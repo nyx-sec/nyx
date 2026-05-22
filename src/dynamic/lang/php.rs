@@ -1230,77 +1230,6 @@ pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
 // Nyx dynamic harness — XPATH_INJECTION DOMXPath::query (Phase 07 / Track J.5).
 {shim}
 
-// Synthetic in-process XPath evaluator over the canonical staged
-// document — counts <user> nodes that satisfy the `[@name='…']`
-// predicate the host code synthesised from the payload.  Real
-// `DOMXPath::query` is not invoked (the harness ignores `_spec` and
-// inlines the evaluator); the differential rule still holds because
-// the vuln payload's `' or '1'='1` tail rewraps the selector into a
-// match-everything shape.
-$NYX_XPATH_USERS = ['alice', 'bob', 'carol'];
-
-function _nyx_xpath_select($expr, array $users): int {{
-    // Recognise the canonical `//user[@name='<payload>']` shape the
-    // synthetic harness emits.  Anything else falls through to "no
-    // match" so a malformed expression cannot accidentally confirm.
-    $needle = "//user[@name=";
-    if (strncmp($expr, $needle, strlen($needle)) !== 0) {{
-        return 0;
-    }}
-    $rest = substr($expr, strlen($needle));
-    if (!str_ends_with($rest, ']')) {{
-        return 0;
-    }}
-    $predicate = substr($rest, 0, strlen($rest) - 1);
-    if (preg_match("/^'([^']*)'(.*)\$/", $predicate, $m)) {{
-        // `name='alice'`  → exact-match against the literal
-        // `name='alice' or '1'='1'` → OR-tail breakouts; presence of
-        //   ` or ` after the closing quote means the selector is now
-        //   tautological → every user matches.
-        $literal = $m[1];
-        $tail = trim($m[2]);
-        if ($tail === '' || $tail === ']') {{
-            $count = 0;
-            foreach ($users as $u) {{
-                if ($u === $literal) $count++;
-            }}
-            return $count;
-        }}
-        if (preg_match("/^or\\s+/i", $tail)) {{
-            return count($users);
-        }}
-    }}
-    if (preg_match('/^"([^"]*)"\\s*$/', $predicate, $m)) {{
-        $literal = $m[1];
-        $count = 0;
-        foreach ($users as $u) {{
-            if ($u === $literal) $count++;
-        }}
-        return $count;
-    }}
-    if (preg_match("/^concat\\(/i", $predicate)) {{
-        // `concat('a',\"'\",'b')` benign-escape path: extract the
-        // joined literal and match exactly once.
-        if (preg_match_all("/'([^']*)'/", $predicate, $parts)) {{
-            $joined = '';
-            foreach ($parts[1] as $p) {{
-                if ($p === ',"') continue;
-                $joined .= $p;
-            }}
-            // Normalise embedded single-quote literals back to the
-            // raw character so a `concat`-quoted username collapses
-            // to the same literal the user typed.
-            $joined = str_replace(",\"'\",", "'", $joined);
-            $count = 0;
-            foreach ($users as $u) {{
-                if ($u === $joined) $count++;
-            }}
-            return $count;
-        }}
-    }}
-    return count($users);
-}}
-
 function _nyx_xpath_probe(string $expr, int $nodes_returned): void {{
     $p = getenv('NYX_PROBE_PATH');
     if ($p === false || $p === '') return;
@@ -1315,23 +1244,34 @@ function _nyx_xpath_probe(string $expr, int $nodes_returned): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
-function _nyx_xpath_via_fixture(string $payload, string $entry_basename, string $entry_name): ?int {{
+function _nyx_xpath_via_fixture(string $payload, string $entry_basename, string $entry_name): int {{
     // Phase 07 tier-(a): require the fixture file and call its
     // `$entry_name` function so the real `DOMXPath::query` runs
-    // against the staged corpus document.  Returns the result-set
-    // length, or `null` when the require / call fails so the caller
-    // can fall back to the inline matcher.
+    // against the staged corpus document.  A missing `ext-dom` /
+    // `ext-xml` host install or an inaccessible fixture file is the
+    // only structural reason this fails; in that case we emit the
+    // conventional `NYX_IMPORT_ERROR:` stderr marker plus `exit(77)`
+    // so the runner maps the outcome to `RunError::BuildFailed` and
+    // the e2e SKIP branch fires.
+    if (!class_exists('DOMDocument') || !class_exists('DOMXPath')) {{
+        fwrite(STDERR, "NYX_IMPORT_ERROR: ext-dom / ext-xml not loaded\n");
+        exit(77);
+    }}
     $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
     if (!is_file($candidate)) {{
-        return null;
+        fwrite(STDERR, "NYX_IMPORT_ERROR: fixture file not found at $candidate\n");
+        exit(77);
     }}
     try {{
         require_once $candidate;
-    }} catch (\Throwable $_) {{
-        return null;
+    }} catch (\Throwable $_e) {{
+        fwrite(STDERR, "NYX_IMPORT_ERROR: " . $_e->getMessage() . "\n");
+        exit(77);
     }}
     if (!function_exists($entry_name)) {{
-        return null;
+        throw new \RuntimeException(
+            "Phase 07 XPath harness: entry function '$entry_name' not found in fixture '$entry_basename'"
+        );
     }}
     try {{
         $result = $entry_name($payload);
@@ -1346,15 +1286,13 @@ function _nyx_xpath_via_fixture(string $payload, string $entry_basename, string 
     if (is_array($result)) {{
         return count($result);
     }}
-    return null;
+    return 0;
 }}
 
 $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
 $expr = "//user[@name='" . $payload . "']";
 $nodes = _nyx_xpath_via_fixture($payload, "{entry_basename}", "{entry_name}");
-if ($nodes === null) {{
-    $nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);
-}}
+echo "__NYX_XPATH_TIER_A__\n";
 _nyx_xpath_probe($expr, $nodes);
 echo "__NYX_SINK_HIT__\n";
 echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
@@ -2494,9 +2432,35 @@ mod tests {
             "PHP XPath harness must check the result against DOMNodeList",
         );
         assert!(
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "PHP XPath harness must emit the tier-(a) stdout marker after the real DOMXPath call: {}",
             h.source
-                .contains("$nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);"),
-            "PHP XPath harness must keep the inline matcher as a fallback",
+        );
+    }
+
+    #[test]
+    fn emit_xpath_harness_drops_inline_matcher_fallback() {
+        let h = emit_xpath_harness(&make_xpath_spec(
+            "tests/dynamic_fixtures/xpath_injection/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            !h.source.contains("_nyx_xpath_select"),
+            "PHP XPath harness must not carry the inline `_nyx_xpath_select` matcher; tier-(a) is the only path",
+        );
+        assert!(
+            !h.source.contains("NYX_XPATH_USERS"),
+            "PHP XPath harness must not carry the inline `NYX_XPATH_USERS` table; tier-(a) is the only path",
+        );
+        assert!(
+            h.source.contains("NYX_IMPORT_ERROR:") && h.source.contains("exit(77)"),
+            "PHP XPath harness must emit `NYX_IMPORT_ERROR:` stderr marker + `exit(77)` on require / ext failure: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "PHP XPath harness must emit the tier-(a) stdout marker: {}",
+            h.source
         );
     }
 

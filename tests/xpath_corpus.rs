@@ -403,8 +403,11 @@ fn staged_corpus_carries_three_users() {
 // verdict path is deterministic without spawning a real XPath
 // engine (`stubs_required: vec![]`).
 //
-// JavaScript is skipped: the synthetic harness's `require('xpath')`
-// import resolves only when the workdir has the package installed.
+// Each lang asserts the tier-(a) stdout marker so a regression that
+// silently falls back to the inline matcher (now deleted) trips the
+// test; on hosts without the real engine installed the harness exits
+// 77 with `NYX_IMPORT_ERROR:` and `is_runtime_import_error` maps it to
+// `RunError::BuildFailed` (SKIP).
 
 mod e2e_phase_07 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
@@ -533,6 +536,17 @@ mod e2e_phase_07 {
             .as_ref()
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        let tier_a_marker = b"__NYX_XPATH_TIER_A__";
+        let saw_tier_a = outcome.attempts.iter().any(|a| {
+            a.outcome
+                .stdout
+                .windows(tier_a_marker.len())
+                .any(|w| w == tier_a_marker)
+        });
+        assert!(
+            saw_tier_a,
+            "Java XPath vuln must reach the tier-(a) real-javax.xml.xpath path (stdout marker `__NYX_XPATH_TIER_A__`); the inline `nyxXpathSelect` fallback was removed and the harness now SKIPs via NYX_IMPORT_ERROR + System.exit(77) when the reflective lookup fails",
+        );
     }
 
     #[test]
@@ -576,6 +590,17 @@ mod e2e_phase_07 {
             .as_ref()
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        let tier_a_marker = b"__NYX_XPATH_TIER_A__";
+        let saw_tier_a = outcome.attempts.iter().any(|a| {
+            a.outcome
+                .stdout
+                .windows(tier_a_marker.len())
+                .any(|w| w == tier_a_marker)
+        });
+        assert!(
+            saw_tier_a,
+            "PHP XPath vuln must reach the tier-(a) real-DOMXPath path (stdout marker `__NYX_XPATH_TIER_A__`); the inline `_nyx_xpath_select` fallback was removed and the harness now SKIPs via NYX_IMPORT_ERROR + exit 77 when ext-dom/ext-xml is unavailable",
+        );
     }
 
     #[test]
@@ -592,5 +617,16 @@ mod e2e_phase_07 {
             .as_ref()
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        let tier_a_marker = b"__NYX_XPATH_TIER_A__";
+        let saw_tier_a = outcome.attempts.iter().any(|a| {
+            a.outcome
+                .stdout
+                .windows(tier_a_marker.len())
+                .any(|w| w == tier_a_marker)
+        });
+        assert!(
+            saw_tier_a,
+            "JavaScript XPath vuln must reach the tier-(a) real-xpath path (stdout marker `__NYX_XPATH_TIER_A__`); the inline `nyxXpathSelect` fallback was removed and the harness now SKIPs via NYX_IMPORT_ERROR + exit 77 when the `xpath` npm package is unavailable",
+        );
     }
 }

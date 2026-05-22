@@ -1354,111 +1354,17 @@ pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     } else {
         spec.entry_name.clone()
     };
-    let uses_real_xpath = entry_source.contains("javax.xml.xpath");
-
-    let main_body = if uses_real_xpath {
-        format!(
-            r#"        // Phase 07 tier-(a): reflectively invoke the fixture's
-        // `run(String)` so the real `javax.xml.xpath.XPath.evaluate`
-        // call against the staged corpus document runs, then count
-        // the returned `NodeList` nodes.  Falls back to the inline
-        // matcher when reflection fails so the harness still produces
-        // a verdict on a fixture whose `run` signature does not match.
-        int count = -1;
-        try {{
-            Class<?> entry = Class.forName("{entry_fqn}");
-            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
-            m.setAccessible(true);
-            Object result = m.invoke(null, payload);
-            if (result instanceof NodeList) {{
-                count = ((NodeList) result).getLength();
-            }}
-        }} catch (ClassNotFoundException | NoSuchMethodException
-                 | IllegalAccessException e) {{
-            // Fixture shape did not match (String) -> NodeList — fall
-            // through to the synthetic matcher below.
-        }} catch (InvocationTargetException ite) {{
-            // The fixture itself threw (malformed XPath, parse error,
-            // ...); treat as a 0-node return so a benign fixture that
-            // rejects the payload stays NotConfirmed.
-            count = 0;
-        }}
-        if (count < 0) {{
-            count = nyxXpathSelect(expr);
-        }}"#
-        )
-    } else {
-        r#"        // No real javax.xml.xpath import on the entry source — fall
-        // back to the inline matcher path so the harness still
-        // produces a verdict.
-        int count = nyxXpathSelect(expr);"#
-            .to_owned()
-    };
-
-    let imports = if uses_real_xpath {
-        "import java.lang.reflect.InvocationTargetException;\n\
-         import java.lang.reflect.Method;\n\
-         import org.w3c.dom.NodeList;\n"
-    } else {
-        ""
-    };
 
     let source = format!(
         r#"// Nyx dynamic harness — XPATH_INJECTION javax.xml.xpath.XPath.evaluate (Phase 07 / Track J.5).
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-{imports}
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import org.w3c.dom.NodeList;
+
 public class NyxHarness {{
 {shim}
-
-    static final String[] NYX_XPATH_USERS = new String[] {{ "alice", "bob", "carol" }};
-
-    static int nyxXpathSelect(String expr) {{
-        String needle = "//user[@name=";
-        if (!expr.startsWith(needle)) return 0;
-        String rest = expr.substring(needle.length());
-        if (!rest.endsWith("]")) return 0;
-        String predicate = rest.substring(0, rest.length() - 1);
-
-        Matcher single = Pattern.compile("^'([^']*)'(.*)$").matcher(predicate);
-        if (single.find()) {{
-            String literal = single.group(1);
-            String tail = single.group(2).trim();
-            if (tail.isEmpty() || tail.equals("]")) {{
-                int count = 0;
-                for (String u : NYX_XPATH_USERS) if (u.equals(literal)) count++;
-                return count;
-            }}
-            if (Pattern.compile("^or\\s+", Pattern.CASE_INSENSITIVE).matcher(tail).find()) {{
-                return NYX_XPATH_USERS.length;
-            }}
-        }}
-        Matcher dbl = Pattern.compile("^\"([^\"]*)\"\\s*$").matcher(predicate);
-        if (dbl.find()) {{
-            String literal = dbl.group(1);
-            int count = 0;
-            for (String u : NYX_XPATH_USERS) if (u.equals(literal)) count++;
-            return count;
-        }}
-        if (Pattern.compile("^concat\\(", Pattern.CASE_INSENSITIVE).matcher(predicate).find()) {{
-            Matcher parts = Pattern.compile("'([^']*)'").matcher(predicate);
-            StringBuilder joined = new StringBuilder();
-            while (parts.find()) {{
-                String p = parts.group(1);
-                if (p.equals(",\"")) continue;
-                joined.append(p);
-            }}
-            String result = joined.toString().replace(",\"'\",", "'");
-            int count = 0;
-            for (String u : NYX_XPATH_USERS) if (u.equals(result)) count++;
-            return count;
-        }}
-        return NYX_XPATH_USERS.length;
-    }}
 
     static void nyxXpathProbe(String expr, int nodesReturned) {{
         String p = System.getenv("NYX_PROBE_PATH");
@@ -1488,7 +1394,38 @@ public class NyxHarness {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
         String expr = "//user[@name='" + payload + "']";
-{main_body}
+        // Phase 07 tier-(a): reflectively invoke the fixture's
+        // `run(String)` so the real `javax.xml.xpath.XPath.evaluate`
+        // call against the staged corpus document runs, then count
+        // the returned `NodeList` nodes.  Missing `javax.xml.xpath`
+        // / `org.w3c.dom` on the JDK is the only structural reason
+        // the reflective lookup fails; in that case we emit the
+        // conventional `NYX_IMPORT_ERROR:` stderr marker plus
+        // `System.exit(77)` so the runner maps the outcome to
+        // `RunError::BuildFailed` and the e2e SKIP branch fires.
+        int count;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            Object result = m.invoke(null, payload);
+            if (result instanceof NodeList) {{
+                count = ((NodeList) result).getLength();
+            }} else {{
+                count = 0;
+            }}
+        }} catch (ClassNotFoundException | NoSuchMethodException
+                 | IllegalAccessException e) {{
+            System.err.println("NYX_IMPORT_ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+            System.exit(77);
+            return;
+        }} catch (InvocationTargetException ite) {{
+            // The fixture itself threw (malformed XPath, parse error,
+            // ...); treat as a 0-node return so a benign fixture that
+            // rejects the payload stays NotConfirmed.
+            count = 0;
+        }}
+        System.out.println("__NYX_XPATH_TIER_A__");
         nyxXpathProbe(expr, count);
         System.out.println("__NYX_SINK_HIT__");
         StringBuilder body = new StringBuilder(64);
@@ -3598,7 +3535,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_xpath_harness_drives_fixture_through_real_xpath_when_imported() {
+    fn emit_xpath_harness_routes_through_real_xpath_reflectively() {
         let dir = std::env::temp_dir().join("nyx_phase07_test_drive_fixture");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3634,15 +3571,16 @@ mod tests {
             "tier-(a) harness must cast the result to NodeList and count nodes",
         );
         assert!(
-            h.source.contains("count = nyxXpathSelect(expr);"),
-            "tier-(a) harness must preserve the inline matcher as a fallback",
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "tier-(a) harness must emit the tier-(a) stdout marker after the real reflective invoke: {}",
+            h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn emit_xpath_harness_falls_back_to_inline_matcher_without_xpath_import() {
-        let dir = std::env::temp_dir().join("nyx_phase07_test_no_xpath_import");
+    fn emit_xpath_harness_drops_inline_matcher_fallback() {
+        let dir = std::env::temp_dir().join("nyx_phase07_test_no_inline_matcher");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let entry = write_servlet_fixture(
@@ -3655,16 +3593,27 @@ mod tests {
         spec.entry_name = "run".into();
         let h = emit_xpath_harness(&spec);
         assert!(
-            !h.source.contains("import org.w3c.dom.NodeList;"),
-            "fallback path must not import NodeList",
+            !h.source.contains("nyxXpathSelect"),
+            "harness must not carry the inline `nyxXpathSelect` matcher; tier-(a) reflective invoke is the only path",
         );
         assert!(
-            !h.source.contains("Class.forName(\"Vuln\")"),
-            "fallback path must not invoke the fixture reflectively",
+            !h.source.contains("NYX_XPATH_USERS"),
+            "harness must not carry the inline `NYX_XPATH_USERS` table; tier-(a) reflective invoke is the only path",
         );
         assert!(
-            h.source.contains("int count = nyxXpathSelect(expr);"),
-            "fallback path must keep the inline matcher as the primary count source",
+            h.source.contains("NYX_IMPORT_ERROR:") && h.source.contains("System.exit(77)"),
+            "harness must emit `NYX_IMPORT_ERROR:` stderr marker + `System.exit(77)` on reflective lookup failure: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "harness must emit the tier-(a) stdout marker: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("import org.w3c.dom.NodeList;")
+                && h.source.contains("import java.lang.reflect.Method;"),
+            "harness must always import the reflective invocation path; the synthetic-only branch is gone",
         );
     }
 }

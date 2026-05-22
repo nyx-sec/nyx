@@ -1225,69 +1225,37 @@ pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
     let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
-    let entry_source = read_entry_source(&spec.entry_file);
     let entry_stem = derive_js_entry_stem(&spec.entry_file);
     let entry_name = if spec.entry_name.is_empty() {
         "run".to_owned()
     } else {
         spec.entry_name.clone()
     };
-    let uses_real_xpath = entry_source.contains("require('xpath')")
-        || entry_source.contains("require(\"xpath\")");
 
     let body = format!(
         r#"// Nyx dynamic harness — XPATH_INJECTION xpath.select (Phase 07 / Track J.5).
 {shim}
 
-const NYX_XPATH_USERS = ['alice', 'bob', 'carol'];
-
-function nyxXpathSelect(expr) {{
-  const needle = "//user[@name=";
-  if (!expr.startsWith(needle)) return 0;
-  const rest = expr.slice(needle.length);
-  if (!rest.endsWith("]")) return 0;
-  const predicate = rest.slice(0, -1);
-
-  let m = predicate.match(/^'([^']*)'(.*)$/);
-  if (m) {{
-    const literal = m[1];
-    const tail = m[2].trim();
-    if (tail === '' || tail === ']') {{
-      return NYX_XPATH_USERS.filter((u) => u === literal).length;
-    }}
-    if (/^or\s+/i.test(tail)) {{
-      return NYX_XPATH_USERS.length;
-    }}
-  }}
-  m = predicate.match(/^"([^"]*)"\s*$/);
-  if (m) {{
-    const literal = m[1];
-    return NYX_XPATH_USERS.filter((u) => u === literal).length;
-  }}
-  if (/^concat\(/i.test(predicate)) {{
-    const parts = [...predicate.matchAll(/'([^']*)'/g)].map((x) => x[1]);
-    let joined = parts.filter((p) => p !== ',"').join('');
-    joined = joined.split(",\"'\",").join("'");
-    return NYX_XPATH_USERS.filter((u) => u === joined).length;
-  }}
-  return NYX_XPATH_USERS.length;
-}}
-
 function nyxXpathViaFixture(payload) {{
   // Phase 07 tier-(a): require the fixture and call its
   // `{entry_name}` so the real `xpath.select` (or other XPath evaluator
-  // the fixture chooses) runs against the staged corpus document.
-  // Returns the node count, or `null` when the require / lookup / call
-  // fails (e.g. the `xpath` npm package is not installed on the host)
-  // so the caller can fall back to the inline matcher.
+  // the fixture chooses) runs against the staged corpus document.  A
+  // missing `xpath` host install is the only structural reason the
+  // require fails; in that case we emit the conventional
+  // `NYX_IMPORT_ERROR:` stderr marker plus `process.exit(77)` so the
+  // runner maps the outcome to `RunError::BuildFailed` and the e2e
+  // SKIP branch fires.
   let _entry;
   try {{
     _entry = require('./{entry_stem}');
   }} catch (e) {{
-    return null;
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
   }}
   const fn = _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
-  if (typeof fn !== 'function') return null;
+  if (typeof fn !== 'function') {{
+    throw new Error("Phase 07 XPath harness: entry function '{entry_name}' not found in fixture module './{entry_stem}'");
+  }}
   let result;
   try {{
     result = fn(payload);
@@ -1321,23 +1289,21 @@ function nyxXpathProbe(expr, nodesReturned) {{
 
 const payload = process.env.NYX_PAYLOAD || '';
 const expr = "//user[@name='" + payload + "']";
-let nodes = nyxXpathViaFixture(payload);
-if (nodes === null) {{
-  nodes = nyxXpathSelect(expr);
-}}
+const nodes = nyxXpathViaFixture(payload);
+console.log('__NYX_XPATH_TIER_A__');
 nyxXpathProbe(expr, nodes);
 console.log('__NYX_SINK_HIT__');
 console.log(JSON.stringify({{ expr: expr, nodes_returned: nodes }}));
 "#
     );
-    let mut extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
-    if uses_real_xpath {
-        extra_files.push(("package.json".to_owned(), package_json_xpath()));
-        extra_files.push((
+    let extra_files = vec![
+        (corpus_filename.to_owned(), corpus_xml.to_owned()),
+        ("package.json".to_owned(), package_json_xpath()),
+        (
             "package-lock.json".to_owned(),
             package_lock_skeleton("nyx-harness-xpath"),
-        ));
-    }
+        ),
+    ];
     HarnessSource {
         source: body,
         filename: "harness.js".to_owned(),
@@ -2857,7 +2823,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_xpath_harness_drives_fixture_through_real_xpath_when_imported() {
+    fn emit_xpath_harness_routes_through_fixture_require() {
         let dir = std::env::temp_dir().join("nyx_phase07_js_test_drive_fixture");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2891,34 +2857,34 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("nodes = nyxXpathSelect(expr);"),
-            "tier-(a) harness must preserve the inline matcher as a fallback: {}",
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "harness must emit the tier-(a) stdout marker after the real xpath call: {}",
             h.source
         );
         assert!(
             h.extra_files
                 .iter()
                 .any(|(p, c)| p == "package.json" && c.contains("\"xpath\"")),
-            "tier-(a) harness must stage a package.json with the xpath dep",
+            "harness must always stage a package.json with the xpath dep",
         );
         assert!(
             h.extra_files
                 .iter()
                 .any(|(p, c)| p == "package.json" && c.contains("@xmldom/xmldom")),
-            "tier-(a) harness must stage a package.json with the xmldom dep",
+            "harness must always stage a package.json with the xmldom dep",
         );
         assert!(
             h.extra_files
                 .iter()
                 .any(|(p, _)| p == "package-lock.json"),
-            "tier-(a) harness must stage a package-lock.json",
+            "harness must always stage a package-lock.json",
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn emit_xpath_harness_falls_back_to_inline_matcher_without_xpath_require() {
-        let dir = std::env::temp_dir().join("nyx_phase07_js_test_no_xpath_require");
+    fn emit_xpath_harness_drops_inline_matcher_fallback() {
+        let dir = std::env::temp_dir().join("nyx_phase07_js_test_no_inline_matcher");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.js");
@@ -2929,14 +2895,28 @@ mod tests {
         .unwrap();
         let h = emit_xpath_harness(&make_xpath_spec(entry.to_str().unwrap(), "run"));
         assert!(
-            !h.extra_files.iter().any(|(p, _)| p == "package.json"),
-            "fallback path must not stage a package.json (xpath dep would be unused)",
+            !h.source.contains("nyxXpathSelect"),
+            "harness must not carry the inline `nyxXpathSelect` matcher; tier-(a) is the only path",
         );
         assert!(
-            !h.extra_files
+            !h.source.contains("NYX_XPATH_USERS"),
+            "harness must not carry the inline `NYX_XPATH_USERS` table; tier-(a) is the only path",
+        );
+        assert!(
+            h.source.contains("NYX_IMPORT_ERROR:") && h.source.contains("process.exit(77)"),
+            "harness must emit `NYX_IMPORT_ERROR:` stderr marker + `process.exit(77)` on require failure: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "harness must emit the tier-(a) stdout marker: {}",
+            h.source
+        );
+        assert!(
+            h.extra_files
                 .iter()
-                .any(|(p, _)| p == "package-lock.json"),
-            "fallback path must not stage a package-lock.json",
+                .any(|(p, _)| p == "package.json"),
+            "harness must always stage a package.json (real-xpath dep is required, no synthetic-only path)",
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
