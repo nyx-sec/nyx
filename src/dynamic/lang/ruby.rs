@@ -221,6 +221,16 @@ fn read_entry_source(entry_file: &str) -> String {
     String::new()
 }
 
+/// Phase 08 / 09 tier-(a) helper: strip the `.rb` extension off the
+/// entry file's basename so the harness can `require_relative` it.
+fn derive_entry_basename(entry_file: &str) -> String {
+    PathBuf::from(entry_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "entry".to_owned())
+}
+
 /// Source of the `__nyx_probe` shim for the Ruby harness (Phase 06 —
 /// Track C.1).
 pub fn probe_shim() -> &'static str {
@@ -1090,13 +1100,85 @@ STDOUT.flush
 /// Phase 08 — Track J.6 header-injection harness for Ruby
 /// (`Rack::Response#set_header`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `response.set_header('Set-Cookie', value)` shim that records the
-/// *unmodified* value bytes (including any embedded `\r\n`) via a
-/// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
-/// pattern used by Phase 03 / 04 / 05.
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// When the fixture imports `rack` the tier-(a) path imports the
+/// fixture, prepends a permissive captor module onto `Rack::Response`
+/// that records every `set_header(name, value)` call verbatim, and
+/// invokes the named entry function with the payload.  Otherwise the
+/// synthetic fallback emits a single `HeaderEmit` probe with the
+/// payload bytes pre-bound to `Set-Cookie`, matching the prior
+/// behaviour.
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_rack = entry_source.contains("require 'rack'")
+        || entry_source.contains("require \"rack\"");
+    let via_fixture = if uses_rack {
+        format!(
+            r#"def _nyx_header_via_fixture(payload)
+  # Phase 08 tier-(a): prepend a permissive captor onto
+  # `Rack::Response` so every `set_header(name, value)` call records
+  # the unmodified bytes (including raw `\r\n`) before Rack's
+  # validator (if any) runs.  Mirrors the Python werkzeug pattern at
+  # `src/dynamic/lang/python.rs::emit_header_injection_harness`.
+  # Returns `nil` when Rack is missing or the fixture cannot be
+  # required so the caller can fall back to the synthetic probe.
+  begin
+    require 'rack'
+  rescue LoadError, ScriptError
+    return nil
+  end
+  captured = []
+  patcher = Module.new do
+    define_method(:set_header) do |name, value|
+      begin
+        captured << [name.to_s, value.to_s]
+      rescue StandardError
+        # ignore non-string args
+      end
+      self
+    end
+  end
+  Rack::Response.prepend(patcher)
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError
+    return nil
+  end
+  begin
+    Object.new.__send__(:'{entry_name}', payload)
+  rescue StandardError
+    # Fixture raised — return whatever was captured before throw.
+  end
+  captured
+end
+
+"#
+        )
+    } else {
+        String::new()
+    };
+    let invoke_via_fixture = if uses_rack {
+        r#"  captured = _nyx_header_via_fixture(payload)
+  if captured && !captured.empty?
+    captured.each do |(name, value)|
+      _nyx_header_probe(name, value)
+    end
+    STDOUT.puts '__NYX_SINK_HIT__'
+    STDOUT.puts JSON.generate({ 'headers' => captured.map { |p| [p[0], p[1]] } })
+    STDOUT.flush
+    return
+  end
+"#
+    } else {
+        ""
+    };
     let body = format!(
         r#"# Nyx dynamic harness — HEADER_INJECTION Rack::Response#set_header (Phase 08 / Track J.6).
 require 'json'
@@ -1120,13 +1202,20 @@ def _nyx_header_probe(name, value)
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
 end
 
-payload = ENV['NYX_PAYLOAD'] || ''
-name = 'Set-Cookie'
-value = payload
-_nyx_header_probe(name, value)
-STDOUT.puts '__NYX_SINK_HIT__'
-STDOUT.puts JSON.generate({{ 'name' => name, 'value' => value }})
-STDOUT.flush
+{via_fixture}def _nyx_run
+  payload = ENV['NYX_PAYLOAD'] || ''
+{invoke_via_fixture}  # Synthetic fallback — mirrors `Rack::Response#set_header`
+  # semantics: the value bytes flow through unmodified, so a tainted
+  # payload that carries raw `\r\n` lands on the wire as a header split.
+  name = 'Set-Cookie'
+  value = payload
+  _nyx_header_probe(name, value)
+  STDOUT.puts '__NYX_SINK_HIT__'
+  STDOUT.puts JSON.generate({{ 'name' => name, 'value' => value }})
+  STDOUT.flush
+end
+
+_nyx_run
 "#
     );
     HarnessSource {
@@ -1141,12 +1230,104 @@ STDOUT.flush
 /// Phase 09 — Track J.7 open-redirect harness for Ruby
 /// (`Rack::Response#redirect`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `response.redirect(value)` shim that records the bound
-/// `Location:` value plus the request's origin host via a
-/// `ProbeKind::Redirect` probe.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// When the fixture imports `rack` the tier-(a) path imports the
+/// fixture, prepends a captor onto `Rack::Response` that records
+/// every `redirect(target)` / `set_header('Location', ...)` /
+/// `location(...)` call, and invokes the named entry function.  The
+/// captor returns `self` so the fixture's downstream method chaining
+/// keeps working.  Falls back to the synthetic probe on missing
+/// Rack / import failure.
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_rack = entry_source.contains("require 'rack'")
+        || entry_source.contains("require \"rack\"");
+    let via_fixture = if uses_rack {
+        format!(
+            r#"def _nyx_redirect_via_fixture(payload)
+  # Phase 09 tier-(a): prepend a captor onto `Rack::Response` so
+  # every `redirect(target)` / `set_header('Location', value)` /
+  # `location(value)` call records the bound location string.
+  # Mirrors the Python flask pattern at
+  # `src/dynamic/lang/python.rs::emit_open_redirect_harness`.
+  # Returns `[location, 'example.com']` on success, `nil` when Rack
+  # is missing or the fixture cannot be required so the caller can
+  # fall back to the synthetic probe.
+  begin
+    require 'rack'
+  rescue LoadError, ScriptError
+    return nil
+  end
+  captured = []
+  patcher = Module.new do
+    define_method(:redirect) do |target, *_args, **_opts|
+      begin
+        captured << target.to_s
+      rescue StandardError
+        # ignore
+      end
+      self
+    end
+    define_method(:set_header) do |name, value|
+      begin
+        if name.to_s.casecmp('Location').zero?
+          captured << value.to_s
+        end
+      rescue StandardError
+        # ignore
+      end
+      self
+    end
+    define_method(:location=) do |value|
+      begin
+        captured << value.to_s
+      rescue StandardError
+        # ignore
+      end
+      value
+    end
+  end
+  Rack::Response.prepend(patcher)
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError
+    return nil
+  end
+  begin
+    Object.new.__send__(:'{entry_name}', payload)
+  rescue StandardError
+    # Fixture raised — return whatever was captured before throw.
+  end
+  return nil if captured.empty?
+  [captured.first, 'example.com']
+end
+
+"#
+        )
+    } else {
+        String::new()
+    };
+    let invoke_via_fixture = if uses_rack {
+        r#"  captured = _nyx_redirect_via_fixture(payload)
+  if captured
+    location, request_host = captured
+    _nyx_redirect_probe(location, request_host)
+    STDOUT.puts '__NYX_SINK_HIT__'
+    STDOUT.puts JSON.generate({ 'location' => location, 'request_host' => request_host })
+    STDOUT.flush
+    return
+  end
+"#
+    } else {
+        ""
+    };
     let body = format!(
         r#"# Nyx dynamic harness — OPEN_REDIRECT Rack::Response#redirect (Phase 09 / Track J.7).
 require 'json'
@@ -1169,13 +1350,17 @@ def _nyx_redirect_probe(location, request_host)
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
 end
 
-payload = ENV['NYX_PAYLOAD'] || ''
-request_host = 'example.com'
-location = payload
-_nyx_redirect_probe(location, request_host)
-STDOUT.puts '__NYX_SINK_HIT__'
-STDOUT.puts JSON.generate({{ 'location' => location, 'request_host' => request_host }})
-STDOUT.flush
+{via_fixture}def _nyx_run
+  payload = ENV['NYX_PAYLOAD'] || ''
+{invoke_via_fixture}  request_host = 'example.com'
+  location = payload
+  _nyx_redirect_probe(location, request_host)
+  STDOUT.puts '__NYX_SINK_HIT__'
+  STDOUT.puts JSON.generate({{ 'location' => location, 'request_host' => request_host }})
+  STDOUT.flush
+end
+
+_nyx_run
 "#
     );
     HarnessSource {
@@ -1683,5 +1868,203 @@ mod tests {
             shim_pos < driver_pos,
             "probe shim must come before the driver so a sink rewrite has the shim's helpers in scope"
         );
+    }
+
+    // ── Phase 08 / 09 tier-(a) Ruby emitter tests ────────────────────────────
+
+    fn make_header_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    fn make_redirect_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_fixture_when_rack_required() {
+        let dir = std::env::temp_dir().join("nyx_phase08_rb_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(
+            &entry,
+            "require 'rack'\n\
+             def run(value)\n  r = Rack::Response.new\n  r.set_header('Set-Cookie', value)\n  r\nend\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_header_via_fixture(payload)"),
+            "tier-(a) harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Rack::Response.prepend(patcher)"),
+            "tier-(a) harness must prepend the captor onto Rack::Response: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_relative './vuln'"),
+            "tier-(a) harness must require the fixture by its file stem: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Object.new.__send__(:'run', payload)"),
+            "tier-(a) harness must invoke the named entry function via __send__: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("captured = _nyx_header_via_fixture(payload)"),
+            "harness main must call the fixture-routing helper first: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("value = payload\n  _nyx_header_probe(name, value)"),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_falls_back_when_rack_not_required() {
+        let dir = std::env::temp_dir().join("nyx_phase08_rb_test_no_rack");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(&entry, "def run(value)\n  value\nend\n").unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("Rack::Response.prepend"),
+            "fallback path must not patch Rack::Response: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("def _nyx_header_via_fixture"),
+            "fallback path must not define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("value = payload\n  _nyx_header_probe(name, value)"),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_derives_basename_from_entry_file() {
+        let dir = std::env::temp_dir().join("nyx_phase08_rb_test_basename_derive");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("benign.rb");
+        std::fs::write(
+            &entry,
+            "require 'rack'\n\
+             def run(v)\n  Rack::Response.new\nend\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("require_relative './benign'"),
+            "basename must come from the entry-file stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_routes_through_fixture_when_rack_required() {
+        let dir = std::env::temp_dir().join("nyx_phase09_rb_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(
+            &entry,
+            "require 'rack'\n\
+             def run(value)\n  r = Rack::Response.new\n  r.redirect(value)\n  r\nend\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_redirect_via_fixture(payload)"),
+            "tier-(a) harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Rack::Response.prepend(patcher)"),
+            "tier-(a) harness must prepend the captor onto Rack::Response: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_relative './vuln'"),
+            "tier-(a) harness must require the fixture by its file stem: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("define_method(:redirect)"),
+            "tier-(a) captor must intercept the redirect method: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("captured = _nyx_redirect_via_fixture(payload)"),
+            "harness main must call the fixture-routing helper first: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_falls_back_when_rack_not_required() {
+        let dir = std::env::temp_dir().join("nyx_phase09_rb_test_no_rack");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(&entry, "def run(value)\n  value\nend\n").unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("Rack::Response.prepend"),
+            "fallback path must not patch Rack::Response: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("def _nyx_redirect_via_fixture"),
+            "fallback path must not define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
