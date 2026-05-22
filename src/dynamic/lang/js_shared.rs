@@ -1221,10 +1221,20 @@ console.log(JSON.stringify({{ render: rendered }}));
 /// staged document, and writes a `ProbeKind::Xpath { nodes_returned }`
 /// probe whose `n` is the count returned.  Mirrors the synthetic-
 /// harness pattern used by Phase 03 / 04 / 05 / 06.
-pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
     let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_real_xpath = entry_source.contains("require('xpath')")
+        || entry_source.contains("require(\"xpath\")");
+
     let body = format!(
         r#"// Nyx dynamic harness — XPATH_INJECTION xpath.select (Phase 07 / Track J.5).
 {shim}
@@ -1263,6 +1273,34 @@ function nyxXpathSelect(expr) {{
   return NYX_XPATH_USERS.length;
 }}
 
+function nyxXpathViaFixture(payload) {{
+  // Phase 07 tier-(a): require the fixture and call its
+  // `{entry_name}` so the real `xpath.select` (or other XPath evaluator
+  // the fixture chooses) runs against the staged corpus document.
+  // Returns the node count, or `null` when the require / lookup / call
+  // fails (e.g. the `xpath` npm package is not installed on the host)
+  // so the caller can fall back to the inline matcher.
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    return null;
+  }}
+  const fn = _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') return null;
+  let result;
+  try {{
+    result = fn(payload);
+  }} catch (e) {{
+    // Malformed XPath / parse error / etc. — treat as 0-node return
+    // so a benign fixture that rejects the payload stays NotConfirmed.
+    return 0;
+  }}
+  if (result == null) return 0;
+  if (typeof result.length === 'number') return result.length;
+  return 0;
+}}
+
 function nyxXpathProbe(expr, nodesReturned) {{
   const p = process.env.NYX_PROBE_PATH;
   if (!p) return;
@@ -1283,13 +1321,23 @@ function nyxXpathProbe(expr, nodesReturned) {{
 
 const payload = process.env.NYX_PAYLOAD || '';
 const expr = "//user[@name='" + payload + "']";
-const nodes = nyxXpathSelect(expr);
+let nodes = nyxXpathViaFixture(payload);
+if (nodes === null) {{
+  nodes = nyxXpathSelect(expr);
+}}
 nyxXpathProbe(expr, nodes);
 console.log('__NYX_SINK_HIT__');
 console.log(JSON.stringify({{ expr: expr, nodes_returned: nodes }}));
 "#
     );
-    let extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    let mut extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    if uses_real_xpath {
+        extra_files.push(("package.json".to_owned(), package_json_xpath()));
+        extra_files.push((
+            "package-lock.json".to_owned(),
+            package_lock_skeleton("nyx-harness-xpath"),
+        ));
+    }
     HarnessSource {
         source: body,
         filename: "harness.js".to_owned(),
@@ -1297,6 +1345,25 @@ console.log(JSON.stringify({{ expr: expr, nodes_returned: nodes }}));
         extra_files,
         entry_subpath: None,
     }
+}
+
+/// Map an entry file path like `tests/.../vuln.js` to the basename
+/// (without extension) the harness will `require('./<stem>')`.  Falls
+/// back to `"vuln"` so the harness still attempts a require when the
+/// path is unusable (the inline matcher fires when the require fails).
+fn derive_js_entry_stem(entry_file: &str) -> String {
+    PathBuf::from(entry_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "vuln".to_owned())
+}
+
+/// `package.json` bundling `xpath` + `@xmldom/xmldom` so the JS XPath
+/// fixtures can `require('xpath')` / `require('@xmldom/xmldom')` from
+/// the harness workdir.  Mirrors `package_json_for` but pins two deps.
+fn package_json_xpath() -> String {
+    "{\n  \"name\": \"nyx-harness-xpath\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"dependencies\": {\n    \"xpath\": \"^0.0.34\",\n    \"@xmldom/xmldom\": \"^0.8.10\"\n  }\n}\n".to_owned()
 }
 
 /// Phase 08 — Track J.6 header-injection harness for Node
@@ -2560,5 +2627,118 @@ mod tests {
             shim.contains("NYX_HTTP_LOG"),
             "stub recorder must read NYX_HTTP_LOG"
         );
+    }
+
+    fn make_xpath_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::XPATH_INJECTION;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    #[test]
+    fn emit_xpath_harness_drives_fixture_through_real_xpath_when_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase07_js_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const xpath = require('xpath');\n\
+             function run(name) { return []; }\n\
+             module.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_xpath_harness(&make_xpath_spec(entry.to_str().unwrap(), "run"));
+        assert!(
+            h.source.contains("function nyxXpathViaFixture(payload)"),
+            "tier-(a) harness must define nyxXpathViaFixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require('./vuln')"),
+            "tier-(a) harness must require the staged fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_entry['run']"),
+            "tier-(a) harness must look up the named entry function: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("if (typeof result.length === 'number') return result.length;"),
+            "tier-(a) harness must count nodes via the returned array's .length: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("nodes = nyxXpathSelect(expr);"),
+            "tier-(a) harness must preserve the inline matcher as a fallback: {}",
+            h.source
+        );
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(p, c)| p == "package.json" && c.contains("\"xpath\"")),
+            "tier-(a) harness must stage a package.json with the xpath dep",
+        );
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(p, c)| p == "package.json" && c.contains("@xmldom/xmldom")),
+            "tier-(a) harness must stage a package.json with the xmldom dep",
+        );
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(p, _)| p == "package-lock.json"),
+            "tier-(a) harness must stage a package-lock.json",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_xpath_harness_falls_back_to_inline_matcher_without_xpath_require() {
+        let dir = std::env::temp_dir().join("nyx_phase07_js_test_no_xpath_require");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "function run(name) { return []; }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_xpath_harness(&make_xpath_spec(entry.to_str().unwrap(), "run"));
+        assert!(
+            !h.extra_files.iter().any(|(p, _)| p == "package.json"),
+            "fallback path must not stage a package.json (xpath dep would be unused)",
+        );
+        assert!(
+            !h.extra_files
+                .iter()
+                .any(|(p, _)| p == "package-lock.json"),
+            "fallback path must not stage a package-lock.json",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_xpath_harness_derives_entry_stem_from_entry_file() {
+        let dir = std::env::temp_dir().join("nyx_phase07_js_test_stem_derive");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("benign.js");
+        std::fs::write(
+            &entry,
+            "const xpath = require('xpath');\nfunction run(name) { return []; }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_xpath_harness(&make_xpath_spec(entry.to_str().unwrap(), "run"));
+        assert!(
+            h.source.contains("require('./benign')"),
+            "harness must require the staged fixture by its file_stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
