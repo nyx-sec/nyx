@@ -4,7 +4,9 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-A focused release on three fronts: an attack-surface map and chain composer that turn the flat finding list into a route-to-sink graph, a sandboxed dynamic verifier that re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict, and a framework adapter registry (107 entries across 8 languages) that grounds the surface map and dynamic harnesses in real-world HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
+Three fronts this release: an attack-surface map, a sandboxed dynamic verifier, and a framework adapter registry that grounds both.
+
+The attack-surface map and chain composer turn the flat finding list into a route-to-sink graph. The dynamic verifier re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict on each. The adapter registry (107 entries across 8 languages) covers HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
 
 ### Attack-surface map
 
