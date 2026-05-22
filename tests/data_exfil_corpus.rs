@@ -146,7 +146,8 @@ mod e2e_data_exfil {
             .join("tests/dynamic_fixtures/data_exfil")
             .join(match lang {
                 Lang::Python => "python",
-                _ => unreachable!("DATA_EXFIL e2e currently covers Python only"),
+                Lang::Ruby => "ruby",
+                _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -187,7 +188,8 @@ mod e2e_data_exfil {
     fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
         let required = match lang {
             Lang::Python => "python3",
-            _ => unreachable!("DATA_EXFIL e2e currently covers Python only"),
+            Lang::Ruby => "ruby",
+            _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby"),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -251,6 +253,39 @@ mod e2e_data_exfil {
         assert!(
             outcome.triggered_by.is_none(),
             "Python DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Ruby pair, same shape as Python: the vuln fixture always calls
+    /// `Net::HTTP.get(uri)` and the harness's open-class shim records
+    /// the URI host; the benign fixture early-returns when the host
+    /// argument is not in `ALLOWLIST` so no `Net::HTTP.get` call is
+    /// made for the attacker payload.  Skips when `ruby` is not on
+    /// PATH.
+    #[test]
+    fn ruby_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Ruby DATA_EXFIL vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn ruby_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "benign.rb", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Ruby DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

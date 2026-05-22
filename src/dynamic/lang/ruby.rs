@@ -459,6 +459,26 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_json_parse_harness(spec));
     }
 
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID harness.  Imports the fixture
+    // via `require_relative`, invokes the entry with the payload as the
+    // requested `owner_id`, and emits a
+    // `ProbeKind::IdorAccess { caller_id, owner_id }` whenever the
+    // fixture materialises a non-`nil` record.  The
+    // `IdorBoundaryCrossed` predicate fires when `caller_id != owner_id`.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL harness.  Open-class shim on
+    // `Net::HTTP.get` / `Net::HTTP.get_response` / `Net::HTTP.start`
+    // captures the outbound URL's host (via `URI.parse`), emits a
+    // `ProbeKind::OutboundNetwork { host }`, and returns a benign
+    // in-memory stand-in so the fixture's caller never blocks on the
+    // network.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
         return Ok(emit_class_method_harness(class, method));
@@ -1733,6 +1753,245 @@ STDOUT.flush
     }
 }
 
+/// Phase 11 (Track J.9) — UNAUTHORIZED_ID IDOR harness for Ruby.
+///
+/// Reads `NYX_PAYLOAD` as the requested `owner_id`, `require_relative`s
+/// the fixture file, and invokes the named entry function with it.
+/// When the fixture returns a non-`nil` record (i.e. the data store
+/// materialised the row without an authorization check) the harness
+/// emits a [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe
+/// carrying the hard-coded `caller_id = "alice"` and the payload as
+/// `owner_id`.  The
+/// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+/// predicate fires whenever `caller_id != owner_id`, so a vuln payload
+/// (`bob`) materialises the probe and a benign payload (`alice`) clears
+/// the predicate even though both fixtures return a record.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_unauthorized_id_harness`.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"# Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+require 'json'
+
+{shim}
+
+NYX_CALLER_ID = 'alice'
+
+def _nyx_idor_probe(caller_id, owner_id)
+  rec = {{
+    'sink_callee'    => '__nyx_idor_lookup',
+    'args'           => [
+      {{ 'kind' => 'String', 'value' => caller_id.to_s }},
+      {{ 'kind' => 'String', 'value' => owner_id.to_s }},
+    ],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{
+      'kind'     => 'IdorAccess',
+      'caller_id' => caller_id.to_s,
+      'owner_id'  => owner_id.to_s,
+    }},
+    'witness'        => __nyx_witness('__nyx_idor_lookup', [caller_id.to_s, owner_id.to_s]),
+  }}
+  __nyx_emit(rec)
+end
+
+def _nyx_idor_via_fixture(payload)
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError => e
+    STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+    exit 77
+  end
+  fn_sym = :'{entry_name}'
+  unless Object.respond_to?(fn_sym, true) || self.respond_to?(fn_sym, true)
+    return nil
+  end
+  begin
+    send(fn_sym, payload)
+  rescue StandardError
+    nil
+  end
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+record = _nyx_idor_via_fixture(payload)
+unless record.nil?
+  _nyx_idor_probe(NYX_CALLER_ID, payload)
+end
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts({{ 'materialised' => !record.nil? }}.to_json)
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) — DATA_EXFIL outbound-network harness for Ruby.
+///
+/// Open-class shims on `Net::HTTP.get`, `Net::HTTP.get_response`,
+/// `Net::HTTP.post`, and `Net::HTTP.start` capture the destination host
+/// before any wire I/O.  The shim parses URIs via `URI.parse`, falls
+/// back to `URI.parse(arg.to_s)` for raw strings, and reads the host
+/// argument directly for the `start(host, port, ...)` form.  A
+/// [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe is
+/// emitted with the parsed host, then the call returns a benign
+/// in-memory stand-in so the fixture's caller never blocks on the
+/// network.  The
+/// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+/// predicate fires when the captured host falls outside the loopback
+/// allowlist, so the `attacker.test` vuln payload materialises a probe
+/// the predicate matches while the `127.0.0.1` benign control stays
+/// clear.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_data_exfil_harness`.
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"# Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+require 'json'
+require 'net/http'
+require 'uri'
+
+{shim}
+
+def _nyx_outbound_probe(host)
+  rec = {{
+    'sink_callee'    => '__nyx_mock_http',
+    'args'           => [{{ 'kind' => 'String', 'value' => host.to_s }}],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'OutboundNetwork', 'host' => host.to_s }},
+    'witness'        => __nyx_witness('__nyx_mock_http', [host.to_s]),
+  }}
+  __nyx_emit(rec)
+end
+
+def _nyx_extract_host(target)
+  return '' if target.nil?
+  if target.respond_to?(:host) && !target.host.nil?
+    return target.host.to_s
+  end
+  raw = target.to_s
+  begin
+    parsed = URI.parse(raw)
+    return parsed.host.to_s unless parsed.host.nil?
+  rescue URI::InvalidURIError, StandardError
+    # fall through
+  end
+  raw
+end
+
+class NyxFakeHttpResponse
+  def body
+    ''
+  end
+
+  def code
+    '200'
+  end
+
+  def message
+    'OK'
+  end
+
+  def read_body
+    ''
+  end
+
+  def each_header
+    return enum_for(:each_header) unless block_given?
+  end
+
+  def [](_)
+    nil
+  end
+end
+
+# Open-class shim on Net::HTTP class methods.  Captures the host
+# argument, emits the OutboundNetwork probe, then returns a benign
+# stand-in so the fixture's caller never blocks on the wire.
+Net::HTTP.define_singleton_method(:get) do |uri_or_host, *_rest, **_kw|
+  host = _nyx_extract_host(uri_or_host)
+  _nyx_outbound_probe(host)
+  ''
+end
+
+Net::HTTP.define_singleton_method(:get_response) do |uri_or_host, *_rest, **_kw|
+  host = _nyx_extract_host(uri_or_host)
+  _nyx_outbound_probe(host)
+  NyxFakeHttpResponse.new
+end
+
+Net::HTTP.define_singleton_method(:post) do |uri_or_host, *_rest, **_kw|
+  host = _nyx_extract_host(uri_or_host)
+  _nyx_outbound_probe(host)
+  NyxFakeHttpResponse.new
+end
+
+Net::HTTP.define_singleton_method(:start) do |host_arg, *rest, **kw, &blk|
+  host = host_arg.is_a?(String) ? host_arg : _nyx_extract_host(host_arg)
+  _nyx_outbound_probe(host)
+  fake = NyxFakeHttpResponse.new
+  blk ? blk.call(fake) : fake
+end
+
+def _nyx_data_exfil_via_fixture(payload)
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError => e
+    STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+    exit 77
+  end
+  fn_sym = :'{entry_name}'
+  unless Object.respond_to?(fn_sym, true) || self.respond_to?(fn_sym, true)
+    return false
+  end
+  begin
+    send(fn_sym, payload)
+  rescue StandardError
+    # Probe is already emitted if the fixture reached Net::HTTP.*
+  end
+  true
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+_nyx_data_exfil_via_fixture(payload)
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts({{ 'payload' => payload }}.to_json)
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
 fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     let entry_fn = &spec.entry_name;
     let pre_call = build_pre_call(spec);
@@ -2655,6 +2914,191 @@ mod tests {
     #[test]
     fn emit_json_parse_harness_derives_entry_basename_from_entry_file() {
         let h = emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.rb", "run"));
+        assert!(h.source.contains("require_relative './benign'"));
+    }
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/ruby/vuln.rb",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_idor_probe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind'     => 'IdorAccess'"),
+            "UNAUTHORIZED_ID harness must emit ProbeKind::IdorAccess records: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(
+            h.source.contains("NYX_CALLER_ID = 'alice'"),
+            "harness must hard-code caller_id=alice so the predicate fires only when payload != alice: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("_nyx_idor_probe(NYX_CALLER_ID, payload)"),
+            "harness must emit the IDOR probe with the hard-coded caller and the payload owner_id: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_skips_probe_when_record_is_nil() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/ruby/benign.rb",
+            "run",
+        ));
+        assert!(
+            h.source.contains("unless record.nil?"),
+            "harness must only emit the probe when the fixture materialised a record so the benign fixture (which returns nil on boundary cross) does not flip the predicate: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_routes_through_fixture_require() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("def _nyx_idor_via_fixture(payload)"),
+            "Ruby UNAUTHORIZED_ID harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(h.source.contains("require_relative './vuln'"));
+        assert!(h.source.contains("fn_sym = :'run'"));
+        assert_eq!(h.filename, "harness.rb");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_derives_entry_basename_from_entry_file() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "/abs/path/benign.rb",
+            "run",
+        ));
+        assert!(h.source.contains("require_relative './benign'"));
+    }
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/ruby/vuln.rb",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source
+                .contains("Net::HTTP.define_singleton_method(:get)"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'OutboundNetwork'"),
+            "DATA_EXFIL harness must emit ProbeKind::OutboundNetwork records: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_shims_net_http_get() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(h.source.contains("Net::HTTP.define_singleton_method(:get)"));
+        assert!(
+            h.source
+                .contains("Net::HTTP.define_singleton_method(:get_response)")
+        );
+        assert!(
+            h.source
+                .contains("Net::HTTP.define_singleton_method(:start)"),
+            "harness must shim Net::HTTP.start so the host-port form is also captured: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("class NyxFakeHttpResponse"),
+            "harness must return a fake response so the fixture does not block on real network egress: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_parses_host_via_uri() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(h.source.contains("URI.parse(raw)"));
+        assert!(h.source.contains("parsed.host.to_s"));
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_handles_uri_instance_via_host_method() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(
+            h.source.contains("target.respond_to?(:host)"),
+            "harness must accept a URI instance too (not only bare URL strings): {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_routes_through_fixture_require() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("def _nyx_data_exfil_via_fixture(payload)"),
+            "Ruby DATA_EXFIL harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(h.source.contains("require_relative './vuln'"));
+        assert!(h.source.contains("fn_sym = :'run'"));
+        assert_eq!(h.filename, "harness.rb");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_derives_entry_basename_from_entry_file() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec("/abs/path/benign.rb", "run"));
         assert!(h.source.contains("require_relative './benign'"));
     }
 }
