@@ -1109,13 +1109,112 @@ echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
 
 /// Phase 08 — Track J.6 header-injection harness for PHP (`header()`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented `header()`
-/// shim that records the *unmodified* value bytes (including any
-/// embedded `\r\n`) via a `ProbeKind::HeaderEmit` probe.  Mirrors
-/// the synthetic-harness pattern used by Phase 03 / 04 / 05 / 06 /
-/// 07.
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier-(a): when the fixture source calls `header(` or `setcookie(`,
+/// load the entry source into a synthetic `Nyx\Captured` namespace via
+/// `eval()` so unqualified calls to `header()` / `setcookie()` resolve
+/// to permissive shims defined in that namespace (rather than PHP's
+/// built-in `header()` which rejects raw CRLF since PHP 5.1.2).  The
+/// shim records every `(name, value)` pair into a global capture
+/// array verbatim; the harness then emits one `ProbeKind::HeaderEmit`
+/// per captured pair.  When the gate marker is absent or the eval /
+/// invocation fails, fall back to the inline synthetic probe that
+/// records the raw payload as a `Set-Cookie` value.  The namespace
+/// shadowing pattern mirrors how Python's tier-(a) monkey-patches
+/// `werkzeug.datastructures.Headers.__setitem__` before werkzeug's
+/// validator runs.
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_header_writer =
+        entry_source.contains("header(") || entry_source.contains("setcookie(");
+    let via_fixture = if uses_header_writer {
+        r#"function _nyx_header_via_fixture(string $payload, string $entry_basename, string $entry_name): ?array {
+    // Phase 08 tier-(a): load the entry source into a synthetic
+    // `Nyx\Captured` namespace via eval() so unqualified `header()`
+    // / `setcookie()` calls inside the fixture resolve to permissive
+    // shims defined in that namespace (PHP's built-in `header()`
+    // rejects raw CRLF since 5.1.2 and would not let us record the
+    // attack bytes verbatim).  Returns the captured `(name, value)`
+    // pairs on success, `null` when load / eval / invoke fails so
+    // the caller can fall back to the inline synthetic probe.
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {
+        return null;
+    }
+    $src = @file_get_contents($candidate);
+    if ($src === false) {
+        return null;
+    }
+    $stripped = preg_replace('/^\s*<\?php\s*/', '', $src);
+    if ($stripped === null) {
+        return null;
+    }
+    $GLOBALS['__nyx_captured_headers'] = [];
+    $eval_src = "namespace Nyx\\Captured;\n"
+        . "function header(string \$header, bool \$replace = true, int \$response_code = 0): void { \$GLOBALS['__nyx_captured_headers'][] = \$header; }\n"
+        . "function setcookie(string \$name, string \$value = '', \$expires_or_options = 0, string \$path = '', string \$domain = '', bool \$secure = false, bool \$httponly = false): bool { \$GLOBALS['__nyx_captured_headers'][] = 'Set-Cookie: ' . \$name . '=' . \$value; return true; }\n"
+        . $stripped;
+    try {
+        $eval_result = @eval($eval_src);
+    } catch (\Throwable $_) {
+        return null;
+    }
+    if ($eval_result === false) {
+        return null;
+    }
+    $fq = 'Nyx\\Captured\\' . $entry_name;
+    if (!function_exists($fq)) {
+        return null;
+    }
+    try {
+        $fq($payload);
+    } catch (\Throwable $_) {
+        // shim may have captured bytes before the throw
+    }
+    $captured = [];
+    foreach ($GLOBALS['__nyx_captured_headers'] ?? [] as $h) {
+        if (!is_string($h)) continue;
+        $colon = strpos($h, ':');
+        if ($colon === false) {
+            $captured[] = [$h, ''];
+        } else {
+            $name = trim(substr($h, 0, $colon));
+            $value = ltrim(substr($h, $colon + 1));
+            $captured[] = [$name, $value];
+        }
+    }
+    if (empty($captured)) {
+        return null;
+    }
+    return $captured;
+}
+
+"#
+    } else {
+        ""
+    };
+    let invoke_via_fixture = if uses_header_writer {
+        format!(
+            r#"$captured = _nyx_header_via_fixture($payload, "{entry_basename}", "{entry_name}");
+    if ($captured !== null) {{
+        foreach ($captured as $pair) {{
+            _nyx_header_probe($pair[0], $pair[1]);
+        }}
+        echo "__NYX_SINK_HIT__\n";
+        echo json_encode(['headers' => $captured]) . "\n";
+        return;
+    }}
+    "#
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
         r#"<?php
 // Nyx dynamic harness — HEADER_INJECTION header() (Phase 08 / Track J.6).
@@ -1138,12 +1237,20 @@ function _nyx_header_probe(string $name, string $value): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
-$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
-$name = 'Set-Cookie';
-$value = $payload;
-_nyx_header_probe($name, $value);
-echo "__NYX_SINK_HIT__\n";
-echo json_encode(['name' => $name, 'value' => $value]) . "\n";
+{via_fixture}function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    {invoke_via_fixture}// Synthetic fallback — records the raw payload as a `Set-Cookie`
+    // value via `_nyx_header_probe`.  Used when the fixture does not
+    // call `header()` / `setcookie()` (gate marker absent) or when
+    // the eval / invocation path fails.
+    $name = 'Set-Cookie';
+    $value = $payload;
+    _nyx_header_probe($name, $value);
+    echo "__NYX_SINK_HIT__\n";
+    echo json_encode(['name' => $name, 'value' => $value]) . "\n";
+}}
+
+_nyx_run();
 "#
     );
     HarnessSource {
@@ -1158,12 +1265,100 @@ echo json_encode(['name' => $name, 'value' => $value]) . "\n";
 /// Phase 09 — Track J.7 open-redirect harness for PHP (`header("Location: …")` /
 /// `Response::redirect`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented redirect shim
-/// that records the bound `Location:` value plus the request's origin
-/// host via a `ProbeKind::Redirect` probe.  Mirrors the
-/// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06 / 07 / 08.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier-(a): when the fixture source references a redirect surface
+/// (`RedirectResponse` constructor, bare `header(`, or `redirect(`),
+/// `require_once` the entry, call its `$entry_name` with the payload,
+/// and read the bound `Location:` off the returned response object
+/// via `getTargetUrl()` or `->headers->get("Location")` (Symfony-style
+/// `Response`).  When the require / invoke fails (Symfony not
+/// installed, fixture throws, no recognisable response shape), return
+/// null so the caller can fall back to the inline synthetic probe
+/// that records the raw payload as the redirect target.
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_redirect_surface = entry_source.contains("RedirectResponse")
+        || entry_source.contains("header(")
+        || entry_source.contains("Response::")
+        || entry_source.contains("redirect(");
+    let via_fixture = if uses_redirect_surface {
+        r#"function _nyx_redirect_via_fixture(string $payload, string $entry_basename, string $entry_name): ?array {
+    // Phase 09 tier-(a): require the entry fixture, call its
+    // `$entry_name` so the real redirect surface runs, then read the
+    // bound `Location:` off the returned response object.  Recognises
+    // both Symfony-style `Response` instances (via `getTargetUrl()`
+    // and `->headers->get("Location")`) and arbitrary objects whose
+    // `headers` property exposes a `get` method.  Returns
+    // `(location, "example.com")` on success or `null` when the
+    // require / invoke fails so the caller can fall back to the
+    // inline synthetic probe.
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {
+        return null;
+    }
+    try {
+        require_once $candidate;
+    } catch (\Throwable $_) {
+        return null;
+    }
+    if (!function_exists($entry_name)) {
+        return null;
+    }
+    try {
+        $result = $entry_name($payload);
+    } catch (\Throwable $_) {
+        return null;
+    }
+    if (is_object($result)) {
+        if (method_exists($result, 'getTargetUrl')) {
+            try {
+                $loc = $result->getTargetUrl();
+            } catch (\Throwable $_) {
+                $loc = null;
+            }
+            if (is_string($loc) && $loc !== '') {
+                return [$loc, 'example.com'];
+            }
+        }
+        if (isset($result->headers) && is_object($result->headers) && method_exists($result->headers, 'get')) {
+            try {
+                $loc = $result->headers->get('Location');
+            } catch (\Throwable $_) {
+                $loc = null;
+            }
+            if (is_string($loc) && $loc !== '') {
+                return [$loc, 'example.com'];
+            }
+        }
+    }
+    return null;
+}
+
+"#
+    } else {
+        ""
+    };
+    let invoke_via_fixture = if uses_redirect_surface {
+        format!(
+            r#"$captured = _nyx_redirect_via_fixture($payload, "{entry_basename}", "{entry_name}");
+    if ($captured !== null) {{
+        [$location, $requestHost] = $captured;
+        _nyx_redirect_probe($location, $requestHost);
+        echo "__NYX_SINK_HIT__\n";
+        echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
+        return;
+    }}
+    "#
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
         r#"<?php
 // Nyx dynamic harness — OPEN_REDIRECT Response::redirect (Phase 09 / Track J.7).
@@ -1189,12 +1384,21 @@ function _nyx_redirect_probe(string $location, string $requestHost): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
-$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
-$requestHost = 'example.com';
-$location = $payload;
-_nyx_redirect_probe($location, $requestHost);
-echo "__NYX_SINK_HIT__\n";
-echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
+{via_fixture}function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    {invoke_via_fixture}// Synthetic fallback — records the raw payload as the redirect
+    // location via `_nyx_redirect_probe`.  Used when the fixture does
+    // not reference a recognised redirect surface (gate marker absent)
+    // or when the require / invoke path fails (Symfony classes
+    // missing, fixture throws).
+    $requestHost = 'example.com';
+    $location = $payload;
+    _nyx_redirect_probe($location, $requestHost);
+    echo "__NYX_SINK_HIT__\n";
+    echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
+}}
+
+_nyx_run();
 "#
     );
     HarnessSource {
@@ -2011,5 +2215,205 @@ mod tests {
             h.source.contains("\"benign.php\""),
             "PHP XPath harness must use the entry-file basename, not a hard-coded literal",
         );
+    }
+
+    // ── Phase 08 / 09 tier-(a) PHP emitter tests ─────────────────────────────
+
+    fn make_header_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    fn make_redirect_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_fixture_when_header_call_present() {
+        let dir = std::env::temp_dir().join("nyx_phase08_php_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(
+            &entry,
+            "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . $value);\n}\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_header_via_fixture("),
+            "tier-(a) harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("namespace Nyx\\\\Captured"),
+            "tier-(a) helper must eval the fixture in the Nyx\\Captured namespace: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'Nyx\\\\Captured\\\\' . $entry_name"),
+            "tier-(a) helper must invoke the fully-qualified namespaced entry: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "tier-(a) harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$captured = _nyx_header_via_fixture("),
+            "harness main must call the fixture-routing helper first: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$value = $payload;\n    _nyx_header_probe("),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_falls_back_when_no_header_call() {
+        let dir = std::env::temp_dir().join("nyx_phase08_php_test_no_header");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(&entry, "<?php\nfunction run($v) { return $v; }\n").unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("function _nyx_header_via_fixture("),
+            "fallback path must not define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("namespace Nyx\\Captured"),
+            "fallback path must not eval into the Nyx\\Captured namespace: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$value = $payload;\n    _nyx_header_probe("),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_derives_basename_from_entry_file() {
+        let dir = std::env::temp_dir().join("nyx_phase08_php_test_basename_derive");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("benign.php");
+        std::fs::write(
+            &entry,
+            "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . urlencode($value));\n}\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "tier-(a) harness must use the entry-file basename: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_routes_through_fixture_when_redirect_surface_present() {
+        let dir = std::env::temp_dir().join("nyx_phase09_php_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(
+            &entry,
+            "<?php\nuse Symfony\\Component\\HttpFoundation\\RedirectResponse;\nfunction run(string $value): RedirectResponse {\n    return new RedirectResponse($value);\n}\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_redirect_via_fixture("),
+            "tier-(a) harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_once $candidate"),
+            "tier-(a) helper must require the entry fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("method_exists($result, 'getTargetUrl')"),
+            "tier-(a) helper must check Symfony getTargetUrl(): {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$result->headers->get('Location')"),
+            "tier-(a) helper must fall back to ->headers->get('Location'): {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "tier-(a) harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$captured = _nyx_redirect_via_fixture("),
+            "harness main must call the fixture-routing helper first: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$location = $payload;\n    _nyx_redirect_probe("),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_falls_back_when_no_redirect_surface() {
+        let dir = std::env::temp_dir().join("nyx_phase09_php_test_no_redirect");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(&entry, "<?php\nfunction run($v) { return $v; }\n").unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("function _nyx_redirect_via_fixture("),
+            "fallback path must not define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("require_once $candidate"),
+            "fallback path must not require the entry fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$location = $payload;\n    _nyx_redirect_probe("),
+            "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
