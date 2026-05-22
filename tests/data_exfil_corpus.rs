@@ -136,8 +136,8 @@ mod e2e_data_exfil {
     fn command_available(bin: &str) -> bool {
         // Go's CLI uses `go version` (subcommand) instead of `go
         // --version` and exits non-zero on `--version`.  Every other
-        // toolchain here (python3, ruby, node, javac, php) accepts
-        // `--version`.
+        // toolchain here (python3, ruby, node, javac, php, cargo)
+        // accepts `--version`.
         let arg = if bin == "go" { "version" } else { "--version" };
         Command::new(bin)
             .arg(arg)
@@ -156,8 +156,9 @@ mod e2e_data_exfil {
                 Lang::Java => "java",
                 Lang::Php => "php",
                 Lang::Go => "go",
+                Lang::Rust => "rust",
                 _ => unreachable!(
-                    "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
+                    "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
                 ),
             })
             .join(fixture);
@@ -204,8 +205,9 @@ mod e2e_data_exfil {
             Lang::Java => "javac",
             Lang::Php => "php",
             Lang::Go => "go",
+            Lang::Rust => "cargo",
             _ => unreachable!(
-                "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
+                "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
             ),
         };
         if !command_available(required) {
@@ -446,6 +448,44 @@ mod e2e_data_exfil {
         assert!(
             outcome.triggered_by.is_none(),
             "Go DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Rust pair, same shape as Python + Ruby + JavaScript + Java +
+    /// Php + Go.  The vuln fixture's `reqwest::blocking::get(&url)`
+    /// has its `reqwest::` prefix rewritten to `crate::nyx_http::` at
+    /// staging time so the outbound call lands in the harness-shipped
+    /// `nyx_http::blocking::get` shim, which parses the URL host, emits
+    /// a `ProbeKind::OutboundNetwork`, and returns a benign empty
+    /// `Response`.  `OutboundHostNotIn` fires for the `attacker.test`
+    /// payload.  The benign fixture's `!ALLOWLIST.contains(&host)`
+    /// guard short-circuits before reaching the rewritten reqwest call
+    /// for non-loopback payloads so no probe fires.  Skips when `cargo`
+    /// is not on PATH.
+    #[test]
+    fn rust_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Rust DATA_EXFIL vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn rust_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "benign.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Rust DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

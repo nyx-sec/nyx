@@ -127,8 +127,8 @@ mod e2e_unauthorized_id {
     fn command_available(bin: &str) -> bool {
         // Go's CLI uses `go version` (subcommand) instead of `go
         // --version` and exits non-zero on `--version`.  Every other
-        // toolchain here (python3, ruby, node, javac, php) accepts
-        // `--version`.
+        // toolchain here (python3, ruby, node, javac, php, cargo)
+        // accepts `--version`.
         let arg = if bin == "go" { "version" } else { "--version" };
         Command::new(bin)
             .arg(arg)
@@ -147,8 +147,9 @@ mod e2e_unauthorized_id {
                 Lang::Java => "java",
                 Lang::Php => "php",
                 Lang::Go => "go",
+                Lang::Rust => "rust",
                 _ => unreachable!(
-                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
+                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
                 ),
             })
             .join(fixture);
@@ -195,8 +196,9 @@ mod e2e_unauthorized_id {
             Lang::Java => "javac",
             Lang::Php => "php",
             Lang::Go => "go",
+            Lang::Rust => "cargo",
             _ => unreachable!(
-                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
+                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
             ),
         };
         if !command_available(required) {
@@ -428,6 +430,41 @@ mod e2e_unauthorized_id {
         assert!(
             outcome.triggered_by.is_none(),
             "Go UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Rust pair, same shape as Python + Ruby + JavaScript + Java +
+    /// Php + Go.  The vuln fixture's `store.get(owner_id).cloned()`
+    /// returns `Some(_)` for any `owner_id`; the harness's `.is_some()`
+    /// gate fires the `IdorAccess(alice, bob)` probe and
+    /// `IdorBoundaryCrossed` confirms the differential.  The benign
+    /// fixture's `if owner_id != CALLER_ID { return None; }` short-
+    /// circuit returns `None` for the non-caller payload so the gate
+    /// clears and no probe fires.  Skips when `cargo` is not on PATH.
+    #[test]
+    fn rust_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Rust UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn rust_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "benign.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Rust UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

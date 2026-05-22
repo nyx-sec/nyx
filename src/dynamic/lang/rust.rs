@@ -1553,6 +1553,353 @@ fn main() {{
     }
 }
 
+/// Phase 11 (Track J.9) UNAUTHORIZED_ID IDOR harness for Rust.
+///
+/// Stages the fixture at `src/entry.rs`, invokes
+/// `entry::<entry_name>(&payload)` which is expected to return an
+/// `Option<_>`, and emits a
+/// [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe iff the
+/// fixture materialises a `Some(_)` record.  The
+/// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+/// predicate fires when `caller_id != owner_id`; the harness pins
+/// `caller_id = "alice"` and treats the payload as `owner_id`.  Falls
+/// back to a payload-only path that emits an
+/// `IdorAccess(alice, payload)` probe when the fixture source is
+/// unreachable so the universal sink-hit path still fires.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_fn = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let cargo_toml = generate_cargo_toml(Cap::UNAUTHORIZED_ID);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let tier_a_active = !entry_source.is_empty();
+
+    let (mod_decls, via_fixture_invoke, extra_files, entry_subpath) = if tier_a_active {
+        let extras: Vec<(String, String)> = vec![
+            ("Cargo.toml".into(), cargo_toml),
+            ("src/entry.rs".into(), entry_source.clone()),
+        ];
+        let invoke = format!(
+            "    let nyx_record = entry::{entry_fn}(&payload);\n    if nyx_record.is_some() {{\n        nyx_idor_access_probe(_NYX_CALLER_ID, &payload);\n    }}\n",
+        );
+        (
+            "mod entry;\n".to_owned(),
+            invoke,
+            extras,
+            Some("ignored/raw_fixture.rs".to_owned()),
+        )
+    } else {
+        let extras: Vec<(String, String)> = vec![("Cargo.toml".into(), cargo_toml)];
+        let invoke =
+            "    nyx_idor_access_probe(_NYX_CALLER_ID, &payload);\n".to_owned();
+        (
+            String::new(),
+            invoke,
+            extras,
+            Some("ignored/raw_fixture.rs".to_owned()),
+        )
+    };
+
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+{mod_decls}use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+const _NYX_CALLER_ID: &str = "alice";
+
+fn nyx_idor_access_probe(caller: &str, owner: &str) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut esc_caller = String::new();
+    __nyx_esc(caller, &mut esc_caller);
+    let mut esc_owner = String::new();
+    __nyx_esc(owner, &mut esc_owner);
+    let mut esc_pid = String::new();
+    __nyx_esc(&payload_id, &mut esc_pid);
+    let mut line = String::with_capacity(256);
+    line.push_str("{{\"sink_callee\":\"__nyx_idor_lookup\",\"args\":[");
+    line.push_str("{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&esc_caller);
+    line.push_str("\"}},{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&esc_owner);
+    line.push_str("\"}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&esc_pid);
+    line.push_str("\",\"kind\":{{\"kind\":\"IdorAccess\",\"caller_id\":\"");
+    line.push_str(&esc_caller);
+    line.push_str("\",\"owner_id\":\"");
+    line.push_str(&esc_owner);
+    line.push_str("\"}},\"witness\":");
+    line.push_str(&__nyx_witness_json("__nyx_idor_lookup", &[caller, owner]));
+    line.push_str("}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    __nyx_install_crash_guard("__nyx_idor_lookup");
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+{via_fixture_invoke}    println!("__NYX_SINK_HIT__");
+    println!("{{{{\"payload_len\":{{}}}}}}", payload.len());
+}}
+"##
+    );
+
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files,
+        entry_subpath,
+    }
+}
+
+/// Phase 11 (Track J.9) DATA_EXFIL outbound-network harness for Rust.
+///
+/// Rust has no monkey-patch hook for `reqwest::blocking::get` /
+/// `reqwest::get`, but the emitter ships an `nyx_http` module via
+/// `extra_files` that exposes the same surface area (`get` /
+/// `blocking::get`) and rewrites the fixture's `reqwest::` references
+/// to `crate::nyx_http::` so the outbound call routes through a
+/// host-capturing shim.  The shim parses the URL host, emits a
+/// [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe, and
+/// returns a benign stand-in `Response` whose `text()` returns an
+/// empty string.  No real network egress; no `reqwest` dep is added
+/// to `Cargo.toml`, so the harness build avoids the multi-minute
+/// reqwest compilation tax.  Falls back to a payload-only path that
+/// emits an `OutboundNetwork(payload)` probe when the fixture source
+/// is unreachable so the universal sink-hit path still fires.
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_fn = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let cargo_toml = generate_cargo_toml(Cap::DATA_EXFIL);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let tier_a_active = !entry_source.is_empty();
+
+    let (mod_decls, via_fixture_invoke, extra_files, entry_subpath) = if tier_a_active {
+        let rewritten = rewrite_reqwest_imports(&entry_source);
+        let extras: Vec<(String, String)> = vec![
+            ("Cargo.toml".into(), cargo_toml),
+            ("src/entry.rs".into(), rewritten),
+            ("src/nyx_http.rs".into(), nyx_http_module_source().to_owned()),
+        ];
+        let invoke = format!(
+            "    let _ = entry::{entry_fn}(&payload);\n",
+        );
+        (
+            "mod entry;\nmod nyx_http;\n".to_owned(),
+            invoke,
+            extras,
+            Some("ignored/raw_fixture.rs".to_owned()),
+        )
+    } else {
+        let extras: Vec<(String, String)> = vec![("Cargo.toml".into(), cargo_toml)];
+        let invoke = "    nyx_outbound_probe(&payload);\n".to_owned();
+        (
+            String::new(),
+            invoke,
+            extras,
+            Some("ignored/raw_fixture.rs".to_owned()),
+        )
+    };
+
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+{mod_decls}use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+pub fn nyx_outbound_probe(host: &str) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut esc_host = String::new();
+    __nyx_esc(host, &mut esc_host);
+    let mut esc_pid = String::new();
+    __nyx_esc(&payload_id, &mut esc_pid);
+    let mut line = String::with_capacity(256);
+    line.push_str("{{\"sink_callee\":\"__nyx_mock_http\",\"args\":[");
+    line.push_str("{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&esc_host);
+    line.push_str("\"}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&esc_pid);
+    line.push_str("\",\"kind\":{{\"kind\":\"OutboundNetwork\",\"host\":\"");
+    line.push_str(&esc_host);
+    line.push_str("\"}},\"witness\":");
+    line.push_str(&__nyx_witness_json("__nyx_mock_http", &[host]));
+    line.push_str("}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    __nyx_install_crash_guard("__nyx_mock_http");
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+{via_fixture_invoke}    println!("__NYX_SINK_HIT__");
+    println!("{{{{\"payload_len\":{{}}}}}}", payload.len());
+}}
+"##
+    );
+
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files,
+        entry_subpath,
+    }
+}
+
+/// Rewrite `reqwest::` references in the fixture source to
+/// `crate::nyx_http::` so the fixture's outbound call routes through
+/// the harness-supplied shim.  Idempotent and byte-level: matches both
+/// the `reqwest::blocking::get` form (today's curated Rust DATA_EXFIL
+/// fixtures) and the bare `reqwest::get` form (async variant).  A
+/// `use reqwest::...;` line is normalised to `use crate::nyx_http::...;`
+/// by the same prefix replacement.
+fn rewrite_reqwest_imports(src: &str) -> String {
+    src.replace("reqwest::", "crate::nyx_http::")
+}
+
+/// Source for the `nyx_http` module — permissive stand-in for the
+/// fraction of `reqwest::blocking` / `reqwest` the curated Rust
+/// DATA_EXFIL fixtures use (`blocking::get(url)` returning a result-
+/// shaped value whose `text()` is callable).  The shim parses the URL
+/// host, calls [`crate::nyx_outbound_probe`] on the main crate, and
+/// returns a benign empty `Response`.  No real wire I/O.
+fn nyx_http_module_source() -> &'static str {
+    r##"//! Permissive `reqwest` stand-in — record outbound host bytes verbatim.
+#![allow(dead_code)]
+
+pub struct Response;
+
+impl Response {
+    pub fn text(self) -> Result<String, NyxHttpError> {
+        Ok(String::new())
+    }
+
+    pub fn bytes(self) -> Result<Vec<u8>, NyxHttpError> {
+        Ok(Vec::new())
+    }
+
+    pub fn status(&self) -> u16 {
+        200
+    }
+}
+
+#[derive(Debug)]
+pub struct NyxHttpError;
+
+impl std::fmt::Display for NyxHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "nyx-http error")
+    }
+}
+
+impl std::error::Error for NyxHttpError {}
+
+fn extract_host(url: &str) -> String {
+    let rest = match url.find("://") {
+        Some(i) => &url[i + 3..],
+        None => url,
+    };
+    let end = rest.find(|c: char| c == '/' || c == '?' || c == '#').unwrap_or(rest.len());
+    let authority = &rest[..end];
+    match authority.rfind(':') {
+        Some(i) => authority[..i].to_owned(),
+        None => authority.to_owned(),
+    }
+}
+
+fn capture<U: AsRef<str>>(url: U) -> Result<Response, NyxHttpError> {
+    let host = extract_host(url.as_ref());
+    crate::nyx_outbound_probe(&host);
+    Ok(Response)
+}
+
+/// Top-level `reqwest::get` shape (async stub).  Returns synchronously
+/// because the curated fixtures discard the future / response; if a
+/// future fixture awaits the value the discard still type-checks.
+pub fn get<U: AsRef<str>>(url: U) -> Result<Response, NyxHttpError> {
+    capture(url)
+}
+
+pub mod blocking {
+    use super::{NyxHttpError, Response, capture};
+
+    pub fn get<U: AsRef<str>>(url: U) -> Result<Response, NyxHttpError> {
+        capture(url)
+    }
+
+    pub struct Client;
+
+    impl Client {
+        pub fn new() -> Self {
+            Self
+        }
+
+        pub fn get<U: AsRef<str>>(&self, url: U) -> RequestBuilder {
+            RequestBuilder { url: url.as_ref().to_owned() }
+        }
+    }
+
+    impl Default for Client {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    pub struct RequestBuilder {
+        url: String,
+    }
+
+    impl RequestBuilder {
+        pub fn send(self) -> Result<Response, NyxHttpError> {
+            capture(self.url.as_str())
+        }
+
+        pub fn header<K: AsRef<str>, V: AsRef<str>>(self, _key: K, _value: V) -> Self {
+            self
+        }
+
+        pub fn body<B>(self, _body: B) -> Self {
+            self
+        }
+    }
+}
+"##
+}
+
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
@@ -1592,6 +1939,29 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // writes a `ProbeKind::JsonParse { depth, excessive_depth }` record.
     if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
         return Ok(emit_json_parse_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID IDOR short-circuit.  Stages
+    // the fixture at `src/entry.rs`, invokes `entry::<entry_name>(&payload)`
+    // which is expected to return an `Option<_>`, and emits a
+    // `ProbeKind::IdorAccess { caller_id: "alice", owner_id: payload }`
+    // record iff the fixture materialised a `Some(_)` record so the
+    // benign fixture's `None` boundary-cross rejection clears the
+    // predicate.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL outbound-network short-circuit.
+    // Rust has no monkey-patch hook for `reqwest::blocking::get`, but
+    // the emitter ships an `nyx_http` module via `extra_files` and
+    // rewrites `reqwest::` references in the fixture source to
+    // `crate::nyx_http::` so the fixture's outbound call routes through
+    // a host-capturing shim that emits a `ProbeKind::OutboundNetwork`
+    // record before returning a benign stand-in `Response`.  No real
+    // network egress.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
     }
 
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Rust has no
@@ -3296,5 +3666,251 @@ mod tests {
         assert!(h.source.contains(r#"\"excessive_depth\":"#));
         assert!(h.source.contains("depth > 64"));
         assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    // ── Phase 11 (Track J.9) Rust UNAUTHORIZED_ID emitter tests ────────────────
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/rust/vuln.rs",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyx_idor_access_probe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness so the IDOR probe shim is present",
+        );
+        assert!(
+            h.source.contains(r#"\"kind\":\"IdorAccess\""#),
+            "Rust UNAUTHORIZED_ID harness must record probes with kind IdorAccess so IdorBoundaryCrossed fires",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("const _NYX_CALLER_ID: &str = \"alice\";"),
+            "Rust UNAUTHORIZED_ID harness must pin caller_id to \"alice\"",
+        );
+        assert!(
+            h.source
+                .contains("nyx_idor_access_probe(_NYX_CALLER_ID, &payload)"),
+            "Rust UNAUTHORIZED_ID harness must call probe with caller_id + payload-as-owner",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_gates_probe_on_some_record() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/rust/benign.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("let nyx_record = entry::run(&payload);"),
+            "Rust UNAUTHORIZED_ID harness must invoke the fixture entry and bind its return",
+        );
+        assert!(
+            h.source.contains("if nyx_record.is_some() {"),
+            "Rust UNAUTHORIZED_ID harness must gate probe emission on Some so the benign fixture's None boundary-cross rejection clears the predicate",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_stages_entry_via_extra_files() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/rust/vuln.rs",
+            "run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "src/entry.rs");
+        assert!(
+            staged.is_some(),
+            "tier-(a) UNAUTHORIZED_ID harness must stage the fixture at src/entry.rs so `mod entry;` resolves",
+        );
+        let body = &staged.unwrap().1;
+        assert!(
+            body.contains("pub fn run(owner_id: &str)"),
+            "staged entry.rs must carry the fixture's `run` signature verbatim",
+        );
+        assert!(
+            h.source.contains("mod entry;"),
+            "main.rs must declare `mod entry;` so the staged file is reachable",
+        );
+        assert_eq!(
+            h.entry_subpath,
+            Some("ignored/raw_fixture.rs".to_owned()),
+            "entry_subpath must park the runner's raw copy out of the way so the staged tier-(a) copy wins",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = "/nonexistent/path/missing.rs".into();
+        spec.entry_name = "run".into();
+        let h = emit_unauthorized_id_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "src/entry.rs");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage an entry copy when the fixture cannot be read",
+        );
+        assert!(
+            !h.source.contains("mod entry;"),
+            "fallback path must omit `mod entry;` so the harness compiles without src/entry.rs",
+        );
+        assert!(
+            h.source
+                .contains("nyx_idor_access_probe(_NYX_CALLER_ID, &payload)"),
+            "fallback path must still emit an IDOR probe so the universal sink-hit path fires",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Rust DATA_EXFIL emitter tests ─────────────────────
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/rust/vuln.rs",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyx_outbound_probe"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness so the outbound probe shim is present",
+        );
+        assert!(
+            h.source.contains(r#"\"kind\":\"OutboundNetwork\""#),
+            "Rust DATA_EXFIL harness must record probes with kind OutboundNetwork so OutboundHostNotIn fires",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_ships_nyx_http_shim() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/rust/vuln.rs",
+            "run",
+        ));
+        let shim = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "src/nyx_http.rs");
+        assert!(
+            shim.is_some(),
+            "Rust DATA_EXFIL harness must ship the nyx_http shim so the rewritten fixture compiles without a real reqwest dep",
+        );
+        let body = &shim.unwrap().1;
+        assert!(
+            body.contains("pub mod blocking"),
+            "nyx_http shim must expose the `blocking` submodule the fixture's reqwest::blocking path rewrites to",
+        );
+        assert!(
+            body.contains("crate::nyx_outbound_probe"),
+            "nyx_http shim must call back into the harness's nyx_outbound_probe so the captured host is emitted",
+        );
+        assert!(
+            h.source.contains("mod nyx_http;"),
+            "main.rs must declare `mod nyx_http;` so the shim resolves at crate-root",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_rewrites_reqwest_imports_in_staged_entry() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/rust/vuln.rs",
+            "run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "src/entry.rs");
+        assert!(
+            staged.is_some(),
+            "tier-(a) DATA_EXFIL harness must stage the rewritten fixture at src/entry.rs",
+        );
+        let body = &staged.unwrap().1;
+        assert!(
+            !body.contains("reqwest::blocking"),
+            "staged entry.rs must have `reqwest::` references rewritten away so the harness does not pull the real reqwest dep",
+        );
+        assert!(
+            body.contains("crate::nyx_http::blocking"),
+            "staged entry.rs must route reqwest::blocking calls through crate::nyx_http::blocking",
+        );
+    }
+
+    #[test]
+    fn rewrite_reqwest_imports_is_idempotent_and_byte_level() {
+        let src = "use reqwest::blocking::Client;\nlet _ = reqwest::blocking::get(&url);\nlet _ = reqwest::get(&u).await;";
+        let once = rewrite_reqwest_imports(src);
+        assert!(once.contains("crate::nyx_http::blocking::Client"));
+        assert!(once.contains("crate::nyx_http::blocking::get(&url)"));
+        assert!(once.contains("crate::nyx_http::get(&u)"));
+        let twice = rewrite_reqwest_imports(&once);
+        assert_eq!(once, twice, "rewrite must be idempotent");
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_invokes_fixture_entry() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("let _ = entry::run(&payload);"),
+            "Rust DATA_EXFIL harness must invoke entry::run via the rewritten fixture so reqwest calls land in the shim",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = "/nonexistent/path/missing.rs".into();
+        spec.entry_name = "run".into();
+        let h = emit_data_exfil_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "src/nyx_http.rs");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage the nyx_http shim when the fixture cannot be read",
+        );
+        assert!(
+            !h.source.contains("mod entry;"),
+            "fallback path must omit `mod entry;` so the harness compiles without src/entry.rs",
+        );
+        assert!(
+            h.source.contains("nyx_outbound_probe(&payload)"),
+            "fallback path must still emit an outbound probe so the universal sink-hit path fires",
+        );
     }
 }
