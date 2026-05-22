@@ -577,6 +577,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 11 (Track J.9): CRYPTO weak-RNG short-circuit.  The Go
+    // harness imports the fixture package directly, invokes
+    // `entry.<EntryFn>(payload)`, and reduces the produced key into a
+    // `ProbeKind::WeakKey { key_int }` record via reflection — int
+    // returns flow through as `uint64`; `[]byte` returns get truncated
+    // to the leading 8 bytes via `binary.BigEndian.Uint64` padded so a
+    // 32-byte `crypto/rand.Read` key produces a magnitude well above
+    // any 16-bit budget.
+    if spec.expected_cap == crate::labels::Cap::CRYPTO {
+        return Ok(emit_crypto_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Go has no
     // classes — the dispatcher treats `class` as a top-level struct
     // declared in the entry file and `method` as a method on its
@@ -1278,6 +1290,144 @@ fn framework_route_invocation(
 
 fn generate_go_mod() -> String {
     "module nyx-harness\n\ngo 1.21\n".to_owned()
+}
+
+/// Phase 11 (Track J.9) CRYPTO harness for Go.
+///
+/// Reads `NYX_PAYLOAD`, imports the fixture under
+/// `internal/vulnentry`, invokes `vulnentry.<EntryFn>(payload)`, and
+/// emits a [`crate::dynamic::probe::ProbeKind::WeakKey`] probe whose
+/// `key_int` is derived from the returned key.  `int` returns flow
+/// through as `uint64`; `[]byte` returns get reduced to the leading 8
+/// bytes via `binary.BigEndian.Uint64` (zero-padded to 8 bytes when
+/// the slice is shorter), so a `crypto/rand.Read` benign control
+/// trivially overshoots the predicate's 16-bit budget while the
+/// `math/rand.Intn(0x10000)` vuln stays inside it.  Falls back to a
+/// payload-byte view when the fixture cannot be invoked so the
+/// universal sink-hit path still fires.
+pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+    let tier_a_active = !entry_source.is_empty();
+    let (extra_imports, via_fixture_decl, via_fixture_invoke) = if tier_a_active {
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push((
+            "internal/vulnentry/vulnentry.go".to_owned(),
+            rewritten,
+        ));
+        let decl = format!(
+            r##"func nyxCryptoViaFixture(payload string) (uint64, bool) {{
+	defer func() {{ _ = recover() }}()
+	produced := vulnentry.{entry_fn}(payload)
+	keyInt, ok := nyxKeyToInt(produced)
+	return keyInt, ok
+}}
+
+func nyxKeyToInt(value interface{{}}) (uint64, bool) {{
+	v := reflect.ValueOf(value)
+	if !v.IsValid() {{
+		return 0, false
+	}}
+	switch v.Kind() {{
+	case reflect.Bool:
+		if v.Bool() {{
+			return 1, true
+		}}
+		return 0, true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return uint64(v.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return v.Uint(), true
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {{
+			b := v.Bytes()
+			var buf [8]byte
+			n := len(b)
+			if n > 8 {{
+				n = 8
+			}}
+			copy(buf[8-n:], b[:n])
+			return binary.BigEndian.Uint64(buf[:]), true
+		}}
+		return 0, false
+	case reflect.String:
+		s := v.String()
+		var buf [8]byte
+		n := len(s)
+		if n > 8 {{
+			n = 8
+		}}
+		copy(buf[8-n:], []byte(s)[:n])
+		return binary.BigEndian.Uint64(buf[:]), true
+	}}
+	return 0, false
+}}
+
+"##
+        );
+        let invoke = "\tkeyInt, ok := nyxCryptoViaFixture(payload)\n\tif !ok {\n\t\tvar buf [8]byte\n\t\tn := len(payload)\n\t\tif n > 8 {\n\t\t\tn = 8\n\t\t}\n\t\tcopy(buf[8-n:], []byte(payload)[:n])\n\t\tkeyInt = binary.BigEndian.Uint64(buf[:])\n\t}\n\tnyxWeakKeyProbe(keyInt)\n".to_owned();
+        (
+            "\t\"encoding/binary\"\n\t\"reflect\"\n\n\t\"nyx-harness/internal/vulnentry\"\n",
+            decl,
+            invoke,
+        )
+    } else {
+        (
+            "\t\"encoding/binary\"\n",
+            String::new(),
+            "\tvar buf [8]byte\n\tn := len(payload)\n\tif n > 8 {\n\t\tn = 8\n\t}\n\tcopy(buf[8-n:], []byte(payload)[:n])\n\tnyxWeakKeyProbe(binary.BigEndian.Uint64(buf[:]))\n".to_owned(),
+        )
+    };
+
+    let source = format!(
+        r##"// Nyx dynamic harness — CRYPTO weak-RNG key entropy (Phase 11 / Track J.9).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+{extra_imports})
+
+{shim}
+
+func nyxWeakKeyProbe(keyInt uint64) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "__nyx_weak_key",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "Int", "value": keyInt}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind":           map[string]interface{{}}{{"kind": "WeakKey", "key_int": keyInt}},
+		"witness":        __nyx_witness("__nyx_weak_key", []string{{fmt.Sprintf("%d", keyInt)}}),
+	}})
+}}
+
+{via_fixture_decl}func main() {{
+	__nyx_install_crash_guard("__nyx_weak_key")
+	defer __nyx_recover_crash("__nyx_weak_key")()
+	payload := os.Getenv("NYX_PAYLOAD")
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files,
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
 }
 
 /// Phase 19 (Track M.1) — class-method harness for Go.
@@ -2328,5 +2478,120 @@ mod tests {
         // The Redirect method must set Location and write the status.
         assert!(stub.contains("c.Writer.Header().Set(\"Location\", location)"));
         assert!(stub.contains("c.Writer.WriteHeader(code)"));
+    }
+
+    fn make_crypto_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
+        let h = emit(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/go/vuln.go",
+            "Run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxWeakKeyProbe"),
+            "dispatcher must short-circuit Cap::CRYPTO into emit_crypto_harness so the weak-key probe shim is present",
+        );
+        assert!(
+            h.source.contains("\"kind\": \"WeakKey\""),
+            "crypto harness must record probes with `kind: WeakKey` so the WeakKeyEntropy predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_routes_through_internal_vulnentry_package() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/go/vuln.go",
+            "Run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_some(),
+            "tier-(a) crypto harness must stage the fixture under internal/vulnentry/ so main.go can import it",
+        );
+        let body = &staged.unwrap().1;
+        assert!(
+            body.contains("package vulnentry"),
+            "fixture package name must be rewritten to vulnentry so the import path resolves",
+        );
+        assert!(
+            h.source.contains("nyx-harness/internal/vulnentry"),
+            "main.go must import the rewritten vulnentry package",
+        );
+        assert!(
+            h.source.contains("vulnentry.Run(payload)"),
+            "main.go must invoke the entry function on the rewritten fixture, not a synthetic stub",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_emits_weak_key_probe_kind() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/go/vuln.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("\"kind\": \"WeakKey\", \"key_int\":"),
+            "Go CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires",
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "Go CRYPTO harness must print the universal sink-hit sentinel",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_reduces_byte_slice_returns_via_big_endian() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/go/benign.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("binary.BigEndian.Uint64"),
+            "Go CRYPTO harness must use binary.BigEndian.Uint64 so byte-slice returns reduce to a magnitude that exceeds the 16-bit budget on CSPRNG keys",
+        );
+        assert!(
+            h.source.contains("reflect.ValueOf"),
+            "Go CRYPTO harness must use reflect to dispatch on the produced key's type",
+        );
+        assert!(
+            h.source.contains("case reflect.Slice"),
+            "Go CRYPTO harness must handle the []byte branch from CSPRNG benign controls",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = "/nonexistent/path/missing.go".into();
+        spec.entry_name = "Run".into();
+        let h = emit_crypto_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage a vulnentry copy when the fixture cannot be read",
+        );
+        assert!(
+            !h.source.contains("nyx-harness/internal/vulnentry"),
+            "fallback path must not import the missing vulnentry package",
+        );
+        assert!(
+            h.source.contains("nyxWeakKeyProbe"),
+            "fallback path must still emit a weak-key probe so the universal sink-hit path fires",
+        );
     }
 }

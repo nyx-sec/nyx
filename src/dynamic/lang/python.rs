@@ -688,6 +688,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 11 (Track J.9): short-circuit to the CRYPTO harness when
+    // the spec's expected cap is CRYPTO.  The harness imports the
+    // fixture, invokes the entry function with the payload, and
+    // converts the returned key into a `ProbeKind::WeakKey { key_int }`
+    // record (int returns flow through verbatim; byte / bytearray
+    // returns get truncated to the leading 8 bytes via
+    // `int.from_bytes`, so a 32-byte CSPRNG key produces a `key_int`
+    // whose magnitude trivially exceeds any 16-bit budget).
+    if spec.expected_cap == crate::labels::Cap::CRYPTO {
+        return Ok(emit_crypto_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  When the spec's
     // entry_kind is the data-bearing `ClassMethod { class, method }`
     // variant the harness instantiates the class via its default
@@ -2430,6 +2442,119 @@ if __name__ == "__main__":
     }
 }
 
+/// Phase 11 (Track J.9) CRYPTO harness for Python.
+///
+/// Reads `NYX_PAYLOAD`, imports the entry module, invokes the named
+/// entry function with the payload, then emits a
+/// [`crate::dynamic::probe::ProbeKind::WeakKey`] probe carrying the
+/// integer view of the produced key.  Integer returns flow through
+/// verbatim (truncated to a `u64`); `bytes`/`bytearray` returns get
+/// reduced via `int.from_bytes(<bytes>[:8], "big")` so a CSPRNG-strong
+/// benign key trivially exceeds any plausible 16-bit budget while a
+/// weak `random.randint(0, 0xFFFF)` value lands well inside it.  When
+/// the fixture cannot be imported or raises during invocation the
+/// harness falls back to emitting a `key_int` derived from the raw
+/// payload bytes so the universal sink-hit path still fires.
+pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let module_name = derive_module_name(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness — CRYPTO weak-RNG key entropy (Phase 11 / Track J.9)."""
+import importlib
+import json
+import os
+import sys
+import time
+
+{probe}
+
+
+def _nyx_weak_key_probe(key_int):
+    rec = {{
+        "sink_callee": "__nyx_weak_key",
+        "args": [
+            {{"kind": "Int", "value": int(key_int)}},
+        ],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{"kind": "WeakKey", "key_int": int(key_int)}},
+        "witness": __nyx_witness("__nyx_weak_key", [int(key_int)]),
+    }}
+    __nyx_emit(rec)
+
+
+def _nyx_key_to_int(value):
+    # int → truncate to u64 magnitude
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int):
+        return value & 0xFFFFFFFFFFFFFFFF
+    if isinstance(value, (bytes, bytearray)):
+        head = bytes(value)[:8]
+        if not head:
+            return 0
+        return int.from_bytes(head, "big")
+    # Unknown type — fall back to its string repr's first 8 bytes so
+    # the predicate still has something deterministic to score
+    try:
+        encoded = str(value).encode("utf-8", "replace")[:8]
+    except Exception:
+        return 0
+    if not encoded:
+        return 0
+    return int.from_bytes(encoded, "big")
+
+
+def _nyx_crypto_via_fixture(payload):
+    sys.path.insert(0, ".")
+    try:
+        mod = importlib.import_module("{module_name}")
+    except Exception:
+        return None
+    fn = getattr(mod, "{entry_name}", None)
+    if fn is None:
+        return None
+    try:
+        return fn(payload)
+    except Exception:
+        return None
+
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    produced = _nyx_crypto_via_fixture(payload)
+    if produced is None:
+        # Fixture path failed.  Fall back to the payload-derived key
+        # so the universal sink-hit path still fires for outcome
+        # reporting; the WeakKeyEntropy predicate will reflect the
+        # payload's own entropy.
+        produced = payload.encode("utf-8", "replace") if isinstance(payload, str) else payload
+    key_int = _nyx_key_to_int(produced)
+    _nyx_weak_key_probe(key_int)
+    print("__NYX_SINK_HIT__", flush=True)
+    sys.stdout.write(json.dumps({{"key_int": key_int}}) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
 /// Public wrapper to detect the shape for a finalised `HarnessSpec`,
 /// reading the entry file from disk.  Exposed so test helpers can pin a
 /// per-fixture shape without round-tripping through [`emit`].
@@ -3779,5 +3904,105 @@ mod tests {
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_crypto_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
+        let h = emit(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/python/vuln.py",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_weak_key_probe"),
+            "dispatcher must short-circuit Cap::CRYPTO into emit_crypto_harness so the weak-key probe shim is present: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"kind\": \"WeakKey\""),
+            "crypto harness must record probes with `kind: WeakKey` so the WeakKeyEntropy predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_routes_through_fixture_import() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/python/vuln.py",
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_crypto_via_fixture(payload):"),
+            "Python CRYPTO harness must define the fixture-routing helper",
+        );
+        assert!(
+            h.source.contains("importlib.import_module(\"vuln\")"),
+            "Python CRYPTO harness must import the entry module by its file stem",
+        );
+        assert!(
+            h.source.contains("getattr(mod, \"run\", None)"),
+            "Python CRYPTO harness must look up the entry function by name",
+        );
+        assert!(
+            h.source.contains("produced = _nyx_crypto_via_fixture(payload)"),
+            "Python CRYPTO harness main must call the fixture-routing helper",
+        );
+        assert_eq!(
+            h.filename, "harness.py",
+            "Python CRYPTO harness must emit a harness.py file",
+        );
+        assert!(
+            h.extra_files.is_empty(),
+            "Python CRYPTO harness must not require per-spec deps — random + secrets are stdlib",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_emits_weak_key_probe_kind() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/python/vuln.py",
+            "run",
+        ));
+        assert!(
+            h.source.contains("\"kind\": \"WeakKey\", \"key_int\":"),
+            "Python CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "Python CRYPTO harness must print the universal sink-hit sentinel",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_converts_bytes_returns_via_from_bytes() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/python/benign.py",
+            "run",
+        ));
+        assert!(
+            h.source.contains("int.from_bytes("),
+            "Python CRYPTO harness must reduce bytes/bytearray returns via int.from_bytes so a 32-byte CSPRNG key produces a key_int whose magnitude exceeds any 16-bit budget",
+        );
+        assert!(
+            h.source.contains("isinstance(value, int):"),
+            "Python CRYPTO harness must keep int returns flowing through verbatim",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_derives_module_name_from_entry_file() {
+        let h = emit_crypto_harness(&make_crypto_spec("/abs/path/benign.py", "run"));
+        assert!(
+            h.source.contains("importlib.import_module(\"benign\")"),
+            "module name must come from the entry-file stem, not a hard-coded literal",
+        );
     }
 }

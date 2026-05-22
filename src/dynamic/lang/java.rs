@@ -593,6 +593,19 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 11 (Track J.9): CRYPTO weak-RNG short-circuit.  The Java
+    // harness reflectively loads the fixture class, invokes its
+    // declared method with the payload, and reduces the produced key
+    // into a `ProbeKind::WeakKey { key_int }` record (byte[] →
+    // `ByteBuffer.wrap(zero-padded[8]).order(BIG_ENDIAN).getLong()`;
+    // `Number` subclasses → `longValue()`).  A weak
+    // `java.util.Random.nextBytes(new byte[2])` reduces to a sub-2^16
+    // key_int; a `SecureRandom.nextBytes(new byte[32])` head-8 byte
+    // view overshoots the 16-bit budget.
+    if spec.expected_cap == crate::labels::Cap::CRYPTO {
+        return Ok(emit_crypto_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Routes through
     // the existing `invokeReflective` helper so the harness instantiates
     // the receiver via its no-arg constructor (or null-fills primitive
@@ -1757,6 +1770,139 @@ public class NyxHarness {{
             "NyxHarness".to_owned(),
         ],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) CRYPTO harness for Java.
+///
+/// Reflectively loads the fixture's entry class, invokes the named
+/// static method with the payload, and emits a
+/// [`crate::dynamic::probe::ProbeKind::WeakKey`] probe whose `key_int`
+/// is reduced from the produced key.  `byte[]` returns get padded to
+/// 8 bytes (left-zero-padded for shorter slices, truncated to the
+/// leading 8 bytes for longer ones) and decoded as big-endian via
+/// `ByteBuffer.getLong()`; `Number` subclasses route through
+/// `longValue()`.  A 2-byte `java.util.Random.nextBytes(new byte[2])`
+/// key fits inside 2^16, while `SecureRandom.nextBytes(new byte[32])`
+/// produces a magnitude well above any 16-bit budget.  Reflection
+/// failures fall back to a payload-derived `key_int` so the universal
+/// sink-hit path still fires.
+pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+
+    let source = format!(
+        r#"// Nyx dynamic harness — CRYPTO weak-RNG key entropy (Phase 11 / Track J.9).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxWeakKeyProbe(long keyInt) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(192);
+        line.append("{{\"sink_callee\":\"__nyx_weak_key\",\"args\":[");
+        line.append("{{\"kind\":\"Int\",\"value\":").append(keyInt).append("}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"WeakKey\",\"key_int\":").append(keyInt).append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("__nyx_weak_key", new String[]{{Long.toString(keyInt)}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    static long nyxKeyToLong(Object value) {{
+        if (value == null) return 0L;
+        if (value instanceof byte[]) {{
+            byte[] b = (byte[]) value;
+            byte[] buf = new byte[8];
+            int n = Math.min(b.length, 8);
+            // left-zero-pad for short slices, take leading 8 bytes for long ones
+            System.arraycopy(b, 0, buf, 8 - n, n);
+            return ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong();
+        }}
+        if (value instanceof Number) {{
+            return ((Number) value).longValue();
+        }}
+        if (value instanceof Boolean) {{
+            return ((Boolean) value).booleanValue() ? 1L : 0L;
+        }}
+        // Fallback — UTF-8 first 8 bytes
+        byte[] enc = value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] buf = new byte[8];
+        int n = Math.min(enc.length, 8);
+        System.arraycopy(enc, 0, buf, 8 - n, n);
+        return ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong();
+    }}
+
+    static long nyxPayloadFallback(String payload) {{
+        if (payload == null) payload = "";
+        byte[] enc = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] buf = new byte[8];
+        int n = Math.min(enc.length, 8);
+        System.arraycopy(enc, 0, buf, 8 - n, n);
+        return ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong();
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        long keyInt;
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            Object produced = m.invoke(null, payload);
+            keyInt = nyxKeyToLong(produced);
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            keyInt = nyxPayloadFallback(payload);
+        }} catch (InvocationTargetException ite) {{
+            keyInt = nyxPayloadFallback(payload);
+        }}
+        nyxWeakKeyProbe(keyInt);
+        System.out.println("__NYX_SINK_HIT__");
+        if (!fixtureInvoked) {{
+            System.out.println("__NYX_CRYPTO_FALLBACK__");
+        }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }
@@ -3614,6 +3760,113 @@ mod tests {
             h.source.contains("import org.w3c.dom.NodeList;")
                 && h.source.contains("import java.lang.reflect.Method;"),
             "harness must always import the reflective invocation path; the synthetic-only branch is gone",
+        );
+    }
+
+    fn make_crypto_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
+        let h = emit(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxWeakKeyProbe"),
+            "dispatcher must short-circuit Cap::CRYPTO into emit_crypto_harness so the weak-key probe shim is present",
+        );
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"WeakKey\\\""),
+            "crypto harness must record probes with kind: WeakKey so the WeakKeyEntropy predicate fires (search for the escaped sequence the Java emitter writes into the .java source string literal)",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_routes_through_reflective_entry_invocation() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java CRYPTO harness must reflectively load the fixture entry class by its derived FQN: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("getDeclaredMethod(\"run\", String.class)"),
+            "Java CRYPTO harness must look up the entry method with a single String parameter",
+        );
+        assert!(
+            h.source.contains("m.invoke(null, payload)"),
+            "Java CRYPTO harness must invoke the static method with the payload",
+        );
+        assert_eq!(
+            h.filename, "NyxHarness.java",
+            "Java CRYPTO harness must emit a NyxHarness.java file",
+        );
+        assert!(
+            h.extra_files.is_empty(),
+            "Java CRYPTO harness must not stage extra files — java.util.Random + SecureRandom are JDK built-ins",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_emits_weak_key_probe_kind() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"WeakKey\\\",\\\"key_int\\\":"),
+            "Java CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "Java CRYPTO harness must print the universal sink-hit sentinel",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_reduces_byte_array_returns_via_byte_buffer() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/java/Benign.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong()"),
+            "Java CRYPTO harness must use ByteBuffer.getLong() so a 32-byte CSPRNG key produces a key_int whose magnitude exceeds the 16-bit budget",
+        );
+        assert!(
+            h.source.contains("value instanceof byte[]"),
+            "Java CRYPTO harness must dispatch on byte[] returns explicitly",
+        );
+        assert!(
+            h.source.contains("value instanceof Number"),
+            "Java CRYPTO harness must dispatch on Number returns explicitly",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_falls_back_when_reflection_fails() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("nyxPayloadFallback(payload)"),
+            "Java CRYPTO harness must fall back to a payload-derived key_int when reflection fails so the universal sink-hit path still fires",
+        );
+        assert!(
+            h.source.contains("ClassNotFoundException | NoSuchMethodException | IllegalAccessException"),
+            "Java CRYPTO harness must catch the reflective lookup exceptions and route to the fallback",
         );
     }
 }
