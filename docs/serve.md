@@ -25,10 +25,10 @@ There is **no** account, no telemetry, no remote logging, no auto-update ping. T
 
 ## Security model
 
-`nyx serve` enforces three things at the HTTP layer ([`src/server/security.rs`](https://github.com/elicpeter/nyx/blob/master/src/server/security.rs)):
+`nyx serve` enforces three things:
 
-1. **Loopback bind only.** `--host` and `[server].host` are clamped to `127.0.0.1`, `localhost`, or `::1`. Any other value is refused at startup with `Nyx serve only binds to loopback addresses; refused host '<value>'`.
-2. **Host-header check.** Every request must carry a `Host` header that matches the bound address and port. Missing or mismatched headers get a `400 invalid Host header`. Defends against DNS rebinding.
+1. **Loopback bind only.** `--host` and `[server].host` are clamped to `127.0.0.1`, `localhost`, or `::1`. Any other value is refused at startup with `Nyx serve only binds to loopback addresses; refused host '<value>'` ([`src/commands/serve.rs`](https://github.com/elicpeter/nyx/blob/master/src/commands/serve.rs)).
+2. **Host-header check.** Every request must carry a `Host` header that matches the bound address and port. Missing or mismatched headers get a `400 invalid Host header`. Defends against DNS rebinding ([`src/server/security.rs`](https://github.com/elicpeter/nyx/blob/master/src/server/security.rs)).
 3. **CSRF on mutations.** `POST` / `PUT` / `PATCH` / `DELETE` requests must carry a per-process CSRF token in the `x-nyx-csrf` header. The token is generated once when the server starts and exposed at `GET /api/health` so the embedded SPA can read it. Cross-origin mutations are rejected before the CSRF check via the `Origin` header.
 
 If you forward the port over SSH or expose it through a reverse proxy, the host-header check will reject the request because the `Host` won't match `localhost:9700`. That's the intended behaviour. Don't do this without a deliberate reason; the loopback bind is part of the security model.

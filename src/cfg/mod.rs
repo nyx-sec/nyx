@@ -791,10 +791,7 @@ impl NodeInfo {
 /// lose information.
 #[derive(Debug, Clone)]
 pub struct LocalFuncSummary {
-    #[allow(dead_code)] // used for future intra-file graph traversal
     pub entry: NodeIndex,
-    #[allow(dead_code)] // used for future intra-file graph traversal
-    pub exit: NodeIndex,
     pub source_caps: Cap,
     pub sanitizer_caps: Cap,
     pub sink_caps: Cap,
@@ -901,7 +898,6 @@ pub struct BodyCfg {
     pub meta: BodyMeta,
     pub graph: Cfg,
     pub entry: NodeIndex,
-    pub exit: NodeIndex,
 }
 
 /// A single import alias binding: local alias → original exported name + module.
@@ -5789,7 +5785,6 @@ pub(super) fn build_sub<'a>(
                 key,
                 LocalFuncSummary {
                     entry: fn_entry,
-                    exit: fn_exit,
                     source_caps: fn_src_bits,
                     sanitizer_caps: fn_sani_bits,
                     sink_caps: fn_sink_bits,
@@ -5839,7 +5834,6 @@ pub(super) fn build_sub<'a>(
                 },
                 graph: fn_graph,
                 entry: fn_entry,
-                exit: fn_exit,
             });
 
             // ── 7) Insert placeholder in parent graph ─────────────────────────
@@ -6428,7 +6422,6 @@ pub(crate) fn build_cfg<'a>(
         },
         graph: g,
         entry,
-        exit,
     };
     bodies.insert(0, toplevel);
     // Sort by BodyId so that bodies[i].meta.id == BodyId(i).
