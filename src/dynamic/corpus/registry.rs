@@ -199,8 +199,11 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
         Lang::JavaScript,
         json_parse::javascript::PAYLOADS,
     ),
+    (Cap::JSON_PARSE, Lang::Go, json_parse::go::PAYLOADS),
+    (Cap::JSON_PARSE, Lang::Php, json_parse::php::PAYLOADS),
     (Cap::JSON_PARSE, Lang::Python, json_parse::python::PAYLOADS),
     (Cap::JSON_PARSE, Lang::Ruby, json_parse::ruby::PAYLOADS),
+    (Cap::JSON_PARSE, Lang::Rust, json_parse::rust::PAYLOADS),
     (
         Cap::UNAUTHORIZED_ID,
         Lang::Python,

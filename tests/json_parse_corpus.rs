@@ -20,7 +20,21 @@ use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;
 use std::time::Duration;
 
-const LANGS: &[Lang] = &[Lang::JavaScript, Lang::Python, Lang::Ruby];
+const LANGS: &[Lang] = &[
+    Lang::JavaScript,
+    Lang::Python,
+    Lang::Ruby,
+    Lang::Php,
+    Lang::Go,
+    Lang::Rust,
+];
+
+/// Subset of [`LANGS`] whose JSON parser has a prototype-pollution
+/// surface — JS / Python / Ruby ship object-property merging idioms
+/// downstream of `JSON.parse` / `json.loads`.  PHP / Go / Rust have no
+/// equivalent surface so the canary predicate is intentionally absent
+/// from their corpus slice.
+const CANARY_LANGS: &[Lang] = &[Lang::JavaScript, Lang::Python, Lang::Ruby];
 
 fn outcome() -> SandboxOutcome {
     SandboxOutcome {
@@ -61,21 +75,55 @@ fn corpus_registers_json_parse_for_each_supported_lang() {
 
 #[test]
 fn json_parse_pairs_benign_per_lang_via_canary_predicate() {
-    for lang in LANGS {
+    for lang in CANARY_LANGS {
         let slice = payloads_for_lang(Cap::JSON_PARSE, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).expect("vuln");
+        let vuln = slice
+            .iter()
+            .find(|p| {
+                !p.is_benign
+                    && matches!(
+                        p.oracle,
+                        Oracle::SinkProbe {
+                            predicates,
+                            ..
+                        } if predicates.iter().any(|q| matches!(
+                            q,
+                            ProbePredicate::PrototypeCanaryTouched {
+                                canary: "__nyx_canary"
+                            }
+                        ))
+                    )
+            })
+            .expect("vuln canary payload");
         let resolved = resolve_benign_control_lang(vuln, Cap::JSON_PARSE, *lang)
             .expect("benign control resolves");
         assert!(resolved.is_benign);
-        match &vuln.oracle {
-            Oracle::SinkProbe { predicates } => assert!(predicates.iter().any(|p| matches!(
-                p,
-                ProbePredicate::PrototypeCanaryTouched {
-                    canary: "__nyx_canary"
-                }
-            ))),
-            other => panic!("expected SinkProbe, got {other:?}"),
-        }
+    }
+}
+
+#[test]
+fn json_parse_depth_bomb_pairs_benign_per_lang() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::JSON_PARSE, *lang);
+        let vuln = slice
+            .iter()
+            .find(|p| {
+                !p.is_benign
+                    && matches!(
+                        p.oracle,
+                        Oracle::SinkProbe {
+                            predicates,
+                            ..
+                        } if predicates.iter().any(|q| matches!(
+                            q,
+                            ProbePredicate::JsonParseExcessiveDepth { max_depth: 64 }
+                        ))
+                    )
+            })
+            .unwrap_or_else(|| panic!("{lang:?} JSON_PARSE slice must carry a depth-bomb vuln"));
+        let resolved = resolve_benign_control_lang(vuln, Cap::JSON_PARSE, *lang)
+            .expect("depth-bomb benign control resolves");
+        assert!(resolved.is_benign);
     }
 }
 
@@ -130,7 +178,10 @@ mod e2e_json_parse_depth {
                 Lang::Python => "python",
                 Lang::JavaScript => "javascript",
                 Lang::Ruby => "ruby",
-                _ => unreachable!("JSON_PARSE depth e2e covers Python + JavaScript + Ruby only"),
+                Lang::Php => "php",
+                Lang::Go => "go",
+                Lang::Rust => "rust",
+                _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust only"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -173,7 +224,10 @@ mod e2e_json_parse_depth {
             Lang::Python => "python3",
             Lang::JavaScript => "node",
             Lang::Ruby => "ruby",
-            _ => unreachable!("JSON_PARSE depth e2e covers Python + JavaScript + Ruby only"),
+            Lang::Php => "php",
+            Lang::Go => "go",
+            Lang::Rust => "cargo",
+            _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust only"),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -232,19 +286,35 @@ mod e2e_json_parse_depth {
         };
         assert_confirmed(Lang::Ruby, &outcome);
     }
+
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        assert_confirmed(Lang::Php, &outcome);
+    }
+
+    #[test]
+    fn go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else {
+            return;
+        };
+        assert_confirmed(Lang::Go, &outcome);
+    }
+
+    #[test]
+    fn rust_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
+        assert_confirmed(Lang::Rust, &outcome);
+    }
 }
 
 #[test]
 fn json_parse_unsupported_for_other_langs() {
-    for lang in [
-        Lang::Rust,
-        Lang::C,
-        Lang::Cpp,
-        Lang::Java,
-        Lang::Go,
-        Lang::Php,
-        Lang::TypeScript,
-    ] {
+    for lang in [Lang::C, Lang::Cpp, Lang::Java, Lang::TypeScript] {
         assert!(
             payloads_for_lang(Cap::JSON_PARSE, lang).is_empty(),
             "JSON_PARSE has unexpected payloads for {lang:?}",

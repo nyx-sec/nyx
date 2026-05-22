@@ -1437,6 +1437,122 @@ fn main() {{
     }
 }
 
+/// Phase 11 — Track J.9 JSON_PARSE depth-bomb harness for Rust.
+///
+/// Stages the fixture at `src/entry.rs`, builds against
+/// `serde_json = "1"` (added to `Cargo.toml` automatically when
+/// `Cap::JSON_PARSE` is set — see [`generate_cargo_toml_with_extras`]),
+/// invokes `entry::<entry_name>(&payload)`, walks the returned
+/// `serde_json::Value` iteratively, and writes a
+/// `ProbeKind::JsonParse { depth, excessive_depth }` probe.
+///
+/// The fixture's entry is expected to return a `serde_json::Value`
+/// (parsing `&str` / `&[u8]` via `serde_json::from_str` or
+/// `serde_json::from_slice` and returning the resulting `Value`).
+/// `serde_json` is iterative so deeply-nested input never panics the
+/// parser; the harness reads the observed depth off the returned
+/// value rather than intercepting the parse call site itself.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_fn = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let cargo_toml = generate_cargo_toml(Cap::JSON_PARSE);
+
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+mod entry;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+const NYX_JSON_MAX_WALK: usize = 4096;
+
+fn nyx_json_count_depth(value: &serde_json::Value) -> u32 {{
+    let mut max_depth: u32 = 0;
+    let mut stack: Vec<(&serde_json::Value, u32)> = Vec::with_capacity(64);
+    stack.push((value, 1));
+    let mut visited: usize = 0;
+    while let Some((cur, depth)) = stack.pop() {{
+        visited += 1;
+        if visited > NYX_JSON_MAX_WALK {{ break; }}
+        if depth > max_depth {{ max_depth = depth; }}
+        match cur {{
+            serde_json::Value::Array(items) => {{
+                for child in items {{
+                    stack.push((child, depth + 1));
+                }}
+            }}
+            serde_json::Value::Object(map) => {{
+                for child in map.values() {{
+                    stack.push((child, depth + 1));
+                }}
+            }}
+            _ => {{}}
+        }}
+    }}
+    max_depth
+}}
+
+fn nyx_json_parse_probe(depth: u32, excessive: bool) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let depth_str = depth.to_string();
+    let excessive_str = if excessive {{ "true" }} else {{ "false" }};
+    let mut line = String::with_capacity(256);
+    line.push_str("{{\"sink_callee\":\"serde_json::from_str\",\"args\":[");
+    line.push_str("{{\"kind\":\"Int\",\"value\":");
+    line.push_str(&depth_str);
+    line.push_str("}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    let mut esc_pid = String::new();
+    __nyx_esc(&payload_id, &mut esc_pid);
+    line.push_str(&esc_pid);
+    line.push_str("\",\"kind\":{{\"kind\":\"JsonParse\",\"depth\":");
+    line.push_str(&depth_str);
+    line.push_str(",\"excessive_depth\":");
+    line.push_str(excessive_str);
+    line.push_str("}},\"witness\":");
+    line.push_str(&__nyx_witness_json("serde_json::from_str", &[&depth_str]));
+    line.push_str("}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+    __nyx_install_crash_guard("serde_json::from_str");
+    let parsed = entry::{entry_fn}(&payload);
+    let depth = nyx_json_count_depth(&parsed);
+    let excessive = depth > 64;
+    nyx_json_parse_probe(depth, excessive);
+    println!("__NYX_SINK_HIT__");
+    println!("{{{{\"depth\":{{depth}}}}}}", depth = depth);
+}}
+"##
+    );
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
@@ -1467,6 +1583,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // record.
     if spec.expected_cap == crate::labels::Cap::CRYPTO {
         return Ok(emit_crypto_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): JSON_PARSE depth-bomb short-circuit.  Stages
+    // the fixture at `src/entry.rs`, builds against `serde_json = "1"`,
+    // invokes `entry::<entry_name>(&payload)` which is expected to
+    // return a `serde_json::Value`, walks that value iteratively, and
+    // writes a `ProbeKind::JsonParse { depth, excessive_depth }` record.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
     }
 
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Rust has no
@@ -1834,6 +1959,9 @@ pub fn generate_cargo_toml_with_extras(cap: Cap, needs_percent_encoding: bool) -
     }
     if cap.contains(Cap::CRYPTO) {
         deps.push_str("rand = \"0.8\"\n");
+    }
+    if cap.contains(Cap::JSON_PARSE) {
+        deps.push_str("serde_json = \"1\"\n");
     }
 
     format!(
@@ -3066,5 +3194,107 @@ mod tests {
             "Rust CRYPTO harness must use spec.entry_name (not a hard-coded literal) when invoking the entry: {}",
             h.source
         );
+    }
+
+    // ── Phase 11 (Track J.9) Rust JSON_PARSE emitter tests ─────────────────────
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/rust/vuln.rs",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("fn nyx_json_parse_probe"),
+            "dispatcher must short-circuit Cap::JSON_PARSE into emit_json_parse_harness so the depth probe shim is present: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains(r#"\"kind\":\"JsonParse\""#),
+            "Rust JSON_PARSE harness must record probes with kind JsonParse: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_invokes_entry_via_mod_entry() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("mod entry;"),
+            "Rust JSON_PARSE harness must declare `mod entry;` so the staged fixture is in scope",
+        );
+        assert!(
+            h.source.contains("let parsed = entry::run(&payload);"),
+            "Rust JSON_PARSE harness must invoke the entry function with the payload",
+        );
+        assert_eq!(h.entry_subpath, Some("src/entry.rs".to_string()));
+        assert_eq!(h.filename, "src/main.rs");
+    }
+
+    #[test]
+    fn emit_json_parse_harness_cargo_toml_pulls_in_serde_json() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/rust/vuln.rs",
+            "run",
+        ));
+        let cargo = h
+            .extra_files
+            .iter()
+            .find(|(n, _)| n == "Cargo.toml")
+            .expect("Cargo.toml must be in extra_files");
+        assert!(
+            cargo.1.contains("serde_json = \"1\""),
+            "Rust JSON_PARSE harness Cargo.toml must depend on serde_json so the fixture's parser resolves: {}",
+            cargo.1
+        );
+        assert!(
+            cargo.1.contains("libc = \"0.2\""),
+            "Rust JSON_PARSE harness Cargo.toml must keep libc dep for the probe shim's sigaction path",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_uses_iterative_walker() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("fn nyx_json_count_depth"),
+            "Rust JSON_PARSE harness must define the iterative depth walker: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("serde_json::Value::Array(items)"),
+            "depth walker must dispatch on serde_json::Value::Array",
+        );
+        assert!(
+            h.source.contains("serde_json::Value::Object(map)"),
+            "depth walker must dispatch on serde_json::Value::Object",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/rust/vuln.rs",
+            "run",
+        ));
+        assert!(h.source.contains(r#"\"depth\":"#));
+        assert!(h.source.contains(r#"\"excessive_depth\":"#));
+        assert!(h.source.contains("depth > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
     }
 }

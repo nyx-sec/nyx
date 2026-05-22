@@ -521,6 +521,17 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_crypto_harness(spec));
     }
 
+    // JSON_PARSE depth-bomb short-circuit.  PHP
+    // cannot monkey-patch the `json_decode` builtin, so the harness
+    // publishes a global `_nyx_json_decode` helper that the fixture
+    // calls in place of the builtin.  Inside the captured namespace
+    // PHP's unqualified function-call resolution falls back to the
+    // global namespace, so a fixture that calls `_nyx_json_decode(...)`
+    // routes through the harness helper without further annotation.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
         return Ok(emit_class_method_harness(class, method));
@@ -2162,6 +2173,155 @@ _nyx_run();
     }
 }
 
+/// Phase 11 (Track J.9) — JSON_PARSE depth-bomb harness for PHP.
+///
+/// The harness publishes a global `_nyx_json_decode($s)` helper that
+/// proxies the real `json_decode`, runs an iterative depth walker over
+/// the parsed value, and emits a
+/// [`crate::dynamic::probe::ProbeKind::JsonParse`] probe record.  PHP
+/// cannot monkey-patch `json_decode` itself, so the per-language fixture
+/// calls `_nyx_json_decode(...)` instead of the builtin.  PHP's
+/// unqualified function-call resolution inside the synthetic
+/// `Nyx\Captured` namespace falls back to the global namespace, so the
+/// fixture call site resolves to the harness helper at runtime.
+///
+/// On parser failure with `JSON_ERROR_DEPTH` (which fires when the
+/// nesting depth exceeds the helper's `$depth` argument) the harness
+/// emits a `JsonParse { depth: 0, excessive_depth: true }` probe before
+/// returning `null` — matches the Python `RecursionError` + JS
+/// `RangeError` excess paths.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_json_parse_harness` and
+/// `crate::dynamic::lang::js_shared::emit_json_parse_harness`.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+{shim}
+
+const _NYX_JSON_MAX_WALK = 4096;
+const _NYX_JSON_HELPER_DEPTH = 4096;
+
+function _nyx_json_count_depth($parsed): int {{
+    $maxDepth = 0;
+    $stack = [[$parsed, 1]];
+    $visited = 0;
+    while (count($stack) > 0) {{
+        [$cur, $depth] = array_pop($stack);
+        $visited += 1;
+        if ($visited > _NYX_JSON_MAX_WALK) {{
+            break;
+        }}
+        if ($depth > $maxDepth) {{
+            $maxDepth = $depth;
+        }}
+        if (is_array($cur)) {{
+            foreach ($cur as $child) {{
+                $stack[] = [$child, $depth + 1];
+            }}
+        }} elseif (is_object($cur)) {{
+            foreach (get_object_vars($cur) as $child) {{
+                $stack[] = [$child, $depth + 1];
+            }}
+        }}
+    }}
+    return $maxDepth;
+}}
+
+function _nyx_json_parse_probe(int $depth, bool $excessive): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'json_decode',
+        'args'           => [['kind' => 'Int', 'value' => $depth]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => [
+            'kind' => 'JsonParse',
+            'depth' => $depth,
+            'excessive_depth' => $excessive,
+        ],
+        'witness'        => __nyx_witness('json_decode', [(string) $depth]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+// Global helper the fixture calls in place of `json_decode`.  Defined
+// in the global namespace so an unqualified `_nyx_json_decode(...)`
+// call inside `namespace Nyx\Captured` resolves here.
+function _nyx_json_decode(string $text, ?bool $assoc = true, int $depth = _NYX_JSON_HELPER_DEPTH, int $flags = 0) {{
+    $parsed = json_decode($text, $assoc, $depth, $flags);
+    if ($parsed === null && json_last_error() !== JSON_ERROR_NONE) {{
+        if (json_last_error() === JSON_ERROR_DEPTH) {{
+            _nyx_json_parse_probe(0, true);
+        }}
+        return null;
+    }}
+    $observed = _nyx_json_count_depth($parsed);
+    _nyx_json_parse_probe($observed, $observed > 64);
+    return $parsed;
+}}
+
+function _nyx_json_parse_via_fixture(string $payload, string $entry_basename, string $entry_name): bool {{
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {{
+        return false;
+    }}
+    $src = @file_get_contents($candidate);
+    if ($src === false) {{
+        return false;
+    }}
+    $stripped = preg_replace('/^\s*<\?php\s*/', '', $src);
+    if ($stripped === null) {{
+        return false;
+    }}
+    $eval_src = "namespace Nyx\\Captured;\n" . $stripped;
+    try {{
+        $eval_result = @eval($eval_src);
+    }} catch (\Throwable $_) {{
+        return false;
+    }}
+    if ($eval_result === false) {{
+        return false;
+    }}
+    $fq = 'Nyx\\Captured\\' . $entry_name;
+    if (!function_exists($fq)) {{
+        return false;
+    }}
+    try {{
+        $fq($payload);
+    }} catch (\Throwable $_) {{
+        // Parser exceptions on the deep payload are expected — the
+        // probe is already emitted before the helper re-raises.
+    }}
+    return true;
+}}
+
+function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    _nyx_json_parse_via_fixture($payload, "{entry_basename}", "{entry_name}");
+    echo "__NYX_SINK_HIT__\n";
+}}
+
+_nyx_run();
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
 /// Phase 19 (Track M.1) — class-method harness for PHP.
 ///
 /// Includes the entry file, instantiates the class via its default
@@ -3358,6 +3518,112 @@ mod tests {
         assert!(
             h.source.contains("\"benign.php\""),
             "PHP CRYPTO harness must use the entry-file basename, not a hard-coded literal: {}",
+            h.source
+        );
+    }
+
+    // ── Phase 11 (Track J.9) PHP JSON_PARSE emitter tests ─────────────────────
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/php/vuln.php",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_json_decode"),
+            "dispatcher must short-circuit Cap::JSON_PARSE into the depth harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'JsonParse'"),
+            "JSON_PARSE harness must emit JsonParse probe records",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_defines_global_helper() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_json_decode("),
+            "PHP JSON_PARSE harness must publish a global _nyx_json_decode helper the fixture can call",
+        );
+        assert!(
+            h.source.contains("function _nyx_json_count_depth("),
+            "PHP JSON_PARSE harness must define the iterative depth walker",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/php/vuln.php",
+            "run",
+        ));
+        assert!(h.source.contains("'depth' => $depth"));
+        assert!(h.source.contains("'excessive_depth' => $excessive"));
+        assert!(h.source.contains("$observed > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_handles_parser_depth_error() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/php/vuln.php",
+            "run",
+        ));
+        assert!(h.source.contains("JSON_ERROR_DEPTH"));
+        assert!(h.source.contains("_nyx_json_parse_probe(0, true)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_fixture_eval() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_json_parse_via_fixture("),
+            "PHP JSON_PARSE harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("namespace Nyx\\\\Captured"),
+            "PHP JSON_PARSE harness must eval the fixture inside the Nyx\\Captured namespace: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'Nyx\\\\Captured\\\\' . $entry_name"),
+            "PHP JSON_PARSE harness must invoke the fully-qualified namespaced entry: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "PHP JSON_PARSE harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert_eq!(h.filename, "harness.php");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_json_parse_harness_derives_basename_from_entry_file() {
+        let h = emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.php", "run"));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "PHP JSON_PARSE harness must use the entry-file basename, not a hard-coded literal: {}",
             h.source
         );
     }

@@ -589,7 +589,21 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_crypto_harness(spec));
     }
 
-    // Phase 19 (Track M.1): ClassMethod short-circuit.  Go has no
+    // JSON_PARSE depth-bomb short-circuit.  The
+    // Go harness imports the fixture under `internal/vulnentry`,
+    // invokes `vulnentry.<EntryFn>(payload)`, then walks the returned
+    // value iteratively and emits a
+    // `ProbeKind::JsonParse { depth, excessive_depth }` probe.  The
+    // fixture's `Run` returns the parsed `interface{}` (or `nil` when
+    // `encoding/json.Unmarshal` fails) so the harness can drive the
+    // depth walker without having to intercept the parse call site
+    // itself — Go can't monkey-patch the stdlib parser and a fixture-
+    // side helper would have to be co-located with the entry package.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
+    // ClassMethod short-circuit.  Go has no
     // classes — the dispatcher treats `class` as a top-level struct
     // declared in the entry file and `method` as a method on its
     // value or pointer receiver.  The harness instantiates a zero
@@ -600,7 +614,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_class_method_harness(class, method));
     }
 
-    // Phase 20 (Track M.2): MessageHandler short-circuit.  Picks the
+    // MessageHandler short-circuit.  Picks the
     // broker loopback (Pub/Sub or NATS) by inspecting the spec's
     // framework adapter id and dispatches the payload synchronously to
     // the named handler function in the entry package.
@@ -608,7 +622,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_message_handler_harness(spec, queue));
     }
 
-    // Phase 21 (Track M.3): GraphQLResolver short-circuit (gqlgen).
+    // GraphQLResolver short-circuit (gqlgen).
     if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
         return Ok(emit_graphql_resolver_harness(
             &spec.entry_name,
@@ -1402,6 +1416,144 @@ func nyxWeakKeyProbe(keyInt uint64) {{
 {via_fixture_decl}func main() {{
 	__nyx_install_crash_guard("__nyx_weak_key")
 	defer __nyx_recover_crash("__nyx_weak_key")()
+	payload := os.Getenv("NYX_PAYLOAD")
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files,
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+/// Phase 11 (Track J.9) JSON_PARSE depth-bomb harness for Go.
+///
+/// Imports the fixture under `internal/vulnentry`, invokes
+/// `vulnentry.<EntryFn>(payload)`, and walks the returned value
+/// iteratively to emit a
+/// [`crate::dynamic::probe::ProbeKind::JsonParse`] probe.  The
+/// fixture's `Run` is expected to call `encoding/json.Unmarshal`
+/// (which is iterative in the Go stdlib so deeply-nested input never
+/// panics) and return the parsed `interface{}` so the harness can
+/// drive the depth walker post-parse.  Falls back to a payload-only
+/// path that emits `JsonParse { depth: 0, excessive_depth: false }`
+/// when the fixture source is unreachable so the universal sink-hit
+/// path still fires.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+    let tier_a_active = !entry_source.is_empty();
+    let (extra_imports, via_fixture_decl, via_fixture_invoke) = if tier_a_active {
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        let decl = format!(
+            r##"const nyxJsonMaxWalk = 4096
+
+func nyxJsonCountDepth(parsed interface{{}}) int {{
+	type frame struct {{
+		v     interface{{}}
+		depth int
+	}}
+	maxDepth := 0
+	stack := []frame{{{{v: parsed, depth: 1}}}}
+	visited := 0
+	for len(stack) > 0 {{
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		visited++
+		if visited > nyxJsonMaxWalk {{
+			break
+		}}
+		if f.depth > maxDepth {{
+			maxDepth = f.depth
+		}}
+		switch cur := f.v.(type) {{
+		case map[string]interface{{}}:
+			for _, child := range cur {{
+				stack = append(stack, frame{{v: child, depth: f.depth + 1}})
+			}}
+		case []interface{{}}:
+			for _, child := range cur {{
+				stack = append(stack, frame{{v: child, depth: f.depth + 1}})
+			}}
+		}}
+	}}
+	return maxDepth
+}}
+
+func nyxJsonParseViaFixture(payload string) (int, bool, bool) {{
+	var depth int
+	var excessive bool
+	var invoked bool
+	defer func() {{ _ = recover() }}()
+	parsed := vulnentry.{entry_fn}(payload)
+	invoked = true
+	depth = nyxJsonCountDepth(parsed)
+	excessive = depth > 64
+	return depth, excessive, invoked
+}}
+
+"##
+        );
+        let invoke = "\tdepth, excessive, fixtureInvoked := nyxJsonParseViaFixture(payload)\n\tif !fixtureInvoked {\n\t\tdepth = 0\n\t\texcessive = false\n\t}\n\tnyxJsonParseProbe(depth, excessive)\n".to_owned();
+        (
+            "\n\t\"nyx-harness/internal/vulnentry\"\n",
+            decl,
+            invoke,
+        )
+    } else {
+        (
+            "",
+            String::new(),
+            "\tnyxJsonParseProbe(0, false)\n".to_owned(),
+        )
+    };
+
+    let source = format!(
+        r##"// Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+{extra_imports})
+
+{shim}
+
+func nyxJsonParseProbe(depth int, excessive bool) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "json.Unmarshal",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "Int", "value": depth}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind": map[string]interface{{}}{{
+			"kind":            "JsonParse",
+			"depth":           depth,
+			"excessive_depth": excessive,
+		}},
+		"witness": __nyx_witness("json.Unmarshal", []string{{fmt.Sprintf("%d", depth)}}),
+	}})
+}}
+
+{via_fixture_decl}func main() {{
+	__nyx_install_crash_guard("json.Unmarshal")
+	defer __nyx_recover_crash("json.Unmarshal")()
 	payload := os.Getenv("NYX_PAYLOAD")
 {via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
 	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
@@ -2595,6 +2747,118 @@ mod tests {
         assert!(
             h.source.contains("nyxWeakKeyProbe"),
             "fallback path must still emit a weak-key probe so the universal sink-hit path fires",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Go JSON_PARSE emitter tests ──────────────────────
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/go/vuln.go",
+            "Run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxJsonParseProbe"),
+            "dispatcher must short-circuit Cap::JSON_PARSE into emit_json_parse_harness so the depth probe shim is present",
+        );
+        assert!(
+            h.source.contains("\"kind\":            \"JsonParse\","),
+            "JSON_PARSE harness must record probes with kind JsonParse",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_internal_vulnentry_package() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/go/vuln.go",
+            "Run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_some(),
+            "tier-(a) JSON_PARSE harness must stage the fixture under internal/vulnentry/",
+        );
+        assert!(
+            staged.unwrap().1.contains("package vulnentry"),
+            "fixture package name must be rewritten to vulnentry",
+        );
+        assert!(
+            h.source.contains("nyx-harness/internal/vulnentry"),
+            "main.go must import the rewritten vulnentry package",
+        );
+        assert!(
+            h.source.contains("vulnentry.Run(payload)"),
+            "main.go must invoke the entry function on the rewritten fixture",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/go/vuln.go",
+            "Run",
+        ));
+        assert!(h.source.contains("\"depth\":           depth"));
+        assert!(h.source.contains("\"excessive_depth\": excessive"));
+        assert!(h.source.contains("depth > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_uses_iterative_walker() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/go/vuln.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("func nyxJsonCountDepth"),
+            "Go JSON_PARSE harness must define the iterative depth walker",
+        );
+        assert!(
+            h.source.contains("map[string]interface{}:"),
+            "depth walker must dispatch on the JSON object type",
+        );
+        assert!(
+            h.source.contains("[]interface{}:"),
+            "depth walker must dispatch on the JSON array type",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = "/nonexistent/path/missing.go".into();
+        spec.entry_name = "Run".into();
+        let h = emit_json_parse_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage a vulnentry copy when the fixture cannot be read",
+        );
+        assert!(
+            !h.source.contains("nyx-harness/internal/vulnentry"),
+            "fallback path must not import the missing vulnentry package",
+        );
+        assert!(
+            h.source.contains("nyxJsonParseProbe"),
+            "fallback path must still emit a JSON_PARSE probe so the universal sink-hit path fires",
         );
     }
 }

@@ -16,6 +16,9 @@
 //! benign control sends a JSON literal whose top-level key is the
 //! regular property `data`, leaving the chain untouched.
 
+pub mod go;
 pub mod javascript;
+pub mod php;
 pub mod python;
 pub mod ruby;
+pub mod rust;
