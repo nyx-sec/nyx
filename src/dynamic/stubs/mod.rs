@@ -58,6 +58,7 @@ pub mod broker_rabbit;
 pub mod broker_sqs;
 pub mod filesystem;
 pub mod http;
+pub mod ldap_ber;
 pub mod ldap_server;
 pub mod mocks;
 pub mod redis;

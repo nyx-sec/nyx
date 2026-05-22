@@ -10,6 +10,24 @@
 //! Endpoint: `127.0.0.1:{port}` (no scheme; the harness composes
 //! `ldap://` itself if it wants).
 //!
+//! # BER (LDAPv3) dispatch
+//!
+//! The accept loop peeks the first byte on each connection.  When it
+//! sees the universal `SEQUENCE` tag (`0x30`) — the leading byte of
+//! every well-formed LDAPv3 [`LDAPMessage`] — it routes the
+//! conversation through [`super::ldap_ber`] so a harness using a stock
+//! LDAP client (`javax.naming.directory.InitialDirContext`,
+//! `python-ldap`, `ldap3`, …) can talk to the stub on the LDAPv3 wire
+//! protocol.  The plaintext `SEARCH <filter>\n` framing remains for
+//! every other first-byte value, so the existing tier-(a) harnesses
+//! keep round-tripping unchanged.
+//!
+//! No env var gates this — the dispatch is byte-shape driven so a
+//! tier-(a) shim that accidentally emits a leading `0x30` will skip
+//! the BER path's failure-mode fallback (the BER decoder bails to
+//! `None` on a non-LDAPv3 payload, which closes the connection without
+//! corrupting state).
+//!
 //! # Directory state
 //!
 //! Three users are provisioned at startup: `alice`, `bob`, `carol`.  An
@@ -41,9 +59,10 @@
 //! Signals the accept thread to shut down and connects to itself to
 //! wake the blocking `accept()`.
 
+use super::ldap_ber;
 use super::{StubEvent, StubKind, StubProvider, monotonic_ns};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -167,11 +186,32 @@ fn accept_loop(
     }
 }
 
-fn handle_connection(mut stream: TcpStream, max_bytes: usize, events: &Arc<Mutex<Vec<StubEvent>>>) {
-    let mut reader = match stream.try_clone() {
-        Ok(s) => BufReader::new(s),
+fn handle_connection(stream: TcpStream, max_bytes: usize, events: &Arc<Mutex<Vec<StubEvent>>>) {
+    let reader_stream = match stream.try_clone() {
+        Ok(s) => s,
         Err(_) => return,
     };
+    let mut reader = BufReader::new(reader_stream);
+    // Peek the first byte to decide between the plaintext and BER
+    // protocol paths.  `fill_buf` does not consume — the chosen
+    // handler reads from `reader` again.
+    let first_byte = match reader.fill_buf() {
+        Ok(buf) if !buf.is_empty() => buf[0],
+        _ => return,
+    };
+    if first_byte == ldap_ber::tags::SEQUENCE {
+        handle_ber_connection(reader, stream, max_bytes, events);
+    } else {
+        handle_plaintext_connection(reader, stream, max_bytes, events);
+    }
+}
+
+fn handle_plaintext_connection(
+    mut reader: BufReader<TcpStream>,
+    mut stream: TcpStream,
+    max_bytes: usize,
+    events: &Arc<Mutex<Vec<StubEvent>>>,
+) {
     let mut line = String::new();
     match reader.read_line(&mut line) {
         Ok(0) => return,
@@ -210,6 +250,118 @@ fn handle_connection(mut stream: TcpStream, max_bytes: usize, events: &Arc<Mutex
     if let Ok(mut g) = events.lock() {
         g.push(ev);
     }
+}
+
+/// LDAPv3 BER dispatch: bind then search loop.  Returns silently on
+/// any decode error so a malformed payload never corrupts state.
+fn handle_ber_connection(
+    mut reader: BufReader<TcpStream>,
+    mut stream: TcpStream,
+    max_bytes: usize,
+    events: &Arc<Mutex<Vec<StubEvent>>>,
+) {
+    loop {
+        let Some(msg) = read_ber_message(&mut reader, max_bytes) else {
+            return;
+        };
+        let Some(hdr) = ldap_ber::decode_ldap_message(&msg) else {
+            return;
+        };
+        match hdr.op_tag {
+            ldap_ber::tags::BIND_REQUEST => {
+                // Anonymous + simple binds both succeed — the stub
+                // does not enforce credentials.
+                let reply =
+                    ldap_ber::encode_bind_response(hdr.message_id, ldap_ber::result_codes::SUCCESS);
+                if stream.write_all(&reply).is_err() {
+                    return;
+                }
+            }
+            ldap_ber::tags::SEARCH_REQUEST => {
+                let Some(req) = ldap_ber::decode_search_request(hdr.op_body) else {
+                    let done = ldap_ber::encode_search_result_done(
+                        hdr.message_id,
+                        ldap_ber::result_codes::UNWILLING_TO_PERFORM,
+                    );
+                    let _ = stream.write_all(&done);
+                    return;
+                };
+                let matches = match_filter(&req.filter);
+                let count = matches.len();
+                for uid in &matches {
+                    let dn = format!("uid={uid},ou=people,dc=nyx,dc=test");
+                    let entry =
+                        ldap_ber::encode_search_result_entry(hdr.message_id, dn.as_bytes());
+                    if stream.write_all(&entry).is_err() {
+                        return;
+                    }
+                }
+                let done = ldap_ber::encode_search_result_done(
+                    hdr.message_id,
+                    ldap_ber::result_codes::SUCCESS,
+                );
+                if stream.write_all(&done).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+                let ev = StubEvent {
+                    kind: StubKind::Ldap,
+                    captured_at_ns: monotonic_ns(),
+                    summary: format!("SEARCH {filter}", filter = req.filter),
+                    detail: {
+                        let mut d = BTreeMap::new();
+                        d.insert("filter".to_owned(), req.filter);
+                        d.insert("protocol".to_owned(), "ldapv3".to_owned());
+                        d.insert("entries_returned".to_owned(), count.to_string());
+                        d
+                    },
+                };
+                if let Ok(mut g) = events.lock() {
+                    g.push(ev);
+                }
+            }
+            _ => {
+                // Unbind / abandon / extended / etc. — bail.  The
+                // verifier oracle only cares about search results.
+                return;
+            }
+        }
+    }
+}
+
+/// Read a single LDAPv3 BER `LDAPMessage` off the wire.  Parses just
+/// enough of the outer TLV to compute the message length, then reads
+/// exactly that many body bytes.  Returns `None` for malformed
+/// framing or when the message size exceeds `max_bytes`.
+fn read_ber_message(reader: &mut BufReader<TcpStream>, max_bytes: usize) -> Option<Vec<u8>> {
+    let mut header = vec![0u8; 2];
+    reader.read_exact(&mut header).ok()?;
+    if header[0] != ldap_ber::tags::SEQUENCE {
+        return None;
+    }
+    let body_len = if header[1] & 0x80 == 0 {
+        header[1] as usize
+    } else {
+        let length_of_length = (header[1] & 0x7F) as usize;
+        if length_of_length == 0 || length_of_length > 4 {
+            return None;
+        }
+        let mut len_bytes = vec![0u8; length_of_length];
+        reader.read_exact(&mut len_bytes).ok()?;
+        let mut acc: usize = 0;
+        for &b in &len_bytes {
+            acc = (acc << 8) | (b as usize);
+        }
+        header.extend_from_slice(&len_bytes);
+        acc
+    };
+    if header.len() + body_len > max_bytes {
+        return None;
+    }
+    let mut body = vec![0u8; body_len];
+    reader.read_exact(&mut body).ok()?;
+    header.extend_from_slice(&body);
+    Some(header)
 }
 
 /// RFC-4515-subset matcher.  See module docs for the grammar.
@@ -452,5 +604,134 @@ mod tests {
         };
         std::thread::sleep(Duration::from_millis(50));
         let _ = TcpListener::bind(format!("127.0.0.1:{port}"));
+    }
+
+    fn build_ber_bind(message_id: i64) -> Vec<u8> {
+        let mut body = Vec::new();
+        ldap_ber::write_integer(&mut body, 3);
+        ldap_ber::write_octet_string(&mut body, b"");
+        ldap_ber::write_tlv(&mut body, ldap_ber::tags::AUTH_SIMPLE, b"");
+        ldap_ber::encode_ldap_message(message_id, ldap_ber::tags::BIND_REQUEST, &body)
+    }
+
+    fn build_ber_search(message_id: i64, filter_tag: u8, filter_body: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        ldap_ber::write_octet_string(&mut body, b"ou=people,dc=nyx,dc=test");
+        ldap_ber::write_enumerated(&mut body, 2);
+        ldap_ber::write_enumerated(&mut body, 0);
+        ldap_ber::write_integer(&mut body, 0);
+        ldap_ber::write_integer(&mut body, 0);
+        ldap_ber::write_tlv(&mut body, 0x01, &[0x00]);
+        ldap_ber::write_tlv(&mut body, filter_tag, filter_body);
+        ldap_ber::write_tlv(&mut body, ldap_ber::tags::SEQUENCE, &[]);
+        ldap_ber::encode_ldap_message(message_id, ldap_ber::tags::SEARCH_REQUEST, &body)
+    }
+
+    fn read_ber_reply(stream: &mut TcpStream) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // Read until the peer closes (the BER handler stays open
+        // until the client disconnects).  A short read timeout was
+        // configured at accept time, so a stuck reader would unblock
+        // there anyway.
+        let _ = stream.read_to_end(&mut buf);
+        buf
+    }
+
+    #[test]
+    fn ber_bind_then_search_wildcard_returns_three_entries() {
+        let stub = LdapStub::start().unwrap();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", stub.port())).unwrap();
+        let bind = build_ber_bind(1);
+        s.write_all(&bind).unwrap();
+        let search = build_ber_search(2, ldap_ber::tags::FILTER_PRESENT, b"uid");
+        s.write_all(&search).unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let reply = read_ber_reply(&mut s);
+        // Walk the reply: BindResponse (msg id 1, tag 0x61), then
+        // 3x SearchResultEntry (tag 0x64), then SearchResultDone
+        // (tag 0x65).
+        let bind_resp = ldap_ber::read_tlv(&reply, 0).expect("bind tlv");
+        assert_eq!(bind_resp.tag, ldap_ber::tags::SEQUENCE);
+        let bind_hdr = ldap_ber::decode_ldap_message(&reply[..bind_resp.end]).expect("bind hdr");
+        assert_eq!(bind_hdr.op_tag, ldap_ber::tags::BIND_RESPONSE);
+        assert_eq!(bind_hdr.message_id, 1);
+
+        let mut cur = bind_resp.end;
+        let mut entries: usize = 0;
+        let mut saw_done = false;
+        while cur < reply.len() {
+            let tlv = ldap_ber::read_tlv(&reply, cur).expect("tlv");
+            assert_eq!(tlv.tag, ldap_ber::tags::SEQUENCE);
+            let hdr = ldap_ber::decode_ldap_message(&reply[cur..tlv.end]).expect("hdr");
+            match hdr.op_tag {
+                ldap_ber::tags::SEARCH_RESULT_ENTRY => entries += 1,
+                ldap_ber::tags::SEARCH_RESULT_DONE => {
+                    saw_done = true;
+                    break;
+                }
+                _ => panic!("unexpected op tag {:#x}", hdr.op_tag),
+            }
+            cur = tlv.end;
+        }
+        assert_eq!(entries, 3);
+        assert!(saw_done);
+        std::thread::sleep(Duration::from_millis(20));
+        let events = stub.drain_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].detail.get("entries_returned").map(String::as_str),
+            Some("3"),
+        );
+        assert_eq!(
+            events[0].detail.get("protocol").map(String::as_str),
+            Some("ldapv3"),
+        );
+    }
+
+    #[test]
+    fn ber_search_concrete_uid_returns_one_entry() {
+        let stub = LdapStub::start().unwrap();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", stub.port())).unwrap();
+        s.write_all(&build_ber_bind(1)).unwrap();
+        let mut eq_body = Vec::new();
+        ldap_ber::write_octet_string(&mut eq_body, b"uid");
+        ldap_ber::write_octet_string(&mut eq_body, b"alice");
+        s.write_all(&build_ber_search(2, ldap_ber::tags::FILTER_EQUALITY, &eq_body))
+            .unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let reply = read_ber_reply(&mut s);
+        // Skip past the BindResponse.
+        let bind_resp = ldap_ber::read_tlv(&reply, 0).expect("bind tlv");
+        let mut cur = bind_resp.end;
+        let mut entry_dns: Vec<String> = Vec::new();
+        let mut saw_done = false;
+        while cur < reply.len() {
+            let tlv = ldap_ber::read_tlv(&reply, cur).expect("tlv");
+            let hdr = ldap_ber::decode_ldap_message(&reply[cur..tlv.end]).expect("hdr");
+            if hdr.op_tag == ldap_ber::tags::SEARCH_RESULT_ENTRY {
+                let dn_tlv = ldap_ber::read_tlv(hdr.op_body, 0).expect("dn");
+                entry_dns.push(String::from_utf8_lossy(dn_tlv.body).into_owned());
+            } else if hdr.op_tag == ldap_ber::tags::SEARCH_RESULT_DONE {
+                saw_done = true;
+                break;
+            }
+            cur = tlv.end;
+        }
+        assert_eq!(entry_dns, vec!["uid=alice,ou=people,dc=nyx,dc=test"]);
+        assert!(saw_done);
+    }
+
+    #[test]
+    fn plaintext_path_still_works_after_ber_branch_added() {
+        // Same shape as `search_request_returns_three_for_wildcard_via_socket`
+        // but the leading byte is `S` (0x53), not `0x30`, so the
+        // accept-loop dispatches plaintext.
+        let stub = LdapStub::start().unwrap();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", stub.port())).unwrap();
+        s.write_all(b"SEARCH (uid=*)\n").unwrap();
+        s.flush().unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("COUNT 3\n"), "got {out:?}");
     }
 }
