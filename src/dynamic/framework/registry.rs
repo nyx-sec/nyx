@@ -57,6 +57,7 @@ static RUST: &[&dyn FrameworkAdapter] = &[
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoJavaAdapter,
     &super::adapters::HeaderJavaAdapter,
     &super::adapters::JavaDeserializeAdapter,
     &super::adapters::JavaMicronautAdapter,
@@ -77,6 +78,7 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxeJavaAdapter,
 ];
 static GO: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::DataExfilGoAdapter,
     &super::adapters::GoChiAdapter,
     &super::adapters::GoEchoAdapter,
     &super::adapters::GoFiberAdapter,
@@ -104,6 +106,8 @@ static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxePhpAdapter,
 ];
 static PYTHON: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoPythonAdapter,
+    &super::adapters::DataExfilPythonAdapter,
     &super::adapters::GraphqlGrapheneAdapter,
     &super::adapters::HeaderPythonAdapter,
     &super::adapters::KafkaPythonAdapter,
@@ -148,6 +152,8 @@ static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::TsNestAdapter,
 ];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoJsAdapter,
+    &super::adapters::DataExfilJsAdapter,
     &super::adapters::GraphqlApolloAdapter,
     &super::adapters::GraphqlRelayAdapter,
     &super::adapters::HeaderJsAdapter,

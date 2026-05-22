@@ -279,11 +279,19 @@ mod tests {
         //   Go: +1 (GraphqlGqlgen)                              9 → 10
         //   Rust: +1 (GraphqlJuniper)                           6 → 7
         // TypeScript / C / Cpp stay unchanged.
+        //
+        // Track L.9 starter slice (Phase 11 follow-up): adds per-cap
+        // adapters for `Cap::CRYPTO` (Python / Java / JavaScript)
+        // and `Cap::DATA_EXFIL` (Python / JavaScript / Go).
+        //   Java: +1 (CryptoJava)                              18 → 19
+        //   Python: +2 (CryptoPython, DataExfilPython)         22 → 24
+        //   JavaScript: +2 (CryptoJs, DataExfilJs)             20 → 22
+        //   Go: +1 (DataExfilGo)                               11 → 12
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            18,
-            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2) + Flyway (1) + Liquibase (1)",
+            19,
+            "Java must have Phase 21 baseline (18) + Track L.9 CryptoJava (1)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);
@@ -300,8 +308,8 @@ mod tests {
         let python_registered = registry::adapters_for(Lang::Python);
         assert_eq!(
             python_registered.len(),
-            22,
-            "Python must have Phase 20 baseline (15) + M.3 Phase-21 (7)",
+            24,
+            "Python must have Phase 21 baseline (22) + Track L.9 (CryptoPython, DataExfilPython)",
         );
         for adapter in python_registered {
             assert_eq!(adapter.lang(), Lang::Python);
@@ -318,8 +326,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            20,
-            "JavaScript must have Phase 20 baseline (12) + M.3 Phase-21 (7) + Knex (1)",
+            22,
+            "JavaScript must have Phase 21 baseline (20) + Track L.9 (CryptoJs, DataExfilJs)",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -336,8 +344,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            11,
-            "Go must have Phase 20 baseline (9) + M.3 gqlgen (1) + golang-migrate (1)",
+            12,
+            "Go must have Phase 21 baseline (11) + Track L.9 DataExfilGo (1)",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);

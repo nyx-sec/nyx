@@ -11,6 +11,12 @@
 //! the route / framework adapters; the per-cap sink adapters live
 //! here so the per-language verticals can ship independently.
 
+pub mod crypto_java;
+pub mod crypto_js;
+pub mod crypto_python;
+pub mod data_exfil_go;
+pub mod data_exfil_js;
+pub mod data_exfil_python;
 pub mod go_chi;
 pub mod go_echo;
 pub mod go_fiber;
@@ -122,6 +128,12 @@ pub mod xxe_php;
 pub mod xxe_python;
 pub mod xxe_ruby;
 
+pub use crypto_java::CryptoJavaAdapter;
+pub use crypto_js::CryptoJsAdapter;
+pub use crypto_python::CryptoPythonAdapter;
+pub use data_exfil_go::DataExfilGoAdapter;
+pub use data_exfil_js::DataExfilJsAdapter;
+pub use data_exfil_python::DataExfilPythonAdapter;
 pub use go_chi::GoChiAdapter;
 pub use go_echo::GoEchoAdapter;
 pub use go_fiber::GoFiberAdapter;
