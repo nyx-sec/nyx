@@ -125,8 +125,13 @@ mod e2e_unauthorized_id {
     use tempfile::TempDir;
 
     fn command_available(bin: &str) -> bool {
+        // Go's CLI uses `go version` (subcommand) instead of `go
+        // --version` and exits non-zero on `--version`.  Every other
+        // toolchain here (python3, ruby, node, javac, php) accepts
+        // `--version`.
+        let arg = if bin == "go" { "version" } else { "--version" };
         Command::new(bin)
-            .arg("--version")
+            .arg(arg)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -141,8 +146,9 @@ mod e2e_unauthorized_id {
                 Lang::JavaScript => "js",
                 Lang::Java => "java",
                 Lang::Php => "php",
+                Lang::Go => "go",
                 _ => unreachable!(
-                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php"
+                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
                 ),
             })
             .join(fixture);
@@ -188,8 +194,9 @@ mod e2e_unauthorized_id {
             Lang::JavaScript => "node",
             Lang::Java => "javac",
             Lang::Php => "php",
+            Lang::Go => "go",
             _ => unreachable!(
-                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php"
+                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go"
             ),
         };
         if !command_available(required) {
@@ -385,6 +392,42 @@ mod e2e_unauthorized_id {
         assert!(
             outcome.triggered_by.is_none(),
             "PHP UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Go pair, same shape as Python + Ruby + JavaScript + Java + Php.
+    /// The vuln fixture's `store[ownerID]` materialises `"bob@x"` for
+    /// the `bob` payload; the harness's `reflect`-driven presence check
+    /// fires the `IdorAccess(alice, bob)` probe and
+    /// `IdorBoundaryCrossed` confirms the differential.  The benign
+    /// fixture's `if ownerID != callerID { return "" }` short-circuit
+    /// returns an empty string for the non-caller payload so the
+    /// presence check clears and no probe fires.  Skips when `go` is
+    /// not on PATH.
+    #[test]
+    fn go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Go UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn go_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "benign.go", "Run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Go UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

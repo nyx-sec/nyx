@@ -603,6 +603,32 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_json_parse_harness(spec));
     }
 
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID IDOR harness.  Imports the
+    // fixture under `internal/vulnentry`, invokes
+    // `vulnentry.<EntryFn>(payload)`, and emits a
+    // `ProbeKind::IdorAccess { caller_id: "alice", owner_id: payload }`
+    // probe whenever the fixture materialises a present record.  A
+    // `reflect`-driven presence check (`string != ""`, non-`nil` for
+    // pointer / slice / map / interface, non-zero struct) covers the
+    // current `func Run(string) string` fixture shape and stays correct
+    // under future return-type variations.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL outbound-network harness.  Go has
+    // no monkey-patch hook for `http.Get` / `http.Post`, but
+    // `http.DefaultTransport` is a public `RoundTripper`-typed variable
+    // — replacing it before the fixture runs intercepts every default-
+    // client request before any wire I/O.  The harness's
+    // `nyxRoundTripper` parses the request URL host, emits a
+    // `ProbeKind::OutboundNetwork { host }` probe, and returns a benign
+    // empty 200 OK response so the fixture's discarded result is
+    // satisfied without a real connection.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
+    }
+
     // ClassMethod short-circuit.  Go has no
     // classes — the dispatcher treats `class` as a top-level struct
     // declared in the entry file and `method` as a method on its
@@ -1554,6 +1580,250 @@ func nyxJsonParseProbe(depth int, excessive bool) {{
 {via_fixture_decl}func main() {{
 	__nyx_install_crash_guard("json.Unmarshal")
 	defer __nyx_recover_crash("json.Unmarshal")()
+	payload := os.Getenv("NYX_PAYLOAD")
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files,
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+/// Phase 11 (Track J.9) UNAUTHORIZED_ID IDOR harness for Go.
+///
+/// Imports the fixture under `internal/vulnentry`, invokes
+/// `vulnentry.<EntryFn>(payload)`, and emits a
+/// [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe iff the
+/// fixture materialises a present record.  Presence is decided via
+/// `reflect`: `string != ""`, non-`nil` for pointer / slice / map /
+/// interface / channel / func, non-zero for struct.  The
+/// `IdorBoundaryCrossed` predicate fires when `caller_id != owner_id`;
+/// the harness pins `caller_id = "alice"` and treats the payload as
+/// `owner_id`.  Falls back to a payload-only path that emits an
+/// `IdorAccess(alice, payload)` probe when the fixture source is
+/// unreachable so the universal sink-hit path still fires.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+    let tier_a_active = !entry_source.is_empty();
+    let (extra_imports, via_fixture_decl, via_fixture_invoke) = if tier_a_active {
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        let decl = format!(
+            r##"func nyxRecordPresent(v reflect.Value) bool {{
+	if !v.IsValid() {{
+		return false
+	}}
+	switch v.Kind() {{
+	case reflect.String:
+		return v.String() != ""
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Chan, reflect.Func:
+		return !v.IsNil()
+	case reflect.Struct:
+		return !v.IsZero()
+	default:
+		return !v.IsZero()
+	}}
+}}
+
+func nyxUnauthorizedIdViaFixture(payload string) bool {{
+	defer func() {{ _ = recover() }}()
+	produced := vulnentry.{entry_fn}(payload)
+	return nyxRecordPresent(reflect.ValueOf(produced))
+}}
+
+"##
+        );
+        let invoke = "\tif nyxUnauthorizedIdViaFixture(payload) {\n\t\tnyxIdorAccessProbe(_NYX_CALLER_ID, payload)\n\t}\n".to_owned();
+        (
+            "\t\"reflect\"\n\n\t\"nyx-harness/internal/vulnentry\"\n",
+            decl,
+            invoke,
+        )
+    } else {
+        (
+            "",
+            String::new(),
+            "\tnyxIdorAccessProbe(_NYX_CALLER_ID, payload)\n".to_owned(),
+        )
+    };
+
+    let source = format!(
+        r##"// Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+{extra_imports})
+
+{shim}
+
+const _NYX_CALLER_ID = "alice"
+
+func nyxIdorAccessProbe(caller, owner string) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "__nyx_idor_lookup",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "String", "value": caller}},
+			{{"kind": "String", "value": owner}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind": map[string]interface{{}}{{
+			"kind":      "IdorAccess",
+			"caller_id": caller,
+			"owner_id":  owner,
+		}},
+		"witness": __nyx_witness("__nyx_idor_lookup", []string{{caller, owner}}),
+	}})
+}}
+
+{via_fixture_decl}func main() {{
+	__nyx_install_crash_guard("__nyx_idor_lookup")
+	defer __nyx_recover_crash("__nyx_idor_lookup")()
+	payload := os.Getenv("NYX_PAYLOAD")
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files,
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+/// Phase 11 (Track J.9) DATA_EXFIL outbound-network harness for Go.
+///
+/// Imports the fixture under `internal/vulnentry`, replaces
+/// `http.DefaultTransport` and `http.DefaultClient.Transport` with a
+/// `nyxRoundTripper` that captures the request URL host before any
+/// wire I/O, emits a
+/// [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe, and
+/// returns a benign empty 200 OK response so the fixture's discarded
+/// result is satisfied without a real connection.  `http.Get` /
+/// `http.Post` / `http.Client.Do` all route through `Client.transport()`
+/// which falls back to `DefaultTransport` when `Client.Transport` is
+/// `nil`, so the override covers the package-level helpers as well as
+/// any fixture-built `&http.Client{}` whose `Transport` field stays
+/// default.  The
+/// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+/// predicate fires when the captured host falls outside the loopback
+/// allowlist.  Falls back to a payload-only path that emits an
+/// `OutboundNetwork(payload)` probe when the fixture source is
+/// unreachable so the universal sink-hit path still fires.
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+    let tier_a_active = !entry_source.is_empty();
+    let (extra_imports, via_fixture_decl, via_fixture_invoke) = if tier_a_active {
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        let decl = r##"type nyxRoundTripper struct{}
+
+func (nyxRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := ""
+	if req != nil && req.URL != nil {
+		host = req.URL.Hostname()
+		if host == "" {
+			host = req.URL.Host
+		}
+	}
+	if host != "" {
+		nyxOutboundProbe(host)
+	}
+	return &http.Response{
+		Status:     "200 OK",
+		StatusCode: 200,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+		Request:    req,
+	}, nil
+}
+
+func nyxInstallHttpTransport() {
+	rt := nyxRoundTripper{}
+	http.DefaultTransport = rt
+	http.DefaultClient = &http.Client{Transport: rt}
+}
+
+func nyxDataExfilViaFixture(payload string) {
+	defer func() { _ = recover() }()
+	vulnentry."##.to_owned()
+            + &format!("{entry_fn}(payload)\n}}\n\n");
+        let invoke =
+            "\tnyxInstallHttpTransport()\n\tnyxDataExfilViaFixture(payload)\n".to_owned();
+        (
+            "\t\"bytes\"\n\t\"io\"\n\t\"net/http\"\n\n\t\"nyx-harness/internal/vulnentry\"\n",
+            decl,
+            invoke,
+        )
+    } else {
+        (
+            "",
+            String::new(),
+            "\tnyxOutboundProbe(payload)\n".to_owned(),
+        )
+    };
+
+    let source = format!(
+        r##"// Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+{extra_imports})
+
+{shim}
+
+func nyxOutboundProbe(host string) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "__nyx_mock_http",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "String", "value": host}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind":           map[string]interface{{}}{{"kind": "OutboundNetwork", "host": host}},
+		"witness":        __nyx_witness("__nyx_mock_http", []string{{host}}),
+	}})
+}}
+
+{via_fixture_decl}func main() {{
+	__nyx_install_crash_guard("__nyx_mock_http")
+	defer __nyx_recover_crash("__nyx_mock_http")()
 	payload := os.Getenv("NYX_PAYLOAD")
 {via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
 	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
@@ -2859,6 +3129,249 @@ mod tests {
         assert!(
             h.source.contains("nyxJsonParseProbe"),
             "fallback path must still emit a JSON_PARSE probe so the universal sink-hit path fires",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Go UNAUTHORIZED_ID emitter tests ──────────────────
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/go/vuln.go",
+            "Run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxIdorAccessProbe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness so the IDOR probe shim is present",
+        );
+        assert!(
+            h.source.contains("\"kind\":      \"IdorAccess\""),
+            "Go UNAUTHORIZED_ID harness must record probes with kind IdorAccess so IdorBoundaryCrossed fires",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/go/vuln.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("const _NYX_CALLER_ID = \"alice\""),
+            "Go UNAUTHORIZED_ID harness must pin caller_id to \"alice\"",
+        );
+        assert!(
+            h.source.contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
+            "Go UNAUTHORIZED_ID harness must call probe with caller_id + payload-as-owner",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_gates_probe_on_record_presence() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/go/benign.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("if nyxUnauthorizedIdViaFixture(payload) {"),
+            "Go UNAUTHORIZED_ID harness must gate probe emission on a present record so the benign fixture's empty-string rejection clears the predicate",
+        );
+        assert!(
+            h.source.contains("func nyxRecordPresent("),
+            "Go UNAUTHORIZED_ID harness must define a reflect-driven presence check that handles string / pointer / map / interface returns",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_routes_through_internal_vulnentry_package() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/go/vuln.go",
+            "Run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_some(),
+            "tier-(a) UNAUTHORIZED_ID harness must stage the fixture under internal/vulnentry/ so main.go can import it",
+        );
+        let body = &staged.unwrap().1;
+        assert!(
+            body.contains("package vulnentry"),
+            "fixture package name must be rewritten to vulnentry so the import path resolves",
+        );
+        assert!(
+            h.source.contains("nyx-harness/internal/vulnentry"),
+            "main.go must import the rewritten vulnentry package",
+        );
+        assert!(
+            h.source.contains("vulnentry.Run(payload)"),
+            "main.go must invoke the entry function on the rewritten fixture",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = "/nonexistent/path/missing.go".into();
+        spec.entry_name = "Run".into();
+        let h = emit_unauthorized_id_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage a vulnentry copy when the fixture cannot be read",
+        );
+        assert!(
+            h.source.contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
+            "fallback path must still emit an IDOR probe so the universal sink-hit path fires",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Go DATA_EXFIL emitter tests ───────────────────────
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/go/vuln.go",
+            "Run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxOutboundProbe"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness so the outbound probe shim is present",
+        );
+        assert!(
+            h.source.contains("\"kind\": \"OutboundNetwork\""),
+            "Go DATA_EXFIL harness must record probes with kind OutboundNetwork so OutboundHostNotIn fires",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_overrides_default_transport() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/go/vuln.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("type nyxRoundTripper struct{}"),
+            "Go DATA_EXFIL harness must define the nyxRoundTripper interceptor type",
+        );
+        assert!(
+            h.source.contains("http.DefaultTransport = rt"),
+            "Go DATA_EXFIL harness must override http.DefaultTransport so package-level http.Get routes through the interceptor",
+        );
+        assert!(
+            h.source
+                .contains("http.DefaultClient = &http.Client{Transport: rt}"),
+            "Go DATA_EXFIL harness must override http.DefaultClient so consumers that call DefaultClient.Do also route through the interceptor",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_parses_host_via_url_hostname() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/go/vuln.go",
+            "Run",
+        ));
+        assert!(
+            h.source.contains("req.URL.Hostname()"),
+            "Go DATA_EXFIL harness must extract host via req.URL.Hostname()",
+        );
+        assert!(
+            h.source.contains("nyxOutboundProbe(host)"),
+            "Go DATA_EXFIL harness must emit the outbound probe with the parsed host",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_installs_transport_before_fixture_call() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/go/vuln.go",
+            "Run",
+        ));
+        let install_idx = h
+            .source
+            .find("nyxInstallHttpTransport()")
+            .expect("install call present");
+        let fixture_idx = h
+            .source
+            .find("nyxDataExfilViaFixture(payload)")
+            .expect("fixture call present");
+        assert!(
+            install_idx < fixture_idx,
+            "Go DATA_EXFIL harness must install the transport override before invoking the fixture so the first http.Get is intercepted",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_routes_through_internal_vulnentry_package() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/go/vuln.go",
+            "Run",
+        ));
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_some(),
+            "tier-(a) DATA_EXFIL harness must stage the fixture under internal/vulnentry/ so main.go can import it",
+        );
+        let body = &staged.unwrap().1;
+        assert!(
+            body.contains("package vulnentry"),
+            "fixture package name must be rewritten to vulnentry so the import path resolves",
+        );
+        assert!(
+            h.source.contains("nyx-harness/internal/vulnentry"),
+            "main.go must import the rewritten vulnentry package",
+        );
+        assert!(
+            h.source.contains("vulnentry.Run(payload)"),
+            "main.go must invoke the entry function on the rewritten fixture",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_falls_back_when_fixture_source_unavailable() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = "/nonexistent/path/missing.go".into();
+        spec.entry_name = "Run".into();
+        let h = emit_data_exfil_harness(&spec);
+        let staged = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_none(),
+            "fallback path must not stage a vulnentry copy when the fixture cannot be read",
+        );
+        assert!(
+            h.source.contains("nyxOutboundProbe(payload)"),
+            "fallback path must still emit an outbound probe so the universal sink-hit path fires",
         );
     }
 }
