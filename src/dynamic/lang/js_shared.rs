@@ -641,6 +641,25 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_json_parse_harness(spec));
     }
 
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID harness.  Imports the
+    // fixture via CommonJS, invokes the named entry with the payload
+    // as `owner_id`, and emits a `ProbeKind::IdorAccess` record only
+    // when the fixture returned a non-null/undefined record.  Mirrors
+    // the Python / Ruby emitters.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL harness.  Monkey-patches
+    // `require('http').request` / `.get`, the same on `https`, and
+    // `global.fetch` so any outbound HTTP request the fixture
+    // initiates is captured before the wire I/O.  Mirrors the
+    // Python `urlopen` patch and the Ruby `Net::HTTP` open-class
+    // shim.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Same shape gap
     // closer as the Python emitter — instantiate the class via its
     // zero-arg constructor (falling back to a stubbed-dependency ctor
@@ -2087,6 +2106,251 @@ function _nyx_json_parse_via_fixture(payload) {{
 const payload = process.env.NYX_PAYLOAD || '';
 _nyx_json_parse_via_fixture(payload);
 console.log('__NYX_SINK_HIT__');
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) — UNAUTHORIZED_ID IDOR harness for Node.js.
+///
+/// Reads `NYX_PAYLOAD` as the requested `owner_id`, `require`s the
+/// fixture file by its basename, and invokes the named entry with the
+/// payload.  When the fixture returns a non-`null` / non-`undefined`
+/// record (i.e. the data store materialised the row without an
+/// authorization check) the harness emits a
+/// [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe carrying the
+/// hard-coded `caller_id = "alice"` and the payload as `owner_id`.  The
+/// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+/// predicate fires whenever `caller_id != owner_id`.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_unauthorized_id_harness`
+/// and `crate::dynamic::lang::ruby::emit_unauthorized_id_harness`.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"// Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+{shim}
+
+const _NYX_CALLER_ID = 'alice';
+
+function _nyx_idor_probe(callerId, ownerId) {{
+  const rec = {{
+    sink_callee: '__nyx_idor_lookup',
+    args: [
+      {{ kind: 'String', value: String(callerId) }},
+      {{ kind: 'String', value: String(ownerId) }},
+    ],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{
+      kind: 'IdorAccess',
+      caller_id: String(callerId),
+      owner_id: String(ownerId),
+    }},
+    witness: __nyx_witness('__nyx_idor_lookup', [String(callerId), String(ownerId)]),
+  }};
+  __nyx_emit(rec);
+}}
+
+function _nyx_idor_via_fixture(payload) {{
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+  }}
+  const fn =
+    _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') {{
+    return null;
+  }}
+  try {{
+    return fn(payload);
+  }} catch (e) {{
+    return null;
+  }}
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+const record = _nyx_idor_via_fixture(payload);
+const materialised = record !== null && record !== undefined;
+if (materialised) {{
+  _nyx_idor_probe(_NYX_CALLER_ID, payload);
+}}
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ materialised }}));
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) — DATA_EXFIL outbound-network harness for Node.js.
+///
+/// Monkey-patches `require('http').request` / `.get`, the matching
+/// `https` exports, and `global.fetch` so any outbound HTTP request
+/// the fixture initiates is intercepted before the wire I/O.  The
+/// host argument is extracted from either an options object
+/// (`{{ host, hostname, ... }}`), a URL instance, or a raw URL
+/// string; a [`crate::dynamic::probe::ProbeKind::OutboundNetwork`]
+/// probe is emitted with the parsed host, then the call returns a
+/// benign in-memory stand-in so the fixture's caller never blocks on
+/// the network.  The
+/// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+/// predicate fires when the captured host falls outside the loopback
+/// allowlist.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_data_exfil_harness`
+/// and `crate::dynamic::lang::ruby::emit_data_exfil_harness`.
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"// Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+{shim}
+
+const _NYX_http = require('http');
+const _NYX_https = require('https');
+
+function _nyx_outbound_probe(host) {{
+  const rec = {{
+    sink_callee: '__nyx_mock_http',
+    args: [{{ kind: 'String', value: String(host) }}],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'OutboundNetwork', host: String(host) }},
+    witness: __nyx_witness('__nyx_mock_http', [String(host)]),
+  }};
+  __nyx_emit(rec);
+}}
+
+function _nyx_extract_host(target) {{
+  if (target === null || target === undefined) return '';
+  if (typeof target === 'object') {{
+    if (typeof target.hostname === 'string' && target.hostname) {{
+      return target.hostname;
+    }}
+    if (typeof target.host === 'string' && target.host) {{
+      const idx = target.host.indexOf(':');
+      return idx === -1 ? target.host : target.host.slice(0, idx);
+    }}
+    if (typeof target.href === 'string') {{
+      try {{ return new URL(target.href).hostname; }} catch (e) {{ /* fall through */ }}
+    }}
+  }}
+  const raw = String(target);
+  try {{ return new URL(raw).hostname; }} catch (e) {{ /* fall through */ }}
+  return raw;
+}}
+
+class _NyxFakeRequest {{
+  on(_event, _cb) {{ return this; }}
+  once(_event, _cb) {{ return this; }}
+  setHeader() {{}}
+  getHeader() {{}}
+  removeHeader() {{}}
+  write() {{ return true; }}
+  end() {{ return this; }}
+  abort() {{}}
+  destroy() {{}}
+  flushHeaders() {{}}
+}}
+
+class _NyxFakeResponse {{
+  constructor() {{
+    this.statusCode = 200;
+    this.statusMessage = 'OK';
+    this.headers = {{}};
+  }}
+  on(event, cb) {{
+    if (event === 'end' && typeof cb === 'function') {{
+      try {{ cb(); }} catch (e) {{ /* swallow */ }}
+    }}
+    return this;
+  }}
+  once(event, cb) {{ return this.on(event, cb); }}
+  setEncoding() {{}}
+  resume() {{}}
+  pause() {{}}
+}}
+
+function _nyx_request_shim(opts, cb) {{
+  const host = _nyx_extract_host(opts);
+  _nyx_outbound_probe(host);
+  const req = new _NyxFakeRequest();
+  if (typeof cb === 'function') {{
+    try {{ cb(new _NyxFakeResponse()); }} catch (e) {{ /* swallow */ }}
+  }}
+  return req;
+}}
+
+_NYX_http.request = _nyx_request_shim;
+_NYX_http.get = _nyx_request_shim;
+_NYX_https.request = _nyx_request_shim;
+_NYX_https.get = _nyx_request_shim;
+
+global.fetch = async function _nyx_fetch_shim(input, _init) {{
+  const host = _nyx_extract_host(input);
+  _nyx_outbound_probe(host);
+  return {{
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: new Map(),
+    text: async () => '',
+    json: async () => ({{}}),
+    arrayBuffer: async () => new ArrayBuffer(0),
+  }};
+}};
+
+function _nyx_data_exfil_via_fixture(payload) {{
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+  }}
+  const fn =
+    _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') {{
+    return false;
+  }}
+  try {{
+    fn(payload);
+  }} catch (e) {{
+    // Probe is already emitted if the fixture reached http.request.
+  }}
+  return true;
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+_nyx_data_exfil_via_fixture(payload);
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ payload }}));
 "#
     );
     HarnessSource {
@@ -3663,6 +3927,198 @@ mod tests {
     fn emit_json_parse_harness_derives_entry_stem_from_entry_file() {
         let h =
             emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.js", "run"));
+        assert!(h.source.contains("require('./benign')"));
+    }
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(
+            &make_unauthorized_id_spec(
+                "tests/dynamic_fixtures/unauthorized_id/js/vuln.js",
+                "run",
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_idor_probe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("kind: 'IdorAccess'"),
+            "UNAUTHORIZED_ID harness must emit ProbeKind::IdorAccess records: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/js/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source.contains("const _NYX_CALLER_ID = 'alice';"),
+            "harness must hard-code caller_id=alice so the predicate fires only when payload != alice: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_nyx_idor_probe(_NYX_CALLER_ID, payload)"),
+            "harness must emit the IDOR probe with the hard-coded caller and the payload owner_id: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_skips_probe_when_record_is_nullish() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/js/benign.js",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("const materialised = record !== null && record !== undefined;"),
+            "harness must guard the probe behind a null/undefined check so the benign fixture (which returns null on boundary cross) does not flip the predicate: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("if (materialised) {"),
+            "harness must only emit the probe when the fixture materialised a record: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_routes_through_fixture_require() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/js/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_idor_via_fixture(payload)"),
+            "JS UNAUTHORIZED_ID harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(h.source.contains("require('./vuln')"));
+        assert!(h.source.contains("_entry['run']"));
+        assert_eq!(h.filename, "harness.js");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_derives_entry_stem_from_entry_file() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "/abs/path/benign.js",
+            "run",
+        ));
+        assert!(h.source.contains("require('./benign')"));
+    }
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(
+            &make_data_exfil_spec("tests/dynamic_fixtures/data_exfil/js/vuln.js", "run"),
+            false,
+        )
+        .unwrap();
+        assert!(
+            h.source.contains("_NYX_http.request = _nyx_request_shim;"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("kind: 'OutboundNetwork'"),
+            "DATA_EXFIL harness must emit ProbeKind::OutboundNetwork records: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_shims_http_and_https_request() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/js/vuln.js",
+            "run",
+        ));
+        assert!(h.source.contains("_NYX_http.request = _nyx_request_shim;"));
+        assert!(h.source.contains("_NYX_http.get = _nyx_request_shim;"));
+        assert!(h.source.contains("_NYX_https.request = _nyx_request_shim;"));
+        assert!(h.source.contains("_NYX_https.get = _nyx_request_shim;"));
+        assert!(
+            h.source.contains("class _NyxFakeRequest"),
+            "harness must return a fake request so the fixture does not block on real network egress: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_shims_global_fetch() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/js/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source.contains("global.fetch = async function _nyx_fetch_shim"),
+            "harness must also intercept global.fetch so Node 18+ fixtures that use the WHATWG fetch API are captured: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_parses_host_from_options_and_url() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/js/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source.contains("target.hostname"),
+            "harness must read hostname from options-object inputs: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("new URL(raw).hostname"),
+            "harness must parse bare URL strings via WHATWG URL: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_routes_through_fixture_require() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/js/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("function _nyx_data_exfil_via_fixture(payload)"),
+            "JS DATA_EXFIL harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(h.source.contains("require('./vuln')"));
+        assert!(h.source.contains("_entry['run']"));
+        assert_eq!(h.filename, "harness.js");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_derives_entry_stem_from_entry_file() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec("/abs/path/benign.js", "run"));
         assert!(h.source.contains("require('./benign')"));
     }
 }

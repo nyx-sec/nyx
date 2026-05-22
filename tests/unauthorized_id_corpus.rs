@@ -138,7 +138,8 @@ mod e2e_unauthorized_id {
             .join(match lang {
                 Lang::Python => "python",
                 Lang::Ruby => "ruby",
-                _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby"),
+                Lang::JavaScript => "js",
+                _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -180,7 +181,8 @@ mod e2e_unauthorized_id {
         let required = match lang {
             Lang::Python => "python3",
             Lang::Ruby => "ruby",
-            _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby"),
+            Lang::JavaScript => "node",
+            _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript"),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -276,6 +278,37 @@ mod e2e_unauthorized_id {
         assert!(
             outcome.triggered_by.is_none(),
             "Ruby UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// JavaScript pair, same shape as Python + Ruby: the vuln fixture
+    /// returns `STORE[ownerId]` for any owner_id, the benign fixture
+    /// returns `null` when `ownerId !== CALLER_ID`.  Skips when `node`
+    /// is not on PATH.
+    #[test]
+    fn javascript_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "JavaScript UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn javascript_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "benign.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "JavaScript UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

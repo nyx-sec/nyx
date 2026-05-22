@@ -147,7 +147,8 @@ mod e2e_data_exfil {
             .join(match lang {
                 Lang::Python => "python",
                 Lang::Ruby => "ruby",
-                _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby"),
+                Lang::JavaScript => "js",
+                _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby + JavaScript"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -189,7 +190,8 @@ mod e2e_data_exfil {
         let required = match lang {
             Lang::Python => "python3",
             Lang::Ruby => "ruby",
-            _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby"),
+            Lang::JavaScript => "node",
+            _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby + JavaScript"),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -286,6 +288,39 @@ mod e2e_data_exfil {
         assert!(
             outcome.triggered_by.is_none(),
             "Ruby DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// JavaScript pair, same shape as Python + Ruby: the vuln fixture's
+    /// `http.request({ host, ... })` hits the harness's `http.request`
+    /// shim and the captured `host` flips `OutboundHostNotIn` for the
+    /// attacker payload.  The benign fixture's `ALLOWLIST.has(host)`
+    /// guard short-circuits before the request call for non-loopback
+    /// hosts so no probe fires.  Skips when `node` is not on PATH.
+    #[test]
+    fn javascript_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "JavaScript DATA_EXFIL vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn javascript_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "benign.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "JavaScript DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }
