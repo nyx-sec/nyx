@@ -507,6 +507,19 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
         return Ok(emit_open_redirect_harness(spec));
     }
+    // Phase 11 (Track J.9): CRYPTO weak-RNG short-circuit.  The PHP
+    // harness requires the fixture (in a synthetic `Nyx\Captured`
+    // namespace so the entry's top-level statements are isolated),
+    // invokes `<entry_name>($payload)`, and reduces the produced key
+    // into a `ProbeKind::WeakKey { key_int }` record.  Int returns flow
+    // through as u64 (masked to PHP_INT_MAX so the sign bit does not
+    // flip a 16-bit predicate); string/bytes returns get truncated to
+    // the leading 8 bytes via `unpack('J', ...)` with left-zero-pad so
+    // a `random_bytes(32)` benign control trivially overshoots any
+    // 16-bit budget while `mt_rand(0, 0xFFFF)` stays inside it.
+    if spec.expected_cap == crate::labels::Cap::CRYPTO {
+        return Ok(emit_crypto_harness(spec));
+    }
 
     // Phase 19 (Track M.1): ClassMethod short-circuit.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
@@ -1751,6 +1764,152 @@ fn build_entry_block(_shape: PhpShape) -> String {
     .to_owned()
 }
 
+/// Phase 11 (Track J.9) CRYPTO harness for PHP.
+///
+/// Reads `NYX_PAYLOAD`, loads the fixture source in a synthetic
+/// `Nyx\Captured` namespace via `eval()` so the entry's top-level
+/// statements are isolated, calls `<entry_name>($payload)`, and
+/// reduces the returned key into a
+/// [`crate::dynamic::probe::ProbeKind::WeakKey`] probe.  `int` returns
+/// flow through masked to `PHP_INT_MAX` (so a high-bit-set value does
+/// not flip a 16-bit predicate); `string`/byte returns get truncated
+/// to the leading 8 bytes via `unpack('J', ...)` with left-zero-pad,
+/// so a 32-byte `random_bytes(32)` benign control trivially overshoots
+/// any 16-bit budget while `mt_rand(0, 0xFFFF)` stays inside it.
+/// Reflection / load failures fall back to a payload-derived `key_int`
+/// so the universal sink-hit path still fires.
+pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — CRYPTO weak-RNG key entropy (Phase 11 / Track J.9).
+{shim}
+
+function _nyx_weak_key_probe(int $keyInt): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => '__nyx_weak_key',
+        'args'           => [
+            ['kind' => 'Int', 'value' => $keyInt],
+        ],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'WeakKey', 'key_int' => $keyInt],
+        'witness'        => __nyx_witness('__nyx_weak_key', [(string) $keyInt]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+function _nyx_key_to_int($value): int {{
+    if (is_bool($value)) {{
+        return $value ? 1 : 0;
+    }}
+    if (is_int($value)) {{
+        return $value & PHP_INT_MAX;
+    }}
+    if (is_string($value)) {{
+        $head = substr($value, 0, 8);
+        if ($head === false || $head === '') {{
+            return 0;
+        }}
+        $padded = str_pad($head, 8, "\0", STR_PAD_LEFT);
+        $unpacked = @unpack('J', $padded);
+        if ($unpacked === false || !isset($unpacked[1])) {{
+            return 0;
+        }}
+        return (int) $unpacked[1] & PHP_INT_MAX;
+    }}
+    // Fallback — UTF-8 first 8 bytes of string repr
+    try {{
+        $s = (string) $value;
+    }} catch (\Throwable $_) {{
+        return 0;
+    }}
+    if ($s === '') {{
+        return 0;
+    }}
+    $head = substr($s, 0, 8);
+    $padded = str_pad($head, 8, "\0", STR_PAD_LEFT);
+    $unpacked = @unpack('J', $padded);
+    if ($unpacked === false || !isset($unpacked[1])) {{
+        return 0;
+    }}
+    return (int) $unpacked[1] & PHP_INT_MAX;
+}}
+
+function _nyx_crypto_via_fixture(string $payload, string $entry_basename, string $entry_name) {{
+    // Phase 11 tier-(a): load the entry source in a synthetic
+    // `Nyx\Captured` namespace via eval() so the fixture's top-level
+    // statements are isolated.  Returns the produced key on success,
+    // `null` when load / eval / invoke fails so the caller can fall
+    // back to the payload-derived key for the universal sink-hit path.
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {{
+        return null;
+    }}
+    $src = @file_get_contents($candidate);
+    if ($src === false) {{
+        return null;
+    }}
+    $stripped = preg_replace('/^\s*<\?php\s*/', '', $src);
+    if ($stripped === null) {{
+        return null;
+    }}
+    $eval_src = "namespace Nyx\\Captured;\n" . $stripped;
+    try {{
+        $eval_result = @eval($eval_src);
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+    if ($eval_result === false) {{
+        return null;
+    }}
+    $fq = 'Nyx\\Captured\\' . $entry_name;
+    if (!function_exists($fq)) {{
+        return null;
+    }}
+    try {{
+        return $fq($payload);
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+}}
+
+function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    $produced = _nyx_crypto_via_fixture($payload, "{entry_basename}", "{entry_name}");
+    $fixtureInvoked = $produced !== null;
+    if ($produced === null) {{
+        $produced = $payload;
+    }}
+    $keyInt = _nyx_key_to_int($produced);
+    _nyx_weak_key_probe($keyInt);
+    echo "__NYX_SINK_HIT__\n";
+    if (!$fixtureInvoked) {{
+        echo "__NYX_CRYPTO_FALLBACK__\n";
+    }}
+    echo json_encode(['key_int' => $keyInt]) . "\n";
+}}
+
+_nyx_run();
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
 /// Phase 19 (Track M.1) — class-method harness for PHP.
 ///
 /// Includes the entry file, instantiates the class via its default
@@ -2716,5 +2875,139 @@ mod tests {
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase 11 (Track J.9) PHP CRYPTO emitter tests ─────────────────────────
+
+    fn make_crypto_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
+        let h = emit(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/php/vuln.php",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_weak_key_probe"),
+            "dispatcher must short-circuit Cap::CRYPTO into emit_crypto_harness so the weak-key probe shim is present: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'WeakKey'"),
+            "crypto harness must record probes with kind WeakKey so the WeakKeyEntropy predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_routes_through_fixture_eval() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_crypto_via_fixture("),
+            "PHP CRYPTO harness must define the fixture-routing helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("namespace Nyx\\\\Captured"),
+            "PHP CRYPTO harness must eval the fixture in the Nyx\\Captured namespace so the entry's top-level statements stay isolated: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'Nyx\\\\Captured\\\\' . $entry_name"),
+            "PHP CRYPTO harness must invoke the fully-qualified namespaced entry: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "PHP CRYPTO harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("$produced = _nyx_crypto_via_fixture("),
+            "PHP CRYPTO harness main must call the fixture-routing helper first: {}",
+            h.source
+        );
+        assert_eq!(
+            h.filename, "harness.php",
+            "PHP CRYPTO harness must emit a harness.php file",
+        );
+        assert!(
+            h.extra_files.is_empty(),
+            "PHP CRYPTO harness must not require per-spec deps — mt_rand + random_bytes are stdlib",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_emits_weak_key_probe_kind() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("['kind' => 'WeakKey', 'key_int' => $keyInt]"),
+            "PHP CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "PHP CRYPTO harness must print the universal sink-hit sentinel",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_reduces_string_via_unpack() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/php/benign.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("unpack('J', $padded)"),
+            "PHP CRYPTO harness must reduce string/byte returns via unpack('J', ...) so a 32-byte CSPRNG key produces a key_int whose magnitude exceeds any 16-bit budget: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("str_pad($head, 8, \"\\0\", STR_PAD_LEFT)"),
+            "PHP CRYPTO harness must left-zero-pad short slices before unpacking",
+        );
+        assert!(
+            h.source.contains("if (is_int($value))"),
+            "PHP CRYPTO harness must keep int returns flowing through via masked AND",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_falls_back_when_fixture_eval_fails() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("if ($produced === null) {\n        $produced = $payload;\n    }"),
+            "PHP CRYPTO harness must fall back to the payload bytes when the fixture path returns null: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_CRYPTO_FALLBACK__"),
+            "PHP CRYPTO harness must print the crypto-fallback sentinel when tier-(a) returns null so the verifier can spot the fallback path on stdout",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_derives_basename_from_entry_file() {
+        let h = emit_crypto_harness(&make_crypto_spec("/abs/path/benign.php", "run"));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "PHP CRYPTO harness must use the entry-file basename, not a hard-coded literal: {}",
+            h.source
+        );
     }
 }
