@@ -59,10 +59,12 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 
 ### CLI
 
-- **`nyx scan --verify`** (enabled by default in standard builds) and `--backend {process,docker,firecracker}` select the dynamic-verification harness.
+- **`nyx scan --verify`** (enabled by default in standard builds) and `--backend {auto,process,docker}` select the dynamic-verification harness. `--no-verify` skips verification for a single run without changing config.
+- **`nyx scan --harden {standard,strict}`** picks the process-backend hardening profile. `standard` is no-new-privs plus a memory rlimit on Linux. `strict` layers namespace unshare, chroot to the workdir, and a default-deny seccomp filter on Linux, or wraps the harness with `sandbox-exec` on macOS.
+- **Patch-validation CI mode.** `--baseline FILE` reads a previous scan's JSON (or a stripped `.nyx/baseline.json` written by `--baseline-write`) and diffs it against the current scan on `stable_hash`, emitting `New` / `Resolved` / `FlippedConfirmed` / `FlippedNotConfirmed` transitions. `--gate {no-new-confirmed,resolve-all-confirmed}` exits non-zero when the diff violates the policy so CI fails the build instead of merging an unreviewed regression. The stripped baseline carries only `stable_hash`, `dynamic_verdict`, `severity`, `path`, and `rule_id`, so persisting it between scans does not leak source.
 - **`nyx scan --verify-all-confidence`** drops the Medium cutoff and re-verifies everything.
 - **`nyx scan --unsafe-sandbox`** disables hardening (development only, never for CI).
-- **`nyx scan --verify-feedback`** writes a `feedback_wrong_for_finding` event so wrong verdicts get logged for offline triage.
+- **`nyx verify-feedback <finding_id> --wrong <reason> | --right`** records a correction or confirmation for a finding's verdict in the local telemetry log.
 - **`nyx scan --explain-engine`** prints the effective engine configuration and exits without scanning.
 - **`nyx surface`** (described above) with `--format {text,json,dot,svg}` and `--build`.
 
