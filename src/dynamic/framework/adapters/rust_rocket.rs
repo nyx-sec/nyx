@@ -23,8 +23,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, find_method_attribute, find_rust_function, rust_formal_names,
-    source_imports_rocket,
+    bind_rust_path_params, collect_rust_middleware, find_method_attribute, find_rust_function,
+    rust_formal_names, source_imports_rocket,
 };
 
 pub struct RustRocketAdapter;
@@ -53,13 +53,14 @@ impl FrameworkAdapter for RustRocketAdapter {
         let (method, path) = find_method_attribute(func, file_bytes)?;
         let formals = rust_formal_names(func, file_bytes);
         let request_params = bind_rust_path_params(&formals, &path);
+        let middleware = collect_rust_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -113,6 +114,18 @@ mod tests {
             .detect(&summary("save"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::POST);
+    }
+
+    #[test]
+    fn populates_middleware_from_attach_fairing() {
+        let src: &[u8] = b"use rocket::get;\n#[get(\"/u\")]\nfn show() -> &'static str { \"ok\" }\n\
+            #[launch]\nfn rocket() -> _ { rocket::build().attach(CsrfLayer).mount(\"/\", routes![show]) }\n";
+        let tree = parse(src);
+        let binding = RustRocketAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "CsrfLayer");
     }
 
     #[test]

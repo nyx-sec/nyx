@@ -13,7 +13,9 @@
 //!     paradigm; the warp adapter binds formals positionally rather
 //!     than by name.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::auth_markers;
+use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
+use crate::symbol::Lang;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known axum markers.
@@ -285,6 +287,153 @@ pub fn verb_from_ident(ident: &str) -> Option<HttpMethod> {
         "options" => Some(HttpMethod::OPTIONS),
         _ => None,
     }
+}
+
+/// Walk every method-chain call in the file whose field name is one
+/// of the known middleware-attach verbs and collect argument
+/// expressions whose names match a known Rust middleware marker (see
+/// [`crate::dynamic::framework::auth_markers::is_protective`]).
+///
+/// Per-framework attach verbs:
+///   - axum:   `.layer(...)`, `.route_layer(...)`
+///   - actix:  `.wrap(...)`, `.wrap_fn(...)`
+///   - rocket: `.attach(...)` (fairings)
+///   - warp:   `.and(filter)` filter composition
+///
+/// Argument rendering:
+///   - bare identifier (`.layer(AuthLayer)`) → `"AuthLayer"`
+///   - scoped identifier (`.wrap(middleware::Logger::default())`'s
+///     receiver path) — the call-form below covers it via callee text
+///   - call expression (`.layer(AuthLayer::new())`) →
+///     `"AuthLayer::new"` (callee text, args dropped)
+///   - turbofish call expression (`.layer(Service::<T>::new())`) →
+///     callee stripped of generics
+///
+/// De-duplicates within a single file; preserves declaration order.
+/// Names the registry does not recognise are dropped silently — the
+/// caller can re-walk with a wider predicate if it needs broader
+/// inclusion.
+pub fn collect_rust_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareShape> {
+    let mut raw: Vec<String> = Vec::new();
+    walk_attach_calls(root, bytes, &mut raw);
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    for name in raw {
+        if auth_markers::is_protective(Lang::Rust, &name)
+            && !out.iter().any(|m| m.name == name)
+        {
+            out.push(MiddlewareShape { name });
+        }
+    }
+    out
+}
+
+fn walk_attach_calls(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "call_expression" {
+        try_collect_attach_call(node, bytes, out);
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_attach_calls(child, bytes, out);
+    }
+}
+
+fn try_collect_attach_call(call: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let Some(callee) = call.child_by_field_name("function") else {
+        return;
+    };
+    if callee.kind() != "field_expression" {
+        return;
+    }
+    let Some(field) = callee.child_by_field_name("field") else {
+        return;
+    };
+    let Ok(verb) = field.utf8_text(bytes) else {
+        return;
+    };
+    if !matches!(
+        verb,
+        "layer" | "route_layer" | "wrap" | "wrap_fn" | "attach" | "and"
+    ) {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cur = args.walk();
+    for arg in args.named_children(&mut cur) {
+        if matches!(arg.kind(), "line_comment" | "block_comment") {
+            continue;
+        }
+        push_middleware_candidates(arg, bytes, out);
+    }
+}
+
+fn push_middleware_candidates(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let Some(primary) = middleware_arg_name(node, bytes) else {
+        return;
+    };
+    out.push(primary.clone());
+    // Also push the leading path segment so a scoped callee like
+    // `HttpAuthentication::bearer(validator)` matches the marker
+    // `HttpAuthentication` in the auth-markers table.
+    if let Some((head, _)) = primary.split_once("::") {
+        let head = head.trim();
+        if !head.is_empty() && head != primary {
+            out.push(head.to_owned());
+        }
+    }
+}
+
+fn middleware_arg_name(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "scoped_identifier" => {
+            node.utf8_text(bytes).ok().map(|s| s.trim().to_owned())
+        }
+        "call_expression" => {
+            let callee = node.child_by_field_name("function")?;
+            let raw = callee.utf8_text(bytes).ok()?.trim().to_owned();
+            // Strip turbofish generics: `Service::<T>::new` → `Service::new`.
+            Some(strip_turbofish(&raw))
+        }
+        "generic_function" => {
+            let callee = node.child_by_field_name("function")?;
+            callee.utf8_text(bytes).ok().map(|s| s.trim().to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn strip_turbofish(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut depth: i32 = 0;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if depth == 0 && i + 1 < bytes.len() && bytes[i] == b':' && bytes[i + 1] == b':' {
+            // peek for `<`
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'<' {
+                depth += 1;
+                i = j + 1;
+                continue;
+            }
+        }
+        if depth > 0 {
+            match bytes[i] {
+                b'<' => depth += 1,
+                b'>' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
 }
 
 /// Read the content of a Rust `string_literal` node, stripping the
@@ -920,5 +1069,82 @@ mod tests {
         let bindings = bind_rust_path_params(&formals, "/users/{u32}");
         assert!(matches!(bindings[0].source, ParamSource::Implicit));
         assert!(matches!(bindings[1].source, ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn collect_rust_middleware_picks_axum_layer_bare_ident() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/x\", get(show)).layer(AuthLayer) }\nfn show() {}\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "AuthLayer");
+    }
+
+    #[test]
+    fn collect_rust_middleware_picks_axum_route_layer() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/x\", get(show)).route_layer(CsrfLayer) }\nfn show() {}\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "CsrfLayer");
+    }
+
+    #[test]
+    fn collect_rust_middleware_picks_actix_wrap_call() {
+        let src: &[u8] = b"use actix_web::App;\nfn build() -> App<()> { App::new().wrap(HttpAuthentication::bearer(validator)) }\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name.contains("HttpAuthentication")));
+    }
+
+    #[test]
+    fn collect_rust_middleware_picks_rocket_attach_fairing() {
+        let src: &[u8] = b"use rocket::Rocket;\nfn build() { rocket::build().attach(CsrfLayer) }\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "CsrfLayer");
+    }
+
+    #[test]
+    fn collect_rust_middleware_picks_warp_and_filter() {
+        let src: &[u8] = b"use warp::Filter;\nfn build() { let r = warp::path!(\"x\").and(BearerAuth).map(show); }\nfn show() {}\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "BearerAuth");
+    }
+
+    #[test]
+    fn collect_rust_middleware_drops_unknown_names() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().layer(LoggingLayer) }\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert!(mw.is_empty(), "LoggingLayer is not a recognised marker");
+    }
+
+    #[test]
+    fn collect_rust_middleware_dedupes_and_preserves_order() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().layer(AuthLayer).route_layer(CsrfLayer).layer(AuthLayer) }\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        let names: Vec<&str> = mw.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["AuthLayer", "CsrfLayer"]);
+    }
+
+    #[test]
+    fn collect_rust_middleware_returns_empty_when_no_attach() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/x\", get(show)) }\nfn show() {}\n";
+        let tree = parse(src);
+        let mw = collect_rust_middleware(tree.root_node(), src);
+        assert!(mw.is_empty());
+    }
+
+    #[test]
+    fn strip_turbofish_removes_generic_args() {
+        assert_eq!(strip_turbofish("Foo::<T>::new"), "Foo::new");
+        assert_eq!(strip_turbofish("Foo::new"), "Foo::new");
+        assert_eq!(strip_turbofish("foo"), "foo");
+        assert_eq!(strip_turbofish("Foo::<A, B>::bar"), "Foo::bar");
     }
 }

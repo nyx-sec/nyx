@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, find_axum_route, find_rust_function, rust_formal_names,
-    source_imports_axum,
+    bind_rust_path_params, collect_rust_middleware, find_axum_route, find_rust_function,
+    rust_formal_names, source_imports_axum,
 };
 
 pub struct RustAxumAdapter;
@@ -52,13 +52,14 @@ impl FrameworkAdapter for RustAxumAdapter {
                 bind_rust_path_params(&formals, &path)
             })
             .unwrap_or_default();
+        let middleware = collect_rust_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -121,6 +122,17 @@ mod tests {
                 .detect(&summary("show"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn populates_middleware_from_layer_calls() {
+        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/u/{id}\", get(show)).layer(AuthLayer) }\nfn show(id: String) -> String { id }\n";
+        let tree = parse(src);
+        let binding = RustAxumAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "AuthLayer");
     }
 
     #[test]

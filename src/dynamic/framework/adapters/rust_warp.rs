@@ -21,8 +21,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, find_rust_function, find_warp_route, rust_formal_names,
-    source_imports_warp,
+    bind_rust_path_params, collect_rust_middleware, find_rust_function, find_warp_route,
+    rust_formal_names, source_imports_warp,
 };
 
 pub struct RustWarpAdapter;
@@ -54,13 +54,14 @@ impl FrameworkAdapter for RustWarpAdapter {
                 bind_rust_path_params(&formals, &path)
             })
             .unwrap_or_default();
+        let middleware = collect_rust_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -106,6 +107,17 @@ mod tests {
             .detect(&summary("handle"), tree.root_node(), src)
             .expect("binding");
         assert!(binding.route.unwrap().path.contains("x"));
+    }
+
+    #[test]
+    fn populates_middleware_from_and_filter() {
+        let src: &[u8] = b"use warp::Filter;\nfn build() { let r = warp::path!(\"x\" / u32).and(BearerAuth).map(show); }\nfn show(id: u32) -> String { String::new() }\n";
+        let tree = parse(src);
+        let binding = RustWarpAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "BearerAuth");
     }
 
     #[test]

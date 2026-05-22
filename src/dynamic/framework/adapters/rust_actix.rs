@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, find_actix_route_chain, find_method_attribute, find_rust_function,
-    rust_formal_names, source_imports_actix,
+    bind_rust_path_params, collect_rust_middleware, find_actix_route_chain, find_method_attribute,
+    find_rust_function, rust_formal_names, source_imports_actix,
 };
 
 pub struct RustActixAdapter;
@@ -50,13 +50,14 @@ impl FrameworkAdapter for RustActixAdapter {
             .or_else(|| find_actix_route_chain(ast, file_bytes, &summary.name))?;
         let formals = rust_formal_names(func, file_bytes);
         let request_params = bind_rust_path_params(&formals, &path);
+        let middleware = collect_rust_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -165,6 +166,18 @@ mod tests {
         let route = binding.route.expect("route");
         assert_eq!(route.method, HttpMethod::POST);
         assert_eq!(route.path, "/save");
+    }
+
+    #[test]
+    fn populates_middleware_from_wrap_call() {
+        let src: &[u8] = b"use actix_web::{App, web};\n\
+            fn build() -> App<()> { App::new().wrap(HttpAuthentication::bearer(validator)).route(\"/u\", web::get().to(show)) }\n\
+            async fn show() -> String { String::new() }\n";
+        let tree = parse(src);
+        let binding = RustActixAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.iter().any(|m| m.name.contains("HttpAuthentication")));
     }
 
     #[test]
