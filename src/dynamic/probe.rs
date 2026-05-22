@@ -443,13 +443,25 @@ pub struct ProbeChannel {
 }
 
 impl ProbeChannel {
-    /// Construct a channel rooted at `<workdir>/__nyx_probes.jsonl`.
+    /// Construct a channel rooted at
+    /// `<workdir>/__nyx_probes-pid{pid}.jsonl`.
+    ///
+    /// The filename is stamped with [`std::process::id`] so two test
+    /// binaries running in parallel against the same deterministic
+    /// `spec_hash` (and therefore the same `<workdir>`) do not race on
+    /// the probe file — one process's [`clear`](ProbeChannel::clear)
+    /// would otherwise truncate another process's freshly-written
+    /// probe records and cause the runner's `vuln_fired` gate to
+    /// evaluate false on an empty drain, silently dropping the benign
+    /// control attempt.  Within a single process every call resolves
+    /// to the same filename so the intra-run probe lifecycle
+    /// (write → drain → clear → next payload) stays correct.
     ///
     /// Creates the file (truncating any previous contents) so a stale
-    /// probe file left over from a prior workdir reuse cannot poison the
-    /// next run's oracle.
+    /// probe file left over from a prior workdir reuse cannot poison
+    /// the next run's oracle.
     pub fn for_workdir(workdir: &Path) -> std::io::Result<Self> {
-        let path = workdir.join(PROBE_FILENAME);
+        let path = workdir.join(format!("__nyx_probes-pid{}.jsonl", std::process::id()));
         File::create(&path)?;
         Ok(Self {
             path,

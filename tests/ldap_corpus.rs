@@ -532,6 +532,16 @@ mod e2e_phase_06 {
             events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
             "Java harness stub events must carry a `(uid=…)` filter; got {events:?}",
         );
+        // The Java emitter dispatches via `javax.naming.directory.InitialDirContext`,
+        // so the stub's BER handler must record `protocol=ldapv3` on at
+        // least one event — pins the tier-(b) wire format and prevents a
+        // regression that silently falls back to the plaintext path.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.detail.get("protocol").map(String::as_str) == Some("ldapv3")),
+            "Java harness must exercise the LDAPv3 BER path; got {events:?}",
+        );
     }
 
     #[test]

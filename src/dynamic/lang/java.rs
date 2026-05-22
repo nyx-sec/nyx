@@ -1086,29 +1086,37 @@ public class NyxHarness {{
 /// (`LdapTemplate.search` / `DirContext.search`).
 ///
 /// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter
-/// template, evaluates the resulting filter against the in-sandbox
-/// LDAP directory (three users: `alice`, `bob`, `carol`) using the
-/// same RFC-4515 subset the
-/// [`crate::dynamic::stubs::ldap_server`] stub implements, and writes
-/// a `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
-/// count the directory returned.  Mirrors the synthetic-harness
-/// pattern used by Phase 03 / 04 / 05; a future structural fix will
-/// link real `LdapTemplate` / `DirContext` via the published
-/// `NYX_LDAP_ENDPOINT`.
+/// template, and dispatches the resulting filter against the
+/// in-sandbox LDAP stub via `javax.naming.directory.InitialDirContext`
+/// over the real LDAPv3 BER wire (the stub's accept loop at
+/// [`crate::dynamic::stubs::ldap_server::accept_loop`] auto-detects
+/// the `0x30 SEQUENCE` lead byte and routes through the BER
+/// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
+/// to an in-process RFC 4515 subset matcher against three canonical
+/// users (`alice`, `bob`, `carol`) when the env var is unset or JNDI
+/// bind/search fails, so the harness still produces a verdict on
+/// hosts that exercise it outside the stub-backed corpus.  Writes a
+/// `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
+/// count the directory returned.  The JNDI provider ships with the
+/// JDK (`com.sun.jndi.ldap.LdapCtxFactory`) so no extra classpath dep
+/// is required.
 pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let source = format!(
-        r#"// Nyx dynamic harness — LDAP_INJECTION LdapTemplate.search (Phase 06 / Track J.4).
-import java.io.BufferedReader;
+        r#"// Nyx dynamic harness — LDAP_INJECTION DirContext.search (Phase 06 / Track J.4).
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Hashtable;
 import java.util.List;
+
+import javax.naming.Context;
+import javax.naming.NamingEnumeration;
+import javax.naming.NamingException;
+import javax.naming.directory.DirContext;
+import javax.naming.directory.InitialDirContext;
+import javax.naming.directory.SearchControls;
+import javax.naming.directory.SearchResult;
 
 public class NyxHarness {{
 {shim}
@@ -1138,43 +1146,49 @@ public class NyxHarness {{
     }}
 
     /// When `NYX_LDAP_ENDPOINT` is set to `host:port`, route the search
-    /// through the in-sandbox LDAP stub over its plain-text protocol
-    /// (`SEARCH <filter>\n` → `COUNT <n>\n…`) and return the parsed
-    /// count.  Returns `-1` when the env var is unset, the address
-    /// fails to parse, or the socket exchange errors — caller falls
-    /// back to the in-process matcher.
-    static int nyxLdapCountViaStub(String filter) {{
+    /// through the in-sandbox LDAP stub via
+    /// `javax.naming.directory.InitialDirContext` over the real LDAPv3
+    /// BER wire and return the count of returned entries.  Returns
+    /// `-1` when the env var is unset or JNDI fails to bind/search —
+    /// caller falls back to the in-process matcher.
+    static int nyxLdapCountViaJndi(String filter) {{
         String ep = System.getenv("NYX_LDAP_ENDPOINT");
         if (ep == null || ep.isEmpty()) return -1;
-        int colon = ep.lastIndexOf(':');
-        if (colon <= 0 || colon >= ep.length() - 1) return -1;
-        String host = ep.substring(0, colon);
-        int port;
+        Hashtable<String, String> env = new Hashtable<>();
+        env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
+        env.put(Context.PROVIDER_URL, "ldap://" + ep + "/");
+        env.put(Context.SECURITY_AUTHENTICATION, "none");
+        env.put("com.sun.jndi.ldap.connect.timeout", "2000");
+        env.put("com.sun.jndi.ldap.read.timeout", "2000");
+        DirContext ctx = null;
         try {{
-            port = Integer.parseInt(ep.substring(colon + 1));
-        }} catch (NumberFormatException nfe) {{
-            return -1;
-        }}
-        try (Socket sock = new Socket(host, port)) {{
-            sock.setSoTimeout(2000);
-            OutputStream os = sock.getOutputStream();
-            os.write(("SEARCH " + filter + "\n").getBytes(StandardCharsets.UTF_8));
-            os.flush();
-            BufferedReader br = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
-            String line = br.readLine();
-            if (line == null || !line.startsWith("COUNT ")) return -1;
+            ctx = new InitialDirContext(env);
+            SearchControls controls = new SearchControls();
+            controls.setSearchScope(SearchControls.SUBTREE_SCOPE);
+            controls.setReturningAttributes(new String[0]);
+            controls.setTimeLimit(2000);
+            NamingEnumeration<SearchResult> results = ctx.search("", filter, controls);
+            int count = 0;
             try {{
-                return Integer.parseInt(line.substring("COUNT ".length()).trim());
-            }} catch (NumberFormatException nfe) {{
-                return -1;
+                while (results.hasMore()) {{
+                    results.next();
+                    count++;
+                }}
+            }} finally {{
+                try {{ results.close(); }} catch (NamingException ne) {{ /* best-effort */ }}
             }}
-        }} catch (IOException ioe) {{
+            return count;
+        }} catch (NamingException ne) {{
             return -1;
+        }} finally {{
+            if (ctx != null) {{
+                try {{ ctx.close(); }} catch (NamingException ne) {{ /* best-effort */ }}
+            }}
         }}
     }}
 
     static int nyxLdapCount(String filter) {{
-        int viaStub = nyxLdapCountViaStub(filter);
+        int viaStub = nyxLdapCountViaJndi(filter);
         if (viaStub >= 0) return viaStub;
         return nyxLdapCountLocal(filter);
     }}
@@ -3328,16 +3342,24 @@ mod tests {
             "Java LDAP harness must read NYX_LDAP_ENDPOINT to route through the stub",
         );
         assert!(
-            h.source.contains("new Socket(host, port)"),
-            "Java LDAP harness must open a TCP socket against the stub endpoint",
+            h.source.contains("javax.naming.directory.InitialDirContext"),
+            "Java LDAP harness must import the JNDI InitialDirContext for the BER round-trip",
         );
         assert!(
-            h.source.contains("SEARCH "),
-            "Java LDAP harness must write SEARCH <filter> over the wire",
+            h.source.contains("new InitialDirContext(env)"),
+            "Java LDAP harness must construct an InitialDirContext bound at the stub endpoint",
         );
         assert!(
-            h.source.contains("COUNT "),
-            "Java LDAP harness must parse the COUNT <n> reply line",
+            h.source.contains("\"ldap://\" + ep + \"/\""),
+            "Java LDAP harness must compose an ldap:// PROVIDER_URL from NYX_LDAP_ENDPOINT",
+        );
+        assert!(
+            h.source.contains("ctx.search(\"\", filter, controls)"),
+            "Java LDAP harness must dispatch DirContext.search over LDAPv3 BER",
+        );
+        assert!(
+            h.source.contains("com.sun.jndi.ldap.LdapCtxFactory"),
+            "Java LDAP harness must select the JDK LDAP context factory",
         );
     }
 
@@ -3349,8 +3371,8 @@ mod tests {
             "Java LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
         );
         assert!(
-            h.source.contains("nyxLdapCountViaStub"),
-            "Java LDAP harness must dispatch through the stub-route helper",
+            h.source.contains("nyxLdapCountViaJndi"),
+            "Java LDAP harness must dispatch through the JNDI stub-route helper",
         );
     }
 
