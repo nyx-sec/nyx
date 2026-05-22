@@ -1560,12 +1560,19 @@ if __name__ == "__main__":
 /// (`ldap.search_s`).
 ///
 /// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter,
-/// evaluates the filter against the in-sandbox LDAP directory (three
-/// users: `alice`, `bob`, `carol`) using the same RFC-4515 subset the
-/// [`crate::dynamic::stubs::ldap_server`] stub implements, and writes
-/// a `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
-/// count the directory returned.  Mirrors the synthetic-harness
-/// pattern used by Phase 03 / 04 / 05.
+/// and — when `NYX_LDAP_ENDPOINT` is set — routes the search through
+/// the in-sandbox LDAP stub over the real LDAPv3 BER wire (the stub's
+/// accept loop at [`crate::dynamic::stubs::ldap_server::accept_loop`]
+/// auto-detects the `0x30 SEQUENCE` lead byte and routes through the
+/// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
+/// to an in-process RFC 4515 subset matcher against three canonical
+/// users (`alice`, `bob`, `carol`) when the env var is unset, the
+/// filter does not parse as a supported RFC 4515 shape, or the socket
+/// exchange errors, so the harness still produces a verdict on hosts
+/// that exercise it outside the stub-backed corpus.  Writes a
+/// `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
+/// count the directory returned.  The BER client is pure-stdlib (just
+/// `socket`) so no extra pip dep is required.
 pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
     let probe = probe_shim();
     let body = format!(
@@ -1644,12 +1651,250 @@ def _nyx_match_one(filt, uid):
     return _nyx_attr_match(pattern, uid)
 
 
-def _nyx_ldap_count_via_stub(filt):
-    """Route through the in-sandbox LDAP stub when NYX_LDAP_ENDPOINT is set.
+# --- LDAPv3 BER client (zero-dep, pure stdlib) ----------------------------
+# Tags this client emits / consumes.  Mirrors `src/dynamic/stubs/ldap_ber.rs`.
+_NYX_BER_BOOLEAN = 0x01
+_NYX_BER_INTEGER = 0x02
+_NYX_BER_OCTET_STRING = 0x04
+_NYX_BER_ENUMERATED = 0x0A
+_NYX_BER_SEQUENCE = 0x30
+_NYX_BER_BIND_REQUEST = 0x60
+_NYX_BER_BIND_RESPONSE = 0x61
+_NYX_BER_SEARCH_REQUEST = 0x63
+_NYX_BER_SEARCH_RESULT_ENTRY = 0x64
+_NYX_BER_SEARCH_RESULT_DONE = 0x65
+_NYX_BER_AUTH_SIMPLE = 0x80
+_NYX_BER_FILTER_AND = 0xA0
+_NYX_BER_FILTER_OR = 0xA1
+_NYX_BER_FILTER_EQUALITY = 0xA3
+_NYX_BER_FILTER_SUBSTRINGS = 0xA4
+_NYX_BER_FILTER_PRESENT = 0x87
+_NYX_BER_SUBSTR_INITIAL = 0x80
+_NYX_BER_SUBSTR_ANY = 0x81
+_NYX_BER_SUBSTR_FINAL = 0x82
 
-    Returns the parsed `COUNT <n>` reply on success, or ``None`` when the
-    env var is unset, the address fails to parse, or the socket exchange
-    errors — caller falls back to the in-process matcher.
+
+def _nyx_ber_length(n):
+    if n < 0x80:
+        return bytes([n])
+    tmp = []
+    while n:
+        tmp.append(n & 0xFF)
+        n >>= 8
+    tmp.reverse()
+    return bytes([0x80 | len(tmp)]) + bytes(tmp)
+
+
+def _nyx_ber_tlv(tag, body):
+    return bytes([tag]) + _nyx_ber_length(len(body)) + body
+
+
+def _nyx_ber_int(n):
+    if n < 0:
+        return None
+    if n == 0:
+        body = b"\x00"
+    else:
+        tmp = []
+        x = n
+        while x > 0:
+            tmp.append(x & 0xFF)
+            x >>= 8
+        tmp.reverse()
+        body = bytes(tmp)
+        if body[0] & 0x80:
+            body = b"\x00" + body
+    return _nyx_ber_tlv(_NYX_BER_INTEGER, body)
+
+
+def _nyx_ber_enum(n):
+    return _nyx_ber_tlv(_NYX_BER_ENUMERATED, bytes([n & 0xFF]))
+
+
+def _nyx_ber_octstr(s):
+    if isinstance(s, str):
+        s = s.encode("utf-8")
+    return _nyx_ber_tlv(_NYX_BER_OCTET_STRING, s)
+
+
+def _nyx_ber_bool(b):
+    return _nyx_ber_tlv(_NYX_BER_BOOLEAN, b"\xFF" if b else b"\x00")
+
+
+def _nyx_ber_seq(body):
+    return _nyx_ber_tlv(_NYX_BER_SEQUENCE, body)
+
+
+def _nyx_valid_attr(a):
+    if not a:
+        return False
+    for ch in a:
+        if not (ch.isalnum() or ch in "-_."):
+            return False
+    return True
+
+
+def _nyx_split_paren_children(s):
+    """Split a string of concatenated `(...)(...)` groups into a list."""
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] != "(":
+            return None
+        depth = 0
+        start = i
+        while i < n:
+            c = s[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+        if depth != 0:
+            return None
+        out.append(s[start:i])
+    return out
+
+
+def _nyx_encode_filter(filt):
+    """RFC 4515 (subset) -> BER bytes.  Returns ``None`` for invalid /
+    unsupported filter shapes; caller falls back to the local matcher."""
+    s = filt.strip()
+    if not s.startswith("(") or not s.endswith(")"):
+        return None
+    depth = 0
+    for i, c in enumerate(s):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+            if depth == 0 and i != len(s) - 1:
+                return None
+    if depth != 0:
+        return None
+    inner = s[1:-1]
+    if not inner:
+        return None
+    head = inner[0]
+    if head in ("&", "|"):
+        children = _nyx_split_paren_children(inner[1:])
+        if not children:
+            return None
+        parts = b""
+        for c in children:
+            sub = _nyx_encode_filter(c)
+            if sub is None:
+                return None
+            parts += sub
+        tag = _NYX_BER_FILTER_AND if head == "&" else _NYX_BER_FILTER_OR
+        return _nyx_ber_tlv(tag, parts)
+    if "=" not in inner:
+        return None
+    attr, _, val = inner.partition("=")
+    if not _nyx_valid_attr(attr):
+        return None
+    if val == "*":
+        return _nyx_ber_tlv(_NYX_BER_FILTER_PRESENT, attr.encode("utf-8"))
+    if "*" in val:
+        parts = val.split("*")
+        seq = b""
+        if parts[0]:
+            seq += _nyx_ber_tlv(_NYX_BER_SUBSTR_INITIAL, parts[0].encode("utf-8"))
+        for p in parts[1:-1]:
+            if p:
+                seq += _nyx_ber_tlv(_NYX_BER_SUBSTR_ANY, p.encode("utf-8"))
+        if parts[-1]:
+            seq += _nyx_ber_tlv(_NYX_BER_SUBSTR_FINAL, parts[-1].encode("utf-8"))
+        body = _nyx_ber_octstr(attr) + _nyx_ber_seq(seq)
+        return _nyx_ber_tlv(_NYX_BER_FILTER_SUBSTRINGS, body)
+    body = _nyx_ber_octstr(attr) + _nyx_ber_octstr(val)
+    return _nyx_ber_tlv(_NYX_BER_FILTER_EQUALITY, body)
+
+
+def _nyx_read_n(sock, n):
+    out = b""
+    while len(out) < n:
+        chunk = sock.recv(n - len(out))
+        if not chunk:
+            return None
+        out += chunk
+    return out
+
+
+def _nyx_read_ber_message(sock):
+    head = _nyx_read_n(sock, 2)
+    if head is None or head[0] != _NYX_BER_SEQUENCE:
+        return None
+    if head[1] & 0x80 == 0:
+        body_len = head[1]
+        length_bytes = b""
+    else:
+        nl = head[1] & 0x7F
+        if nl == 0 or nl > 4:
+            return None
+        length_bytes = _nyx_read_n(sock, nl)
+        if length_bytes is None:
+            return None
+        body_len = 0
+        for b in length_bytes:
+            body_len = (body_len << 8) | b
+    if body_len > 64 * 1024:
+        return None
+    body = _nyx_read_n(sock, body_len)
+    if body is None:
+        return None
+    return head + length_bytes + body
+
+
+def _nyx_decode_tlv(buf, offset):
+    if offset + 2 > len(buf):
+        return None
+    tag = buf[offset]
+    first_len = buf[offset + 1]
+    if first_len & 0x80 == 0:
+        body_len = first_len
+        body_start = offset + 2
+    else:
+        nl = first_len & 0x7F
+        if nl == 0 or nl > 4 or offset + 2 + nl > len(buf):
+            return None
+        body_len = 0
+        for b in buf[offset + 2:offset + 2 + nl]:
+            body_len = (body_len << 8) | b
+        body_start = offset + 2 + nl
+    body_end = body_start + body_len
+    if body_end > len(buf):
+        return None
+    return (tag, buf[body_start:body_end], body_end)
+
+
+def _nyx_decode_ldap_op(msg):
+    """Return ``(op_tag, op_body)`` for an LDAPMessage byte slice."""
+    outer = _nyx_decode_tlv(msg, 0)
+    if outer is None or outer[0] != _NYX_BER_SEQUENCE:
+        return None
+    inner = outer[1]
+    msg_id_tlv = _nyx_decode_tlv(inner, 0)
+    if msg_id_tlv is None or msg_id_tlv[0] != _NYX_BER_INTEGER:
+        return None
+    op_tlv = _nyx_decode_tlv(inner, msg_id_tlv[2])
+    if op_tlv is None:
+        return None
+    return (op_tlv[0], op_tlv[1])
+
+
+def _nyx_ldap_count_via_ber(filt):
+    """Route through the in-sandbox LDAP stub via real LDAPv3 BER when
+    `NYX_LDAP_ENDPOINT` is set.  Returns the entry count on success, or
+    ``None`` when the env var is unset, the filter is not a supported
+    RFC 4515 shape, the address fails to parse, the bind fails, or the
+    socket exchange errors — caller falls back to the in-process matcher.
     """
     ep = os.environ.get("NYX_LDAP_ENDPOINT", "")
     if not ep:
@@ -1662,23 +1907,56 @@ def _nyx_ldap_count_via_stub(filt):
         port = int(ep[sep + 1:])
     except ValueError:
         return None
+    filter_bytes = _nyx_encode_filter(filt)
+    if filter_bytes is None:
+        return None
     try:
         with socket.create_connection((host, port), timeout=2.0) as sock:
-            sock.sendall(("SEARCH " + filt + "\n").encode("utf-8"))
-            buf = sock.makefile("rb")
-            line = buf.readline()
-            if not line:
+            sock.settimeout(2.0)
+            bind_body = (
+                _nyx_ber_int(3)
+                + _nyx_ber_octstr(b"")
+                + _nyx_ber_tlv(_NYX_BER_AUTH_SIMPLE, b"")
+            )
+            bind_msg = _nyx_ber_seq(
+                _nyx_ber_int(1) + _nyx_ber_tlv(_NYX_BER_BIND_REQUEST, bind_body)
+            )
+            sock.sendall(bind_msg)
+            resp = _nyx_read_ber_message(sock)
+            if resp is None:
                 return None
-            try:
-                line_s = line.decode("utf-8", "replace").rstrip("\r\n")
-            except Exception:
+            decoded = _nyx_decode_ldap_op(resp)
+            if decoded is None or decoded[0] != _NYX_BER_BIND_RESPONSE:
                 return None
-            if not line_s.startswith("COUNT "):
-                return None
-            try:
-                return int(line_s[len("COUNT "):].strip())
-            except ValueError:
-                return None
+            search_body = (
+                _nyx_ber_octstr(b"")
+                + _nyx_ber_enum(2)
+                + _nyx_ber_enum(0)
+                + _nyx_ber_int(0)
+                + _nyx_ber_int(2)
+                + _nyx_ber_bool(False)
+                + filter_bytes
+                + _nyx_ber_seq(b"")
+            )
+            search_msg = _nyx_ber_seq(
+                _nyx_ber_int(2) + _nyx_ber_tlv(_NYX_BER_SEARCH_REQUEST, search_body)
+            )
+            sock.sendall(search_msg)
+            count = 0
+            while True:
+                resp = _nyx_read_ber_message(sock)
+                if resp is None:
+                    return None
+                decoded = _nyx_decode_ldap_op(resp)
+                if decoded is None:
+                    return None
+                op_tag = decoded[0]
+                if op_tag == _NYX_BER_SEARCH_RESULT_ENTRY:
+                    count += 1
+                elif op_tag == _NYX_BER_SEARCH_RESULT_DONE:
+                    return count
+                else:
+                    return count
     except (OSError, socket.timeout):
         return None
 
@@ -1695,9 +1973,9 @@ def _nyx_ldap_count_local(filt):
 
 
 def _nyx_ldap_count(filt):
-    via_stub = _nyx_ldap_count_via_stub(filt)
-    if via_stub is not None:
-        return via_stub
+    via_ber = _nyx_ldap_count_via_ber(filt)
+    if via_ber is not None:
+        return via_ber
     return _nyx_ldap_count_local(filt)
 
 
@@ -3150,12 +3428,20 @@ mod tests {
             "Python LDAP harness must open a TCP socket against the stub endpoint",
         );
         assert!(
-            h.source.contains("SEARCH "),
-            "Python LDAP harness must write SEARCH <filter> over the wire",
+            h.source.contains("_NYX_BER_BIND_REQUEST = 0x60"),
+            "Python LDAP harness must compose an LDAPv3 BindRequest (BER tag 0x60)",
         );
         assert!(
-            h.source.contains("COUNT "),
-            "Python LDAP harness must parse the COUNT <n> reply line",
+            h.source.contains("_NYX_BER_SEARCH_REQUEST = 0x63"),
+            "Python LDAP harness must compose an LDAPv3 SearchRequest (BER tag 0x63)",
+        );
+        assert!(
+            h.source.contains("_nyx_encode_filter"),
+            "Python LDAP harness must encode the RFC 4515 filter string into BER bytes",
+        );
+        assert!(
+            !h.source.contains("\"SEARCH \""),
+            "Python LDAP harness must no longer write the plaintext SEARCH <filter> tier-(a) framing",
         );
     }
 
@@ -3167,8 +3453,8 @@ mod tests {
             "Python LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
         );
         assert!(
-            h.source.contains("_nyx_ldap_count_via_stub"),
-            "Python LDAP harness must dispatch through the stub-route helper",
+            h.source.contains("_nyx_ldap_count_via_ber"),
+            "Python LDAP harness must dispatch through the BER stub-route helper",
         );
     }
 

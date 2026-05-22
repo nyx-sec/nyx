@@ -562,6 +562,17 @@ mod e2e_phase_06 {
             events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
             "Python harness stub events must carry a `(uid=…)` filter; got {events:?}",
         );
+        // The Python emitter now dispatches via a pure-stdlib LDAPv3 BER
+        // client, so the stub's BER handler must record `protocol=ldapv3`
+        // on at least one event — pins the tier-(b) wire format and
+        // prevents a regression that silently falls back to the plaintext
+        // path.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.detail.get("protocol").map(String::as_str) == Some("ldapv3")),
+            "Python harness must exercise the LDAPv3 BER path; got {events:?}",
+        );
     }
 
     #[test]
@@ -581,6 +592,17 @@ mod e2e_phase_06 {
         assert!(
             events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
             "PHP harness stub events must carry a `(uid=…)` filter; got {events:?}",
+        );
+        // The PHP emitter now dispatches via a core-PHP LDAPv3 BER client
+        // (no `ext-ldap` dep), so the stub's BER handler must record
+        // `protocol=ldapv3` on at least one event — pins the tier-(b) wire
+        // format and prevents a regression that silently falls back to the
+        // plaintext path.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.detail.get("protocol").map(String::as_str) == Some("ldapv3")),
+            "PHP harness must exercise the LDAPv3 BER path; got {events:?}",
         );
     }
 }

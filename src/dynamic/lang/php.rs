@@ -782,12 +782,20 @@ echo json_encode(["entity_expanded" => $expanded]) . "\n";
 /// Phase 06 — Track J.4 LDAP-injection harness for PHP (`ldap_search`).
 ///
 /// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter,
-/// evaluates the filter against the in-sandbox LDAP directory (three
-/// users: `alice`, `bob`, `carol`) using the same RFC-4515 subset the
-/// [`crate::dynamic::stubs::ldap_server`] stub implements, and writes
-/// a `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
-/// count the directory returned.  Mirrors the synthetic-harness
-/// pattern used by Phase 03 / 04 / 05.
+/// and — when `NYX_LDAP_ENDPOINT` is set — routes the search through
+/// the in-sandbox LDAP stub over the real LDAPv3 BER wire (the stub's
+/// accept loop at [`crate::dynamic::stubs::ldap_server::accept_loop`]
+/// auto-detects the `0x30 SEQUENCE` lead byte and routes through the
+/// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
+/// to an in-process RFC 4515 subset matcher against three canonical
+/// users (`alice`, `bob`, `carol`) when the env var is unset, the
+/// filter does not parse as a supported RFC 4515 shape, or the socket
+/// exchange errors, so the harness still produces a verdict on hosts
+/// that exercise it outside the stub-backed corpus.  Writes a
+/// `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
+/// count the directory returned.  The BER client is core-PHP only
+/// (`fsockopen` / `fwrite` / `fread`) so no `ext-ldap` extension is
+/// required.
 pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
@@ -866,7 +874,235 @@ function _nyx_match_one(string $filt, string $uid): bool {{
     return _nyx_attr_match($pattern, $uid);
 }}
 
-function _nyx_ldap_count_via_stub(string $filt): ?int {{
+// --- LDAPv3 BER client (zero-dep, core PHP only) -------------------------
+// Tags this client emits / consumes.  Mirrors `src/dynamic/stubs/ldap_ber.rs`.
+const _NYX_BER_BOOLEAN = 0x01;
+const _NYX_BER_INTEGER = 0x02;
+const _NYX_BER_OCTET_STRING = 0x04;
+const _NYX_BER_ENUMERATED = 0x0A;
+const _NYX_BER_SEQUENCE = 0x30;
+const _NYX_BER_BIND_REQUEST = 0x60;
+const _NYX_BER_BIND_RESPONSE = 0x61;
+const _NYX_BER_SEARCH_REQUEST = 0x63;
+const _NYX_BER_SEARCH_RESULT_ENTRY = 0x64;
+const _NYX_BER_SEARCH_RESULT_DONE = 0x65;
+const _NYX_BER_AUTH_SIMPLE = 0x80;
+const _NYX_BER_FILTER_AND = 0xA0;
+const _NYX_BER_FILTER_OR = 0xA1;
+const _NYX_BER_FILTER_EQUALITY = 0xA3;
+const _NYX_BER_FILTER_SUBSTRINGS = 0xA4;
+const _NYX_BER_FILTER_PRESENT = 0x87;
+const _NYX_BER_SUBSTR_INITIAL = 0x80;
+const _NYX_BER_SUBSTR_ANY = 0x81;
+const _NYX_BER_SUBSTR_FINAL = 0x82;
+
+function _nyx_ber_length(int $n): string {{
+    if ($n < 0x80) return chr($n);
+    $tmp = '';
+    while ($n > 0) {{
+        $tmp = chr($n & 0xFF) . $tmp;
+        $n >>= 8;
+    }}
+    return chr(0x80 | strlen($tmp)) . $tmp;
+}}
+
+function _nyx_ber_tlv(int $tag, string $body): string {{
+    return chr($tag) . _nyx_ber_length(strlen($body)) . $body;
+}}
+
+function _nyx_ber_int(int $n): ?string {{
+    if ($n < 0) return null;
+    if ($n === 0) {{
+        $body = "\x00";
+    }} else {{
+        $tmp = '';
+        while ($n > 0) {{
+            $tmp = chr($n & 0xFF) . $tmp;
+            $n >>= 8;
+        }}
+        if (ord($tmp[0]) & 0x80) {{
+            $tmp = "\x00" . $tmp;
+        }}
+        $body = $tmp;
+    }}
+    return _nyx_ber_tlv(_NYX_BER_INTEGER, $body);
+}}
+
+function _nyx_ber_enum(int $n): string {{
+    return _nyx_ber_tlv(_NYX_BER_ENUMERATED, chr($n & 0xFF));
+}}
+
+function _nyx_ber_octstr(string $s): string {{
+    return _nyx_ber_tlv(_NYX_BER_OCTET_STRING, $s);
+}}
+
+function _nyx_ber_bool(bool $b): string {{
+    return _nyx_ber_tlv(_NYX_BER_BOOLEAN, $b ? "\xFF" : "\x00");
+}}
+
+function _nyx_ber_seq(string $body): string {{
+    return _nyx_ber_tlv(_NYX_BER_SEQUENCE, $body);
+}}
+
+function _nyx_valid_attr(string $a): bool {{
+    if ($a === '') return false;
+    $n = strlen($a);
+    for ($i = 0; $i < $n; $i++) {{
+        $c = $a[$i];
+        if (!(ctype_alnum($c) || $c === '-' || $c === '_' || $c === '.')) return false;
+    }}
+    return true;
+}}
+
+function _nyx_split_paren_children(string $s): ?array {{
+    $out = [];
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {{
+        if ($s[$i] !== '(') return null;
+        $depth = 0;
+        $start = $i;
+        while ($i < $n) {{
+            $c = $s[$i];
+            if ($c === '(') $depth++;
+            elseif ($c === ')') {{
+                $depth--;
+                if ($depth === 0) {{ $i++; break; }}
+            }}
+            $i++;
+        }}
+        if ($depth !== 0) return null;
+        $out[] = substr($s, $start, $i - $start);
+    }}
+    return $out;
+}}
+
+function _nyx_encode_filter(string $filt): ?string {{
+    $s = trim($filt);
+    if (!str_starts_with($s, '(') || !str_ends_with($s, ')')) return null;
+    $depth = 0;
+    $n = strlen($s);
+    for ($i = 0; $i < $n; $i++) {{
+        $c = $s[$i];
+        if ($c === '(') $depth++;
+        elseif ($c === ')') {{
+            $depth--;
+            if ($depth < 0) return null;
+            if ($depth === 0 && $i !== $n - 1) return null;
+        }}
+    }}
+    if ($depth !== 0) return null;
+    $inner = substr($s, 1, strlen($s) - 2);
+    if ($inner === '') return null;
+    $head = $inner[0];
+    if ($head === '&' || $head === '|') {{
+        $children = _nyx_split_paren_children(substr($inner, 1));
+        if ($children === null || empty($children)) return null;
+        $parts = '';
+        foreach ($children as $c) {{
+            $sub = _nyx_encode_filter($c);
+            if ($sub === null) return null;
+            $parts .= $sub;
+        }}
+        $tag = $head === '&' ? _NYX_BER_FILTER_AND : _NYX_BER_FILTER_OR;
+        return _nyx_ber_tlv($tag, $parts);
+    }}
+    $eq = strpos($inner, '=');
+    if ($eq === false) return null;
+    $attr = substr($inner, 0, $eq);
+    $val = substr($inner, $eq + 1);
+    if (!_nyx_valid_attr($attr)) return null;
+    if ($val === '*') {{
+        return _nyx_ber_tlv(_NYX_BER_FILTER_PRESENT, $attr);
+    }}
+    if (strpos($val, '*') !== false) {{
+        $parts = explode('*', $val);
+        $last = count($parts) - 1;
+        $seq = '';
+        if ($parts[0] !== '') {{
+            $seq .= _nyx_ber_tlv(_NYX_BER_SUBSTR_INITIAL, $parts[0]);
+        }}
+        for ($i = 1; $i < $last; $i++) {{
+            if ($parts[$i] !== '') {{
+                $seq .= _nyx_ber_tlv(_NYX_BER_SUBSTR_ANY, $parts[$i]);
+            }}
+        }}
+        if ($parts[$last] !== '') {{
+            $seq .= _nyx_ber_tlv(_NYX_BER_SUBSTR_FINAL, $parts[$last]);
+        }}
+        $body = _nyx_ber_octstr($attr) . _nyx_ber_seq($seq);
+        return _nyx_ber_tlv(_NYX_BER_FILTER_SUBSTRINGS, $body);
+    }}
+    $body = _nyx_ber_octstr($attr) . _nyx_ber_octstr($val);
+    return _nyx_ber_tlv(_NYX_BER_FILTER_EQUALITY, $body);
+}}
+
+function _nyx_read_n($sock, int $n): ?string {{
+    $out = '';
+    while (strlen($out) < $n) {{
+        $chunk = @fread($sock, $n - strlen($out));
+        if ($chunk === false || $chunk === '') return null;
+        $out .= $chunk;
+    }}
+    return $out;
+}}
+
+function _nyx_read_ber_message($sock): ?string {{
+    $head = _nyx_read_n($sock, 2);
+    if ($head === null || ord($head[0]) !== _NYX_BER_SEQUENCE) return null;
+    $first_len = ord($head[1]);
+    if (($first_len & 0x80) === 0) {{
+        $body_len = $first_len;
+        $length_bytes = '';
+    }} else {{
+        $nl = $first_len & 0x7F;
+        if ($nl === 0 || $nl > 4) return null;
+        $length_bytes = _nyx_read_n($sock, $nl);
+        if ($length_bytes === null) return null;
+        $body_len = 0;
+        for ($i = 0; $i < $nl; $i++) {{
+            $body_len = ($body_len << 8) | ord($length_bytes[$i]);
+        }}
+    }}
+    if ($body_len > 64 * 1024) return null;
+    $body = _nyx_read_n($sock, $body_len);
+    if ($body === null) return null;
+    return $head . $length_bytes . $body;
+}}
+
+function _nyx_decode_tlv(string $buf, int $offset): ?array {{
+    if ($offset + 2 > strlen($buf)) return null;
+    $tag = ord($buf[$offset]);
+    $first_len = ord($buf[$offset + 1]);
+    if (($first_len & 0x80) === 0) {{
+        $body_len = $first_len;
+        $body_start = $offset + 2;
+    }} else {{
+        $nl = $first_len & 0x7F;
+        if ($nl === 0 || $nl > 4 || $offset + 2 + $nl > strlen($buf)) return null;
+        $body_len = 0;
+        for ($i = 0; $i < $nl; $i++) {{
+            $body_len = ($body_len << 8) | ord($buf[$offset + 2 + $i]);
+        }}
+        $body_start = $offset + 2 + $nl;
+    }}
+    $body_end = $body_start + $body_len;
+    if ($body_end > strlen($buf)) return null;
+    return [$tag, substr($buf, $body_start, $body_len), $body_end];
+}}
+
+function _nyx_decode_ldap_op(string $msg): ?array {{
+    $outer = _nyx_decode_tlv($msg, 0);
+    if ($outer === null || $outer[0] !== _NYX_BER_SEQUENCE) return null;
+    $inner = $outer[1];
+    $msg_id_tlv = _nyx_decode_tlv($inner, 0);
+    if ($msg_id_tlv === null || $msg_id_tlv[0] !== _NYX_BER_INTEGER) return null;
+    $op_tlv = _nyx_decode_tlv($inner, $msg_id_tlv[2]);
+    if ($op_tlv === null) return null;
+    return [$op_tlv[0], $op_tlv[1]];
+}}
+
+function _nyx_ldap_count_via_ber(string $filt): ?int {{
     $ep = getenv('NYX_LDAP_ENDPOINT');
     if ($ep === false || $ep === '') return null;
     $sep = strrpos($ep, ':');
@@ -874,20 +1110,47 @@ function _nyx_ldap_count_via_stub(string $filt): ?int {{
     $host = substr($ep, 0, $sep);
     $port = (int) substr($ep, $sep + 1);
     if ($port <= 0) return null;
+    $filter_bytes = _nyx_encode_filter($filt);
+    if ($filter_bytes === null) return null;
     $errno = 0;
     $errstr = '';
     $sock = @fsockopen($host, $port, $errno, $errstr, 2.0);
     if ($sock === false) return null;
     stream_set_timeout($sock, 2);
-    @fwrite($sock, 'SEARCH ' . $filt . "\n");
-    $line = @fgets($sock);
-    @fclose($sock);
-    if ($line === false) return null;
-    $line = rtrim($line, "\r\n");
-    if (!str_starts_with($line, 'COUNT ')) return null;
-    $tail = trim(substr($line, strlen('COUNT ')));
-    if ($tail === '' || !ctype_digit($tail)) return null;
-    return (int) $tail;
+    $bind_body = _nyx_ber_int(3) . _nyx_ber_octstr('') . _nyx_ber_tlv(_NYX_BER_AUTH_SIMPLE, '');
+    $bind_msg = _nyx_ber_seq(_nyx_ber_int(1) . _nyx_ber_tlv(_NYX_BER_BIND_REQUEST, $bind_body));
+    if (@fwrite($sock, $bind_msg) === false) {{ @fclose($sock); return null; }}
+    $resp = _nyx_read_ber_message($sock);
+    if ($resp === null) {{ @fclose($sock); return null; }}
+    $decoded = _nyx_decode_ldap_op($resp);
+    if ($decoded === null || $decoded[0] !== _NYX_BER_BIND_RESPONSE) {{ @fclose($sock); return null; }}
+    $search_body = _nyx_ber_octstr('')
+        . _nyx_ber_enum(2)
+        . _nyx_ber_enum(0)
+        . _nyx_ber_int(0)
+        . _nyx_ber_int(2)
+        . _nyx_ber_bool(false)
+        . $filter_bytes
+        . _nyx_ber_seq('');
+    $search_msg = _nyx_ber_seq(_nyx_ber_int(2) . _nyx_ber_tlv(_NYX_BER_SEARCH_REQUEST, $search_body));
+    if (@fwrite($sock, $search_msg) === false) {{ @fclose($sock); return null; }}
+    $count = 0;
+    while (true) {{
+        $resp = _nyx_read_ber_message($sock);
+        if ($resp === null) {{ @fclose($sock); return null; }}
+        $decoded = _nyx_decode_ldap_op($resp);
+        if ($decoded === null) {{ @fclose($sock); return null; }}
+        $op_tag = $decoded[0];
+        if ($op_tag === _NYX_BER_SEARCH_RESULT_ENTRY) {{
+            $count++;
+        }} elseif ($op_tag === _NYX_BER_SEARCH_RESULT_DONE) {{
+            @fclose($sock);
+            return $count;
+        }} else {{
+            @fclose($sock);
+            return $count;
+        }}
+    }}
 }}
 
 function _nyx_ldap_count_local(string $filt, array $users): int {{
@@ -904,8 +1167,8 @@ function _nyx_ldap_count_local(string $filt, array $users): int {{
 }}
 
 function _nyx_ldap_count(string $filt, array $users): int {{
-    $via_stub = _nyx_ldap_count_via_stub($filt);
-    if ($via_stub !== null) return $via_stub;
+    $via_ber = _nyx_ldap_count_via_ber($filt);
+    if ($via_ber !== null) return $via_ber;
     return _nyx_ldap_count_local($filt, $users);
 }}
 
@@ -2164,12 +2427,20 @@ mod tests {
             "PHP LDAP harness must open a TCP socket against the stub endpoint",
         );
         assert!(
-            h.source.contains("'SEARCH '"),
-            "PHP LDAP harness must write SEARCH <filter> over the wire",
+            h.source.contains("_NYX_BER_BIND_REQUEST = 0x60"),
+            "PHP LDAP harness must compose an LDAPv3 BindRequest (BER tag 0x60)",
         );
         assert!(
-            h.source.contains("'COUNT '"),
-            "PHP LDAP harness must parse the COUNT <n> reply line",
+            h.source.contains("_NYX_BER_SEARCH_REQUEST = 0x63"),
+            "PHP LDAP harness must compose an LDAPv3 SearchRequest (BER tag 0x63)",
+        );
+        assert!(
+            h.source.contains("_nyx_encode_filter"),
+            "PHP LDAP harness must encode the RFC 4515 filter string into BER bytes",
+        );
+        assert!(
+            !h.source.contains("'SEARCH '"),
+            "PHP LDAP harness must no longer write the plaintext SEARCH <filter> tier-(a) framing",
         );
     }
 
@@ -2181,8 +2452,8 @@ mod tests {
             "PHP LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
         );
         assert!(
-            h.source.contains("_nyx_ldap_count_via_stub"),
-            "PHP LDAP harness must dispatch through the stub-route helper",
+            h.source.contains("_nyx_ldap_count_via_ber"),
+            "PHP LDAP harness must dispatch through the BER stub-route helper",
         );
     }
 
