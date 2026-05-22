@@ -1,10 +1,10 @@
 <?php
 // File I/O — negative fixture.
 // Safe: realpath + prefix validation prevents directory traversal.
-// Entry: readFile($userPath)  Cap: FILE_IO
+// Entry: runReadFile($userPath)  Cap: FILE_IO
 // Expected verdict: NotConfirmed
 
-function readFile($userPath) {
+function runReadFile($userPath) {
     $baseDir = '/var/data';
     $filePath = realpath($baseDir . '/' . $userPath);
     if ($filePath === false || strpos($filePath, $baseDir . DIRECTORY_SEPARATOR) !== 0) {

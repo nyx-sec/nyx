@@ -12,7 +12,7 @@ import (
 
 func RunPing(host string) {
 	fmt.Print("__NYX_SINK_HIT__\n")
-	cmd := exec.Command("sh", "-c", "echo hello "+host)
+	cmd := exec.Command("/bin/sh", "-c", "/bin/echo hello "+host)
 	out, _ := cmd.CombinedOutput()
 	fmt.Print(string(out))
 }

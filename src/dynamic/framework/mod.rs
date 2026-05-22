@@ -287,6 +287,10 @@ mod tests {
         //   Python: +2 (CryptoPython, DataExfilPython)         22 → 24
         //   JavaScript: +2 (CryptoJs, DataExfilJs)             20 → 22
         //   Go: +1 (DataExfilGo)                               11 → 12
+        // Track L.9 follow-up slice (session-0015 of run 7d60):
+        // CRYPTO × {Php, Ruby} + DATA_EXFIL × Ruby.
+        //   Php: +1 (CryptoPhp)                                12 → 13
+        //   Ruby: +2 (CryptoRuby, DataExfilRuby)               12 → 14
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
@@ -299,8 +303,8 @@ mod tests {
         let php_registered = registry::adapters_for(Lang::Php);
         assert_eq!(
             php_registered.len(),
-            12,
-            "Php must have Phase 20 baseline (10) + M.3 Laravel middleware+migration (2)",
+            13,
+            "Php must have Phase 20 baseline (10) + M.3 Laravel middleware+migration (2) + Track L.9 CryptoPhp (1)",
         );
         for adapter in php_registered {
             assert_eq!(adapter.lang(), Lang::Php);
@@ -317,8 +321,8 @@ mod tests {
         let ruby_registered = registry::adapters_for(Lang::Ruby);
         assert_eq!(
             ruby_registered.len(),
-            12,
-            "Ruby must have Phase 20 baseline (8) + M.3 Phase-21 (4)",
+            14,
+            "Ruby must have Phase 20 baseline (8) + M.3 Phase-21 (4) + Track L.9 (CryptoRuby, DataExfilRuby)",
         );
         for adapter in ruby_registered {
             assert_eq!(adapter.lang(), Lang::Ruby);

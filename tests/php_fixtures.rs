@@ -214,7 +214,7 @@ mod php_fixture_tests {
 
     #[test]
     fn php_fileio_positive_is_confirmed() {
-        let result = run_fixture("fileio_positive.php", "readFile", Cap::FILE_IO, 9);
+        let result = run_fixture("fileio_positive.php", "runReadFile", Cap::FILE_IO, 9);
         if result.status == VerifyStatus::Unsupported
             && result.reason == Some(UnsupportedReason::BackendUnavailable)
         {
@@ -231,7 +231,7 @@ mod php_fixture_tests {
 
     #[test]
     fn php_fileio_negative_is_not_confirmed() {
-        let result = run_fixture("fileio_negative.php", "readFile", Cap::FILE_IO, 14);
+        let result = run_fixture("fileio_negative.php", "runReadFile", Cap::FILE_IO, 14);
         if result.status == VerifyStatus::Unsupported
             && result.reason == Some(UnsupportedReason::BackendUnavailable)
         {
@@ -247,7 +247,7 @@ mod php_fixture_tests {
 
     #[test]
     fn php_fileio_adversarial_is_oracle_collision() {
-        let result = run_fixture("fileio_adversarial.php", "readFile", Cap::FILE_IO, 999);
+        let result = run_fixture("fileio_adversarial.php", "runReadFile", Cap::FILE_IO, 999);
         if result.status == VerifyStatus::Unsupported
             && result.reason == Some(UnsupportedReason::BackendUnavailable)
         {

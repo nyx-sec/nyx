@@ -13,10 +13,13 @@
 
 pub mod crypto_java;
 pub mod crypto_js;
+pub mod crypto_php;
 pub mod crypto_python;
+pub mod crypto_ruby;
 pub mod data_exfil_go;
 pub mod data_exfil_js;
 pub mod data_exfil_python;
+pub mod data_exfil_ruby;
 pub mod go_chi;
 pub mod go_echo;
 pub mod go_fiber;
@@ -130,10 +133,13 @@ pub mod xxe_ruby;
 
 pub use crypto_java::CryptoJavaAdapter;
 pub use crypto_js::CryptoJsAdapter;
+pub use crypto_php::CryptoPhpAdapter;
 pub use crypto_python::CryptoPythonAdapter;
+pub use crypto_ruby::CryptoRubyAdapter;
 pub use data_exfil_go::DataExfilGoAdapter;
 pub use data_exfil_js::DataExfilJsAdapter;
 pub use data_exfil_python::DataExfilPythonAdapter;
+pub use data_exfil_ruby::DataExfilRubyAdapter;
 pub use go_chi::GoChiAdapter;
 pub use go_echo::GoEchoAdapter;
 pub use go_fiber::GoFiberAdapter;

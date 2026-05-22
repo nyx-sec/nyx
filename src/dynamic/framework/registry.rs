@@ -92,6 +92,7 @@ static GO: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxeGoAdapter,
 ];
 static PHP: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoPhpAdapter,
     &super::adapters::HeaderPhpAdapter,
     &super::adapters::LdapPhpAdapter,
     &super::adapters::MiddlewareLaravelAdapter,
@@ -132,6 +133,8 @@ static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxePythonAdapter,
 ];
 static RUBY: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoRubyAdapter,
+    &super::adapters::DataExfilRubyAdapter,
     &super::adapters::HeaderRubyAdapter,
     &super::adapters::MiddlewareRailsAdapter,
     &super::adapters::MigrationRailsAdapter,

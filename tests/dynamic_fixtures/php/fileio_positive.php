@@ -1,10 +1,10 @@
 <?php
 // File I/O — positive fixture.
 // Vulnerable: reads file at user-controlled path without sanitization.
-// Entry: readFile($userPath)  Cap: FILE_IO
+// Entry: runReadFile($userPath)  Cap: FILE_IO
 // Expected verdict: Confirmed (../../../../etc/passwd → "root:" in output)
 
-function readFile($userPath) {
+function runReadFile($userPath) {
     $filePath = '/var/data/' . $userPath;
     echo "__NYX_SINK_HIT__\n";
     $content = @file_get_contents($filePath);
