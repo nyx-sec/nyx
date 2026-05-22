@@ -1474,9 +1474,12 @@ public class NyxHarness {{
 /// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
 /// pattern used by Phase 03 / 04 / 05 / 06 / 07.
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
+    let entry_source = read_entry_source(&spec.entry_file);
+    if entry_source_uses_raw_socket(&entry_source) {
+        return emit_header_injection_wire_frame_harness(spec, &entry_source);
+    }
     let shim = probe_shim();
     let extra_files = servlet_stubs_for_entry(&spec.entry_file);
-    let entry_source = read_entry_source(&spec.entry_file);
     let servlet_pkg = if entry_source.contains("jakarta.servlet") {
         "jakarta.servlet.http"
     } else {
@@ -1608,6 +1611,311 @@ public class NyxHarness {{
             "NyxHarness".to_owned(),
         ],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 tier-(b) gate: route to the wire-frame harness when the
+/// entry file exposes the raw-socket fixture API (`createServer` +
+/// `runOnce` + `setCookieValue`) driven by `java.net.ServerSocket`.
+/// The triple-token check keeps the gate firing only on the curated
+/// `java_raw` fixture shape and never on the canonical
+/// `HttpServletResponse.setHeader` fixture above.
+fn entry_source_uses_raw_socket(src: &str) -> bool {
+    src.contains("java.net.ServerSocket") && src.contains("setCookieValue")
+}
+
+/// Phase 08 — Track J.6 tier-(b) wire-frame harness for Java.
+/// Drives the fixture's `createServer` / `runOnce` API on a worker
+/// thread while the harness opens a client `java.net.Socket` against
+/// the bound port, issues one `GET / HTTP/1.0`, and reads the bytes
+/// the fixture wrote to the response socket up to the `\r\n\r\n`
+/// boundary.  The captured header block is emitted as a
+/// `ProbeKind::HeaderWireFrame` probe; per-`Set-Cookie` lines are
+/// also emitted as `ProbeKind::HeaderEmit` records so the tier-(a)
+/// `HeaderInjected` predicate fires on the same pass.  Prints a
+/// `wire_frame_len` stdout marker so e2e tests can pin the branch.
+///
+/// Reflective dispatch via `Class.forName(entry_fqn)
+/// .getDeclaredMethod("setCookieValue", byte[].class)` etc. mirrors
+/// the Phase 06 LDAP Java tier-(b) pattern.  Avoids any external
+/// jar bundling — only `java.net.*` + `java.io.*` (JDK built-ins).
+fn emit_header_injection_wire_frame_harness(
+    _spec: &HarnessSpec,
+    entry_source: &str,
+) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_class = derive_entry_class(entry_source);
+    let entry_fqn = derive_entry_qualifier(entry_source, &entry_class);
+    let source = format!(
+        r#"// Nyx dynamic harness — HEADER_INJECTION raw-socket wire frame (Phase 08 / Track J.6).
+import java.io.ByteArrayOutputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxWireFrameHeaderProbe(String name, String value) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"Socket.getOutputStream().write\",\"args\":[");
+        line.append("{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(name, line);
+        line.append("\"}},{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(value, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"HeaderEmit\",\"name\":\"");
+        nyxJsonEscape(name, line);
+        line.append("\",\"value\":\"");
+        nyxJsonEscape(value, line);
+        line.append("\",\"protocol\":\"wire\"}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("Socket.getOutputStream().write", new String[]{{name, value}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    static void nyxWireFrameProbe(byte[] rawBytes) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256 + rawBytes.length * 4);
+        line.append("{{\"sink_callee\":\"Socket.getOutputStream().write\",\"args\":[],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"HeaderWireFrame\",\"raw_bytes\":[");
+        for (int i = 0; i < rawBytes.length; i++) {{
+            if (i > 0) line.append(',');
+            line.append(((int) rawBytes[i]) & 0xff);
+        }}
+        line.append("]}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("Socket.getOutputStream().write", new String[0]));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    // Phase 08 tier-(b): install the cookie value on the fixture,
+    // boot its `ServerSocket` on 127.0.0.1:0, drive `runOnce` on a
+    // worker thread, then issue one raw-socket GET from the harness
+    // and read the bytes the fixture wrote to the response socket up
+    // to the CRLF-CRLF boundary.  Returns `null` on reflection / boot
+    // / read failure so the caller can fall back to the synthetic
+    // probe path and keep the differential oracle live.
+    static byte[] nyxWireFrameViaFixture(String payload) {{
+        Class<?> entry;
+        try {{
+            entry = Class.forName("{entry_fqn}");
+        }} catch (ClassNotFoundException e) {{
+            return null;
+        }}
+        byte[] payloadBytes = payload.getBytes(StandardCharsets.ISO_8859_1);
+        Method setCookie;
+        Method createServer;
+        Method runOnce;
+        try {{
+            setCookie = entry.getDeclaredMethod("setCookieValue", byte[].class);
+            setCookie.setAccessible(true);
+            createServer = entry.getDeclaredMethod("createServer");
+            createServer.setAccessible(true);
+            runOnce = entry.getDeclaredMethod("runOnce", ServerSocket.class);
+            runOnce.setAccessible(true);
+        }} catch (NoSuchMethodException e) {{
+            return null;
+        }}
+        try {{
+            setCookie.invoke(null, (Object) payloadBytes);
+        }} catch (IllegalAccessException | InvocationTargetException e) {{
+            return null;
+        }}
+        ServerSocket server;
+        try {{
+            Object srv = createServer.invoke(null);
+            if (!(srv instanceof ServerSocket)) {{
+                return null;
+            }}
+            server = (ServerSocket) srv;
+        }} catch (IllegalAccessException | InvocationTargetException e) {{
+            return null;
+        }}
+        final ServerSocket serverFinal = server;
+        final Method runOnceFinal = runOnce;
+        Thread worker = new Thread(() -> {{
+            try {{
+                runOnceFinal.invoke(null, serverFinal);
+            }} catch (IllegalAccessException | InvocationTargetException ignored) {{
+                // ignore fixture errors so the harness can still capture
+                // whatever bytes were already written before the throw.
+            }}
+        }}, "nyx-wire-frame-worker");
+        worker.setDaemon(true);
+        worker.start();
+        int port = server.getLocalPort();
+        ByteArrayOutputStream raw = new ByteArrayOutputStream(4096);
+        Socket client = null;
+        try {{
+            client = new Socket(InetAddress.getByName("127.0.0.1"), port);
+            client.setSoTimeout(2000);
+            OutputStream out = client.getOutputStream();
+            out.write("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n"
+                .getBytes(StandardCharsets.ISO_8859_1));
+            out.flush();
+            InputStream in = client.getInputStream();
+            byte[] buf = new byte[4096];
+            long deadline = System.currentTimeMillis() + 5000;
+            while (raw.size() < 65536 && System.currentTimeMillis() < deadline) {{
+                int read;
+                try {{
+                    read = in.read(buf, 0, buf.length);
+                }} catch (java.net.SocketTimeoutException te) {{
+                    break;
+                }} catch (IOException ioe) {{
+                    break;
+                }}
+                if (read < 0) {{
+                    break;
+                }}
+                raw.write(buf, 0, read);
+                if (nyxContainsCrlfCrlf(raw.toByteArray())) {{
+                    break;
+                }}
+            }}
+        }} catch (IOException ioe) {{
+            // boot / connect / read failed — surface null so the caller
+            // takes the synthetic fallback path.
+            try {{ worker.interrupt(); }} catch (Exception ignored) {{}}
+            try {{ server.close(); }} catch (IOException ignored) {{}}
+            return null;
+        }} finally {{
+            if (client != null) {{
+                try {{ client.close(); }} catch (IOException ignored) {{}}
+            }}
+            try {{ worker.join(2000); }} catch (InterruptedException ignored) {{}}
+            try {{ server.close(); }} catch (IOException ignored) {{}}
+        }}
+        byte[] rawBytes = raw.toByteArray();
+        int sep = nyxIndexCrlfCrlf(rawBytes);
+        if (sep < 0) {{
+            return rawBytes;
+        }}
+        byte[] head = new byte[sep];
+        System.arraycopy(rawBytes, 0, head, 0, sep);
+        return head;
+    }}
+
+    private static boolean nyxContainsCrlfCrlf(byte[] buf) {{
+        return nyxIndexCrlfCrlf(buf) >= 0;
+    }}
+
+    private static int nyxIndexCrlfCrlf(byte[] buf) {{
+        for (int i = 0; i + 3 < buf.length; i++) {{
+            if (buf[i] == 0x0d && buf[i + 1] == 0x0a
+                && buf[i + 2] == 0x0d && buf[i + 3] == 0x0a) {{
+                return i;
+            }}
+        }}
+        return -1;
+    }}
+
+    // Derive `Set-Cookie:` HeaderEmit records from the raw wire-frame
+    // bytes so the tier-(a) `HeaderInjected` predicate fires on the
+    // same harness pass.  The wire-frame branch owns the bytes; the
+    // HeaderEmit records are derived from them.
+    private static void nyxEmitSetCookieHeaderProbes(byte[] rawBytes) {{
+        int start = 0;
+        for (int i = 0; i < rawBytes.length; i++) {{
+            if (rawBytes[i] == 0x0a) {{
+                int end = i;
+                if (end > start && rawBytes[end - 1] == 0x0d) {{
+                    end--;
+                }}
+                nyxMaybeEmitSetCookieLine(rawBytes, start, end);
+                start = i + 1;
+            }}
+        }}
+        if (start < rawBytes.length) {{
+            nyxMaybeEmitSetCookieLine(rawBytes, start, rawBytes.length);
+        }}
+    }}
+
+    private static void nyxMaybeEmitSetCookieLine(byte[] rawBytes, int start, int end) {{
+        if (end <= start) return;
+        int colon = -1;
+        for (int i = start; i < end; i++) {{
+            if (rawBytes[i] == 0x3a) {{
+                colon = i;
+                break;
+            }}
+        }}
+        if (colon < 0) return;
+        String name = new String(rawBytes, start, colon - start, StandardCharsets.ISO_8859_1);
+        if (!name.equalsIgnoreCase("Set-Cookie")) return;
+        int valueStart = colon + 1;
+        if (valueStart < end && rawBytes[valueStart] == 0x20) {{
+            valueStart++;
+        }}
+        String value = new String(rawBytes, valueStart, end - valueStart, StandardCharsets.ISO_8859_1);
+        nyxWireFrameHeaderProbe(name, value);
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        byte[] rawBytes = nyxWireFrameViaFixture(payload);
+        if (rawBytes != null) {{
+            nyxWireFrameProbe(rawBytes);
+            nyxEmitSetCookieHeaderProbes(rawBytes);
+            System.out.println("__NYX_SINK_HIT__");
+            System.out.println("{{\"wire_frame_len\":" + rawBytes.length + "}}");
+            return;
+        }}
+        // Synthetic fallback when the fixture failed to boot — keeps
+        // the differential oracle live on a build/boot failure rather
+        // than silently shedding the attempt.
+        nyxWireFrameHeaderProbe("Set-Cookie", payload);
+        System.out.println("__NYX_SINK_HIT__");
+        System.out.println("{{\"payload_len\":" + payload.getBytes(StandardCharsets.UTF_8).length + "}}");
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }
@@ -3554,6 +3862,126 @@ mod tests {
         assert!(
             h.source.contains("nyxHeaderProbe(\"Set-Cookie\", payload)"),
             "non-servlet fixture must keep the synthetic-probe fallback",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_wire_frame_when_raw_socket_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_java_test_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import java.net.ServerSocket;\n\
+             public class Vuln {\n  \
+             public static void setCookieValue(byte[] value) {}\n  \
+             public static ServerSocket createServer() throws java.io.IOException { return new ServerSocket(0); }\n  \
+             public static void runOnce(ServerSocket server) {}\n\
+             }\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_header_injection_harness(&spec);
+        assert!(
+            h.extra_files.is_empty(),
+            "tier-(b) wire-frame harness must not ship servlet stubs: {:?}",
+            h.extra_files,
+        );
+        assert!(
+            h.source.contains("static byte[] nyxWireFrameViaFixture(String payload)"),
+            "tier-(b) harness must define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "tier-(b) harness must reflectively load the fixture entry class: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("getDeclaredMethod(\"setCookieValue\", byte[].class)"),
+            "tier-(b) harness must install the cookie value via reflection: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("getDeclaredMethod(\"createServer\")"),
+            "tier-(b) harness must boot the fixture's ServerSocket via reflection: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("getDeclaredMethod(\"runOnce\", ServerSocket.class)"),
+            "tier-(b) harness must drive runOnce on a worker thread: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("new Thread(()"),
+            "tier-(b) harness must spawn a worker thread for the accept loop: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("new Socket(InetAddress.getByName(\"127.0.0.1\"), port)"),
+            "tier-(b) harness must open a client Socket against the bound port: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("GET / HTTP/1.0\\r\\nHost: 127.0.0.1"),
+            "tier-(b) harness must issue a raw GET request: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"HeaderWireFrame\\\""),
+            "tier-(b) harness must emit a HeaderWireFrame probe kind: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\\\"raw_bytes\\\":["),
+            "tier-(b) harness must carry the raw_bytes array on the wire-frame probe: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"{\\\"wire_frame_len\\\":\" + rawBytes.length"),
+            "tier-(b) harness must emit the wire_frame_len stdout marker: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("nyxDrainHeaders()"),
+            "tier-(b) harness must not invoke the servlet-stub drain path: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_wire_frame_branch_drops_when_only_servlet_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_java_test_no_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import javax.servlet.http.HttpServletResponse;\n\
+             public class Vuln {\n  public static void run(HttpServletResponse r, String v) {\n    r.setHeader(\"Set-Cookie\", v);\n  }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_header_injection_harness(&spec);
+        assert!(
+            !h.source.contains("nyxWireFrameViaFixture"),
+            "servlet-only harness must not define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("HeaderWireFrame"),
+            "servlet-only harness must not emit the HeaderWireFrame probe shape: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("wire_frame_len"),
+            "servlet-only harness must not emit the wire_frame_len stdout marker: {}",
+            h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

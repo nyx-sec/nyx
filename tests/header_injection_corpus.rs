@@ -1101,4 +1101,99 @@ mod e2e_phase_08 {
                 .collect::<Vec<_>>(),
         );
     }
+
+    // Phase 08 tier-(b): Java raw-socket wire-frame fixture.
+    // `tests/dynamic_fixtures/header_injection/java_raw/Vuln.java`
+    // binds a `java.net.ServerSocket` via `createServer` whose
+    // `runOnce` handler writes raw bytes via
+    // `Socket.getOutputStream().write(byte[])`, bypassing Tomcat /
+    // Jetty / Undertow's CRLF strip on `HttpServletResponse.setHeader`.
+    // The harness boots the server on a loopback port via reflective
+    // dispatch (`Class.forName("Vuln").getDeclaredMethod(...)`), opens
+    // a client `java.net.Socket`, reads the response-header block off
+    // the socket, and emits a `ProbeKind::HeaderWireFrame` record.
+    // Asserts the test exercises the wire-frame branch (not the
+    // synthetic fallback) by pinning `wire_frame_len` in the captured
+    // stdout — that literal only appears in the tier-(b) write path.
+    fn build_java_raw_spec(entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/header_injection/java_raw/Vuln.java");
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("Vuln.java");
+        std::fs::copy(&fixture_src, &dst).expect("copy java_raw fixture into tempdir");
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase08-e2e-header-injection|java_raw|Vuln.java");
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+        // Mirror the Java workdir wipe used by build_spec — javac caches
+        // compiled bytecode under the shared workdir at
+        // `/tmp/nyx-harness/<spec_hash>`, so a previous run with a
+        // different harness source can serve stale class files.
+        let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec_hash);
+        let _ = std::fs::remove_dir_all(&workdir);
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Java,
+            toolchain_id: default_toolchain_id(Lang::Java).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::HEADER_INJECTION,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
+        };
+        (spec, tmp)
+    }
+
+    #[test]
+    fn java_raw_socket_vuln_confirms_via_wire_frame_probe() {
+        if !command_available("javac") {
+            eprintln!("SKIP java_raw: missing javac");
+            return;
+        }
+        if !command_available("java") {
+            eprintln!("SKIP java_raw: missing java");
+            return;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_java_raw_spec("run");
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        let outcome = match run_spec(&spec, &opts) {
+            Ok(outcome) => outcome,
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP java_raw: harness build failed after {attempts} attempts: {stderr}",
+                );
+                return;
+            }
+            Err(e) => panic!("run_spec(java_raw) errored: {e:?}"),
+        };
+        assert_confirmed(Lang::Java, &outcome);
+        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
+            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
+        });
+        assert!(
+            any_wire_frame_marker,
+            "java_raw fixture must exercise the tier-(b) wire-frame harness branch; \
+             expected `wire_frame_len` substring in at least one attempt's stdout, got attempts={:?}",
+            outcome
+                .attempts
+                .iter()
+                .map(|a| String::from_utf8_lossy(&a.outcome.stdout).into_owned())
+                .collect::<Vec<_>>(),
+        );
+    }
 }
