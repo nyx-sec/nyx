@@ -1059,6 +1059,24 @@ fn find_summary_by_path<'a>(
         .map(|(_, s)| s)
 }
 
+/// Companion to [`find_summary_by_path`] that returns the SSA
+/// summary registered at the same `FuncKey`.  Used by
+/// [`attach_framework_binding`] to feed
+/// [`crate::dynamic::framework::detect_binding_with_context`] so
+/// adapters can consult `typed_call_receivers` for FP narrowing.
+fn find_ssa_summary_by_path<'a>(
+    summaries: &'a GlobalSummaries,
+    lang: Lang,
+    name: &str,
+    diag_path: &str,
+) -> Option<&'a crate::summary::ssa_summary::SsaFuncSummary> {
+    summaries
+        .lookup_same_lang(lang, name)
+        .into_iter()
+        .find(|(_, s)| paths_match(&s.file_path, diag_path))
+        .and_then(|(k, _)| summaries.get_ssa(k))
+}
+
 /// Loose path comparison that tolerates absolute / project-relative drift.
 ///
 /// `FuncSummary::file_path` may be stored relative to the project root while
@@ -1221,9 +1239,16 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
     let resolved = summaries
         .and_then(|gs| find_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file));
     let summary_ref = resolved.unwrap_or(&synthetic);
-    if let Some(binding) =
-        crate::dynamic::framework::detect_binding(summary_ref, tree.root_node(), &bytes, spec.lang)
-    {
+    let ssa_ref = summaries.and_then(|gs| {
+        find_ssa_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file)
+    });
+    if let Some(binding) = crate::dynamic::framework::detect_binding_with_context(
+        summary_ref,
+        ssa_ref,
+        tree.root_node(),
+        &bytes,
+        spec.lang,
+    ) {
         stamp_framework_binding(spec, binding);
     }
 }

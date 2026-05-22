@@ -20,6 +20,7 @@ pub mod registry;
 
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 
@@ -168,6 +169,30 @@ pub trait FrameworkAdapter: Sync {
         ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding>;
+
+    /// Detection variant that also receives the function's
+    /// [`SsaFuncSummary`] when one is available on the caller side.
+    ///
+    /// The SSA summary carries per-call-site receiver-type info via
+    /// [`SsaFuncSummary::typed_call_receivers`], which adapters can
+    /// use to discriminate permissive callee-name matches (e.g.
+    /// distinguishing `gin.Engine::Get` from `cache.Get`).  The
+    /// default implementation ignores the SSA input and delegates to
+    /// [`Self::detect`], so existing adapters keep working unchanged.
+    /// Adapters that want receiver-type-aware FP narrowing override
+    /// this method and consult the SSA summary directly.
+    ///
+    /// Callers without an SSA summary in hand (most test paths,
+    /// pre-pass-1 callers) pass `None` here.
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        _ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        self.detect(summary, ast, file_bytes)
+    }
 }
 
 /// Walk every adapter registered for `lang` in registration order
@@ -179,6 +204,24 @@ pub fn detect_binding(
     file_bytes: &[u8],
     lang: Lang,
 ) -> Option<FrameworkBinding> {
+    detect_binding_with_context(summary, None, ast, file_bytes, lang)
+}
+
+/// SSA-aware sibling of [`detect_binding`].
+///
+/// Threads an `Option<&SsaFuncSummary>` through to every adapter's
+/// [`FrameworkAdapter::detect_with_context`] so adapters can
+/// consume receiver-type facts when available.  Callers without an
+/// SSA summary in hand pass `None`, at which point this function is
+/// behaviourally identical to [`detect_binding`] (adapters' default
+/// `detect_with_context` delegates to `detect`).
+pub fn detect_binding_with_context(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+    lang: Lang,
+) -> Option<FrameworkBinding> {
     for adapter in registry::adapters_for(lang) {
         debug_assert_eq!(
             adapter.lang(),
@@ -186,7 +229,7 @@ pub fn detect_binding(
             "adapter '{}' registered under wrong lang",
             adapter.name()
         );
-        if let Some(binding) = adapter.detect(summary, ast, file_bytes) {
+        if let Some(binding) = adapter.detect_with_context(summary, ssa_summary, ast, file_bytes) {
             return Some(binding);
         }
     }
@@ -325,6 +368,140 @@ mod tests {
         let src: &[u8] = b"def handler():\n    pass\n";
         let tree = parse_python(src);
         let binding = detect_binding(&summary, tree.root_node(), src, Lang::Python);
+        assert!(binding.is_none());
+    }
+
+    /// Adapter that overrides the SSA-aware variant only.  Returns a
+    /// binding whose `adapter` field encodes whether the SSA summary
+    /// was visible (`"with-ssa"` vs `"no-ssa"`).
+    struct SsaProbingAdapter;
+    impl FrameworkAdapter for SsaProbingAdapter {
+        fn name(&self) -> &'static str {
+            "ssa-probe"
+        }
+        fn lang(&self) -> Lang {
+            Lang::Python
+        }
+        fn detect(
+            &self,
+            _summary: &FuncSummary,
+            _ast: tree_sitter::Node<'_>,
+            _file_bytes: &[u8],
+        ) -> Option<FrameworkBinding> {
+            None
+        }
+        fn detect_with_context(
+            &self,
+            _summary: &FuncSummary,
+            ssa: Option<&SsaFuncSummary>,
+            _ast: tree_sitter::Node<'_>,
+            _file_bytes: &[u8],
+        ) -> Option<FrameworkBinding> {
+            let tag = if ssa.is_some() { "with-ssa" } else { "no-ssa" };
+            Some(FrameworkBinding {
+                adapter: tag.into(),
+                kind: EntryKind::HttpRoute,
+                route: None,
+                request_params: vec![],
+                response_writer: None,
+                middleware: vec![],
+            })
+        }
+    }
+
+    /// Adapter that only overrides `detect` and relies on the
+    /// trait's default `detect_with_context` to delegate.  Used to
+    /// pin the additive-by-default contract: callers passing an SSA
+    /// summary still reach the legacy `detect` path on adapters that
+    /// have not been upgraded.
+    struct LegacyDetectOnlyAdapter;
+    impl FrameworkAdapter for LegacyDetectOnlyAdapter {
+        fn name(&self) -> &'static str {
+            "legacy"
+        }
+        fn lang(&self) -> Lang {
+            Lang::Python
+        }
+        fn detect(
+            &self,
+            summary: &FuncSummary,
+            _ast: tree_sitter::Node<'_>,
+            _file_bytes: &[u8],
+        ) -> Option<FrameworkBinding> {
+            Some(FrameworkBinding {
+                adapter: format!("legacy:{}", summary.name),
+                kind: EntryKind::HttpRoute,
+                route: None,
+                request_params: vec![],
+                response_writer: None,
+                middleware: vec![],
+            })
+        }
+    }
+
+    #[test]
+    fn detect_with_context_default_impl_delegates_to_detect() {
+        // A legacy adapter that only implements `detect` must still
+        // produce a binding when reached via the SSA-aware entry
+        // point, with or without an SSA summary in hand.
+        let summary = synth_summary("handler", "python");
+        let src: &[u8] = b"def handler():\n    pass\n";
+        let tree = parse_python(src);
+        let adapter = LegacyDetectOnlyAdapter;
+
+        let no_ssa = adapter.detect_with_context(&summary, None, tree.root_node(), src);
+        assert_eq!(no_ssa.as_ref().map(|b| b.adapter.as_str()), Some("legacy:handler"));
+
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "Repository".to_string()));
+        let with_ssa = adapter.detect_with_context(&summary, Some(&ssa), tree.root_node(), src);
+        // Default impl ignores the SSA summary, so both calls produce
+        // the same binding identity.
+        assert_eq!(with_ssa, no_ssa);
+    }
+
+    #[test]
+    fn detect_with_context_lets_adapter_observe_ssa_summary() {
+        // An adapter that overrides `detect_with_context` sees the
+        // SSA summary handed in by the caller.
+        let summary = synth_summary("handler", "python");
+        let src: &[u8] = b"def handler():\n    pass\n";
+        let tree = parse_python(src);
+        let adapter = SsaProbingAdapter;
+
+        let no_ssa = adapter.detect_with_context(&summary, None, tree.root_node(), src);
+        assert_eq!(no_ssa.as_ref().map(|b| b.adapter.as_str()), Some("no-ssa"));
+
+        let ssa = SsaFuncSummary::default();
+        let with_ssa = adapter.detect_with_context(&summary, Some(&ssa), tree.root_node(), src);
+        assert_eq!(
+            with_ssa.as_ref().map(|b| b.adapter.as_str()),
+            Some("with-ssa")
+        );
+    }
+
+    #[test]
+    fn detect_binding_function_uses_legacy_detect_path() {
+        // The bare `detect_binding` entry point must keep working
+        // for every existing test in the tree — empty registry
+        // means no binding regardless of how it dispatches.
+        let summary = synth_summary("handler", "python");
+        let src: &[u8] = b"def handler():\n    pass\n";
+        let tree = parse_python(src);
+        let binding = detect_binding(&summary, tree.root_node(), src, Lang::Python);
+        assert!(binding.is_none());
+    }
+
+    #[test]
+    fn detect_binding_with_context_function_accepts_none() {
+        // Passing `None` for the SSA summary is behaviourally
+        // identical to calling `detect_binding`.
+        let summary = synth_summary("handler", "python");
+        let src: &[u8] = b"def handler():\n    pass\n";
+        let tree = parse_python(src);
+        let binding =
+            detect_binding_with_context(&summary, None, tree.root_node(), src, Lang::Python);
         assert!(binding.is_none());
     }
 
