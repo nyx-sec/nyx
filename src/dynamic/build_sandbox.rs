@@ -139,18 +139,46 @@ fn compute_rust_lockfile_hash(workdir: &Path) -> String {
             h.update(&content);
         }
     }
-    // Entry file is compiled into the binary, so it must be part of the cache key.
-    // Without this, two fixtures with the same Cargo.toml but different entry.rs
-    // would collide and the second would receive the wrong cached binary.
-    if let Ok(content) = std::fs::read(workdir.join("src").join("entry.rs")) {
-        h.update(b"src/entry.rs");
-        h.update(&content);
+    // Every Rust file under src/ feeds the binary so any change must
+    // invalidate the cache.  Walk src/ recursively and hash every .rs
+    // file path + content in deterministic (sorted) order so the cache
+    // key is stable across runs.  Without this, an emitter change to
+    // main.rs / nyx_harness_stubs.rs / etc. with no Cargo.toml /
+    // entry.rs change would silently re-use a stale binary built from
+    // the old emitter source.
+    let src_dir = workdir.join("src");
+    let mut rs_files: Vec<PathBuf> = Vec::new();
+    collect_rs_files(&src_dir, &src_dir, &mut rs_files);
+    rs_files.sort();
+    for rel in &rs_files {
+        if let Ok(content) = std::fs::read(src_dir.join(rel)) {
+            h.update(rel.to_string_lossy().as_bytes());
+            h.update(b"\0");
+            h.update(&content);
+        }
     }
     let out = h.finalize();
     format!(
         "{:016x}",
         u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
     )
+}
+
+fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(root, &path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs")
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_path_buf());
+        }
+    }
 }
 
 /// Result of a successful build.

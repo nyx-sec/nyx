@@ -923,9 +923,9 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
 
 "##
         );
-        via_fixture_invoke = "    let location = match nyx_redirect_via_fixture(payload.clone()) {\n        Some(loc) if !loc.is_empty() => loc,\n        _ => payload.clone(),\n    };\n    nyx_redirect_probe(&location, request_host);\n".to_owned();
+        via_fixture_invoke = "    let location = match nyx_redirect_via_fixture(payload.clone()) {\n        Some(loc) if !loc.is_empty() => loc,\n        _ => payload.clone(),\n    };\n    nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);\n".to_owned();
     } else {
-        via_fixture_invoke = "    let location = payload.clone();\n    nyx_redirect_probe(&location, request_host);\n".to_owned();
+        via_fixture_invoke = "    let location = payload.clone();\n    nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);\n".to_owned();
     }
 
     let cargo_toml = generate_cargo_toml(Cap::OPEN_REDIRECT);
@@ -980,6 +980,52 @@ fn nyx_redirect_probe(location: &str, request_host: &str) {{
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
         let _ = f.write_all(line.as_bytes());
     }}
+}}
+
+// Phase 09 OOB closure: when the captured Location is a loopback URL,
+// follow it with a zero-dep `TcpStream` GET so the OOB listener
+// observes the per-finding nonce.  Skips non-loopback hosts and
+// non-HTTP schemes (no real network egress).  Best-effort: errors do
+// not propagate; the listener may still record the TCP connect before
+// the read fails.
+fn nyx_follow_location(location: &str) {{
+    if location.is_empty() {{ return; }}
+    let loopback = location.starts_with("http://127.0.0.1")
+        || location.starts_with("http://localhost")
+        || location.starts_with("http://host-gateway");
+    if !loopback {{ return; }}
+    let rest = match location.strip_prefix("http://") {{
+        Some(r) => r,
+        None => return,
+    }};
+    let (authority, path) = match rest.find('/') {{
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    }};
+    let (host, port): (&str, u16) = match authority.rfind(':') {{
+        Some(i) => {{
+            let p = authority[i + 1..].parse::<u16>().unwrap_or(80);
+            (&authority[..i], p)
+        }}
+        None => (authority, 80),
+    }};
+    use std::io::{{Read, Write}};
+    use std::net::{{TcpStream, ToSocketAddrs}};
+    use std::time::Duration;
+    let addr = match (host, port).to_socket_addrs() {{
+        Ok(mut it) => match it.next() {{ Some(a) => a, None => return }},
+        Err(_) => return,
+    }};
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {{
+        Ok(s) => s,
+        Err(_) => return,
+    }};
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let req = format!("GET {{path}} HTTP/1.0\r\nHost: {{host}}\r\nConnection: close\r\n\r\n", path = path, host = host);
+    let _ = stream.write_all(req.as_bytes());
+    let mut buf = [0u8; 1];
+    let _ = stream.read(&mut buf);
 }}
 
 {via_fixture_decl}fn main() {{
@@ -2249,6 +2295,60 @@ mod tests {
                 .iter()
                 .all(|(p, _)| p != "src/entry.rs" && p != "src/nyx_harness_stubs.rs"),
             "tier-(b) open_redirect must not stage rewritten fixture or stubs",
+        );
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "/nonexistent/missing.rs".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            harness.source.contains("fn nyx_follow_location(location: &str)"),
+            "OPEN_REDIRECT harness must declare the nyx_follow_location helper",
+        );
+        for prefix in [
+            "http://127.0.0.1",
+            "http://localhost",
+            "http://host-gateway",
+        ] {
+            assert!(
+                harness
+                    .source
+                    .contains(&format!("starts_with(\"{prefix}\")")),
+                "follower must gate on loopback {prefix} prefix",
+            );
+        }
+        assert!(
+            harness.source.contains("TcpStream::connect_timeout"),
+            "follower must drive a zero-dep TcpStream::connect_timeout against the captured Location",
+        );
+        assert!(
+            harness.source.contains("GET {path} HTTP/1.0"),
+            "follower must write a HTTP/1.0 GET request line",
+        );
+        // Tier-(b) callsite must call the follower on the synthetic payload.
+        assert!(
+            harness
+                .source
+                .contains("nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"),
+            "tier-(b) callsite must invoke nyx_follow_location after the synthetic probe",
+        );
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_follows_captured_location_in_tier_a() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "tests/dynamic_fixtures/open_redirect/rust/vuln.rs".into();
+        let harness = emit_open_redirect_harness(&spec);
+        // Tier-(a) callsite: captured loc → probe + follow.
+        assert!(
+            harness.source.contains("nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"),
+            "tier-(a) callsite must invoke nyx_follow_location on the captured Location",
         );
     }
 

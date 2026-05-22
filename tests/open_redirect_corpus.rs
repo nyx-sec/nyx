@@ -743,4 +743,20 @@ mod e2e_phase_09 {
         };
         assert_oob_recorded(&outcome, "open-redirect-php-oob-nonce");
     }
+
+    #[test]
+    fn go_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Go, "vuln.go", "Run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-go-oob-nonce");
+    }
+
+    #[test]
+    fn rust_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-rust-oob-nonce");
+    }
 }

@@ -972,7 +972,7 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
 "##
         ));
         via_fixture_invoke.push_str(
-            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t}\n",
+            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t\tnyxFollowLocation(loc)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t\tnyxFollowLocation(payload)\n\t}\n",
         );
     } else if imports_net_http {
         // Plain stdlib `http.Redirect(w, r, value, status)` fixture.
@@ -999,10 +999,15 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
 "##
         ));
         via_fixture_invoke.push_str(
-            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t}\n",
+            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t\tnyxFollowLocation(loc)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t\tnyxFollowLocation(payload)\n\t}\n",
         );
     } else {
-        via_fixture_invoke.push_str("\tnyxRedirectProbe(payload, requestHost)\n");
+        // Tier-(b) fallback gate doesn't import net/http, but the OOB
+        // follower itself needs it.  Pull the stdlib net/http surface
+        // unconditionally so `nyxFollowLocation` compiles.
+        extra_imports.push_str("\t\"net/http\"\n");
+        via_fixture_invoke
+            .push_str("\tnyxRedirectProbe(payload, requestHost)\n\tnyxFollowLocation(payload)\n");
     }
 
     let source = format!(
@@ -1032,6 +1037,30 @@ func nyxRedirectProbe(location, requestHost string) {{
 		"kind":           map[string]interface{{}}{{"kind": "Redirect", "location": location, "request_host": requestHost}},
 		"witness":        __nyx_witness("gin.Context.Redirect", []string{{location}}),
 	}})
+}}
+
+// Phase 09 OOB closure: when the captured Location is a loopback URL,
+// follow it with a real GET so the OOB listener observes the per-finding
+// nonce.  Skips non-loopback hosts and non-HTTP schemes (no real network
+// egress).  Best-effort: errors do not propagate; the listener may still
+// record the TCP connect before the read fails.
+func nyxFollowLocation(location string) {{
+	if location == "" {{
+		return
+	}}
+	if !(strings.HasPrefix(location, "http://127.0.0.1") ||
+		strings.HasPrefix(location, "http://localhost") ||
+		strings.HasPrefix(location, "http://host-gateway")) {{
+		return
+	}}
+	client := &http.Client{{Timeout: 2 * time.Second}}
+	resp, err := client.Get(location)
+	if err != nil {{
+		return
+	}}
+	defer resp.Body.Close()
+	buf := make([]byte, 1)
+	_, _ = resp.Body.Read(buf)
 }}
 
 {via_fixture_decl}func main() {{
@@ -2222,6 +2251,70 @@ mod tests {
                 .iter()
                 .all(|(p, _)| !p.starts_with("internal/vulnentry/")),
             "tier-(b) open_redirect must not stage any rewritten fixture or stub",
+        );
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "/nonexistent/missing.go".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            harness.source.contains("func nyxFollowLocation(location string)"),
+            "OPEN_REDIRECT harness must declare the nyxFollowLocation helper",
+        );
+        assert!(
+            harness.source.contains("strings.HasPrefix(location, \"http://127.0.0.1\")"),
+            "follower must gate on loopback 127.0.0.1 host prefix",
+        );
+        assert!(
+            harness.source.contains("strings.HasPrefix(location, \"http://localhost\")"),
+            "follower must gate on loopback localhost host prefix",
+        );
+        assert!(
+            harness.source.contains("strings.HasPrefix(location, \"http://host-gateway\")"),
+            "follower must gate on loopback host-gateway prefix",
+        );
+        assert!(
+            harness.source.contains("client.Get(location)"),
+            "follower must drive a real http.Client.Get against the captured Location",
+        );
+        // Tier-(b) callsite must call the follower on the synthetic payload.
+        assert!(
+            harness
+                .source
+                .contains("nyxRedirectProbe(payload, requestHost)\n\tnyxFollowLocation(payload)"),
+            "tier-(b) callsite must invoke nyxFollowLocation after the synthetic probe",
+        );
+        // Even tier-(b) must pull in net/http so the follower compiles.
+        assert!(
+            harness.source.contains("\"net/http\""),
+            "OPEN_REDIRECT harness must always import net/http so nyxFollowLocation compiles",
+        );
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_follows_captured_location_in_tier_a() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "tests/dynamic_fixtures/open_redirect/go/vuln.go".into();
+        let harness = emit_open_redirect_harness(&spec);
+        // Tier-(a) gin: when fixture call succeeds, follow the captured loc.
+        assert!(
+            harness
+                .source
+                .contains("nyxRedirectProbe(loc, requestHost)\n\t\tnyxFollowLocation(loc)"),
+            "tier-(a) callsite must invoke nyxFollowLocation on the captured Location",
+        );
+        // Tier-(a) fixture-call-failed branch falls back to payload-as-loc.
+        assert!(
+            harness
+                .source
+                .contains("nyxRedirectProbe(payload, requestHost)\n\t\tnyxFollowLocation(payload)"),
+            "tier-(a) fixture-failure branch must still follow the synthetic payload",
         );
     }
 
