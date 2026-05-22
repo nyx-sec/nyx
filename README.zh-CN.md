@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/nyx-wordmark.svg" alt="nyx" height="110"/>
+  <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
 **本地优先的安全扫描器，自带浏览器 UI。在本地扫描代码仓库并在浏览器中分诊处理，无需云端、无需账号。**
 
@@ -7,7 +7,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/elicpeter/nyx/ci.yml?branch=master)](https://github.com/elicpeter/nyx/actions)
-[![Docs](https://img.shields.io/badge/docs-elicpeter.github.io%2Fnyx-blue)](https://elicpeter.github.io/nyx/)
+[![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
 [English](./README.md) · 简体中文
 </div>
@@ -46,7 +46,7 @@ nyx serve          # 在浏览器中打开 http://localhost:9700
 | **配置** | 实时配置编辑器；无需重启即可重载 |
 
 
-`nyx serve` 参数：`--port <N>`（默认 `9700`）、`--host <addr>`（仅回环：`127.0.0.1`、`localhost`、`::1`）、`--no-browser`。持久化设置见 `nyx.conf` 的 `[server]` 段，分页面 UI 介绍与安全模型详见 [Browser UI 指南](https://elicpeter.github.io/nyx/serve.html)。
+`nyx serve` 参数：`--port <N>`（默认 `9700`）、`--host <addr>`（仅回环：`127.0.0.1`、`localhost`、`::1`）、`--no-browser`。持久化设置见 `nyx.conf` 的 `[server]` 段，分页面 UI 介绍与安全模型详见 [Browser UI 指南](https://nyxscan.dev/docs/serve.html)。
 
 ---
 
@@ -71,7 +71,7 @@ nyx scan --mode ast
 nyx scan --engine-profile deep
 ```
 
-正向跨文件污点在所有画像下都会运行。Symex 与按需后向遍历是可选项，可通过 `--engine-profile deep` 一次性开启，或单独开启（`--symex`、`--backwards-analysis`）。完整开关矩阵见 [CLI 参考](https://elicpeter.github.io/nyx/cli.html#engine-depth-profile)。
+正向跨文件污点在所有画像下都会运行。Symex 与按需后向遍历是可选项，可通过 `--engine-profile deep` 一次性开启，或单独开启（`--symex`、`--backwards-analysis`）。完整开关矩阵见 [CLI 参考](https://nyxscan.dev/docs/cli.html#engine-depth-profile)。
 
 ### GitHub Action
 
@@ -125,7 +125,7 @@ cd nyx && cargo build --release
 | **Beta** | Java、PHP、Ruby、Rust、Go | 100% | 适合，需轻度 FP 分诊 |
 | **预览** | C、C++ | 合成语料 100% | 不适合。已跟踪 STL 容器流、builder 链、内联类成员函数；尚未覆盖深度指针别名与函数指针。建议与 clang-tidy 或 Clang Static Analyzer 搭配使用 |
 
-所有真实 CVE 用例均触发，语料在记录基线下无未关闭的 FP（P=R=F1=1.000）。各维度详情与已知盲区见 [语言成熟度页面](https://elicpeter.github.io/nyx/language-maturity.html)。
+所有真实 CVE 用例均触发，语料在记录基线下无未关闭的 FP（P=R=F1=1.000）。各维度详情与已知盲区见 [语言成熟度页面](https://nyxscan.dev/docs/language-maturity.html)。
 
 ### 通过真实 CVE 验证
 
@@ -182,7 +182,7 @@ cd nyx && cargo build --release
 3. **Pass 2**：在跨文件上下文与有限上下文敏感（文件内被调用 k=1 内联，SCC 不动点上限 64 次迭代，超过内联体大小阈值的被调用走摘要回退）下重新分析每个文件。正向数据流工作表通过 SSA 格传播污点，保证收敛。调用图 SCC 迭代到不动点（在上限内），使相互递归函数能拿到准确摘要。
 4. **排序、去重、输出**：按 严重度 × 证据强度 × 源类可利用性 打分，并输出到控制台、JSON 或 SARIF。
 
-检测器家族：污点（跨文件 source→sink，含 SQLi、XSS、命令/代码执行、反序列化、SSRF、路径穿越、格式串、加密、LDAP 注入、XPath 注入、HTTP 头/响应拆分、开放重定向、服务端模板注入、XXE、原型污染、数据外泄、以及 auth 折入的能力位类规则）、CFG 结构（鉴权缺失、未守卫汇、资源泄漏）、状态模型（use-after-close、double-close、must-leak、unauthed-access）、AST 模式（tree-sitter 结构匹配）。完整检测器文档：[Detectors](https://elicpeter.github.io/nyx/detectors.html)。
+检测器家族：污点（跨文件 source→sink，含 SQLi、XSS、命令/代码执行、反序列化、SSRF、路径穿越、格式串、加密、LDAP 注入、XPath 注入、HTTP 头/响应拆分、开放重定向、服务端模板注入、XXE、原型污染、数据外泄、以及 auth 折入的能力位类规则）、CFG 结构（鉴权缺失、未守卫汇、资源泄漏）、状态模型（use-after-close、double-close、must-leak、unauthed-access）、AST 模式（tree-sitter 结构匹配）。完整检测器文档：[Detectors](https://nyxscan.dev/docs/detectors.html)。
 
 ---
 
@@ -207,7 +207,7 @@ kind     = "sanitizer"
 cap      = "html_escape"
 ```
 
-或交互式添加规则：`nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`。能力位（caps）：`env_var`、`html_escape`、`shell_escape`、`url_encode`、`json_parse`、`file_io`、`fmt_string`、`sql_query`、`deserialize`、`ssrf`、`data_exfil`、`code_exec`、`crypto`、`unauthorized_id`、`ldap_injection`、`xpath_injection`、`header_injection`、`open_redirect`、`ssti`、`xxe`、`prototype_pollution`、`all`。完整 schema：[Configuration](https://elicpeter.github.io/nyx/configuration.html)。运行 `nyx rules list` 可在终端浏览注册表。
+或交互式添加规则：`nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`。能力位（caps）：`env_var`、`html_escape`、`shell_escape`、`url_encode`、`json_parse`、`file_io`、`fmt_string`、`sql_query`、`deserialize`、`ssrf`、`data_exfil`、`code_exec`、`crypto`、`unauthorized_id`、`ldap_injection`、`xpath_injection`、`header_injection`、`open_redirect`、`ssti`、`xxe`、`prototype_pollution`、`all`。完整 schema：[Configuration](https://nyxscan.dev/docs/configuration.html)。运行 `nyx rules list` 可在终端浏览注册表。
 
 ---
 
@@ -228,12 +228,12 @@ cap      = "html_escape"
 
 ## 文档
 
-完整文档站点：**[elicpeter.github.io/nyx](https://elicpeter.github.io/nyx/)**。
+完整文档站点：**[nyxscan.dev/docs](https://nyxscan.dev/docs/)**。
 
-- [Quick Start](https://elicpeter.github.io/nyx/quickstart.html) · [CLI Reference](https://elicpeter.github.io/nyx/cli.html) · [Installation](https://elicpeter.github.io/nyx/installation.html)
-- [`nyx serve`](https://elicpeter.github.io/nyx/serve.html) · [Output Formats](https://elicpeter.github.io/nyx/output.html) · [Configuration](https://elicpeter.github.io/nyx/configuration.html)
-- [How it works](https://elicpeter.github.io/nyx/how-it-works.html) · [Detectors](https://elicpeter.github.io/nyx/detectors.html)（[Taint](https://elicpeter.github.io/nyx/detectors/taint.html)、[CFG](https://elicpeter.github.io/nyx/detectors/cfg.html)、[State](https://elicpeter.github.io/nyx/detectors/state.html)、[AST Patterns](https://elicpeter.github.io/nyx/detectors/patterns.html)）
-- [Rule Reference](https://elicpeter.github.io/nyx/rules.html) · [Language Maturity](https://elicpeter.github.io/nyx/language-maturity.html) · [Advanced Analysis](https://elicpeter.github.io/nyx/advanced-analysis.html) · [Auth Analysis](https://elicpeter.github.io/nyx/auth.html)
+- [Quick Start](https://nyxscan.dev/docs/quickstart.html) · [CLI Reference](https://nyxscan.dev/docs/cli.html) · [Installation](https://nyxscan.dev/docs/installation.html)
+- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html)
+- [How it works](https://nyxscan.dev/docs/how-it-works.html) · [Detectors](https://nyxscan.dev/docs/detectors.html)（[Taint](https://nyxscan.dev/docs/detectors/taint.html)、[CFG](https://nyxscan.dev/docs/detectors/cfg.html)、[State](https://nyxscan.dev/docs/detectors/state.html)、[AST Patterns](https://nyxscan.dev/docs/detectors/patterns.html)）
+- [Rule Reference](https://nyxscan.dev/docs/rules.html) · [Language Maturity](https://nyxscan.dev/docs/language-maturity.html) · [Advanced Analysis](https://nyxscan.dev/docs/advanced-analysis.html) · [Auth Analysis](https://nyxscan.dev/docs/auth.html)
 
 ---
 
