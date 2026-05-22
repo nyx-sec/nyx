@@ -19,7 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::ruby_routes::{
-    bind_path_params, first_string_arg, source_imports_sinatra, verb_from_ident,
+    bind_path_params, collect_ruby_middleware, first_string_arg, source_imports_sinatra,
+    verb_from_ident,
 };
 
 pub struct RubySinatraAdapter;
@@ -148,6 +149,7 @@ impl FrameworkAdapter for RubySinatraAdapter {
             .find(|r| path_stem(&r.path) == target)
             .or_else(|| routes.first())?;
         let request_params = bind_path_params(&route.block_params, &route.path);
+        let middleware = collect_ruby_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
@@ -157,7 +159,7 @@ impl FrameworkAdapter for RubySinatraAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -291,6 +293,23 @@ mod tests {
             RubySinatraAdapter
                 .detect(&summary("run"), tree.root_node(), src)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn populates_middleware_from_use_rack_attack() {
+        let src: &[u8] = b"require 'sinatra'\nuse Rack::Attack\nget '/run' do |payload|\n  payload\nend\n";
+        let tree = parse(src);
+        let binding = RubySinatraAdapter
+            .detect(&summary("run"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name == "Rack::Attack"),
+            "expected Rack::Attack marker, got {:?}",
+            binding.middleware
         );
     }
 

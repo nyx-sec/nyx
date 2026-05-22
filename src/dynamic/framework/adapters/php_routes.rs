@@ -10,7 +10,10 @@
 //! helpers here keeps the three adapters terse and lets every
 //! framework share the same placeholder-binding semantics.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::{
+    HttpMethod, MiddlewareShape, ParamBinding, ParamSource, auth_markers,
+};
+use crate::symbol::Lang;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Laravel import
@@ -661,6 +664,117 @@ fn codeigniter_callable_matches(
     }
 }
 
+/// Walk every PHP attach-site in `root` and collect arguments whose
+/// names match a known PHP middleware marker (see
+/// [`crate::dynamic::framework::auth_markers::is_protective`]).
+///
+/// Three attach idioms are recognised:
+///
+///   - **Chained `->middleware(...)` member calls** (Laravel):
+///     `Route::get('/x', '...')->middleware('auth:sanctum')`,
+///     `$this->middleware(['auth', 'verified'])` declared in a
+///     controller constructor.
+///   - **Static `Route::middleware(...)` scoped calls** (Laravel):
+///     `Route::middleware(['auth'])->group(...)`.
+///   - **Symfony PHP attributes** on `class_declaration` /
+///     `method_declaration` / `function_definition`: `#[IsGranted]`,
+///     `#[Security]`.  Attribute leaf names are wrapped with the
+///     `#[...]` brackets so they classify against the PHP marker
+///     table (`#[IsGranted]`, `#[Security]`).
+///
+/// Argument rendering (for `->middleware(...)` / `Route::middleware(...)`):
+///   - string literal → string content (e.g. `'auth:sanctum'`)
+///   - array literal  → each element string content, in order
+///   - non-string args dropped silently
+///
+/// De-duplicates within a single file; preserves declaration order.
+/// Names the registry does not recognise are dropped silently —
+/// callers can re-walk with a wider predicate if broader inclusion is
+/// needed.  CodeIgniter `['filter' => 'auth-jwt']` array-key idiom is
+/// out of scope for v1; revisit when a real-world CodeIgniter fixture
+/// surfaces the gap.
+pub fn collect_php_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareShape> {
+    let mut raw: Vec<String> = Vec::new();
+    walk_php_middleware(root, bytes, &mut raw);
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    for name in raw {
+        if auth_markers::is_protective(Lang::Php, &name)
+            && !out.iter().any(|m| m.name == name)
+        {
+            out.push(MiddlewareShape { name });
+        }
+    }
+    out
+}
+
+fn walk_php_middleware(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "member_call_expression" | "scoped_call_expression" => {
+            collect_middleware_call(node, bytes, out);
+        }
+        "class_declaration" | "method_declaration" | "function_definition" => {
+            iter_php_attributes(node, bytes, |_ann, leaf| {
+                out.push(format!("#[{leaf}]"));
+            });
+        }
+        _ => {}
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_php_middleware(child, bytes, out);
+    }
+}
+
+fn collect_middleware_call(call: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let Some(name_node) = call.child_by_field_name("name") else {
+        return;
+    };
+    let Ok(name) = name_node.utf8_text(bytes) else {
+        return;
+    };
+    if name != "middleware" {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut ac = args.walk();
+    for arg in args.named_children(&mut ac) {
+        if arg.kind() != "argument" {
+            continue;
+        }
+        if arg.child_by_field_name("name").is_some() {
+            continue;
+        }
+        let Some(value) = arg.named_child(0) else {
+            continue;
+        };
+        push_middleware_value(value, bytes, out);
+    }
+}
+
+fn push_middleware_value(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "string" | "encapsed_string" => {
+            if let Some(s) = string_content(node, bytes) {
+                out.push(s);
+            }
+        }
+        "array_creation_expression" => {
+            let mut ac = node.walk();
+            for elem in node.named_children(&mut ac) {
+                if elem.kind() != "array_element_initializer" {
+                    continue;
+                }
+                if let Some(value) = elem.named_child(0) {
+                    push_middleware_value(value, bytes, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,5 +905,82 @@ mod tests {
             find_codeigniter_route(tree.root_node(), src, "show", Some("UserController")).unwrap();
         assert_eq!(hit.0, HttpMethod::GET);
         assert_eq!(hit.1, "users/(:num)");
+    }
+
+    #[test]
+    fn collects_chained_middleware_string_arg() {
+        let src: &[u8] =
+            b"<?php\nRoute::get('/users', 'UserController@index')->middleware('auth');\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "auth"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_chained_middleware_with_sanctum_guard() {
+        let src: &[u8] = b"<?php\nRoute::get('/x', 'C@x')->middleware('auth:sanctum');\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "auth:sanctum"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_array_middleware_arg() {
+        let src: &[u8] =
+            b"<?php\nRoute::get('/x', 'C@x')->middleware(['auth', 'verified']);\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "auth"), "got {mw:?}");
+        assert!(mw.iter().any(|m| m.name == "verified"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_static_route_middleware_chain() {
+        let src: &[u8] = b"<?php\nRoute::middleware(['auth'])->group(function () {});\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "auth"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_controller_constructor_middleware() {
+        let src: &[u8] = b"<?php\nclass C {\n  public function __construct() {\n    $this->middleware('auth');\n  }\n}\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "auth"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_symfony_is_granted_attribute() {
+        let src: &[u8] = b"<?php\nclass C {\n  #[IsGranted('ROLE_USER')]\n  public function show($id) { return $id; }\n}\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "#[IsGranted]"), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_symfony_security_attribute_at_class_level() {
+        let src: &[u8] = b"<?php\n#[Security(\"is_granted('ROLE_ADMIN')\")]\nclass C {\n  public function show() { return 1; }\n}\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "#[Security]"), "got {mw:?}");
+    }
+
+    #[test]
+    fn drops_unknown_php_middleware_names() {
+        let src: &[u8] =
+            b"<?php\nRoute::get('/x', 'C@x')->middleware('custom-thing-not-in-table');\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        assert!(mw.is_empty(), "got {mw:?}");
+    }
+
+    #[test]
+    fn dedupes_repeated_php_middleware() {
+        let src: &[u8] = b"<?php\nRoute::get('/a', 'C@a')->middleware('auth');\nRoute::get('/b', 'C@b')->middleware('auth');\n";
+        let tree = parse(src);
+        let mw = collect_php_middleware(tree.root_node(), src);
+        let auth_count = mw.iter().filter(|m| m.name == "auth").count();
+        assert_eq!(auth_count, 1, "got {mw:?}");
     }
 }

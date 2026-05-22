@@ -17,8 +17,9 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::ruby_routes::{
-    bind_path_params, class_extends, class_name, find_class_with_method, first_string_arg,
-    first_symbol_arg, kwarg_string, method_formal_names, source_imports_rails, verb_from_ident,
+    bind_path_params, class_extends, class_name, collect_ruby_middleware, find_class_with_method,
+    first_string_arg, first_symbol_arg, kwarg_string, method_formal_names, source_imports_rails,
+    verb_from_ident,
 };
 
 pub struct RubyRailsAdapter;
@@ -283,6 +284,7 @@ impl FrameworkAdapter for RubyRailsAdapter {
 
         let formals = method_formal_names(method, file_bytes);
         let request_params = bind_path_params(&formals, &path);
+        let middleware = collect_ruby_middleware(ast, file_bytes);
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
@@ -293,7 +295,7 @@ impl FrameworkAdapter for RubyRailsAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -461,6 +463,34 @@ mod tests {
             RubyRailsAdapter
                 .detect(&summary("index"), tree.root_node(), src)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn populates_middleware_from_before_action() {
+        let src: &[u8] = b"class UsersController < ApplicationController\n  before_action :authenticate_user!\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "authenticate_user!");
+    }
+
+    #[test]
+    fn populates_middleware_from_protect_from_forgery() {
+        let src: &[u8] = b"class A < ApplicationController\n  protect_from_forgery with: :exception\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name == "protect_from_forgery"),
+            "expected protect_from_forgery marker, got {:?}",
+            binding.middleware
         );
     }
 

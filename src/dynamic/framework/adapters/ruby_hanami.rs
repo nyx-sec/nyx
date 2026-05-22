@@ -16,8 +16,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::ruby_routes::{
-    bind_path_params, class_extends, class_includes, class_name, find_class_with_method,
-    method_formal_names, source_imports_hanami,
+    bind_path_params, class_extends, class_includes, class_name, collect_ruby_middleware,
+    find_class_with_method, method_formal_names, source_imports_hanami,
 };
 
 pub struct RubyHanamiAdapter;
@@ -172,6 +172,7 @@ impl FrameworkAdapter for RubyHanamiAdapter {
         let (http_method, path) = route_for_class(file_bytes, cls_name, &default);
         let formals = method_formal_names(method, file_bytes);
         let request_params = bind_path_params(&formals, &path);
+        let middleware = collect_ruby_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
@@ -181,7 +182,7 @@ impl FrameworkAdapter for RubyHanamiAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -354,6 +355,23 @@ mod tests {
         let route = binding.route.unwrap();
         assert_eq!(route.method, HttpMethod::PUT);
         assert_eq!(route.path, "/new");
+    }
+
+    #[test]
+    fn populates_middleware_from_before_action() {
+        let src: &[u8] = b"require 'hanami/action'\nclass Show < Hanami::Action\n  before_action :authenticate_user!\n  def call(req)\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyHanamiAdapter
+            .detect(&summary("call"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name == "authenticate_user!"),
+            "expected authenticate_user! marker, got {:?}",
+            binding.middleware
+        );
     }
 
     #[test]

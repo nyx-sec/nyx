@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::php_routes::{
-    bind_php_path_params, find_php_function, first_php_string_arg, iter_php_attributes,
-    methods_named_arg, php_formal_names, source_imports_symfony,
+    bind_php_path_params, collect_php_middleware, find_php_function, first_php_string_arg,
+    iter_php_attributes, methods_named_arg, php_formal_names, source_imports_symfony,
 };
 
 pub struct PhpSymfonyAdapter;
@@ -84,6 +84,7 @@ impl FrameworkAdapter for PhpSymfonyAdapter {
         let path = join_route_path(&class_prefix, &method_path);
         let formals = php_formal_names(func_node, file_bytes);
         let request_params = bind_php_path_params(&formals, &path);
+        let middleware = collect_php_middleware(ast, file_bytes);
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
@@ -94,7 +95,7 @@ impl FrameworkAdapter for PhpSymfonyAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -159,6 +160,23 @@ mod tests {
             .expect("binding");
         let route = binding.route.unwrap();
         assert_eq!(route.path, "/x");
+    }
+
+    #[test]
+    fn populates_middleware_from_is_granted_attribute() {
+        let src: &[u8] = b"<?php\nuse Symfony\\Component\\Routing\\Annotation\\Route;\nclass C {\n  #[Route('/x')]\n  #[IsGranted('ROLE_USER')]\n  public function show() { return 1; }\n}\n";
+        let tree = parse(src);
+        let binding = PhpSymfonyAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name == "#[IsGranted]"),
+            "got {:?}",
+            binding.middleware
+        );
     }
 
     #[test]

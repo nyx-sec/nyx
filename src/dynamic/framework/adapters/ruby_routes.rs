@@ -8,7 +8,8 @@
 //! helpers here keeps the three adapters terse and lets every
 //! framework share the same placeholder-binding semantics.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource, auth_markers};
+use crate::symbol::Lang;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Rails import
@@ -448,6 +449,136 @@ pub fn verb_from_ident(ident: &str) -> Option<HttpMethod> {
     }
 }
 
+/// Ruby attach-verb identifiers that introduce a middleware /
+/// before-filter / output sanitiser declaration.  Rails controllers
+/// use `before_action :authenticate_user!`; Sinatra modular apps use
+/// `use Rack::Auth::Basic`; both Rails and Hanami v1 also accept
+/// `before :method_name`.  Some verbs (`protect_from_forgery`) act as
+/// self-naming markers with no positional argument.
+const RUBY_ATTACH_VERBS: &[&str] = &[
+    "before_action",
+    "prepend_before_action",
+    "skip_before_action",
+    "around_action",
+    "append_before_action",
+    "before",
+    "use",
+    "protect_from_forgery",
+];
+
+/// Walk every Ruby `call` node whose identifier matches a known
+/// middleware-attach verb and collect arguments whose names match a
+/// known Ruby middleware marker (see
+/// [`crate::dynamic::framework::auth_markers::is_protective`]).
+///
+/// Per-framework attach-verb idioms:
+///   - Rails: `before_action :authenticate_user!`,
+///     `protect_from_forgery with: :exception`,
+///     `prepend_before_action :require_login`
+///   - Sinatra: `use Rack::Auth::Basic`, `before do ... end`
+///   - Hanami v1: `before :authenticate_user!`
+///
+/// Argument rendering:
+///   - simple symbol (`:authenticate_user!`) → `"authenticate_user!"`
+///   - bare identifier (`use AuthMiddleware`) → `"AuthMiddleware"`
+///   - constant (`use Authenticate`) → `"Authenticate"`
+///   - scoped constant (`use Rack::Auth::Basic`) → `"Rack::Auth::Basic"`
+///
+/// In addition the verb token itself is emitted as a candidate so
+/// self-naming forms like `protect_from_forgery` (often invoked with
+/// only kwargs) classify against the Ruby auth-markers table.
+///
+/// Recursion stops at `method` / `singleton_method` boundaries so a
+/// stray `before_action :x` inside an unrelated method body is not
+/// picked up.  De-duplicates within a single file; preserves
+/// declaration order.  Names the registry does not recognise are
+/// dropped silently — callers can re-walk with a wider predicate if
+/// broader inclusion is needed.
+pub fn collect_ruby_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareShape> {
+    let mut raw: Vec<String> = Vec::new();
+    walk_attach_calls(root, bytes, &mut raw);
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    for name in raw {
+        if auth_markers::is_protective(Lang::Ruby, &name)
+            && !out.iter().any(|m| m.name == name)
+        {
+            out.push(MiddlewareShape { name });
+        }
+    }
+    out
+}
+
+fn walk_attach_calls(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "call" {
+        try_collect_attach_call(node, bytes, out);
+    }
+    // Middleware declarations live at class body / top level / routes
+    // block scope, not inside per-action method bodies.  Skip descent
+    // into method nodes to avoid binding stray `before_action :x` calls
+    // hidden inside a helper method.
+    if matches!(node.kind(), "method" | "singleton_method") {
+        return;
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_attach_calls(child, bytes, out);
+    }
+}
+
+fn try_collect_attach_call(call: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let mut cur = call.walk();
+    let mut verb: Option<&str> = None;
+    let mut args: Option<Node<'_>> = None;
+    for child in call.named_children(&mut cur) {
+        match child.kind() {
+            "identifier" => {
+                if verb.is_none()
+                    && let Ok(t) = child.utf8_text(bytes)
+                {
+                    verb = Some(t);
+                }
+            }
+            "argument_list" => args = Some(child),
+            _ => {}
+        }
+    }
+    let Some(verb) = verb else { return };
+    if !RUBY_ATTACH_VERBS.contains(&verb) {
+        return;
+    }
+    // Emit the verb itself so self-naming forms classify (e.g.
+    // `protect_from_forgery with: :exception` → marker
+    // `protect_from_forgery`).
+    out.push(verb.to_owned());
+    let Some(args) = args else { return };
+    let mut ac = args.walk();
+    for arg in args.named_children(&mut ac) {
+        push_middleware_arg(arg, bytes, out);
+    }
+}
+
+fn push_middleware_arg(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "simple_symbol" => {
+            if let Ok(t) = node.utf8_text(bytes) {
+                let trimmed = t.trim_start_matches(':').trim().to_owned();
+                if !trimmed.is_empty() {
+                    out.push(trimmed);
+                }
+            }
+        }
+        "identifier" | "constant" | "scope_resolution" => {
+            if let Ok(t) = node.utf8_text(bytes) {
+                let name = t.trim().to_owned();
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,5 +707,85 @@ mod tests {
             .unwrap();
         let args = call.child_by_field_name("arguments").unwrap();
         assert_eq!(first_string_arg(args, src), Some("/run".into()));
+    }
+
+    #[test]
+    fn collects_rails_before_action_symbol() {
+        let src: &[u8] = b"class UsersController < ApplicationController\n  before_action :authenticate_user!\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1, "expected exactly one marker, got {mw:?}");
+        assert_eq!(mw[0].name, "authenticate_user!");
+    }
+
+    #[test]
+    fn collects_rails_protect_from_forgery_self_naming() {
+        // `protect_from_forgery with: :exception` carries no positional
+        // arg — the verb itself must be recognised as the marker.
+        let src: &[u8] = b"class A < ApplicationController\n  protect_from_forgery with: :exception\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert!(
+            mw.iter().any(|m| m.name == "protect_from_forgery"),
+            "got {mw:?}"
+        );
+    }
+
+    #[test]
+    fn collects_sinatra_use_rack_auth_basic() {
+        let src: &[u8] = b"require 'sinatra/base'\nclass App < Sinatra::Base\n  use Rack::Auth::Basic\n  get '/x' do\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert!(
+            mw.iter().any(|m| m.name == "Rack::Auth::Basic"),
+            "got {mw:?}"
+        );
+    }
+
+    #[test]
+    fn collects_sinatra_use_rack_attack_rate_limit() {
+        let src: &[u8] =
+            b"require 'sinatra'\nuse Rack::Attack\nget '/x' do\n  'ok'\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert!(mw.iter().any(|m| m.name == "Rack::Attack"), "got {mw:?}");
+    }
+
+    #[test]
+    fn dedupes_repeated_markers() {
+        let src: &[u8] = b"class A < ApplicationController\n  before_action :authenticate_user!\n  before_action :authenticate_user!\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "authenticate_user!");
+    }
+
+    #[test]
+    fn drops_unknown_marker_names() {
+        let src: &[u8] = b"class A < ApplicationController\n  before_action :do_something_custom\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        // `do_something_custom` is not in the Ruby auth-markers table.
+        // The verb itself (`before_action`) is also not registered as a
+        // standalone marker — it only flags the call to walk for args.
+        assert!(mw.is_empty(), "got {mw:?}");
+    }
+
+    #[test]
+    fn skips_middleware_call_hidden_inside_method_body() {
+        let src: &[u8] = b"class A < ApplicationController\n  def helper\n    before_action :authenticate_user!\n  end\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert!(mw.is_empty(), "got {mw:?}");
+    }
+
+    #[test]
+    fn collects_multiple_distinct_markers() {
+        let src: &[u8] = b"class A < ApplicationController\n  before_action :authenticate_user!\n  protect_from_forgery with: :exception\nend\n";
+        let tree = parse(src);
+        let mw = collect_ruby_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 2);
+        assert_eq!(mw[0].name, "authenticate_user!");
+        assert_eq!(mw[1].name, "protect_from_forgery");
     }
 }

@@ -21,8 +21,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::php_routes::{
-    bind_php_path_params, find_laravel_static_route, find_php_function, php_class_name,
-    php_formal_names, source_imports_laravel,
+    bind_php_path_params, collect_php_middleware, find_laravel_static_route, find_php_function,
+    php_class_name, php_formal_names, source_imports_laravel,
 };
 
 pub struct PhpLaravelAdapter;
@@ -54,6 +54,7 @@ impl FrameworkAdapter for PhpLaravelAdapter {
 
         let formals = php_formal_names(func_node, file_bytes);
         let request_params = bind_php_path_params(&formals, &path);
+        let middleware = collect_php_middleware(ast, file_bytes);
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
@@ -61,7 +62,7 @@ impl FrameworkAdapter for PhpLaravelAdapter {
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -136,6 +137,37 @@ mod tests {
             .detect(&summary("destroy"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::DELETE);
+    }
+
+    #[test]
+    fn populates_middleware_from_chained_call() {
+        let src: &[u8] = b"<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/users/{id}', 'UserController@show')->middleware('auth');\nclass UserController {\n  public function show($id) { return $id; }\n}\n";
+        let tree = parse(src);
+        let binding = PhpLaravelAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding.middleware.iter().any(|m| m.name == "auth"),
+            "got {:?}",
+            binding.middleware
+        );
+    }
+
+    #[test]
+    fn populates_middleware_from_constructor_call() {
+        let src: &[u8] = b"<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/users', 'UserController@index');\nclass UserController {\n  public function __construct() { $this->middleware('auth:sanctum'); }\n  public function index() { return 1; }\n}\n";
+        let tree = parse(src);
+        let binding = PhpLaravelAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name == "auth:sanctum"),
+            "got {:?}",
+            binding.middleware
+        );
     }
 
     #[test]

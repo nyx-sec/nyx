@@ -20,8 +20,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::php_routes::{
-    bind_php_path_params, find_codeigniter_route, find_php_function, php_class_name,
-    php_formal_names, source_imports_codeigniter,
+    bind_php_path_params, collect_php_middleware, find_codeigniter_route, find_php_function,
+    php_class_name, php_formal_names, source_imports_codeigniter,
 };
 
 pub struct PhpCodeIgniterAdapter;
@@ -53,6 +53,7 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
 
         let formals = php_formal_names(func_node, file_bytes);
         let request_params = bind_php_path_params(&formals, &path);
+        let middleware = collect_php_middleware(ast, file_bytes);
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
@@ -60,7 +61,7 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
