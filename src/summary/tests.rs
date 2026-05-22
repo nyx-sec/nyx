@@ -3272,27 +3272,17 @@ fn insert_body_param_count_mismatch_rekeys() {
     assert_eq!(head.param_count, 2);
 
     // Invariant 2: the conflicting body is preserved under a synthetic
-    // disambig, not dropped.  Reconstruct the expected synth disambig
-    // using the same formula as `reconcile_body_key`.
-    let mut found_conflicting = false;
+    // disambig at its own arity, not dropped.
     let base = (4u32).wrapping_mul(0x9E37_79B9);
-    for probe in 0u32..1024 {
-        let synth = base.wrapping_add(probe);
-        let synth_key = FuncKey {
-            disambig: Some(0x8000_0000 | (synth & 0x7FFF_FFFF)),
-            ..key.clone()
-        };
-        if let Some(body) = gs.get_body(&synth_key)
-            && body.param_count == 4
-        {
-            found_conflicting = true;
-            break;
-        }
-    }
-    assert!(
-        found_conflicting,
-        "the 4-param body must be preserved under a synthetic disambig key"
-    );
+    let synth_key = FuncKey {
+        arity: Some(4),
+        disambig: Some(0x8000_0000 | (base & 0x7FFF_FFFF)),
+        ..key.clone()
+    };
+    let conflicting = gs
+        .get_body(&synth_key)
+        .expect("the 4-param body must be preserved under a synthetic disambig key");
+    assert_eq!(conflicting.param_count, 4);
 }
 
 #[test]

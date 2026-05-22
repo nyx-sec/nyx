@@ -1940,18 +1940,10 @@ pub(crate) fn extract_intra_file_ssa_summaries(
             Err(_) => continue,
         };
 
-        // Param count = number of formal params (from CFG), falling back to
-        // counting all SsaOp::Param ops when no local summary is available.
-        let param_count = if !formal_params.is_empty() {
-            formal_params.len()
-        } else {
-            func_ssa
-                .blocks
-                .iter()
-                .flat_map(|b| b.phis.iter().chain(b.body.iter()))
-                .filter(|i| matches!(i.op, crate::ssa::ir::SsaOp::Param { .. }))
-                .count()
-        };
+        // `formal_params` is authoritative even when it is empty. SSA lowering
+        // also emits Param ops for external captures; counting those as arity
+        // makes zero-arg functions look like synthetic overloads.
+        let param_count = formal_params.len();
 
         // Zero-param helpers are normally elided, a fixture with no
         // parameters cannot carry per-parameter taint transforms.  But

@@ -36,6 +36,12 @@ impl Commands {
             && (fmt == OutputFormat::Json || fmt == OutputFormat::Sarif)
     }
 
+    /// Whether the user explicitly asked this invocation to suppress
+    /// human-readable output.
+    pub fn quiet_requested(&self) -> bool {
+        matches!(self, Commands::Scan { quiet: true, .. })
+    }
+
     /// Whether this is a long-running server command (skip timing output).
     pub fn is_serve(&self) -> bool {
         matches!(self, Commands::Serve { .. })

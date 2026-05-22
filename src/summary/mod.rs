@@ -788,6 +788,7 @@ impl GlobalSummaries {
                 .wrapping_mul(0x9E37_79B9)
                 .wrapping_add(probe);
             key.disambig = Some(SYNTHETIC_DISAMBIG_BIT | (synth & !SYNTHETIC_DISAMBIG_BIT));
+            key.arity = Some(body.param_count);
             probe = probe.wrapping_add(1);
             if probe >= 1024 {
                 tracing::warn!(

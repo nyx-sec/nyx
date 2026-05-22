@@ -71,9 +71,10 @@ nyx scan --unsafe-sandbox    # alias for --backend process
 ```
 
 Docker is the preferred backend. It mounts only the entry file's directory and
-blocks outbound network by default. If out-of-band detection is enabled with
-`oob_listener`, Docker uses bridge networking with a host-gateway route so the
-harness can reach the listener.
+blocks outbound network by default. Nyx binds a loopback OOB listener at scan
+start for callback-style payloads (SSRF, blind SSTI). When the bind succeeds,
+Docker switches to bridge networking with a host-gateway route so the harness
+can reach the listener; OOB payloads are skipped if the bind fails.
 
 The process backend is useful for development and machines without Docker. It
 does not provide the same isolation.
@@ -141,7 +142,7 @@ The literal `nyx_version` and `corpus_version` values shift between releases; se
 | `schema_version` | Event schema version. Readers reject mismatches. |
 | `nyx_version` | Version of the Nyx binary that wrote the event. |
 | `corpus_version` | Payload corpus version used for the verdict. |
-| `kind` | `verdict`, `rank_delta`, or `feedback`. |
+| `kind` | `verdict` or `rank_delta`. Feedback rows use an `event: "verify_feedback"` field instead and may pre-date the schema envelope. |
 | `ts` | Write time in RFC 3339 format. |
 | `finding_id` | Stable finding identifier. |
 | `spec_hash` | Hash of the harness spec. |
