@@ -149,8 +149,9 @@ mod e2e_data_exfil {
                 Lang::Ruby => "ruby",
                 Lang::JavaScript => "js",
                 Lang::Java => "java",
+                Lang::Php => "php",
                 _ => unreachable!(
-                    "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java"
+                    "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php"
                 ),
             })
             .join(fixture);
@@ -195,8 +196,9 @@ mod e2e_data_exfil {
             Lang::Ruby => "ruby",
             Lang::JavaScript => "node",
             Lang::Java => "javac",
+            Lang::Php => "php",
             _ => unreachable!(
-                "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java"
+                "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java + Php"
             ),
         };
         if !command_available(required) {
@@ -364,6 +366,42 @@ mod e2e_data_exfil {
         assert!(
             outcome.triggered_by.is_none(),
             "Java DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// PHP pair, same shape as Python + Ruby + JavaScript + Java.  The
+    /// vuln fixture calls `@file_get_contents("http://" . $host . "/...")`;
+    /// the harness installs a stream-wrapper override for the `http`
+    /// scheme that parses the URL host via `parse_url(PHP_URL_HOST)`,
+    /// emits a `ProbeKind::OutboundNetwork`, and returns an empty
+    /// stream.  `OutboundHostNotIn` fires for the attacker payload.
+    /// The benign fixture's `in_array($host, ALLOWLIST)` guard
+    /// short-circuits before `file_get_contents` for non-loopback
+    /// payloads, so no probe fires.  Skips when `php` is not on PATH.
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "PHP DATA_EXFIL vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn php_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "benign.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "PHP DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

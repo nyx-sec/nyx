@@ -346,8 +346,14 @@ function __nyx_witness(string $sinkCallee, array $args): array {
     for ($i = 0; $i < strlen($pb); $i++) $bytes[] = ord($pb[$i]);
     $repr = [];
     foreach ($args as $a) $repr[] = is_string($a) ? $a : (string) $a;
+    // Cast env to object so json_encode emits `{}` (a JSON map) when
+    // `$_ENV` is empty.  PHP's default `variables_order` (`GPCS`)
+    // leaves `$_ENV` empty, and an empty PHP array json_encodes to
+    // `[]` (a JSON sequence) — which fails to deserialise on the host
+    // side as `BTreeMap<String, String>` and would drop every probe
+    // record on hosts without `E` in `variables_order`.
     return [
-        'env_snapshot'  => $env,
+        'env_snapshot'  => (object) $env,
         'cwd'           => @getcwd() ?: '',
         'payload_bytes' => $bytes,
         'callee'        => $sinkCallee,
@@ -530,6 +536,28 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // routes through the harness helper without further annotation.
     if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
         return Ok(emit_json_parse_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID harness.  Requires the
+    // fixture, invokes the named entry with the payload as the
+    // requested owner_id, and emits a
+    // `ProbeKind::IdorAccess { caller_id, owner_id }` whenever the
+    // fixture materialises a non-null record.  The
+    // `IdorBoundaryCrossed` predicate fires when `caller_id != owner_id`.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL harness.  Registers a stream
+    // wrapper against the `http` + `https` schemes so any outbound
+    // `file_get_contents` / `fopen` / `stream_*` call from the fixture
+    // is intercepted before the wire I/O: the URL's host is parsed via
+    // `parse_url(PHP_URL_HOST)`, a
+    // [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe is
+    // emitted, and the wrapper returns an empty stream so the fixture's
+    // caller never blocks on the network.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
     }
 
     // Phase 19 (Track M.1): ClassMethod short-circuit.
@@ -2322,6 +2350,248 @@ _nyx_run();
     }
 }
 
+/// Phase 11 (Track J.9) — UNAUTHORIZED_ID IDOR harness for PHP.
+///
+/// Requires the fixture, calls `entry_name($payload)`, and emits a
+/// [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe iff the
+/// fixture materialises a non-null record.  The fixture lives at
+/// `__DIR__ . '/' . $entry_basename` (the harness runner copies it
+/// next to `harness.php` when `entry_subpath` is `None`).
+///
+/// `caller_id` is hard-pinned to `"alice"`; the
+/// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+/// predicate fires when the payload (treated as `owner_id`) does not
+/// match.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+{shim}
+
+const _NYX_CALLER_ID = 'alice';
+
+function _nyx_idor_probe(string $caller, string $owner): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => '__nyx_idor_lookup',
+        'args'           => [
+            ['kind' => 'String', 'value' => $caller],
+            ['kind' => 'String', 'value' => $owner],
+        ],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => [
+            'kind'      => 'IdorAccess',
+            'caller_id' => $caller,
+            'owner_id'  => $owner,
+        ],
+        'witness'        => __nyx_witness('__nyx_idor_lookup', [$caller, $owner]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+function _nyx_idor_call_entry(string $payload, string $entry_name) {{
+    if (!function_exists($entry_name)) {{
+        return null;
+    }}
+    try {{
+        return $entry_name($payload);
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+}}
+
+// Require the fixture at script-top so its top-level state (e.g.
+// `$STORE = […]`) lands in the global scope — `require_once` inside a
+// function would scope those variables to the calling function, and
+// the fixture's `function run() {{ global $STORE; … }}` would then see
+// an undefined symbol.
+$_NYX_ENTRY_PATH = __DIR__ . DIRECTORY_SEPARATOR . "{entry_basename}";
+if (is_file($_NYX_ENTRY_PATH)) {{
+    require_once $_NYX_ENTRY_PATH;
+}}
+
+function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    $record = _nyx_idor_call_entry($payload, "{entry_name}");
+    if ($record !== null) {{
+        _nyx_idor_probe(_NYX_CALLER_ID, $payload);
+    }}
+    echo "__NYX_SINK_HIT__\n";
+}}
+
+_nyx_run();
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) — DATA_EXFIL outbound-network harness for PHP.
+///
+/// PHP has no monkey-patch hook for `file_get_contents` / `fopen`, but
+/// the language exposes a per-scheme stream-wrapper registry the
+/// harness can override.  Before requiring the fixture the harness
+/// unregisters the default `http` + `https` wrappers and installs
+/// `NyxHttpStreamWrapper` in their place; the wrapper's `stream_open`
+/// parses the URL host via `parse_url(PHP_URL_HOST)`, emits a
+/// [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe, and
+/// returns an immediately-EOF stream so the fixture's caller does not
+/// block on a real wire request.  The
+/// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+/// predicate fires when the captured host falls outside the loopback
+/// allowlist, so the `attacker.test` vuln payload materialises a probe
+/// the predicate matches while the `127.0.0.1` benign control stays
+/// clear.
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+{shim}
+
+function _nyx_outbound_probe(string $host): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => '__nyx_mock_http',
+        'args'           => [['kind' => 'String', 'value' => $host]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'OutboundNetwork', 'host' => $host],
+        'witness'        => __nyx_witness('__nyx_mock_http', [$host]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+class NyxHttpStreamWrapper {{
+    public $context;
+    private int $pos = 0;
+
+    public function stream_open($path, $mode, $options, &$opened_path) {{
+        $host = @parse_url($path, PHP_URL_HOST);
+        if (is_string($host) && $host !== '') {{
+            _nyx_outbound_probe($host);
+        }}
+        $this->pos = 0;
+        return true;
+    }}
+
+    public function stream_read($count) {{
+        return '';
+    }}
+
+    public function stream_write($data) {{
+        return strlen((string) $data);
+    }}
+
+    public function stream_eof() {{
+        return true;
+    }}
+
+    public function stream_close() {{}}
+
+    public function stream_stat() {{
+        return false;
+    }}
+
+    public function url_stat($path, $flags) {{
+        // file_get_contents / fopen on http URLs go through stream_open;
+        // the probe is captured there.  Returning false here keeps
+        // is_file() / file_exists() honest without double-emitting.
+        return false;
+    }}
+
+    public function stream_set_option($option, $arg1, $arg2) {{
+        return false;
+    }}
+
+    public function stream_seek($offset, $whence = SEEK_SET) {{
+        return false;
+    }}
+
+    public function stream_tell() {{
+        return $this->pos;
+    }}
+}}
+
+function _nyx_install_http_wrapper(): void {{
+    foreach (['http', 'https'] as $scheme) {{
+        if (in_array($scheme, stream_get_wrappers(), true)) {{
+            @stream_wrapper_unregister($scheme);
+        }}
+        @stream_wrapper_register($scheme, 'NyxHttpStreamWrapper');
+    }}
+}}
+
+function _nyx_data_exfil_call_entry(string $payload, string $entry_name): bool {{
+    if (!function_exists($entry_name)) {{
+        return false;
+    }}
+    try {{
+        $entry_name($payload);
+    }} catch (\Throwable $_) {{
+        // Fixture-side throw after a partial outbound call still leaves
+        // the probe emitted; nothing else to do here.
+    }}
+    return true;
+}}
+
+// Install the stream-wrapper override at script-top BEFORE requiring
+// the fixture so any top-level `file_get_contents(http://…)` inside
+// the fixture's body is also captured (the v1 fixtures only call into
+// the wrapper from `run()` but a future fixture's top-level state may
+// still want the egress trapped).
+_nyx_install_http_wrapper();
+
+// Require the fixture at script-top so its top-level state lands in
+// the global scope.  `require_once` inside a function scopes any
+// top-level variables to that function — the v1 fixture body is pure
+// `function run(…) {{ … }}` so the distinction does not bite today,
+// but keeping the require at script-top matches the
+// UNAUTHORIZED_ID emitter and stays correct under fixture growth.
+$_NYX_ENTRY_PATH = __DIR__ . DIRECTORY_SEPARATOR . "{entry_basename}";
+if (is_file($_NYX_ENTRY_PATH)) {{
+    require_once $_NYX_ENTRY_PATH;
+}}
+
+function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    _nyx_data_exfil_call_entry($payload, "{entry_name}");
+    echo "__NYX_SINK_HIT__\n";
+}}
+
+_nyx_run();
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
 /// Phase 19 (Track M.1) — class-method harness for PHP.
 ///
 /// Includes the entry file, instantiates the class via its default
@@ -3624,6 +3894,236 @@ mod tests {
         assert!(
             h.source.contains("\"benign.php\""),
             "PHP JSON_PARSE harness must use the entry-file basename, not a hard-coded literal: {}",
+            h.source
+        );
+    }
+
+    // ── Phase 11 (Track J.9) PHP UNAUTHORIZED_ID emitter tests ───────────────
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/php/vuln.php",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_idor_probe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind'      => 'IdorAccess'"),
+            "UNAUTHORIZED_ID harness must record probes with kind IdorAccess so IdorBoundaryCrossed fires: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("const _NYX_CALLER_ID = 'alice'"),
+            "PHP UNAUTHORIZED_ID harness must pin caller_id to 'alice': {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("_nyx_idor_probe(_NYX_CALLER_ID, $payload)"),
+            "PHP UNAUTHORIZED_ID harness must call probe with caller_id + payload-as-owner: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_skips_probe_when_record_is_null() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/php/benign.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("if ($record !== null) {"),
+            "PHP UNAUTHORIZED_ID harness must gate probe emission on a non-null record so the benign fixture's null rejection clears the predicate: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_routes_through_fixture_require() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_idor_call_entry("),
+            "PHP UNAUTHORIZED_ID harness must define the entry-call helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_once $_NYX_ENTRY_PATH"),
+            "PHP UNAUTHORIZED_ID harness must require_once the fixture at script-top so the fixture's top-level state lands in the global scope: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "PHP UNAUTHORIZED_ID harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert_eq!(h.filename, "harness.php");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_derives_basename_from_entry_file() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "/abs/path/benign.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "PHP UNAUTHORIZED_ID harness must use the entry-file basename, not a hard-coded literal: {}",
+            h.source
+        );
+    }
+
+    // ── Phase 11 (Track J.9) PHP DATA_EXFIL emitter tests ────────────────────
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/php/vuln.php",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_outbound_probe"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'OutboundNetwork'"),
+            "DATA_EXFIL harness must record probes with kind OutboundNetwork so OutboundHostNotIn fires: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_installs_stream_wrapper() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("class NyxHttpStreamWrapper"),
+            "PHP DATA_EXFIL harness must define the http stream-wrapper class: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("stream_wrapper_register($scheme, 'NyxHttpStreamWrapper')"),
+            "PHP DATA_EXFIL harness must register the wrapper for http/https: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("foreach (['http', 'https'] as $scheme)"),
+            "PHP DATA_EXFIL harness must override both http and https schemes: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_parses_host_via_parse_url() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("@parse_url($path, PHP_URL_HOST)"),
+            "PHP DATA_EXFIL harness must extract host via parse_url: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_nyx_outbound_probe($host)"),
+            "PHP DATA_EXFIL harness must emit the outbound probe with the parsed host: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_routes_through_fixture_require() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/php/vuln.php",
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_data_exfil_call_entry("),
+            "PHP DATA_EXFIL harness must define the entry-call helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_once $_NYX_ENTRY_PATH"),
+            "PHP DATA_EXFIL harness must require_once the fixture at script-top: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "PHP DATA_EXFIL harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert_eq!(h.filename, "harness.php");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_installs_wrapper_before_fixture_require() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/php/vuln.php",
+            "run",
+        ));
+        // Both the wrapper install and the fixture require happen at
+        // script-top.  The wrapper must come first so any top-level
+        // egress from the fixture body is also captured.  Find the
+        // last (script-top) occurrence of `_nyx_install_http_wrapper()`
+        // to skip the matches inside the helper function definitions.
+        let install_idx = h
+            .source
+            .rfind("_nyx_install_http_wrapper();")
+            .expect("script-top install call present");
+        let require_idx = h
+            .source
+            .find("require_once $_NYX_ENTRY_PATH")
+            .expect("script-top require_once present");
+        assert!(
+            install_idx < require_idx,
+            "PHP DATA_EXFIL harness must install the stream wrapper before requiring the fixture so top-level egress is also captured",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_derives_basename_from_entry_file() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec("/abs/path/benign.php", "run"));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "PHP DATA_EXFIL harness must use the entry-file basename, not a hard-coded literal: {}",
             h.source
         );
     }

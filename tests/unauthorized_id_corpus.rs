@@ -140,8 +140,9 @@ mod e2e_unauthorized_id {
                 Lang::Ruby => "ruby",
                 Lang::JavaScript => "js",
                 Lang::Java => "java",
+                Lang::Php => "php",
                 _ => unreachable!(
-                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java"
+                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php"
                 ),
             })
             .join(fixture);
@@ -186,8 +187,9 @@ mod e2e_unauthorized_id {
             Lang::Ruby => "ruby",
             Lang::JavaScript => "node",
             Lang::Java => "javac",
+            Lang::Php => "php",
             _ => unreachable!(
-                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java"
+                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php"
             ),
         };
         if !command_available(required) {
@@ -349,6 +351,40 @@ mod e2e_unauthorized_id {
         assert!(
             outcome.triggered_by.is_none(),
             "Java UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// PHP pair, same shape as Python + Ruby + JavaScript + Java.  The
+    /// vuln fixture's `$STORE[$ownerId]` materialises a record for any
+    /// owner_id; the harness emits `ProbeKind::IdorAccess` and
+    /// `IdorBoundaryCrossed` fires for `bob`.  The benign fixture's
+    /// `if ($ownerId !== CALLER_ID) return null;` short-circuit clears
+    /// the predicate for the non-caller payload.  Skips when `php` is
+    /// not on PATH.
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "PHP UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn php_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "benign.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "PHP UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }
