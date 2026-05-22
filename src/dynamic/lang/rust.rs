@@ -618,15 +618,71 @@ pub fn detect_shape(spec: &HarnessSpec) -> RustShape {
 /// Phase 08 — Track J.6 header-injection harness for Rust
 /// (`axum`-style `HeaderMap::insert`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `headers_mut().insert("Set-Cookie", value)` shim that records the
-/// *unmodified* value bytes (including any embedded `\r\n`) via a
-/// `ProbeKind::HeaderEmit` probe.  Std-only — no `Cargo.toml`
-/// dependencies beyond the always-pinned `libc` (used by the probe
-/// shim's crash guard).
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier (a): when the fixture imports `axum::http::HeaderMap`, rewrite
+/// the axum imports to point at a local `nyx_harness_stubs` module
+/// shipped in `src/nyx_harness_stubs.rs`, stage the rewritten fixture
+/// at `src/entry.rs` via `extra_files`, and have main.rs declare
+/// `mod entry;` + `mod nyx_harness_stubs;` so the fixture's real
+/// `headers.insert(...)` call site runs through a permissive stub that
+/// records every captured `(name, value)` pair (modern `http >= 0.2`
+/// rejects raw `\r\n` in `HeaderValue::from_bytes`, so a real-axum
+/// build would panic on the vuln payload before the differential
+/// oracle sees the smuggled header).
+///
+/// Tier (b): when the fixture does not import axum, fall back to the
+/// synthetic `nyx_header_probe("Set-Cookie", &payload)` call so the
+/// differential oracle still flips on raw payload bytes.
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let cargo_toml = generate_cargo_toml(Cap::HEADER_INJECTION);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let tier_a_active = entry_source_imports_axum_header(&entry_source);
+    let entry_fn = &spec.entry_name;
+    let needs_percent_encoding = entry_source.contains("percent_encoding");
+
+    let mut mod_decls = String::new();
+    let mut via_fixture_decl = String::new();
+    let via_fixture_invoke;
+    let mut extra_files: Vec<(String, String)> = Vec::new();
+    let mut entry_subpath: Option<String> = Some("src/entry.rs".into());
+
+    if tier_a_active {
+        let rewritten = rewrite_axum_imports(&entry_source);
+        extra_files.push(("src/entry.rs".into(), rewritten));
+        extra_files.push((
+            "src/nyx_harness_stubs.rs".into(),
+            rust_header_stubs_source().to_owned(),
+        ));
+        // Park the raw fixture out of `src/` so its un-rewritten axum
+        // imports don't reach the compiler.  Nothing references the
+        // path, so cargo ignores the file.
+        entry_subpath = Some("ignored/raw_fixture.rs".into());
+        mod_decls.push_str("mod entry;\nmod nyx_harness_stubs;\n");
+        via_fixture_decl = format!(
+            r##"fn nyx_header_via_fixture(payload: &str) -> bool {{
+    use std::panic;
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {{
+        let mut headers = nyx_harness_stubs::HeaderMap::new();
+        entry::{entry_fn}(&mut headers, payload);
+        let mut fired = false;
+        for (name, value) in headers.iter() {{
+            nyx_header_probe(name, &value);
+            fired = true;
+        }}
+        fired
+    }}));
+    result.unwrap_or(false)
+}}
+
+"##
+        );
+        via_fixture_invoke = "    if !nyx_header_via_fixture(&payload) {\n        nyx_header_probe(\"Set-Cookie\", &payload);\n    }\n".to_owned();
+    } else {
+        via_fixture_invoke = "    nyx_header_probe(\"Set-Cookie\", &payload);\n".to_owned();
+    }
+
+    let cargo_toml = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, needs_percent_encoding);
+    extra_files.insert(0, ("Cargo.toml".into(), cargo_toml));
+
     let main_rs = format!(
         r##"//! Nyx dynamic harness — HEADER_INJECTION HeaderMap::insert (Phase 08 / Track J.6).
 use std::env;
@@ -634,7 +690,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{{SystemTime, UNIX_EPOCH}};
 
-{shim}
+{mod_decls}{shim}
 
 fn nyx_json_escape(s: &str) -> String {{
     let mut out = String::with_capacity(s.len() + 2);
@@ -680,18 +736,13 @@ fn nyx_header_probe(name: &str, value: &str) {{
     }}
 }}
 
-fn main() {{
+{via_fixture_decl}fn main() {{
     let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
-    let name = "Set-Cookie";
-    let value = &payload;
-    nyx_header_probe(name, value);
-    println!("__NYX_SINK_HIT__");
+{via_fixture_invoke}    println!("__NYX_SINK_HIT__");
     let mut body = String::new();
-    body.push_str("{{\"name\":\"");
-    body.push_str(&nyx_json_escape(name));
-    body.push_str("\",\"value\":\"");
-    body.push_str(&nyx_json_escape(value));
-    body.push_str("\"}}");
+    body.push_str("{{\"payload_len\":");
+    body.push_str(&payload.len().to_string());
+    body.push_str("}}");
     println!("{{body}}", body = body);
 }}
 "##
@@ -700,22 +751,186 @@ fn main() {{
         source: main_rs,
         filename: "src/main.rs".into(),
         command: vec!["target/release/nyx_harness".into()],
-        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
-        entry_subpath: Some("src/entry.rs".into()),
+        extra_files,
+        entry_subpath,
     }
+}
+
+/// Tier-(a) gate for HEADER_INJECTION: the fixture imports the
+/// `axum::http::HeaderMap` type.  Matches both the explicit `use`
+/// form and the path-qualified form (`axum::http::HeaderMap` token).
+fn entry_source_imports_axum_header(src: &str) -> bool {
+    src.contains("axum::http::HeaderMap") || src.contains("http::HeaderMap")
+}
+
+/// Tier-(a) gate for OPEN_REDIRECT: the fixture imports
+/// `axum::response::Redirect`.
+fn entry_source_imports_axum_redirect(src: &str) -> bool {
+    src.contains("axum::response::Redirect") || src.contains("response::Redirect")
+}
+
+/// Rewrite axum import paths at emit time so the fixture compiles
+/// against the local `nyx_harness_stubs` module instead of the real
+/// axum / http crates.  Three substitutions are applied:
+///
+/// - `axum::http::HeaderMap` → `crate::nyx_harness_stubs::HeaderMap`
+/// - `axum::http::HeaderValue` → `crate::nyx_harness_stubs::HeaderValue`
+/// - `axum::response::Redirect` → `crate::nyx_harness_stubs::Redirect`
+///
+/// The substitutions are byte-level and idempotent; un-matched files
+/// pass through unchanged.
+fn rewrite_axum_imports(src: &str) -> String {
+    src.replace(
+        "axum::http::HeaderMap",
+        "crate::nyx_harness_stubs::HeaderMap",
+    )
+    .replace(
+        "axum::http::HeaderValue",
+        "crate::nyx_harness_stubs::HeaderValue",
+    )
+    .replace(
+        "axum::response::Redirect",
+        "crate::nyx_harness_stubs::Redirect",
+    )
+}
+
+/// Source for the `nyx_harness_stubs` module — permissive stand-ins
+/// for `axum::http::{HeaderMap, HeaderValue}` that record raw header
+/// bytes (including CRLF) without invoking the real `http` crate's
+/// RFC-7230 value validator.  The real axum / http crates reject raw
+/// `\r\n` in `HeaderValue::from_bytes`, which would mask the vuln
+/// fixture's smuggled header before the differential oracle sees it.
+fn rust_header_stubs_source() -> &'static str {
+    r##"//! Permissive axum::http stubs — record header bytes verbatim.
+#![allow(dead_code)]
+
+pub struct HeaderValue {
+    bytes: Vec<u8>,
+}
+
+impl HeaderValue {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+        Ok(Self { bytes: bytes.to_vec() })
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, &'static str> {
+        Ok(Self { bytes: s.as_bytes().to_vec() })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+pub struct HeaderMap {
+    items: Vec<(String, Vec<u8>)>,
+}
+
+impl Default for HeaderMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HeaderMap {
+    pub fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    pub fn insert<K: Into<String>>(&mut self, key: K, value: HeaderValue) -> Option<HeaderValue> {
+        self.items.push((key.into(), value.bytes));
+        None
+    }
+
+    pub fn iter(&self) -> HeaderMapIter<'_> {
+        HeaderMapIter { inner: self.items.iter() }
+    }
+}
+
+pub struct HeaderMapIter<'a> {
+    inner: std::slice::Iter<'a, (String, Vec<u8>)>,
+}
+
+impl<'a> Iterator for HeaderMapIter<'a> {
+    type Item = (&'a str, String);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, v)| {
+            (k.as_str(), String::from_utf8_lossy(v).into_owned())
+        })
+    }
+}
+
+pub struct Redirect {
+    location: String,
+}
+
+impl Redirect {
+    pub fn to(s: &str) -> Self {
+        Self { location: s.to_owned() }
+    }
+
+    pub fn location(&self) -> &str {
+        &self.location
+    }
+}
+"##
 }
 
 /// Phase 09 — Track J.7 open-redirect harness for Rust
 /// (`axum::response::Redirect::to`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `Redirect::to(value)` shim that records the bound `Location:`
-/// value plus the request's origin host via a `ProbeKind::Redirect`
-/// probe.  Std-only — no `Cargo.toml` dependencies beyond the
-/// always-pinned `libc`.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier (a): when the fixture imports `axum::response::Redirect`,
+/// rewrite the axum import to point at the local
+/// `nyx_harness_stubs::Redirect` shim, stage the rewritten fixture at
+/// `src/entry.rs` via `extra_files`, declare `mod entry;` +
+/// `mod nyx_harness_stubs;` in main.rs, invoke `entry::<fn>(payload)`,
+/// read the captured `Location:` value off the returned stub and emit
+/// a `ProbeKind::Redirect` probe carrying it.
+///
+/// Tier (b): when the fixture does not import axum, fall back to the
+/// synthetic `nyx_redirect_probe(payload, "example.com")` call so the
+/// differential oracle still flips on raw payload bytes.
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let tier_a_active = entry_source_imports_axum_redirect(&entry_source);
+    let entry_fn = &spec.entry_name;
+
+    let mut mod_decls = String::new();
+    let mut via_fixture_decl = String::new();
+    let via_fixture_invoke;
+    let mut extra_files: Vec<(String, String)> = Vec::new();
+    let mut entry_subpath: Option<String> = Some("src/entry.rs".into());
+
+    if tier_a_active {
+        let rewritten = rewrite_axum_imports(&entry_source);
+        extra_files.push(("src/entry.rs".into(), rewritten));
+        extra_files.push((
+            "src/nyx_harness_stubs.rs".into(),
+            rust_header_stubs_source().to_owned(),
+        ));
+        entry_subpath = Some("ignored/raw_fixture.rs".into());
+        mod_decls.push_str("mod entry;\nmod nyx_harness_stubs;\n");
+        via_fixture_decl = format!(
+            r##"fn nyx_redirect_via_fixture(payload: String) -> Option<String> {{
+    use std::panic;
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {{
+        let redirect = entry::{entry_fn}(payload);
+        redirect.location().to_owned()
+    }}));
+    result.ok()
+}}
+
+"##
+        );
+        via_fixture_invoke = "    let location = match nyx_redirect_via_fixture(payload.clone()) {\n        Some(loc) if !loc.is_empty() => loc,\n        _ => payload.clone(),\n    };\n    nyx_redirect_probe(&location, request_host);\n".to_owned();
+    } else {
+        via_fixture_invoke = "    let location = payload.clone();\n    nyx_redirect_probe(&location, request_host);\n".to_owned();
+    }
+
     let cargo_toml = generate_cargo_toml(Cap::OPEN_REDIRECT);
+    extra_files.insert(0, ("Cargo.toml".into(), cargo_toml));
+
     let main_rs = format!(
         r##"//! Nyx dynamic harness — OPEN_REDIRECT Redirect::to (Phase 09 / Track J.7).
 use std::env;
@@ -723,7 +938,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{{SystemTime, UNIX_EPOCH}};
 
-{shim}
+{mod_decls}{shim}
 
 fn nyx_json_escape(s: &str) -> String {{
     let mut out = String::with_capacity(s.len() + 2);
@@ -767,16 +982,12 @@ fn nyx_redirect_probe(location: &str, request_host: &str) {{
     }}
 }}
 
-fn main() {{
+{via_fixture_decl}fn main() {{
     let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
     let request_host = "example.com";
-    let location = &payload;
-    nyx_redirect_probe(location, request_host);
-    println!("__NYX_SINK_HIT__");
+{via_fixture_invoke}    println!("__NYX_SINK_HIT__");
     let mut body = String::new();
-    body.push_str("{{\"location\":\"");
-    body.push_str(&nyx_json_escape(location));
-    body.push_str("\",\"request_host\":\"");
+    body.push_str("{{\"request_host\":\"");
     body.push_str(&nyx_json_escape(request_host));
     body.push_str("\"}}");
     println!("{{body}}", body = body);
@@ -787,8 +998,8 @@ fn main() {{
         source: main_rs,
         filename: "src/main.rs".into(),
         command: vec!["target/release/nyx_harness".into()],
-        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
-        entry_subpath: Some("src/entry.rs".into()),
+        extra_files,
+        entry_subpath,
     }
 }
 
@@ -1169,11 +1380,22 @@ fn word_in_text(text: &str, kw: &str) -> bool {
 /// `__nyx_install_crash_guard`.  The shim is unconditionally compiled so
 /// the dep must be unconditional too.
 pub fn generate_cargo_toml(cap: Cap) -> String {
+    generate_cargo_toml_with_extras(cap, false)
+}
+
+/// Variant of [`generate_cargo_toml`] that conditionally pulls in
+/// `percent-encoding` for the HEADER_INJECTION benign control fixture
+/// (it routes the value through `utf8_percent_encode` to land CRLF as
+/// `%0D%0A`).  No extra dep weight for tier-(b) builds.
+pub fn generate_cargo_toml_with_extras(cap: Cap, needs_percent_encoding: bool) -> String {
     let mut deps = String::new();
 
     deps.push_str("libc = \"0.2\"\n");
     if cap.contains(Cap::SQL_QUERY) {
         deps.push_str("rusqlite = { version = \"0.39\", features = [\"bundled\"] }\n");
+    }
+    if needs_percent_encoding {
+        deps.push_str("percent-encoding = \"2\"\n");
     }
 
     format!(
@@ -1781,6 +2003,263 @@ mod tests {
             shim.contains("NYX_HTTP_LOG"),
             "HTTP recorder must read NYX_HTTP_LOG",
         );
+    }
+
+    // ── Phase 08 / 09 tier-(a) helpers + emitters ───────────────────────────
+
+    #[test]
+    fn rewrite_axum_imports_replaces_header_map_path() {
+        let src = "use axum::http::HeaderMap;\nuse axum::http::HeaderValue;\npub fn run() {}";
+        let out = rewrite_axum_imports(src);
+        assert!(
+            out.contains("crate::nyx_harness_stubs::HeaderMap"),
+            "HeaderMap import must rewrite to local stub: {out}",
+        );
+        assert!(
+            out.contains("crate::nyx_harness_stubs::HeaderValue"),
+            "HeaderValue import must rewrite to local stub: {out}",
+        );
+        assert!(
+            !out.contains("axum::http::HeaderMap"),
+            "raw axum::http::HeaderMap must be gone: {out}",
+        );
+    }
+
+    #[test]
+    fn rewrite_axum_imports_replaces_redirect_path() {
+        let src = "use axum::response::Redirect;\npub fn run() {}";
+        let out = rewrite_axum_imports(src);
+        assert!(
+            out.contains("crate::nyx_harness_stubs::Redirect"),
+            "Redirect import must rewrite to local stub: {out}",
+        );
+        assert!(
+            !out.contains("axum::response::Redirect"),
+            "raw axum::response::Redirect must be gone: {out}",
+        );
+    }
+
+    #[test]
+    fn rewrite_axum_imports_passes_through_when_unmatched() {
+        let src = "use std::fs;\npub fn run() {}\n";
+        assert_eq!(rewrite_axum_imports(src), src);
+    }
+
+    #[test]
+    fn entry_source_imports_axum_header_matches_qualified_form() {
+        assert!(entry_source_imports_axum_header(
+            "use axum::http::HeaderMap;"
+        ));
+        assert!(entry_source_imports_axum_header(
+            "let h: http::HeaderMap = HeaderMap::new();"
+        ));
+        assert!(!entry_source_imports_axum_header("use std::collections::HashMap;"));
+    }
+
+    #[test]
+    fn entry_source_imports_axum_redirect_matches_qualified_form() {
+        assert!(entry_source_imports_axum_redirect(
+            "use axum::response::Redirect;"
+        ));
+        assert!(entry_source_imports_axum_redirect(
+            "fn x() -> response::Redirect { todo!() }"
+        ));
+        assert!(!entry_source_imports_axum_redirect("use std::fs;"));
+    }
+
+    #[test]
+    fn rust_header_stubs_source_exposes_required_surface() {
+        let src = rust_header_stubs_source();
+        assert!(src.contains("pub struct HeaderValue"));
+        assert!(src.contains("pub struct HeaderMap"));
+        assert!(src.contains("pub struct Redirect"));
+        assert!(src.contains("pub fn from_bytes"));
+        assert!(src.contains("pub fn from_str"));
+        assert!(src.contains("pub fn insert<K"));
+        assert!(src.contains("pub fn iter("));
+        assert!(src.contains("pub fn to(s: &str) -> Self"));
+        assert!(src.contains("pub fn location("));
+    }
+
+    #[test]
+    fn header_injection_tier_a_fires_when_axum_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "tests/dynamic_fixtures/header_injection/rust/vuln.rs".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            harness.source.contains("mod entry;"),
+            "tier-(a) header_injection main.rs must declare mod entry",
+        );
+        assert!(
+            harness.source.contains("mod nyx_harness_stubs;"),
+            "tier-(a) header_injection main.rs must declare mod nyx_harness_stubs",
+        );
+        assert!(
+            harness.source.contains("nyx_header_via_fixture(&payload)"),
+            "tier-(a) header_injection must dispatch via fixture wrapper",
+        );
+        assert!(
+            harness.source.contains("entry::run(&mut headers, payload)"),
+            "tier-(a) header_injection must invoke entry::run with headers + payload",
+        );
+        // Rewritten fixture staged under src/entry.rs.
+        let staged = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "src/entry.rs");
+        assert!(
+            staged.is_some(),
+            "tier-(a) header_injection must stage src/entry.rs",
+        );
+        assert!(
+            staged.unwrap().1.contains("crate::nyx_harness_stubs::HeaderMap"),
+            "staged fixture must have axum imports rewritten",
+        );
+        // Stub module staged.
+        let stub = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "src/nyx_harness_stubs.rs");
+        assert!(stub.is_some(), "tier-(a) must stage nyx_harness_stubs.rs");
+        // Raw fixture parked outside src/ so cargo ignores it.
+        assert_eq!(
+            harness.entry_subpath.as_deref(),
+            Some("ignored/raw_fixture.rs"),
+        );
+    }
+
+    #[test]
+    fn header_injection_tier_b_falls_back_when_no_axum() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "/nonexistent/missing.rs".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            !harness.source.contains("mod entry;"),
+            "tier-(b) header_injection must not declare mod entry",
+        );
+        assert!(
+            harness
+                .source
+                .contains("nyx_header_probe(\"Set-Cookie\", &payload)"),
+            "tier-(b) header_injection must emit synthetic Set-Cookie probe",
+        );
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .all(|(p, _)| p != "src/entry.rs" && p != "src/nyx_harness_stubs.rs"),
+            "tier-(b) header_injection must not stage rewritten fixture or stubs",
+        );
+        assert_eq!(harness.entry_subpath.as_deref(), Some("src/entry.rs"));
+    }
+
+    #[test]
+    fn header_injection_tier_a_pulls_percent_encoding_when_benign_uses_it() {
+        // Benign fixture imports `percent_encoding`; tier-(a) must pin
+        // the dep so the workdir build resolves the symbol.
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "tests/dynamic_fixtures/header_injection/rust/benign.rs".into();
+        let harness = emit_header_injection_harness(&spec);
+        let cargo = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "Cargo.toml")
+            .expect("Cargo.toml staged");
+        assert!(
+            cargo.1.contains("percent-encoding = \"2\""),
+            "benign fixture's percent_encoding import must pin the dep, got: {body}",
+            body = cargo.1,
+        );
+    }
+
+    #[test]
+    fn open_redirect_tier_a_fires_when_axum_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "tests/dynamic_fixtures/open_redirect/rust/vuln.rs".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            harness.source.contains("mod entry;"),
+            "tier-(a) open_redirect main.rs must declare mod entry",
+        );
+        assert!(
+            harness.source.contains("mod nyx_harness_stubs;"),
+            "tier-(a) open_redirect main.rs must declare mod nyx_harness_stubs",
+        );
+        assert!(
+            harness
+                .source
+                .contains("nyx_redirect_via_fixture(payload.clone())"),
+            "tier-(a) open_redirect must dispatch via fixture wrapper",
+        );
+        assert!(
+            harness.source.contains("entry::run(payload)"),
+            "tier-(a) open_redirect must invoke entry::run with payload",
+        );
+        let staged = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "src/entry.rs");
+        assert!(staged.is_some(), "tier-(a) open_redirect must stage src/entry.rs");
+        assert!(
+            staged
+                .unwrap()
+                .1
+                .contains("crate::nyx_harness_stubs::Redirect"),
+            "staged fixture must have axum::response::Redirect rewritten",
+        );
+        let stub = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "src/nyx_harness_stubs.rs");
+        assert!(stub.is_some(), "tier-(a) open_redirect must stage nyx_harness_stubs.rs");
+        assert_eq!(
+            harness.entry_subpath.as_deref(),
+            Some("ignored/raw_fixture.rs"),
+        );
+    }
+
+    #[test]
+    fn open_redirect_tier_b_falls_back_when_no_axum() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "/nonexistent/missing.rs".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            !harness.source.contains("mod entry;"),
+            "tier-(b) open_redirect must not declare mod entry",
+        );
+        assert!(
+            harness
+                .source
+                .contains("nyx_redirect_probe(&location, request_host)"),
+            "tier-(b) open_redirect must emit synthetic redirect probe",
+        );
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .all(|(p, _)| p != "src/entry.rs" && p != "src/nyx_harness_stubs.rs"),
+            "tier-(b) open_redirect must not stage rewritten fixture or stubs",
+        );
+    }
+
+    #[test]
+    fn cargo_toml_extras_pins_percent_encoding_when_requested() {
+        let cargo = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, true);
+        assert!(cargo.contains("libc = \"0.2\""));
+        assert!(cargo.contains("percent-encoding = \"2\""));
+        let cargo_no_extras = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, false);
+        assert!(cargo_no_extras.contains("libc = \"0.2\""));
+        assert!(!cargo_no_extras.contains("percent-encoding"));
     }
 
     #[test]
