@@ -291,11 +291,17 @@ mod tests {
         // CRYPTO × {Php, Ruby} + DATA_EXFIL × Ruby.
         //   Php: +1 (CryptoPhp)                                12 → 13
         //   Ruby: +2 (CryptoRuby, DataExfilRuby)               12 → 14
+        // Track L.9 closing slice (session-0017 of run 7d60):
+        // CRYPTO × {Go, Rust} + DATA_EXFIL × {Java, Php, Rust}.
+        //   Go: +1 (CryptoGo)                                  12 → 13
+        //   Java: +1 (DataExfilJava)                           19 → 20
+        //   Php: +1 (DataExfilPhp)                             13 → 14
+        //   Rust: +2 (CryptoRust, DataExfilRust)                8 → 10
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            19,
-            "Java must have Phase 21 baseline (18) + Track L.9 CryptoJava (1)",
+            20,
+            "Java must have Phase 21 baseline (18) + Track L.9 (CryptoJava, DataExfilJava)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);
@@ -303,8 +309,8 @@ mod tests {
         let php_registered = registry::adapters_for(Lang::Php);
         assert_eq!(
             php_registered.len(),
-            13,
-            "Php must have Phase 20 baseline (10) + M.3 Laravel middleware+migration (2) + Track L.9 CryptoPhp (1)",
+            14,
+            "Php must have Phase 20 baseline (10) + M.3 Laravel middleware+migration (2) + Track L.9 (CryptoPhp, DataExfilPhp)",
         );
         for adapter in php_registered {
             assert_eq!(adapter.lang(), Lang::Php);
@@ -348,8 +354,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            12,
-            "Go must have Phase 21 baseline (11) + Track L.9 DataExfilGo (1)",
+            13,
+            "Go must have Phase 21 baseline (11) + Track L.9 (CryptoGo, DataExfilGo)",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);
@@ -357,8 +363,8 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            8,
-            "Rust must have Phase 20 baseline (6) + M.3 juniper (1) + refinery (1)",
+            10,
+            "Rust must have Phase 20 baseline (6) + M.3 juniper (1) + refinery (1) + Track L.9 (CryptoRust, DataExfilRust)",
         );
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);

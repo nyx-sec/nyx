@@ -45,6 +45,8 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 // later phase that appends a new adapter cannot silently re-order
 // the existing first-match.
 static RUST: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoRustAdapter,
+    &super::adapters::DataExfilRustAdapter,
     &super::adapters::GraphqlJuniperAdapter,
     &super::adapters::HeaderRustAdapter,
     &super::adapters::MigrationRefineryAdapter,
@@ -58,6 +60,7 @@ static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::CryptoJavaAdapter,
+    &super::adapters::DataExfilJavaAdapter,
     &super::adapters::HeaderJavaAdapter,
     &super::adapters::JavaDeserializeAdapter,
     &super::adapters::JavaMicronautAdapter,
@@ -78,6 +81,7 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxeJavaAdapter,
 ];
 static GO: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoGoAdapter,
     &super::adapters::DataExfilGoAdapter,
     &super::adapters::GoChiAdapter,
     &super::adapters::GoEchoAdapter,
@@ -93,6 +97,7 @@ static GO: &[&dyn FrameworkAdapter] = &[
 ];
 static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::CryptoPhpAdapter,
+    &super::adapters::DataExfilPhpAdapter,
     &super::adapters::HeaderPhpAdapter,
     &super::adapters::LdapPhpAdapter,
     &super::adapters::MiddlewareLaravelAdapter,
