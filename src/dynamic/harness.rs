@@ -18,6 +18,10 @@ use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::UnsupportedReason;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static WORKDIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A built harness ready to hand off to the sandbox.
 #[derive(Debug, Clone)]
@@ -56,12 +60,19 @@ pub fn build(spec: &HarnessSpec) -> Result<BuiltHarness, HarnessError> {
 
 /// Write the harness source to a temporary working directory.
 ///
-/// On Unix we prefer `/tmp/nyx-harness/{spec_hash}` over `env::temp_dir()`
+/// On Unix we prefer `/tmp/nyx-harness/{spec_hash}-p{pid}-r{seq}-t{time}`
+/// over `env::temp_dir()`
 /// because macOS' `$TMPDIR` resolves to `/var/folders/.../T/` — deep enough
 /// that traversal payloads like `../../../../etc/passwd` cannot escape to
 /// `/` from the workdir, which masks path-traversal verdicts. `/tmp` is
 /// shallow (resolves to `/private/tmp` on macOS, `/tmp` on Linux) and keeps
 /// payload depth assumptions portable.
+///
+/// The per-run suffix is intentional: the workdir contains mutable build
+/// products, probe channels, and sometimes a long-lived Docker container
+/// mount.  Reusing `/tmp/nyx-harness/{spec_hash}` across concurrent
+/// verifier processes lets one run overwrite or delete another run's Java
+/// classes while the JVM is starting.
 fn stage_harness(
     spec: &HarnessSpec,
     harness_src: &lang::HarnessSource,
@@ -71,7 +82,7 @@ fn stage_harness(
     } else {
         std::env::temp_dir().join("nyx-harness")
     };
-    let workdir = base_dir.join(&spec.spec_hash);
+    let workdir = unique_workdir(&base_dir, &spec.spec_hash);
     fs::create_dir_all(&workdir)?;
 
     // Write harness source (create parent dir if needed, e.g. "src/main.rs").
@@ -92,8 +103,42 @@ fn stage_harness(
 
     // Copy the entry file into the workdir so the harness can import/include it.
     copy_entry_file(spec, &workdir, harness_src.entry_subpath.as_deref());
+    copy_java_sibling_sources(spec, &workdir);
 
     Ok(workdir)
+}
+
+fn unique_workdir(base_dir: &Path, spec_hash: &str) -> PathBuf {
+    let seq = WORKDIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    base_dir.join(format!(
+        "{}-p{pid}-r{seq:016x}-t{nanos:x}",
+        safe_workdir_component(spec_hash)
+    ))
+}
+
+fn safe_workdir_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().max(1));
+    for b in input.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {
+            out.push(b as char);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("unknown");
+    }
+    if out.len() > 80 {
+        let digest = blake3::hash(input.as_bytes());
+        let hex = digest.to_hex();
+        out = format!("{}-{}", &out[..80], &hex[..16]);
+    }
+    out
 }
 
 /// Copy the entry source file to the workdir.
@@ -132,6 +177,44 @@ fn copy_entry_file(spec: &HarnessSpec, workdir: &Path, entry_subpath: Option<&st
             let _ = fs::copy(src, &dst);
             return;
         }
+    }
+}
+
+/// Java shape fixtures often keep tiny annotation / framework stubs next to
+/// `Vuln.java` or `Benign.java`.  Stage those siblings with the entry file so
+/// each unique workdir is self-contained, while skipping the opposite fixture
+/// variant to avoid duplicate public-class declarations in corpus tests.
+fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
+    if spec.lang != crate::symbol::Lang::Java {
+        return;
+    }
+    let entry = PathBuf::from(&spec.entry_file);
+    let Some(parent) = entry.parent() else {
+        return;
+    };
+    let Some(entry_name) = entry.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let alt_name = match entry_name {
+        "Vuln.java" => "Benign.java",
+        "Benign.java" => "Vuln.java",
+        _ => return,
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for item in entries.flatten() {
+        let p = item.path();
+        if !p.extension().map(|e| e == "java").unwrap_or(false) {
+            continue;
+        }
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name == entry_name || name == alt_name {
+            continue;
+        }
+        let _ = fs::copy(&p, workdir.join(name));
     }
 }
 
@@ -230,5 +313,64 @@ mod tests {
         let harness = build(&spec).unwrap();
         assert!(harness.workdir.join("harness.py").exists());
         assert!(!harness.source.is_empty());
+    }
+
+    #[test]
+    fn build_uses_unique_flat_workdir_for_same_spec_hash() {
+        let spec = HarnessSpec {
+            finding_id: "0000000000000001".into(),
+            entry_file: "src/app.py".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "python-3".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/app.py".into(),
+            sink_line: 10,
+            spec_hash: "test0000abcd1234".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
+        };
+        let first = build(&spec).unwrap();
+        let second = build(&spec).unwrap();
+        assert_ne!(first.workdir, second.workdir);
+        assert_eq!(first.workdir.parent(), second.workdir.parent());
+    }
+
+    #[test]
+    fn build_java_stages_sibling_stubs_without_alt_fixture() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vuln = tmp.path().join("Vuln.java");
+        fs::write(&vuln, "public class Vuln {}\n").unwrap();
+        fs::write(tmp.path().join("Helper.java"), "class Helper {}\n").unwrap();
+        fs::write(tmp.path().join("Benign.java"), "public class Benign {}\n").unwrap();
+
+        let spec = HarnessSpec {
+            finding_id: "0000000000000001".into(),
+            entry_file: vuln.to_string_lossy().into_owned(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Java,
+            toolchain_id: "java-21".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::XXE,
+            constraint_hints: vec![],
+            sink_file: vuln.to_string_lossy().into_owned(),
+            sink_line: 1,
+            spec_hash: "javatest00000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
+        };
+
+        let harness = build(&spec).unwrap();
+        assert!(harness.workdir.join("Vuln.java").exists());
+        assert!(harness.workdir.join("Helper.java").exists());
+        assert!(!harness.workdir.join("Benign.java").exists());
     }
 }

@@ -722,15 +722,16 @@ fn register_exit_cleanup() {
 }
 
 fn workdir_to_container_name(workdir: &Path) -> String {
-    // The workdir is /tmp/nyx-harness/{spec_hash}; the spec_hash is the last
-    // path component (16-char hex). Use it directly for a readable name.
-    let spec_hash = workdir
+    // The harness workdir's final path component is a sanitized, readable run
+    // id derived from the spec hash plus a per-run suffix. Use it directly so
+    // two concurrent builds for the same finding do not share a container.
+    let run_id = workdir
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
-    // Container names: [a-zA-Z0-9_.-], must not start with dot or dash.
-    // spec_hash is lowercase hex (0-9a-f); safe to use directly.
-    format!("nyx-{spec_hash}")
+    // Container names: [a-zA-Z0-9_.-], must not start with dot or dash. The
+    // `nyx-` prefix provides a safe first character.
+    format!("nyx-{run_id}")
 }
 
 /// Docker image tag for a Python toolchain ID (e.g. `python-3.11`).

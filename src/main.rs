@@ -20,6 +20,7 @@ fn init_tracing() {
 
     let fmt_layer = tracing_fmt::layer()
         .pretty()
+        .with_writer(std::io::stderr)
         .with_thread_ids(true)
         .with_timer(time::UtcTime::rfc_3339());
 
