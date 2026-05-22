@@ -61,7 +61,8 @@
 //! user_input`, `path_validated: false`, symbolic witness produced.
 //!
 //! Lower confidence: path-validated taint, source is a database read or
-//! internal file, engine note `ForwardBailed` / `PathWidened`.
+//! internal file, any non-informational `EngineNote` (e.g.
+//! `SsaLoweringBailed`, `PredicateStateWidened`, `WorklistCapped`).
 //!
 //! # Submodules
 //!

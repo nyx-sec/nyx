@@ -98,7 +98,7 @@ Clicking through opens the **flow visualiser**: a numbered walk from source to s
 
 <p align="center"><img src="assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow showing source → call → sink steps, How to fix guidance, and evidence panel" width="900"/></p>
 
-Engine notes call out when precision was bounded for that finding (`OriginsTruncated`, `PointsToTruncated`, `PathWidened`, `ForwardBailed`, etc.). Anything tagged `under-report` means the emitted flow is real and the result set is a lower bound; `over-report` means widening or bail. `--require-converged` in the CLI drops the over-report ones for strict gates.
+Engine notes call out when precision was bounded for that finding (`OriginsTruncated`, `PointsToTruncated`, `WorklistCapped`, `PredicateStateWidened`, `SsaLoweringBailed`, etc.). Each note carries a direction tag: `under-report` means the emitted flow is real and the result set is a lower bound; `over-report` means widening dropped a guard; `bail` means analysis aborted before producing a trustworthy result. `--require-converged` in the CLI drops over-report and bail notes for strict gates.
 
 ### Triage
 

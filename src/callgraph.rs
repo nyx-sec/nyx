@@ -1005,10 +1005,16 @@ pub fn scc_spans_files(cg: &CallGraph, scc: &[NodeIndex]) -> bool {
     iter.any(|n| cg.graph[*n].namespace.as_str() != first_ns)
 }
 
-/// Like [`scc_file_batches`] but annotates each batch with whether any
-/// contributing SCC has mutual recursion (`len > 1`).
+/// Map SCC topological order to an ordered sequence of file-path batches
+/// annotated with whether any contributing SCC is mutually recursive
+/// (`len > 1`) or cross-file.
 ///
-/// Returns `(ordered_batches, orphan_files)`.
+/// A file is placed in the earliest batch where any of its functions appear
+/// (min topo index), so leaf callees become available before the callers
+/// that depend on them.
+///
+/// Returns `(ordered_batches, orphan_files)`. Orphans are paths from
+/// `all_files` that have no functions in the call graph.
 pub fn scc_file_batches_with_metadata<'a>(
     cg: &CallGraph,
     analysis: &CallGraphAnalysis,
@@ -1089,8 +1095,8 @@ pub fn scc_file_batches_with_metadata<'a>(
 ///
 /// Returns `(ordered_batches, orphan_files)` where orphan_files are paths
 /// from `all_files` that have no functions in the call graph.
-#[allow(dead_code)] // kept for tests; production callers use scc_file_batches_with_metadata
-pub fn scc_file_batches<'a>(
+#[cfg(test)]
+pub(super) fn scc_file_batches<'a>(
     cg: &CallGraph,
     analysis: &CallGraphAnalysis,
     all_files: &'a [PathBuf],
