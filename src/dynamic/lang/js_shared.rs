@@ -1369,13 +1369,105 @@ fn package_json_xpath() -> String {
 /// Phase 08 — Track J.6 header-injection harness for Node
 /// (`http.ServerResponse#setHeader`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `res.setHeader('Set-Cookie', value)` shim that records the
-/// *unmodified* value bytes (including any embedded `\r\n`) via a
-/// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
-/// pattern used by Phase 03 / 04 / 05 / 06 / 07.
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Reads `NYX_PAYLOAD` and, when the fixture imports `http` or
+/// `express`, routes through tier-(a): `require('./<entry-stem>')` +
+/// look up the named entry function + call it with a permissive `res`
+/// mock whose `setHeader` records every `(name, value)` pair the
+/// fixture writes verbatim *before* Node's CRLF validator would
+/// reject the call.  Mirrors the Python werkzeug-Headers monkey-patch
+/// at `src/dynamic/lang/python.rs::emit_header_injection_harness` and
+/// the Java permissive servlet stub at
+/// `src/dynamic/lang/java_servlet_stubs.rs::http_servlet_response`.
+/// Falls back to the inline `nyxHeaderProbe('Set-Cookie', payload)`
+/// synthetic probe when the fixture does not import a Node response
+/// writer or when the tier-(a) call fails (require throws, entry
+/// function missing, etc.).
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_node_writer = entry_source.contains("require('http')")
+        || entry_source.contains("require(\"http\")")
+        || entry_source.contains("require('express')")
+        || entry_source.contains("require(\"express\")")
+        || entry_source.contains("from 'http'")
+        || entry_source.contains("from \"http\"")
+        || entry_source.contains("from 'express'")
+        || entry_source.contains("from \"express\"");
+
+    let via_fixture = if uses_node_writer {
+        format!(
+            r#"function nyxHeaderViaFixture(payload) {{
+  // Phase 08 tier-(a): require the fixture, call its `{entry_name}`
+  // with a permissive `res` mock whose `setHeader` records every
+  // `(name, value)` pair verbatim *before* Node's CRLF validator
+  // would reject the call.  Returns the captured pairs as an array
+  // of `[name, value]` tuples, or `null` when the require / lookup /
+  // call fails so the caller can fall back to the inline probe.
+  const captured = [];
+  const res = {{
+    setHeader(name, value) {{
+      try {{
+        captured.push([String(name), String(value)]);
+      }} catch (e) {{
+        // ignore — captor is best-effort
+      }}
+    }},
+    getHeader(_name) {{ return undefined; }},
+    removeHeader(_name) {{}},
+    writeHead(_status, headers) {{
+      if (headers && typeof headers === 'object') {{
+        for (const k of Object.keys(headers)) {{
+          try {{ captured.push([String(k), String(headers[k])]); }} catch (e) {{}}
+        }}
+      }}
+    }},
+    end() {{}},
+    statusCode: 200,
+  }};
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    return null;
+  }}
+  const fn = _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') return null;
+  // Phase 08 fixtures use `run(res, value)`; the Express open-redirect
+  // shape is `run(req, res, value)`.  Try the two-arg path first, then
+  // fall through to the three-arg path so an Express handler that
+  // calls `res.setHeader` also lands.
+  try {{
+    fn(res, payload);
+  }} catch (e) {{
+    captured.length = 0;
+    try {{
+      fn({{ headers: {{}}, method: 'GET', url: '/' }}, res, payload);
+    }} catch (e2) {{
+      // both signatures threw — return whatever was captured before
+      // the throw, or null when nothing landed
+    }}
+  }}
+  return captured;
+}}
+
+"#
+        )
+    } else {
+        String::new()
+    };
+
+    let invoke_via_fixture = if uses_node_writer {
+        "const captured = nyxHeaderViaFixture(payload);\nif (Array.isArray(captured) && captured.length > 0) {\n  for (const [hname, hvalue] of captured) {\n    nyxHeaderProbe(hname, hvalue);\n  }\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ headers: captured.map(([n, v]) => [n, v]) }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const name = 'Set-Cookie';\n  const value = payload;\n  nyxHeaderProbe(name, value);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ name: name, value: value }));\n}\n"
+    } else {
+        "const name = 'Set-Cookie';\nconst value = payload;\nnyxHeaderProbe(name, value);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ name: name, value: value }));\n"
+    };
+
     let body = format!(
         r#"// Nyx dynamic harness — HEADER_INJECTION http.ServerResponse#setHeader (Phase 08 / Track J.6).
 {shim}
@@ -1401,13 +1493,8 @@ function nyxHeaderProbe(name, value) {{
   }}
 }}
 
-const payload = process.env.NYX_PAYLOAD || '';
-const name = 'Set-Cookie';
-const value = payload;
-nyxHeaderProbe(name, value);
-console.log('__NYX_SINK_HIT__');
-console.log(JSON.stringify({{ name: name, value: value }}));
-"#
+{via_fixture}const payload = process.env.NYX_PAYLOAD || '';
+{invoke_via_fixture}"#
     );
     HarnessSource {
         source: body,
@@ -1421,12 +1508,121 @@ console.log(JSON.stringify({{ name: name, value: value }}));
 /// Phase 09 — Track J.7 open-redirect harness for Node (Express
 /// `res.redirect`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
-/// `res.redirect(value)` shim that records the bound `Location:`
-/// value plus the request's origin host via a `ProbeKind::Redirect`
-/// probe.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Reads `NYX_PAYLOAD` and, when the fixture imports `express` or
+/// `http`, routes through tier-(a): `require('./<entry-stem>')` +
+/// look up the named entry function + call it with a permissive `res`
+/// mock whose `redirect` / `setHeader('Location', …)` record the
+/// bound URL.  Mirrors the Python tier-(a) at
+/// `src/dynamic/lang/python.rs::emit_open_redirect_harness`: call the
+/// fixture, read the Location header off the response.  Falls back to
+/// the inline synthetic probe (`nyxRedirectProbe(payload, …)`) when
+/// the fixture does not import a Node response writer or when the
+/// tier-(a) call fails.
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_node_writer = entry_source.contains("require('http')")
+        || entry_source.contains("require(\"http\")")
+        || entry_source.contains("require('express')")
+        || entry_source.contains("require(\"express\")")
+        || entry_source.contains("from 'http'")
+        || entry_source.contains("from \"http\"")
+        || entry_source.contains("from 'express'")
+        || entry_source.contains("from \"express\"");
+
+    let via_fixture = if uses_node_writer {
+        format!(
+            r#"function nyxRedirectViaFixture(payload) {{
+  // Phase 09 tier-(a): require the fixture, call its `{entry_name}`
+  // with a permissive `res` mock whose `redirect` / `setHeader` both
+  // record the bound `Location:` URL.  Returns `[location, host]` or
+  // `null` when the require / lookup / call fails so the caller can
+  // fall back to the inline synthetic probe.
+  let location = null;
+  const recordLocation = (value) => {{
+    if (location === null && value !== undefined && value !== null) {{
+      location = String(value);
+    }}
+  }};
+  const res = {{
+    redirect(...args) {{
+      // Express signatures: redirect(url) | redirect(status, url).
+      if (args.length === 1) {{
+        recordLocation(args[0]);
+      }} else if (args.length >= 2) {{
+        recordLocation(args[1]);
+      }}
+    }},
+    setHeader(name, value) {{
+      if (String(name).toLowerCase() === 'location') {{
+        recordLocation(value);
+      }}
+    }},
+    set(name, value) {{
+      if (String(name).toLowerCase() === 'location') {{
+        recordLocation(value);
+      }}
+    }},
+    location(value) {{
+      recordLocation(value);
+    }},
+    writeHead(_status, headers) {{
+      if (headers && typeof headers === 'object') {{
+        for (const k of Object.keys(headers)) {{
+          if (k.toLowerCase() === 'location') {{
+            recordLocation(headers[k]);
+          }}
+        }}
+      }}
+    }},
+    end() {{}},
+    statusCode: 200,
+  }};
+  const req = {{ headers: {{}}, method: 'GET', url: '/' }};
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    return null;
+  }}
+  const fn = _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') return null;
+  // Phase 09 fixtures use `run(req, res, value)` (Express handler
+  // signature).  Try the three-arg path first; if it throws try the
+  // two-arg shape `(res, value)` so a fixture without an explicit
+  // `req` parameter still lands.
+  try {{
+    fn(req, res, payload);
+  }} catch (e) {{
+    try {{
+      fn(res, payload);
+    }} catch (e2) {{
+      // both signatures threw — return whatever was captured before
+      // the throw, or null when nothing landed
+    }}
+  }}
+  if (location === null) return null;
+  return [location, 'example.com'];
+}}
+
+"#
+        )
+    } else {
+        String::new()
+    };
+
+    let invoke_via_fixture = if uses_node_writer {
+        "const captured = nyxRedirectViaFixture(payload);\nif (Array.isArray(captured)) {\n  const [location, requestHost] = captured;\n  nyxRedirectProbe(location, requestHost);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const requestHost = 'example.com';\n  const location = payload;\n  nyxRedirectProbe(location, requestHost);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n}\n"
+    } else {
+        "const requestHost = 'example.com';\nconst location = payload;\nnyxRedirectProbe(location, requestHost);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ location: location, request_host: requestHost }));\n"
+    };
+
     let body = format!(
         r#"// Nyx dynamic harness — OPEN_REDIRECT res.redirect (Phase 09 / Track J.7).
 {shim}
@@ -1451,13 +1647,8 @@ function nyxRedirectProbe(location, requestHost) {{
   }}
 }}
 
-const payload = process.env.NYX_PAYLOAD || '';
-const requestHost = 'example.com';
-const location = payload;
-nyxRedirectProbe(location, requestHost);
-console.log('__NYX_SINK_HIT__');
-console.log(JSON.stringify({{ location: location, request_host: requestHost }}));
-"#
+{via_fixture}const payload = process.env.NYX_PAYLOAD || '';
+{invoke_via_fixture}"#
     );
     HarnessSource {
         source: body,
@@ -2737,6 +2928,192 @@ mod tests {
         assert!(
             h.source.contains("require('./benign')"),
             "harness must require the staged fixture by its file_stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_header_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    fn make_redirect_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_fixture_when_http_required() {
+        let dir = std::env::temp_dir().join("nyx_phase08_js_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function nyxHeaderViaFixture(payload)"),
+            "tier-(a) harness must define nyxHeaderViaFixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require('./vuln')"),
+            "tier-(a) harness must require the staged fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_entry['run']"),
+            "tier-(a) harness must look up the named entry function: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("captured.push([String(name), String(value)])"),
+            "tier-(a) harness must record (name, value) pairs verbatim: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Synthetic fallback"),
+            "tier-(a) harness must preserve the inline probe as a fallback: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_falls_back_when_http_not_required() {
+        let dir = std::env::temp_dir().join("nyx_phase08_js_test_no_http");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "function run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("function nyxHeaderViaFixture(payload)"),
+            "fallback path must not emit the tier-(a) helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("const name = 'Set-Cookie';"),
+            "fallback path must emit the inline synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_derives_entry_stem_from_entry_file() {
+        let dir = std::env::temp_dir().join("nyx_phase08_js_test_stem_derive");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("benign.js");
+        std::fs::write(
+            &entry,
+            "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', encodeURIComponent(value)); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("require('./benign')"),
+            "tier-(a) harness must require the staged fixture by its file_stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_routes_through_fixture_when_express_required() {
+        let dir = std::env::temp_dir().join("nyx_phase09_js_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const express = require('express');\nfunction run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function nyxRedirectViaFixture(payload)"),
+            "tier-(a) harness must define nyxRedirectViaFixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require('./vuln')"),
+            "tier-(a) harness must require the staged fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_entry['run']"),
+            "tier-(a) harness must look up the named entry function: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("redirect(...args)"),
+            "tier-(a) harness must define a res.redirect captor: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("if (String(name).toLowerCase() === 'location')"),
+            "tier-(a) harness must also capture setHeader('Location', …) writes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Synthetic fallback"),
+            "tier-(a) harness must preserve the inline probe as a fallback: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_falls_back_when_express_not_required() {
+        let dir = std::env::temp_dir().join("nyx_phase09_js_test_no_express");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "function run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("function nyxRedirectViaFixture(payload)"),
+            "fallback path must not emit the tier-(a) helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("const requestHost = 'example.com';"),
+            "fallback path must emit the inline synthetic probe: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
