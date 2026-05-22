@@ -1365,6 +1365,116 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
         || entry_source.contains("from \"http\"")
         || entry_source.contains("from 'express'")
         || entry_source.contains("from \"express\"");
+    // Phase 08 tier-(b): a fixture that uses `net.createServer` writes
+    // bytes straight to the response socket via `socket.write`, bypassing
+    // every framework-level CRLF validator (Node's
+    // `http.ServerResponse#setHeader` / Express / axum / Tomcat all
+    // strip CRLF before write).  The harness boots the server on a
+    // loopback port and captures the raw response-header block as a
+    // `ProbeKind::HeaderWireFrame` probe.  Mirrors the Python tier-(b)
+    // at `src/dynamic/lang/python.rs::emit_header_injection_harness`.
+    let uses_raw_socket = entry_source.contains("net.createServer")
+        || entry_source.contains("require('net')")
+        || entry_source.contains("require(\"net\")")
+        || entry_source.contains("from 'net'")
+        || entry_source.contains("from \"net\"");
+
+    let wire_frame_via_fixture = if uses_raw_socket {
+        format!(
+            r#"async function nyxWireFrameViaFixture(payload) {{
+  // Phase 08 tier-(b): boot the fixture's net.Server on 127.0.0.1:0,
+  // issue one raw-socket GET, read the bytes the handler wrote to the
+  // response socket up to the CRLF-CRLF boundary.  Returns the captured
+  // header-block bytes on success, or `null` on import / boot failure so
+  // the caller can fall back to the inline synthetic probe.
+  const _net = require('net');
+  let mod;
+  try {{
+    mod = require('./{entry_stem}');
+  }} catch (e) {{
+    return null;
+  }}
+  if (!mod || typeof mod.createServer !== 'function' || typeof mod.setCookieValue !== 'function') {{
+    return null;
+  }}
+  try {{
+    if (Buffer.isBuffer(payload)) {{
+      mod.setCookieValue(payload);
+    }} else {{
+      mod.setCookieValue(Buffer.from(String(payload), 'utf8'));
+    }}
+  }} catch (e) {{
+    return null;
+  }}
+  let server;
+  try {{
+    server = mod.createServer();
+  }} catch (e) {{
+    return null;
+  }}
+  const listenPort = await new Promise((resolve) => {{
+    server.once('error', () => resolve(null));
+    server.listen(0, '127.0.0.1', () => {{
+      const addr = server.address();
+      resolve(addr && typeof addr === 'object' ? addr.port : null);
+    }});
+  }});
+  if (listenPort === null) {{
+    try {{ server.close(); }} catch (e) {{}}
+    return null;
+  }}
+  let raw = Buffer.alloc(0);
+  await new Promise((resolve) => {{
+    const client = _net.createConnection({{ host: '127.0.0.1', port: listenPort }}, () => {{
+      try {{
+        client.write('GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n');
+      }} catch (e) {{}}
+    }});
+    const timer = setTimeout(() => {{
+      try {{ client.destroy(); }} catch (e) {{}}
+      resolve();
+    }}, 5000);
+    client.on('data', (chunk) => {{
+      raw = Buffer.concat([raw, chunk]);
+      if (raw.length >= 65536 || raw.indexOf('\r\n\r\n') !== -1) {{
+        try {{ client.end(); }} catch (e) {{}}
+      }}
+    }});
+    client.on('end', () => {{ clearTimeout(timer); resolve(); }});
+    client.on('error', () => {{ clearTimeout(timer); resolve(); }});
+    client.on('close', () => {{ clearTimeout(timer); resolve(); }});
+  }});
+  try {{ server.close(); }} catch (e) {{}}
+  const sep = raw.indexOf('\r\n\r\n');
+  if (sep === -1) {{
+    return raw;
+  }}
+  return raw.subarray(0, sep);
+}}
+
+function nyxWireFrameProbe(rawBytes) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'net.Server.socket.write',
+    args: [],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'HeaderWireFrame', raw_bytes: Array.from(rawBytes) }},
+    witness: __nyx_witness('net.Server.socket.write', []),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+"#
+        )
+    } else {
+        String::new()
+    };
 
     let via_fixture = if uses_node_writer {
         format!(
@@ -1434,8 +1544,74 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
         "const name = 'Set-Cookie';\nconst value = payload;\nnyxHeaderProbe(name, value);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ name: name, value: value }));\n"
     };
 
-    let body = format!(
-        r#"// Nyx dynamic harness — HEADER_INJECTION http.ServerResponse#setHeader (Phase 08 / Track J.6).
+    // Phase 08 tier-(b): when the fixture imports `net.createServer`, run
+    // the wire-frame branch first (async IIFE awaits the loopback round
+    // trip).  When it succeeds, emit a `HeaderWireFrame` probe plus a
+    // derived `HeaderEmit` per Set-Cookie line and exit.  When it returns
+    // null (require/boot failure), fall through to the existing sync
+    // tier-(a) / synthetic path so the harness still produces some
+    // signal.
+    let body = if uses_raw_socket {
+        format!(
+            r#"// Nyx dynamic harness — HEADER_INJECTION net.Server raw-socket wire-frame (Phase 08 / Track J.6).
+{shim}
+
+function nyxHeaderProbe(name, value) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'http.ServerResponse#setHeader',
+    args: [
+      {{ kind: 'String', value: name }},
+      {{ kind: 'String', value: value }},
+    ],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'HeaderEmit', name: name, value: value, protocol: 'in-process' }},
+    witness: __nyx_witness('http.ServerResponse#setHeader', [name, value]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+{wire_frame_via_fixture}(async () => {{
+  const payload = process.env.NYX_PAYLOAD || '';
+  const rawBytes = await nyxWireFrameViaFixture(payload);
+  if (rawBytes !== null && rawBytes !== undefined) {{
+    nyxWireFrameProbe(rawBytes);
+    // Also emit a HeaderEmit record per Set-Cookie line so the tier-(a)
+    // HeaderInjected predicate fires on the same payload that trips
+    // HeaderSmuggledInWire.  The wire-frame branch is the source of
+    // truth; the HeaderEmit records are derived from the same captured
+    // bytes.
+    const headerText = rawBytes.toString('binary');
+    for (const line of headerText.split('\r\n')) {{
+      const sep = line.indexOf(': ');
+      if (sep < 0) continue;
+      const hname = line.slice(0, sep);
+      if (hname.toLowerCase() !== 'set-cookie') continue;
+      const hvalue = line.slice(sep + 2);
+      nyxHeaderProbe(hname, hvalue);
+    }}
+    console.log('__NYX_SINK_HIT__');
+    console.log(JSON.stringify({{ wire_frame_len: rawBytes.length }}));
+    return;
+  }}
+  // Synthetic fallback — wire-frame branch did not produce bytes.
+  const name = 'Set-Cookie';
+  const value = payload;
+  nyxHeaderProbe(name, value);
+  console.log('__NYX_SINK_HIT__');
+  console.log(JSON.stringify({{ name: name, value: value }}));
+}})();
+"#
+        )
+    } else {
+        format!(
+            r#"// Nyx dynamic harness — HEADER_INJECTION http.ServerResponse#setHeader (Phase 08 / Track J.6).
 {shim}
 
 function nyxHeaderProbe(name, value) {{
@@ -1461,7 +1637,8 @@ function nyxHeaderProbe(name, value) {{
 
 {via_fixture}const payload = process.env.NYX_PAYLOAD || '';
 {invoke_via_fixture}"#
-    );
+        )
+    };
     HarnessSource {
         source: body,
         filename: "harness.js".to_owned(),
@@ -3023,6 +3200,93 @@ mod tests {
         assert!(
             h.source.contains("const name = 'Set-Cookie';"),
             "fallback path must emit the inline synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_wire_frame_when_net_create_server_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_js_test_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const net = require('net');\nlet cookieValue = Buffer.alloc(0);\nfunction setCookieValue(v) { cookieValue = Buffer.from(String(v)); }\nfunction createServer() { return net.createServer((s) => { s.write(Buffer.concat([Buffer.from('HTTP/1.0 200 OK\\r\\nSet-Cookie: '), cookieValue, Buffer.from('\\r\\n\\r\\nok')])); s.end(); }); }\nmodule.exports = { setCookieValue, createServer };\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("async function nyxWireFrameViaFixture(payload)"),
+            "tier-(b) harness must define the async wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require('./vuln')"),
+            "tier-(b) harness must require the staged fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("mod.createServer()"),
+            "tier-(b) harness must boot the fixture's net.Server: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'GET / HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n'"),
+            "tier-(b) harness must issue a raw GET over the client socket: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("kind: 'HeaderWireFrame', raw_bytes: Array.from(rawBytes)"),
+            "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("wire_frame_len: rawBytes.length"),
+            "tier-(b) harness must print the wire_frame_len stdout marker: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("if (hname.toLowerCase() !== 'set-cookie')"),
+            "tier-(b) harness must derive a HeaderEmit probe per Set-Cookie line: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_drops_wire_frame_branch_when_only_http_required() {
+        let dir = std::env::temp_dir().join("nyx_phase08_js_test_no_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("async function nyxWireFrameViaFixture"),
+            "http-only harness must not emit the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("HeaderWireFrame"),
+            "http-only harness must not emit the HeaderWireFrame probe shape: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("wire_frame_len"),
+            "http-only harness must not emit the wire_frame_len stdout marker: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
