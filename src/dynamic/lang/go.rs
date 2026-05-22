@@ -758,13 +758,61 @@ func main() {{
 /// Phase 08 — Track J.6 header-injection harness for Go
 /// (`http.ResponseWriter.Header().Set`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented `Header.Set`
-/// shim that records the *unmodified* value bytes (including any
-/// embedded `\r\n`) via a `ProbeKind::HeaderEmit` probe.  Mirrors
-/// the synthetic-harness pattern used by Phase 05.
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier (a): when the fixture imports `net/http` and exposes a
+/// `func <Name>(w http.ResponseWriter, value string)`, the harness
+/// rewrites the fixture's `package <X>` declaration to
+/// `package vulnentry`, stages the rewritten copy under
+/// `internal/vulnentry/`, drives the fixture against
+/// `httptest.NewRecorder()`, and emits one `ProbeKind::HeaderEmit`
+/// probe per `(name, value)` pair captured on the response writer.
+///
+/// Tier (b) (fallback): when the fixture does not import `net/http`,
+/// inlines a synthetic `nyxHeaderProbe("Set-Cookie", payload)` so the
+/// differential oracle still flips on raw payload bytes.  Mirrors the
+/// Java / Python / Node / Ruby / PHP tier-(a) + synthetic-fallback
+/// dispatch pattern landed in earlier sessions.
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let tier_a_active = entry_source_imports_net_http(&entry_source);
+
+    let mut extra_imports = "";
+    let mut via_fixture_decl = String::new();
+    let via_fixture_invoke;
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+
+    if tier_a_active {
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push((
+            "internal/vulnentry/vulnentry.go".to_owned(),
+            rewritten,
+        ));
+        extra_imports = "\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n";
+        via_fixture_decl = format!(
+            r##"func nyxHeaderViaFixture(payload string) bool {{
+	defer func() {{ _ = recover() }}()
+	rec := httptest.NewRecorder()
+	vulnentry.{entry_fn}(rec, payload)
+	fired := false
+	for name, values := range rec.Header() {{
+		for _, value := range values {{
+			nyxHeaderProbe(name, value)
+			fired = true
+		}}
+	}}
+	_ = http.StatusOK
+	return fired
+}}
+
+"##
+        );
+        via_fixture_invoke = "\tif !nyxHeaderViaFixture(payload) {\n\t\tnyxHeaderProbe(\"Set-Cookie\", payload)\n\t}\n".to_owned();
+    } else {
+        via_fixture_invoke = "\tnyxHeaderProbe(\"Set-Cookie\", payload)\n".to_owned();
+    }
+
     let source = format!(
         r##"// Nyx dynamic harness — HEADER_INJECTION http.ResponseWriter.Header().Set (Phase 08 / Track J.6).
 package main
@@ -777,7 +825,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-)
+{extra_imports})
 
 {shim}
 
@@ -795,15 +843,12 @@ func nyxHeaderProbe(name, value string) {{
 	}})
 }}
 
-func main() {{
+{via_fixture_decl}func main() {{
 	__nyx_install_crash_guard("http.ResponseWriter.Header.Set")
 	defer __nyx_recover_crash("http.ResponseWriter.Header.Set")()
 	payload := os.Getenv("NYX_PAYLOAD")
-	name := "Set-Cookie"
-	value := payload
-	nyxHeaderProbe(name, value)
-	fmt.Println("__NYX_SINK_HIT__")
-	body, _ := json.Marshal(map[string]interface{{}}{{"name": name, "value": value}})
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"payload_len": len(payload)}})
 	fmt.Println(string(body))
 }}
 "##
@@ -812,24 +857,154 @@ func main() {{
         source,
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
-        extra_files: vec![("go.mod".to_owned(), go_mod)],
-        // Park the fixture under `entry/` so `go build .` only picks up
-        // the synthetic `main.go` — fixtures declare `package vuln` /
-        // `package benign`, which would otherwise collide with the
-        // harness's `package main` and break the build.
+        extra_files,
+        // Park the raw fixture under `entry/` so `go build .` ignores
+        // it (the directory is never imported by main).  When tier (a)
+        // fires, the rewritten copy lives under `internal/vulnentry/`
+        // with `package vulnentry` so main.go can import it directly.
         entry_subpath: Some("entry/entry.go".to_owned()),
     }
+}
+
+/// Tier-(a) gate for HEADER_INJECTION + OPEN_REDIRECT: the fixture
+/// must import `net/http` (header injection) or otherwise expose the
+/// stdlib `http.ResponseWriter` / `http.Request` surface.  Returns
+/// `true` for any `import "net/http"` style declaration.
+fn entry_source_imports_net_http(src: &str) -> bool {
+    src.contains("\"net/http\"")
+}
+
+/// Rewrite the first `^package <ident>$` line in `src` to
+/// `package <target>`.  Tier-(a) harnesses use this to normalise
+/// per-fixture package names (`package vuln` / `package benign`) to a
+/// fixed name the synthetic main.go can import.  Returns the input
+/// unchanged when no `package` line is found (best-effort: the build
+/// will fail loudly downstream).
+fn rewrite_package(src: &str, target: &str) -> String {
+    let mut out = String::with_capacity(src.len() + 16);
+    let mut rewrote = false;
+    for line in src.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if !rewrote
+            && let Some(rest) = trimmed.strip_prefix("package ")
+            && !rest.trim().is_empty()
+        {
+            out.push_str("package ");
+            out.push_str(target);
+            // Preserve original line ending.
+            if line.ends_with("\r\n") {
+                out.push_str("\r\n");
+            } else if line.ends_with('\n') {
+                out.push('\n');
+            }
+            rewrote = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Phase 09 — Track J.7 open-redirect harness for Go (`gin.Context.Redirect`
 /// / `http.Redirect`).
 ///
-/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented redirect shim
-/// that records the bound `Location:` value plus the request's
-/// origin host via a `ProbeKind::Redirect` probe.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Tier (a) — gin shape: when the fixture imports
+/// `github.com/gin-gonic/gin`, the harness rewrites the fixture's
+/// `package <X>` to `package vulnentry`, rewrites the `gin` import to a
+/// local stub path, stages the rewritten fixture + gin stub copy
+/// under `internal/vulnentry/`, constructs
+/// `gin.NewContext(httptest.NewRecorder(), req)`, calls
+/// `vulnentry.<Run>(ctx, payload)`, and emits a `ProbeKind::Redirect`
+/// probe carrying the `Location:` value the stub captured.
+///
+/// Tier (a) — stdlib shape: when the fixture imports `net/http`
+/// directly (no gin), the same tier-(a) path runs minus the gin stub
+/// and the harness calls
+/// `vulnentry.<Run>(httptest.NewRecorder(), <req>, payload)`.
+///
+/// Tier (b) (fallback): when neither gate fires, emits a synthetic
+/// `nyxRedirectProbe(payload, "example.com")` so the differential
+/// oracle still flips on the raw payload.
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let go_mod = generate_go_mod();
+    let entry_fn = capitalize_first(&spec.entry_name);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let imports_gin = entry_source.contains("gin-gonic/gin");
+    let imports_net_http = entry_source_imports_net_http(&entry_source);
+
+    let mut extra_imports = String::new();
+    let mut via_fixture_decl = String::new();
+    let mut via_fixture_invoke = String::new();
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+
+    if imports_gin {
+        // Rewrite package + gin import to local stub.
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        let rewritten = rewritten.replace(
+            "\"github.com/gin-gonic/gin\"",
+            "\"nyx-harness/internal/vulnentry/gin\"",
+        );
+        extra_files.push((
+            "internal/vulnentry/vulnentry.go".to_owned(),
+            rewritten,
+        ));
+        extra_files.push((
+            "internal/vulnentry/gin/gin.go".to_owned(),
+            gin_stub_pkg(),
+        ));
+        extra_imports.push_str("\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n\t\"nyx-harness/internal/vulnentry/gin\"\n");
+        via_fixture_decl.push_str(&format!(
+            r##"func nyxRedirectViaFixture(payload string) (string, bool) {{
+	defer func() {{ _ = recover() }}()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", strings.NewReader(""))
+	ctx := gin.NewContext(rec, req)
+	vulnentry.{entry_fn}(ctx, payload)
+	loc := rec.Header().Get("Location")
+	if loc == "" {{
+		return "", false
+	}}
+	_ = http.StatusOK
+	return loc, true
+}}
+
+"##
+        ));
+        via_fixture_invoke.push_str(
+            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t}\n",
+        );
+    } else if imports_net_http {
+        // Plain stdlib `http.Redirect(w, r, value, status)` fixture.
+        let rewritten = rewrite_package(&entry_source, "vulnentry");
+        extra_files.push((
+            "internal/vulnentry/vulnentry.go".to_owned(),
+            rewritten,
+        ));
+        extra_imports.push_str("\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n");
+        via_fixture_decl.push_str(&format!(
+            r##"func nyxRedirectViaFixture(payload string) (string, bool) {{
+	defer func() {{ _ = recover() }}()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", strings.NewReader(""))
+	vulnentry.{entry_fn}(rec, req, payload)
+	loc := rec.Header().Get("Location")
+	if loc == "" {{
+		return "", false
+	}}
+	_ = http.StatusOK
+	return loc, true
+}}
+
+"##
+        ));
+        via_fixture_invoke.push_str(
+            "\tif loc, ok := nyxRedirectViaFixture(payload); ok {\n\t\tnyxRedirectProbe(loc, requestHost)\n\t} else {\n\t\tnyxRedirectProbe(payload, requestHost)\n\t}\n",
+        );
+    } else {
+        via_fixture_invoke.push_str("\tnyxRedirectProbe(payload, requestHost)\n");
+    }
+
     let source = format!(
         r##"// Nyx dynamic harness — OPEN_REDIRECT c.Redirect (Phase 09 / Track J.7).
 package main
@@ -842,7 +1017,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-)
+{extra_imports})
 
 {shim}
 
@@ -859,15 +1034,13 @@ func nyxRedirectProbe(location, requestHost string) {{
 	}})
 }}
 
-func main() {{
+{via_fixture_decl}func main() {{
 	__nyx_install_crash_guard("gin.Context.Redirect")
 	defer __nyx_recover_crash("gin.Context.Redirect")()
 	payload := os.Getenv("NYX_PAYLOAD")
 	requestHost := "example.com"
-	location := payload
-	nyxRedirectProbe(location, requestHost)
-	fmt.Println("__NYX_SINK_HIT__")
-	body, _ := json.Marshal(map[string]interface{{}}{{"location": location, "request_host": requestHost}})
+{via_fixture_invoke}	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"request_host": requestHost}})
 	fmt.Println(string(body))
 }}
 "##
@@ -876,11 +1049,10 @@ func main() {{
         source,
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
-        extra_files: vec![("go.mod".to_owned(), go_mod)],
-        // Park the fixture under `entry/` so `go build .` only picks up
-        // the synthetic `main.go` — fixtures declare `package vuln` /
-        // `package benign`, which would otherwise collide with the
-        // harness's `package main` and break the build.
+        extra_files,
+        // Park the raw fixture under `entry/` so `go build .` ignores
+        // it (the directory is never imported by main).  Tier (a)
+        // ships the rewritten copy under `internal/vulnentry/`.
         entry_subpath: Some("entry/entry.go".to_owned()),
     }
 }
@@ -1489,6 +1661,13 @@ func (c *Context) String(code int, format string, values ...interface{}) {
 		fmt.Fprintf(c.Writer, format, values...)
 	}
 }
+
+func (c *Context) Redirect(code int, location string) {
+	if c.Writer != nil {
+		c.Writer.Header().Set("Location", location)
+		c.Writer.WriteHeader(code)
+	}
+}
 "#
     .to_owned()
 }
@@ -1861,5 +2040,200 @@ mod tests {
         // Driver imports preserved alongside the shim imports.
         assert!(step.source.contains("\"fmt\""));
         assert!(step.source.contains("\"os\""));
+    }
+
+    // ── Phase 08 / 09 tier-(a) helpers + emitters ───────────────────────────
+
+    #[test]
+    fn rewrite_package_replaces_first_package_line() {
+        let src = "// header\npackage vuln\n\nimport \"net/http\"\n\nfunc Run() {}\n";
+        let out = rewrite_package(src, "vulnentry");
+        assert!(
+            out.contains("\npackage vulnentry\n"),
+            "rewrite must produce `package vulnentry`, got:\n{out}",
+        );
+        assert!(
+            !out.contains("\npackage vuln\n"),
+            "original `package vuln` must be gone after rewrite, got:\n{out}",
+        );
+        // Other lines preserved verbatim.
+        assert!(out.contains("// header"));
+        assert!(out.contains("import \"net/http\""));
+        assert!(out.contains("func Run() {}"));
+    }
+
+    #[test]
+    fn rewrite_package_handles_crlf_line_endings() {
+        let src = "package benign\r\nimport \"net/http\"\r\n";
+        let out = rewrite_package(src, "vulnentry");
+        assert!(out.starts_with("package vulnentry\r\n"));
+        assert!(out.contains("import \"net/http\""));
+    }
+
+    #[test]
+    fn rewrite_package_passes_through_when_no_package_line() {
+        let src = "// no package decl here\nimport \"net/http\"\n";
+        let out = rewrite_package(src, "vulnentry");
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn header_injection_tier_a_fires_when_net_http_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "tests/dynamic_fixtures/header_injection/go/vuln.go".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            harness.source.contains("nyx-harness/internal/vulnentry"),
+            "tier-(a) header_injection must import the rewritten fixture package",
+        );
+        assert!(
+            harness.source.contains("nyxHeaderViaFixture(payload)"),
+            "tier-(a) header_injection must dispatch via fixture wrapper",
+        );
+        assert!(
+            harness.source.contains("vulnentry.Run(rec, payload)"),
+            "tier-(a) header_injection must call <entry>.Run(rec, payload)",
+        );
+        assert!(
+            harness.source.contains("rec.Header()"),
+            "tier-(a) header_injection must walk rec.Header() for captured headers",
+        );
+        // Rewritten fixture must be staged under internal/vulnentry/.
+        let staged = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged.is_some(),
+            "tier-(a) header_injection must stage internal/vulnentry/vulnentry.go",
+        );
+        assert!(
+            staged.unwrap().1.contains("package vulnentry"),
+            "staged fixture must carry the rewritten package declaration",
+        );
+    }
+
+    #[test]
+    fn header_injection_tier_b_falls_back_when_no_net_http() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "/nonexistent/missing.go".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            !harness.source.contains("nyx-harness/internal/vulnentry"),
+            "tier-(b) header_injection must not import a fixture package",
+        );
+        assert!(
+            harness.source.contains("nyxHeaderProbe(\"Set-Cookie\", payload)"),
+            "tier-(b) header_injection must emit synthetic Set-Cookie probe",
+        );
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .all(|(p, _)| p != "internal/vulnentry/vulnentry.go"),
+            "tier-(b) header_injection must not stage a rewritten fixture",
+        );
+    }
+
+    #[test]
+    fn open_redirect_tier_a_fires_when_gin_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "tests/dynamic_fixtures/open_redirect/go/vuln.go".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            harness.source.contains("nyx-harness/internal/vulnentry"),
+            "tier-(a) open_redirect must import the rewritten fixture package",
+        );
+        assert!(
+            harness.source.contains("nyx-harness/internal/vulnentry/gin"),
+            "tier-(a) open_redirect must import the local gin stub",
+        );
+        assert!(
+            harness.source.contains("nyxRedirectViaFixture(payload)"),
+            "tier-(a) open_redirect must dispatch via fixture wrapper",
+        );
+        assert!(
+            harness.source.contains("vulnentry.Run(ctx, payload)"),
+            "tier-(a) open_redirect must call <entry>.Run(ctx, payload)",
+        );
+        assert!(
+            harness.source.contains("rec.Header().Get(\"Location\")"),
+            "tier-(a) open_redirect must read Location off the recorder",
+        );
+        let staged_fixture = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "internal/vulnentry/vulnentry.go");
+        assert!(
+            staged_fixture.is_some(),
+            "tier-(a) open_redirect must stage internal/vulnentry/vulnentry.go",
+        );
+        let staged_fixture = staged_fixture.unwrap();
+        assert!(
+            staged_fixture.1.contains("package vulnentry"),
+            "staged fixture must carry the rewritten package",
+        );
+        assert!(
+            staged_fixture
+                .1
+                .contains("\"nyx-harness/internal/vulnentry/gin\""),
+            "staged fixture must have its gin import rewritten to the local stub",
+        );
+        let staged_gin = harness
+            .extra_files
+            .iter()
+            .find(|(p, _)| p == "internal/vulnentry/gin/gin.go");
+        assert!(
+            staged_gin.is_some(),
+            "tier-(a) open_redirect must stage the gin stub",
+        );
+        assert!(
+            staged_gin.unwrap().1.contains("func (c *Context) Redirect("),
+            "staged gin stub must expose Redirect",
+        );
+    }
+
+    #[test]
+    fn open_redirect_tier_b_falls_back_when_no_framework() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "Run".into();
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = "/nonexistent/missing.go".into();
+        let harness = emit_open_redirect_harness(&spec);
+        assert!(
+            !harness.source.contains("nyx-harness/internal/vulnentry"),
+            "tier-(b) open_redirect must not import a fixture package",
+        );
+        assert!(
+            harness
+                .source
+                .contains("nyxRedirectProbe(payload, requestHost)"),
+            "tier-(b) open_redirect must emit synthetic redirect probe",
+        );
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .all(|(p, _)| !p.starts_with("internal/vulnentry/")),
+            "tier-(b) open_redirect must not stage any rewritten fixture or stub",
+        );
+    }
+
+    #[test]
+    fn gin_stub_pkg_exposes_redirect_method() {
+        let stub = gin_stub_pkg();
+        assert!(
+            stub.contains("func (c *Context) Redirect(code int, location string)"),
+            "gin stub must expose a Redirect method tier-(a) open_redirect drives the fixture through",
+        );
+        // The Redirect method must set Location and write the status.
+        assert!(stub.contains("c.Writer.Header().Set(\"Location\", location)"));
+        assert!(stub.contains("c.Writer.WriteHeader(code)"));
     }
 }
