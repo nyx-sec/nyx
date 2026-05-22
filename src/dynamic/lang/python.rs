@@ -2166,6 +2166,130 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let uses_flask = entry_source.contains("from flask")
         || entry_source.contains("import flask")
         || entry_source.contains("werkzeug.wrappers");
+    // Phase 08 tier-(b): a fixture that subclasses
+    // `BaseHTTPRequestHandler` writes bytes straight to the response
+    // socket via `self.wfile.write`, bypassing every framework-level
+    // CRLF validator (werkzeug / Flask / axum / Tomcat all strip CRLF
+    // before write).  The harness boots the handler on a loopback
+    // port and captures the raw response-header block as a
+    // `ProbeKind::HeaderWireFrame` probe.
+    let uses_raw_socket = entry_source.contains("BaseHTTPRequestHandler");
+    let wire_frame_via_fixture = if uses_raw_socket {
+        format!(
+            r#"def _nyx_wire_frame_via_fixture(payload):
+    # Phase 08 tier-(b): boot the fixture's BaseHTTPRequestHandler on
+    # 127.0.0.1:0, issue one raw-socket GET, read the bytes the handler
+    # wrote to the response socket up to the CRLF-CRLF boundary.
+    # Returns the captured header-block bytes on success, or None on
+    # import / boot failure so the caller can fall back to the inline
+    # synthetic probe.
+    import http.server
+    import socket
+    import threading
+    sys.path.insert(0, ".")
+    try:
+        mod = importlib.import_module("{module_name}")
+    except Exception:
+        return None
+    Handler = getattr(mod, "VulnHandler", None)
+    if Handler is None:
+        return None
+    try:
+        if isinstance(payload, str):
+            Handler.cookie_value = payload.encode("utf-8")
+        else:
+            Handler.cookie_value = bytes(payload)
+    except Exception:
+        return None
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    except Exception:
+        return None
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    raw = b""
+    try:
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        except Exception:
+            return None
+        try:
+            sock.settimeout(2.0)
+            sock.sendall(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            while len(raw) < 65536:
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                raw += chunk
+                if b"\r\n\r\n" in raw:
+                    break
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+    finally:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        try:
+            server.server_close()
+        except Exception:
+            pass
+    sep = raw.find(b"\r\n\r\n")
+    if sep == -1:
+        return raw
+    return raw[:sep]
+
+
+def _nyx_wire_frame_probe(raw_bytes):
+    rec = {{
+        "sink_callee": "http.server.wfile.write",
+        "args": [],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{"kind": "HeaderWireFrame", "raw_bytes": list(raw_bytes)}},
+        "witness": __nyx_witness("http.server.wfile.write", []),
+    }}
+    __nyx_emit(rec)
+
+
+"#
+        )
+    } else {
+        String::new()
+    };
+    let invoke_via_wire_frame = if uses_raw_socket {
+        r#"    raw_bytes = _nyx_wire_frame_via_fixture(payload)
+    if raw_bytes is not None:
+        _nyx_wire_frame_probe(raw_bytes)
+        # Also emit a HeaderEmit record per Set-Cookie line so the
+        # tier-(a) HeaderInjected predicate fires on the same payload
+        # that trips HeaderSmuggledInWire.  The wire-frame branch is
+        # the source of truth; the HeaderEmit records are derived from
+        # the same captured bytes.
+        for line in raw_bytes.split(b"\r\n"):
+            sep = line.find(b": ")
+            if sep < 0:
+                continue
+            name = line[:sep].decode("ascii", "replace")
+            if name.lower() != "set-cookie":
+                continue
+            value = line[sep + 2:].decode("utf-8", "replace")
+            _nyx_header_probe(name, value)
+        print("__NYX_SINK_HIT__", flush=True)
+        sys.stdout.write(json.dumps({"wire_frame_len": len(raw_bytes)}) + "\n")
+        sys.stdout.flush()
+        return
+"#
+    } else {
+        ""
+    };
     let via_fixture = if uses_flask {
         format!(
             r#"def _nyx_header_via_fixture(payload):
@@ -2236,10 +2360,14 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     } else {
         ""
     };
-    let importlib_import = if uses_flask { "import importlib\n" } else { "" };
+    let importlib_import = if uses_flask || uses_raw_socket {
+        "import importlib\n"
+    } else {
+        ""
+    };
     let body = format!(
         r#"#!/usr/bin/env python3
-"""Nyx dynamic harness — HEADER_INJECTION flask.Response.headers.__setitem__ (Phase 08 / Track J.6)."""
+"""Nyx dynamic harness — HEADER_INJECTION flask.Response.headers.__setitem__ + raw-socket wire-frame (Phase 08 / Track J.6)."""
 {importlib_import}import json
 import os
 import sys
@@ -2263,9 +2391,9 @@ def _nyx_header_probe(name, value):
     __nyx_emit(rec)
 
 
-{via_fixture}def _nyx_run():
+{wire_frame_via_fixture}{via_fixture}def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
-{invoke_via_fixture}    # Synthetic fallback — mirrors
+{invoke_via_wire_frame}{invoke_via_fixture}    # Synthetic fallback — mirrors
     # `werkzeug.datastructures.Headers.__setitem__` semantics: the
     # value bytes flow through unmodified, so a tainted payload that
     # carries raw `\r\n` lands on the wire as a header split.
@@ -3749,6 +3877,89 @@ mod tests {
         assert!(
             h.source.contains("importlib.import_module(\"benign\")"),
             "module name must come from the entry-file stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_wire_frame_when_base_http_request_handler_imported()
+     {
+        let dir = std::env::temp_dir().join("nyx_phase08_py_test_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.py");
+        std::fs::write(
+            &entry,
+            "from http.server import BaseHTTPRequestHandler\n\
+             class VulnHandler(BaseHTTPRequestHandler):\n    cookie_value = b''\n    def do_GET(self):\n        self.wfile.write(b'HTTP/1.0 200 OK\\r\\nSet-Cookie: ' + self.__class__.cookie_value + b'\\r\\n\\r\\nok')\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_wire_frame_via_fixture(payload):"),
+            "tier-(b) harness must define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("http.server.HTTPServer((\"127.0.0.1\", 0)"),
+            "tier-(b) harness must boot HTTPServer on loopback ephemeral port: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("getattr(mod, \"VulnHandler\", None)"),
+            "tier-(b) harness must look up the VulnHandler class: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("raw_bytes = _nyx_wire_frame_via_fixture(payload)"),
+            "harness main must call the wire-frame helper first when raw-socket fixture detected: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains(r#""kind": {"kind": "HeaderWireFrame", "raw_bytes": list(raw_bytes)}"#),
+            "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
+            h.source
+        );
+        // Wire-frame branch also derives HeaderEmit records from the
+        // captured Set-Cookie lines so the tier-(a) HeaderInjected
+        // predicate fires on the same payload.
+        assert!(
+            h.source.contains("_nyx_header_probe(name, value)"),
+            "wire-frame branch must also emit derived HeaderEmit probes: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_drops_wire_frame_branch_when_only_flask_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_py_test_no_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.py");
+        std::fs::write(
+            &entry,
+            "from flask import Response\n\
+             def run(value):\n    response = Response('ok')\n    response.headers['Set-Cookie'] = value\n    return response\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("def _nyx_wire_frame_via_fixture"),
+            "flask-only fixture must not pull in the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("HeaderWireFrame"),
+            "flask-only harness must not emit the HeaderWireFrame probe shape: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);

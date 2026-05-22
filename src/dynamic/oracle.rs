@@ -420,6 +420,27 @@ pub enum ProbePredicate {
         /// expression expanded into an over-broad selector.
         n: u32,
     },
+    /// Phase 11 (Track J.9): JSON_PARSE depth-bomb predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::JsonParse`] whose `depth > max_depth` OR whose
+    /// `excessive_depth` flag is set.  The canonical attacker payload
+    /// is a deeply-nested JSON document (`[[[[[...]]]]]`) that drives
+    /// the host's parser to a recursion limit or stack-exhaustion
+    /// shape; the benign control is a flat or shallowly-nested
+    /// document that leaves the predicate clear.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] — evaluated across every drained
+    /// probe rather than against a single record.
+    JsonParseExcessiveDepth {
+        /// Maximum legal nesting depth.  A captured probe with
+        /// `depth > max_depth` (or `excessive_depth = true`) fires the
+        /// predicate.  Typical benign depths are under 8; depth-bomb
+        /// payloads ship 256+ nested arrays.
+        max_depth: u32,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -649,6 +670,20 @@ pub fn oracle_fired_with_stubs(
             if !outbound_ok {
                 return false;
             }
+            // Phase 11 (Track J.9): JSON_PARSE depth-bomb cross-cutting
+            // predicates.  Each `JsonParseExcessiveDepth { max_depth }`
+            // consults the captured probe channel for a
+            // [`ProbeKind::JsonParse`] record whose `depth > max_depth`
+            // OR whose `excessive_depth` flag is set.
+            let json_parse_ok = cross.iter().all(|p| match p {
+                ProbePredicate::JsonParseExcessiveDepth { max_depth } => {
+                    probes_satisfy_json_parse_excessive(probes, *max_depth)
+                }
+                _ => true,
+            });
+            if !json_parse_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -687,7 +722,8 @@ pub fn oracle_fired_with_stubs(
             | ProbeKind::PrototypePollution { .. }
             | ProbeKind::WeakKey { .. }
             | ProbeKind::IdorAccess { .. }
-            | ProbeKind::OutboundNetwork { .. } => false,
+            | ProbeKind::OutboundNetwork { .. }
+            | ProbeKind::JsonParse { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -721,6 +757,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::WeakKeyEntropy { .. }
             | ProbePredicate::IdorBoundaryCrossed
             | ProbePredicate::OutboundHostNotIn { .. }
+            | ProbePredicate::JsonParseExcessiveDepth { .. }
     )
 }
 
@@ -1007,6 +1044,25 @@ fn probes_satisfy_outbound_off_list(probes: &[SinkProbe], allowlist: &[&str]) ->
     })
 }
 
+/// True when at least one drained probe is a
+/// [`ProbeKind::JsonParse`] record whose `depth > max_depth` OR whose
+/// `excessive_depth` flag is set.  Powers
+/// [`ProbePredicate::JsonParseExcessiveDepth`] (Phase 11 — Track J.9).
+///
+/// `excessive_depth` short-circuits — a shim that already caught the
+/// parser's own recursion-limit signal can emit
+/// `JsonParse { depth: 0, excessive_depth: true }` without counting
+/// nesting manually and still trip the predicate.
+fn probes_satisfy_json_parse_excessive(probes: &[SinkProbe], max_depth: u32) -> bool {
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::JsonParse {
+            depth,
+            excessive_depth,
+        } => *excessive_depth || *depth > max_depth,
+        _ => false,
+    })
+}
+
 /// Returns `true` when `location` redirects to a host that is neither
 /// `request_host` nor any entry of `allowlist`.  Crate-visible so the
 /// in-crate predicate above and the colocated tests can share one
@@ -1117,7 +1173,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::PrototypeCanaryTouched { .. }
         | ProbePredicate::WeakKeyEntropy { .. }
         | ProbePredicate::IdorBoundaryCrossed
-        | ProbePredicate::OutboundHostNotIn { .. } => true,
+        | ProbePredicate::OutboundHostNotIn { .. }
+        | ProbePredicate::JsonParseExcessiveDepth { .. } => true,
     }
 }
 
@@ -1150,7 +1207,8 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         | ProbeKind::PrototypePollution { .. }
         | ProbeKind::WeakKey { .. }
         | ProbeKind::IdorAccess { .. }
-        | ProbeKind::OutboundNetwork { .. } => None,
+        | ProbeKind::OutboundNetwork { .. }
+        | ProbeKind::JsonParse { .. } => None,
     }
 }
 
@@ -1723,5 +1781,61 @@ mod tests {
             signals: SignalSet::all(),
         };
         assert!(!oracle_fired(&oracle, &o, &[]));
+    }
+
+    fn json_parse_probe(depth: u32, excessive_depth: bool) -> SinkProbe {
+        SinkProbe {
+            sink_callee: "json.loads".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "phase11-json".into(),
+            kind: ProbeKind::JsonParse {
+                depth,
+                excessive_depth,
+            },
+            witness: ProbeWitness::empty(),
+        }
+    }
+
+    #[test]
+    fn json_parse_excessive_depth_fires_when_depth_exceeds_budget() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::JsonParseExcessiveDepth { max_depth: 64 }],
+        };
+        let probes = vec![json_parse_probe(512, false)];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn json_parse_excessive_depth_fires_on_short_circuit_flag_even_with_zero_depth() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::JsonParseExcessiveDepth { max_depth: 64 }],
+        };
+        // Shim caught the parser's own recursion limit and emitted
+        // `excessive_depth: true` without counting nesting — predicate
+        // should still fire.
+        let probes = vec![json_parse_probe(0, true)];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn json_parse_excessive_depth_clears_when_depth_within_budget() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::JsonParseExcessiveDepth { max_depth: 64 }],
+        };
+        // Benign control: shallowly nested object.
+        let probes = vec![json_parse_probe(3, false)];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn json_parse_excessive_depth_ignores_unrelated_probe_kinds() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::JsonParseExcessiveDepth { max_depth: 64 }],
+        };
+        // A HeaderEmit probe (different kind) must not satisfy the
+        // predicate even if the shim emitted both for the same payload.
+        let probes = vec![header_emit_probe("Set-Cookie", "noise")];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 }

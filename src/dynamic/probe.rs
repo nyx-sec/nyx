@@ -378,6 +378,38 @@ pub enum ProbeKind {
         /// case-insensitively against the allowlist entries.
         host: String,
     },
+    /// Phase 11 (Track J.9) JSON_PARSE depth observation.  Stamped by
+    /// the per-language harness shim's instrumented JSON parser
+    /// (`json.loads` / `JSON.parse` / `Jackson.readTree` / `serde_json`
+    /// / `Yajl::Parser` / etc.) when the attacker-controlled payload
+    /// is decoded.  `depth` records the maximum nesting depth observed
+    /// during parsing; the
+    /// [`crate::dynamic::oracle::ProbePredicate::JsonParseExcessiveDepth`]
+    /// predicate fires when `depth > max_depth` — the canonical
+    /// JSON-parser depth-bomb / stack-exhaustion shape.
+    ///
+    /// `excessive_depth` is a pre-computed hint the shim sets when it
+    /// already knows the parser tripped a configured depth limit
+    /// (e.g. the parser raised on `RECURSION_LIMIT`).  The oracle's
+    /// predicate consults `depth` directly so the hint is informational
+    /// — it lets host-side tooling render the probe without re-deriving
+    /// the verdict.  Per-shim implementations may emit `depth = 0` when
+    /// the recursion budget tripped and the actual depth was not
+    /// counted; in that case `excessive_depth: true` is the load-bearing
+    /// field.
+    JsonParse {
+        /// Maximum nesting depth observed during the parse.  Zero is
+        /// legal (flat JSON like `[]` or `"x"`).  The oracle compares
+        /// against `ProbePredicate::JsonParseExcessiveDepth::max_depth`.
+        depth: u32,
+        /// Pre-computed flag set by the shim when the parser already
+        /// reported an excessive-depth condition (e.g. CPython's
+        /// `RecursionError`).  The predicate fires on either
+        /// `depth > max_depth` OR `excessive_depth = true`, so a shim
+        /// that catches the parser's own limit signal can short-circuit
+        /// without counting nesting manually.
+        excessive_depth: bool,
+    },
 }
 
 /// Bounded forensic snapshot captured alongside a [`SinkProbe`]
@@ -765,6 +797,69 @@ mod tests {
         assert!(json.contains(r#""kind":"HeaderWireFrame""#));
         let round: SinkProbe = serde_json::from_str(&json).unwrap();
         assert!(matches!(round.kind, ProbeKind::HeaderWireFrame { .. }));
+    }
+
+    #[test]
+    fn probe_kind_json_parse_round_trips_through_channel() {
+        let dir = TempDir::new().unwrap();
+        let ch = ProbeChannel::for_workdir(dir.path()).unwrap();
+        let mut p = sample_probe("json-depth");
+        p.kind = ProbeKind::JsonParse {
+            depth: 512,
+            excessive_depth: true,
+        };
+        ch.write(&p).unwrap();
+        let drained = ch.drain();
+        assert_eq!(drained.len(), 1);
+        match &drained[0].kind {
+            ProbeKind::JsonParse {
+                depth,
+                excessive_depth,
+            } => {
+                assert_eq!(*depth, 512);
+                assert!(*excessive_depth);
+            }
+            other => panic!("expected JsonParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_kind_json_parse_serdes_with_explicit_tag() {
+        let p = SinkProbe {
+            sink_callee: "json.loads".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "json-1".into(),
+            kind: ProbeKind::JsonParse {
+                depth: 7,
+                excessive_depth: false,
+            },
+            witness: ProbeWitness::empty(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            json.contains(r#""kind":"JsonParse""#),
+            "kind tag must round-trip: {json}",
+        );
+        assert!(
+            json.contains(r#""depth":7"#),
+            "depth field must round-trip: {json}",
+        );
+        assert!(
+            json.contains(r#""excessive_depth":false"#),
+            "excessive_depth field must round-trip: {json}",
+        );
+        let round: SinkProbe = serde_json::from_str(&json).unwrap();
+        match round.kind {
+            ProbeKind::JsonParse {
+                depth,
+                excessive_depth,
+            } => {
+                assert_eq!(depth, 7);
+                assert!(!excessive_depth);
+            }
+            other => panic!("expected JsonParse after round-trip, got {other:?}"),
+        }
     }
 
     #[test]
