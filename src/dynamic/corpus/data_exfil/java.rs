@@ -18,7 +18,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 15,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/data_exfil/java/vuln.java"],
+        fixture_paths: &["tests/dynamic_fixtures/data_exfil/java/Vuln.java"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::OutboundHostNotIn {
             allowlist: ALLOWLIST,
@@ -40,7 +40,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 15,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/data_exfil/java/benign.java"],
+        fixture_paths: &["tests/dynamic_fixtures/data_exfil/java/Benign.java"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

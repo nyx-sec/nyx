@@ -148,7 +148,10 @@ mod e2e_data_exfil {
                 Lang::Python => "python",
                 Lang::Ruby => "ruby",
                 Lang::JavaScript => "js",
-                _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby + JavaScript"),
+                Lang::Java => "java",
+                _ => unreachable!(
+                    "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java"
+                ),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -191,7 +194,10 @@ mod e2e_data_exfil {
             Lang::Python => "python3",
             Lang::Ruby => "ruby",
             Lang::JavaScript => "node",
-            _ => unreachable!("DATA_EXFIL e2e currently covers Python + Ruby + JavaScript"),
+            Lang::Java => "javac",
+            _ => unreachable!(
+                "DATA_EXFIL e2e currently covers Python + Ruby + JavaScript + Java"
+            ),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -321,6 +327,43 @@ mod e2e_data_exfil {
         assert!(
             outcome.triggered_by.is_none(),
             "JavaScript DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Java pair, same shape as Python + Ruby + JavaScript.  The vuln
+    /// fixture calls `NyxMockHttp.get("http://" + host + "/exfil?...")`;
+    /// the harness-supplied `NyxMockHttp.captureHost` parses the URL
+    /// host into `CAPTURED_HOSTS`; the harness drains the list after
+    /// the entry returns and emits one `ProbeKind::OutboundNetwork` per
+    /// host.  `OutboundHostNotIn` fires for the attacker payload.  The
+    /// benign fixture's `ALLOWLIST.contains(host)` guard short-circuits
+    /// before reaching `NyxMockHttp.get` for non-loopback payloads, so
+    /// `CAPTURED_HOSTS` stays empty and no probe fires.  Skips when
+    /// `javac` is not on PATH.
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Java DATA_EXFIL vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn java_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Benign.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Java DATA_EXFIL benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

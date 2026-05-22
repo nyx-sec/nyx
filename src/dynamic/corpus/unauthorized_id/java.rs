@@ -14,7 +14,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 15,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/unauthorized_id/java/vuln.java"],
+        fixture_paths: &["tests/dynamic_fixtures/unauthorized_id/java/Vuln.java"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::IdorBoundaryCrossed],
         benign_control: Some(PayloadRef {
@@ -32,7 +32,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 15,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/unauthorized_id/java/benign.java"],
+        fixture_paths: &["tests/dynamic_fixtures/unauthorized_id/java/Benign.java"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

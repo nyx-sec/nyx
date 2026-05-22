@@ -139,7 +139,10 @@ mod e2e_unauthorized_id {
                 Lang::Python => "python",
                 Lang::Ruby => "ruby",
                 Lang::JavaScript => "js",
-                _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript"),
+                Lang::Java => "java",
+                _ => unreachable!(
+                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java"
+                ),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -182,7 +185,10 @@ mod e2e_unauthorized_id {
             Lang::Python => "python3",
             Lang::Ruby => "ruby",
             Lang::JavaScript => "node",
-            _ => unreachable!("UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript"),
+            Lang::Java => "javac",
+            _ => unreachable!(
+                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java"
+            ),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -309,6 +315,40 @@ mod e2e_unauthorized_id {
         assert!(
             outcome.triggered_by.is_none(),
             "JavaScript UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Java pair, same shape as Python + Ruby + JavaScript: the vuln
+    /// fixture's `STORE.get(ownerId)` materialises a record for any
+    /// owner_id; the harness emits a `ProbeKind::IdorAccess` and
+    /// `IdorBoundaryCrossed` fires for `bob`.  The benign fixture's
+    /// `if (!CALLER.equals(ownerId)) return null;` short-circuits for
+    /// the non-caller payload so no probe is emitted and the predicate
+    /// stays clear.  Skips when `javac` is not on PATH.
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Java UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn java_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Benign.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Java UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
         );
     }
 }

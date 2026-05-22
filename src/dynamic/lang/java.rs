@@ -618,6 +618,30 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_json_parse_harness(spec));
     }
 
+    // Phase 11 (Track J.9): UNAUTHORIZED_ID IDOR boundary harness.
+    // Reflectively loads the fixture entry class, invokes the named
+    // static method with the payload as `owner_id`, and emits a
+    // `ProbeKind::IdorAccess { caller_id, owner_id }` probe only when
+    // the fixture returns a non-`null` record.  The benign fixture's
+    // `if (!CALLER.equals(ownerId)) return null;` rejection clears the
+    // probe; the vuln fixture's unguarded `STORE.get(ownerId)` always
+    // materialises a record so the probe fires for every cross-tenant
+    // payload.
+    if spec.expected_cap == crate::labels::Cap::UNAUTHORIZED_ID {
+        return Ok(emit_unauthorized_id_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): DATA_EXFIL outbound-network harness.  Java
+    // has no stdlib monkey-patch hook, so the harness ships a sibling
+    // `NyxMockHttp.java` helper the fixture calls into in place of
+    // `HttpURLConnection.openConnection().connect()`.  `NyxMockHttp.get`
+    // captures the destination host into a shared list without
+    // initiating real wire I/O; the harness then drains the list and
+    // emits a `ProbeKind::OutboundNetwork { host }` probe per call.
+    if spec.expected_cap == crate::labels::Cap::DATA_EXFIL {
+        return Ok(emit_data_exfil_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Routes through
     // the existing `invokeReflective` helper so the harness instantiates
     // the receiver via its no-arg constructor (or null-fills primitive
@@ -2568,6 +2592,299 @@ public class NyxJsonProbe {
         final Object value;
         final int depth;
         Frame(Object v, int d) { this.value = v; this.depth = d; }
+    }
+}
+"#
+}
+
+/// Phase 11 (Track J.9) UNAUTHORIZED_ID IDOR harness for Java.
+///
+/// Reflectively loads the fixture's entry class, invokes the named
+/// static method with the payload as `owner_id` (signature `static
+/// Object <method>(String)`), and emits a
+/// [`crate::dynamic::probe::ProbeKind::IdorAccess`] probe carrying
+/// `caller_id = "alice"` and `owner_id = payload` only when the
+/// fixture returns a non-`null` record.  The benign control's
+/// `if (!CALLER.equals(ownerId)) return null;` rejection clears the
+/// probe; the vuln fixture's unguarded `STORE.get(ownerId)` always
+/// materialises a record so the
+/// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+/// predicate fires for any cross-tenant payload.
+pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+
+    let source = format!(
+        r#"// Nyx dynamic harness — UNAUTHORIZED_ID IDOR boundary (Phase 11 / Track J.9).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+public class NyxHarness {{
+{shim}
+
+    private static final String _NYX_CALLER_ID = "alice";
+
+    static void nyxIdorProbe(String callerId, String ownerId) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"__nyx_idor_lookup\",\"args\":[");
+        line.append("{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(callerId == null ? "" : callerId, line);
+        line.append("\"}},{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(ownerId == null ? "" : ownerId, line);
+        line.append("\"}}],\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"IdorAccess\",\"caller_id\":\"");
+        nyxJsonEscape(callerId == null ? "" : callerId, line);
+        line.append("\",\"owner_id\":\"");
+        nyxJsonEscape(ownerId == null ? "" : ownerId, line);
+        line.append("\"}},\"witness\":");
+        line.append(nyxWitnessJson(
+            "__nyx_idor_lookup",
+            new String[]{{callerId == null ? "" : callerId, ownerId == null ? "" : ownerId}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        Object record = null;
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            record = m.invoke(null, payload);
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            // Fall through; harness still prints sink hit.
+        }} catch (InvocationTargetException ite) {{
+            fixtureInvoked = true;
+        }}
+        if (record != null) {{
+            nyxIdorProbe(_NYX_CALLER_ID, payload);
+        }}
+        System.out.println("__NYX_SINK_HIT__");
+        if (!fixtureInvoked) {{
+            System.out.println("__NYX_UNAUTHORIZED_ID_FALLBACK__");
+        }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+/// Phase 11 (Track J.9) DATA_EXFIL outbound-network harness for Java.
+///
+/// Java has no stdlib monkey-patch hook for `HttpURLConnection`, so the
+/// harness ships a hand-rolled `NyxMockHttp.java` helper alongside
+/// `NyxHarness.java` and the fixture calls into
+/// `NyxMockHttp.get(url)` / `NyxMockHttp.post(url, body)` in place of
+/// any real wire I/O.  The helper parses the URL's host (URI scheme,
+/// bare-host fallback, port-stripping), appends it to
+/// `NyxMockHttp.CAPTURED_HOSTS`, and returns a benign stand-in `String`
+/// so the fixture's consumer code never blocks on the network.  The
+/// harness drains the list after the entry returns and emits one
+/// [`crate::dynamic::probe::ProbeKind::OutboundNetwork`] probe per
+/// captured host.  The
+/// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+/// predicate fires for any host outside the loopback allowlist
+/// (`["127.0.0.1", "localhost"]`).
+pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+
+    let source = format!(
+        r#"// Nyx dynamic harness — DATA_EXFIL outbound-host (Phase 11 / Track J.9).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxOutboundProbe(String host) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"__nyx_mock_http\",\"args\":[");
+        line.append("{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(host == null ? "" : host, line);
+        line.append("\"}}],\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"OutboundNetwork\",\"host\":\"");
+        nyxJsonEscape(host == null ? "" : host, line);
+        line.append("\"}},\"witness\":");
+        line.append(nyxWitnessJson(
+            "__nyx_mock_http",
+            new String[]{{host == null ? "" : host}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        NyxMockHttp.CAPTURED_HOSTS.clear();
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            m.invoke(null, payload);
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            // Fall through; harness still prints sink hit.
+        }} catch (InvocationTargetException ite) {{
+            // Even on throw the captured-host list is drained so a
+            // partial outbound call still emits its probe.
+            fixtureInvoked = true;
+        }}
+        for (String host : NyxMockHttp.CAPTURED_HOSTS) {{
+            nyxOutboundProbe(host);
+        }}
+        System.out.println("__NYX_SINK_HIT__");
+        if (!fixtureInvoked) {{
+            System.out.println("__NYX_DATA_EXFIL_FALLBACK__");
+        }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![(
+            "NyxMockHttp.java".to_owned(),
+            nyx_mock_http_source().to_owned(),
+        )],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+/// Hand-rolled HTTP mock shipped alongside the DATA_EXFIL harness.
+///
+/// Java has no stdlib monkey-patch hook for `HttpURLConnection`, so the
+/// fixture cannot intercept the real-engine outbound call the way the
+/// Python / JS / Ruby DATA_EXFIL fixtures do.  The fixture is rewritten
+/// to call into `NyxMockHttp.get(url)` in place of
+/// `HttpURLConnection.openConnection().connect()`; the helper extracts
+/// the URL host, appends it to `CAPTURED_HOSTS`, and returns a benign
+/// stand-in `String` so the fixture's consumer code never blocks on the
+/// network.  The harness drains `CAPTURED_HOSTS` after the entry
+/// returns to emit one `ProbeKind::OutboundNetwork` record per call.
+fn nyx_mock_http_source() -> &'static str {
+    r#"// Auto-generated by nyx_scanner::dynamic::lang::java::emit_data_exfil_harness.
+// Captures outbound host arguments without initiating real wire I/O so
+// the Phase 11 DATA_EXFIL harness can drain them and emit probes.
+
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+public class NyxMockHttp {
+    public static final List<String> CAPTURED_HOSTS =
+        Collections.synchronizedList(new ArrayList<String>());
+
+    public static String get(String url) {
+        captureHost(url);
+        return "";
+    }
+
+    public static String post(String url, String body) {
+        captureHost(url);
+        return "";
+    }
+
+    public static String request(String method, String url, String body) {
+        captureHost(url);
+        return "";
+    }
+
+    public static String request(String method, String url) {
+        captureHost(url);
+        return "";
+    }
+
+    private static void captureHost(String url) {
+        if (url == null) {
+            CAPTURED_HOSTS.add("");
+            return;
+        }
+        String trimmed = url.trim();
+        if (trimmed.isEmpty()) {
+            CAPTURED_HOSTS.add("");
+            return;
+        }
+        try {
+            if (trimmed.indexOf("://") < 0) {
+                // Bare host[:port][/path] — strip path then port.
+                int slash = trimmed.indexOf('/');
+                String hostPart = slash < 0 ? trimmed : trimmed.substring(0, slash);
+                int colon = hostPart.indexOf(':');
+                CAPTURED_HOSTS.add(colon < 0 ? hostPart : hostPart.substring(0, colon));
+                return;
+            }
+            URI uri = URI.create(trimmed);
+            String host = uri.getHost();
+            CAPTURED_HOSTS.add(host == null ? "" : host);
+        } catch (Exception e) {
+            CAPTURED_HOSTS.add("");
+        }
     }
 }
 "#
@@ -4811,6 +5128,239 @@ mod tests {
             matches!(h.entry_subpath.as_deref(), Some(p) if p == "Vuln.java"),
             "Java JSON_PARSE harness must stage the fixture under its public-class-derived filename so javac's filename invariant holds: got {:?}",
             h.entry_subpath,
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Java UNAUTHORIZED_ID emitter tests ───────────────
+
+    fn make_unauthorized_id_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::UNAUTHORIZED_ID;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
+        let h = emit(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/java/Vuln.java",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxIdorProbe"),
+            "dispatcher must short-circuit Cap::UNAUTHORIZED_ID into emit_unauthorized_id_harness so the IDOR probe shim is present",
+        );
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"IdorAccess\\\""),
+            "Java UNAUTHORIZED_ID harness must record probes with kind: IdorAccess so the IdorBoundaryCrossed predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_pins_caller_id() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("private static final String _NYX_CALLER_ID = \"alice\""),
+            "Java UNAUTHORIZED_ID harness must pin caller_id = \"alice\" so the differential oracle can flag bob/alice as a cross-tenant access",
+        );
+        assert!(
+            h.source.contains("nyxIdorProbe(_NYX_CALLER_ID, payload)"),
+            "Java UNAUTHORIZED_ID harness must seed the probe with the pinned caller_id and the payload as owner_id",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_skips_probe_when_record_is_null() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/java/Benign.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("if (record != null) {"),
+            "Java UNAUTHORIZED_ID harness must gate probe emission on the fixture returning a non-null record so the benign control's null-rejection path clears the predicate",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_routes_through_reflective_entry_invocation() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java UNAUTHORIZED_ID harness must reflectively load the fixture entry class: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("getDeclaredMethod(\"run\", String.class)"),
+            "Java UNAUTHORIZED_ID harness must look up the entry method with a single String parameter",
+        );
+        assert!(
+            h.source.contains("m.invoke(null, payload)"),
+            "Java UNAUTHORIZED_ID harness must invoke the static method with the payload as owner_id",
+        );
+        assert_eq!(
+            h.filename, "NyxHarness.java",
+            "Java UNAUTHORIZED_ID harness must emit a NyxHarness.java file",
+        );
+    }
+
+    #[test]
+    fn emit_unauthorized_id_harness_derives_entry_class_from_fixture() {
+        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
+            "tests/dynamic_fixtures/unauthorized_id/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            matches!(h.entry_subpath.as_deref(), Some(p) if p == "Vuln.java"),
+            "Java UNAUTHORIZED_ID harness must stage the fixture under its public-class-derived filename so javac's filename invariant holds: got {:?}",
+            h.entry_subpath,
+        );
+        assert!(
+            h.extra_files.is_empty(),
+            "Java UNAUTHORIZED_ID harness must not ship sibling helpers — the fixture's data store is in-process",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Java DATA_EXFIL emitter tests ────────────────────
+
+    fn make_data_exfil_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::DATA_EXFIL;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_data_exfil_harness_when_cap_is_data_exfil() {
+        let h = emit(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxOutboundProbe"),
+            "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness so the outbound probe shim is present",
+        );
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"OutboundNetwork\\\""),
+            "Java DATA_EXFIL harness must record probes with kind: OutboundNetwork so the OutboundHostNotIn predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_ships_nyx_mock_http_extra_file() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(name, _)| name == "NyxMockHttp.java"),
+            "Java DATA_EXFIL harness must stage NyxMockHttp.java as a sibling extra file so the fixture's call into the helper resolves at javac time without an HttpURLConnection monkey-patch",
+        );
+        let (_, mock_src) = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "NyxMockHttp.java")
+            .unwrap();
+        assert!(
+            mock_src.contains("public class NyxMockHttp"),
+            "NyxMockHttp.java extra file must declare the helper class",
+        );
+        assert!(
+            mock_src.contains("public static String get(String url)"),
+            "NyxMockHttp must expose a String get(url) helper the fixture calls into",
+        );
+        assert!(
+            mock_src.contains("CAPTURED_HOSTS"),
+            "NyxMockHttp must expose a CAPTURED_HOSTS list the harness drains after invocation",
+        );
+        assert!(
+            mock_src.contains("URI.create(trimmed)"),
+            "NyxMockHttp.captureHost must parse the host via java.net.URI so https://attacker.test/path resolves to attacker.test",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_drains_captured_hosts_after_invocation() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("NyxMockHttp.CAPTURED_HOSTS.clear();"),
+            "Java DATA_EXFIL harness must clear the captured-hosts list before invoking the fixture so probes do not leak between invocations",
+        );
+        assert!(
+            h.source
+                .contains("for (String host : NyxMockHttp.CAPTURED_HOSTS) {"),
+            "Java DATA_EXFIL harness must drain CAPTURED_HOSTS after the fixture returns",
+        );
+        assert!(
+            h.source.contains("nyxOutboundProbe(host)"),
+            "Java DATA_EXFIL harness must emit one OutboundNetwork probe per captured host",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_routes_through_reflective_entry_invocation() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java DATA_EXFIL harness must reflectively load the fixture entry class: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("getDeclaredMethod(\"run\", String.class)"),
+            "Java DATA_EXFIL harness must look up the entry method with a single String parameter",
+        );
+        assert!(
+            h.source.contains("m.invoke(null, payload)"),
+            "Java DATA_EXFIL harness must invoke the static method with the payload as host",
+        );
+        assert_eq!(
+            h.filename, "NyxHarness.java",
+            "Java DATA_EXFIL harness must emit a NyxHarness.java file",
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_derives_entry_class_from_fixture() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            matches!(h.entry_subpath.as_deref(), Some(p) if p == "Vuln.java"),
+            "Java DATA_EXFIL harness must stage the fixture under its public-class-derived filename so javac's filename invariant holds: got {:?}",
+            h.entry_subpath,
+        );
+    }
+
+    #[test]
+    fn emit_data_exfil_harness_drains_even_on_invocation_throw() {
+        let h = emit_data_exfil_harness(&make_data_exfil_spec(
+            "tests/dynamic_fixtures/data_exfil/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("InvocationTargetException ite"),
+            "Java DATA_EXFIL harness must catch InvocationTargetException so a fixture-side throw after a partial outbound call still drains CAPTURED_HOSTS",
         );
     }
 }
