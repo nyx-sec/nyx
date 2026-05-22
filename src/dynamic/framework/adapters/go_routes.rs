@@ -16,7 +16,9 @@
 //!
 //! [`extract_go_path_placeholders`] supports both syntaxes.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::auth_markers;
+use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
+use crate::symbol::Lang;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known gin markers.
@@ -245,6 +247,98 @@ pub fn verb_from_method(method: &str) -> Option<HttpMethod> {
     }
 }
 
+/// Walk every `receiver.Use(...)` / `receiver.With(...)` call in the
+/// file and collect the argument expressions whose names match a
+/// known Go middleware marker (see
+/// [`crate::dynamic::framework::auth_markers::is_protective`]).
+///
+/// gin / echo / fiber attach middleware via `r.Use(mw1, mw2, ...)`;
+/// chi attaches middleware inline via `r.Use(...)` or
+/// `r.With(...).Get(...)`.  Both verbs are accepted; mid-chain
+/// `.With(...)` calls that follow a verb-method call (`.Get(...)`
+/// returns no router so chained `.With` is impossible) are
+/// conservatively still collected because tree-sitter has already
+/// flattened the chain into the same `call_expression` shape.
+///
+/// Argument rendering:
+///   - bare identifier (`r.Use(authMiddleware)`) → `"authMiddleware"`
+///   - selector expression (`r.Use(middleware.JWT)`) →
+///     `"middleware.JWT"`
+///   - call expression (`r.Use(csrf.New(secret))`) → `"csrf.New"`
+///     (callee text, args dropped — the auth-markers table is keyed
+///     on the factory function, not the constructed instance)
+///
+/// De-duplicates within a single file; preserves declaration order.
+/// Names the registry does not recognise are dropped silently —
+/// callers can re-walk with a wider predicate if they need broader
+/// inclusion.
+pub fn collect_use_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareShape> {
+    let mut raw: Vec<String> = Vec::new();
+    walk_use_calls(root, bytes, &mut raw);
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    for name in raw {
+        if auth_markers::is_protective(Lang::Go, &name)
+            && !out.iter().any(|m| m.name == name)
+        {
+            out.push(MiddlewareShape { name });
+        }
+    }
+    out
+}
+
+fn walk_use_calls(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "call_expression" {
+        try_collect_use_call(node, bytes, out);
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_use_calls(child, bytes, out);
+    }
+}
+
+fn try_collect_use_call(call: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let Some(callee) = call.child_by_field_name("function") else {
+        return;
+    };
+    if callee.kind() != "selector_expression" {
+        return;
+    }
+    let Some(field) = callee.child_by_field_name("field") else {
+        return;
+    };
+    let Ok(verb) = field.utf8_text(bytes) else {
+        return;
+    };
+    if verb != "Use" && verb != "With" {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut cur = args.walk();
+    for arg in args.named_children(&mut cur) {
+        if arg.kind() == "comment" {
+            continue;
+        }
+        if let Some(name) = middleware_arg_name(arg, bytes) {
+            out.push(name);
+        }
+    }
+}
+
+fn middleware_arg_name(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "selector_expression" => {
+            node.utf8_text(bytes).ok().map(|s| s.trim().to_owned())
+        }
+        "call_expression" => {
+            let callee = node.child_by_field_name("function")?;
+            callee.utf8_text(bytes).ok().map(|s| s.trim().to_owned())
+        }
+        _ => None,
+    }
+}
+
 /// Locate the `(method, path)` of a `receiver.Verb("/path", target)`
 /// call expression registered against `target` in the file.  Walks
 /// every `call_expression` in `root` and inspects each one whose
@@ -442,5 +536,71 @@ mod tests {
         let f = find_go_function(tree.root_node(), src, "Show").unwrap();
         let names = go_formal_names(f, src);
         assert_eq!(names, vec!["c", "id"]);
+    }
+
+    #[test]
+    fn collect_use_middleware_picks_bare_identifier() {
+        let src: &[u8] = b"package main\nfunc init() { r := gin.Default(); r.Use(AuthMiddleware) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "AuthMiddleware");
+    }
+
+    #[test]
+    fn collect_use_middleware_picks_selector_marker() {
+        let src: &[u8] =
+            b"package main\nfunc init() { e := echo.New(); e.Use(middleware.JWT) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "middleware.JWT");
+    }
+
+    #[test]
+    fn collect_use_middleware_picks_call_factory() {
+        let src: &[u8] =
+            b"package main\nfunc init() { r := chi.NewRouter(); r.Use(csrf.New(secret)) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "csrf.New");
+    }
+
+    #[test]
+    fn collect_use_middleware_accepts_chi_with() {
+        let src: &[u8] =
+            b"package main\nfunc init() { r := chi.NewRouter(); r.With(jwtauth.Verifier).Get(\"/x\", Show) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert_eq!(mw.len(), 1);
+        assert_eq!(mw[0].name, "jwtauth.Verifier");
+    }
+
+    #[test]
+    fn collect_use_middleware_drops_unknown_names() {
+        let src: &[u8] =
+            b"package main\nfunc init() { r := gin.Default(); r.Use(loggingHandler) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert!(mw.is_empty(), "loggingHandler is not a recognised marker");
+    }
+
+    #[test]
+    fn collect_use_middleware_dedupes_and_collects_multiple() {
+        let src: &[u8] = b"package main\nfunc init() { r := gin.Default(); r.Use(AuthMiddleware, csrf.New(s)); r.Use(AuthMiddleware) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        let names: Vec<&str> = mw.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["AuthMiddleware", "csrf.New"]);
+    }
+
+    #[test]
+    fn collect_use_middleware_returns_empty_when_none_recognised() {
+        let src: &[u8] =
+            b"package main\nfunc init() { r := gin.Default(); r.GET(\"/x\", Show) }\n";
+        let tree = parse(src);
+        let mw = collect_use_middleware(tree.root_node(), src);
+        assert!(mw.is_empty());
     }
 }

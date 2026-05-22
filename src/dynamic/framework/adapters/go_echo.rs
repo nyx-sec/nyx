@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::go_routes::{
-    bind_go_path_params, find_go_function, find_route_for_callee, go_formal_names,
-    source_imports_echo,
+    bind_go_path_params, collect_use_middleware, find_go_function, find_route_for_callee,
+    go_formal_names, source_imports_echo,
 };
 
 pub struct GoEchoAdapter;
@@ -52,13 +52,14 @@ impl FrameworkAdapter for GoEchoAdapter {
                 bind_go_path_params(&formals, &path)
             })
             .unwrap_or_default();
+        let middleware = collect_use_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -114,6 +115,19 @@ mod tests {
             .detect(&summary("Update"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::PUT);
+    }
+
+    #[test]
+    fn populates_middleware_from_use_calls() {
+        let src: &[u8] = b"package main\nimport \"github.com/labstack/echo/v4\"\n\
+            func init() { e := echo.New(); e.Use(middleware.JWT); e.GET(\"/u/:id\", Show) }\n\
+            func Show(c echo.Context, id string) error { return nil }\n";
+        let tree = parse(src);
+        let binding = GoEchoAdapter
+            .detect(&summary("Show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "middleware.JWT");
     }
 
     #[test]

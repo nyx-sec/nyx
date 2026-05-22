@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::go_routes::{
-    bind_go_path_params, find_go_function, find_route_for_callee, go_formal_names,
-    source_imports_chi,
+    bind_go_path_params, collect_use_middleware, find_go_function, find_route_for_callee,
+    go_formal_names, source_imports_chi,
 };
 
 pub struct GoChiAdapter;
@@ -52,13 +52,14 @@ impl FrameworkAdapter for GoChiAdapter {
                 bind_go_path_params(&formals, &path)
             })
             .unwrap_or_default();
+        let middleware = collect_use_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -113,6 +114,19 @@ mod tests {
             .find(|p| p.name == "id")
             .unwrap();
         assert!(matches!(id.source, ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn populates_middleware_from_with_chain() {
+        let src: &[u8] = b"package main\nimport (\"net/http\"; \"github.com/go-chi/chi/v5\")\n\
+            func init() { r := chi.NewRouter(); r.With(jwtauth.Verifier).Get(\"/users/{id}\", Show) }\n\
+            func Show(w http.ResponseWriter, r *http.Request) {}\n";
+        let tree = parse(src);
+        let binding = GoChiAdapter
+            .detect(&summary("Show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "jwtauth.Verifier");
     }
 
     #[test]

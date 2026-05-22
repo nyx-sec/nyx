@@ -22,8 +22,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::go_routes::{
-    bind_go_path_params, find_go_function, find_route_for_callee, go_formal_names,
-    source_imports_gin,
+    bind_go_path_params, collect_use_middleware, find_go_function, find_route_for_callee,
+    go_formal_names, source_imports_gin,
 };
 
 pub struct GoGinAdapter;
@@ -55,13 +55,14 @@ impl FrameworkAdapter for GoGinAdapter {
                 bind_go_path_params(&formals, &path)
             })
             .unwrap_or_default();
+        let middleware = collect_use_middleware(ast, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -141,6 +142,19 @@ mod tests {
                 .detect(&summary("Helper"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn populates_middleware_from_use_calls() {
+        let src: &[u8] = b"package main\nimport \"github.com/gin-gonic/gin\"\n\
+            func init() { r := gin.Default(); r.Use(AuthMiddleware); r.GET(\"/u/:id\", Show) }\n\
+            func Show(c *gin.Context, id string) {}\n";
+        let tree = parse(src);
+        let binding = GoGinAdapter
+            .detect(&summary("Show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.middleware.len(), 1);
+        assert_eq!(binding.middleware[0].name, "AuthMiddleware");
     }
 
     #[test]
