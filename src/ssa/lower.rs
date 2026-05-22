@@ -355,44 +355,25 @@ fn check_catch_block_reachability_gated(body: &SsaBody) {
     if let Err(err) = result {
         #[cfg(debug_assertions)]
         {
-            if !catch_invariant_do_not_panic() {
-                panic!(
-                    "SSA catch-block reachability invariant violated:\n{}",
-                    err.joined()
-                );
-            }
+            panic!(
+                "SSA catch-block reachability invariant violated:\n{}",
+                err.joined()
+            );
         }
-        tracing::warn!(
-            violations = %err.joined(),
-            "SSA catch-block reachability invariant violated; proceeding with \
-             conservative orphan fallback"
-        );
-        crate::taint::ssa_transfer::record_engine_note(
-            crate::engine_notes::EngineNote::SsaLoweringBailed {
-                reason: format!("catch_block_orphan: {}", err.joined()),
-            },
-        );
+        #[cfg(not(debug_assertions))]
+        {
+            tracing::warn!(
+                violations = %err.joined(),
+                "SSA catch-block reachability invariant violated; proceeding with \
+                 conservative orphan fallback"
+            );
+            crate::taint::ssa_transfer::record_engine_note(
+                crate::engine_notes::EngineNote::SsaLoweringBailed {
+                    reason: format!("catch_block_orphan: {}", err.joined()),
+                },
+            );
+        }
     }
-}
-
-// Test-only escape hatch: when set, `check_catch_block_reachability_gated`
-// takes the release-build path (warn + engine note, no panic) even under
-// `debug_assertions`. Used by the invariant test that constructs a
-// synthetic orphan catch body.
-#[cfg(debug_assertions)]
-thread_local! {
-    static CATCH_INVARIANT_DO_NOT_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(debug_assertions)]
-#[allow(dead_code)]
-pub(crate) fn set_catch_invariant_do_not_panic(on: bool) {
-    CATCH_INVARIANT_DO_NOT_PANIC.with(|c| c.set(on));
-}
-
-#[cfg(debug_assertions)]
-fn catch_invariant_do_not_panic() -> bool {
-    CATCH_INVARIANT_DO_NOT_PANIC.with(|c| c.get())
 }
 
 /// Collect reachable nodes (BFS from entry), filtering by scope and stripping exception edges.
