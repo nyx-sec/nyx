@@ -272,6 +272,19 @@ fn read_entry_source(entry_file: &str) -> String {
     String::new()
 }
 
+/// Map an entry file path like `tests/.../vuln.php` to the basename
+/// (`vuln.php`) the harness will `require_once`.  Falls back to
+/// `vuln.php` when the path is unusable so the harness still attempts
+/// the require (the fallback inline matcher fires when the require
+/// fails).
+fn derive_php_entry_basename(entry_file: &str) -> String {
+    PathBuf::from(entry_file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "vuln.php".to_owned())
+}
+
 /// Phase 09 — Track D.2: synthesise a `composer.json` with the captured
 /// PHP version pin and (where known) the framework deps.
 pub fn materialize_php(env: &Environment) -> RuntimeArtifacts {
@@ -939,10 +952,16 @@ echo json_encode(['filter' => $filt, 'entries_returned' => $count]) . "\n";
 /// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06; a
 /// future structural fix will link real `DOMXPath` via the staged
 /// document.
-pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
     let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
     let body = format!(
         r#"<?php
 // Nyx dynamic harness — XPATH_INJECTION DOMXPath::query (Phase 07 / Track J.5).
@@ -1033,9 +1052,46 @@ function _nyx_xpath_probe(string $expr, int $nodes_returned): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
+function _nyx_xpath_via_fixture(string $payload, string $entry_basename, string $entry_name): ?int {{
+    // Phase 07 tier-(a): require the fixture file and call its
+    // `$entry_name` function so the real `DOMXPath::query` runs
+    // against the staged corpus document.  Returns the result-set
+    // length, or `null` when the require / call fails so the caller
+    // can fall back to the inline matcher.
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {{
+        return null;
+    }}
+    try {{
+        require_once $candidate;
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+    if (!function_exists($entry_name)) {{
+        return null;
+    }}
+    try {{
+        $result = $entry_name($payload);
+    }} catch (\Throwable $_) {{
+        // Malformed XPath / parse error — treat as a 0-node return so
+        // a benign fixture that rejects the payload stays NotConfirmed.
+        return 0;
+    }}
+    if ($result instanceof DOMNodeList) {{
+        return $result->length;
+    }}
+    if (is_array($result)) {{
+        return count($result);
+    }}
+    return null;
+}}
+
 $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
 $expr = "//user[@name='" . $payload . "']";
-$nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);
+$nodes = _nyx_xpath_via_fixture($payload, "{entry_basename}", "{entry_name}");
+if ($nodes === null) {{
+    $nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);
+}}
 _nyx_xpath_probe($expr, $nodes);
 echo "__NYX_SINK_HIT__\n";
 echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
@@ -1902,6 +1958,58 @@ mod tests {
         assert!(
             h.source.contains("_nyx_ldap_count_via_stub"),
             "PHP LDAP harness must dispatch through the stub-route helper",
+        );
+    }
+
+    fn make_xpath_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::XPATH_INJECTION;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_xpath_harness_routes_through_fixture_require() {
+        let h = emit_xpath_harness(&make_xpath_spec(
+            "tests/dynamic_fixtures/xpath_injection/php/vuln.php",
+            "run",
+        ));
+        assert_eq!(h.extra_files.len(), 1);
+        assert_eq!(h.extra_files[0].0, "xpath_corpus.xml");
+        assert!(
+            h.source.contains("function _nyx_xpath_via_fixture("),
+            "PHP XPath harness must define the fixture-routing helper",
+        );
+        assert!(
+            h.source.contains("require_once $candidate"),
+            "PHP XPath harness must require the entry fixture before invoking it",
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "PHP XPath harness must pass the entry basename to the helper",
+        );
+        assert!(
+            h.source.contains("\"run\""),
+            "PHP XPath harness must pass the entry function name to the helper",
+        );
+        assert!(
+            h.source.contains("$result instanceof DOMNodeList"),
+            "PHP XPath harness must check the result against DOMNodeList",
+        );
+        assert!(
+            h.source
+                .contains("$nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);"),
+            "PHP XPath harness must keep the inline matcher as a fallback",
+        );
+    }
+
+    #[test]
+    fn emit_xpath_harness_derives_basename_from_entry_file() {
+        let h = emit_xpath_harness(&make_xpath_spec("/abs/path/benign.php", "run"));
+        assert!(
+            h.source.contains("\"benign.php\""),
+            "PHP XPath harness must use the entry-file basename, not a hard-coded literal",
         );
     }
 }

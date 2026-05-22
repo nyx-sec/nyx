@@ -1744,13 +1744,20 @@ if __name__ == "__main__":
 /// staged document, and writes a `ProbeKind::Xpath { nodes_returned }`
 /// probe whose `n` is the count returned.  Mirrors the
 /// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06.
-pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     let probe = probe_shim();
     let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
     let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let module_name = derive_module_name(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
     let body = format!(
         r#"#!/usr/bin/env python3
 """Nyx dynamic harness — XPATH_INJECTION lxml.etree.xpath (Phase 07 / Track J.5)."""
+import importlib
 import json
 import os
 import re
@@ -1790,6 +1797,34 @@ def _nyx_xpath_select(expr):
     return len(_NYX_XPATH_USERS)
 
 
+def _nyx_xpath_via_fixture(payload):
+    # Phase 07 tier-(a): import the fixture and call its
+    # `{entry_name}` so the real `lxml.etree.xpath` (or other
+    # XPath evaluator the fixture chooses) runs against the staged
+    # corpus document.  Returns the node count, or `None` when the
+    # import or call fails (e.g. lxml is not installed on the host)
+    # so the caller can fall back to the inline matcher.
+    sys.path.insert(0, ".")
+    try:
+        mod = importlib.import_module("{module_name}")
+    except Exception:
+        return None
+    fn = getattr(mod, "{entry_name}", None)
+    if fn is None:
+        return None
+    try:
+        result = fn(payload)
+    except Exception:
+        # Malformed XPath / parse error / etc. — treat as a 0-node
+        # return so a benign fixture that rejects the payload stays
+        # NotConfirmed.
+        return 0
+    try:
+        return len(result)
+    except TypeError:
+        return 0
+
+
 def _nyx_xpath_probe(expr, nodes_returned):
     rec = {{
         "sink_callee": "lxml.etree.xpath",
@@ -1805,7 +1840,9 @@ def _nyx_xpath_probe(expr, nodes_returned):
 def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
     expr = "//user[@name='" + payload + "']"
-    nodes = _nyx_xpath_select(expr)
+    nodes = _nyx_xpath_via_fixture(payload)
+    if nodes is None:
+        nodes = _nyx_xpath_select(expr)
     _nyx_xpath_probe(expr, nodes)
     print("__NYX_SINK_HIT__", flush=True)
     sys.stdout.write(json.dumps({{"expr": expr, "nodes_returned": nodes}}) + "\n")
@@ -1824,6 +1861,19 @@ if __name__ == "__main__":
         extra_files,
         entry_subpath: None,
     }
+}
+
+/// Map an entry file path like `tests/.../vuln.py` to the Python
+/// module name `vuln` the harness will `importlib.import_module(...)`.
+/// Falls back to `vuln` when the path is unusable so the harness still
+/// attempts an import (the fallback inline matcher fires when the
+/// import fails).
+fn derive_module_name(entry_file: &str) -> String {
+    PathBuf::from(entry_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "vuln".to_owned())
 }
 
 /// Phase 08 — Track J.6 header-injection harness for Python (Flask
@@ -2950,6 +3000,53 @@ mod tests {
         assert!(
             h.source.contains("_nyx_ldap_count_via_stub"),
             "Python LDAP harness must dispatch through the stub-route helper",
+        );
+    }
+
+    fn make_xpath_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::XPATH_INJECTION;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_xpath_harness_routes_through_fixture_import() {
+        let h = emit_xpath_harness(&make_xpath_spec(
+            "tests/dynamic_fixtures/xpath_injection/python/vuln.py",
+            "run",
+        ));
+        assert_eq!(h.extra_files.len(), 1);
+        assert_eq!(h.extra_files[0].0, "xpath_corpus.xml");
+        assert!(
+            h.source.contains("def _nyx_xpath_via_fixture(payload):"),
+            "Python XPath harness must define the fixture-routing helper",
+        );
+        assert!(
+            h.source.contains("importlib.import_module(\"vuln\")"),
+            "Python XPath harness must import the entry module by its file stem",
+        );
+        assert!(
+            h.source.contains("getattr(mod, \"run\", None)"),
+            "Python XPath harness must look up the entry function by name",
+        );
+        assert!(
+            h.source.contains("nodes = _nyx_xpath_via_fixture(payload)"),
+            "Python XPath harness main must call the fixture-routing helper first",
+        );
+        assert!(
+            h.source.contains("nodes = _nyx_xpath_select(expr)"),
+            "Python XPath harness must keep the inline matcher as a fallback",
+        );
+    }
+
+    #[test]
+    fn emit_xpath_harness_derives_module_name_from_entry_file() {
+        let h = emit_xpath_harness(&make_xpath_spec("/abs/path/benign.py", "run"));
+        assert!(
+            h.source.contains("importlib.import_module(\"benign\")"),
+            "module name must come from the entry-file stem, not a hard-coded literal",
         );
     }
 }

@@ -1318,17 +1318,77 @@ public class NyxHarness {{
 /// Phase 07 — Track J.5 XPath-injection harness for Java
 /// (`javax.xml.xpath.XPath.evaluate`).
 ///
-/// Reads `NYX_PAYLOAD`, splices it into a `//user[@name='<payload>']`
-/// expression, counts matching `<user>` nodes against the canonical
-/// staged document, and writes a `ProbeKind::Xpath { nodes_returned }`
-/// probe whose `n` is the count returned.  Mirrors the
-/// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06; a
-/// future structural fix will link real `javax.xml.xpath` via the
-/// staged document.
-pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Reads `NYX_PAYLOAD` and (tier (a)) reflectively invokes the entry
+/// class's static `run(String)` method, which itself calls
+/// `javax.xml.xpath.XPath.evaluate` against the canonical staged
+/// document.  The harness counts nodes by casting the returned
+/// `NodeList` and writes a `ProbeKind::Xpath { nodes_returned }`
+/// probe.  When the entry source does not import
+/// `javax.xml.xpath` (or reflective invocation fails for any reason)
+/// the harness falls back to the legacy in-process matcher so the
+/// verdict path stays intact on hosts that exercise the harness
+/// outside the fixture corpus.
+pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
     let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let uses_real_xpath = entry_source.contains("javax.xml.xpath");
+
+    let main_body = if uses_real_xpath {
+        format!(
+            r#"        // Phase 07 tier-(a): reflectively invoke the fixture's
+        // `run(String)` so the real `javax.xml.xpath.XPath.evaluate`
+        // call against the staged corpus document runs, then count
+        // the returned `NodeList` nodes.  Falls back to the inline
+        // matcher when reflection fails so the harness still produces
+        // a verdict on a fixture whose `run` signature does not match.
+        int count = -1;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            Object result = m.invoke(null, payload);
+            if (result instanceof NodeList) {{
+                count = ((NodeList) result).getLength();
+            }}
+        }} catch (ClassNotFoundException | NoSuchMethodException
+                 | IllegalAccessException e) {{
+            // Fixture shape did not match (String) -> NodeList — fall
+            // through to the synthetic matcher below.
+        }} catch (InvocationTargetException ite) {{
+            // The fixture itself threw (malformed XPath, parse error,
+            // ...); treat as a 0-node return so a benign fixture that
+            // rejects the payload stays NotConfirmed.
+            count = 0;
+        }}
+        if (count < 0) {{
+            count = nyxXpathSelect(expr);
+        }}"#
+        )
+    } else {
+        r#"        // No real javax.xml.xpath import on the entry source — fall
+        // back to the inline matcher path so the harness still
+        // produces a verdict.
+        int count = nyxXpathSelect(expr);"#
+            .to_owned()
+    };
+
+    let imports = if uses_real_xpath {
+        "import java.lang.reflect.InvocationTargetException;\n\
+         import java.lang.reflect.Method;\n\
+         import org.w3c.dom.NodeList;\n"
+    } else {
+        ""
+    };
+
     let source = format!(
         r#"// Nyx dynamic harness — XPATH_INJECTION javax.xml.xpath.XPath.evaluate (Phase 07 / Track J.5).
 import java.io.FileWriter;
@@ -1337,7 +1397,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
+{imports}
 public class NyxHarness {{
 {shim}
 
@@ -1414,7 +1474,7 @@ public class NyxHarness {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
         String expr = "//user[@name='" + payload + "']";
-        int count = nyxXpathSelect(expr);
+{main_body}
         nyxXpathProbe(expr, count);
         System.out.println("__NYX_SINK_HIT__");
         StringBuilder body = new StringBuilder(64);
@@ -3425,5 +3485,76 @@ mod tests {
             "non-servlet fixture must keep the synthetic-probe fallback",
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_xpath_harness_drives_fixture_through_real_xpath_when_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase07_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import javax.xml.xpath.XPath;\n\
+             import javax.xml.xpath.XPathConstants;\n\
+             public class Vuln {\n  public static Object run(String name) throws Exception { return null; }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::XPATH_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_xpath_harness(&spec);
+        assert!(
+            !h.extra_files.is_empty(),
+            "XPath harness must stage the canonical corpus XML",
+        );
+        assert!(
+            h.source.contains("import org.w3c.dom.NodeList;"),
+            "tier-(a) harness must import NodeList for the cast",
+        );
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "tier-(a) harness must reflectively load the fixture entry class",
+        );
+        assert!(
+            h.source.contains("getDeclaredMethod(\"run\", String.class)"),
+            "tier-(a) harness must reflectively grab the fixture's run(String) method",
+        );
+        assert!(
+            h.source.contains("((NodeList) result).getLength()"),
+            "tier-(a) harness must cast the result to NodeList and count nodes",
+        );
+        assert!(
+            h.source.contains("count = nyxXpathSelect(expr);"),
+            "tier-(a) harness must preserve the inline matcher as a fallback",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_xpath_harness_falls_back_to_inline_matcher_without_xpath_import() {
+        let dir = std::env::temp_dir().join("nyx_phase07_test_no_xpath_import");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "public class Vuln { public static Object run(String name) { return null; } }\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::XPATH_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_xpath_harness(&spec);
+        assert!(
+            !h.source.contains("import org.w3c.dom.NodeList;"),
+            "fallback path must not import NodeList",
+        );
+        assert!(
+            !h.source.contains("Class.forName(\"Vuln\")"),
+            "fallback path must not invoke the fixture reflectively",
+        );
+        assert!(
+            h.source.contains("int count = nyxXpathSelect(expr);"),
+            "fallback path must keep the inline matcher as the primary count source",
+        );
     }
 }
