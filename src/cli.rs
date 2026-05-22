@@ -704,7 +704,11 @@ pub enum ConfigAction {
         #[arg(long)]
         kind: String,
 
-        /// Capability: env_var, html_escape, shell_escape, url_encode, json_parse, file_io, or all
+        /// Capability slug. One of: env_var, html_escape, shell_escape,
+        /// url_encode, json_parse, file_io, fmt_string, sql_query, deserialize,
+        /// ssrf, code_exec, crypto, unauthorized_id, data_exfil, ldap_injection,
+        /// xpath_injection, header_injection, open_redirect, ssti, xxe,
+        /// prototype_pollution, or all. See docs/cli.md.
         #[arg(long)]
         cap: String,
     },

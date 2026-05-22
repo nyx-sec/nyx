@@ -56,7 +56,7 @@ pub struct VerifyOptions {
     /// entry-point ancestor (route handler, CLI subcommand, `main`).
     /// `None` keeps strategy 4 on the legacy rule-id substring path.
     pub callgraph: Option<Arc<CallGraph>>,
-    /// Phase 18 (Track E.2): when `true`, refuse to stamp `Confirmed`
+    /// When `true`, refuse to stamp `Confirmed`
     /// on findings whose [`HarnessSpec::expected_cap`] includes
     /// [`crate::labels::Cap::FILE_IO`] because the active sandbox
     /// backend cannot confine filesystem reach.  Set by
@@ -66,22 +66,22 @@ pub struct VerifyOptions {
     /// [`crate::evidence::InconclusiveReason::BackendInsufficient`]
     /// rather than running against an unhardened host.
     pub refuse_filesystem_confirm: bool,
-    /// Phase 27 (Track H.2): sampling policy applied to every telemetry
-    /// event emitted from the verify pipeline.  Default `keep_all` so unit
-    /// tests and embedded callers do not silently lose records.
+    /// Sampling policy applied to every telemetry event emitted from the
+    /// verify pipeline.  Default `keep_all` so unit tests and embedded
+    /// callers do not silently lose records.
     pub telemetry_policy: SamplingPolicy,
-    /// Phase 30 (Track C observability): when `true` the verifier prints
-    /// every recorded [`crate::dynamic::trace::TraceEvent`] to stderr at
-    /// end-of-verify.  Wired to the future `--verbose` CLI flag; off by
-    /// default so non-interactive scans stay quiet.
+    /// When `true` the verifier prints every recorded
+    /// [`crate::dynamic::trace::TraceEvent`] to stderr at end-of-verify.
+    /// Wired to the `--verbose` CLI flag; off by default so
+    /// non-interactive scans stay quiet.
     pub trace_verbose: bool,
-    /// Phase 29 follow-up: when `true`, the verifier re-runs
+    /// When `true`, the verifier re-runs
     /// `reproduce.sh` against the freshly written repro bundle whenever a
     /// finding is `Confirmed` and stamps the typed
     /// [`crate::evidence::VerifyResult::replay_stable`] field via
     /// [`crate::dynamic::repro::replay_stability`]. Opt-in because
     /// invoking `reproduce.sh` per Confirmed finding doubles wall-clock
-    /// cost — the eval-corpus driver flips it on; interactive `nyx scan`
+    /// cost. The eval-corpus driver flips it on; interactive `nyx scan`
     /// keeps it off and leaves `replay_stable: None`.
     ///
     /// Default `false`. [`Self::from_config`] honours the
@@ -100,7 +100,7 @@ pub struct VerifyOptions {
     /// Test/observability hook: when `Some`, [`verify_finding`] records
     /// every [`crate::dynamic::trace::TraceEvent`] into this trace handle
     /// instead of constructing a fresh internal one. Lets integration
-    /// tests inspect the verifier's stage timeline (e.g. the Track L.0
+    /// tests inspect the verifier's stage timeline (e.g. the
     /// `framework_adapter_*` events) without scraping stderr or writing
     /// a repro bundle. `None` in production paths.
     pub trace_sink: Option<Arc<crate::dynamic::trace::VerifyTrace>>,
@@ -127,7 +127,7 @@ impl VerifyOptions {
             "firecracker" => SandboxBackend::Firecracker,
             _ => SandboxBackend::Auto,
         };
-        // Phase 11 — Track D.5: surface the per-scan listener as a
+        // Surface the per-scan listener as a
         // [`NetworkPolicy::OobOutbound`] so the docker backend turns on
         // bridge networking + the iptables egress filter, and the process
         // backend reaches the listener via the same accessor as before.
@@ -135,19 +135,19 @@ impl VerifyOptions {
             Some(listener) => NetworkPolicy::OobOutbound { listener },
             None => NetworkPolicy::None,
         };
-        // Phase 17/18 (Track E.1/E.2): `--harden=strict` (or
-        // `harden_profile = "strict"` in nyx.toml) opts the verifier into
-        // the full process-backend lockdown.  Linux engages namespace
-        // unshare + chroot + default-deny seccomp on top of the baseline;
-        // macOS wraps the harness with `sandbox-exec -f <cap>.sb` keyed
-        // off the per-finding expected cap (set later in `verify_finding`
-        // because the cap is only known once spec derivation runs).
+        // `--harden=strict` (or `harden_profile = "strict"` in nyx.toml)
+        // opts the verifier into the full process-backend lockdown.  Linux
+        // engages namespace unshare + chroot + default-deny seccomp on top
+        // of the baseline; macOS wraps the harness with `sandbox-exec -f
+        // <cap>.sb` keyed off the per-finding expected cap (set later in
+        // `verify_finding` because the cap is only known once spec
+        // derivation runs).
         let process_hardening = match config.scanner.harden_profile.as_str() {
             "strict" => ProcessHardeningProfile::Strict,
             _ => ProcessHardeningProfile::Standard,
         };
-        // Phase 18 (Track E.2): the macOS process backend depends on
-        // `/usr/bin/sandbox-exec` to confine filesystem reach.  When the
+        // The macOS process backend depends on `/usr/bin/sandbox-exec` to
+        // confine filesystem reach.  When the
         // binary is absent, surface that up-front so filesystem oracles
         // degrade to `Inconclusive(BackendInsufficient)` instead of
         // running against an unhardened host.
@@ -186,7 +186,7 @@ impl VerifyOptions {
     }
 }
 
-/// Phase 17 follow-up: predicate driving the
+/// Predicate driving the
 /// [`SandboxOptions::bind_mount_host_libs`] opt-in for the Linux
 /// process backend under [`ProcessHardeningProfile::Strict`].
 ///
@@ -205,7 +205,7 @@ impl VerifyOptions {
 /// `mount(2)` syscall sequence to avoid the host-mount side-channel
 /// the bind-mounts open up.
 ///
-/// Standard-profile runs ignore this entirely — the engine only
+/// Standard-profile runs ignore this entirely; the engine only
 /// consults the predicate inside the Strict branch in
 /// [`verify_finding`].
 fn lang_needs_host_libs(lang: crate::symbol::Lang) -> bool {
@@ -321,8 +321,8 @@ fn insert_verdict_cache(
 /// `attempted` is the spec's entry kind; `lang` is the spec's language; the
 /// supported list and human-readable hint come from the lang emitter via
 /// [`crate::dynamic::lang::entry_kinds_supported`] /
-/// [`crate::dynamic::lang::entry_kind_hint`], so adding new shapes in later
-/// Track B phases automatically narrows what gets routed here without
+/// [`crate::dynamic::lang::entry_kind_hint`], so adding new entry-kind
+/// shapes there automatically narrows what gets routed here without
 /// touching this function.
 ///
 /// The caller passes the originating [`Diag`] when one is in scope (for the
@@ -483,9 +483,9 @@ fn derivation_failure_hint(diag: &Diag) -> String {
 pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let finding_id = format!("{:016x}", diag.stable_hash);
 
-    // Phase 30 (Track C observability): one trace per finding, threaded
-    // into [`SandboxOptions`] so the runner can append `build_*` /
-    // `sandbox_started` / `oracle_*` stages from inside `run_spec`.
+    // One trace per finding, threaded into [`SandboxOptions`] so the
+    // runner can append `build_*` / `sandbox_started` / `oracle_*` stages
+    // from inside `run_spec`.
     //
     // Tests may pre-seed `opts.trace_sink` with their own `Arc<VerifyTrace>`
     // handle; when present we reuse it instead of allocating a fresh one
@@ -499,14 +499,14 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         Some(format!("rule={} path={}", diag.id, diag.path)),
     );
 
-    // Phase 30 §C — cross-cutting policy deny rules.  Findings whose
-    // static metadata mentions credentials, private keys, or production
-    // endpoint regexes are refused up front: the sandbox is never
-    // started and no payload is materialised, so a leaked secret cannot
-    // round-trip through the harness even if the deny rule is wrong.
-    // The verifier returns `Inconclusive(PolicyDeniedDynamic)` so the
-    // operator sees *why* dynamic execution was skipped without losing
-    // the static finding from the report.
+    // Cross-cutting policy deny rules.  Findings whose static metadata
+    // mentions credentials, private keys, or production endpoint regexes
+    // are refused up front: the sandbox is never started and no payload
+    // is materialised, so a leaked secret cannot round-trip through the
+    // harness even if the deny rule is wrong.  The verifier returns
+    // `Inconclusive(PolicyDeniedDynamic)` so the operator sees *why*
+    // dynamic execution was skipped without losing the static finding
+    // from the report.
     if let crate::dynamic::policy::PolicyDecision::Deny {
         rule,
         field,
@@ -525,7 +525,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             field: field.clone(),
             excerpt: excerpt.clone(),
         };
-        // Emit telemetry so the Phase 27 events log records the deny —
+        // Emit telemetry so the events log records the deny;
         // operators triaging refusals need it on the wire even though
         // the sandbox never ran.
         let tel_event = TelemetryEvent::no_spec(
@@ -580,12 +580,10 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             spec.spec_hash, spec.lang, spec.entry_kind
         )),
     );
-    // Track L.0: surface framework-adapter dispatch outcome to the
-    // trace so operators (and the Phase 30 determinism audit) can see
-    // whether an adapter claimed the entry function.  Phase 01 always
-    // emits the `None` variant because the adapter registry is empty;
-    // subsequent Track-L phases register adapters and switch the
-    // event to `Detected` with the adapter name in `detail`.
+    // Surface framework-adapter dispatch outcome to the trace so
+    // operators (and the determinism audit) can see whether an adapter
+    // claimed the entry function.  Emits `Detected` with the adapter
+    // name in `detail` when one matched, otherwise `None`.
     match &spec.framework {
         Some(binding) => trace.record(
             crate::dynamic::trace::TraceStage::FrameworkAdapterDetected,
@@ -616,8 +614,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         );
     }
 
-    // Phase 18 (Track E.2): when the active backend cannot confine
-    // filesystem reach (macOS process backend without `sandbox-exec`),
+    // When the active backend cannot confine filesystem reach
+    // (macOS process backend without `sandbox-exec`),
     // refuse to run filesystem-escape oracles up-front and emit a
     // structured `Inconclusive(BackendInsufficient)` so operators see
     // the backend gap instead of a quiet `Confirmed` against an
@@ -720,8 +718,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         return cached;
     }
 
-    // Phase 10 (Track D.3): spawn the boundary stubs the spec
-    // demands *before* the sandbox runs.  When `stubs_required` is
+    // Spawn the boundary stubs the spec demands *before* the sandbox
+    // runs.  When `stubs_required` is
     // empty `StubHarness::start` is a no-op so the 500 ms boot budget
     // for stub-less harnesses stays intact.  The harness lives for
     // the lifetime of this `verify_finding` call; its `Drop` releases
@@ -749,19 +747,19 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     if !stub_harness.is_empty() {
         sandbox_opts.stub_harness = Some(Arc::clone(&stub_harness));
     }
-    // Phase 17/18: when the operator opted into Strict hardening, seed
-    // `seccomp_caps` from the spec's expected cap so the Linux process
-    // backend installs the cap-minimal syscall allowlist and the macOS
-    // backend picks the matching `.sb` profile (`FILE_IO →
-    // path_traversal`, `CODE_EXEC → cmdi`, …).  Standard runs leave the
-    // field at 0 (base allowlist / no wrap) for back-compat.
+    // When the operator opted into Strict hardening, seed `seccomp_caps`
+    // from the spec's expected cap so the Linux process backend installs
+    // the cap-minimal syscall allowlist and the macOS backend picks the
+    // matching `.sb` profile (`FILE_IO -> path_traversal`, `CODE_EXEC ->
+    // cmdi`, etc.).  Standard runs leave the field at 0 (base allowlist /
+    // no wrap) for back-compat.
     if matches!(
         sandbox_opts.process_hardening,
         crate::dynamic::sandbox::ProcessHardeningProfile::Strict,
     ) {
         sandbox_opts.seccomp_caps = spec.expected_cap.bits();
-        // Phase 17 follow-up: interpreted-language harnesses cannot
-        // resolve their interpreter + shared libraries from inside the
+        // Interpreted-language harnesses cannot resolve their interpreter
+        // + shared libraries from inside the
         // chroot unless the host's `/lib`, `/lib64`, `/usr/lib`, and
         // `/usr/bin` are bind-mounted into the workdir.  Native-compile
         // langs (Rust / C / C++ / Go) are statically linked under
@@ -769,10 +767,10 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         // tight by skipping the bind-mounts for them.
         sandbox_opts.bind_mount_host_libs = lang_needs_host_libs(spec.lang);
     }
-    // Phase 30: hand the runner an `Arc` clone so it can append
-    // `build_*` / `sandbox_started` / `oracle_*` stages from inside
-    // `run_spec`.  The verifier still owns the trace for verdict-stage
-    // appending after `run_spec` returns.
+    // Hand the runner an `Arc` clone so it can append `build_*` /
+    // `sandbox_started` / `oracle_*` stages from inside `run_spec`.
+    // The verifier still owns the trace for verdict-stage appending
+    // after `run_spec` returns.
     sandbox_opts.trace = Some(Arc::clone(&trace));
 
     let start = Instant::now();
@@ -788,10 +786,10 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
 
     let mut verdict = build_verdict(&finding_id, &spec, result, toolchain_match, opts, elapsed);
 
-    // Phase 29 follow-up: stamp `replay_stable` from a `reproduce.sh` rerun
-    // against the freshly written bundle.  Opt-in (see
+    // Stamp `replay_stable` from a `reproduce.sh` rerun against the
+    // freshly written bundle.  Opt-in (see
     // `VerifyOptions::replay_stable_check`) because invoking the script
-    // per Confirmed finding doubles wall-clock cost — the eval-corpus
+    // per Confirmed finding doubles wall-clock cost.  The eval-corpus
     // driver flips it on so the tabulated `stable_replays` column becomes
     // non-vacuous; interactive `nyx scan` keeps `replay_stable: None`.
     if verdict.status == VerifyStatus::Confirmed
@@ -831,9 +829,9 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     );
     telemetry::emit_with_policy(&event, &opts.telemetry_policy);
 
-    // Phase 30 — verdict is the terminal trace stage.  Recorded after
-    // cache insert + telemetry so the trace reflects the full pipeline
-    // the operator just saw run.
+    // Verdict is the terminal trace stage.  Recorded after cache insert +
+    // telemetry so the trace reflects the full pipeline the operator just
+    // saw run.
     trace.record(
         crate::dynamic::trace::TraceStage::Verdict,
         Some(format!("status={:?}", verdict.status)),
@@ -1018,10 +1016,10 @@ fn build_verdict(
                     hardening_outcome,
                 }
             } else if run.unrelated_crash {
-                // Phase 08 §C.4: the harness crashed but the death
-                // happened outside the instrumented sink (no Crash
-                // probe was written).  Downgrade rather than letting
-                // a setup-code abort masquerade as a confirmed fire.
+                // The harness crashed but the death happened outside the
+                // instrumented sink (no Crash probe was written).
+                // Downgrade rather than letting a setup-code abort
+                // masquerade as a confirmed fire.
                 VerifyResult {
                     finding_id: finding_id.to_owned(),
                     status: VerifyStatus::Inconclusive,
@@ -1029,7 +1027,7 @@ fn build_verdict(
                     reason: None,
                     inconclusive_reason: Some(InconclusiveReason::UnrelatedCrash),
                     detail: Some(
-                        "process crashed with no sink-site crash probe — likely setup-code abort, not the sink"
+                        "process crashed with no sink-site crash probe, likely setup-code abort, not the sink"
                             .to_owned(),
                     ),
                     attempts,
@@ -1040,8 +1038,8 @@ fn build_verdict(
                     hardening_outcome: None,
                 }
             } else if run.no_benign_control {
-                // Phase 07 §4.1: vuln oracle + sink-hit fired but the
-                // paired benign control was missing.  Downgrade to
+                // Vuln oracle + sink-hit fired but the paired benign
+                // control was missing.  Downgrade to
                 // `Inconclusive(NoBenignControl)` rather than stamping
                 // `Confirmed` from a one-sided observation.
                 VerifyResult {
