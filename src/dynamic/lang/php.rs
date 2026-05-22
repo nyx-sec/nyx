@@ -1337,8 +1337,11 @@ echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
 /// `werkzeug.datastructures.Headers.__setitem__` before werkzeug's
 /// validator runs.
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
-    let shim = probe_shim();
     let entry_source = read_entry_source(&spec.entry_file);
+    if entry_source_uses_raw_socket(&entry_source) {
+        return emit_header_injection_wire_frame_harness(spec, &entry_source);
+    }
+    let shim = probe_shim();
     let entry_basename = derive_php_entry_basename(&spec.entry_file);
     let entry_name = if spec.entry_name.is_empty() {
         "run".to_owned()
@@ -1462,6 +1465,255 @@ function _nyx_header_probe(string $name, string $value): void {{
     _nyx_header_probe($name, $value);
     echo "__NYX_SINK_HIT__\n";
     echo json_encode(['name' => $name, 'value' => $value]) . "\n";
+}}
+
+_nyx_run();
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Tier-(b) wire-frame gate for HEADER_INJECTION.  Fires when the
+/// fixture binds a raw `stream_socket_server` (or `socket_create`) and
+/// exposes the `set_cookie_value` / `create_server` / `run_once`
+/// triple the harness drives.  Distinct from the `header()` /
+/// `setcookie()` gate because the wire-frame branch owns the
+/// response-write path itself and bypasses PHP's built-in CRLF
+/// validator.
+fn entry_source_uses_raw_socket(src: &str) -> bool {
+    (src.contains("stream_socket_server") || src.contains("socket_create"))
+        && src.contains("set_cookie_value")
+}
+
+/// Phase 08 — Track J.6 tier-(b) wire-frame harness for PHP.  Drives
+/// the fixture's `create_server` / `run_once` API in a forked / threaded
+/// worker while the main process opens a `stream_socket_client` against
+/// the bound port, issues one `GET / HTTP/1.0`, and reads the bytes the
+/// fixture wrote to the response stream up to the `\r\n\r\n` boundary.
+/// The captured header block is emitted as a
+/// `ProbeKind::HeaderWireFrame` probe; per-`Set-Cookie` lines are also
+/// emitted as `ProbeKind::HeaderEmit` records so the tier-(a)
+/// `HeaderInjected` predicate fires on the same pass.  Prints a
+/// `wire_frame_len` stdout marker so e2e tests can pin the branch.
+///
+/// PHP has no portable green-thread primitive — the harness uses
+/// `pcntl_fork` when available (Linux + macOS Homebrew PHP both ship
+/// `ext-pcntl` by default) and falls back to a non-blocking
+/// `stream_select` drive of both the server and the client in a single
+/// process when `pcntl_fork` is missing (Windows / minimal CLI builds).
+fn emit_header_injection_wire_frame_harness(
+    spec: &HarnessSpec,
+    _entry_source: &str,
+) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_php_entry_basename(&spec.entry_file);
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — HEADER_INJECTION raw-socket wire frame (Phase 08 / Track J.6).
+{shim}
+
+function _nyx_header_probe(string $name, string $value): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'fwrite(stream)',
+        'args'           => [
+            ['kind' => 'String', 'value' => $name],
+            ['kind' => 'String', 'value' => $value],
+        ],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'HeaderEmit', 'name' => $name, 'value' => $value, 'protocol' => 'wire'],
+        'witness'        => __nyx_witness('fwrite(stream)', [$name, $value]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+function _nyx_wire_frame_probe(string $raw_bytes): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $bytes = [];
+    $len = strlen($raw_bytes);
+    for ($i = 0; $i < $len; $i++) {{
+        $bytes[] = ord($raw_bytes[$i]);
+    }}
+    $rec = [
+        'sink_callee'    => 'fwrite(stream)',
+        'args'           => [],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'HeaderWireFrame', 'raw_bytes' => $bytes],
+        'witness'        => __nyx_witness('fwrite(stream)', []),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+function _nyx_wire_frame_via_fixture(string $payload, string $entry_basename): ?string {{
+    // Phase 08 tier-(b): require the fixture, install the cookie
+    // value, boot its `stream_socket_server` on 127.0.0.1:0, drive
+    // `run_once` either in a forked child (when `pcntl_fork` is
+    // available) or in a single-process `stream_select` loop, then
+    // issue one raw-socket GET from the harness and read the bytes
+    // the fixture wrote to the response stream up to the CRLF-CRLF
+    // boundary.  Returns null on require / boot / read failure so the
+    // caller can fall back to the synthetic probe.
+    $candidate = __DIR__ . DIRECTORY_SEPARATOR . $entry_basename;
+    if (!is_file($candidate)) {{
+        return null;
+    }}
+    try {{
+        require_once $candidate;
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+    if (!function_exists('set_cookie_value')
+        || !function_exists('create_server')
+        || !function_exists('run_once')) {{
+        return null;
+    }}
+    try {{
+        set_cookie_value($payload);
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+    try {{
+        $server = create_server();
+    }} catch (\Throwable $_) {{
+        return null;
+    }}
+    if ($server === false || $server === null) {{
+        return null;
+    }}
+    $name = @stream_socket_get_name($server, false);
+    if ($name === false || $name === '') {{
+        @fclose($server);
+        return null;
+    }}
+    $colon = strrpos($name, ':');
+    $port = $colon === false ? '0' : substr($name, $colon + 1);
+    if ($port === '0' || $port === '') {{
+        @fclose($server);
+        return null;
+    }}
+    $forked = false;
+    $pid = -1;
+    if (function_exists('pcntl_fork')) {{
+        $pid = @pcntl_fork();
+        if ($pid === 0) {{
+            // Child runs the accept loop and exits.
+            try {{
+                run_once($server);
+            }} catch (\Throwable $_) {{
+                // ignore fixture errors so the parent can still
+                // capture whatever bytes were written before the throw.
+            }}
+            @fclose($server);
+            exit(0);
+        }}
+        if ($pid > 0) {{
+            $forked = true;
+        }}
+    }}
+    $raw = '';
+    $errno = 0;
+    $errstr = '';
+    $client = @stream_socket_client(
+        'tcp://127.0.0.1:' . $port,
+        $errno,
+        $errstr,
+        5.0
+    );
+    if ($client === false) {{
+        if ($forked) {{
+            @posix_kill($pid, 9);
+            @pcntl_waitpid($pid, $status);
+        }} else {{
+            try {{
+                run_once($server);
+            }} catch (\Throwable $_) {{
+                // ignore
+            }}
+        }}
+        @fclose($server);
+        return null;
+    }}
+    try {{
+        @stream_set_timeout($client, 2, 0);
+        @fwrite($client, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
+        if (!$forked) {{
+            // Single-process path: drive `run_once` after the client
+            // has already sent its request so the accept call returns
+            // immediately.
+            try {{
+                run_once($server);
+            }} catch (\Throwable $_) {{
+                // ignore
+            }}
+        }}
+        $deadline = microtime(true) + 5.0;
+        while (strlen($raw) < 65536 && microtime(true) < $deadline) {{
+            $chunk = @fread($client, 4096);
+            if ($chunk === false || $chunk === '') {{
+                break;
+            }}
+            $raw .= $chunk;
+            if (strpos($raw, "\r\n\r\n") !== false) {{
+                break;
+            }}
+        }}
+    }} finally {{
+        @fclose($client);
+        if ($forked) {{
+            $status = 0;
+            @pcntl_waitpid($pid, $status);
+        }}
+        @fclose($server);
+    }}
+    $sep = strpos($raw, "\r\n\r\n");
+    if ($sep === false) {{
+        return $raw === '' ? null : $raw;
+    }}
+    return substr($raw, 0, $sep);
+}}
+
+function _nyx_run(): void {{
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    $raw_bytes = _nyx_wire_frame_via_fixture($payload, "{entry_basename}");
+    if ($raw_bytes !== null) {{
+        _nyx_wire_frame_probe($raw_bytes);
+        // Derive HeaderEmit records per Set-Cookie line on the wire so
+        // the tier-(a) HeaderInjected predicate also fires on the same
+        // harness pass.  The wire-frame branch owns the bytes; the
+        // HeaderEmit records are derived from them.
+        foreach (explode("\n", $raw_bytes) as $line) {{
+            $trimmed = (substr($line, -1) === "\r") ? substr($line, 0, -1) : $line;
+            $colon = strpos($trimmed, ':');
+            if ($colon === false) continue;
+            $name = substr($trimmed, 0, $colon);
+            if (strcasecmp($name, 'Set-Cookie') !== 0) continue;
+            $start = $colon + 1;
+            if ($start < strlen($trimmed) && $trimmed[$start] === ' ') {{
+                $start++;
+            }}
+            $value = (string) substr($trimmed, $start);
+            _nyx_header_probe($name, $value);
+        }}
+        echo "__NYX_SINK_HIT__\n";
+        echo json_encode(['wire_frame_len' => strlen($raw_bytes)]) . "\n";
+        return;
+    }}
+    // Synthetic fallback when the fixture failed to boot — keeps the
+    // differential oracle live on a build/boot failure rather than
+    // silently shedding the attempt.
+    _nyx_header_probe('Set-Cookie', $payload);
+    echo "__NYX_SINK_HIT__\n";
+    echo json_encode(['payload_len' => strlen($payload)]) . "\n";
 }}
 
 _nyx_run();
@@ -2745,6 +2997,116 @@ mod tests {
         assert!(
             h.source.contains("\"benign.php\""),
             "tier-(a) harness must use the entry-file basename: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_wire_frame_when_raw_socket_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_php_test_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(
+            &entry,
+            "<?php\n\
+             $GLOBALS['nyx_cookie_value'] = '';\n\
+             function set_cookie_value($value) { $GLOBALS['nyx_cookie_value'] = (string) $value; }\n\
+             function create_server() { $e=0; $s=''; return stream_socket_server('tcp://127.0.0.1:0', $e, $s); }\n\
+             function run_once($server) { $c = stream_socket_accept($server, 5.0); if ($c === false) return; fwrite($c, \"HTTP/1.0 200 OK\\r\\nSet-Cookie: \" . $GLOBALS['nyx_cookie_value'] . \"\\r\\n\\r\\nok\"); fclose($c); }\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_wire_frame_via_fixture("),
+            "tier-(b) harness must define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_once $candidate"),
+            "tier-(b) harness must require_once the fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"vuln.php\""),
+            "tier-(b) harness must pass the entry basename to the helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("set_cookie_value($payload)"),
+            "tier-(b) harness must install the cookie value on the fixture: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("create_server()"),
+            "tier-(b) harness must boot the fixture's stream socket via create_server: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("run_once($server)"),
+            "tier-(b) harness must drive run_once: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("stream_socket_client("),
+            "tier-(b) harness must open a client stream against the bound port: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("GET / HTTP/1.0\\r\\nHost: 127.0.0.1"),
+            "tier-(b) harness must issue a raw GET request: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => $bytes"),
+            "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'wire_frame_len' => strlen($raw_bytes)"),
+            "tier-(b) harness must emit the wire_frame_len stdout marker: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("namespace Nyx\\\\Captured"),
+            "tier-(b) harness must not eval into the Nyx\\Captured namespace (that's the tier-(a) path): {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_wire_frame_branch_drops_when_only_header_call_present() {
+        let dir = std::env::temp_dir().join("nyx_phase08_php_test_no_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(
+            &entry,
+            "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . $value);\n}\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("function _nyx_wire_frame_via_fixture("),
+            "header()-only harness must not define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("HeaderWireFrame"),
+            "header()-only harness must not emit the HeaderWireFrame probe shape: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("wire_frame_len"),
+            "header()-only harness must not emit the wire_frame_len stdout marker: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
