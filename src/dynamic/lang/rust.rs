@@ -1062,6 +1062,140 @@ fn read_entry_source(entry_file: &str) -> String {
     String::new()
 }
 
+/// Phase 11 — Track J.9 CRYPTO weak-RNG harness for Rust.
+///
+/// Stages the fixture at `src/entry.rs`, builds against `rand = "0.8"`
+/// (added to `Cargo.toml` automatically when `Cap::CRYPTO` is set —
+/// see [`generate_cargo_toml_with_extras`]), invokes
+/// `entry::<entry_name>(&payload)`, reduces the produced key into a
+/// `u64` via the `NyxKeyToInt` trait, and writes a
+/// `ProbeKind::WeakKey { key_int }` probe.
+///
+/// The `NyxKeyToInt` trait has impls for `u8` / `u16` / `u32` / `u64` /
+/// `usize` / signed counterparts (masked to `i64::MAX` so the sign bit
+/// does not flip a 16-bit predicate), `bool` (1/0), `[u8; N]`,
+/// `Vec<u8>`, `String`, and `&str`.  Byte / string returns are left-
+/// zero-padded to 8 bytes then read as big-endian `u64`, mirroring the
+/// Python / Go / Java / PHP sibling reduction: a `rand::thread_rng()
+/// .gen_range(0..=0xFFFF) as u16` vuln return lands in `[0, 65535]` and
+/// trips the `WeakKeyEntropy { max_bits: 16 }` predicate; an
+/// `OsRng.fill_bytes([u8; 32])` benign return's leading 8 bytes are
+/// uniformly distributed across `u64::MAX` and overshoot the budget
+/// with probability `1 - 2^-48` — effectively always.
+pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_fn = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let cargo_toml = generate_cargo_toml(Cap::CRYPTO);
+
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — CRYPTO weak-RNG key entropy (Phase 11 / Track J.9).
+mod entry;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+/// Reduce the fixture's produced key to a `u64` the `WeakKey` probe
+/// shape can carry verbatim.  Impls below cover the return types the
+/// curated CRYPTO fixtures hand back; future fixtures returning other
+/// shapes should grow an impl here rather than panicking at compile
+/// time.
+trait NyxKeyToInt {{
+    fn to_key_int(self) -> u64;
+}}
+
+fn nyx_bytes_to_key_int(bytes: &[u8]) -> u64 {{
+    // Left-zero-pad short slices then read the leading 8 bytes as
+    // big-endian, mirroring PHP's `unpack('J', str_pad($head, 8,
+    // "\\0", STR_PAD_LEFT))` and Go's `binary.BigEndian.Uint64` with
+    // left zero-pad.
+    let mut buf = [0u8; 8];
+    let n = bytes.len().min(8);
+    let start = 8 - n;
+    buf[start..start + n].copy_from_slice(&bytes[..n]);
+    u64::from_be_bytes(buf)
+}}
+
+impl NyxKeyToInt for u8 {{ fn to_key_int(self) -> u64 {{ u64::from(self) }} }}
+impl NyxKeyToInt for u16 {{ fn to_key_int(self) -> u64 {{ u64::from(self) }} }}
+impl NyxKeyToInt for u32 {{ fn to_key_int(self) -> u64 {{ u64::from(self) }} }}
+impl NyxKeyToInt for u64 {{ fn to_key_int(self) -> u64 {{ self }} }}
+impl NyxKeyToInt for usize {{ fn to_key_int(self) -> u64 {{ self as u64 }} }}
+impl NyxKeyToInt for i8 {{ fn to_key_int(self) -> u64 {{ (self as u64) & (i64::MAX as u64) }} }}
+impl NyxKeyToInt for i16 {{ fn to_key_int(self) -> u64 {{ (self as u64) & (i64::MAX as u64) }} }}
+impl NyxKeyToInt for i32 {{ fn to_key_int(self) -> u64 {{ (self as u64) & (i64::MAX as u64) }} }}
+impl NyxKeyToInt for i64 {{ fn to_key_int(self) -> u64 {{ (self as u64) & (i64::MAX as u64) }} }}
+impl NyxKeyToInt for isize {{ fn to_key_int(self) -> u64 {{ (self as u64) & (i64::MAX as u64) }} }}
+impl NyxKeyToInt for bool {{ fn to_key_int(self) -> u64 {{ if self {{ 1 }} else {{ 0 }} }} }}
+impl<const N: usize> NyxKeyToInt for [u8; N] {{
+    fn to_key_int(self) -> u64 {{ nyx_bytes_to_key_int(&self) }}
+}}
+impl NyxKeyToInt for Vec<u8> {{
+    fn to_key_int(self) -> u64 {{ nyx_bytes_to_key_int(&self) }}
+}}
+impl NyxKeyToInt for String {{
+    fn to_key_int(self) -> u64 {{ nyx_bytes_to_key_int(self.as_bytes()) }}
+}}
+impl<'a> NyxKeyToInt for &'a str {{
+    fn to_key_int(self) -> u64 {{ nyx_bytes_to_key_int(self.as_bytes()) }}
+}}
+
+fn nyx_weak_key_probe(key_int: u64) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let key_str = key_int.to_string();
+    let mut line = String::with_capacity(256);
+    line.push_str("{{\"sink_callee\":\"__nyx_weak_key\",\"args\":[");
+    line.push_str("{{\"kind\":\"Int\",\"value\":");
+    line.push_str(&key_str);
+    line.push_str("}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    let mut esc_pid = String::new();
+    __nyx_esc(&payload_id, &mut esc_pid);
+    line.push_str(&esc_pid);
+    line.push_str("\",\"kind\":{{\"kind\":\"WeakKey\",\"key_int\":");
+    line.push_str(&key_str);
+    line.push_str("}},\"witness\":");
+    line.push_str(&__nyx_witness_json("__nyx_weak_key", &[&key_str]));
+    line.push_str("}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+    __nyx_install_crash_guard("__nyx_weak_key");
+    let produced = entry::{entry_fn}(&payload);
+    let key_int = produced.to_key_int();
+    nyx_weak_key_probe(key_int);
+    println!("__NYX_SINK_HIT__");
+    println!("{{{{\"key_int\":{{key_int}}}}}}", key_int = key_int);
+}}
+"##
+    );
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
@@ -1078,6 +1212,20 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // `ProbeKind::Redirect` probe.
     if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
         return Ok(emit_open_redirect_harness(spec));
+    }
+
+    // Phase 11 (Track J.9): CRYPTO weak-RNG short-circuit.  Stages the
+    // fixture at `src/entry.rs`, builds against `rand = "0.8"` (the
+    // benign fixture uses `rand::rngs::OsRng`, the vuln fixture uses
+    // `rand::thread_rng().gen_range(...)`), invokes `entry::run(&payload)`,
+    // reduces the produced key to a `u64` via the `NyxKeyToInt` trait
+    // (`u16`/`u32`/`u64` flow through verbatim, `[u8; N]`/`Vec<u8>`/
+    // `String`/`&str` are left-zero-padded to 8 bytes then read as BE
+    // u64 so a 32-byte CSPRNG benign result trivially overshoots any
+    // 16-bit budget), and writes a `ProbeKind::WeakKey { key_int }`
+    // record.
+    if spec.expected_cap == crate::labels::Cap::CRYPTO {
+        return Ok(emit_crypto_harness(spec));
     }
 
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Rust has no
@@ -1442,6 +1590,9 @@ pub fn generate_cargo_toml_with_extras(cap: Cap, needs_percent_encoding: bool) -
     }
     if needs_percent_encoding {
         deps.push_str("percent-encoding = \"2\"\n");
+    }
+    if cap.contains(Cap::CRYPTO) {
+        deps.push_str("rand = \"0.8\"\n");
     }
 
     format!(
@@ -2382,6 +2533,173 @@ mod tests {
         assert!(
             body.contains("edition = \"2021\""),
             "Cargo.toml must declare edition 2021, got: {body}",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Rust CRYPTO emitter tests ─────────────────────────
+
+    fn make_crypto_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::CRYPTO;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
+        let h = emit(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("fn nyx_weak_key_probe"),
+            "dispatcher must short-circuit Cap::CRYPTO into emit_crypto_harness so the weak-key probe shim is present: {}",
+            h.source
+        );
+        // The harness source quotes the JSON field names with escaped
+        // backslashes (the generated Rust code splices the JSON via
+        // `push_str("\"kind\":\"WeakKey\"")`).  Assert against the
+        // escaped form so the test pins the runtime probe shape, not
+        // an accidental colocation.
+        assert!(
+            h.source.contains(r#"\"kind\":\"WeakKey\""#),
+            "Rust CRYPTO harness must record probes with kind WeakKey so the WeakKeyEntropy predicate fires: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_invokes_entry_via_mod_entry() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("mod entry;"),
+            "Rust CRYPTO harness must declare `mod entry;` so the staged fixture is in scope: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("let produced = entry::run(&payload);"),
+            "Rust CRYPTO harness must invoke the entry function with the payload: {}",
+            h.source
+        );
+        assert_eq!(
+            h.entry_subpath,
+            Some("src/entry.rs".to_string()),
+            "Rust CRYPTO harness must stage the fixture at src/entry.rs so `mod entry;` picks it up",
+        );
+        assert_eq!(
+            h.filename, "src/main.rs",
+            "Rust CRYPTO harness main file must be src/main.rs",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_emits_weak_key_probe_kind() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains(r#"\"kind\":{\"kind\":\"WeakKey\",\"key_int\":"#),
+            "Rust CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "Rust CRYPTO harness must print the universal sink-hit sentinel: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_cargo_toml_pulls_in_rand_crate() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ));
+        let cargo = h
+            .extra_files
+            .iter()
+            .find(|(n, _)| n == "Cargo.toml")
+            .expect("Cargo.toml must be in extra_files");
+        assert!(
+            cargo.1.contains("rand = \"0.8\""),
+            "Rust CRYPTO harness Cargo.toml must depend on rand = \"0.8\" so the fixture's `rand::thread_rng()` / `rand::rngs::OsRng` imports resolve: {}",
+            cargo.1
+        );
+        assert!(
+            cargo.1.contains("libc = \"0.2\""),
+            "Rust CRYPTO harness Cargo.toml must keep libc dep for the probe shim's sigaction path",
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_reduces_byte_array_via_be_u64() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/benign.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("fn nyx_bytes_to_key_int"),
+            "Rust CRYPTO harness must define the byte-slice reduction helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("u64::from_be_bytes"),
+            "Rust CRYPTO harness must use big-endian u64 reduction so a 32-byte CSPRNG benign result overshoots any 16-bit budget: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("impl<const N: usize> NyxKeyToInt for [u8; N]"),
+            "Rust CRYPTO harness must provide a generic [u8; N] impl so both [u8; 32] (benign) and other-sized array returns reduce uniformly: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_provides_impls_for_primitive_int_returns() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ));
+        for ty in &["u8", "u16", "u32", "u64", "i64", "bool"] {
+            let needle = format!("impl NyxKeyToInt for {ty}");
+            assert!(
+                h.source.contains(&needle),
+                "Rust CRYPTO harness must provide a NyxKeyToInt impl for {ty} so fixture return-type variation does not break compilation: {}",
+                h.source
+            );
+        }
+    }
+
+    #[test]
+    fn emit_crypto_harness_signed_impls_mask_sign_bit() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "run",
+        ));
+        assert!(
+            h.source.contains("(self as u64) & (i64::MAX as u64)"),
+            "signed-int impls must mask the sign bit so a negative key value does not flip a small-bit-budget predicate: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_crypto_harness_honours_entry_name_when_set() {
+        let h = emit_crypto_harness(&make_crypto_spec(
+            "tests/dynamic_fixtures/crypto/rust/vuln.rs",
+            "weak_key_derivation",
+        ));
+        assert!(
+            h.source.contains("entry::weak_key_derivation(&payload)"),
+            "Rust CRYPTO harness must use spec.entry_name (not a hard-coded literal) when invoking the entry: {}",
+            h.source
         );
     }
 }
