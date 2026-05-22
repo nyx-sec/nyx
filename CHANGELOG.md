@@ -6,7 +6,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 Three fronts this release: an attack-surface map, a sandboxed dynamic verifier, and a framework adapter registry that grounds both.
 
-The attack-surface map and chain composer turn the flat finding list into a route-to-sink graph. The dynamic verifier re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict on each. The adapter registry (107 entries across 8 languages) covers HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
+The attack-surface map and chain composer turn the flat finding list into a route-to-sink graph. The dynamic verifier re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict on each. The adapter registry (116 entries across 8 languages) covers HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
 
 ### Attack-surface map
 
@@ -16,7 +16,7 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 
 ### Framework adapter registry
 
-`src/dynamic/framework/` ships a `FrameworkAdapter` trait with concrete adapters across 8 languages (107 entries today, growing per release). Each adapter binds a route / handler / consumer pattern to a `FrameworkBinding` so the surface map and dynamic verifier can locate entry points without re-walking the AST.
+`src/dynamic/framework/` ships a `FrameworkAdapter` trait with concrete adapters across 8 languages (116 entries today, growing per release). Each adapter binds a route / handler / consumer pattern to a `FrameworkBinding` so the surface map and dynamic verifier can locate entry points without re-walking the AST.
 
 - **HTTP routers.** Flask, Django, FastAPI, Starlette (Python); Express, Koa, NestJS, Fastify (JS/TS); Spring, Quarkus, Micronaut, Jakarta Servlet (Java); Gin, Echo, Fiber, Chi (Go); Axum, Actix, Rocket, Warp (Rust); Rails, Sinatra, Hanami (Ruby); Laravel, Symfony, CodeIgniter (PHP).
 - **New `EntryKind` variants.** `ClassMethod`, `MessageHandler`, `ScheduledJob`, `GraphQLResolver`, `WebSocket`, `Middleware`, `Migration` join the existing `RouteHandler` / `Function` set so the surface map shows non-HTTP entry surfaces.
@@ -25,13 +25,13 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 - **GraphQL resolvers.** Apollo, Relay, gqlgen, Juniper, Graphene.
 - **WebSocket handlers.** ws, Socket.IO, ActionCable, Django Channels.
 - **Middleware + migrations.** Express, Laravel, Spring, Django, Rails middleware; Django, Flask, Laravel, Rails, Prisma, Sequelize migration scripts.
-- **Sanitizer-aware adapter strengthening.** Every XXE, header-injection, open-redirect, SSTI, LDAP, XPath, and deserialization adapter rejects bindings when the surrounding source visibly hardens the parser (`disallow-doctype-decl`, `resolve_entities=False`, `libxml_disable_entity_loader`), routes the value through a known encoder (`LdapEncoder.filterEncode`, `escape_filter_chars`, `ldap_escape`), or validates the URL through an allowlist. Cuts adapter FPs without losing the genuinely dangerous calls.
+- **Sanitizer-aware adapter strengthening.** Every XXE, header-injection, open-redirect, SSTI, LDAP, XPath, deserialization, crypto, and data-exfiltration adapter rejects bindings when the surrounding source visibly hardens the parser (`disallow-doctype-decl`, `resolve_entities=False`, `libxml_disable_entity_loader`), routes the value through a known encoder (`LdapEncoder.filterEncode`, `escape_filter_chars`, `ldap_escape`), swaps a weak primitive for a CSPRNG (`secrets.token_bytes`, `crypto.randomBytes`, `SecureRandom`), or validates the destination host through an allowlist. Cuts adapter FPs without losing the genuinely dangerous calls.
 
 ### Dynamic verification
 
 - **`nyx scan --verify`.** Every finding with `Confidence >= Medium` is re-executed inside a sandboxed harness against a curated payload corpus. The verdict (`Confirmed` / `NotConfirmed` / `Inconclusive` / `Unsupported`) lands on `Evidence.dynamic_verdict` and shows up in console output, JSON, SARIF, and the dashboard via a new `VerdictBadge` component on the finding detail page.
 - **Backends.** In-process on Linux with `Standard` / `Strict` hardening (namespace unshare, chroot, RLIMIT cap, seccomp filter), in-process on macOS via `sandbox-exec` with a profile-per-policy wrap, Docker with a published image-builder catalogue, and a Firecracker trait stub for future microVM execution. The Docker backend ships native binary support for Rust and Go so harnesses no longer need to drag a toolchain into every image.
-- **Language coverage.** Per-language harness emitters for Python, JS/TS, Go, Java, PHP, Ruby, Rust, C, and C++. Stub harness intercepts SQL, HTTP, Redis, and filesystem boundaries so the verdict reflects the sink, not the network.
+- **Language coverage.** Per-language harness emitters for Python, JS/TS, Go, Java, PHP, Ruby, Rust, C, and C++. Stub harness intercepts SQL, HTTP, Redis, and filesystem boundaries so the verdict reflects the sink, not the network. The `JSON_PARSE`, `UNAUTHORIZED_ID`, and `DATA_EXFIL` cap dispatchers are wired into every emitter that ships these caps (Python, JS, TS, Go, Java, PHP, Ruby, Rust), so the verdict pipeline closes the loop on each cap end-to-end rather than per-language piecemeal.
 - **Abstract-interpretation and symex sanitizer suppression.** Symbolic execution and the interval/string abstract domain are now consulted at verdict time, so a payload that the static engine would call dangerous but symex can prove never reaches the sink lands as NotConfirmed.
 - **Guard-aware verdicts.** When a known input-validation or output-sanitization middleware sits in front of a Confirmed sink (Spring `@PreAuthorize`, Express `helmet`, Nest `@UseGuards`, Django `@permission_classes`, and the per-language registry in `src/dynamic/framework/auth_markers.rs`), the verdict demotes to `ConfirmedWithKnownGuard` and the guard names land on `differential.known_guards`. Authentication-only filters do not trigger the demotion since they do not mitigate injection.
 - **Repro bundles.** Every verified finding writes a hermetic bundle to `~/.cache/nyx/dynamic/repro/<spec_hash>/` with `reproduce.sh`, `expected/{verdict.json,outcome.json,trace.jsonl}`, and a `docker_pull.sh` when the toolchain is pinned in `tools/image-builder/images.toml`. `--verbose` flushes the per-step `VerifyTrace` to stderr for live triage.
