@@ -8,7 +8,6 @@
 
 use crate::labels::Cap;
 use crate::ssa::ir::{SsaBody, Terminator};
-use crate::summary::ssa_summary::PathFactReturnEntry;
 use crate::symbol::FuncKey;
 use crate::taint::domain::{TaintOrigin, VarTaint};
 use petgraph::graph::NodeIndex;
@@ -32,11 +31,6 @@ pub(crate) struct InlineResult {
     /// provably narrows it (e.g. a `sanitize_path` early-returning on
     /// `s.contains("..")`).
     pub(super) return_path_fact: crate::abstract_interp::PathFact,
-    /// Per-return-path decomposition of `return_path_fact`. Non-empty
-    /// when the callee has ≥2 return blocks with different predicate
-    /// gates.
-    #[allow(dead_code)]
-    pub(super) return_path_facts: SmallVec<[PathFactReturnEntry; 2]>,
 }
 
 /// Structural (callsite-agnostic) summary of an inline-analyzed
@@ -71,9 +65,6 @@ pub(crate) struct ReturnShape {
     /// state under Top-seeded Params. Describes the callee's intrinsic
     /// narrowing.
     pub(super) return_path_fact: crate::abstract_interp::PathFact,
-    /// Per-return-path decomposition of the return value. Populated
-    /// when the callee has ≥2 return blocks with different predicates.
-    pub(super) return_path_facts: SmallVec<[PathFactReturnEntry; 2]>,
 }
 
 impl CachedInlineShape {

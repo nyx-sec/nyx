@@ -283,9 +283,6 @@ pub mod index {
     ///   footprint.
     pub const SCHEMA_VERSION: &str = "4";
 
-    // TODO: ADD CLEANS FOR EACH TABLE BASED ON PROJECT WHICH RUNS ON CLEAN
-    // TODO: ADD DROP AND GIVE A CLI PARAMETER FOR DROP
-
     /// A single issue row, ready for insertion.
     #[derive(Debug, Clone)]
     pub struct IssueRow<'a> {

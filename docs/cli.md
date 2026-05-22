@@ -74,7 +74,7 @@ nyx scan [PATH] [OPTIONS]
 | `--fail-on <SEV>` | *(none)* | Exit code 1 if any finding >= this severity |
 | `--show-suppressed` | off | Show inline-suppressed findings (dimmed, tagged `[SUPPRESSED]`) |
 | `--keep-nonprod-severity` | off | Don't downgrade severity for test/vendor paths |
-| `--all` | off | Disable category filtering, rollups, and LOW budgets -- show everything |
+| `--all` | off | Disable category filtering, rollups, and LOW budgets. Shows everything |
 | `--include-quality` | off | Include Quality-category findings (hidden by default) |
 | `--max-low <N>` | `20` | Maximum total LOW findings to show |
 | `--max-low-per-file <N>` | `1` | Maximum LOW findings per file |

@@ -3114,20 +3114,13 @@ fn extract_inline_return_taint(
     let return_path_fact =
         return_path_fact_acc.unwrap_or_else(crate::abstract_interp::PathFact::top);
 
-    // Only keep per-return-path entries when at least one entry carries
-    // meaningful signal (non-Top path_fact or a variant_inner_fact).  A
-    // list of all-Top entries adds bytes on disk without helping a
-    // caller pick a path.  Additionally require ≥2 distinct entries ,
-    // a single-entry list is no finer than the joined `return_path_fact`.
-    let return_path_facts = if per_return_path_entries.len() >= 2
+    // Surface per-return-path signal in the gate below: at least two
+    // distinct entries with non-Top path_fact or a variant_inner_fact.
+    // Single-entry lists are no finer than the joined `return_path_fact`.
+    let has_per_return_path_signal = per_return_path_entries.len() >= 2
         && per_return_path_entries
             .iter()
-            .any(|e| !e.path_fact.is_top() || e.variant_inner_fact.is_some())
-    {
-        per_return_path_entries
-    } else {
-        SmallVec::new()
-    };
+            .any(|e| !e.path_fact.is_top() || e.variant_inner_fact.is_some());
 
     // Even when the callee produces no return taint and no param/receiver
     // provenance, a non-Top PathFact on the return is still meaningful
@@ -3138,7 +3131,7 @@ fn extract_inline_return_taint(
         && !final_receiver
         && final_internal.is_empty()
         && return_path_fact.is_top()
-        && return_path_facts.is_empty()
+        && !has_per_return_path_signal
     {
         return CachedInlineShape(None);
     }
@@ -3150,7 +3143,6 @@ fn extract_inline_return_taint(
         receiver_provenance: final_receiver,
         uses_summary: true, // inline analysis is a form of summary
         return_path_fact,
-        return_path_facts,
     }))
 }
 
@@ -3325,7 +3317,6 @@ fn apply_cached_shape(
         return InlineResult {
             return_taint: None,
             return_path_fact: crate::abstract_interp::PathFact::top(),
-            return_path_facts: SmallVec::new(),
         };
     };
 
@@ -3407,7 +3398,6 @@ fn apply_cached_shape(
     InlineResult {
         return_taint,
         return_path_fact: ret.return_path_fact.clone(),
-        return_path_facts: ret.return_path_facts.clone(),
     }
 }
 
