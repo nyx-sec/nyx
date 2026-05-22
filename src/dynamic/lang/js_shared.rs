@@ -629,6 +629,18 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_prototype_pollution_harness(spec));
     }
 
+    // Phase 11 (Track J.9): JSON_PARSE depth-bomb short-circuit.  The
+    // synthetic harness monkey-patches `JSON.parse`, walks the parsed
+    // value iteratively to record maximum nesting depth, emits a
+    // `ProbeKind::JsonParse { depth, excessive_depth }` record, then
+    // routes the payload through the fixture entry.  RangeError-style
+    // V8 stack-exhaustion paths emit `JsonParse { depth: 0,
+    // excessive_depth: true }` so the predicate still fires when the
+    // engine rejects the input outright.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Same shape gap
     // closer as the Python emitter — instantiate the class via its
     // zero-arg constructor (falling back to a stubbed-dependency ctor
@@ -1953,6 +1965,135 @@ console.log(JSON.stringify({{
 "#
             .to_owned(),
         )],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 11 (Track J.9) — JSON_PARSE depth-bomb harness for Node.
+///
+/// Monkey-patches `JSON.parse` with a wrapper that calls the original
+/// parser, walks the resulting value iteratively (no recursion stack)
+/// to compute maximum nesting depth, emits a
+/// `ProbeKind::JsonParse { depth, excessive_depth }` record, then
+/// returns the parsed value verbatim.  A `RangeError` raised by V8 on
+/// excessively-deep input is caught and converted into a
+/// `JsonParse { depth: 0, excessive_depth: true }` probe before the
+/// error is re-thrown — matching the Python harness's
+/// `RecursionError` handling.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_json_parse_harness`.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_stem = derive_js_entry_stem(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"// Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+{shim}
+
+const _NYX_MAX_WALK = 4096;
+
+function _nyx_count_depth(parsed) {{
+  let maxDepth = 0;
+  const stack = [[parsed, 1]];
+  let visited = 0;
+  while (stack.length > 0) {{
+    const [cur, depth] = stack.pop();
+    visited += 1;
+    if (visited > _NYX_MAX_WALK) break;
+    if (depth > maxDepth) maxDepth = depth;
+    if (cur !== null && typeof cur === 'object') {{
+      if (Array.isArray(cur)) {{
+        for (let i = 0; i < cur.length; i += 1) {{
+          stack.push([cur[i], depth + 1]);
+        }}
+      }} else {{
+        for (const k of Object.keys(cur)) {{
+          stack.push([cur[k], depth + 1]);
+        }}
+      }}
+    }}
+  }}
+  return maxDepth;
+}}
+
+function _nyx_json_parse_probe(depth, excessive) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'JSON.parse',
+    args: [{{ kind: 'Int', value: depth | 0 }}],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{
+      kind: 'JsonParse',
+      depth: depth | 0,
+      excessive_depth: !!excessive,
+    }},
+    witness: __nyx_witness('JSON.parse', [depth | 0]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+const _nyx_orig_json_parse = JSON.parse;
+
+JSON.parse = function _nyx_json_parse_with_depth(text, reviver) {{
+  let parsed;
+  try {{
+    parsed = _nyx_orig_json_parse(text, reviver);
+  }} catch (e) {{
+    // V8 raises `RangeError: Maximum call stack size exceeded` on
+    // deeply-nested input.  Emit the excessive-depth probe before
+    // re-raising so the oracle still fires.
+    if (e instanceof RangeError) {{
+      _nyx_json_parse_probe(0, true);
+    }}
+    throw e;
+  }}
+  const depth = _nyx_count_depth(parsed);
+  _nyx_json_parse_probe(depth, depth > 64);
+  return parsed;
+}};
+
+function _nyx_json_parse_via_fixture(payload) {{
+  let _entry;
+  try {{
+    _entry = require('./{entry_stem}');
+  }} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+  }}
+  const fn =
+    _entry && (typeof _entry === 'function' ? _entry : _entry['{entry_name}']);
+  if (typeof fn !== 'function') {{
+    return false;
+  }}
+  try {{
+    fn(payload);
+  }} catch (e) {{
+    // Parser errors / depth-induced throws are expected on the vuln
+    // payload; the probe is already emitted.
+  }}
+  return true;
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+_nyx_json_parse_via_fixture(payload);
+console.log('__NYX_SINK_HIT__');
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }
@@ -3435,5 +3576,93 @@ mod tests {
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(EntryKind::Function, entry_name, PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.into();
+        spec.entry_name = entry_name.into();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(
+            &make_json_parse_spec(
+                "tests/dynamic_fixtures/json_parse_depth/javascript/vuln.js",
+                "run",
+            ),
+            false,
+        )
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_json_parse_with_depth"),
+            "dispatcher must select the JSON_PARSE depth harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("kind: 'JsonParse'"),
+            "JSON_PARSE harness must emit JsonParse probes",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_monkey_patches_json_parse() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/javascript/vuln.js",
+            "run",
+        ));
+        assert!(h.source.contains("const _nyx_orig_json_parse = JSON.parse"));
+        assert!(
+            h.source
+                .contains("JSON.parse = function _nyx_json_parse_with_depth")
+        );
+        assert!(h.source.contains("function _nyx_count_depth(parsed)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/javascript/vuln.js",
+            "run",
+        ));
+        assert!(h.source.contains("depth: depth | 0"));
+        assert!(h.source.contains("excessive_depth: !!excessive"));
+        assert!(h.source.contains("depth > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_handles_range_error() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/javascript/vuln.js",
+            "run",
+        ));
+        assert!(h.source.contains("e instanceof RangeError"));
+        assert!(h.source.contains("_nyx_json_parse_probe(0, true)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_fixture_require() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/javascript/vuln.js",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("function _nyx_json_parse_via_fixture(payload)")
+        );
+        assert!(h.source.contains("require('./vuln')"));
+        assert!(h.source.contains("_entry['run']"));
+        assert_eq!(h.filename, "harness.js");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_json_parse_harness_derives_entry_stem_from_entry_file() {
+        let h =
+            emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.js", "run"));
+        assert!(h.source.contains("require('./benign')"));
     }
 }

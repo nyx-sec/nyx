@@ -128,7 +128,9 @@ mod e2e_json_parse_depth {
             .join("tests/dynamic_fixtures/json_parse_depth")
             .join(match lang {
                 Lang::Python => "python",
-                _ => unreachable!("JSON_PARSE depth e2e covers Python only"),
+                Lang::JavaScript => "javascript",
+                Lang::Ruby => "ruby",
+                _ => unreachable!("JSON_PARSE depth e2e covers Python + JavaScript + Ruby only"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -167,8 +169,14 @@ mod e2e_json_parse_depth {
     }
 
     fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
-        if !command_available("python3") {
-            eprintln!("SKIP {lang:?} {fixture}: missing toolchain python3");
+        let required = match lang {
+            Lang::Python => "python3",
+            Lang::JavaScript => "node",
+            Lang::Ruby => "ruby",
+            _ => unreachable!("JSON_PARSE depth e2e covers Python + JavaScript + Ruby only"),
+        };
+        if !command_available(required) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
             return None;
         }
         let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -207,6 +215,22 @@ mod e2e_json_parse_depth {
             return;
         };
         assert_confirmed(Lang::Python, &outcome);
+    }
+
+    #[test]
+    fn javascript_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
+        assert_confirmed(Lang::JavaScript, &outcome);
+    }
+
+    #[test]
+    fn ruby_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
+        assert_confirmed(Lang::Ruby, &outcome);
     }
 }
 

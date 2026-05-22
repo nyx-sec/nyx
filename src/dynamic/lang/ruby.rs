@@ -447,6 +447,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 11 (Track J.9): JSON_PARSE depth-bomb short-circuit.  The
+    // synthetic harness rebinds `JSON.parse` to a depth-counting
+    // wrapper, walks the parsed value iteratively, and emits a
+    // `ProbeKind::JsonParse { depth, excessive_depth }` record before
+    // returning the parsed value.  `JSON::NestingError` (raised by the
+    // Ruby json gem when the input exceeds `max_nesting`) is caught
+    // and converted into a `JsonParse { depth: 0, excessive_depth:
+    // true }` probe before the error is re-raised.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
         return Ok(emit_class_method_harness(class, method));
@@ -1596,6 +1608,131 @@ _nyx_run
     }
 }
 
+/// Phase 11 (Track J.9) — JSON_PARSE depth-bomb harness for Ruby.
+///
+/// Rebinds `JSON.parse` to a depth-counting wrapper that calls the
+/// original parser, walks the resulting value iteratively (no
+/// recursion stack) to compute maximum nesting depth, emits a
+/// `ProbeKind::JsonParse { depth, excessive_depth }` record, then
+/// returns the parsed value verbatim.  `JSON::NestingError` raised by
+/// the Ruby json gem (default `max_nesting` is 100) is caught and
+/// converted into a `JsonParse { depth: 0, excessive_depth: true }`
+/// probe before the error is re-raised — matching the Python harness's
+/// `RecursionError` handling and the JS harness's `RangeError`
+/// handling.
+///
+/// Mirrors `crate::dynamic::lang::python::emit_json_parse_harness` and
+/// `crate::dynamic::lang::js_shared::emit_json_parse_harness`.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"# Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+require 'json'
+
+{shim}
+
+NYX_MAX_WALK = 4096
+
+def _nyx_count_depth(parsed)
+  max_depth = 0
+  stack = [[parsed, 1]]
+  visited = 0
+  until stack.empty?
+    cur, depth = stack.pop
+    visited += 1
+    break if visited > NYX_MAX_WALK
+    max_depth = depth if depth > max_depth
+    case cur
+    when Hash
+      cur.each_value {{ |v| stack.push([v, depth + 1]) }}
+    when Array
+      cur.each {{ |v| stack.push([v, depth + 1]) }}
+    end
+  end
+  max_depth
+end
+
+def _nyx_json_parse_probe(depth, excessive)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'JSON.parse',
+    'args'           => [{{ 'kind' => 'Int', 'value' => depth.to_i }}],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{
+      'kind'            => 'JsonParse',
+      'depth'           => depth.to_i,
+      'excessive_depth' => !!excessive,
+    }},
+    'witness'        => __nyx_witness('JSON.parse', [depth.to_i]),
+  }}
+  begin
+    File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+  rescue StandardError
+    # best-effort
+  end
+end
+
+_nyx_orig_json_parse = JSON.method(:parse)
+
+JSON.define_singleton_method(:parse) do |source, *args, **opts|
+  begin
+    parsed = _nyx_orig_json_parse.call(source, *args, **opts)
+  rescue JSON::NestingError => e
+    # The json gem raises NestingError once `max_nesting` (default 100)
+    # is exceeded.  Emit the excessive-depth probe before re-raising so
+    # the oracle still fires when the parser rejects the input.
+    _nyx_json_parse_probe(0, true)
+    raise e
+  end
+  depth = _nyx_count_depth(parsed)
+  _nyx_json_parse_probe(depth, depth > 64)
+  parsed
+end
+
+def _nyx_json_parse_via_fixture(payload)
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError => e
+    STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+    exit 77
+  end
+  fn_sym = :'{entry_name}'
+  unless Object.respond_to?(fn_sym, true) || self.respond_to?(fn_sym, true)
+    return false
+  end
+  begin
+    send(fn_sym, payload)
+  rescue StandardError
+    # Parser errors / depth-induced raises are expected on the vuln
+    # payload; the probe is already emitted.
+  end
+  true
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+_nyx_json_parse_via_fixture(payload)
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
 fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     let entry_fn = &spec.entry_name;
     let pre_call = build_pre_call(spec);
@@ -2433,5 +2570,91 @@ mod tests {
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("JSON.define_singleton_method(:parse)"),
+            "dispatcher must select the JSON_PARSE depth harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("=> 'JsonParse'"),
+            "JSON_PARSE harness must emit JsonParse probes: {}",
+            h.source
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_monkey_patches_json_parse() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(h.source.contains("_nyx_orig_json_parse = JSON.method(:parse)"));
+        assert!(
+            h.source.contains("JSON.define_singleton_method(:parse)"),
+            "must rebind JSON.parse: {}",
+            h.source
+        );
+        assert!(h.source.contains("def _nyx_count_depth(parsed)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(h.source.contains("'depth'           => depth.to_i"));
+        assert!(h.source.contains("'excessive_depth' => !!excessive"));
+        assert!(h.source.contains("depth > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_handles_nesting_error() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(h.source.contains("rescue JSON::NestingError => e"));
+        assert!(h.source.contains("_nyx_json_parse_probe(0, true)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_fixture_require() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("def _nyx_json_parse_via_fixture(payload)")
+        );
+        assert!(h.source.contains("require_relative './vuln'"));
+        assert!(h.source.contains("fn_sym = :'run'"));
+        assert_eq!(h.filename, "harness.rb");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_json_parse_harness_derives_entry_basename_from_entry_file() {
+        let h = emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.rb", "run"));
+        assert!(h.source.contains("require_relative './benign'"));
     }
 }
