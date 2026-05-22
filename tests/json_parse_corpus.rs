@@ -27,6 +27,7 @@ const LANGS: &[Lang] = &[
     Lang::Php,
     Lang::Go,
     Lang::Rust,
+    Lang::Java,
 ];
 
 /// Subset of [`LANGS`] whose JSON parser has a prototype-pollution
@@ -181,7 +182,8 @@ mod e2e_json_parse_depth {
                 Lang::Php => "php",
                 Lang::Go => "go",
                 Lang::Rust => "rust",
-                _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust only"),
+                Lang::Java => "java",
+                _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -227,7 +229,8 @@ mod e2e_json_parse_depth {
             Lang::Php => "php",
             Lang::Go => "go",
             Lang::Rust => "cargo",
-            _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust only"),
+            Lang::Java => "javac",
+            _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
@@ -310,11 +313,19 @@ mod e2e_json_parse_depth {
         };
         assert_confirmed(Lang::Rust, &outcome);
     }
+
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        assert_confirmed(Lang::Java, &outcome);
+    }
 }
 
 #[test]
 fn json_parse_unsupported_for_other_langs() {
-    for lang in [Lang::C, Lang::Cpp, Lang::Java, Lang::TypeScript] {
+    for lang in [Lang::C, Lang::Cpp, Lang::TypeScript] {
         assert!(
             payloads_for_lang(Cap::JSON_PARSE, lang).is_empty(),
             "JSON_PARSE has unexpected payloads for {lang:?}",

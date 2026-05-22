@@ -17,6 +17,7 @@
 //! regular property `data`, leaving the chain untouched.
 
 pub mod go;
+pub mod java;
 pub mod javascript;
 pub mod php;
 pub mod python;

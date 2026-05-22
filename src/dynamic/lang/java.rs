@@ -606,6 +606,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_crypto_harness(spec));
     }
 
+    // Phase 11 (Track J.9): JSON_PARSE depth-bomb short-circuit.  The
+    // Java harness reflectively loads the fixture class, invokes its
+    // declared method with the payload, walks the returned tree
+    // iteratively via `NyxJsonProbe.countDepth`, and emits a
+    // [`crate::dynamic::probe::ProbeKind::JsonParse`] probe.  The
+    // hand-rolled `NyxJsonProbe` helper is shipped as a sibling
+    // `.java` file so the build path never reaches for Jackson /
+    // Gson.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  Routes through
     // the existing `invokeReflective` helper so the harness instantiates
     // the receiver via its no-arg constructor (or null-fills primitive
@@ -2213,6 +2225,352 @@ public class NyxHarness {{
         extra_files: Vec::new(),
         entry_subpath: None,
     }
+}
+
+/// Phase 11 (Track J.9) JSON_PARSE depth-bomb harness for Java.
+///
+/// Reflectively loads the fixture's entry class, invokes the named
+/// static method with the payload (signature `static Object
+/// <method>(String)`), then walks the returned tree iteratively via
+/// `NyxJsonProbe.countDepth(Object)` to produce a
+/// [`crate::dynamic::probe::ProbeKind::JsonParse`] record.
+///
+/// Java has no stdlib JSON parser, so the harness ships
+/// `NyxJsonProbe.java` as an `extra_files` sibling: a hand-rolled
+/// iterative parser that returns a `java.util.List` / `java.util.Map`
+/// tree without pulling Jackson / Gson onto the classpath.  The
+/// fixture calls `NyxJsonProbe.parse(text)` in place of any library
+/// JSON parser.  When the parser's own
+/// [`NyxJsonProbe.NyxJsonDepthException`] fires (nesting above
+/// `MAX_PARSE_DEPTH = 4096`) the harness emits a `JsonParse { depth:
+/// 0, excessive_depth: true }` probe before continuing — matches the
+/// PHP `JSON_ERROR_DEPTH` and Python `RecursionError` excess paths.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_source = read_entry_source(&spec.entry_file);
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+
+    let source = format!(
+        r#"// Nyx dynamic harness — JSON_PARSE depth checks (Phase 11 / Track J.9).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxJsonParseProbe(int depth, boolean excessive) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(192);
+        line.append("{{\"sink_callee\":\"NyxJsonProbe.parse\",\"args\":[");
+        line.append("{{\"kind\":\"Int\",\"value\":").append(depth).append("}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"JsonParse\",\"depth\":").append(depth);
+        line.append(",\"excessive_depth\":").append(excessive).append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("NyxJsonProbe.parse", new String[]{{Integer.toString(depth)}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        int depth = 0;
+        boolean excessive = false;
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod("{entry_method}", String.class);
+            m.setAccessible(true);
+            Object produced = m.invoke(null, payload);
+            depth = NyxJsonProbe.countDepth(produced);
+            excessive = depth > 64;
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            // Fall through to fallback probe.
+        }} catch (InvocationTargetException ite) {{
+            Throwable cause = ite.getCause();
+            if (cause instanceof NyxJsonProbe.NyxJsonDepthException) {{
+                depth = 0;
+                excessive = true;
+                fixtureInvoked = true;
+            }} else if (cause instanceof NyxJsonProbe.NyxJsonParseException) {{
+                // Malformed JSON — payload survived the harness path,
+                // record the parse attempt without claiming depth.
+                fixtureInvoked = true;
+            }}
+        }}
+        nyxJsonParseProbe(depth, excessive);
+        System.out.println("__NYX_SINK_HIT__");
+        if (!fixtureInvoked) {{
+            System.out.println("__NYX_JSON_PARSE_FALLBACK__");
+        }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![("NyxJsonProbe.java".to_owned(), nyx_json_probe_source().to_owned())],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+/// Hand-rolled iterative JSON parser shipped alongside the harness.
+///
+/// Phase 11 (Track J.9) cannot reach for Jackson / Gson because the
+/// build container does not yet bundle either jar.  The walker returns
+/// a `java.util.List` / `java.util.Map` / `String` / `Long` / `Double`
+/// / `Boolean` / null tree the harness then iterates over via an
+/// explicit stack to compute the observed max nesting depth.
+fn nyx_json_probe_source() -> &'static str {
+    r#"// Auto-generated by nyx_scanner::dynamic::lang::java::emit_json_parse_harness.
+// Hand-rolled iterative JSON parser so the Phase 11 JSON_PARSE harness
+// can run without a Jackson / Gson classpath dep.
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class NyxJsonProbe {
+    public static final int MAX_PARSE_DEPTH = 4096;
+    public static final int MAX_WALK = 4096;
+
+    public static class NyxJsonDepthException extends RuntimeException {
+        public NyxJsonDepthException(String msg) { super(msg); }
+    }
+
+    public static class NyxJsonParseException extends RuntimeException {
+        public NyxJsonParseException(String msg) { super(msg); }
+    }
+
+    public static Object parse(String s) {
+        if (s == null) return null;
+        State st = new State(s);
+        st.skipWs();
+        Object v = parseValue(st, 1);
+        st.skipWs();
+        return v;
+    }
+
+    private static Object parseValue(State st, int depth) {
+        if (depth > MAX_PARSE_DEPTH) {
+            throw new NyxJsonDepthException("max depth " + MAX_PARSE_DEPTH + " exceeded");
+        }
+        st.skipWs();
+        if (st.pos >= st.src.length()) {
+            throw new NyxJsonParseException("unexpected EOF");
+        }
+        char c = st.src.charAt(st.pos);
+        if (c == '[') {
+            st.pos++;
+            List<Object> arr = new ArrayList<>();
+            st.skipWs();
+            if (st.pos < st.src.length() && st.src.charAt(st.pos) == ']') {
+                st.pos++;
+                return arr;
+            }
+            while (true) {
+                arr.add(parseValue(st, depth + 1));
+                st.skipWs();
+                if (st.pos >= st.src.length()) {
+                    throw new NyxJsonParseException("unterminated array");
+                }
+                char d = st.src.charAt(st.pos);
+                if (d == ',') {
+                    st.pos++;
+                    continue;
+                }
+                if (d == ']') {
+                    st.pos++;
+                    return arr;
+                }
+                throw new NyxJsonParseException("expected , or ] in array");
+            }
+        }
+        if (c == '{') {
+            st.pos++;
+            Map<String, Object> obj = new HashMap<>();
+            st.skipWs();
+            if (st.pos < st.src.length() && st.src.charAt(st.pos) == '}') {
+                st.pos++;
+                return obj;
+            }
+            while (true) {
+                st.skipWs();
+                String key = parseString(st);
+                st.skipWs();
+                if (st.pos >= st.src.length() || st.src.charAt(st.pos) != ':') {
+                    throw new NyxJsonParseException("expected : in object");
+                }
+                st.pos++;
+                Object v = parseValue(st, depth + 1);
+                obj.put(key, v);
+                st.skipWs();
+                if (st.pos >= st.src.length()) {
+                    throw new NyxJsonParseException("unterminated object");
+                }
+                char d = st.src.charAt(st.pos);
+                if (d == ',') {
+                    st.pos++;
+                    continue;
+                }
+                if (d == '}') {
+                    st.pos++;
+                    return obj;
+                }
+                throw new NyxJsonParseException("expected , or } in object");
+            }
+        }
+        if (c == '"') return parseString(st);
+        if (c == 't' || c == 'f' || c == 'n') return parseLiteral(st);
+        if (c == '-' || (c >= '0' && c <= '9')) return parseNumber(st);
+        throw new NyxJsonParseException("unexpected char " + c + " at " + st.pos);
+    }
+
+    private static String parseString(State st) {
+        if (st.pos >= st.src.length() || st.src.charAt(st.pos) != '"') {
+            throw new NyxJsonParseException("expected string");
+        }
+        st.pos++;
+        StringBuilder sb = new StringBuilder();
+        while (st.pos < st.src.length()) {
+            char c = st.src.charAt(st.pos++);
+            if (c == '"') return sb.toString();
+            if (c == '\\') {
+                if (st.pos >= st.src.length()) {
+                    throw new NyxJsonParseException("trailing escape");
+                }
+                char e = st.src.charAt(st.pos++);
+                switch (e) {
+                    case '"':  sb.append('"');  break;
+                    case '\\': sb.append('\\'); break;
+                    case '/':  sb.append('/');  break;
+                    case 'n':  sb.append('\n'); break;
+                    case 't':  sb.append('\t'); break;
+                    case 'r':  sb.append('\r'); break;
+                    case 'b':  sb.append('\b'); break;
+                    case 'f':  sb.append('\f'); break;
+                    case 'u':
+                        if (st.pos + 4 > st.src.length()) {
+                            throw new NyxJsonParseException("bad unicode escape");
+                        }
+                        int code = Integer.parseInt(st.src.substring(st.pos, st.pos + 4), 16);
+                        sb.append((char) code);
+                        st.pos += 4;
+                        break;
+                    default:
+                        sb.append(e);
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        throw new NyxJsonParseException("unterminated string");
+    }
+
+    private static Object parseLiteral(State st) {
+        if (st.src.startsWith("true", st.pos))  { st.pos += 4; return Boolean.TRUE; }
+        if (st.src.startsWith("false", st.pos)) { st.pos += 5; return Boolean.FALSE; }
+        if (st.src.startsWith("null", st.pos))  { st.pos += 4; return null; }
+        throw new NyxJsonParseException("bad literal at " + st.pos);
+    }
+
+    private static Object parseNumber(State st) {
+        int start = st.pos;
+        if (st.src.charAt(st.pos) == '-') st.pos++;
+        boolean isFloat = false;
+        while (st.pos < st.src.length()) {
+            char c = st.src.charAt(st.pos);
+            if ((c >= '0' && c <= '9') || c == '+' || c == '-') {
+                st.pos++;
+            } else if (c == '.' || c == 'e' || c == 'E') {
+                isFloat = true;
+                st.pos++;
+            } else {
+                break;
+            }
+        }
+        String num = st.src.substring(start, st.pos);
+        try {
+            if (isFloat) return Double.parseDouble(num);
+            return Long.parseLong(num);
+        } catch (NumberFormatException e) {
+            throw new NyxJsonParseException("bad number: " + num);
+        }
+    }
+
+    public static int countDepth(Object parsed) {
+        if (parsed == null) return 0;
+        ArrayDeque<Frame> stack = new ArrayDeque<>();
+        stack.push(new Frame(parsed, 1));
+        int maxDepth = 0;
+        int visited = 0;
+        while (!stack.isEmpty()) {
+            Frame f = stack.pop();
+            visited++;
+            if (visited > MAX_WALK) break;
+            if (f.depth > maxDepth) maxDepth = f.depth;
+            if (f.value instanceof List) {
+                for (Object child : (List<?>) f.value) {
+                    stack.push(new Frame(child, f.depth + 1));
+                }
+            } else if (f.value instanceof Map) {
+                for (Object child : ((Map<?, ?>) f.value).values()) {
+                    stack.push(new Frame(child, f.depth + 1));
+                }
+            }
+        }
+        return maxDepth;
+    }
+
+    private static final class State {
+        final String src;
+        int pos;
+        State(String s) { this.src = s; this.pos = 0; }
+        void skipWs() {
+            while (pos < src.length()) {
+                char c = src.charAt(pos);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') pos++;
+                else break;
+            }
+        }
+    }
+
+    private static final class Frame {
+        final Object value;
+        final int depth;
+        Frame(Object v, int d) { this.value = v; this.depth = d; }
+    }
+}
+"#
 }
 
 /// Stage the `javax.servlet.*` / `jakarta.servlet.*` stub bundle when
@@ -4316,6 +4674,143 @@ mod tests {
                 "ClassNotFoundException | NoSuchMethodException | IllegalAccessException"
             ),
             "Java CRYPTO harness must catch the reflective lookup exceptions and route to the fallback",
+        );
+    }
+
+    // ── Phase 11 (Track J.9) Java JSON_PARSE emitter tests ────────────────────
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("nyxJsonParseProbe"),
+            "dispatcher must short-circuit Cap::JSON_PARSE into emit_json_parse_harness so the depth probe shim is present",
+        );
+        assert!(
+            h.source.contains("\\\"kind\\\":\\\"JsonParse\\\""),
+            "Java JSON_PARSE harness must record probes with kind: JsonParse so the JsonParseExcessiveDepth predicate fires",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_ships_nyx_json_probe_extra_file() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(name, _)| name == "NyxJsonProbe.java"),
+            "Java JSON_PARSE harness must stage NyxJsonProbe.java as a sibling extra file so the fixture can resolve the helper at javac time without Jackson / Gson",
+        );
+        let (_, probe_src) = h
+            .extra_files
+            .iter()
+            .find(|(name, _)| name == "NyxJsonProbe.java")
+            .unwrap();
+        assert!(
+            probe_src.contains("public class NyxJsonProbe"),
+            "NyxJsonProbe.java extra file must declare the helper class",
+        );
+        assert!(
+            probe_src.contains("public static Object parse(String s)"),
+            "NyxJsonProbe must expose a String -> Object parse helper",
+        );
+        assert!(
+            probe_src.contains("public static int countDepth(Object parsed)"),
+            "NyxJsonProbe must expose an iterative countDepth walker",
+        );
+        assert!(
+            probe_src.contains("ArrayDeque<Frame>"),
+            "NyxJsonProbe.countDepth must walk iteratively to dodge the JVM stack-frame budget",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_reflective_entry_invocation() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java JSON_PARSE harness must reflectively load the fixture entry class by its derived FQN: {}",
+            h.source
+        );
+        assert!(
+            h.source
+                .contains("getDeclaredMethod(\"run\", String.class)"),
+            "Java JSON_PARSE harness must look up the entry method with a single String parameter",
+        );
+        assert!(
+            h.source.contains("m.invoke(null, payload)"),
+            "Java JSON_PARSE harness must invoke the static method with the payload",
+        );
+        assert!(
+            h.source.contains("NyxJsonProbe.countDepth(produced)"),
+            "Java JSON_PARSE harness must drive countDepth on the fixture's return value",
+        );
+        assert_eq!(
+            h.filename, "NyxHarness.java",
+            "Java JSON_PARSE harness must emit a NyxHarness.java file",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("\\\"depth\\\":"),
+            "Java JSON_PARSE harness must serialise a depth field on the JsonParse probe record",
+        );
+        assert!(
+            h.source.contains("\\\"excessive_depth\\\":"),
+            "Java JSON_PARSE harness must serialise an excessive_depth field on the JsonParse probe record",
+        );
+        assert!(
+            h.source.contains("__NYX_SINK_HIT__"),
+            "Java JSON_PARSE harness must print the universal sink-hit sentinel",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_handles_parser_depth_exception() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            h.source.contains("NyxJsonProbe.NyxJsonDepthException"),
+            "Java JSON_PARSE harness must catch the parser's depth-budget exception so a guard-rail trip still emits a probe",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_derives_entry_class_from_fixture() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/java/Vuln.java",
+            "run",
+        ));
+        assert!(
+            matches!(h.entry_subpath.as_deref(), Some(p) if p == "Vuln.java"),
+            "Java JSON_PARSE harness must stage the fixture under its public-class-derived filename so javac's filename invariant holds: got {:?}",
+            h.entry_subpath,
         );
     }
 }
