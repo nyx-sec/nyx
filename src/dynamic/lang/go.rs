@@ -797,11 +797,9 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
 
     if tier_a_active {
         let rewritten = rewrite_package(&entry_source, "vulnentry");
-        extra_files.push((
-            "internal/vulnentry/vulnentry.go".to_owned(),
-            rewritten,
-        ));
-        extra_imports = "\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n";
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        extra_imports =
+            "\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n";
         via_fixture_decl = format!(
             r##"func nyxHeaderViaFixture(payload string) bool {{
 	defer func() {{ _ = recover() }}()
@@ -957,14 +955,8 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
             "\"github.com/gin-gonic/gin\"",
             "\"nyx-harness/internal/vulnentry/gin\"",
         );
-        extra_files.push((
-            "internal/vulnentry/vulnentry.go".to_owned(),
-            rewritten,
-        ));
-        extra_files.push((
-            "internal/vulnentry/gin/gin.go".to_owned(),
-            gin_stub_pkg(),
-        ));
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        extra_files.push(("internal/vulnentry/gin/gin.go".to_owned(), gin_stub_pkg()));
         extra_imports.push_str("\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n\t\"nyx-harness/internal/vulnentry/gin\"\n");
         via_fixture_decl.push_str(&format!(
             r##"func nyxRedirectViaFixture(payload string) (string, bool) {{
@@ -989,11 +981,10 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     } else if imports_net_http {
         // Plain stdlib `http.Redirect(w, r, value, status)` fixture.
         let rewritten = rewrite_package(&entry_source, "vulnentry");
-        extra_files.push((
-            "internal/vulnentry/vulnentry.go".to_owned(),
-            rewritten,
-        ));
-        extra_imports.push_str("\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n");
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
+        extra_imports.push_str(
+            "\t\"net/http\"\n\t\"net/http/httptest\"\n\n\t\"nyx-harness/internal/vulnentry\"\n",
+        );
         via_fixture_decl.push_str(&format!(
             r##"func nyxRedirectViaFixture(payload string) (string, bool) {{
 	defer func() {{ _ = recover() }}()
@@ -1314,10 +1305,7 @@ pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
     let tier_a_active = !entry_source.is_empty();
     let (extra_imports, via_fixture_decl, via_fixture_invoke) = if tier_a_active {
         let rewritten = rewrite_package(&entry_source, "vulnentry");
-        extra_files.push((
-            "internal/vulnentry/vulnentry.go".to_owned(),
-            rewritten,
-        ));
+        extra_files.push(("internal/vulnentry/vulnentry.go".to_owned(), rewritten));
         let decl = format!(
             r##"func nyxCryptoViaFixture(payload string) (uint64, bool) {{
 	defer func() {{ _ = recover() }}()
@@ -2306,7 +2294,9 @@ mod tests {
             "tier-(b) header_injection must not import a fixture package",
         );
         assert!(
-            harness.source.contains("nyxHeaderProbe(\"Set-Cookie\", payload)"),
+            harness
+                .source
+                .contains("nyxHeaderProbe(\"Set-Cookie\", payload)"),
             "tier-(b) header_injection must emit synthetic Set-Cookie probe",
         );
         assert!(
@@ -2330,7 +2320,9 @@ mod tests {
             "tier-(a) open_redirect must import the rewritten fixture package",
         );
         assert!(
-            harness.source.contains("nyx-harness/internal/vulnentry/gin"),
+            harness
+                .source
+                .contains("nyx-harness/internal/vulnentry/gin"),
             "tier-(a) open_redirect must import the local gin stub",
         );
         assert!(
@@ -2373,7 +2365,10 @@ mod tests {
             "tier-(a) open_redirect must stage the gin stub",
         );
         assert!(
-            staged_gin.unwrap().1.contains("func (c *Context) Redirect("),
+            staged_gin
+                .unwrap()
+                .1
+                .contains("func (c *Context) Redirect("),
             "staged gin stub must expose Redirect",
         );
     }
@@ -2412,19 +2407,27 @@ mod tests {
         spec.entry_file = "/nonexistent/missing.go".into();
         let harness = emit_open_redirect_harness(&spec);
         assert!(
-            harness.source.contains("func nyxFollowLocation(location string)"),
+            harness
+                .source
+                .contains("func nyxFollowLocation(location string)"),
             "OPEN_REDIRECT harness must declare the nyxFollowLocation helper",
         );
         assert!(
-            harness.source.contains("strings.HasPrefix(location, \"http://127.0.0.1\")"),
+            harness
+                .source
+                .contains("strings.HasPrefix(location, \"http://127.0.0.1\")"),
             "follower must gate on loopback 127.0.0.1 host prefix",
         );
         assert!(
-            harness.source.contains("strings.HasPrefix(location, \"http://localhost\")"),
+            harness
+                .source
+                .contains("strings.HasPrefix(location, \"http://localhost\")"),
             "follower must gate on loopback localhost host prefix",
         );
         assert!(
-            harness.source.contains("strings.HasPrefix(location, \"http://host-gateway\")"),
+            harness
+                .source
+                .contains("strings.HasPrefix(location, \"http://host-gateway\")"),
             "follower must gate on loopback host-gateway prefix",
         );
         assert!(

@@ -698,9 +698,7 @@ pub fn collect_php_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareSha
     walk_php_middleware(root, bytes, &mut raw);
     let mut out: Vec<MiddlewareShape> = Vec::new();
     for name in raw {
-        if auth_markers::is_protective(Lang::Php, &name)
-            && !out.iter().any(|m| m.name == name)
-        {
+        if auth_markers::is_protective(Lang::Php, &name) && !out.iter().any(|m| m.name == name) {
             out.push(MiddlewareShape { name });
         }
     }
@@ -926,8 +924,7 @@ mod tests {
 
     #[test]
     fn collects_array_middleware_arg() {
-        let src: &[u8] =
-            b"<?php\nRoute::get('/x', 'C@x')->middleware(['auth', 'verified']);\n";
+        let src: &[u8] = b"<?php\nRoute::get('/x', 'C@x')->middleware(['auth', 'verified']);\n";
         let tree = parse(src);
         let mw = collect_php_middleware(tree.root_node(), src);
         assert!(mw.iter().any(|m| m.name == "auth"), "got {mw:?}");

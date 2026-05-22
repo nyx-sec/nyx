@@ -298,16 +298,14 @@ mod tests {
 
     #[test]
     fn populates_middleware_from_use_rack_attack() {
-        let src: &[u8] = b"require 'sinatra'\nuse Rack::Attack\nget '/run' do |payload|\n  payload\nend\n";
+        let src: &[u8] =
+            b"require 'sinatra'\nuse Rack::Attack\nget '/run' do |payload|\n  payload\nend\n";
         let tree = parse(src);
         let binding = RubySinatraAdapter
             .detect(&summary("run"), tree.root_node(), src)
             .expect("binding");
         assert!(
-            binding
-                .middleware
-                .iter()
-                .any(|m| m.name == "Rack::Attack"),
+            binding.middleware.iter().any(|m| m.name == "Rack::Attack"),
             "expected Rack::Attack marker, got {:?}",
             binding.middleware
         );

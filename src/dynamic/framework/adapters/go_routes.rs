@@ -277,9 +277,7 @@ pub fn collect_use_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareSha
     walk_use_calls(root, bytes, &mut raw);
     let mut out: Vec<MiddlewareShape> = Vec::new();
     for name in raw {
-        if auth_markers::is_protective(Lang::Go, &name)
-            && !out.iter().any(|m| m.name == name)
-        {
+        if auth_markers::is_protective(Lang::Go, &name) && !out.iter().any(|m| m.name == name) {
             out.push(MiddlewareShape { name });
         }
     }
@@ -540,7 +538,8 @@ mod tests {
 
     #[test]
     fn collect_use_middleware_picks_bare_identifier() {
-        let src: &[u8] = b"package main\nfunc init() { r := gin.Default(); r.Use(AuthMiddleware) }\n";
+        let src: &[u8] =
+            b"package main\nfunc init() { r := gin.Default(); r.Use(AuthMiddleware) }\n";
         let tree = parse(src);
         let mw = collect_use_middleware(tree.root_node(), src);
         assert_eq!(mw.len(), 1);
@@ -549,8 +548,7 @@ mod tests {
 
     #[test]
     fn collect_use_middleware_picks_selector_marker() {
-        let src: &[u8] =
-            b"package main\nfunc init() { e := echo.New(); e.Use(middleware.JWT) }\n";
+        let src: &[u8] = b"package main\nfunc init() { e := echo.New(); e.Use(middleware.JWT) }\n";
         let tree = parse(src);
         let mw = collect_use_middleware(tree.root_node(), src);
         assert_eq!(mw.len(), 1);
@@ -597,8 +595,7 @@ mod tests {
 
     #[test]
     fn collect_use_middleware_returns_empty_when_none_recognised() {
-        let src: &[u8] =
-            b"package main\nfunc init() { r := gin.Default(); r.GET(\"/x\", Show) }\n";
+        let src: &[u8] = b"package main\nfunc init() { r := gin.Default(); r.GET(\"/x\", Show) }\n";
         let tree = parse(src);
         let mw = collect_use_middleware(tree.root_node(), src);
         assert!(mw.is_empty());

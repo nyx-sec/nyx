@@ -8,7 +8,9 @@
 //! helpers here keeps the three adapters terse and lets every
 //! framework share the same placeholder-binding semantics.
 
-use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource, auth_markers};
+use crate::dynamic::framework::{
+    HttpMethod, MiddlewareShape, ParamBinding, ParamSource, auth_markers,
+};
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
@@ -499,9 +501,7 @@ pub fn collect_ruby_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareSh
     walk_attach_calls(root, bytes, &mut raw);
     let mut out: Vec<MiddlewareShape> = Vec::new();
     for name in raw {
-        if auth_markers::is_protective(Lang::Ruby, &name)
-            && !out.iter().any(|m| m.name == name)
-        {
+        if auth_markers::is_protective(Lang::Ruby, &name) && !out.iter().any(|m| m.name == name) {
             out.push(MiddlewareShape { name });
         }
     }
@@ -722,7 +722,8 @@ mod tests {
     fn collects_rails_protect_from_forgery_self_naming() {
         // `protect_from_forgery with: :exception` carries no positional
         // arg — the verb itself must be recognised as the marker.
-        let src: &[u8] = b"class A < ApplicationController\n  protect_from_forgery with: :exception\nend\n";
+        let src: &[u8] =
+            b"class A < ApplicationController\n  protect_from_forgery with: :exception\nend\n";
         let tree = parse(src);
         let mw = collect_ruby_middleware(tree.root_node(), src);
         assert!(
@@ -744,8 +745,7 @@ mod tests {
 
     #[test]
     fn collects_sinatra_use_rack_attack_rate_limit() {
-        let src: &[u8] =
-            b"require 'sinatra'\nuse Rack::Attack\nget '/x' do\n  'ok'\nend\n";
+        let src: &[u8] = b"require 'sinatra'\nuse Rack::Attack\nget '/x' do\n  'ok'\nend\n";
         let tree = parse(src);
         let mw = collect_ruby_middleware(tree.root_node(), src);
         assert!(mw.iter().any(|m| m.name == "Rack::Attack"), "got {mw:?}");
@@ -762,7 +762,8 @@ mod tests {
 
     #[test]
     fn drops_unknown_marker_names() {
-        let src: &[u8] = b"class A < ApplicationController\n  before_action :do_something_custom\nend\n";
+        let src: &[u8] =
+            b"class A < ApplicationController\n  before_action :do_something_custom\nend\n";
         let tree = parse(src);
         let mw = collect_ruby_middleware(tree.root_node(), src);
         // `do_something_custom` is not in the Ruby auth-markers table.

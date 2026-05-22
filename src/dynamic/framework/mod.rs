@@ -450,11 +450,13 @@ mod tests {
         let adapter = LegacyDetectOnlyAdapter;
 
         let no_ssa = adapter.detect_with_context(&summary, None, tree.root_node(), src);
-        assert_eq!(no_ssa.as_ref().map(|b| b.adapter.as_str()), Some("legacy:handler"));
+        assert_eq!(
+            no_ssa.as_ref().map(|b| b.adapter.as_str()),
+            Some("legacy:handler")
+        );
 
         let mut ssa = SsaFuncSummary::default();
-        ssa.typed_call_receivers
-            .push((0, "Repository".to_string()));
+        ssa.typed_call_receivers.push((0, "Repository".to_string()));
         let with_ssa = adapter.detect_with_context(&summary, Some(&ssa), tree.root_node(), src);
         // Default impl ignores the SSA summary, so both calls produce
         // the same binding identity.

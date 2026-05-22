@@ -72,9 +72,7 @@ fn extract_version(file_bytes: &[u8]) -> Option<String> {
                     .map(|c| if c == '_' { '.' } else { c })
                     .collect();
                 if !normalised.is_empty()
-                    && normalised
-                        .chars()
-                        .all(|c| c.is_ascii_digit() || c == '.')
+                    && normalised.chars().all(|c| c.is_ascii_digit() || c == '.')
                 {
                     return Some(normalised);
                 }

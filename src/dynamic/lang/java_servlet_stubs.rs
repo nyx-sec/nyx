@@ -497,8 +497,7 @@ mod tests {
         for pkg in &["javax.servlet.http", "jakarta.servlet.http"] {
             let resp = http_servlet_response(pkg);
             assert!(
-                resp.contains("redirectLocation")
-                    && resp.contains("getRedirectedUrl"),
+                resp.contains("redirectLocation") && resp.contains("getRedirectedUrl"),
                 "{pkg} HttpServletResponse stub missing redirect-capture wiring",
             );
         }

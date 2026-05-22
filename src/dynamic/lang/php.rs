@@ -2913,10 +2913,7 @@ mod tests {
             "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . $value);\n}\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function _nyx_header_via_fixture("),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -2943,7 +2940,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("$value = $payload;\n    _nyx_header_probe("),
+            h.source
+                .contains("$value = $payload;\n    _nyx_header_probe("),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2957,10 +2955,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.php");
         std::fs::write(&entry, "<?php\nfunction run($v) { return $v; }\n").unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("function _nyx_header_via_fixture("),
             "fallback path must not define the fixture-routing helper: {}",
@@ -2972,7 +2967,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("$value = $payload;\n    _nyx_header_probe("),
+            h.source
+                .contains("$value = $payload;\n    _nyx_header_probe("),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2990,10 +2986,7 @@ mod tests {
             "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . urlencode($value));\n}\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("\"benign.php\""),
             "tier-(a) harness must use the entry-file basename: {}",
@@ -3017,10 +3010,7 @@ mod tests {
              function run_once($server) { $c = stream_socket_accept($server, 5.0); if ($c === false) return; fwrite($c, \"HTTP/1.0 200 OK\\r\\nSet-Cookie: \" . $GLOBALS['nyx_cookie_value'] . \"\\r\\n\\r\\nok\"); fclose($c); }\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function _nyx_wire_frame_via_fixture("),
             "tier-(b) harness must define the wire-frame helper: {}",
@@ -3062,7 +3052,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => $bytes"),
+            h.source
+                .contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => $bytes"),
             "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
             h.source
         );
@@ -3090,10 +3081,7 @@ mod tests {
             "<?php\nfunction run($value) {\n    header(\"Set-Cookie: \" . $value);\n}\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("function _nyx_wire_frame_via_fixture("),
             "header()-only harness must not define the wire-frame helper: {}",
@@ -3123,10 +3111,7 @@ mod tests {
             "<?php\nuse Symfony\\Component\\HttpFoundation\\RedirectResponse;\nfunction run(string $value): RedirectResponse {\n    return new RedirectResponse($value);\n}\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function _nyx_redirect_via_fixture("),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -3158,7 +3143,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("$location = $payload;\n    _nyx_redirect_probe("),
+            h.source
+                .contains("$location = $payload;\n    _nyx_redirect_probe("),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -3172,10 +3158,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.php");
         std::fs::write(&entry, "<?php\nfunction run($v) { return $v; }\n").unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("function _nyx_redirect_via_fixture("),
             "fallback path must not define the fixture-routing helper: {}",
@@ -3187,7 +3170,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("$location = $payload;\n    _nyx_redirect_probe("),
+            h.source
+                .contains("$location = $payload;\n    _nyx_redirect_probe("),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -3205,17 +3189,16 @@ mod tests {
             "<?php\nuse Symfony\\Component\\HttpFoundation\\RedirectResponse;\nfunction run($v) { return new RedirectResponse($v); }\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
-            h.source.contains("function _nyx_follow_location(string $location): void"),
+            h.source
+                .contains("function _nyx_follow_location(string $location): void"),
             "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
             h.source
         );
         assert!(
-            h.source.contains("file_get_contents($location, false, $ctx)"),
+            h.source
+                .contains("file_get_contents($location, false, $ctx)"),
             "follow-location helper must call file_get_contents with a stream context: {}",
             h.source
         );
@@ -3225,9 +3208,12 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("str_starts_with($lower, 'http://127.0.0.1')")
-                && h.source.contains("str_starts_with($lower, 'http://localhost')")
-                && h.source.contains("str_starts_with($lower, 'http://host-gateway')"),
+            h.source
+                .contains("str_starts_with($lower, 'http://127.0.0.1')")
+                && h.source
+                    .contains("str_starts_with($lower, 'http://localhost')")
+                && h.source
+                    .contains("str_starts_with($lower, 'http://host-gateway')"),
             "follow-location helper must gate on loopback host prefixes: {}",
             h.source
         );
@@ -3315,7 +3301,8 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source.contains("['kind' => 'WeakKey', 'key_int' => $keyInt]"),
+            h.source
+                .contains("['kind' => 'WeakKey', 'key_int' => $keyInt]"),
             "PHP CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
             h.source
         );
@@ -3337,7 +3324,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("str_pad($head, 8, \"\\0\", STR_PAD_LEFT)"),
+            h.source
+                .contains("str_pad($head, 8, \"\\0\", STR_PAD_LEFT)"),
             "PHP CRYPTO harness must left-zero-pad short slices before unpacking",
         );
         assert!(
@@ -3353,7 +3341,8 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source.contains("if ($produced === null) {\n        $produced = $payload;\n    }"),
+            h.source
+                .contains("if ($produced === null) {\n        $produced = $payload;\n    }"),
             "PHP CRYPTO harness must fall back to the payload bytes when the fixture path returns null: {}",
             h.source
         );

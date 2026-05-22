@@ -1239,9 +1239,8 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
     let resolved = summaries
         .and_then(|gs| find_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file));
     let summary_ref = resolved.unwrap_or(&synthetic);
-    let ssa_ref = summaries.and_then(|gs| {
-        find_ssa_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file)
-    });
+    let ssa_ref = summaries
+        .and_then(|gs| find_ssa_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file));
     if let Some(binding) = crate::dynamic::framework::detect_binding_with_context(
         summary_ref,
         ssa_ref,

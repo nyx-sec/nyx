@@ -29,8 +29,8 @@
 //! guard names on [`DifferentialOutcome::known_guards`] and can
 //! deprioritise the finding without losing the underlying signal.
 
-use crate::dynamic::framework::auth_markers::{AuthMarkerKind, classify};
 use crate::dynamic::framework::FrameworkBinding;
+use crate::dynamic::framework::auth_markers::{AuthMarkerKind, classify};
 use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
 use crate::symbol::Lang;
 
@@ -116,9 +116,7 @@ pub fn is_triggering_verdict(verdict: DifferentialVerdict) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::framework::{
-        FrameworkBinding, HttpMethod, MiddlewareShape, RouteShape,
-    };
+    use crate::dynamic::framework::{FrameworkBinding, HttpMethod, MiddlewareShape, RouteShape};
     use crate::evidence::EntryKind;
 
     fn make_outcome(verdict: DifferentialVerdict) -> DifferentialOutcome {

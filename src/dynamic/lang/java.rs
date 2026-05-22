@@ -3733,7 +3733,8 @@ mod tests {
             "Java LDAP harness must read NYX_LDAP_ENDPOINT to route through the stub",
         );
         assert!(
-            h.source.contains("javax.naming.directory.InitialDirContext"),
+            h.source
+                .contains("javax.naming.directory.InitialDirContext"),
             "Java LDAP harness must import the JNDI InitialDirContext for the BER round-trip",
         );
         assert!(
@@ -3793,7 +3794,9 @@ mod tests {
             "servlet-importing fixture must trigger stub-file emission",
         );
         assert!(
-            h.source.contains("HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"),
+            h.source.contains(
+                "HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"
+            ),
             "Java HEADER_INJECTION harness must instantiate the captured-header response wrapper",
         );
         assert!(
@@ -3827,11 +3830,13 @@ mod tests {
         spec.entry_name = "run".into();
         let h = emit_header_injection_harness(&spec);
         assert!(
-            h.source.contains("jakarta.servlet.http.HttpServletResponse"),
+            h.source
+                .contains("jakarta.servlet.http.HttpServletResponse"),
             "Java HEADER_INJECTION harness must follow the entry source's servlet namespace",
         );
         assert!(
-            !h.source.contains("javax.servlet.http.HttpServletResponse response"),
+            !h.source
+                .contains("javax.servlet.http.HttpServletResponse response"),
             "Jakarta entry must not instantiate javax response wrapper",
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3891,7 +3896,8 @@ mod tests {
             h.extra_files,
         );
         assert!(
-            h.source.contains("static byte[] nyxWireFrameViaFixture(String payload)"),
+            h.source
+                .contains("static byte[] nyxWireFrameViaFixture(String payload)"),
             "tier-(b) harness must define the wire-frame helper: {}",
             h.source
         );
@@ -3901,7 +3907,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("getDeclaredMethod(\"setCookieValue\", byte[].class)"),
+            h.source
+                .contains("getDeclaredMethod(\"setCookieValue\", byte[].class)"),
             "tier-(b) harness must install the cookie value via reflection: {}",
             h.source
         );
@@ -3911,7 +3918,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("getDeclaredMethod(\"runOnce\", ServerSocket.class)"),
+            h.source
+                .contains("getDeclaredMethod(\"runOnce\", ServerSocket.class)"),
             "tier-(b) harness must drive runOnce on a worker thread: {}",
             h.source
         );
@@ -3921,7 +3929,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("new Socket(InetAddress.getByName(\"127.0.0.1\"), port)"),
+            h.source
+                .contains("new Socket(InetAddress.getByName(\"127.0.0.1\"), port)"),
             "tier-(b) harness must open a client Socket against the bound port: {}",
             h.source
         );
@@ -3941,7 +3950,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("\"{\\\"wire_frame_len\\\":\" + rawBytes.length"),
+            h.source
+                .contains("\"{\\\"wire_frame_len\\\":\" + rawBytes.length"),
             "tier-(b) harness must emit the wire_frame_len stdout marker: {}",
             h.source
         );
@@ -4006,7 +4016,9 @@ mod tests {
             "servlet-importing fixture must trigger stub-file emission",
         );
         assert!(
-            h.source.contains("HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"),
+            h.source.contains(
+                "HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"
+            ),
             "Java OPEN_REDIRECT harness must instantiate the captured-redirect response wrapper",
         );
         assert!(
@@ -4064,7 +4076,8 @@ mod tests {
         spec.entry_name = "run".into();
         let h = emit_open_redirect_harness(&spec);
         assert!(
-            h.source.contains("static void nyxFollowLocation(String location)"),
+            h.source
+                .contains("static void nyxFollowLocation(String location)"),
             "OPEN_REDIRECT harness must declare the nyxFollowLocation helper",
         );
         assert!(
@@ -4102,7 +4115,9 @@ mod tests {
         spec.entry_name = "run".into();
         let h = emit_open_redirect_harness(&spec);
         assert!(
-            h.source.contains("nyxRedirectProbe(captured, requestHost);\n            nyxFollowLocation(captured);"),
+            h.source.contains(
+                "nyxRedirectProbe(captured, requestHost);\n            nyxFollowLocation(captured);"
+            ),
             "tier-(a) must follow the captured Location: value, not the raw payload",
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -4137,7 +4152,8 @@ mod tests {
             "tier-(a) harness must reflectively load the fixture entry class",
         );
         assert!(
-            h.source.contains("getDeclaredMethod(\"run\", String.class)"),
+            h.source
+                .contains("getDeclaredMethod(\"run\", String.class)"),
             "tier-(a) harness must reflectively grab the fixture's run(String) method",
         );
         assert!(
@@ -4228,7 +4244,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("getDeclaredMethod(\"run\", String.class)"),
+            h.source
+                .contains("getDeclaredMethod(\"run\", String.class)"),
             "Java CRYPTO harness must look up the entry method with a single String parameter",
         );
         assert!(
@@ -4252,7 +4269,8 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source.contains("\\\"kind\\\":\\\"WeakKey\\\",\\\"key_int\\\":"),
+            h.source
+                .contains("\\\"kind\\\":\\\"WeakKey\\\",\\\"key_int\\\":"),
             "Java CRYPTO harness must emit ProbeKind::WeakKey records carrying a key_int field so the WeakKeyEntropy predicate fires: {}",
             h.source
         );
@@ -4269,7 +4287,8 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source.contains("ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong()"),
+            h.source
+                .contains("ByteBuffer.wrap(buf).order(ByteOrder.BIG_ENDIAN).getLong()"),
             "Java CRYPTO harness must use ByteBuffer.getLong() so a 32-byte CSPRNG key produces a key_int whose magnitude exceeds the 16-bit budget",
         );
         assert!(
@@ -4293,7 +4312,9 @@ mod tests {
             "Java CRYPTO harness must fall back to a payload-derived key_int when reflection fails so the universal sink-hit path still fires",
         );
         assert!(
-            h.source.contains("ClassNotFoundException | NoSuchMethodException | IllegalAccessException"),
+            h.source.contains(
+                "ClassNotFoundException | NoSuchMethodException | IllegalAccessException"
+            ),
             "Java CRYPTO harness must catch the reflective lookup exceptions and route to the fallback",
         );
     }

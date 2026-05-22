@@ -680,7 +680,8 @@ mod tests {
 
     #[test]
     fn records_class_and_method_use_decorators_in_order() {
-        let src: &[u8] = b"import { Controller, Post, UseGuards, UseInterceptors } from '@nestjs/common';\n\
+        let src: &[u8] =
+            b"import { Controller, Post, UseGuards, UseInterceptors } from '@nestjs/common';\n\
             import { AuthGuard } from './auth.guard';\n\
             import { LoggingInterceptor } from './logging.interceptor';\n\
             import { RoleGuard } from './role.guard';\n\

@@ -137,10 +137,7 @@ fn is_runtime_import_error(outcome: &sandbox::SandboxOutcome) -> bool {
         return false;
     }
     let needle = b"NYX_IMPORT_ERROR:";
-    outcome
-        .stderr
-        .windows(needle.len())
-        .any(|w| w == needle)
+    outcome.stderr.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Build harness (with retry), run every payload, stop at first confirmed trigger.
@@ -711,7 +708,10 @@ mod tests {
 
     #[test]
     fn import_error_detects_exit_77_with_marker() {
-        let outcome = outcome_with(Some(77), b"NYX_IMPORT_ERROR: Cannot find module 'express'\n");
+        let outcome = outcome_with(
+            Some(77),
+            b"NYX_IMPORT_ERROR: Cannot find module 'express'\n",
+        );
         assert!(is_runtime_import_error(&outcome));
     }
 

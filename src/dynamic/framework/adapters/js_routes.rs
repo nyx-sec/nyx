@@ -900,8 +900,7 @@ mod tests {
 
     #[test]
     fn extract_middleware_skips_member_expression_path_alias() {
-        let src: &[u8] =
-            b"app.post('/save', mw.csrf, mw.auth, controller.save);\n";
+        let src: &[u8] = b"app.post('/save', mw.csrf, mw.auth, controller.save);\n";
         let tree = parse_js(src);
         let recv = |n: &str| n == "app";
         let mw = extract_route_middleware(tree.root_node(), src, "save", &recv);

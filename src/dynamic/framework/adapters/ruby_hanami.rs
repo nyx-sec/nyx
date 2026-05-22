@@ -88,7 +88,11 @@ fn parse_inline_route(file_bytes: &[u8], class_name: &str) -> Option<(HttpMethod
     None
 }
 
-fn parse_route_line(line: &str, class_orig: &str, class_snake: &str) -> Option<(HttpMethod, String)> {
+fn parse_route_line(
+    line: &str,
+    class_orig: &str,
+    class_snake: &str,
+) -> Option<(HttpMethod, String)> {
     let (verb_tok, after) = line.split_once(char::is_whitespace)?;
     let method = HttpMethod::from_ident(verb_tok)?;
     let after = after.trim_start();

@@ -177,7 +177,12 @@ mod tests {
         let binding = RustActixAdapter
             .detect(&summary("show"), tree.root_node(), src)
             .expect("binding");
-        assert!(binding.middleware.iter().any(|m| m.name.contains("HttpAuthentication")));
+        assert!(
+            binding
+                .middleware
+                .iter()
+                .any(|m| m.name.contains("HttpAuthentication"))
+        );
     }
 
     #[test]

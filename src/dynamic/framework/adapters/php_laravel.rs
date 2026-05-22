@@ -161,10 +161,7 @@ mod tests {
             .detect(&summary("index"), tree.root_node(), src)
             .expect("binding");
         assert!(
-            binding
-                .middleware
-                .iter()
-                .any(|m| m.name == "auth:sanctum"),
+            binding.middleware.iter().any(|m| m.name == "auth:sanctum"),
             "got {:?}",
             binding.middleware
         );

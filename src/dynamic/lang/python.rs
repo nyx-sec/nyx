@@ -700,6 +700,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_crypto_harness(spec));
     }
 
+    // JSON_PARSE uses a dedicated depth-counting harness.
+    if spec.expected_cap == crate::labels::Cap::JSON_PARSE {
+        return Ok(emit_json_parse_harness(spec));
+    }
+
     // Phase 19 (Track M.1): ClassMethod short-circuit.  When the spec's
     // entry_kind is the data-bearing `ClassMethod { class, method }`
     // variant the harness instantiates the class via its default
@@ -2437,8 +2442,7 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     } else {
         spec.entry_name.clone()
     };
-    let uses_flask =
-        entry_source.contains("from flask") || entry_source.contains("import flask");
+    let uses_flask = entry_source.contains("from flask") || entry_source.contains("import flask");
     let via_fixture = if uses_flask {
         format!(
             r#"def _nyx_redirect_via_fixture(payload):
@@ -2668,6 +2672,121 @@ def _nyx_run():
     print("__NYX_SINK_HIT__", flush=True)
     sys.stdout.write(json.dumps({{"key_int": key_int}}) + "\n")
     sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// JSON_PARSE depth-bomb harness for Python.
+///
+/// The harness wraps `json.loads`, records the maximum nested list / dict
+/// depth, then calls the fixture entry with `NYX_PAYLOAD`. It treats parser
+/// recursion errors as excessive depth so the oracle sees the failure mode.
+pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let module_name = derive_module_name(&spec.entry_file);
+    let entry_name = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness for JSON_PARSE depth checks."""
+import importlib
+import json
+import os
+import sys
+import time
+
+{probe}
+
+_NYX_MAX_WALK = 4096
+
+
+def _nyx_count_depth(parsed):
+    max_depth = 0
+    stack = [(parsed, 1)]
+    visited = 0
+    while stack:
+        cur, depth = stack.pop()
+        visited += 1
+        if visited > _NYX_MAX_WALK:
+            break
+        if depth > max_depth:
+            max_depth = depth
+        if isinstance(cur, dict):
+            for value in cur.values():
+                stack.append((value, depth + 1))
+        elif isinstance(cur, list):
+            for value in cur:
+                stack.append((value, depth + 1))
+    return max_depth
+
+
+def _nyx_json_parse_probe(depth, excessive):
+    rec = {{
+        "sink_callee": "json.loads",
+        "args": [{{"kind": "Int", "value": int(depth)}}],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{
+            "kind": "JsonParse",
+            "depth": int(depth),
+            "excessive_depth": bool(excessive),
+        }},
+        "witness": __nyx_witness("json.loads", [int(depth)]),
+    }}
+    __nyx_emit(rec)
+
+
+_nyx_orig_json_loads = json.loads
+
+
+def _nyx_json_loads_with_depth(s, *args, **kwargs):
+    try:
+        parsed = _nyx_orig_json_loads(s, *args, **kwargs)
+    except RecursionError:
+        _nyx_json_parse_probe(0, True)
+        raise
+    depth = _nyx_count_depth(parsed)
+    _nyx_json_parse_probe(depth, depth > 64)
+    return parsed
+
+
+json.loads = _nyx_json_loads_with_depth
+
+
+def _nyx_json_parse_via_fixture(payload):
+    sys.path.insert(0, ".")
+    try:
+        mod = importlib.import_module("{module_name}")
+    except Exception:
+        return False
+    fn = getattr(mod, "{entry_name}", None)
+    if fn is None:
+        return False
+    try:
+        fn(payload)
+    except Exception:
+        return True
+    return True
+
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    _nyx_json_parse_via_fixture(payload)
+    print("__NYX_SINK_HIT__", flush=True)
 
 
 if __name__ == "__main__":
@@ -3781,10 +3900,7 @@ mod tests {
              def run(value):\n    response = Response('ok')\n    response.headers['Set-Cookie'] = value\n    return response\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_header_via_fixture(payload):"),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -3811,14 +3927,16 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("captured = _nyx_header_via_fixture(payload)"),
+            h.source
+                .contains("captured = _nyx_header_via_fixture(payload)"),
             "harness main must call the fixture-routing helper first: {}",
             h.source
         );
         assert!(
             h.source
                 .contains("_nyx_header_probe(\"Set-Cookie\", payload)")
-                || h.source.contains("value = payload\n    _nyx_header_probe(name, value)"),
+                || h.source
+                    .contains("value = payload\n    _nyx_header_probe(name, value)"),
             "fallback path must still emit a synthetic probe: {}",
             h.source
         );
@@ -3831,15 +3949,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.py");
-        std::fs::write(
-            &entry,
-            "def run(value):\n    return value\n",
-        )
-        .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        std::fs::write(&entry, "def run(value):\n    return value\n").unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("import werkzeug.datastructures"),
             "fallback path must not import werkzeug: {}",
@@ -3851,7 +3962,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("value = payload\n    _nyx_header_probe(name, value)"),
+            h.source
+                .contains("value = payload\n    _nyx_header_probe(name, value)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -3870,10 +3982,7 @@ mod tests {
              def run(v):\n    return Response('ok')\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("importlib.import_module(\"benign\")"),
             "module name must come from the entry-file stem: {}",
@@ -3895,17 +4004,16 @@ mod tests {
              class VulnHandler(BaseHTTPRequestHandler):\n    cookie_value = b''\n    def do_GET(self):\n        self.wfile.write(b'HTTP/1.0 200 OK\\r\\nSet-Cookie: ' + self.__class__.cookie_value + b'\\r\\n\\r\\nok')\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
-            h.source.contains("def _nyx_wire_frame_via_fixture(payload):"),
+            h.source
+                .contains("def _nyx_wire_frame_via_fixture(payload):"),
             "tier-(b) harness must define the wire-frame helper: {}",
             h.source
         );
         assert!(
-            h.source.contains("http.server.HTTPServer((\"127.0.0.1\", 0)"),
+            h.source
+                .contains("http.server.HTTPServer((\"127.0.0.1\", 0)"),
             "tier-(b) harness must boot HTTPServer on loopback ephemeral port: {}",
             h.source
         );
@@ -3915,7 +4023,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("raw_bytes = _nyx_wire_frame_via_fixture(payload)"),
+            h.source
+                .contains("raw_bytes = _nyx_wire_frame_via_fixture(payload)"),
             "harness main must call the wire-frame helper first when raw-socket fixture detected: {}",
             h.source
         );
@@ -3948,10 +4057,7 @@ mod tests {
              def run(value):\n    response = Response('ok')\n    response.headers['Set-Cookie'] = value\n    return response\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("def _nyx_wire_frame_via_fixture"),
             "flask-only fixture must not pull in the wire-frame helper: {}",
@@ -3984,10 +4090,7 @@ mod tests {
             "from flask import redirect\ndef run(value):\n    return redirect(value)\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_redirect_via_fixture(payload):"),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -3999,17 +4102,20 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("response.headers.get(\"Location\", \"\")"),
+            h.source
+                .contains("response.headers.get(\"Location\", \"\")"),
             "tier-(a) harness must read the Location header off the returned response: {}",
             h.source
         );
         assert!(
-            h.source.contains("captured = _nyx_redirect_via_fixture(payload)"),
+            h.source
+                .contains("captured = _nyx_redirect_via_fixture(payload)"),
             "harness main must call the fixture-routing helper first: {}",
             h.source
         );
         assert!(
-            h.source.contains("location = payload\n    _nyx_redirect_probe(location, request_host)"),
+            h.source
+                .contains("location = payload\n    _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -4022,15 +4128,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.py");
-        std::fs::write(
-            &entry,
-            "def run(value):\n    return value\n",
-        )
-        .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        std::fs::write(&entry, "def run(value):\n    return value\n").unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("def _nyx_redirect_via_fixture"),
             "fallback path must not define the fixture-routing helper: {}",
@@ -4042,7 +4141,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("location = payload\n    _nyx_redirect_probe(location, request_host)"),
+            h.source
+                .contains("location = payload\n    _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -4060,10 +4160,7 @@ mod tests {
             "from flask import redirect\ndef run(value):\n    return redirect(value)\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_follow_location(location):"),
             "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
@@ -4075,7 +4172,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("urllib.request.urlopen(location, timeout=2.0)"),
+            h.source
+                .contains("urllib.request.urlopen(location, timeout=2.0)"),
             "follow-location helper must call urllib.request.urlopen with a 2-second timeout: {}",
             h.source
         );
@@ -4100,17 +4198,16 @@ mod tests {
             "from flask import redirect\ndef run(value):\n    return redirect(value)\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("_nyx_redirect_probe(location, request_host)\n        _nyx_follow_location(location)"),
             "tier-(a) must follow the captured Location after emitting the probe: {}",
             h.source
         );
         assert!(
-            h.source.contains("_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"),
+            h.source.contains(
+                "_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"
+            ),
             "tier-(b) fallback must also follow the synthetic location after the probe: {}",
             h.source
         );
@@ -4162,7 +4259,8 @@ mod tests {
             "Python CRYPTO harness must look up the entry function by name",
         );
         assert!(
-            h.source.contains("produced = _nyx_crypto_via_fixture(payload)"),
+            h.source
+                .contains("produced = _nyx_crypto_via_fixture(payload)"),
             "Python CRYPTO harness main must call the fixture-routing helper",
         );
         assert_eq!(
@@ -4215,5 +4313,86 @@ mod tests {
             h.source.contains("importlib.import_module(\"benign\")"),
             "module name must come from the entry-file stem, not a hard-coded literal",
         );
+    }
+
+    fn make_json_parse_spec(entry_file: &str, entry_name: &str) -> HarnessSpec {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::JSON_PARSE;
+        spec.entry_file = entry_file.to_owned();
+        spec.entry_name = entry_name.to_owned();
+        spec
+    }
+
+    #[test]
+    fn emit_dispatches_to_json_parse_harness_when_cap_is_json_parse() {
+        let h = emit(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/python/vuln.py",
+            "run",
+        ))
+        .unwrap();
+        assert!(
+            h.source.contains("_nyx_json_loads_with_depth"),
+            "dispatcher must select the JSON_PARSE depth harness: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"kind\": \"JsonParse\""),
+            "JSON_PARSE harness must emit JsonParse probes",
+        );
+    }
+
+    #[test]
+    fn emit_json_parse_harness_monkey_patches_json_loads() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/python/vuln.py",
+            "run",
+        ));
+        assert!(h.source.contains("_nyx_orig_json_loads = json.loads"));
+        assert!(h.source.contains("json.loads = _nyx_json_loads_with_depth"));
+        assert!(h.source.contains("def _nyx_count_depth(parsed):"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_emits_depth_fields() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/python/vuln.py",
+            "run",
+        ));
+        assert!(h.source.contains("\"depth\": int(depth)"));
+        assert!(h.source.contains("\"excessive_depth\": bool(excessive)"));
+        assert!(h.source.contains("depth > 64"));
+        assert!(h.source.contains("__NYX_SINK_HIT__"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_handles_parser_recursion_error() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/python/vuln.py",
+            "run",
+        ));
+        assert!(h.source.contains("except RecursionError:"));
+        assert!(h.source.contains("_nyx_json_parse_probe(0, True)"));
+    }
+
+    #[test]
+    fn emit_json_parse_harness_routes_through_fixture_import() {
+        let h = emit_json_parse_harness(&make_json_parse_spec(
+            "tests/dynamic_fixtures/json_parse_depth/python/vuln.py",
+            "run",
+        ));
+        assert!(
+            h.source
+                .contains("def _nyx_json_parse_via_fixture(payload):")
+        );
+        assert!(h.source.contains("importlib.import_module(\"vuln\")"));
+        assert!(h.source.contains("getattr(mod, \"run\", None)"));
+        assert_eq!(h.filename, "harness.py");
+        assert!(h.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_json_parse_harness_derives_module_name_from_entry_file() {
+        let h = emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.py", "run"));
+        assert!(h.source.contains("importlib.import_module(\"benign\")"));
     }
 }

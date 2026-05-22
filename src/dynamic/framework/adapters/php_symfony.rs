@@ -170,10 +170,7 @@ mod tests {
             .detect(&summary("show"), tree.root_node(), src)
             .expect("binding");
         assert!(
-            binding
-                .middleware
-                .iter()
-                .any(|m| m.name == "#[IsGranted]"),
+            binding.middleware.iter().any(|m| m.name == "#[IsGranted]"),
             "got {:?}",
             binding.middleware
         );

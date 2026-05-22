@@ -3029,7 +3029,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("if (typeof result.length === 'number') return result.length;"),
+            h.source
+                .contains("if (typeof result.length === 'number') return result.length;"),
             "tier-(a) harness must count nodes via the returned array's .length: {}",
             h.source
         );
@@ -3051,9 +3052,7 @@ mod tests {
             "harness must always stage a package.json with the xmldom dep",
         );
         assert!(
-            h.extra_files
-                .iter()
-                .any(|(p, _)| p == "package-lock.json"),
+            h.extra_files.iter().any(|(p, _)| p == "package-lock.json"),
             "harness must always stage a package-lock.json",
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3090,9 +3089,7 @@ mod tests {
             h.source
         );
         assert!(
-            h.extra_files
-                .iter()
-                .any(|(p, _)| p == "package.json"),
+            h.extra_files.iter().any(|(p, _)| p == "package.json"),
             "harness must always stage a package.json (real-xpath dep is required, no synthetic-only path)",
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -3145,10 +3142,7 @@ mod tests {
             "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function nyxHeaderViaFixture(payload)"),
             "tier-(a) harness must define nyxHeaderViaFixture: {}",
@@ -3165,7 +3159,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("captured.push([String(name), String(value)])"),
+            h.source
+                .contains("captured.push([String(name), String(value)])"),
             "tier-(a) harness must record (name, value) pairs verbatim: {}",
             h.source
         );
@@ -3188,10 +3183,7 @@ mod tests {
             "function run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("function nyxHeaderViaFixture(payload)"),
             "fallback path must not emit the tier-(a) helper: {}",
@@ -3216,12 +3208,10 @@ mod tests {
             "const net = require('net');\nlet cookieValue = Buffer.alloc(0);\nfunction setCookieValue(v) { cookieValue = Buffer.from(String(v)); }\nfunction createServer() { return net.createServer((s) => { s.write(Buffer.concat([Buffer.from('HTTP/1.0 200 OK\\r\\nSet-Cookie: '), cookieValue, Buffer.from('\\r\\n\\r\\nok')])); s.end(); }); }\nmodule.exports = { setCookieValue, createServer };\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
-            h.source.contains("async function nyxWireFrameViaFixture(payload)"),
+            h.source
+                .contains("async function nyxWireFrameViaFixture(payload)"),
             "tier-(b) harness must define the async wire-frame helper: {}",
             h.source
         );
@@ -3236,7 +3226,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("'GET / HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n'"),
+            h.source
+                .contains("'GET / HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n'"),
             "tier-(b) harness must issue a raw GET over the client socket: {}",
             h.source
         );
@@ -3252,7 +3243,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("if (hname.toLowerCase() !== 'set-cookie')"),
+            h.source
+                .contains("if (hname.toLowerCase() !== 'set-cookie')"),
             "tier-(b) harness must derive a HeaderEmit probe per Set-Cookie line: {}",
             h.source
         );
@@ -3270,10 +3262,7 @@ mod tests {
             "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("async function nyxWireFrameViaFixture"),
             "http-only harness must not emit the wire-frame helper: {}",
@@ -3303,10 +3292,7 @@ mod tests {
             "const http = require('http');\nfunction run(res, value) { res.setHeader('Set-Cookie', encodeURIComponent(value)); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("require('./benign')"),
             "tier-(a) harness must require the staged fixture by its file_stem: {}",
@@ -3326,10 +3312,7 @@ mod tests {
             "const express = require('express');\nfunction run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function nyxRedirectViaFixture(payload)"),
             "tier-(a) harness must define nyxRedirectViaFixture: {}",
@@ -3351,7 +3334,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("if (String(name).toLowerCase() === 'location')"),
+            h.source
+                .contains("if (String(name).toLowerCase() === 'location')"),
             "tier-(a) harness must also capture setHeader('Location', …) writes: {}",
             h.source
         );
@@ -3374,10 +3358,7 @@ mod tests {
             "function run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("function nyxRedirectViaFixture(payload)"),
             "fallback path must not emit the tier-(a) helper: {}",
@@ -3402,10 +3383,7 @@ mod tests {
             "const express = require('express');\nfunction run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function nyxFollowLocation(location)"),
             "OPEN_REDIRECT harness must declare the nyxFollowLocation helper: {}",
@@ -3424,7 +3402,9 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);"),
+            h.source.contains(
+                "nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);"
+            ),
             "tier-(a) must follow the captured Location after emitting the probe: {}",
             h.source
         );
@@ -3442,17 +3422,15 @@ mod tests {
             "function run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("function nyxFollowLocation(location)"),
             "fallback path must still declare nyxFollowLocation: {}",
             h.source
         );
         assert!(
-            h.source.contains("nyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);"),
+            h.source
+                .contains("nyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);"),
             "fallback path must follow the synthetic location after the probe: {}",
             h.source
         );

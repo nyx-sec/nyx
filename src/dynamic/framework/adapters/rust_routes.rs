@@ -318,9 +318,7 @@ pub fn collect_rust_middleware(root: Node<'_>, bytes: &[u8]) -> Vec<MiddlewareSh
     walk_attach_calls(root, bytes, &mut raw);
     let mut out: Vec<MiddlewareShape> = Vec::new();
     for name in raw {
-        if auth_markers::is_protective(Lang::Rust, &name)
-            && !out.iter().any(|m| m.name == name)
-        {
+        if auth_markers::is_protective(Lang::Rust, &name) && !out.iter().any(|m| m.name == name) {
             out.push(MiddlewareShape { name });
         }
     }
@@ -1117,7 +1115,8 @@ mod tests {
 
     #[test]
     fn collect_rust_middleware_drops_unknown_names() {
-        let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().layer(LoggingLayer) }\n";
+        let src: &[u8] =
+            b"use axum::Router;\nfn build() -> Router { Router::new().layer(LoggingLayer) }\n";
         let tree = parse(src);
         let mw = collect_rust_middleware(tree.root_node(), src);
         assert!(mw.is_empty(), "LoggingLayer is not a recognised marker");

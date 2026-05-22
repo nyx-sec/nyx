@@ -290,8 +290,7 @@ fn handle_ber_connection(
                 let count = matches.len();
                 for uid in &matches {
                     let dn = format!("uid={uid},ou=people,dc=nyx,dc=test");
-                    let entry =
-                        ldap_ber::encode_search_result_entry(hdr.message_id, dn.as_bytes());
+                    let entry = ldap_ber::encode_search_result_entry(hdr.message_id, dn.as_bytes());
                     if stream.write_all(&entry).is_err() {
                         return;
                     }
@@ -696,8 +695,12 @@ mod tests {
         let mut eq_body = Vec::new();
         ldap_ber::write_octet_string(&mut eq_body, b"uid");
         ldap_ber::write_octet_string(&mut eq_body, b"alice");
-        s.write_all(&build_ber_search(2, ldap_ber::tags::FILTER_EQUALITY, &eq_body))
-            .unwrap();
+        s.write_all(&build_ber_search(
+            2,
+            ldap_ber::tags::FILTER_EQUALITY,
+            &eq_body,
+        ))
+        .unwrap();
         s.shutdown(std::net::Shutdown::Write).unwrap();
         let reply = read_ber_reply(&mut s);
         // Skip past the BindResponse.

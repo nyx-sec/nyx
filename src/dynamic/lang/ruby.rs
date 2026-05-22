@@ -1129,8 +1129,8 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     } else {
         spec.entry_name.clone()
     };
-    let uses_rack = entry_source.contains("require 'rack'")
-        || entry_source.contains("require \"rack\"");
+    let uses_rack =
+        entry_source.contains("require 'rack'") || entry_source.contains("require \"rack\"");
     let via_fixture = if uses_rack {
         format!(
             r#"def _nyx_header_via_fixture(payload)
@@ -1442,8 +1442,8 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     } else {
         spec.entry_name.clone()
     };
-    let uses_rack = entry_source.contains("require 'rack'")
-        || entry_source.contains("require \"rack\"");
+    let uses_rack =
+        entry_source.contains("require 'rack'") || entry_source.contains("require \"rack\"");
     let via_fixture = if uses_rack {
         format!(
             r#"def _nyx_redirect_via_fixture(payload)
@@ -2124,10 +2124,7 @@ mod tests {
              def run(value)\n  r = Rack::Response.new\n  r.set_header('Set-Cookie', value)\n  r\nend\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_header_via_fixture(payload)"),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -2149,12 +2146,14 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("captured = _nyx_header_via_fixture(payload)"),
+            h.source
+                .contains("captured = _nyx_header_via_fixture(payload)"),
             "harness main must call the fixture-routing helper first: {}",
             h.source
         );
         assert!(
-            h.source.contains("value = payload\n  _nyx_header_probe(name, value)"),
+            h.source
+                .contains("value = payload\n  _nyx_header_probe(name, value)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2168,10 +2167,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.rb");
         std::fs::write(&entry, "def run(value)\n  value\nend\n").unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("Rack::Response.prepend"),
             "fallback path must not patch Rack::Response: {}",
@@ -2183,7 +2179,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("value = payload\n  _nyx_header_probe(name, value)"),
+            h.source
+                .contains("value = payload\n  _nyx_header_probe(name, value)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2202,10 +2199,7 @@ mod tests {
              def run(v)\n  Rack::Response.new\nend\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("require_relative './benign'"),
             "basename must come from the entry-file stem: {}",
@@ -2228,12 +2222,10 @@ mod tests {
              def run_once(server)\n  s = server.accept\n  s.write('HTTP/1.0 200 OK\\r\\nSet-Cookie: ' + $nyx_cookie_value + '\\r\\n\\r\\nok')\n  s.close\nend\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
-            h.source.contains("def _nyx_wire_frame_via_fixture(payload)"),
+            h.source
+                .contains("def _nyx_wire_frame_via_fixture(payload)"),
             "tier-(b) harness must define the wire-frame helper: {}",
             h.source
         );
@@ -2243,7 +2235,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("obj.__send__(:set_cookie_value, payload)"),
+            h.source
+                .contains("obj.__send__(:set_cookie_value, payload)"),
             "tier-(b) harness must install the cookie value via __send__: {}",
             h.source
         );
@@ -2273,7 +2266,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => raw_bytes.bytes"),
+            h.source
+                .contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => raw_bytes.bytes"),
             "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
             h.source
         );
@@ -2302,10 +2296,7 @@ mod tests {
              def run(value)\n  r = Rack::Response.new\n  r.set_header('Set-Cookie', value)\n  r\nend\n",
         )
         .unwrap();
-        let h = emit_header_injection_harness(&make_header_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_header_injection_harness(&make_header_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("def _nyx_wire_frame_via_fixture"),
             "rack-only harness must not define the wire-frame helper: {}",
@@ -2336,10 +2327,7 @@ mod tests {
              def run(value)\n  r = Rack::Response.new\n  r.redirect(value)\n  r\nend\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_redirect_via_fixture(payload)"),
             "tier-(a) harness must define the fixture-routing helper: {}",
@@ -2361,12 +2349,14 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("captured = _nyx_redirect_via_fixture(payload)"),
+            h.source
+                .contains("captured = _nyx_redirect_via_fixture(payload)"),
             "harness main must call the fixture-routing helper first: {}",
             h.source
         );
         assert!(
-            h.source.contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
+            h.source
+                .contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2380,10 +2370,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let entry = dir.join("vuln.rb");
         std::fs::write(&entry, "def run(value)\n  value\nend\n").unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             !h.source.contains("Rack::Response.prepend"),
             "fallback path must not patch Rack::Response: {}",
@@ -2395,7 +2382,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
+            h.source
+                .contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
             h.source
         );
@@ -2414,10 +2402,7 @@ mod tests {
              def run(value)\n  r = Rack::Response.new\n  r.redirect(value)\n  r\nend\n",
         )
         .unwrap();
-        let h = emit_open_redirect_harness(&make_redirect_spec(
-            entry.to_str().unwrap(),
-            "run",
-        ));
+        let h = emit_open_redirect_harness(&make_redirect_spec(entry.to_str().unwrap(), "run"));
         assert!(
             h.source.contains("def _nyx_follow_location(location)"),
             "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
@@ -2441,7 +2426,9 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"),
+            h.source.contains(
+                "_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"
+            ),
             "tier-(a) must follow the captured Location after emitting the probe: {}",
             h.source
         );

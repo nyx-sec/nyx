@@ -128,7 +128,10 @@ const PYTHON_EXACT: &[ExactRow] = &[
     ("ValidationMiddleware", AuthMarkerKind::InputValidation),
     ("pydantic_validate", AuthMarkerKind::InputValidation),
     ("SecurityMiddleware", AuthMarkerKind::OutputSanitization),
-    ("XContentTypeOptionsMiddleware", AuthMarkerKind::OutputSanitization),
+    (
+        "XContentTypeOptionsMiddleware",
+        AuthMarkerKind::OutputSanitization,
+    ),
     ("bleach_clean", AuthMarkerKind::OutputSanitization),
     ("RateLimitMiddleware", AuthMarkerKind::RateLimit),
     ("ratelimit", AuthMarkerKind::RateLimit),
@@ -504,10 +507,7 @@ mod tests {
             classify(Lang::Go, "JWTAuth"),
             Some(AuthMarkerKind::Authentication)
         );
-        assert_eq!(
-            classify(Lang::Go, "csrf.New"),
-            Some(AuthMarkerKind::Csrf)
-        );
+        assert_eq!(classify(Lang::Go, "csrf.New"), Some(AuthMarkerKind::Csrf));
     }
 
     #[test]

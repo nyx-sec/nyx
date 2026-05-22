@@ -2491,7 +2491,9 @@ mod tests {
         assert!(entry_source_imports_axum_header(
             "let h: http::HeaderMap = HeaderMap::new();"
         ));
-        assert!(!entry_source_imports_axum_header("use std::collections::HashMap;"));
+        assert!(!entry_source_imports_axum_header(
+            "use std::collections::HashMap;"
+        ));
     }
 
     #[test]
@@ -2552,7 +2554,10 @@ mod tests {
             "tier-(a) header_injection must stage src/entry.rs",
         );
         assert!(
-            staged.unwrap().1.contains("crate::nyx_harness_stubs::HeaderMap"),
+            staged
+                .unwrap()
+                .1
+                .contains("crate::nyx_harness_stubs::HeaderMap"),
             "staged fixture must have axum imports rewritten",
         );
         // Stub module staged.
@@ -2620,12 +2625,16 @@ mod tests {
             body = harness.source,
         );
         assert!(
-            harness.source.contains("entry::set_cookie_value(payload.as_bytes())"),
+            harness
+                .source
+                .contains("entry::set_cookie_value(payload.as_bytes())"),
             "wire-frame harness must install cookie value on the fixture: {body}",
             body = harness.source,
         );
         assert!(
-            harness.source.contains("let listener = entry::create_server();"),
+            harness
+                .source
+                .contains("let listener = entry::create_server();"),
             "wire-frame harness must boot the fixture's TcpListener: {body}",
             body = harness.source,
         );
@@ -2663,10 +2672,7 @@ mod tests {
         assert_eq!(harness.entry_subpath.as_deref(), Some("src/entry.rs"));
         // Cargo.toml must still be staged so the workdir builds.
         assert!(
-            harness
-                .extra_files
-                .iter()
-                .any(|(p, _)| p == "Cargo.toml"),
+            harness.extra_files.iter().any(|(p, _)| p == "Cargo.toml"),
             "wire-frame harness must stage Cargo.toml: {files:?}",
             files = harness
                 .extra_files
@@ -2752,7 +2758,10 @@ mod tests {
             .extra_files
             .iter()
             .find(|(p, _)| p == "src/entry.rs");
-        assert!(staged.is_some(), "tier-(a) open_redirect must stage src/entry.rs");
+        assert!(
+            staged.is_some(),
+            "tier-(a) open_redirect must stage src/entry.rs"
+        );
         assert!(
             staged
                 .unwrap()
@@ -2764,7 +2773,10 @@ mod tests {
             .extra_files
             .iter()
             .find(|(p, _)| p == "src/nyx_harness_stubs.rs");
-        assert!(stub.is_some(), "tier-(a) open_redirect must stage nyx_harness_stubs.rs");
+        assert!(
+            stub.is_some(),
+            "tier-(a) open_redirect must stage nyx_harness_stubs.rs"
+        );
         assert_eq!(
             harness.entry_subpath.as_deref(),
             Some("ignored/raw_fixture.rs"),
@@ -2805,7 +2817,9 @@ mod tests {
         spec.entry_file = "/nonexistent/missing.rs".into();
         let harness = emit_open_redirect_harness(&spec);
         assert!(
-            harness.source.contains("fn nyx_follow_location(location: &str)"),
+            harness
+                .source
+                .contains("fn nyx_follow_location(location: &str)"),
             "OPEN_REDIRECT harness must declare the nyx_follow_location helper",
         );
         for prefix in [
@@ -2830,9 +2844,9 @@ mod tests {
         );
         // Tier-(b) callsite must call the follower on the synthetic payload.
         assert!(
-            harness
-                .source
-                .contains("nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"),
+            harness.source.contains(
+                "nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"
+            ),
             "tier-(b) callsite must invoke nyx_follow_location after the synthetic probe",
         );
     }
@@ -2846,7 +2860,9 @@ mod tests {
         let harness = emit_open_redirect_harness(&spec);
         // Tier-(a) callsite: captured loc → probe + follow.
         assert!(
-            harness.source.contains("nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"),
+            harness.source.contains(
+                "nyx_redirect_probe(&location, request_host);\n    nyx_follow_location(&location);"
+            ),
             "tier-(a) callsite must invoke nyx_follow_location on the captured Location",
         );
     }
@@ -3003,7 +3019,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("impl<const N: usize> NyxKeyToInt for [u8; N]"),
+            h.source
+                .contains("impl<const N: usize> NyxKeyToInt for [u8; N]"),
             "Rust CRYPTO harness must provide a generic [u8; N] impl so both [u8; 32] (benign) and other-sized array returns reduce uniformly: {}",
             h.source
         );

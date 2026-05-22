@@ -785,17 +785,16 @@ mod e2e_phase_08 {
         let outcome = match run_spec(&spec, &opts) {
             Ok(outcome) => outcome,
             Err(RunError::BuildFailed { stderr, attempts }) => {
-                eprintln!(
-                    "SKIP js_raw: harness build failed after {attempts} attempts: {stderr}",
-                );
+                eprintln!("SKIP js_raw: harness build failed after {attempts} attempts: {stderr}",);
                 return;
             }
             Err(e) => panic!("run_spec(js_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::JavaScript, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "js_raw fixture must exercise the tier-(b) wire-frame harness branch; \
@@ -882,9 +881,10 @@ mod e2e_phase_08 {
             Err(e) => panic!("run_spec(rust_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::Rust, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "rust_raw fixture must exercise the tier-(b) wire-frame harness branch; \
@@ -920,9 +920,10 @@ mod e2e_phase_08 {
             Err(e) => panic!("run_spec(python_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::Python, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "python_raw fixture must exercise the tier-(b) wire-frame harness branch; \
@@ -1003,9 +1004,10 @@ mod e2e_phase_08 {
             Err(e) => panic!("run_spec(ruby_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::Ruby, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "ruby_raw fixture must exercise the tier-(b) wire-frame harness branch; \
@@ -1079,17 +1081,16 @@ mod e2e_phase_08 {
         let outcome = match run_spec(&spec, &opts) {
             Ok(outcome) => outcome,
             Err(RunError::BuildFailed { stderr, attempts }) => {
-                eprintln!(
-                    "SKIP php_raw: harness build failed after {attempts} attempts: {stderr}",
-                );
+                eprintln!("SKIP php_raw: harness build failed after {attempts} attempts: {stderr}",);
                 return;
             }
             Err(e) => panic!("run_spec(php_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::Php, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "php_raw fixture must exercise the tier-(b) wire-frame harness branch; \
@@ -1182,9 +1183,10 @@ mod e2e_phase_08 {
             Err(e) => panic!("run_spec(java_raw) errored: {e:?}"),
         };
         assert_confirmed(Lang::Java, &outcome);
-        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
-            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
-        });
+        let any_wire_frame_marker = outcome
+            .attempts
+            .iter()
+            .any(|a| String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len"));
         assert!(
             any_wire_frame_marker,
             "java_raw fixture must exercise the tier-(b) wire-frame harness branch; \

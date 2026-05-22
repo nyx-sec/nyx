@@ -1665,9 +1665,7 @@ mod tests {
                 smuggled: "X-Injected",
             }],
         };
-        let probes = vec![header_wire_probe(
-            b"Set-Cookie: a=1\r\nX-Injected: 1\r\n",
-        )];
+        let probes = vec![header_wire_probe(b"Set-Cookie: a=1\r\nX-Injected: 1\r\n")];
         assert!(oracle_fired(&oracle, &outcome(), &probes));
     }
 
@@ -1696,9 +1694,7 @@ mod tests {
                 smuggled: "x-injected",
             }],
         };
-        let probes = vec![header_wire_probe(
-            b"SET-COOKIE: a=1\r\nX-INJECTED: 1\r\n",
-        )];
+        let probes = vec![header_wire_probe(b"SET-COOKIE: a=1\r\nX-INJECTED: 1\r\n")];
         assert!(oracle_fired(&oracle, &outcome(), &probes));
     }
 
@@ -1714,10 +1710,7 @@ mod tests {
                 smuggled: "X-Injected",
             }],
         };
-        let probes = vec![header_emit_probe(
-            "Set-Cookie",
-            "a=1\r\nX-Injected: 1",
-        )];
+        let probes = vec![header_emit_probe("Set-Cookie", "a=1\r\nX-Injected: 1")];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 
@@ -1731,9 +1724,7 @@ mod tests {
                 header_name: "Set-Cookie",
             }],
         };
-        let probes = vec![header_wire_probe(
-            b"Set-Cookie: a=1\r\nX-Injected: 1\r\n",
-        )];
+        let probes = vec![header_wire_probe(b"Set-Cookie: a=1\r\nX-Injected: 1\r\n")];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 

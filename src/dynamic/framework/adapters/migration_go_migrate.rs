@@ -24,10 +24,7 @@ const ADAPTER_NAME: &str = "migration-go-migrate";
 
 fn callee_is_go_migrate(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "Up" | "Down" | "Steps" | "Migrate" | "Force" | "Drop"
-    )
+    matches!(last, "Up" | "Down" | "Steps" | "Migrate" | "Force" | "Drop")
 }
 
 fn source_imports_go_migrate(file_bytes: &[u8]) -> bool {
