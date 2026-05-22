@@ -1319,6 +1319,7 @@ end
   if captured
     location, request_host = captured
     _nyx_redirect_probe(location, request_host)
+    _nyx_follow_location(location)
     STDOUT.puts '__NYX_SINK_HIT__'
     STDOUT.puts JSON.generate({ 'location' => location, 'request_host' => request_host })
     STDOUT.flush
@@ -1331,6 +1332,8 @@ end
     let body = format!(
         r#"# Nyx dynamic harness — OPEN_REDIRECT Rack::Response#redirect (Phase 09 / Track J.7).
 require 'json'
+require 'net/http'
+require 'uri'
 
 {shim}
 
@@ -1350,11 +1353,36 @@ def _nyx_redirect_probe(location, request_host)
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
 end
 
+# Phase 09 OOB closure: when the captured Location is a fully-qualified
+# loopback URL, follow it with a real GET so the OOB listener records
+# the per-finding nonce.  Skips non-loopback hosts (no real network egress)
+# and any non-HTTP scheme.  Best-effort: failures do not propagate, the
+# listener may still have observed the connect before the read errored.
+def _nyx_follow_location(location)
+  return if location.nil? || location.empty?
+  lower = location.to_s.downcase
+  unless lower.start_with?('http://127.0.0.1') ||
+         lower.start_with?('http://localhost') ||
+         lower.start_with?('http://host-gateway')
+    return
+  end
+  begin
+    uri = URI(location)
+    Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 2) do |http|
+      req = Net::HTTP::Get.new(uri.request_uri)
+      http.request(req) {{ |resp| resp.read_body {{ |_chunk| break }} }}
+    end
+  rescue StandardError
+    # best-effort OOB fetch
+  end
+end
+
 {via_fixture}def _nyx_run
   payload = ENV['NYX_PAYLOAD'] || ''
 {invoke_via_fixture}  request_host = 'example.com'
   location = payload
   _nyx_redirect_probe(location, request_host)
+  _nyx_follow_location(location)
   STDOUT.puts '__NYX_SINK_HIT__'
   STDOUT.puts JSON.generate({{ 'location' => location, 'request_host' => request_host }})
   STDOUT.flush
@@ -2063,6 +2091,52 @@ mod tests {
         assert!(
             h.source.contains("location = payload\n  _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let dir = std::env::temp_dir().join("nyx_phase09_rb_test_follow_location");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(
+            &entry,
+            "require 'rack'\n\
+             def run(value)\n  r = Rack::Response.new\n  r.redirect(value)\n  r\nend\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_follow_location(location)"),
+            "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require 'net/http'") && h.source.contains("require 'uri'"),
+            "OPEN_REDIRECT harness must require net/http and uri for the loopback follow: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Net::HTTP.start(uri.host, uri.port"),
+            "follow-location helper must invoke Net::HTTP.start: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("start_with?('http://127.0.0.1')")
+                && h.source.contains("start_with?('http://localhost')")
+                && h.source.contains("start_with?('http://host-gateway')"),
+            "follow-location helper must gate on loopback host prefixes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"),
+            "tier-(a) must follow the captured Location after emitting the probe: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);

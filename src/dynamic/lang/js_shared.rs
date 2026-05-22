@@ -1618,9 +1618,9 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     };
 
     let invoke_via_fixture = if uses_node_writer {
-        "const captured = nyxRedirectViaFixture(payload);\nif (Array.isArray(captured)) {\n  const [location, requestHost] = captured;\n  nyxRedirectProbe(location, requestHost);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const requestHost = 'example.com';\n  const location = payload;\n  nyxRedirectProbe(location, requestHost);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n}\n"
+        "const captured = nyxRedirectViaFixture(payload);\nif (Array.isArray(captured)) {\n  const [location, requestHost] = captured;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const requestHost = 'example.com';\n  const location = payload;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n}\n"
     } else {
-        "const requestHost = 'example.com';\nconst location = payload;\nnyxRedirectProbe(location, requestHost);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ location: location, request_host: requestHost }));\n"
+        "const requestHost = 'example.com';\nconst location = payload;\nnyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ location: location, request_host: requestHost }));\n"
     };
 
     let body = format!(
@@ -1644,6 +1644,31 @@ function nyxRedirectProbe(location, requestHost) {{
     require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
   }} catch (e) {{
     // best-effort
+  }}
+}}
+
+// Phase 09 OOB closure: when the captured Location is a fully-qualified
+// loopback URL, follow it with a real GET so the OOB listener records
+// the per-finding nonce.  Skips non-loopback hosts (no real network egress)
+// and any non-HTTP scheme.  Best-effort: failures do not propagate, the
+// listener may still have observed the connect before the read errored.
+function nyxFollowLocation(location) {{
+  if (!location || typeof location !== 'string') return;
+  const lower = location.toLowerCase();
+  if (!(lower.startsWith('http://127.0.0.1')
+        || lower.startsWith('http://localhost')
+        || lower.startsWith('http://host-gateway'))) {{
+    return;
+  }}
+  try {{
+    const http = require('http');
+    const req = http.get(location, {{ timeout: 2000 }}, (res) => {{
+      res.resume();
+    }});
+    req.on('error', () => {{}});
+    req.on('timeout', () => {{ try {{ req.destroy(); }} catch (e) {{}} }});
+  }} catch (e) {{
+    // best-effort OOB fetch
   }}
 }}
 
@@ -3114,6 +3139,74 @@ mod tests {
         assert!(
             h.source.contains("const requestHost = 'example.com';"),
             "fallback path must emit the inline synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let dir = std::env::temp_dir().join("nyx_phase09_js_test_follow_location");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "const express = require('express');\nfunction run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function nyxFollowLocation(location)"),
+            "OPEN_REDIRECT harness must declare the nyxFollowLocation helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("http.get(location"),
+            "follow-location helper must call http.get on the captured URL: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("lower.startsWith('http://127.0.0.1')")
+                && h.source.contains("lower.startsWith('http://localhost')")
+                && h.source.contains("lower.startsWith('http://host-gateway')"),
+            "follow-location helper must gate on loopback host prefixes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);"),
+            "tier-(a) must follow the captured Location after emitting the probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_follows_synthetic_location_in_fallback() {
+        let dir = std::env::temp_dir().join("nyx_phase09_js_test_follow_fallback");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.js");
+        std::fs::write(
+            &entry,
+            "function run(req, res, value) { res.redirect(value); }\nmodule.exports = { run };\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function nyxFollowLocation(location)"),
+            "fallback path must still declare nyxFollowLocation: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("nyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);"),
+            "fallback path must follow the synthetic location after the probe: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);

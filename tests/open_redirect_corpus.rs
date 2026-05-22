@@ -711,4 +711,36 @@ mod e2e_phase_09 {
         };
         assert_oob_recorded(&outcome, "open-redirect-java-oob-nonce");
     }
+
+    #[test]
+    fn python_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-python-oob-nonce");
+    }
+
+    #[test]
+    fn js_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-js-oob-nonce");
+    }
+
+    #[test]
+    fn ruby_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-ruby-oob-nonce");
+    }
+
+    #[test]
+    fn php_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-php-oob-nonce");
+    }
 }

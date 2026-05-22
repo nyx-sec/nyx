@@ -1350,6 +1350,7 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     if ($captured !== null) {{
         [$location, $requestHost] = $captured;
         _nyx_redirect_probe($location, $requestHost);
+        _nyx_follow_location($location);
         echo "__NYX_SINK_HIT__\n";
         echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
         return;
@@ -1384,6 +1385,25 @@ function _nyx_redirect_probe(string $location, string $requestHost): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
+// Phase 09 OOB closure: when the captured Location is a fully-qualified
+// loopback URL, follow it with a real GET so the OOB listener records
+// the per-finding nonce.  Skips non-loopback hosts (no real network egress)
+// and any non-HTTP scheme.  Best-effort: failures do not propagate, the
+// listener may still have observed the connect before the read errored.
+function _nyx_follow_location(string $location): void {{
+    if ($location === '') return;
+    $lower = strtolower($location);
+    if (!(str_starts_with($lower, 'http://127.0.0.1')
+            || str_starts_with($lower, 'http://localhost')
+            || str_starts_with($lower, 'http://host-gateway'))) {{
+        return;
+    }}
+    $ctx = stream_context_create([
+        'http' => ['timeout' => 2, 'follow_location' => 0, 'ignore_errors' => true],
+    ]);
+    @file_get_contents($location, false, $ctx);
+}}
+
 {via_fixture}function _nyx_run(): void {{
     $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
     {invoke_via_fixture}// Synthetic fallback — records the raw payload as the redirect
@@ -1394,6 +1414,7 @@ function _nyx_redirect_probe(string $location, string $requestHost): void {{
     $requestHost = 'example.com';
     $location = $payload;
     _nyx_redirect_probe($location, $requestHost);
+    _nyx_follow_location($location);
     echo "__NYX_SINK_HIT__\n";
     echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
 }}
@@ -2412,6 +2433,51 @@ mod tests {
         assert!(
             h.source.contains("$location = $payload;\n    _nyx_redirect_probe("),
             "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let dir = std::env::temp_dir().join("nyx_phase09_php_test_follow_location");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.php");
+        std::fs::write(
+            &entry,
+            "<?php\nuse Symfony\\Component\\HttpFoundation\\RedirectResponse;\nfunction run($v) { return new RedirectResponse($v); }\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("function _nyx_follow_location(string $location): void"),
+            "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("file_get_contents($location, false, $ctx)"),
+            "follow-location helper must call file_get_contents with a stream context: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'timeout' => 2"),
+            "follow-location helper must pin the stream context timeout to 2 seconds: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("str_starts_with($lower, 'http://127.0.0.1')")
+                && h.source.contains("str_starts_with($lower, 'http://localhost')")
+                && h.source.contains("str_starts_with($lower, 'http://host-gateway')"),
+            "follow-location helper must gate on loopback host prefixes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_nyx_redirect_probe($location, $requestHost);\n        _nyx_follow_location($location);"),
+            "tier-(a) must follow the captured Location after emitting the probe: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);

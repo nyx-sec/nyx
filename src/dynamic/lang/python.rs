@@ -2090,6 +2090,7 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     if captured is not None:
         location, request_host = captured
         _nyx_redirect_probe(location, request_host)
+        _nyx_follow_location(location)
         print("__NYX_SINK_HIT__", flush=True)
         sys.stdout.write(json.dumps({"location": location, "request_host": request_host}) + "\n")
         sys.stdout.flush()
@@ -2106,6 +2107,7 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
 import os
 import sys
 import time
+import urllib.request
 
 {probe}
 
@@ -2128,11 +2130,35 @@ def _nyx_redirect_probe(location, request_host):
     __nyx_emit(rec)
 
 
+# Phase 09 OOB closure: when the captured Location is a fully-qualified
+# loopback URL, follow it with a real GET so the OOB listener records
+# the per-finding nonce.  Skips non-loopback hosts (no real network egress)
+# and any non-HTTP scheme.  Best-effort: failures do not propagate, the
+# listener may still have observed the connect before the read errored.
+def _nyx_follow_location(location):
+    if not location:
+        return
+    lower = location.lower()
+    if not (
+        lower.startswith("http://127.0.0.1")
+        or lower.startswith("http://localhost")
+        or lower.startswith("http://host-gateway")
+    ):
+        return
+    try:
+        with urllib.request.urlopen(location, timeout=2.0) as resp:
+            resp.read(1)
+    except Exception:
+        # best-effort OOB fetch
+        pass
+
+
 {via_fixture}def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
 {invoke_via_fixture}    request_host = "example.com"
     location = payload
     _nyx_redirect_probe(location, request_host)
+    _nyx_follow_location(location)
     print("__NYX_SINK_HIT__", flush=True)
     sys.stdout.write(json.dumps({{"location": location, "request_host": request_host}}) + "\n")
     sys.stdout.flush()
@@ -3393,6 +3419,74 @@ mod tests {
         assert!(
             h.source.contains("location = payload\n    _nyx_redirect_probe(location, request_host)"),
             "fallback path must keep the synthetic probe: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let dir = std::env::temp_dir().join("nyx_phase09_py_test_follow_location");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.py");
+        std::fs::write(
+            &entry,
+            "from flask import redirect\ndef run(value):\n    return redirect(value)\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_follow_location(location):"),
+            "OPEN_REDIRECT harness must declare the _nyx_follow_location helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("import urllib.request"),
+            "OPEN_REDIRECT harness must import urllib.request for the loopback follow: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("urllib.request.urlopen(location, timeout=2.0)"),
+            "follow-location helper must call urllib.request.urlopen with a 2-second timeout: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("startswith(\"http://127.0.0.1\")")
+                && h.source.contains("startswith(\"http://localhost\")")
+                && h.source.contains("startswith(\"http://host-gateway\")"),
+            "follow-location helper must gate on loopback host prefixes: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_follows_captured_location_in_tier_a() {
+        let dir = std::env::temp_dir().join("nyx_phase09_py_test_follow_captured");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.py");
+        std::fs::write(
+            &entry,
+            "from flask import redirect\ndef run(value):\n    return redirect(value)\n",
+        )
+        .unwrap();
+        let h = emit_open_redirect_harness(&make_redirect_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("_nyx_redirect_probe(location, request_host)\n        _nyx_follow_location(location)"),
+            "tier-(a) must follow the captured Location after emitting the probe: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("_nyx_redirect_probe(location, request_host)\n    _nyx_follow_location(location)"),
+            "tier-(b) fallback must also follow the synthetic location after the probe: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
