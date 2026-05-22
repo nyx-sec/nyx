@@ -1100,16 +1100,29 @@ STDOUT.flush
 /// Phase 08 — Track J.6 header-injection harness for Ruby
 /// (`Rack::Response#set_header`).
 ///
-/// When the fixture imports `rack` the tier-(a) path imports the
-/// fixture, prepends a permissive captor module onto `Rack::Response`
-/// that records every `set_header(name, value)` call verbatim, and
-/// invokes the named entry function with the payload.  Otherwise the
-/// synthetic fallback emits a single `HeaderEmit` probe with the
-/// payload bytes pre-bound to `Set-Cookie`, matching the prior
-/// behaviour.
+/// Tier (a): when the fixture imports `rack`, prepend a permissive
+/// captor module onto `Rack::Response` that records every
+/// `set_header(name, value)` call verbatim, then invoke the named
+/// entry function with the payload.
+///
+/// Tier (b) — raw-socket wire frame: when the fixture binds a
+/// `TCPServer` and exposes the `set_cookie_value` / `create_server` /
+/// `run_once` triple, drive the fixture from the harness while
+/// opening a client `TCPSocket` against the bound port, read the
+/// bytes the fixture wrote to the response socket up to the
+/// CRLF-CRLF boundary, and emit them as a `ProbeKind::HeaderWireFrame`
+/// probe.  Bypasses every framework-level CRLF validator since the
+/// fixture owns the response-write path itself.
+///
+/// Tier (c) synthetic fallback: when neither gate fires, emit a
+/// single `HeaderEmit` probe with the payload bytes pre-bound to
+/// `Set-Cookie`.
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
-    let shim = probe_shim();
     let entry_source = read_entry_source(&spec.entry_file);
+    if entry_source_uses_raw_socket(&entry_source) {
+        return emit_header_injection_wire_frame_harness(spec, &entry_source);
+    }
+    let shim = probe_shim();
     let entry_basename = derive_entry_basename(&spec.entry_file);
     let entry_name = if spec.entry_name.is_empty() {
         "run".to_owned()
@@ -1212,6 +1225,189 @@ end
   _nyx_header_probe(name, value)
   STDOUT.puts '__NYX_SINK_HIT__'
   STDOUT.puts JSON.generate({{ 'name' => name, 'value' => value }})
+  STDOUT.flush
+end
+
+_nyx_run
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Tier-(b) wire-frame gate for HEADER_INJECTION.  Fires when the
+/// fixture binds a raw `TCPServer` and exposes the `set_cookie_value`
+/// / `create_server` / `run_once` triple the harness drives.  Distinct
+/// from the Rack gate because the wire-frame branch owns the
+/// response-write path itself and bypasses every framework CRLF
+/// validator.
+fn entry_source_uses_raw_socket(src: &str) -> bool {
+    src.contains("TCPServer.new") && src.contains("set_cookie_value")
+}
+
+/// Phase 08 — Track J.6 tier-(b) wire-frame harness for Ruby.  Drives
+/// the fixture's `create_server` / `run_once` API in a worker thread
+/// while the harness opens a `TCPSocket` against the bound port,
+/// issues one `GET / HTTP/1.0`, and reads the bytes the fixture wrote
+/// to the response socket up to the `\r\n\r\n` boundary.  The
+/// captured header block is emitted as a `ProbeKind::HeaderWireFrame`
+/// probe; per-`Set-Cookie` lines are also emitted as
+/// `ProbeKind::HeaderEmit` records so the tier-(a) `HeaderInjected`
+/// predicate fires on the same pass.  Prints a `wire_frame_len`
+/// stdout marker so e2e tests can pin the branch.
+fn emit_header_injection_wire_frame_harness(
+    spec: &HarnessSpec,
+    _entry_source: &str,
+) -> HarnessSource {
+    let shim = probe_shim();
+    let entry_basename = derive_entry_basename(&spec.entry_file);
+    let body = format!(
+        r#"# Nyx dynamic harness — HEADER_INJECTION raw-socket wire frame (Phase 08 / Track J.6).
+require 'json'
+require 'socket'
+
+{shim}
+
+def _nyx_header_probe(name, value)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'TCPSocket#write',
+    'args'           => [
+      {{ 'kind' => 'String', 'value' => name }},
+      {{ 'kind' => 'String', 'value' => value }},
+    ],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'HeaderEmit', 'name' => name, 'value' => value, 'protocol' => 'wire' }},
+    'witness'        => __nyx_witness('TCPSocket#write', [name, value]),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+def _nyx_wire_frame_probe(raw_bytes)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'TCPSocket#write',
+    'args'           => [],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'HeaderWireFrame', 'raw_bytes' => raw_bytes.bytes }},
+    'witness'        => __nyx_witness('TCPSocket#write', []),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+def _nyx_wire_frame_via_fixture(payload)
+  # Phase 08 tier-(b): install the cookie value on the fixture, boot
+  # its `TCPServer` on 127.0.0.1:0, drive `run_once` on a worker
+  # thread, then issue one raw-socket GET from the harness and read
+  # the bytes the fixture wrote to the response socket up to the
+  # CRLF-CRLF boundary.  Returns nil on import / boot / read failure
+  # so the caller can fall back to the synthetic probe.
+  $LOAD_PATH.unshift('.')
+  begin
+    require_relative './{entry_basename}'
+  rescue LoadError, ScriptError
+    return nil
+  end
+  obj = Object.new
+  begin
+    obj.__send__(:set_cookie_value, payload)
+  rescue StandardError
+    return nil
+  end
+  server = begin
+    obj.__send__(:create_server)
+  rescue StandardError
+    return nil
+  end
+  port = server.addr[1]
+  worker = Thread.new do
+    begin
+      obj.__send__(:run_once, server)
+    rescue StandardError
+      # ignore fixture errors so the harness can still capture the
+      # bytes already written before the throw.
+    end
+  end
+  raw = String.new(encoding: 'BINARY')
+  begin
+    client = TCPSocket.new('127.0.0.1', port)
+  rescue StandardError
+    worker.kill rescue nil
+    return nil
+  end
+  begin
+    client.write("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+    deadline = Time.now + 5.0
+    while raw.bytesize < 65536 && Time.now < deadline
+      ready = IO.select([client], nil, nil, [deadline - Time.now, 0.0].max)
+      break unless ready
+      begin
+        chunk = client.recv(4096)
+      rescue StandardError
+        break
+      end
+      break if chunk.nil? || chunk.empty?
+      raw << chunk.b
+      break if raw.include?("\r\n\r\n".b)
+    end
+  ensure
+    begin
+      client.close
+    rescue StandardError
+      # ignore close errors
+    end
+    worker.join(2.0) rescue nil
+    begin
+      server.close
+    rescue StandardError
+      # ignore close errors
+    end
+  end
+  sep = raw.index("\r\n\r\n".b)
+  return raw if sep.nil?
+  raw.byteslice(0, sep)
+end
+
+def _nyx_run
+  payload = ENV['NYX_PAYLOAD'] || ''
+  raw_bytes = _nyx_wire_frame_via_fixture(payload)
+  if raw_bytes
+    _nyx_wire_frame_probe(raw_bytes)
+    # Derive HeaderEmit records per Set-Cookie line on the wire so
+    # the tier-(a) HeaderInjected predicate also fires on the same
+    # harness pass.  The wire-frame branch owns the bytes; the
+    # HeaderEmit records are derived from them.
+    raw_bytes.split("\n".b).each do |line|
+      trimmed = line.bytes.last == 13 ? line.byteslice(0, line.bytesize - 1) : line
+      sep = trimmed.index(':'.b)
+      next if sep.nil?
+      name = trimmed.byteslice(0, sep)
+      next unless name.downcase == 'set-cookie'.b
+      start = sep + 1
+      start += 1 if start < trimmed.bytesize && trimmed.getbyte(start) == 32
+      value = trimmed.byteslice(start, trimmed.bytesize - start) || ''.b
+      _nyx_header_probe(name.force_encoding('UTF-8'), value.force_encoding('UTF-8'))
+    end
+    STDOUT.puts '__NYX_SINK_HIT__'
+    STDOUT.puts JSON.generate({{ 'wire_frame_len' => raw_bytes.bytesize }})
+    STDOUT.flush
+    return
+  end
+  # Synthetic fallback when the fixture failed to boot — keeps the
+  # differential oracle live on a build/boot failure rather than
+  # silently shedding the attempt.
+  _nyx_header_probe('Set-Cookie', payload)
+  STDOUT.puts '__NYX_SINK_HIT__'
+  STDOUT.puts JSON.generate({{ 'payload_len' => payload.bytesize }})
   STDOUT.flush
 end
 
@@ -2013,6 +2209,116 @@ mod tests {
         assert!(
             h.source.contains("require_relative './benign'"),
             "basename must come from the entry-file stem: {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_routes_through_wire_frame_when_raw_socket_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_rb_test_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(
+            &entry,
+            "require 'socket'\n\
+             def set_cookie_value(value)\n  $nyx_cookie_value = value.b\nend\n\
+             def create_server\n  TCPServer.new('127.0.0.1', 0)\nend\n\
+             def run_once(server)\n  s = server.accept\n  s.write('HTTP/1.0 200 OK\\r\\nSet-Cookie: ' + $nyx_cookie_value + '\\r\\n\\r\\nok')\n  s.close\nend\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            h.source.contains("def _nyx_wire_frame_via_fixture(payload)"),
+            "tier-(b) harness must define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("require_relative './vuln'"),
+            "tier-(b) harness must require the fixture by its file stem: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("obj.__send__(:set_cookie_value, payload)"),
+            "tier-(b) harness must install the cookie value via __send__: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("obj.__send__(:create_server)"),
+            "tier-(b) harness must boot the fixture's TCPServer via __send__: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("obj.__send__(:run_once, server)"),
+            "tier-(b) harness must drive run_once on a worker thread: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("Thread.new"),
+            "tier-(b) harness must spawn a worker thread for the accept loop: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("TCPSocket.new('127.0.0.1', port)"),
+            "tier-(b) harness must open a client TCPSocket against the bound port: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("GET / HTTP/1.0\\r\\nHost: 127.0.0.1"),
+            "tier-(b) harness must issue a raw GET request: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'kind' => 'HeaderWireFrame', 'raw_bytes' => raw_bytes.bytes"),
+            "tier-(b) harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("'wire_frame_len' => raw_bytes.bytesize"),
+            "tier-(b) harness must emit the wire_frame_len stdout marker: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("Rack::Response.prepend"),
+            "tier-(b) harness must not patch Rack::Response (that's the tier-(a) path): {}",
+            h.source
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_wire_frame_branch_drops_when_only_rack_imported() {
+        let dir = std::env::temp_dir().join("nyx_phase08_rb_test_no_wire_frame");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("vuln.rb");
+        std::fs::write(
+            &entry,
+            "require 'rack'\n\
+             def run(value)\n  r = Rack::Response.new\n  r.set_header('Set-Cookie', value)\n  r\nend\n",
+        )
+        .unwrap();
+        let h = emit_header_injection_harness(&make_header_spec(
+            entry.to_str().unwrap(),
+            "run",
+        ));
+        assert!(
+            !h.source.contains("def _nyx_wire_frame_via_fixture"),
+            "rack-only harness must not define the wire-frame helper: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("HeaderWireFrame"),
+            "rack-only harness must not emit the HeaderWireFrame probe shape: {}",
+            h.source
+        );
+        assert!(
+            !h.source.contains("wire_frame_len"),
+            "rack-only harness must not emit the wire_frame_len stdout marker: {}",
             h.source
         );
         let _ = std::fs::remove_dir_all(&dir);
