@@ -261,6 +261,32 @@ pub enum ProbeKind {
         #[serde(default)]
         protocol: HeaderEmitProtocol,
     },
+    /// Phase 08 (Track J.6) wire-frame header-injection observation.
+    ///
+    /// Stamped by a tier-(b) harness that boots a real Tomcat /
+    /// werkzeug / `http.createServer` / `axum::serve` on a loopback
+    /// port and taps the literal bytes the server wrote to the
+    /// response socket.  Unlike [`ProbeKind::HeaderEmit`], which
+    /// captures one logical `(name, value)` pair before the host
+    /// runtime's CRLF validator runs, this kind records the entire
+    /// raw response-header block so the oracle can scan for two
+    /// distinct `name:` lines — the proof that a CRLF-bearing
+    /// attacker value actually smuggled a second header through to
+    /// the wire rather than being stripped on the way out.
+    ///
+    /// `raw_bytes` carries the bytes up to (but not including) the
+    /// CRLF-CRLF that separates headers from the response body.  No
+    /// per-shim path produces this variant today; the schema lands
+    /// now so the tier-(b) shims can write the variant without a
+    /// follow-up oracle-side re-shape, matching the
+    /// [`HeaderEmitProtocol::Wire`] discriminator pattern.
+    HeaderWireFrame {
+        /// Raw header-block bytes the underlying real server wrote
+        /// to the response socket, terminated by the CRLF-CRLF
+        /// boundary preceding the response body.  Pre-CRLF-CRLF
+        /// only; the body is not captured.
+        raw_bytes: Vec<u8>,
+    },
     /// Phase 09 (Track J.7) HTTP-redirect observation.  Stamped by
     /// the per-language harness shim's instrumented redirect entry
     /// point (`HttpServletResponse.sendRedirect`, `flask.redirect`,
@@ -701,6 +727,44 @@ mod tests {
             w.args_repr[0]
         );
         assert!(!w.args_repr[0].contains("aaa-bbb-ccc"));
+    }
+
+    #[test]
+    fn probe_kind_header_wire_frame_round_trips_through_channel() {
+        let dir = TempDir::new().unwrap();
+        let ch = ProbeChannel::for_workdir(dir.path()).unwrap();
+        let mut p = sample_probe("wire-smuggle");
+        p.kind = ProbeKind::HeaderWireFrame {
+            raw_bytes: b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nX-Injected: 1\r\n".to_vec(),
+        };
+        ch.write(&p).unwrap();
+        let drained = ch.drain();
+        assert_eq!(drained.len(), 1);
+        match &drained[0].kind {
+            ProbeKind::HeaderWireFrame { raw_bytes } => {
+                assert!(raw_bytes.windows(11).any(|w| w == b"Set-Cookie:"));
+                assert!(raw_bytes.windows(11).any(|w| w == b"X-Injected:"));
+            }
+            other => panic!("expected HeaderWireFrame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_kind_header_wire_frame_serdes_with_explicit_tag() {
+        let p = SinkProbe {
+            sink_callee: "wire".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "wire-1".into(),
+            kind: ProbeKind::HeaderWireFrame {
+                raw_bytes: b"Set-Cookie: a=1\r\nX-Injected: 1\r\n".to_vec(),
+            },
+            witness: ProbeWitness::empty(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""kind":"HeaderWireFrame""#));
+        let round: SinkProbe = serde_json::from_str(&json).unwrap();
+        assert!(matches!(round.kind, ProbeKind::HeaderWireFrame { .. }));
     }
 
     #[test]

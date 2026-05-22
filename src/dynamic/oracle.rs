@@ -265,6 +265,39 @@ pub enum ProbePredicate {
         /// captured header whose value contains the CRLF pair.
         header_name: &'static str,
     },
+    /// Phase 08 (Track J.6): wire-frame header-smuggling predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::HeaderWireFrame`] whose `raw_bytes` contains two
+    /// distinct header lines on the wire — one starting with
+    /// `primary:` and a separate line starting with `smuggled:`.
+    /// Both names are matched case-insensitively against the leading
+    /// token of each `\r\n`-terminated header line.
+    ///
+    /// Distinct from [`Self::HeaderInjected`], which fires on a
+    /// single in-process `HeaderEmit` whose value contains a literal
+    /// CRLF pair: a vulnerable host process can pass `\r\n`-bearing
+    /// bytes into its framework's header setter *and* the framework
+    /// can then CRLF-strip the bytes on the way to the wire, leaving
+    /// the in-process probe satisfied but the actual response frame
+    /// clean.  This predicate proves the smuggled header survived to
+    /// the underlying server's response socket.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] /
+    /// [`Self::HeaderInjected`] — evaluated across every drained
+    /// probe rather than against a single record.
+    HeaderSmuggledInWire {
+        /// Header name the original payload set legitimately (e.g.
+        /// `"Set-Cookie"`).  Must appear as the leading token of at
+        /// least one `\r\n`-terminated wire line.
+        primary: &'static str,
+        /// Header name the attacker smuggled past the CRLF boundary
+        /// (e.g. `"X-Injected"`).  Must appear as the leading token
+        /// of a separate `\r\n`-terminated wire line.
+        smuggled: &'static str,
+    },
     /// Phase 09 (Track J.7): open-redirect predicate.
     ///
     /// Fires when at least one drained probe carries
@@ -544,6 +577,21 @@ pub fn oracle_fired_with_stubs(
             if !header_injected_ok {
                 return false;
             }
+            // Phase 08 (Track J.6): wire-frame header-smuggling
+            // cross-cutting predicates.  Each
+            // `HeaderSmuggledInWire { primary, smuggled }` consults
+            // the captured probe channel for a
+            // [`ProbeKind::HeaderWireFrame`] record whose `raw_bytes`
+            // contain two distinct `name:` lines.
+            let header_wire_ok = cross.iter().all(|p| match p {
+                ProbePredicate::HeaderSmuggledInWire { primary, smuggled } => {
+                    probes_satisfy_header_smuggled_in_wire(probes, primary, smuggled)
+                }
+                _ => true,
+            });
+            if !header_wire_ok {
+                return false;
+            }
             // Phase 09 (Track J.7): open-redirect cross-cutting
             // predicates.  Each `RedirectHostNotIn { allowlist }`
             // consults the captured probe channel for a
@@ -634,6 +682,7 @@ pub fn oracle_fired_with_stubs(
             | ProbeKind::Ldap { .. }
             | ProbeKind::Xpath { .. }
             | ProbeKind::HeaderEmit { .. }
+            | ProbeKind::HeaderWireFrame { .. }
             | ProbeKind::Redirect { .. }
             | ProbeKind::PrototypePollution { .. }
             | ProbeKind::WeakKey { .. }
@@ -666,6 +715,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::XxeEntityExpanded { .. }
             | ProbePredicate::QueryResultCountGreaterThan { .. }
             | ProbePredicate::HeaderInjected { .. }
+            | ProbePredicate::HeaderSmuggledInWire { .. }
             | ProbePredicate::RedirectHostNotIn { .. }
             | ProbePredicate::PrototypeCanaryTouched { .. }
             | ProbePredicate::WeakKeyEntropy { .. }
@@ -699,6 +749,11 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_header_injected`] below.
         ProbePredicate::HeaderInjected { .. } => true,
+        // HeaderSmuggledInWire is cross-cutting against the
+        // *probe log* rather than stub events; evaluated
+        // separately in [`probes_satisfy_header_smuggled_in_wire`]
+        // below.
+        ProbePredicate::HeaderSmuggledInWire { .. } => true,
         // RedirectHostNotIn is cross-cutting against the *probe log*
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_redirect_off_origin`] below.
@@ -802,6 +857,69 @@ fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bo
         }
         _ => false,
     })
+}
+
+/// True when at least one drained probe is a
+/// [`ProbeKind::HeaderWireFrame`] whose `raw_bytes` carries two
+/// distinct `\r\n`-terminated header lines whose leading tokens
+/// (everything before the first `:`) match `primary` and `smuggled`
+/// case-insensitively.  Powers
+/// [`ProbePredicate::HeaderSmuggledInWire`] (Phase 08 — Track J.6).
+///
+/// Same line must not satisfy both names; the predicate models two
+/// independent header lines, not a single line whose value happens
+/// to contain a `:` substring.
+fn probes_satisfy_header_smuggled_in_wire(
+    probes: &[SinkProbe],
+    primary: &str,
+    smuggled: &str,
+) -> bool {
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::HeaderWireFrame { raw_bytes } => {
+            wire_frame_has_distinct_header_lines(raw_bytes, primary, smuggled)
+        }
+        _ => false,
+    })
+}
+
+/// Returns `true` when `bytes` contains a `\r\n`-terminated line
+/// whose leading `name:` token matches `primary` (case-insensitive)
+/// *and* a separate `\r\n`-terminated line whose leading `name:`
+/// token matches `smuggled`.  The two matches must come from
+/// distinct lines.  Lines without a `:` are skipped.
+///
+/// Used by [`probes_satisfy_header_smuggled_in_wire`]; pulled out so
+/// the colocated tests can exercise the wire-byte scan directly.
+pub(crate) fn wire_frame_has_distinct_header_lines(
+    bytes: &[u8],
+    primary: &str,
+    smuggled: &str,
+) -> bool {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let primary_lower = primary.trim().to_ascii_lowercase();
+    let smuggled_lower = smuggled.trim().to_ascii_lowercase();
+    if primary_lower.is_empty() || smuggled_lower.is_empty() {
+        return false;
+    }
+    let mut saw_primary = false;
+    let mut saw_smuggled = false;
+    for line in text.split("\r\n") {
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        let name = line[..colon].trim().to_ascii_lowercase();
+        if !saw_primary && name == primary_lower {
+            saw_primary = true;
+            continue;
+        }
+        if !saw_smuggled && name == smuggled_lower {
+            saw_smuggled = true;
+        }
+    }
+    saw_primary && saw_smuggled
 }
 
 /// True when at least one drained probe is a [`ProbeKind::Redirect`]
@@ -994,6 +1112,7 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::XxeEntityExpanded { .. }
         | ProbePredicate::QueryResultCountGreaterThan { .. }
         | ProbePredicate::HeaderInjected { .. }
+        | ProbePredicate::HeaderSmuggledInWire { .. }
         | ProbePredicate::RedirectHostNotIn { .. }
         | ProbePredicate::PrototypeCanaryTouched { .. }
         | ProbePredicate::WeakKeyEntropy { .. }
@@ -1026,6 +1145,7 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         | ProbeKind::Ldap { .. }
         | ProbeKind::Xpath { .. }
         | ProbeKind::HeaderEmit { .. }
+        | ProbeKind::HeaderWireFrame { .. }
         | ProbeKind::Redirect { .. }
         | ProbeKind::PrototypePollution { .. }
         | ProbeKind::WeakKey { .. }
@@ -1449,6 +1569,149 @@ mod tests {
         };
         let probes = vec![probe("noop", vec![])];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    fn header_emit_probe(name: &str, value: &str) -> SinkProbe {
+        SinkProbe {
+            sink_callee: "HttpServletResponse.setHeader".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "phase08".into(),
+            kind: ProbeKind::HeaderEmit {
+                name: name.into(),
+                value: value.into(),
+                protocol: crate::dynamic::probe::HeaderEmitProtocol::InProcess,
+            },
+            witness: ProbeWitness::empty(),
+        }
+    }
+
+    fn header_wire_probe(raw: &[u8]) -> SinkProbe {
+        SinkProbe {
+            sink_callee: "wire-tap".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "phase08-wire".into(),
+            kind: ProbeKind::HeaderWireFrame {
+                raw_bytes: raw.to_vec(),
+            },
+            witness: ProbeWitness::empty(),
+        }
+    }
+
+    #[test]
+    fn header_smuggled_in_wire_fires_on_two_distinct_header_lines() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::HeaderSmuggledInWire {
+                primary: "Set-Cookie",
+                smuggled: "X-Injected",
+            }],
+        };
+        let probes = vec![header_wire_probe(
+            b"Set-Cookie: a=1\r\nX-Injected: 1\r\n",
+        )];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn header_smuggled_in_wire_clears_when_only_primary_line_present() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::HeaderSmuggledInWire {
+                primary: "Set-Cookie",
+                smuggled: "X-Injected",
+            }],
+        };
+        // Benign control: framework URL-encoded the CRLF on the way
+        // to the wire, leaving the original Set-Cookie intact and no
+        // sibling X-Injected line.
+        let probes = vec![header_wire_probe(
+            b"Set-Cookie: a=1%0d%0aX-Injected:%201\r\n",
+        )];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn header_smuggled_in_wire_matches_case_insensitively() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::HeaderSmuggledInWire {
+                primary: "set-cookie",
+                smuggled: "x-injected",
+            }],
+        };
+        let probes = vec![header_wire_probe(
+            b"SET-COOKIE: a=1\r\nX-INJECTED: 1\r\n",
+        )];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn header_smuggled_in_wire_ignores_header_emit_probes() {
+        // A tier-(a) HeaderEmit probe whose value carries `\r\n`
+        // satisfies HeaderInjected but must not satisfy
+        // HeaderSmuggledInWire — that predicate proves the bytes
+        // survived to the response socket.
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::HeaderSmuggledInWire {
+                primary: "Set-Cookie",
+                smuggled: "X-Injected",
+            }],
+        };
+        let probes = vec![header_emit_probe(
+            "Set-Cookie",
+            "a=1\r\nX-Injected: 1",
+        )];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn header_injected_ignores_header_wire_frame_probes() {
+        // Symmetric: the existing HeaderInjected predicate must keep
+        // ignoring wire-frame probes — those only satisfy the new
+        // wire-smuggling predicate.
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::HeaderInjected {
+                header_name: "Set-Cookie",
+            }],
+        };
+        let probes = vec![header_wire_probe(
+            b"Set-Cookie: a=1\r\nX-Injected: 1\r\n",
+        )];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn wire_frame_helper_handles_repeated_primary_name_via_self_smuggling() {
+        // Classic CRLF smuggling attack: attacker injects a second
+        // `Set-Cookie` line by tunnelling through the original.  The
+        // helper accepts same-name twice as proof when `primary`
+        // and `smuggled` are configured to the same name.
+        assert!(wire_frame_has_distinct_header_lines(
+            b"Set-Cookie: original=1\r\nSet-Cookie: attacker=1\r\n",
+            "Set-Cookie",
+            "Set-Cookie",
+        ));
+    }
+
+    #[test]
+    fn wire_frame_helper_rejects_single_line_with_inline_colon_value() {
+        // A line like `Set-Cookie: foo=bar; ext=baz` contains a `:`
+        // in the value segment but only one true header line; the
+        // helper splits on `\r\n` so the value's `:` cannot satisfy
+        // the smuggled predicate by itself.
+        assert!(!wire_frame_has_distinct_header_lines(
+            b"Set-Cookie: foo=bar; ext=baz\r\n",
+            "Set-Cookie",
+            "X-Injected",
+        ));
+    }
+
+    #[test]
+    fn wire_frame_helper_rejects_non_utf8_bytes() {
+        assert!(!wire_frame_has_distinct_header_lines(
+            &[0xff, 0xfe, 0xfd],
+            "Set-Cookie",
+            "X-Injected",
+        ));
     }
 
     #[test]
