@@ -289,6 +289,26 @@ Pipe `dot` output through `dot -Tsvg` for a renderable graph, or use `--format s
 
 ---
 
+## `nyx serve`
+
+Start the local browser UI for browsing scan results.
+
+```
+nyx serve [PATH] [OPTIONS]
+```
+
+**PATH** defaults to `.` (current directory). The server binds to a loopback address only and refuses non-loopback hosts at startup.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --port <PORT>` | *(from config)* | Port to bind to (overrides `[server].port`) |
+| `--host <HOST>` | *(from config)* | Host to bind to (overrides `[server].host`) |
+| `--no-browser` | off | Skip opening the browser automatically |
+
+See [serve.md](serve.md) for the UI tour, route map, and CSRF / host-header behaviour.
+
+---
+
 ## `nyx verify-feedback`
 
 Record a correction or confirmation against a dynamic-verifier verdict. Requires `--features dynamic`.

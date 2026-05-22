@@ -783,7 +783,9 @@ pub mod index {
         ///
         /// Short-circuits on mtime: if the stored mtime matches the
         /// filesystem mtime, the file is assumed unchanged (skip hash).
-        #[allow(dead_code)] // used in tests and by should_scan_with_hash callers may fall back
+        /// Production scans use `should_scan_with_hash`, which avoids the
+        /// redundant `digest_file` read; this variant exists for tests.
+        #[cfg(test)]
         pub fn should_scan(&self, path: &Path) -> NyxResult<bool> {
             let meta = fs::metadata(path)?;
             let mtime = meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -2311,7 +2313,6 @@ pub mod index {
 
         /// Set the triage state for a single finding. Upserts the state and
         /// appends an audit log entry. Returns the previous state (or "open").
-        #[allow(dead_code)]
         pub fn set_triage_state(
             &self,
             fingerprint: &str,
@@ -2700,7 +2701,7 @@ pub mod index {
         // -------------------------------------------------------------------------
         // Helpers
         // -------------------------------------------------------------------------
-        #[allow(dead_code)] // used by should_scan() and tests
+        #[cfg(test)]
         fn digest_file(path: &Path) -> NyxResult<Vec<u8>> {
             let mut hasher = blake3::Hasher::new();
             let mut file = fs::File::open(path)?;
@@ -3204,7 +3205,7 @@ fn clear_drops_ssa_summaries_table() {
 // ── CalleeSsaBody persistence tests ──────────────────────────────────────
 
 /// Helper: build a minimal CalleeSsaBody for DB tests.
-#[allow(dead_code)] // used by tests below
+#[cfg(test)]
 fn make_test_callee_body(
     num_blocks: usize,
     param_count: usize,
