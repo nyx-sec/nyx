@@ -1196,7 +1196,7 @@ def _nyx_header_probe(name, value)
     ],
     'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
     'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
-    'kind'           => {{ 'kind' => 'HeaderEmit', 'name' => name, 'value' => value }},
+    'kind'           => {{ 'kind' => 'HeaderEmit', 'name' => name, 'value' => value, 'protocol' => 'in-process' }},
     'witness'        => __nyx_witness('Rack::Response#set_header', [name, value]),
   }}
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}

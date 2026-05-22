@@ -797,7 +797,7 @@ fn probes_satisfy_count_gt(probes: &[SinkProbe], n: u32) -> bool {
 /// [`ProbePredicate::HeaderInjected`] (Phase 08 — Track J.6).
 fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bool {
     probes.iter().any(|p| match &p.kind {
-        ProbeKind::HeaderEmit { name, value } => {
+        ProbeKind::HeaderEmit { name, value, .. } => {
             (header_name == "*" || name.eq_ignore_ascii_case(header_name)) && value.contains("\r\n")
         }
         _ => false,

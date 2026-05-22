@@ -1628,7 +1628,7 @@ public class NyxHarness {{
         nyxJsonEscape(name, line);
         line.append("\",\"value\":\"");
         nyxJsonEscape(value, line);
-        line.append("\"}},");
+        line.append("\",\"protocol\":\"in-process\"}},");
         line.append("\"witness\":");
         line.append(nyxWitnessJson("HttpServletResponse.setHeader", new String[]{{name, value}}));
         line.append("}}\n");

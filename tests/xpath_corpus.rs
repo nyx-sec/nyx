@@ -549,6 +549,17 @@ mod e2e_phase_07 {
             .as_ref()
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        let tier_a_marker = b"__NYX_XPATH_TIER_A__";
+        let saw_tier_a = outcome.attempts.iter().any(|a| {
+            a.outcome
+                .stdout
+                .windows(tier_a_marker.len())
+                .any(|w| w == tier_a_marker)
+        });
+        assert!(
+            saw_tier_a,
+            "Python XPath vuln must reach the tier-(a) real-lxml path (stdout marker `__NYX_XPATH_TIER_A__`); the inline `_nyx_xpath_select` fallback was removed and the harness now SKIPs via NYX_IMPORT_ERROR + exit 77 when lxml is unavailable",
+        );
     }
 
     #[test]

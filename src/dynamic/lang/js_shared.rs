@@ -1483,7 +1483,7 @@ function nyxHeaderProbe(name, value) {{
     ],
     captured_at_ns: Number(process.hrtime.bigint()),
     payload_id: process.env.NYX_PAYLOAD_ID || '',
-    kind: {{ kind: 'HeaderEmit', name: name, value: value }},
+    kind: {{ kind: 'HeaderEmit', name: name, value: value, protocol: 'in-process' }},
     witness: __nyx_witness('http.ServerResponse#setHeader', [name, value]),
   }};
   try {{
@@ -1766,21 +1766,19 @@ function nyxPrototypePollutionProbe(value) {{
   }});
 }})();
 
-function nyxDeepMerge(target, source) {{
-  if (source === null || typeof source !== 'object') return target;
-  for (const key of Object.keys(source)) {{
-    const sv = source[key];
-    if (sv !== null && typeof sv === 'object') {{
-      if (target[key] === null || typeof target[key] !== 'object') {{
-        target[key] = {{}};
-      }}
-      nyxDeepMerge(target[key], sv);
-    }} else {{
-      target[key] = sv;
-    }}
-  }}
-  return target;
-}}
+// Phase 10 sink: route the parsed payload through the real
+// `lodash.merge` pinned at lodash 4.17.4.  Lodash hardened `_.merge`
+// against the `__proto__` key starting in 4.17.5 (well before the
+// official CVE-2018-16487 fix at 4.17.11 which targeted `_.set` /
+// `_.setWith`), so the canary only fires against <= 4.17.4.  The
+// staged `package.json` pins this version exactly; `prepare_node`
+// resolves the dep via `npm install` before the harness runs.
+// Exercising the real merge implementation (vs the hand-rolled
+// `nyxDeepMerge` that previously stood in) covers lodash's actual
+// recursion / cycle / array-vs-object decision shape so a future
+// fixture that hits a patched range can be added without re-shaping
+// the harness.
+const _lodashMerge = require('lodash').merge;
 
 const payload = process.env.NYX_PAYLOAD || '';
 let parsed;
@@ -1791,9 +1789,9 @@ try {{
 }}
 const target = {{}};
 try {{
-  nyxDeepMerge(target, parsed);
+  _lodashMerge(target, parsed);
 }} catch (e) {{
-  // Naive merge may throw on weird inputs; the canary observation
+  // lodash.merge can throw on weird inputs; the canary observation
   // already wrote any probe before the throw.
 }}
 console.log('__NYX_SINK_HIT__');
@@ -1806,7 +1804,12 @@ console.log(JSON.stringify({{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: vec![(
+            "package.json".to_owned(),
+            r#"{"name":"nyx-prototype-pollution-harness","private":true,"dependencies":{"lodash":"4.17.4"}}
+"#
+            .to_owned(),
+        )],
         entry_subpath: None,
     }
 }

@@ -1494,7 +1494,7 @@ function _nyx_header_probe(string $name, string $value): void {{
         ],
         'captured_at_ns' => (int) hrtime(true),
         'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
-        'kind'           => ['kind' => 'HeaderEmit', 'name' => $name, 'value' => $value],
+        'kind'           => ['kind' => 'HeaderEmit', 'name' => $name, 'value' => $value, 'protocol' => 'in-process'],
         'witness'        => __nyx_witness('header()', [$name, $value]),
     ];
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);

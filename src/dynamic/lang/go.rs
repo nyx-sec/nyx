@@ -838,7 +838,7 @@ func nyxHeaderProbe(name, value string) {{
 		}},
 		"captured_at_ns": uint64(time.Now().UnixNano()),
 		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
-		"kind":           map[string]interface{{}}{{"kind": "HeaderEmit", "name": name, "value": value}},
+		"kind":           map[string]interface{{}}{{"kind": "HeaderEmit", "name": name, "value": value, "protocol": "in-process"}},
 		"witness":        __nyx_witness("http.ResponseWriter.Header.Set", []string{{name, value}}),
 	}})
 }}

@@ -22,7 +22,7 @@ use nyx_scanner::dynamic::corpus::{
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::oracle::{ProbePredicate, oracle_fired};
-use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
+use nyx_scanner::dynamic::probe::{HeaderEmitProtocol, ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use nyx_scanner::labels::Cap;
@@ -158,13 +158,51 @@ fn probe_kind_header_emit_serdes() {
     let original = ProbeKind::HeaderEmit {
         name: "Set-Cookie".into(),
         value: "nyx-session\r\nSet-Cookie: nyx-injected=pwn".into(),
+        protocol: HeaderEmitProtocol::InProcess,
     };
     let json = serde_json::to_string(&original).unwrap();
     assert!(json.contains("HeaderEmit"));
     assert!(json.contains("name"));
     assert!(json.contains("value"));
+    assert!(json.contains("\"protocol\":\"in-process\""));
     let parsed: ProbeKind = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, original);
+}
+
+#[test]
+fn probe_kind_header_emit_serdes_wire_variant() {
+    let original = ProbeKind::HeaderEmit {
+        name: "Set-Cookie".into(),
+        value: "nyx-session\r\nSet-Cookie: nyx-injected=pwn".into(),
+        protocol: HeaderEmitProtocol::Wire,
+    };
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("\"protocol\":\"wire\""));
+    let parsed: ProbeKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn probe_kind_header_emit_deserialises_legacy_records_as_in_process() {
+    // Probe records emitted before the protocol field existed must
+    // continue to deserialise via the `#[serde(default)]` hatch so the
+    // future oracle tightening landing does not need to migrate the
+    // on-disk channel format.
+    let legacy_json =
+        r#"{"kind":"HeaderEmit","name":"Set-Cookie","value":"nyx-session\r\nSet-Cookie: pwn"}"#;
+    let parsed: ProbeKind = serde_json::from_str(legacy_json).unwrap();
+    match parsed {
+        ProbeKind::HeaderEmit {
+            name,
+            value,
+            protocol,
+        } => {
+            assert_eq!(name, "Set-Cookie");
+            assert_eq!(value, "nyx-session\r\nSet-Cookie: pwn");
+            assert_eq!(protocol, HeaderEmitProtocol::InProcess);
+        }
+        other => panic!("expected HeaderEmit, got {other:?}"),
+    }
 }
 
 #[test]
@@ -182,6 +220,7 @@ fn header_injected_predicate_fires_on_crlf_value() {
         kind: ProbeKind::HeaderEmit {
             name: "Set-Cookie".into(),
             value: "nyx-session\r\nSet-Cookie: nyx-injected=pwn".into(),
+            protocol: HeaderEmitProtocol::InProcess,
         },
         witness: ProbeWitness::empty(),
     }];
@@ -213,6 +252,7 @@ fn header_injected_predicate_clear_when_value_is_url_encoded() {
         kind: ProbeKind::HeaderEmit {
             name: "Set-Cookie".into(),
             value: "nyx-session%0D%0ASet-Cookie%3A%20nyx-injected%3Dpwn".into(),
+            protocol: HeaderEmitProtocol::InProcess,
         },
         witness: ProbeWitness::empty(),
     }];
@@ -246,6 +286,7 @@ fn header_injected_predicate_clear_on_unrelated_header() {
         kind: ProbeKind::HeaderEmit {
             name: "X-Trace-Id".into(),
             value: "trace\r\nX-Injected: 1".into(),
+            protocol: HeaderEmitProtocol::InProcess,
         },
         witness: ProbeWitness::empty(),
     }];

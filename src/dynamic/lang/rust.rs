@@ -730,7 +730,7 @@ fn nyx_header_probe(name: &str, value: &str) {{
     line.push_str(&nyx_json_escape(name));
     line.push_str("\",\"value\":\"");
     line.push_str(&nyx_json_escape(value));
-    line.push_str("\"}},\"witness\":{{}}}}\n");
+    line.push_str("\",\"protocol\":\"in-process\"}},\"witness\":{{}}}}\n");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
         let _ = f.write_all(line.as_bytes());
     }}

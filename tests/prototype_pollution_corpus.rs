@@ -254,8 +254,23 @@ fn lang_emitter_dispatches_to_prototype_pollution_harness() {
             "{lang:?} harness must install the canary trap on Object.prototype",
         );
         assert!(
-            harness.source.contains("nyxDeepMerge"),
-            "{lang:?} harness must inline the deep-merge sink",
+            harness.source.contains("require('lodash').merge"),
+            "{lang:?} harness must route through the real `lodash.merge` (Phase 10 follow-up swap)",
+        );
+        assert!(
+            !harness.source.contains("function nyxDeepMerge"),
+            "{lang:?} harness must no longer declare the hand-rolled `nyxDeepMerge` shim",
+        );
+        assert!(
+            !harness.source.contains("nyxDeepMerge(target,"),
+            "{lang:?} harness must no longer call the hand-rolled `nyxDeepMerge` shim",
+        );
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .any(|(p, c)| p == "package.json" && c.contains("\"lodash\":\"4.17.4\"")),
+            "{lang:?} harness must publish a `package.json` pinning lodash 4.17.4 (last version before `_.merge` was hardened against `__proto__`); empirical bisect shows 4.17.5+ already filters the key so newer pins flip the vuln fixture to NotConfirmed",
         );
         assert!(
             harness.source.contains("__NYX_SINK_HIT__"),

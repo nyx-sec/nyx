@@ -103,6 +103,39 @@ impl ProbeArg {
     }
 }
 
+/// Transport layer that recorded a [`ProbeKind::HeaderEmit`] observation.
+///
+/// Today every per-language harness shim monkey-patches the framework's
+/// response object (`flask.Response.headers.__setitem__`, the Java
+/// servlet stub's `setHeader`, the Node `nyxResponse.setHeader` mock,
+/// etc.) so the bytes are captured *before* the host runtime's CRLF
+/// validator could reject them.  Those probes carry
+/// [`HeaderEmitProtocol::InProcess`].
+///
+/// A future tier-(b) harness booting a real Tomcat / werkzeug /
+/// `http.createServer` on loopback would tap the bytes the underlying
+/// server actually wrote to the response socket and record them as
+/// [`HeaderEmitProtocol::Wire`].  The variant exists now so an oracle
+/// tightening landing later (e.g. a sibling
+/// `ProbePredicate::HeaderSmuggledInWire` that scans wire-frame bytes
+/// for two distinct `name:` lines) does not need to re-shape the
+/// probe schema.
+///
+/// Probe records emitted before this field existed deserialise as
+/// [`HeaderEmitProtocol::InProcess`] via `#[serde(default)]` on the
+/// containing [`ProbeKind::HeaderEmit`] field.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeaderEmitProtocol {
+    /// Bytes captured by an in-process monkey-patch on the framework's
+    /// header setter, before the host runtime's CRLF validator ran.
+    #[default]
+    InProcess,
+    /// Bytes captured at the wire layer — the literal response frame
+    /// the underlying real server wrote to the response socket.
+    Wire,
+}
+
 /// Discriminator on a [`SinkProbe`] (Phase 08 — Track C.4).
 ///
 /// Distinguishes a probe written from the normal sink-instrumentation
@@ -213,6 +246,20 @@ pub enum ProbeKind {
         /// host concatenates attacker bytes into this string without
         /// CRLF stripping; a benign host URL-encodes them (`%0d%0a`).
         value: String,
+        /// Transport layer at which the bytes were captured.  Today's
+        /// per-language harness shims monkey-patch the framework's
+        /// response object before any CRLF validator runs and so
+        /// produce [`HeaderEmitProtocol::InProcess`].  A future
+        /// tier-(b) harness booting a real Tomcat / werkzeug /
+        /// `http.createServer` on loopback would record the bytes the
+        /// underlying server actually wrote to the response socket as
+        /// [`HeaderEmitProtocol::Wire`].  Pre-existing on-disk probe
+        /// records that pre-date this field deserialise as
+        /// [`HeaderEmitProtocol::InProcess`] via `#[serde(default)]`
+        /// so an oracle tightening landing later does not need to
+        /// re-shape the probe schema.
+        #[serde(default)]
+        protocol: HeaderEmitProtocol,
     },
     /// Phase 09 (Track J.7) HTTP-redirect observation.  Stamped by
     /// the per-language harness shim's instrumented redirect entry

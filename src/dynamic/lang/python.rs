@@ -2038,58 +2038,31 @@ pub fn emit_xpath_harness(spec: &HarnessSpec) -> HarnessSource {
 import importlib
 import json
 import os
-import re
 import sys
 import time
 
 {probe}
 
-_NYX_XPATH_USERS = ["alice", "bob", "carol"]
-
-
-def _nyx_xpath_select(expr):
-    needle = "//user[@name="
-    if not expr.startswith(needle):
-        return 0
-    rest = expr[len(needle):]
-    if not rest.endswith("]"):
-        return 0
-    predicate = rest[:-1]
-    m = re.match(r"^'([^']*)'(.*)$", predicate)
-    if m is not None:
-        literal = m.group(1)
-        tail = m.group(2).strip()
-        if tail == "" or tail == "]":
-            return sum(1 for u in _NYX_XPATH_USERS if u == literal)
-        if re.match(r"^or\s+", tail, re.IGNORECASE):
-            return len(_NYX_XPATH_USERS)
-    m = re.match(r'^"([^"]*)"\s*$', predicate)
-    if m is not None:
-        literal = m.group(1)
-        return sum(1 for u in _NYX_XPATH_USERS if u == literal)
-    if re.match(r"^concat\(", predicate, re.IGNORECASE):
-        parts = re.findall(r"'([^']*)'", predicate)
-        joined = "".join(p for p in parts if p not in (',"',))
-        joined = joined.replace(",\"'\",", "'")
-        return sum(1 for u in _NYX_XPATH_USERS if u == joined)
-    return len(_NYX_XPATH_USERS)
-
 
 def _nyx_xpath_via_fixture(payload):
     # Phase 07 tier-(a): import the fixture and call its
-    # `{entry_name}` so the real `lxml.etree.xpath` (or other
-    # XPath evaluator the fixture chooses) runs against the staged
-    # corpus document.  Returns the node count, or `None` when the
-    # import or call fails (e.g. lxml is not installed on the host)
-    # so the caller can fall back to the inline matcher.
+    # `{entry_name}` so the real `lxml.etree.xpath` runs against the
+    # staged corpus document.  A missing `lxml` host install is the
+    # only structural reason the import fails; in that case we emit
+    # the conventional `NYX_IMPORT_ERROR:` stderr marker plus
+    # `sys.exit(77)` so the runner maps the outcome to
+    # `RunError::BuildFailed` and the e2e SKIP branch fires.
     sys.path.insert(0, ".")
     try:
         mod = importlib.import_module("{module_name}")
-    except Exception:
-        return None
+    except ImportError as _e:
+        print(f"NYX_IMPORT_ERROR: {{_e}}", file=sys.stderr, flush=True)
+        sys.exit(77)
     fn = getattr(mod, "{entry_name}", None)
     if fn is None:
-        return None
+        raise RuntimeError(
+            "Phase 07 XPath harness: entry function '{entry_name}' not found in fixture module '{module_name}'"
+        )
     try:
         result = fn(payload)
     except Exception:
@@ -2119,8 +2092,7 @@ def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
     expr = "//user[@name='" + payload + "']"
     nodes = _nyx_xpath_via_fixture(payload)
-    if nodes is None:
-        nodes = _nyx_xpath_select(expr)
+    print("__NYX_XPATH_TIER_A__", flush=True)
     _nyx_xpath_probe(expr, nodes)
     print("__NYX_SINK_HIT__", flush=True)
     sys.stdout.write(json.dumps({{"expr": expr, "nodes_returned": nodes}}) + "\n")
@@ -2131,7 +2103,10 @@ if __name__ == "__main__":
     _nyx_run()
 "#
     );
-    let extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    let extra_files = vec![
+        (corpus_filename.to_owned(), corpus_xml.to_owned()),
+        ("requirements.txt".to_owned(), "lxml\n".to_owned()),
+    ];
     HarnessSource {
         source: body,
         filename: "harness.py".to_owned(),
@@ -2270,7 +2245,7 @@ def _nyx_header_probe(name, value):
         ],
         "captured_at_ns": time.time_ns(),
         "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
-        "kind": {{"kind": "HeaderEmit", "name": name, "value": value}},
+        "kind": {{"kind": "HeaderEmit", "name": name, "value": value, "protocol": "in-process"}},
         "witness": __nyx_witness("flask.Response.headers.__setitem__", [name, value]),
     }}
     __nyx_emit(rec)
@@ -3472,8 +3447,16 @@ mod tests {
             "tests/dynamic_fixtures/xpath_injection/python/vuln.py",
             "run",
         ));
-        assert_eq!(h.extra_files.len(), 1);
+        assert_eq!(h.extra_files.len(), 2);
         assert_eq!(h.extra_files[0].0, "xpath_corpus.xml");
+        assert_eq!(
+            h.extra_files[1].0, "requirements.txt",
+            "Python XPath harness must stage requirements.txt so prepare_python pip-installs lxml",
+        );
+        assert_eq!(
+            h.extra_files[1].1, "lxml\n",
+            "Python XPath harness requirements.txt must pin lxml so tier-(a) imports succeed",
+        );
         assert!(
             h.source.contains("def _nyx_xpath_via_fixture(payload):"),
             "Python XPath harness must define the fixture-routing helper",
@@ -3488,11 +3471,31 @@ mod tests {
         );
         assert!(
             h.source.contains("nodes = _nyx_xpath_via_fixture(payload)"),
-            "Python XPath harness main must call the fixture-routing helper first",
+            "Python XPath harness main must call the fixture-routing helper",
+        );
+    }
+
+    #[test]
+    fn emit_xpath_harness_drops_inline_matcher_fallback() {
+        let h = emit_xpath_harness(&make_xpath_spec(
+            "tests/dynamic_fixtures/xpath_injection/python/vuln.py",
+            "run",
+        ));
+        assert!(
+            !h.source.contains("_nyx_xpath_select"),
+            "Python XPath harness must no longer carry the inline `_nyx_xpath_select` matcher fallback",
         );
         assert!(
-            h.source.contains("nodes = _nyx_xpath_select(expr)"),
-            "Python XPath harness must keep the inline matcher as a fallback",
+            h.source.contains("NYX_IMPORT_ERROR:"),
+            "Python XPath harness must emit the conventional NYX_IMPORT_ERROR stderr marker so the runner SKIPs hosts without lxml installed",
+        );
+        assert!(
+            h.source.contains("sys.exit(77)"),
+            "Python XPath harness must exit 77 on ImportError so RunError::BuildFailed fires",
+        );
+        assert!(
+            h.source.contains("__NYX_XPATH_TIER_A__"),
+            "Python XPath harness must print the tier-(a) stdout marker after a successful fixture call so e2e assertions can pin tier-(a) execution",
         );
     }
 
