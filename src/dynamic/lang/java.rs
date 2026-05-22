@@ -1706,18 +1706,22 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
         String captured = response.getRedirectedUrl();
         if (fixtureInvoked && captured != null) {{
             nyxRedirectProbe(captured, requestHost);
+            nyxFollowLocation(captured);
         }} else {{
             nyxRedirectProbe(payload, requestHost);
+            nyxFollowLocation(payload);
         }}"#
         )
     } else {
-        r#"        nyxRedirectProbe(payload, requestHost);"#.to_owned()
+        r#"        nyxRedirectProbe(payload, requestHost);
+        nyxFollowLocation(payload);"#
+            .to_owned()
     };
 
     let imports = if has_servlet_stubs {
-        "import java.lang.reflect.InvocationTargetException;\nimport java.lang.reflect.Method;\n"
+        "import java.lang.reflect.InvocationTargetException;\nimport java.lang.reflect.Method;\nimport java.net.HttpURLConnection;\nimport java.net.URL;\n"
     } else {
-        ""
+        "import java.net.HttpURLConnection;\nimport java.net.URL;\n"
     };
 
     let source = format!(
@@ -1754,6 +1758,31 @@ public class NyxHarness {{
             fw.write(line.toString());
         }} catch (IOException e) {{
             // best-effort
+        }}
+    }}
+
+    // Phase 09 OOB closure: when the captured Location is a fully-qualified
+    // loopback URL, follow it with a real GET so the OOB listener records
+    // the per-finding nonce.  Skips non-loopback hosts (no real network egress)
+    // and any non-HTTP scheme.  Best-effort: failures do not propagate, the
+    // listener may still have observed the connect before the read errored.
+    static void nyxFollowLocation(String location) {{
+        if (location == null || location.isEmpty()) return;
+        String lower = location.toLowerCase();
+        if (!(lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("http://host-gateway"))) {{
+            return;
+        }}
+        try {{
+            HttpURLConnection conn = (HttpURLConnection) new URL(location).openConnection();
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(2000);
+            conn.setInstanceFollowRedirects(false);
+            conn.getInputStream().close();
+            conn.disconnect();
+        }} catch (Exception ignored) {{
+            // best-effort OOB fetch
         }}
     }}
 
@@ -3483,6 +3512,65 @@ mod tests {
         assert!(
             h.source.contains("nyxRedirectProbe(payload, requestHost)"),
             "non-servlet fixture must keep the synthetic-probe fallback",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_ships_follow_location_helper() {
+        let dir = std::env::temp_dir().join("nyx_phase09_test_follow_helper");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "public class Vuln { public static void run(String v) { System.out.println(v); } }\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_open_redirect_harness(&spec);
+        assert!(
+            h.source.contains("static void nyxFollowLocation(String location)"),
+            "OPEN_REDIRECT harness must declare the nyxFollowLocation helper",
+        );
+        assert!(
+            h.source.contains("import java.net.HttpURLConnection;"),
+            "OPEN_REDIRECT harness must import HttpURLConnection",
+        );
+        assert!(
+            h.source.contains("import java.net.URL;"),
+            "OPEN_REDIRECT harness must import URL",
+        );
+        assert!(
+            h.source.contains("http://127.0.0.1"),
+            "follow-location helper must whitelist loopback hosts",
+        );
+        assert!(
+            h.source.contains("nyxFollowLocation(payload)"),
+            "tier-(b) fallback must follow the synthetic payload location",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_follows_captured_location_in_tier_a() {
+        let dir = std::env::temp_dir().join("nyx_phase09_test_follow_tier_a");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import javax.servlet.http.HttpServletResponse;\n\
+             public class Vuln {\n  public static void run(HttpServletResponse r, String v) throws Exception {\n    r.sendRedirect(v);\n  }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_open_redirect_harness(&spec);
+        assert!(
+            h.source.contains("nyxRedirectProbe(captured, requestHost);\n            nyxFollowLocation(captured);"),
+            "tier-(a) must follow the captured Location: value, not the raw payload",
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

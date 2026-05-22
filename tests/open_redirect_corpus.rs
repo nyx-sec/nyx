@@ -90,7 +90,12 @@ fn open_redirect_unsupported_caps_unchanged_for_other_langs() {
 fn benign_control_resolves_within_lang_slice() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::OPEN_REDIRECT, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        // Skip OOB-nonce variants — they self-confirm via the per-finding
+        // listener and carry no paired benign control by design.
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         let resolved =
             resolve_benign_control_lang(vuln, Cap::OPEN_REDIRECT, *lang).expect("paired control");
         assert!(resolved.is_benign);
@@ -103,7 +108,12 @@ fn benign_control_resolves_within_lang_slice() {
 fn payload_oracle_carries_redirect_host_not_in_predicate() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::OPEN_REDIRECT, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        // The off-origin-URL vuln carries the RedirectHostNotIn predicate;
+        // OOB-nonce variants observe via the listener and use OobCallback.
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
                 assert!(
@@ -122,7 +132,12 @@ fn payload_oracle_carries_redirect_host_not_in_predicate() {
 fn vuln_payload_bytes_carry_off_origin_url_benign_bytes_do_not() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::OPEN_REDIRECT, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        // OOB-nonce variants ship empty `bytes` (the runner substitutes the
+        // loopback nonce URL at run-time); inspect only the curated vuln here.
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         let benign = slice.iter().find(|p| p.is_benign).unwrap();
         let vuln_text = std::str::from_utf8(vuln.bytes).unwrap();
         let benign_text = std::str::from_utf8(benign.bytes).unwrap();
@@ -602,5 +617,98 @@ mod e2e_phase_09 {
             return;
         };
         assert_confirmed(Lang::Rust, &outcome);
+    }
+
+    /// Phase 09 OOB-loopback observation: when an [`nyx_scanner::dynamic::oob::OobListener`]
+    /// is attached and the runner exercises the `open-redirect-java-oob-nonce`
+    /// payload, the harness follows the captured `Location:` URL with a real
+    /// `HttpURLConnection.getInputStream()` against the loopback nonce URL and
+    /// the listener records the hit.  Asserts both halves of the OOB closure:
+    /// the callback observation AND the verdict-tier promotion from
+    /// `Confirmed` to `ConfirmedProvenOob` (the runner's
+    /// `build_oob_self_confirmed_outcome` path treats the OOB-nonce payload as
+    /// self-confirming since a benign URL structurally cannot hit a
+    /// per-finding nonce).
+    fn run_oob(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        use nyx_scanner::dynamic::oob::OobListener;
+        use nyx_scanner::dynamic::sandbox::NetworkPolicy;
+        use std::sync::Arc;
+
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture} (oob): missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let listener = Arc::new(OobListener::bind().expect("bind OOB listener on loopback"));
+        let (mut spec, _tmp) = build_spec(lang, fixture, entry_name);
+        // Use a distinct workdir from the non-OOB e2e tests so the probe
+        // channel files do not collide (both tests use the same fixture, so
+        // the default spec_hash would resolve to the same
+        // `/tmp/nyx-harness/<spec_hash>/__nyx_probes.jsonl` and the two runs
+        // could clobber each other's drains under parallel nextest).
+        spec.spec_hash = format!("{}-oob", spec.spec_hash);
+        spec.finding_id = spec.spec_hash.clone();
+        if matches!(lang, Lang::Java) {
+            let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+        }
+
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            network_policy: NetworkPolicy::OobOutbound {
+                listener: Arc::clone(&listener),
+            },
+            ..SandboxOptions::default()
+        };
+
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture} (oob): harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture} oob) errored: {e:?}"),
+        }
+    }
+
+    fn assert_oob_recorded(outcome: &RunOutcome, label: &str) {
+        let oob_attempt = outcome
+            .attempts
+            .iter()
+            .find(|a| a.payload_label == label)
+            .unwrap_or_else(|| {
+                panic!(
+                    "OOB payload {label:?} must run when listener is attached; outcome={outcome:?}"
+                )
+            });
+        assert!(
+            oob_attempt.outcome.oob_callback_seen,
+            "harness must follow captured Location URL so OOB listener records the nonce; got attempt={oob_attempt:?}",
+        );
+        assert!(
+            oob_attempt.triggered,
+            "OOB attempt must mark triggered=true under the self-confirming OOB path; got attempt={oob_attempt:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("self-confirming OOB run must carry a DifferentialOutcome");
+        assert_eq!(
+            diff.verdict,
+            DifferentialVerdict::ConfirmedProvenOob,
+            "OOB callback observation must promote verdict tier; got diff={diff:?}",
+        );
+    }
+
+    #[test]
+    fn java_open_redirect_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        assert_oob_recorded(&outcome, "open-redirect-java-oob-nonce");
     }
 }
