@@ -629,12 +629,25 @@ pub fn detect_shape(spec: &HarnessSpec) -> RustShape {
 /// build would panic on the vuln payload before the differential
 /// oracle sees the smuggled header).
 ///
-/// Tier (b): when the fixture does not import axum, fall back to the
-/// synthetic `nyx_header_probe("Set-Cookie", &payload)` call so the
-/// differential oracle still flips on raw payload bytes.
+/// Tier (b) — raw-socket wire frame: when the fixture uses
+/// `std::net::TcpListener::bind` (the `rust_raw` fixture exports
+/// `create_server` + `run_once` + `set_cookie_value`), boot the
+/// listener on a loopback port via the fixture, open a `TcpStream`
+/// from the harness, read the bytes the fixture wrote to the response
+/// socket up to the `\r\n\r\n` boundary, and emit them as a
+/// `ProbeKind::HeaderWireFrame` record.  Bypasses every framework-
+/// level CRLF validator since the fixture owns the write path.
+///
+/// Tier (c) synthetic fallback: when the fixture imports neither
+/// axum nor TcpListener, fall back to the synthetic
+/// `nyx_header_probe("Set-Cookie", &payload)` call so the differential
+/// oracle still flips on raw payload bytes.
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
-    let shim = probe_shim();
     let entry_source = read_entry_source(&spec.entry_file);
+    if entry_source_uses_raw_socket(&entry_source) {
+        return emit_header_injection_wire_frame_harness(spec, &entry_source);
+    }
+    let shim = probe_shim();
     let tier_a_active = entry_source_imports_axum_header(&entry_source);
     let entry_fn = &spec.entry_name;
     let needs_percent_encoding = entry_source.contains("percent_encoding");
@@ -761,6 +774,234 @@ fn nyx_header_probe(name: &str, value: &str) {{
 /// form and the path-qualified form (`axum::http::HeaderMap` token).
 fn entry_source_imports_axum_header(src: &str) -> bool {
     src.contains("axum::http::HeaderMap") || src.contains("http::HeaderMap")
+}
+
+/// Tier-(b) wire-frame gate for HEADER_INJECTION.  Fires when the
+/// fixture binds a raw `std::net::TcpListener` and exposes the
+/// `set_cookie_value` / `create_server` / `run_once` triple the harness
+/// drives.  Distinct from the axum gate because the wire-frame branch
+/// owns the response-write path itself and bypasses every framework
+/// CRLF validator.
+fn entry_source_uses_raw_socket(src: &str) -> bool {
+    src.contains("TcpListener::bind") && src.contains("set_cookie_value")
+}
+
+/// Tier-(b) wire-frame harness for HEADER_INJECTION (Phase 08 / Track
+/// J.6).  Stages the raw-socket fixture at `src/entry.rs`, declares
+/// `mod entry;` in `main.rs`, and drives the fixture's `create_server`
+/// and `run_once` API in a worker thread while the harness opens a
+/// `TcpStream` against the bound port, issues one `GET / HTTP/1.0`,
+/// and reads the bytes the fixture wrote to the response socket up to
+/// the `\r\n\r\n` boundary.  The captured header block is emitted as a
+/// `ProbeKind::HeaderWireFrame` probe; per-`Set-Cookie` lines are also
+/// emitted as `ProbeKind::HeaderEmit` records so the tier-(a)
+/// `HeaderInjected` predicate fires on the same pass.  Prints a
+/// `wire_frame_len` stdout marker so e2e tests can pin the branch.
+fn emit_header_injection_wire_frame_harness(
+    _spec: &HarnessSpec,
+    entry_source: &str,
+) -> HarnessSource {
+    let shim = probe_shim();
+    let needs_percent_encoding = entry_source.contains("percent_encoding");
+    let mut extra_files: Vec<(String, String)> = Vec::new();
+    let cargo_toml = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, needs_percent_encoding);
+    extra_files.push(("Cargo.toml".into(), cargo_toml));
+
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — HEADER_INJECTION raw-socket wire frame (Phase 08 / Track J.6).
+mod entry;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::{{Read, Write}};
+use std::net::TcpStream;
+use std::thread;
+use std::time::{{Duration, SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+fn nyx_json_escape(s: &str) -> String {{
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {{
+        match c {{
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {{
+                out.push_str(&format!("\\u{{:04x}}", c as u32));
+            }}
+            c => out.push(c),
+        }}
+    }}
+    out
+}}
+
+fn nyx_byte_list(bytes: &[u8]) -> String {{
+    let mut out = String::with_capacity(bytes.len() * 4 + 2);
+    out.push('[');
+    for (i, b) in bytes.iter().enumerate() {{
+        if i > 0 {{ out.push(','); }}
+        out.push_str(&b.to_string());
+    }}
+    out.push(']');
+    out
+}}
+
+fn nyx_emit_record(line: &str) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn nyx_now_ns() -> u64 {{
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}}
+
+fn nyx_header_probe(name: &str, value: &str) {{
+    let now = nyx_now_ns();
+    let pid = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut line = String::new();
+    line.push_str("{{\"sink_callee\":\"TcpStream::write_all\",\"args\":[");
+    line.push_str("{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&nyx_json_escape(name));
+    line.push_str("\"}},{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&nyx_json_escape(value));
+    line.push_str("\"}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&nyx_json_escape(&pid));
+    line.push_str("\",\"kind\":{{\"kind\":\"HeaderEmit\",\"name\":\"");
+    line.push_str(&nyx_json_escape(name));
+    line.push_str("\",\"value\":\"");
+    line.push_str(&nyx_json_escape(value));
+    line.push_str("\",\"protocol\":\"wire\"}},\"witness\":{{}}}}\n");
+    nyx_emit_record(&line);
+}}
+
+fn nyx_wire_frame_probe(raw_bytes: &[u8]) {{
+    let now = nyx_now_ns();
+    let pid = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut line = String::new();
+    line.push_str("{{\"sink_callee\":\"TcpStream::write_all\",\"args\":[],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&nyx_json_escape(&pid));
+    line.push_str("\",\"kind\":{{\"kind\":\"HeaderWireFrame\",\"raw_bytes\":");
+    line.push_str(&nyx_byte_list(raw_bytes));
+    line.push_str("}},\"witness\":{{}}}}\n");
+    nyx_emit_record(&line);
+}}
+
+fn nyx_wire_frame_via_fixture(payload: &str) -> Option<Vec<u8>> {{
+    // Phase 08 tier-(b): install the cookie value on the fixture, boot
+    // its `TcpListener` on 127.0.0.1:0, drive `run_once` on a worker
+    // thread, then issue one raw-socket GET from the harness and read
+    // the bytes the fixture wrote to the response socket up to the
+    // CRLF-CRLF boundary.  Returns None on connect / read failure so
+    // the caller can fall back to the synthetic probe.
+    entry::set_cookie_value(payload.as_bytes());
+    let listener = entry::create_server();
+    let addr = match listener.local_addr() {{
+        Ok(a) => a,
+        Err(_) => return None,
+    }};
+    let handle = thread::spawn(move || entry::run_once(listener));
+    let mut client = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {{
+        Ok(c) => c,
+        Err(_) => {{
+            let _ = handle.join();
+            return None;
+        }}
+    }};
+    let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = client.set_write_timeout(Some(Duration::from_secs(2)));
+    if client
+        .write_all(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .is_err()
+    {{
+        let _ = handle.join();
+        return None;
+    }}
+    let mut raw: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    while raw.len() < 65536 {{
+        match client.read(&mut buf) {{
+            Ok(0) => break,
+            Ok(n) => {{
+                raw.extend_from_slice(&buf[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {{
+                    break;
+                }}
+            }}
+            Err(_) => break,
+        }}
+    }}
+    let _ = handle.join();
+    let sep = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    Some(raw[..sep].to_vec())
+}}
+
+fn main() {{
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+    if let Some(raw_bytes) = nyx_wire_frame_via_fixture(&payload) {{
+        nyx_wire_frame_probe(&raw_bytes);
+        // Derive HeaderEmit records per Set-Cookie line on the wire so
+        // the tier-(a) HeaderInjected predicate also fires on the same
+        // harness pass.  The wire-frame branch owns the bytes; the
+        // HeaderEmit records are derived from them.
+        for line in raw_bytes.split(|&b| b == b'\n') {{
+            let trimmed: &[u8] = if line.last() == Some(&b'\r') {{
+                &line[..line.len() - 1]
+            }} else {{
+                line
+            }};
+            let sep = match trimmed.iter().position(|&b| b == b':') {{
+                Some(s) => s,
+                None => continue,
+            }};
+            let name = match std::str::from_utf8(&trimmed[..sep]) {{
+                Ok(s) => s,
+                Err(_) => continue,
+            }};
+            if !name.eq_ignore_ascii_case("Set-Cookie") {{
+                continue;
+            }}
+            let mut start = sep + 1;
+            if start < trimmed.len() && trimmed[start] == b' ' {{
+                start += 1;
+            }}
+            let value = String::from_utf8_lossy(&trimmed[start..]).into_owned();
+            nyx_header_probe(name, &value);
+        }}
+        println!("__NYX_SINK_HIT__");
+        println!("{{{{\"wire_frame_len\":{{}}}}}}", raw_bytes.len());
+        return;
+    }}
+    // Synthetic fallback when the fixture failed to boot — keeps the
+    // differential oracle live on a build/boot failure rather than
+    // silently shedding the attempt.
+    nyx_header_probe("Set-Cookie", &payload);
+    println!("__NYX_SINK_HIT__");
+    println!("{{{{\"payload_len\":{{}}}}}}", payload.len());
+}}
+"##
+    );
+
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files,
+        entry_subpath: Some("src/entry.rs".into()),
+    }
 }
 
 /// Tier-(a) gate for OPEN_REDIRECT: the fixture imports
@@ -2352,6 +2593,113 @@ mod tests {
             "tier-(b) header_injection must not stage rewritten fixture or stubs",
         );
         assert_eq!(harness.entry_subpath.as_deref(), Some("src/entry.rs"));
+    }
+
+    #[test]
+    fn header_injection_routes_through_wire_frame_when_raw_socket_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "tests/dynamic_fixtures/header_injection/rust_raw/vuln.rs".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            harness.source.contains("mod entry;"),
+            "wire-frame harness must declare mod entry: {body}",
+            body = harness.source,
+        );
+        assert!(
+            !harness.source.contains("mod nyx_harness_stubs;"),
+            "wire-frame harness must not pull the axum stubs: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains("fn nyx_wire_frame_via_fixture(payload: &str)"),
+            "wire-frame harness must declare the fixture-driving helper: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness.source.contains("entry::set_cookie_value(payload.as_bytes())"),
+            "wire-frame harness must install cookie value on the fixture: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness.source.contains("let listener = entry::create_server();"),
+            "wire-frame harness must boot the fixture's TcpListener: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains("thread::spawn(move || entry::run_once(listener))"),
+            "wire-frame harness must drive the fixture's run_once on a worker thread: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains(".write_all(b\"GET / HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n\")"),
+            "wire-frame harness must issue raw GET request: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains(r#"HeaderWireFrame\",\"raw_bytes\":"#),
+            "wire-frame harness must emit a HeaderWireFrame probe carrying the raw header-block bytes: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness.source.contains(r#"\"protocol\":\"wire\""#),
+            "wire-frame harness must tag derived HeaderEmit records as wire protocol: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness.source.contains("wire_frame_len"),
+            "wire-frame harness must emit the wire_frame_len stdout marker: {body}",
+            body = harness.source,
+        );
+        assert_eq!(harness.entry_subpath.as_deref(), Some("src/entry.rs"));
+        // Cargo.toml must still be staged so the workdir builds.
+        assert!(
+            harness
+                .extra_files
+                .iter()
+                .any(|(p, _)| p == "Cargo.toml"),
+            "wire-frame harness must stage Cargo.toml: {files:?}",
+            files = harness
+                .extra_files
+                .iter()
+                .map(|(p, _)| p.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn header_injection_wire_frame_branch_drops_when_only_axum_imported() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_name = "run".into();
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = "tests/dynamic_fixtures/header_injection/rust/vuln.rs".into();
+        let harness = emit_header_injection_harness(&spec);
+        assert!(
+            !harness
+                .source
+                .contains("fn nyx_wire_frame_via_fixture(payload: &str)"),
+            "axum harness must not pull the wire-frame helper: {body}",
+            body = harness.source,
+        );
+        assert!(
+            !harness.source.contains("HeaderWireFrame"),
+            "axum harness must not emit the HeaderWireFrame probe shape: {body}",
+            body = harness.source,
+        );
+        assert!(
+            !harness.source.contains("wire_frame_len"),
+            "axum harness must not print the wire-frame stdout marker: {body}",
+            body = harness.source,
+        );
     }
 
     #[test]

@@ -808,6 +808,95 @@ mod e2e_phase_08 {
         );
     }
 
+    // Phase 08 tier-(b): Rust raw-socket wire-frame fixture.
+    // `tests/dynamic_fixtures/header_injection/rust_raw/vuln.rs` boots a
+    // `std::net::TcpListener` via `create_server` whose `run_once`
+    // handler writes raw bytes via `TcpStream::write_all`, bypassing
+    // axum's `HeaderValue::from_bytes` CRLF strip.  The harness boots
+    // the listener on a loopback port, opens a client `TcpStream`,
+    // reads the response-header block off the socket, and emits a
+    // `ProbeKind::HeaderWireFrame` record.  Asserts the test exercises
+    // the wire-frame branch (not the synthetic fallback) by pinning
+    // `wire_frame_len` in the captured stdout — that literal only
+    // appears in the tier-(b) write path.
+    fn build_rust_raw_spec(entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/header_injection/rust_raw/vuln.rs");
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("vuln.rs");
+        std::fs::copy(&fixture_src, &dst).expect("copy rust_raw fixture into tempdir");
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase08-e2e-header-injection|rust_raw|vuln.rs");
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+        // Mirror the Java workdir wipe — Cargo's release build dir lives
+        // under the shared workdir at `/tmp/nyx-harness/<spec_hash>`, so
+        // a previous run with a different harness source can serve stale
+        // cached compilation results.
+        let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec_hash);
+        let _ = std::fs::remove_dir_all(&workdir);
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Rust,
+            toolchain_id: default_toolchain_id(Lang::Rust).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::HEADER_INJECTION,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
+        };
+        (spec, tmp)
+    }
+
+    #[test]
+    fn rust_raw_socket_vuln_confirms_via_wire_frame_probe() {
+        if !command_available("cargo") {
+            eprintln!("SKIP rust_raw: missing cargo");
+            return;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_rust_raw_spec("run");
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        let outcome = match run_spec(&spec, &opts) {
+            Ok(outcome) => outcome,
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP rust_raw: harness build failed after {attempts} attempts: {stderr}",
+                );
+                return;
+            }
+            Err(e) => panic!("run_spec(rust_raw) errored: {e:?}"),
+        };
+        assert_confirmed(Lang::Rust, &outcome);
+        let any_wire_frame_marker = outcome.attempts.iter().any(|a| {
+            String::from_utf8_lossy(&a.outcome.stdout).contains("wire_frame_len")
+        });
+        assert!(
+            any_wire_frame_marker,
+            "rust_raw fixture must exercise the tier-(b) wire-frame harness branch; \
+             expected `wire_frame_len` substring in at least one attempt's stdout, got attempts={:?}",
+            outcome
+                .attempts
+                .iter()
+                .map(|a| String::from_utf8_lossy(&a.outcome.stdout).into_owned())
+                .collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn python_raw_socket_vuln_confirms_via_wire_frame_probe() {
         if !command_available("python3") {
