@@ -262,6 +262,40 @@ fn any_callee_matches(
     summary.callees.iter().any(|c| predicate(c.name.as_str()))
 }
 
+/// Use SSA receiver facts, when available, to reject permissive callee
+/// matches whose receiver is known to belong to a different runtime.
+///
+/// Adapters still accept source-only matches and call sites without typed
+/// receiver facts. A typed incompatible receiver is stronger evidence than a
+/// broad method name such as `send`, `poll`, `process`, or `receive`.
+fn typed_receiver_facts_allow(
+    summary: &crate::summary::FuncSummary,
+    ssa_summary: Option<&crate::summary::ssa_summary::SsaFuncSummary>,
+    callee_pred: impl Fn(&str) -> bool,
+    container_pred: impl Fn(&str) -> bool,
+) -> bool {
+    let Some(ssa_summary) = ssa_summary else {
+        return true;
+    };
+    for site in &summary.callees {
+        if !callee_pred(site.name.as_str()) || site.receiver.is_none() {
+            continue;
+        }
+        let Some(container) = ssa_summary
+            .typed_call_receivers
+            .iter()
+            .find(|(ord, _)| *ord == site.ordinal)
+            .map(|(_, container)| container.as_str())
+        else {
+            continue;
+        };
+        if !container_pred(container) {
+            return false;
+        }
+    }
+    true
+}
+
 /// True when any callee in `summary.callees` matches `name_pred` AND
 /// (its receiver matches `receiver_pred` OR its receiver is `None`).
 ///

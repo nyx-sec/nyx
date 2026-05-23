@@ -3,8 +3,33 @@
 // `$routes->get('run', 'UserController::run')` references the
 // controller method whose body shells out without sanitisation.
 
+namespace CodeIgniter\Router {
+    class RouteCollection
+    {
+    }
+}
+
+namespace {
 use CodeIgniter\Router\RouteCollection;
 
+class BaseController
+{
+}
+
+class NyxRoutes extends RouteCollection
+{
+    public function get(string $path, string $callable)
+    {
+        $GLOBALS['__nyx_route'] = function (string $payload) use ($callable) {
+            [$class, $method] = explode('::', $callable, 2);
+            $controller = new $class();
+            return $controller->$method($payload);
+        };
+        return $this;
+    }
+}
+
+$routes = new NyxRoutes();
 $routes->get('run', 'UserController::run');
 
 class UserController extends BaseController
@@ -17,4 +42,5 @@ class UserController extends BaseController
         echo $out;
         return $out;
     }
+}
 }

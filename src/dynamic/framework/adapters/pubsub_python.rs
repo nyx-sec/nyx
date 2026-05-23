@@ -3,6 +3,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct PubsubPythonAdapter;
@@ -57,32 +58,64 @@ impl FrameworkAdapter for PubsubPythonAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_pubsub);
-        let matches_source = source_imports_pubsub(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::MessageHandler {
-                    queue: extract_topic(file_bytes),
-                    message_schema: None,
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
-        }
+        detect_pubsub_python(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_pubsub_python(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_pubsub_python(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    let matches_call = super::any_callee_matches(summary, callee_is_pubsub);
+    let matches_source = source_imports_pubsub(file_bytes);
+    if !(matches_call || matches_source) {
+        return None;
+    }
+    if !super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_pubsub,
+        typed_container_allows_pubsub,
+    ) {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::MessageHandler {
+            queue: extract_topic(file_bytes),
+            message_schema: None,
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_pubsub(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("pubsub") || lc.contains("subscriber") || lc.contains("subscription")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_python(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -108,5 +141,54 @@ mod tests {
         if let EntryKind::MessageHandler { queue, .. } = binding.kind {
             assert_eq!(queue, "projects/p/subscriptions/s");
         }
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_pubsub_callback_collision() {
+        let src: &[u8] = b"from google.cloud import pubsub_v1\n\
+            def callback(message):\n    timer.callback(message)\n";
+        let tree = parse_python(src);
+        let mut summary = FuncSummary {
+            name: "callback".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "timer.callback".to_owned(),
+            receiver: Some("timer".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "Timer".to_owned()));
+        assert!(
+            PubsubPythonAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_pubsub_subscriber() {
+        let src: &[u8] = b"from google.cloud import pubsub_v1\n\
+            def callback(message):\n    sub.subscribe('projects/p/subscriptions/s')\n";
+        let tree = parse_python(src);
+        let mut summary = FuncSummary {
+            name: "callback".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "sub.subscribe".to_owned(),
+            receiver: Some("sub".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "PubsubSubscriberClient".to_owned()));
+        assert!(
+            PubsubPythonAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

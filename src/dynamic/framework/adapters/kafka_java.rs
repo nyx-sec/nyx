@@ -8,6 +8,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct KafkaJavaAdapter;
@@ -63,32 +64,64 @@ impl FrameworkAdapter for KafkaJavaAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_kafka);
-        let matches_source = source_imports_kafka(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::MessageHandler {
-                    queue: extract_topic(file_bytes),
-                    message_schema: None,
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
-        }
+        detect_kafka_java(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_kafka_java(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_kafka_java(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    let matches_call = super::any_callee_matches(summary, callee_is_kafka);
+    let matches_source = source_imports_kafka(file_bytes);
+    if !(matches_call || matches_source) {
+        return None;
+    }
+    if !super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_kafka,
+        typed_container_allows_kafka,
+    ) {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::MessageHandler {
+            queue: extract_topic(file_bytes),
+            message_schema: None,
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_kafka(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("kafka") || lc.contains("consumer")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_java(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -116,5 +149,58 @@ mod tests {
         if let EntryKind::MessageHandler { queue, .. } = binding.kind {
             assert_eq!(queue, "orders");
         }
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_kafka_poll_collision() {
+        let src: &[u8] = b"import org.springframework.kafka.annotation.KafkaListener;\n\
+            public class Vuln {\n\
+              public void onMessage(String body) { timer.poll(); }\n\
+            }\n";
+        let tree = parse_java(src);
+        let mut summary = FuncSummary {
+            name: "onMessage".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "timer.poll".to_owned(),
+            receiver: Some("timer".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "Timer".to_owned()));
+        assert!(
+            KafkaJavaAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_kafka_consumer() {
+        let src: &[u8] = b"import org.apache.kafka.clients.consumer.KafkaConsumer;\n\
+            public class Vuln {\n\
+              public void onMessage(String body) { consumer.poll(); }\n\
+            }\n";
+        let tree = parse_java(src);
+        let mut summary = FuncSummary {
+            name: "onMessage".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "consumer.poll".to_owned(),
+            receiver: Some("consumer".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "KafkaConsumer".to_owned()));
+        assert!(
+            KafkaJavaAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

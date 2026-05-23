@@ -3,6 +3,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct NatsGoAdapter;
@@ -49,32 +50,64 @@ impl FrameworkAdapter for NatsGoAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_nats);
-        let matches_source = source_imports_nats(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::MessageHandler {
-                    queue: extract_subject(file_bytes),
-                    message_schema: None,
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
-        }
+        detect_nats_go(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_nats_go(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_nats_go(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    let matches_call = super::any_callee_matches(summary, callee_is_nats);
+    let matches_source = source_imports_nats(file_bytes);
+    if !(matches_call || matches_source) {
+        return None;
+    }
+    if !super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_nats,
+        typed_container_allows_nats,
+    ) {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::MessageHandler {
+            queue: extract_subject(file_bytes),
+            message_schema: None,
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_nats(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("nats") || lc.contains("subscription")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_go(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -100,5 +133,53 @@ mod tests {
         if let EntryKind::MessageHandler { queue, .. } = binding.kind {
             assert_eq!(queue, "events");
         }
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_nats_publish_collision() {
+        let src: &[u8] = b"package entry\nimport \"github.com/nats-io/nats.go\"\n\
+            func OnMessage(msg *nats.Msg) { bus.Publish(msg) }\n";
+        let tree = parse_go(src);
+        let mut summary = FuncSummary {
+            name: "OnMessage".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "bus.Publish".to_owned(),
+            receiver: Some("bus".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "EventBus".to_owned()));
+        assert!(
+            NatsGoAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_nats_connection() {
+        let src: &[u8] = b"package entry\nimport \"github.com/nats-io/nats.go\"\n\
+            func OnMessage(msg *nats.Msg) { nc.Subscribe(\"events\", OnMessage) }\n";
+        let tree = parse_go(src);
+        let mut summary = FuncSummary {
+            name: "OnMessage".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "nc.Subscribe".to_owned(),
+            receiver: Some("nc".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "nats.Conn".to_owned()));
+        assert!(
+            NatsGoAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }
