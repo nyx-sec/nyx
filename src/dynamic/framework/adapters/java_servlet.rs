@@ -13,12 +13,14 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, HttpMethod, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::java_routes::{
     annotation_string_arg, bind_java_params, class_extends, collect_security_annotations,
-    find_class_with_method, iter_annotations, method_formal_types, source_imports_servlet,
+    find_class_with_method, iter_annotations, java_receiver_facts_allow_formals,
+    method_formal_types, source_imports_servlet,
 };
 
 pub struct JavaServletAdapter;
@@ -53,6 +55,42 @@ fn formals_look_like_servlet(formals: &[(String, String)]) -> bool {
         .any(|(ty, _)| ty == "HttpServletRequest" || ty == "ServletRequest")
 }
 
+fn detect_servlet(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_servlet(file_bytes) {
+        return None;
+    }
+    let http_method = servlet_method_for(&summary.name)?;
+    let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
+    let formals = method_formal_types(method, file_bytes);
+    let extends_servlet = class_extends(class, file_bytes, "HttpServlet")
+        || class_extends(class, file_bytes, "GenericServlet");
+    if !extends_servlet && !formals_look_like_servlet(&formals) {
+        return None;
+    }
+    if !java_receiver_facts_allow_formals(summary, ssa_summary, &formals) {
+        return None;
+    }
+    let path = web_servlet_path(class, file_bytes).unwrap_or_else(|| "/".to_owned());
+    let request_params = bind_java_params(&formals, &path);
+    let middleware = collect_security_annotations(class, method, file_bytes);
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape {
+            method: http_method,
+            path,
+        }),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
+}
+
 impl FrameworkAdapter for JavaServletAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -68,31 +106,17 @@ impl FrameworkAdapter for JavaServletAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_servlet(file_bytes) {
-            return None;
-        }
-        let http_method = servlet_method_for(&summary.name)?;
-        let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
-        let formals = method_formal_types(method, file_bytes);
-        let extends_servlet = class_extends(class, file_bytes, "HttpServlet")
-            || class_extends(class, file_bytes, "GenericServlet");
-        if !extends_servlet && !formals_look_like_servlet(&formals) {
-            return None;
-        }
-        let path = web_servlet_path(class, file_bytes).unwrap_or_else(|| "/".to_owned());
-        let request_params = bind_java_params(&formals, &path);
-        let middleware = collect_security_annotations(class, method, file_bytes);
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: http_method,
-                path,
-            }),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_servlet(summary, None, ast, file_bytes)
+    }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_servlet(summary, ssa_summary, ast, file_bytes)
     }
 }
 
@@ -100,6 +124,7 @@ impl FrameworkAdapter for JavaServletAdapter {
 mod tests {
     use super::*;
     use crate::dynamic::framework::ParamSource;
+    use crate::summary::CalleeSite;
 
     fn parse(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -114,6 +139,23 @@ mod tests {
             lang: "java".into(),
             ..Default::default()
         }
+    }
+
+    fn summary_with_receiver(name: &str, receiver: &str, callee: &str) -> FuncSummary {
+        let mut s = summary(name);
+        s.callees.push(CalleeSite {
+            name: callee.into(),
+            receiver: Some(receiver.into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        s
+    }
+
+    fn ssa_receiver(container: &str) -> SsaFuncSummary {
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, container.to_owned()));
+        ssa
     }
 
     #[test]
@@ -189,5 +231,31 @@ mod tests {
             .detect(&summary("doGet"), tree.root_node(), src)
             .expect("binding");
         assert!(binding.middleware.iter().any(|m| m.name == "@PreAuthorize"));
+    }
+
+    #[test]
+    fn ssa_rejects_incompatible_response_receiver() {
+        let src: &[u8] = b"public class V {\n  public void doGet(HttpServletRequest req, HttpServletResponse resp) { resp.setHeader(\"X\", \"y\"); }\n}\n";
+        let tree = parse(src);
+        let summary = summary_with_receiver("doGet", "resp", "setHeader");
+        let ssa = ssa_receiver("LocalCollection");
+        assert!(
+            JavaServletAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_allows_matching_response_receiver() {
+        let src: &[u8] = b"public class V {\n  public void doGet(HttpServletRequest req, HttpServletResponse resp) { resp.setHeader(\"X\", \"y\"); }\n}\n";
+        let tree = parse(src);
+        let summary = summary_with_receiver("doGet", "resp", "setHeader");
+        let ssa = ssa_receiver("HttpResponse");
+        assert!(
+            JavaServletAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

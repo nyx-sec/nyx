@@ -12,7 +12,7 @@ const app = express();
 
 function runCmd(req, res) {
     const cmd = req.query.cmd || '';
-    exec(cmd, (err, stdout) => {
+    exec('ls ' + cmd, (err, stdout) => {
         if (err) return res.status(500).send(String(err));
         res.send(stdout);
     });

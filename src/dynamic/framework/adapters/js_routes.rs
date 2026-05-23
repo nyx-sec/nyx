@@ -10,6 +10,8 @@
 //! template.
 
 use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
+use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Express import
@@ -84,6 +86,26 @@ pub fn source_imports_nest(bytes: &[u8]) -> bool {
     )
 }
 
+/// True when the file imports Nest's decorator package explicitly.
+///
+/// A bare `@Controller` token is too weak for receiver/class-shape
+/// narrowing: decorator-heavy frontend or DI code can define an unrelated
+/// `Controller` decorator.  Nest route binding should therefore require
+/// the canonical Nest package marker when the adapter classifies a
+/// decorator-shaped controller.
+pub fn source_imports_nest_common(bytes: &[u8]) -> bool {
+    contains_any(
+        bytes,
+        &[
+            b"@nestjs/common",
+            b"require('@nestjs/common')",
+            b"require(\"@nestjs/common\")",
+            b"from '@nestjs/common'",
+            b"from \"@nestjs/common\"",
+        ],
+    )
+}
+
 fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
     needles
         .iter()
@@ -96,6 +118,274 @@ fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
 /// regardless of the receiver alias.
 pub fn last_segment(callee: &str) -> &str {
     callee.rsplit_once('.').map(|(_, s)| s).unwrap_or(callee)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsFrameworkObject {
+    Express,
+    Koa,
+    Fastify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverOrigin {
+    Framework(JsFrameworkObject),
+    NonFramework,
+    Unknown,
+}
+
+/// Return `true` when the route receiver is either unresolved or proven to
+/// originate from the expected framework object.
+///
+/// The JS route adapters intentionally accept conventional aliases such as
+/// `app`, `router`, and `server`.  This helper adds a local declaration
+/// check so files that merely import a framework but register a handler on
+/// `new Map()` / `new Set()` / a different framework instance do not bind as
+/// HTTP routes.  Unknown origins remain permissive to keep plugin callback
+/// shapes (`fastify.register((instance) => instance.get(...))`) working.
+pub fn receiver_origin_allows_framework(
+    root: Node<'_>,
+    bytes: &[u8],
+    receiver: &str,
+    expected: JsFrameworkObject,
+) -> bool {
+    match find_receiver_origin(root, bytes, receiver) {
+        ReceiverOrigin::Framework(found) => found == expected,
+        ReceiverOrigin::NonFramework => false,
+        ReceiverOrigin::Unknown => true,
+    }
+}
+
+fn find_receiver_origin(root: Node<'_>, bytes: &[u8], receiver: &str) -> ReceiverOrigin {
+    let mut out = ReceiverOrigin::Unknown;
+    walk_for_receiver_origin(root, bytes, receiver, &mut out);
+    out
+}
+
+fn walk_for_receiver_origin(
+    node: Node<'_>,
+    bytes: &[u8],
+    receiver: &str,
+    out: &mut ReceiverOrigin,
+) {
+    if *out != ReceiverOrigin::Unknown {
+        return;
+    }
+    match node.kind() {
+        "variable_declarator" => {
+            if let Some(name) = node.child_by_field_name("name")
+                && node_name_matches(name, bytes, receiver)
+                && let Some(value) = node.child_by_field_name("value")
+            {
+                *out = classify_receiver_value(value, bytes);
+                if *out != ReceiverOrigin::Unknown {
+                    return;
+                }
+            }
+        }
+        "assignment_expression" => {
+            if let Some(left) = node.child_by_field_name("left")
+                && node_name_matches(left, bytes, receiver)
+                && let Some(right) = node.child_by_field_name("right")
+            {
+                *out = classify_receiver_value(right, bytes);
+                if *out != ReceiverOrigin::Unknown {
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_for_receiver_origin(child, bytes, receiver, out);
+        if *out != ReceiverOrigin::Unknown {
+            return;
+        }
+    }
+}
+
+fn node_name_matches(node: Node<'_>, bytes: &[u8], receiver: &str) -> bool {
+    node.utf8_text(bytes)
+        .ok()
+        .map(|text| last_segment(text.trim()) == receiver)
+        .unwrap_or(false)
+}
+
+fn classify_receiver_value(value: Node<'_>, bytes: &[u8]) -> ReceiverOrigin {
+    let text = value
+        .utf8_text(bytes)
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    if text.is_empty() {
+        return ReceiverOrigin::Unknown;
+    }
+    if value_is_non_framework(value, &text) {
+        return ReceiverOrigin::NonFramework;
+    }
+    if value_is_express(value, &text, bytes) {
+        return ReceiverOrigin::Framework(JsFrameworkObject::Express);
+    }
+    if value_is_koa(value, &text, bytes) {
+        return ReceiverOrigin::Framework(JsFrameworkObject::Koa);
+    }
+    if value_is_fastify(value, &text, bytes) {
+        return ReceiverOrigin::Framework(JsFrameworkObject::Fastify);
+    }
+    ReceiverOrigin::Unknown
+}
+
+fn value_is_non_framework(value: Node<'_>, compact_text: &str) -> bool {
+    let leaf = call_leaf(value, compact_text);
+    matches!(
+        leaf.as_deref(),
+        Some("Map")
+            | Some("Set")
+            | Some("WeakMap")
+            | Some("WeakSet")
+            | Some("Array")
+            | Some("Object")
+            | Some("URL")
+            | Some("Request")
+            | Some("Response")
+            | Some("Date")
+            | Some("Promise")
+    ) || compact_text == "{}"
+        || compact_text == "[]"
+        || compact_text.starts_with("Object.create(")
+}
+
+fn value_is_express(value: Node<'_>, compact_text: &str, bytes: &[u8]) -> bool {
+    if compact_text.contains("require('express')")
+        || compact_text.contains("require(\"express\")")
+        || compact_text.contains("express.Router(")
+    {
+        return true;
+    }
+    if !source_imports_express(bytes) {
+        return false;
+    }
+    matches!(
+        call_leaf(value, compact_text).as_deref(),
+        Some("express" | "Router")
+    )
+}
+
+fn value_is_koa(value: Node<'_>, compact_text: &str, bytes: &[u8]) -> bool {
+    if compact_text.contains("require('koa')")
+        || compact_text.contains("require(\"koa\")")
+        || compact_text.contains("require('@koa/router')")
+        || compact_text.contains("require(\"@koa/router\")")
+    {
+        return true;
+    }
+    if !source_imports_koa(bytes) {
+        return false;
+    }
+    matches!(
+        call_leaf(value, compact_text).as_deref(),
+        Some("Koa" | "Router" | "KoaRouter")
+    )
+}
+
+fn value_is_fastify(value: Node<'_>, compact_text: &str, bytes: &[u8]) -> bool {
+    if compact_text.contains("require('fastify')") || compact_text.contains("require(\"fastify\")")
+    {
+        return true;
+    }
+    if !source_imports_fastify(bytes) {
+        return false;
+    }
+    matches!(
+        call_leaf(value, compact_text).as_deref(),
+        Some("fastify" | "Fastify")
+    )
+}
+
+fn call_leaf(_value: Node<'_>, compact_text: &str) -> Option<String> {
+    let mut text = compact_text.trim();
+    while text.starts_with('(') && text.ends_with(')') && text.len() > 2 {
+        text = &text[1..text.len() - 1];
+    }
+    if let Some(rest) = text.strip_prefix("new") {
+        text = rest;
+    }
+    let callee = text.split('(').next().unwrap_or(text);
+    if callee.is_empty() {
+        None
+    } else {
+        Some(last_segment(callee).to_owned())
+    }
+}
+
+/// Use SSA receiver facts, when the caller supplied them, to reject a route
+/// registration whose call receiver is known to be a different container.
+///
+/// Most adapter callers still lack SSA for the setup function that owns the
+/// route-registration call.  In that case this helper deliberately returns
+/// `true`, preserving the existing AST-only binding path.  When an SSA map
+/// and matching call site are present, an incompatible container is a strong
+/// signal that a permissive alias such as `app` or `router` is not the
+/// framework object after all.
+pub fn ssa_receiver_allows_framework(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    receiver: &str,
+    method: &str,
+    expected: JsFrameworkObject,
+) -> bool {
+    let Some(ssa_summary) = ssa_summary else {
+        return true;
+    };
+    for site in &summary.callees {
+        if !callee_site_matches(site, receiver, method) {
+            continue;
+        }
+        let Some(container) =
+            container_for_ordinal(&ssa_summary.typed_call_receivers, site.ordinal)
+        else {
+            continue;
+        };
+        return typed_container_allows_framework(container, expected);
+    }
+    true
+}
+
+fn callee_site_matches(site: &crate::summary::CalleeSite, receiver: &str, method: &str) -> bool {
+    if let Some(site_receiver) = site.receiver.as_deref()
+        && last_segment(site_receiver) != receiver
+    {
+        return false;
+    }
+    let leaf = site
+        .name
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(site.name.as_str());
+    if method == "*" {
+        return http_verb_from_method(leaf).is_some() || matches!(leaf, "route" | "use");
+    }
+    leaf == method
+}
+
+fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> {
+    typed
+        .iter()
+        .find(|(ord, _)| *ord == ordinal)
+        .map(|(_, container)| container.as_str())
+}
+
+fn typed_container_allows_framework(container: &str, expected: JsFrameworkObject) -> bool {
+    let lc = container.to_ascii_lowercase();
+    match expected {
+        JsFrameworkObject::Express => {
+            lc.contains("express") || lc == "router" || lc.ends_with("expressrouter")
+        }
+        JsFrameworkObject::Koa => lc.contains("koa") || lc == "router" || lc.ends_with("koarouter"),
+        JsFrameworkObject::Fastify => lc.contains("fastify"),
+    }
 }
 
 /// Map a route-method name (`get` / `post` / `put` / `patch` /

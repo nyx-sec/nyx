@@ -14,7 +14,7 @@ const router = new Router();
 async function runCmd(ctx) {
     const cmd = ctx.query.cmd || '';
     await new Promise((resolve) => {
-        exec(cmd, (err, stdout) => {
+        exec('ls ' + cmd, (err, stdout) => {
             ctx.body = err ? String(err) : stdout;
             resolve();
         });

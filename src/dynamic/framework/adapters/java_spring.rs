@@ -11,13 +11,14 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, HttpMethod, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::java_routes::{
     annotation_string_arg, bind_java_params, collect_security_annotations, find_class_with_method,
-    iter_annotations, join_route_path, method_formal_types, request_method_from_args,
-    source_imports_quarkus, source_imports_spring,
+    iter_annotations, java_receiver_facts_allow_formals, join_route_path, method_formal_types,
+    request_method_from_args, source_imports_quarkus, source_imports_spring,
 };
 
 pub struct JavaSpringAdapter;
@@ -77,6 +78,66 @@ fn method_route(method: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> 
     hit
 }
 
+fn detect_spring(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_spring(file_bytes) {
+        return None;
+    }
+    // Quarkus / JAX-RS files often re-use `@Path` but the brief
+    // routes those through `java-quarkus`; skip when the file
+    // looks like Quarkus and is not also a Spring controller.
+    if source_imports_quarkus(file_bytes)
+        && !file_bytes.windows(15).any(|w| w == b"@RestController")
+        && !file_bytes.windows(11).any(|w| w == b"@Controller")
+    {
+        return None;
+    }
+    let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
+    if !class_is_controller(class, file_bytes) {
+        return None;
+    }
+    let class_prefix = class_route_prefix(class, file_bytes);
+    // Method-level mapping wins.  Falls back to (GET, "") when
+    // the method has no mapping annotation but the enclosing
+    // class has a `@RequestMapping(prefix)` — Spring routes the
+    // public method under the class prefix.  Skip the binding
+    // when neither the method nor the class declares a route
+    // path so a plain `@Controller` helper class does not
+    // hijack the registry.
+    let (http_method, method_path) = match method_route(method, file_bytes) {
+        Some(r) => r,
+        None => {
+            if class_prefix.is_empty() {
+                return None;
+            }
+            (HttpMethod::GET, String::new())
+        }
+    };
+    let path = join_route_path(&class_prefix, &method_path);
+    let formals = method_formal_types(method, file_bytes);
+    if !java_receiver_facts_allow_formals(summary, ssa_summary, &formals) {
+        return None;
+    }
+    let request_params = bind_java_params(&formals, &path);
+    let middleware = collect_security_annotations(class, method, file_bytes);
+
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape {
+            method: http_method,
+            path,
+        }),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
+}
+
 impl FrameworkAdapter for JavaSpringAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -92,55 +153,17 @@ impl FrameworkAdapter for JavaSpringAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_spring(file_bytes) {
-            return None;
-        }
-        // Quarkus / JAX-RS files often re-use `@Path` but the brief
-        // routes those through `java-quarkus`; skip when the file
-        // looks like Quarkus and is not also a Spring controller.
-        if source_imports_quarkus(file_bytes)
-            && !file_bytes.windows(15).any(|w| w == b"@RestController")
-            && !file_bytes.windows(11).any(|w| w == b"@Controller")
-        {
-            return None;
-        }
-        let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
-        if !class_is_controller(class, file_bytes) {
-            return None;
-        }
-        let class_prefix = class_route_prefix(class, file_bytes);
-        // Method-level mapping wins.  Falls back to (GET, "") when
-        // the method has no mapping annotation but the enclosing
-        // class has a `@RequestMapping(prefix)` — Spring routes the
-        // public method under the class prefix.  Skip the binding
-        // when neither the method nor the class declares a route
-        // path so a plain `@Controller` helper class does not
-        // hijack the registry.
-        let (http_method, method_path) = match method_route(method, file_bytes) {
-            Some(r) => r,
-            None => {
-                if class_prefix.is_empty() {
-                    return None;
-                }
-                (HttpMethod::GET, String::new())
-            }
-        };
-        let path = join_route_path(&class_prefix, &method_path);
-        let formals = method_formal_types(method, file_bytes);
-        let request_params = bind_java_params(&formals, &path);
-        let middleware = collect_security_annotations(class, method, file_bytes);
+        detect_spring(summary, None, ast, file_bytes)
+    }
 
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: http_method,
-                path,
-            }),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_spring(summary, ssa_summary, ast, file_bytes)
     }
 }
 
@@ -148,6 +171,7 @@ impl FrameworkAdapter for JavaSpringAdapter {
 mod tests {
     use super::*;
     use crate::dynamic::framework::ParamSource;
+    use crate::summary::CalleeSite;
 
     fn parse(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -162,6 +186,23 @@ mod tests {
             lang: "java".into(),
             ..Default::default()
         }
+    }
+
+    fn summary_with_receiver(name: &str, receiver: &str, callee: &str) -> FuncSummary {
+        let mut s = summary(name);
+        s.callees.push(CalleeSite {
+            name: callee.into(),
+            receiver: Some(receiver.into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        s
+    }
+
+    fn ssa_receiver(container: &str) -> SsaFuncSummary {
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, container.to_owned()));
+        ssa
     }
 
     #[test]
@@ -298,5 +339,31 @@ mod tests {
             .detect(&summary("x"), tree.root_node(), src)
             .expect("binding");
         assert!(binding.middleware.is_empty());
+    }
+
+    #[test]
+    fn ssa_rejects_incompatible_request_receiver() {
+        let src: &[u8] = b"@RestController\npublic class C {\n  @GetMapping(\"/x\")\n  public String x(HttpServletRequest req) { return req.getParameter(\"q\"); }\n}\n";
+        let tree = parse(src);
+        let summary = summary_with_receiver("x", "req", "getParameter");
+        let ssa = ssa_receiver("LocalCollection");
+        assert!(
+            JavaSpringAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_allows_matching_request_receiver() {
+        let src: &[u8] = b"@RestController\npublic class C {\n  @GetMapping(\"/x\")\n  public String x(HttpServletRequest req) { return req.getParameter(\"q\"); }\n}\n";
+        let tree = parse(src);
+        let summary = summary_with_receiver("x", "req", "getParameter");
+        let ssa = ssa_receiver("HttpServletRequest");
+        assert!(
+            JavaSpringAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

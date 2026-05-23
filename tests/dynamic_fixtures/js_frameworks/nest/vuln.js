@@ -17,7 +17,7 @@ class AppController {
     @Get('run')
     runCmd(@Query('cmd') cmd) {
         return new Promise((resolve) => {
-            exec(cmd || '', (err, stdout) => {
+            exec('ls ' + (cmd || ''), (err, stdout) => {
                 resolve(err ? String(err) : stdout);
             });
         });

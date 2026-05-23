@@ -15,12 +15,14 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
-    function_formal_names, source_imports_express,
+    JsFrameworkObject, bind_path_params, extract_route_middleware, find_function_params,
+    find_route_registration, function_formal_names, receiver_origin_allows_framework,
+    source_imports_express, ssa_receiver_allows_framework,
 };
 
 pub struct JsExpressAdapter;
@@ -52,31 +54,62 @@ impl FrameworkAdapter for JsExpressAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_express(file_bytes) {
-            return None;
-        }
-        let recv = receiver_looks_like_express;
-        let (method, path) = find_route_registration(ast, file_bytes, &summary.name, &recv)?;
-        let formals = find_function_params(ast, file_bytes, &summary.name)
-            .map(|p| function_formal_names(p, file_bytes))
-            .unwrap_or_default();
-        let request_params = bind_path_params(&formals, &path);
-        let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape { method, path }),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_express(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_express(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_express(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_express(file_bytes) {
+        return None;
+    }
+    let recv = |name: &str| {
+        receiver_looks_like_express(name)
+            && receiver_origin_allows_framework(ast, file_bytes, name, JsFrameworkObject::Express)
+            && ssa_receiver_allows_framework(
+                summary,
+                ssa_summary,
+                name,
+                "*",
+                JsFrameworkObject::Express,
+            )
+    };
+    let (method, path) = find_route_registration(ast, file_bytes, &summary.name, &recv)?;
+    let formals = find_function_params(ast, file_bytes, &summary.name)
+        .map(|p| function_formal_names(p, file_bytes))
+        .unwrap_or_default();
+    let request_params = bind_path_params(&formals, &path);
+    let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape { method, path }),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dynamic::framework::{HttpMethod, ParamSource};
+    use crate::summary::CalleeSite;
+    use crate::summary::ssa_summary::SsaFuncSummary;
 
     fn parse_js(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -207,6 +240,70 @@ mod tests {
             JsExpressAdapter
                 .detect(&summary("missing"), tree.root_node(), src)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_route_registered_on_local_collection_alias() {
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = new Map();\n\
+            function handler(req, res) { res.send('ok'); }\n\
+            app.get('/x', handler);\n";
+        let tree = parse_js(src);
+        assert!(
+            JsExpressAdapter
+                .detect(&summary("handler"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_incompatible_route_receiver() {
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = makeApp();\n\
+            function handler(req, res) { res.send('ok'); }\n\
+            app.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let mut func = summary("handler");
+        func.callees.push(CalleeSite {
+            name: "app.get".to_owned(),
+            receiver: Some("app".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let ssa = SsaFuncSummary {
+            typed_call_receivers: vec![(0, "Map".to_owned())],
+            ..Default::default()
+        };
+        assert!(
+            JsExpressAdapter
+                .detect_with_context(&func, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_express_container() {
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = makeApp();\n\
+            function handler(req, res) { res.send('ok'); }\n\
+            app.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let mut func = summary("handler");
+        func.callees.push(CalleeSite {
+            name: "app.get".to_owned(),
+            receiver: Some("app".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let ssa = SsaFuncSummary {
+            typed_call_receivers: vec![(0, "ExpressApplication".to_owned())],
+            ..Default::default()
+        };
+        assert!(
+            JsExpressAdapter
+                .detect_with_context(&func, Some(&ssa), tree.root_node(), src)
+                .is_some()
         );
     }
 }

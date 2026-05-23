@@ -10,12 +10,14 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, HttpMethod, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::java_routes::{
     annotation_string_arg, bind_java_params, collect_security_annotations, find_class_with_method,
-    iter_annotations, join_route_path, method_formal_types, source_imports_quarkus,
+    iter_annotations, java_receiver_facts_allow_formals, join_route_path, method_formal_types,
+    source_imports_quarkus,
 };
 
 pub struct JavaQuarkusAdapter;
@@ -63,6 +65,38 @@ fn method_verb_and_path(method: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, S
     Some((verb?, path))
 }
 
+fn detect_quarkus(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_quarkus(file_bytes) {
+        return None;
+    }
+    let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
+    let (http_method, method_path) = method_verb_and_path(method, file_bytes)?;
+    let class_prefix = class_path_prefix(class, file_bytes);
+    let path = join_route_path(&class_prefix, &method_path);
+    let formals = method_formal_types(method, file_bytes);
+    if !java_receiver_facts_allow_formals(summary, ssa_summary, &formals) {
+        return None;
+    }
+    let request_params = bind_java_params(&formals, &path);
+    let middleware = collect_security_annotations(class, method, file_bytes);
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape {
+            method: http_method,
+            path,
+        }),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
+}
+
 impl FrameworkAdapter for JavaQuarkusAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -78,27 +112,17 @@ impl FrameworkAdapter for JavaQuarkusAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_quarkus(file_bytes) {
-            return None;
-        }
-        let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
-        let (http_method, method_path) = method_verb_and_path(method, file_bytes)?;
-        let class_prefix = class_path_prefix(class, file_bytes);
-        let path = join_route_path(&class_prefix, &method_path);
-        let formals = method_formal_types(method, file_bytes);
-        let request_params = bind_java_params(&formals, &path);
-        let middleware = collect_security_annotations(class, method, file_bytes);
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: http_method,
-                path,
-            }),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_quarkus(summary, None, ast, file_bytes)
+    }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_quarkus(summary, ssa_summary, ast, file_bytes)
     }
 }
 
@@ -106,6 +130,7 @@ impl FrameworkAdapter for JavaQuarkusAdapter {
 mod tests {
     use super::*;
     use crate::dynamic::framework::ParamSource;
+    use crate::summary::CalleeSite;
 
     fn parse(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -120,6 +145,17 @@ mod tests {
             lang: "java".into(),
             ..Default::default()
         }
+    }
+
+    fn summary_with_receiver(name: &str, receiver: &str, callee: &str) -> FuncSummary {
+        let mut s = summary(name);
+        s.callees.push(CalleeSite {
+            name: callee.into(),
+            receiver: Some(receiver.into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        s
     }
 
     #[test]
@@ -183,5 +219,20 @@ mod tests {
             .detect(&summary("run"), tree.root_node(), src)
             .expect("binding");
         assert!(binding.middleware.iter().any(|m| m.name == "@RolesAllowed"));
+    }
+
+    #[test]
+    fn ssa_rejects_incompatible_request_receiver() {
+        let src: &[u8] = b"import jakarta.ws.rs.GET;\nimport jakarta.ws.rs.Path;\n@Path(\"/api\")\npublic class V {\n  @GET\n  public String run(HttpServletRequest req) { return req.getParameter(\"q\"); }\n}\n";
+        let tree = parse(src);
+        let summary = summary_with_receiver("run", "req", "getParameter");
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "DatabaseConnection".into()));
+        assert!(
+            JavaQuarkusAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -24,12 +24,13 @@ use crate::dynamic::framework::{
 };
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
     bind_path_params, extract_path_placeholders, function_formal_names, http_verb_from_method,
-    last_segment, source_imports_nest, strip_quotes,
+    last_segment, source_imports_nest, source_imports_nest_common, strip_quotes,
 };
 
 pub struct JsNestAdapter;
@@ -55,6 +56,16 @@ impl FrameworkAdapter for JsNestAdapter {
     ) -> Option<FrameworkBinding> {
         detect_nest(summary, ast, file_bytes, JS_ADAPTER_NAME)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        _ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_nest(summary, ast, file_bytes, JS_ADAPTER_NAME)
+    }
 }
 
 impl FrameworkAdapter for TsNestAdapter {
@@ -74,6 +85,16 @@ impl FrameworkAdapter for TsNestAdapter {
     ) -> Option<FrameworkBinding> {
         detect_nest(summary, ast, file_bytes, TS_ADAPTER_NAME)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        _ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_nest(summary, ast, file_bytes, TS_ADAPTER_NAME)
+    }
 }
 
 fn detect_nest(
@@ -82,7 +103,7 @@ fn detect_nest(
     file_bytes: &[u8],
     adapter_name: &'static str,
 ) -> Option<FrameworkBinding> {
-    if !source_imports_nest(file_bytes) {
+    if !source_imports_nest(file_bytes) || !source_imports_nest_common(file_bytes) {
         return None;
     }
     let (class_node, method_node) = find_class_method(ast, file_bytes, &summary.name)?;
@@ -727,6 +748,23 @@ mod tests {
         assert!(
             TsNestAdapter
                 .detect(&summary("compute", "typescript"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_unrelated_controller_decorator_without_nest_import() {
+        let src: &[u8] = b"function Controller(path: string) { return function(_: any) {}; }\n\
+            function Get(path: string) { return function(_: any, __: string) {}; }\n\
+            @Controller('users')\n\
+            export class UsersController {\n\
+              @Get(':id')\n\
+              getUser(id: string) { return id; }\n\
+            }\n";
+        let tree = parse_ts(src);
+        assert!(
+            TsNestAdapter
+                .detect(&summary("getUser", "typescript"), tree.root_node(), src)
                 .is_none()
         );
     }

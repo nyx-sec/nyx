@@ -11,6 +11,8 @@
 
 use crate::dynamic::framework::auth_markers;
 use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
+use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
@@ -372,6 +374,98 @@ pub fn bind_java_params(formals: &[(String, String)], path: &str) -> Vec<ParamBi
             }
         })
         .collect()
+}
+
+/// Role carried by a Java framework-injected request/response formal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaReceiverRole {
+    Request,
+    Response,
+}
+
+/// Use SSA receiver facts, when supplied, to reject framework bindings whose
+/// request/response formal is proven to be a different receiver class.
+///
+/// Most callers still reach adapters without SSA or without a receiver fact for
+/// a given call ordinal.  Those cases remain permissive.  Only a matching
+/// `summary.callees` receiver plus an incompatible
+/// `SsaFuncSummary::typed_call_receivers` entry is strong enough to suppress
+/// the binding.
+pub fn java_receiver_facts_allow_formals(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    formals: &[(String, String)],
+) -> bool {
+    let Some(ssa_summary) = ssa_summary else {
+        return true;
+    };
+    if ssa_summary.typed_call_receivers.is_empty() {
+        return true;
+    }
+
+    for site in &summary.callees {
+        let Some(receiver) = site.receiver.as_deref() else {
+            continue;
+        };
+        let receiver = last_segment(receiver);
+        let Some(role) = formal_receiver_role(formals, receiver) else {
+            continue;
+        };
+        let Some(container) =
+            container_for_ordinal(&ssa_summary.typed_call_receivers, site.ordinal)
+        else {
+            continue;
+        };
+        if !typed_container_allows_java_receiver(container, role) {
+            return false;
+        }
+    }
+    true
+}
+
+fn formal_receiver_role(formals: &[(String, String)], receiver: &str) -> Option<JavaReceiverRole> {
+    formals.iter().find_map(|(ty, name)| {
+        if name != receiver {
+            return None;
+        }
+        match ty.as_str() {
+            "HttpServletRequest" | "ServletRequest" | "HttpRequest" | "Request" => {
+                Some(JavaReceiverRole::Request)
+            }
+            "HttpServletResponse" | "ServletResponse" | "HttpResponse" | "Response" => {
+                Some(JavaReceiverRole::Response)
+            }
+            _ => None,
+        }
+    })
+}
+
+fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> {
+    typed
+        .iter()
+        .find(|(ord, _)| *ord == ordinal)
+        .map(|(_, container)| container.as_str())
+}
+
+fn typed_container_allows_java_receiver(container: &str, role: JavaReceiverRole) -> bool {
+    let leaf = last_segment(container)
+        .trim_end_matches("[]")
+        .trim_end_matches('*')
+        .to_ascii_lowercase();
+    match role {
+        JavaReceiverRole::Request => matches!(
+            leaf.as_str(),
+            "httpservletrequest" | "servletrequest" | "httprequest" | "request"
+        ),
+        JavaReceiverRole::Response => matches!(
+            leaf.as_str(),
+            "httpservletresponse" | "servletresponse" | "httpresponse" | "response"
+        ),
+    }
+}
+
+fn last_segment(text: &str) -> &str {
+    text.rsplit(['.', ':', '$']).next().unwrap_or(text).trim()
 }
 
 fn is_implicit_type(ty: &str) -> bool {

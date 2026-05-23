@@ -13,12 +13,14 @@ use crate::dynamic::framework::{
 };
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
-    function_formal_names, last_segment, source_imports_koa, view_arg_references,
+    JsFrameworkObject, bind_path_params, extract_route_middleware, find_function_params,
+    find_route_registration, function_formal_names, last_segment, receiver_origin_allows_framework,
+    source_imports_koa, ssa_receiver_allows_framework, view_arg_references,
 };
 
 pub struct JsKoaAdapter;
@@ -39,13 +41,24 @@ fn receiver_looks_like_koa(name: &str) -> bool {
 /// that reference `target`.  Returns the matched call node so callers
 /// can stamp a middleware-shape binding when the verb-based dispatch
 /// fails to fire.
-fn find_use_middleware<'a>(root: Node<'a>, bytes: &[u8], target: &str) -> Option<Node<'a>> {
+fn find_use_middleware<'a>(
+    root: Node<'a>,
+    bytes: &[u8],
+    target: &str,
+    receiver_accepts: &dyn Fn(&str) -> bool,
+) -> Option<Node<'a>> {
     let mut hit: Option<Node<'a>> = None;
-    walk_for_use(root, bytes, target, &mut hit);
+    walk_for_use(root, bytes, target, receiver_accepts, &mut hit);
     hit
 }
 
-fn walk_for_use<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option<Node<'a>>) {
+fn walk_for_use<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    target: &str,
+    receiver_accepts: &dyn Fn(&str) -> bool,
+    out: &mut Option<Node<'a>>,
+) {
     if out.is_some() {
         return;
     }
@@ -57,7 +70,7 @@ fn walk_for_use<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option
         && prop_text == "use"
         && let Some(object) = callee.child_by_field_name("object")
         && let Some(obj_text) = object.utf8_text(bytes).ok()
-        && receiver_looks_like_koa(last_segment(obj_text))
+        && receiver_accepts(last_segment(obj_text))
         && let Some(args) = node.child_by_field_name("arguments")
     {
         let mut cur = args.walk();
@@ -70,7 +83,7 @@ fn walk_for_use<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
-        walk_for_use(child, bytes, target, out);
+        walk_for_use(child, bytes, target, receiver_accepts, out);
     }
 }
 
@@ -89,50 +102,78 @@ impl FrameworkAdapter for JsKoaAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_koa(file_bytes) {
-            return None;
-        }
-        let recv = receiver_looks_like_koa;
-        let formals_for = |path: &str| {
-            let formals = find_function_params(ast, file_bytes, &summary.name)
-                .map(|p| function_formal_names(p, file_bytes))
-                .unwrap_or_default();
-            bind_path_params(&formals, path)
-        };
-        if let Some((method, path)) = find_route_registration(ast, file_bytes, &summary.name, &recv)
-        {
-            let request_params = formals_for(&path);
-            let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
-            return Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::HttpRoute,
-                route: Some(RouteShape { method, path }),
-                request_params,
-                response_writer: None,
-                middleware,
-            });
-        }
-        // Fall back to `app.use(handler)` middleware registration.  No
-        // verb / path information — record the binding so the harness
-        // still drives the middleware via a synthetic ctx.
-        if find_use_middleware(ast, file_bytes, &summary.name).is_some() {
-            let request_params = formals_for("/");
-            return Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::HttpRoute,
-                route: Some(RouteShape {
-                    method: HttpMethod::GET,
-                    path: "/".to_owned(),
-                }),
-                request_params,
-                response_writer: None,
-                middleware: vec![MiddlewareShape {
-                    name: "koa.use".to_owned(),
-                }],
-            });
-        }
-        None
+        detect_koa(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_koa(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_koa(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_koa(file_bytes) {
+        return None;
+    }
+    let recv = |name: &str| {
+        receiver_looks_like_koa(name)
+            && receiver_origin_allows_framework(ast, file_bytes, name, JsFrameworkObject::Koa)
+            && ssa_receiver_allows_framework(
+                summary,
+                ssa_summary,
+                name,
+                "*",
+                JsFrameworkObject::Koa,
+            )
+    };
+    let formals_for = |path: &str| {
+        let formals = find_function_params(ast, file_bytes, &summary.name)
+            .map(|p| function_formal_names(p, file_bytes))
+            .unwrap_or_default();
+        bind_path_params(&formals, path)
+    };
+    if let Some((method, path)) = find_route_registration(ast, file_bytes, &summary.name, &recv) {
+        let request_params = formals_for(&path);
+        let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
+        return Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::HttpRoute,
+            route: Some(RouteShape { method, path }),
+            request_params,
+            response_writer: None,
+            middleware,
+        });
+    }
+    // Fall back to `app.use(handler)` middleware registration.  No
+    // verb / path information — record the binding so the harness
+    // still drives the middleware via a synthetic ctx.
+    if find_use_middleware(ast, file_bytes, &summary.name, &recv).is_some() {
+        let request_params = formals_for("/");
+        return Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::HttpRoute,
+            route: Some(RouteShape {
+                method: HttpMethod::GET,
+                path: "/".to_owned(),
+            }),
+            request_params,
+            response_writer: None,
+            middleware: vec![MiddlewareShape {
+                name: "koa.use".to_owned(),
+            }],
+        });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -237,6 +278,35 @@ mod tests {
         assert!(
             JsKoaAdapter
                 .detect(&summary("h"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_route_registered_on_non_koa_router_alias() {
+        let src: &[u8] = b"const Koa = require('koa');\n\
+            const Router = require('@koa/router');\n\
+            const router = new Map();\n\
+            async function handler(ctx) { ctx.body = 'ok'; }\n\
+            router.get('/x', handler);\n";
+        let tree = parse_js(src);
+        assert!(
+            JsKoaAdapter
+                .detect(&summary("handler"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_use_middleware_on_non_koa_app_alias() {
+        let src: &[u8] = b"const Koa = require('koa');\n\
+            const app = new Set();\n\
+            async function logger(ctx, next) { await next(); }\n\
+            app.use(logger);\n";
+        let tree = parse_js(src);
+        assert!(
+            JsKoaAdapter
+                .detect(&summary("logger"), tree.root_node(), src)
                 .is_none()
         );
     }

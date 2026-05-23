@@ -2667,6 +2667,7 @@ const _res = {{
         // populate _captured after the handler return. Wait up to 3s for a
         // res.send / res.end / res.json call before flushing stdout.
         await Promise.race([_responded, new Promise(function (r) {{ setTimeout(r, 3000); }})]);
+        process.stdout.write('__NYX_SINK_HIT__\n');
         process.stdout.write(_captured + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -2729,6 +2730,7 @@ if (_kind === 'query') {{
         // Wait up to 3s for an async ctx.body assignment (e.g. from a
         // child_process.exec callback) before flushing stdout.
         await Promise.race([_responded, new Promise(function (r) {{ setTimeout(r, 3000); }})]);
+        process.stdout.write('__NYX_SINK_HIT__\n');
         process.stdout.write(String(_ctx.body == null ? '' : _ctx.body) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -2854,6 +2856,7 @@ if (_kind === 'query') {{
         if (_query) _injectOpts.query = _query;
         if (_bodyArg !== undefined) _injectOpts.payload = _bodyArg;
         const _res = await _app.inject(_injectOpts);
+        process.stdout.write('__NYX_SINK_HIT__\n');
         process.stdout.write(String(_res.body == null ? '' : _res.body) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -2954,6 +2957,7 @@ if (_kind === 'env') {{
             _req = _req.set('content-type', 'application/json').send(payload);
         }}
         const _res = await _req;
+        process.stdout.write('__NYX_SINK_HIT__\n');
         process.stdout.write(String(_res.text == null ? '' : _res.text) + '\n');
         if (typeof _app.close === 'function') await _app.close();
     }} catch (e) {{
@@ -3925,8 +3929,7 @@ mod tests {
 
     #[test]
     fn emit_json_parse_harness_derives_entry_stem_from_entry_file() {
-        let h =
-            emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.js", "run"));
+        let h = emit_json_parse_harness(&make_json_parse_spec("/abs/path/benign.js", "run"));
         assert!(h.source.contains("require('./benign')"));
     }
 
@@ -3941,10 +3944,7 @@ mod tests {
     #[test]
     fn emit_dispatches_to_unauthorized_id_harness_when_cap_is_unauthorized_id() {
         let h = emit(
-            &make_unauthorized_id_spec(
-                "tests/dynamic_fixtures/unauthorized_id/js/vuln.js",
-                "run",
-            ),
+            &make_unauthorized_id_spec("tests/dynamic_fixtures/unauthorized_id/js/vuln.js", "run"),
             false,
         )
         .unwrap();
@@ -3972,7 +3972,8 @@ mod tests {
             h.source
         );
         assert!(
-            h.source.contains("_nyx_idor_probe(_NYX_CALLER_ID, payload)"),
+            h.source
+                .contains("_nyx_idor_probe(_NYX_CALLER_ID, payload)"),
             "harness must emit the IDOR probe with the hard-coded caller and the payload owner_id: {}",
             h.source
         );
@@ -4016,10 +4017,8 @@ mod tests {
 
     #[test]
     fn emit_unauthorized_id_harness_derives_entry_stem_from_entry_file() {
-        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
-            "/abs/path/benign.js",
-            "run",
-        ));
+        let h =
+            emit_unauthorized_id_harness(&make_unauthorized_id_spec("/abs/path/benign.js", "run"));
         assert!(h.source.contains("require('./benign')"));
     }
 
@@ -4074,7 +4073,8 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source.contains("global.fetch = async function _nyx_fetch_shim"),
+            h.source
+                .contains("global.fetch = async function _nyx_fetch_shim"),
             "harness must also intercept global.fetch so Node 18+ fixtures that use the WHATWG fetch API are captured: {}",
             h.source
         );

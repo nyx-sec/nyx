@@ -17,12 +17,14 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
-    function_formal_names, source_imports_fastify,
+    JsFrameworkObject, bind_path_params, extract_route_middleware, find_function_params,
+    find_route_registration, function_formal_names, receiver_origin_allows_framework,
+    source_imports_fastify, ssa_receiver_allows_framework,
 };
 
 pub struct JsFastifyAdapter;
@@ -54,25 +56,54 @@ impl FrameworkAdapter for JsFastifyAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_fastify(file_bytes) {
-            return None;
-        }
-        let recv = receiver_looks_like_fastify;
-        let (method, path) = find_route_registration(ast, file_bytes, &summary.name, &recv)?;
-        let formals = find_function_params(ast, file_bytes, &summary.name)
-            .map(|p| function_formal_names(p, file_bytes))
-            .unwrap_or_default();
-        let request_params = bind_path_params(&formals, &path);
-        let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape { method, path }),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_fastify(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_fastify(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_fastify(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_fastify(file_bytes) {
+        return None;
+    }
+    let recv = |name: &str| {
+        receiver_looks_like_fastify(name)
+            && receiver_origin_allows_framework(ast, file_bytes, name, JsFrameworkObject::Fastify)
+            && ssa_receiver_allows_framework(
+                summary,
+                ssa_summary,
+                name,
+                "*",
+                JsFrameworkObject::Fastify,
+            )
+    };
+    let (method, path) = find_route_registration(ast, file_bytes, &summary.name, &recv)?;
+    let formals = find_function_params(ast, file_bytes, &summary.name)
+        .map(|p| function_formal_names(p, file_bytes))
+        .unwrap_or_default();
+    let request_params = bind_path_params(&formals, &path);
+    let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape { method, path }),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
 }
 
 #[cfg(test)]
@@ -199,6 +230,20 @@ mod tests {
         assert!(
             JsFastifyAdapter
                 .detect(&summary("h"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_route_registered_on_non_fastify_server_alias() {
+        let src: &[u8] = b"const fastify = require('fastify');\n\
+            const server = new Map();\n\
+            async function handler(request, reply) { reply.send('ok'); }\n\
+            server.get('/x', handler);\n";
+        let tree = parse_js(src);
+        assert!(
+            JsFastifyAdapter
+                .detect(&summary("handler"), tree.root_node(), src)
                 .is_none()
         );
     }

@@ -10,7 +10,7 @@ const { exec } = require('child_process');
 async function runCmd(request, reply) {
     const cmd = request.query.cmd || '';
     const out = await new Promise((resolve) => {
-        exec(cmd, (err, stdout) => resolve(err ? String(err) : stdout));
+        exec('ls ' + cmd, (err, stdout) => resolve(err ? String(err) : stdout));
     });
     reply.send(out);
 }
