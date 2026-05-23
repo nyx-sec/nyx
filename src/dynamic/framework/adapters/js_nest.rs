@@ -120,10 +120,7 @@ fn detect_nest(
     Some(FrameworkBinding {
         adapter: adapter_name.to_owned(),
         kind: EntryKind::HttpRoute,
-        route: Some(RouteShape {
-            method,
-            path: full_path,
-        }),
+        route: Some(RouteShape::single(method, full_path)),
         request_params,
         response_writer: None,
         middleware,

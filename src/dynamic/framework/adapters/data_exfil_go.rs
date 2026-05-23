@@ -34,10 +34,7 @@ fn callee_is_outbound_http(name: &str) -> bool {
 }
 
 fn source_imports_go_http_client(file_bytes: &[u8]) -> bool {
-    const NEEDLES: &[&[u8]] = &[
-        b"\"net/http\"",
-        b"net/http\"",
-    ];
+    const NEEDLES: &[&[u8]] = &[b"\"net/http\"", b"net/http\""];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))

@@ -19,33 +19,31 @@ const ADAPTER_NAME: &str = "data-exfil-ruby";
 fn callee_is_outbound_http(name: &str) -> bool {
     let last = name.rsplit_once("::").map(|(_, s)| s).unwrap_or(name);
     let last = last.rsplit_once('.').map(|(_, s)| s).unwrap_or(last);
-    matches!(
-        last,
-        "get_response" | "post_form" | "request" | "start"
-    ) || matches!(
-        name,
-        "Net::HTTP.get"
-            | "Net::HTTP.get_response"
-            | "Net::HTTP.post_form"
-            | "Net::HTTP.start"
-            | "Net::HTTP::Get.new"
-            | "Net::HTTP::Post.new"
-            | "RestClient.get"
-            | "RestClient.post"
-            | "RestClient.put"
-            | "RestClient.delete"
-            | "RestClient::Request.execute"
-            | "HTTParty.get"
-            | "HTTParty.post"
-            | "HTTParty.put"
-            | "HTTParty.delete"
-            | "Faraday.get"
-            | "Faraday.post"
-            | "Faraday.new"
-            | "Faraday::Connection.get"
-            | "URI.open"
-            | "Kernel.open"
-    )
+    matches!(last, "get_response" | "post_form" | "request" | "start")
+        || matches!(
+            name,
+            "Net::HTTP.get"
+                | "Net::HTTP.get_response"
+                | "Net::HTTP.post_form"
+                | "Net::HTTP.start"
+                | "Net::HTTP::Get.new"
+                | "Net::HTTP::Post.new"
+                | "RestClient.get"
+                | "RestClient.post"
+                | "RestClient.put"
+                | "RestClient.delete"
+                | "RestClient::Request.execute"
+                | "HTTParty.get"
+                | "HTTParty.post"
+                | "HTTParty.put"
+                | "HTTParty.delete"
+                | "Faraday.get"
+                | "Faraday.post"
+                | "Faraday.new"
+                | "Faraday::Connection.get"
+                | "URI.open"
+                | "Kernel.open"
+        )
 }
 
 fn source_imports_ruby_http_client(file_bytes: &[u8]) -> bool {

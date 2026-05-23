@@ -99,7 +99,7 @@ fn detect_fastify(
     Some(FrameworkBinding {
         adapter: ADAPTER_NAME.to_owned(),
         kind: EntryKind::HttpRoute,
-        route: Some(RouteShape { method, path }),
+        route: Some(RouteShape::single(method, path)),
         request_params,
         response_writer: None,
         middleware,

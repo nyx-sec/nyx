@@ -213,7 +213,8 @@ mod tests {
 
     #[test]
     fn skips_plain_method() {
-        let src: &[u8] = b"public class Plain { public static int add(int a, int b) { return a + b; } }\n";
+        let src: &[u8] =
+            b"public class Plain { public static int add(int a, int b) { return a + b; } }\n";
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "add".into(),

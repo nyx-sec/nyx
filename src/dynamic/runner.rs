@@ -288,7 +288,18 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
                 }
-                Err(_) => {}
+                Err(build_sandbox::BuildError::Io(e)) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: format!("prepare go build cache: {e}"),
+                        attempts: 1,
+                    });
+                }
+                Err(build_sandbox::BuildError::Unsupported) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: "go build preparation unsupported on this host".to_owned(),
+                        attempts: 1,
+                    });
+                }
             }
         }
         Lang::Java => {
@@ -306,7 +317,18 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
                 }
-                Err(_) => {}
+                Err(build_sandbox::BuildError::Io(e)) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: format!("prepare java build cache: {e}"),
+                        attempts: 1,
+                    });
+                }
+                Err(build_sandbox::BuildError::Unsupported) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: "java build preparation unsupported on this host".to_owned(),
+                        attempts: 1,
+                    });
+                }
             }
         }
         Lang::Php => {

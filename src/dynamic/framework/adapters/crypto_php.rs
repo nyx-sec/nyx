@@ -128,8 +128,7 @@ mod tests {
 
     #[test]
     fn fires_on_md5() {
-        let src: &[u8] =
-            b"<?php\nfunction sign($value) {\n    return md5($value);\n}\n";
+        let src: &[u8] = b"<?php\nfunction sign($value) {\n    return md5($value);\n}\n";
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "sign".into(),
@@ -180,8 +179,7 @@ mod tests {
 
     #[test]
     fn skips_when_sha256_hashing_present() {
-        let src: &[u8] =
-            b"<?php\nfunction sign($value) {\n    return hash('sha256', $value);\n}\n";
+        let src: &[u8] = b"<?php\nfunction sign($value) {\n    return hash('sha256', $value);\n}\n";
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "sign".into(),

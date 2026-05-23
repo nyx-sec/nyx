@@ -159,7 +159,8 @@ mod tests {
 
     #[test]
     fn fires_on_md5_compute() {
-        let src: &[u8] = b"use md5;\npub fn sign(value: &[u8]) -> md5::Digest {\n    md5::compute(value)\n}\n";
+        let src: &[u8] =
+            b"use md5;\npub fn sign(value: &[u8]) -> md5::Digest {\n    md5::compute(value)\n}\n";
         let tree = parse_rust(src);
         let summary = FuncSummary {
             name: "sign".into(),

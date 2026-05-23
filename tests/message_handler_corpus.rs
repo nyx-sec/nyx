@@ -326,8 +326,9 @@ mod e2e_phase_20 {
     use tempfile::TempDir;
 
     fn command_available(bin: &str) -> bool {
+        let version_arg = if bin == "go" { "version" } else { "--version" };
         Command::new(bin)
-            .arg("--version")
+            .arg(version_arg)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -484,7 +485,10 @@ mod e2e_phase_20 {
         let Some(outcome) = run(Lang::Python, "sqs_python", "vuln.py", "handler", "jobs") else {
             return;
         };
-        assert!(outcome.triggered_by.is_some());
+        assert!(
+            outcome.triggered_by.is_some(),
+            "sqs-python MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
         let diff = outcome.differential.as_ref().expect("Confirmed");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
@@ -500,7 +504,10 @@ mod e2e_phase_20 {
         ) else {
             return;
         };
-        assert!(outcome.triggered_by.is_some());
+        assert!(
+            outcome.triggered_by.is_some(),
+            "pubsub-python MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
         let diff = outcome.differential.as_ref().expect("Confirmed");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
@@ -516,7 +523,10 @@ mod e2e_phase_20 {
         ) else {
             return;
         };
-        assert!(outcome.triggered_by.is_some());
+        assert!(
+            outcome.triggered_by.is_some(),
+            "rabbit-python MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
         let diff = outcome.differential.as_ref().expect("Confirmed");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
@@ -530,6 +540,73 @@ mod e2e_phase_20 {
             outcome.triggered_by.is_some(),
             "sqs-node vuln failed; attempts: {:?}",
             outcome.attempts,
+        );
+        let diff = outcome.differential.as_ref().expect("Confirmed");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn kafka_java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "kafka_java", "Vuln.java", "onMessage", "orders")
+        else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "kafka-java MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome.differential.as_ref().expect("Confirmed");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn sqs_java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "sqs_java", "Vuln.java", "handleMessage", "jobs")
+        else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "sqs-java MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome.differential.as_ref().expect("Confirmed");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn rabbit_java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "rabbit_java", "Vuln.java", "onMessage", "work") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "rabbit-java MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome.differential.as_ref().expect("Confirmed");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn pubsub_go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "pubsub_go", "vuln.go", "OnMessage", "my-sub") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "pubsub-go MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome.differential.as_ref().expect("Confirmed");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn nats_go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "nats_go", "vuln.go", "OnMessage", "events") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "nats-go MessageHandler vuln must Confirm via run_spec; got {outcome:?}",
         );
         let diff = outcome.differential.as_ref().expect("Confirmed");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);

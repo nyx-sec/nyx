@@ -134,10 +134,7 @@ mod tests {
         FrameworkBinding {
             adapter: "test-adapter".to_string(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: HttpMethod::GET,
-                path: "/x".to_string(),
-            }),
+            route: Some(RouteShape::single(HttpMethod::GET, "/x")),
             request_params: Vec::new(),
             response_writer: None,
             middleware: middleware

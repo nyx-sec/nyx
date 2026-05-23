@@ -2360,7 +2360,10 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: vec![("NyxJsonProbe.java".to_owned(), nyx_json_probe_source().to_owned())],
+        extra_files: vec![(
+            "NyxJsonProbe.java".to_owned(),
+            nyx_json_probe_source().to_owned(),
+        )],
         entry_subpath: Some(format!("{entry_class}.java")),
     }
 }
@@ -3572,9 +3575,49 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: vec![],
+        extra_files: message_handler_annotation_stubs(),
         entry_subpath: Some(format!("{entry_class}.java")),
     }
+}
+
+fn message_handler_annotation_stubs() -> Vec<(String, String)> {
+    vec![
+        (
+            "org/springframework/kafka/annotation/KafkaListener.java".to_owned(),
+            r#"package org.springframework.kafka.annotation;
+
+public @interface KafkaListener {
+    String[] value() default {};
+    String[] topics() default {};
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "io/awspring/cloud/sqs/annotation/SqsListener.java".to_owned(),
+            r#"package io.awspring.cloud.sqs.annotation;
+
+public @interface SqsListener {
+    String[] value() default {};
+    String[] queueNames() default {};
+    String queueName() default "";
+    String queueUrl() default "";
+}
+"#
+            .to_owned(),
+        ),
+        (
+            "org/springframework/amqp/rabbit/annotation/RabbitListener.java".to_owned(),
+            r#"package org.springframework.amqp.rabbit.annotation;
+
+public @interface RabbitListener {
+    String[] value() default {};
+    String[] queues() default {};
+}
+"#
+            .to_owned(),
+        ),
+    ]
 }
 
 // ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
@@ -5362,5 +5405,27 @@ mod tests {
             h.source.contains("InvocationTargetException ite"),
             "Java DATA_EXFIL harness must catch InvocationTargetException so a fixture-side throw after a partial outbound call still drains CAPTURED_HOSTS",
         );
+    }
+
+    #[test]
+    fn emit_message_handler_harness_ships_broker_annotation_stubs() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_file = "tests/dynamic_fixtures/message_handler/kafka_java/Vuln.java".to_owned();
+        spec.entry_name = "onMessage".to_owned();
+        spec.entry_kind = EntryKind::MessageHandler {
+            queue: "orders".to_owned(),
+            message_schema: None,
+        };
+        let h = emit(&spec).unwrap();
+        for path in [
+            "org/springframework/kafka/annotation/KafkaListener.java",
+            "io/awspring/cloud/sqs/annotation/SqsListener.java",
+            "org/springframework/amqp/rabbit/annotation/RabbitListener.java",
+        ] {
+            assert!(
+                h.extra_files.iter().any(|(name, _)| name == path),
+                "Java MessageHandler harness must stage {path} so annotated broker fixtures compile without real Spring jars",
+            );
+        }
     }
 }

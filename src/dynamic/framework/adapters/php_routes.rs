@@ -11,7 +11,7 @@
 //! framework share the same placeholder-binding semantics.
 
 use crate::dynamic::framework::{
-    HttpMethod, MiddlewareShape, ParamBinding, ParamSource, auth_markers,
+    HttpMethod, MiddlewareShape, ParamBinding, ParamSource, RouteShape, auth_markers,
 };
 use crate::symbol::Lang;
 use tree_sitter::Node;
@@ -407,7 +407,19 @@ pub fn find_laravel_static_route<'a>(
     target: &str,
     controller: Option<&str>,
 ) -> Option<(HttpMethod, String)> {
-    let mut hit: Option<(HttpMethod, String)> = None;
+    find_laravel_static_route_shape(root, bytes, target, controller)
+        .map(|route| (route.method, route.path))
+}
+
+/// Laravel route lookup that preserves multi-verb registrations such
+/// as `Route::any(...)` and `Route::match([...], ...)`.
+pub fn find_laravel_static_route_shape<'a>(
+    root: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+    controller: Option<&str>,
+) -> Option<RouteShape> {
+    let mut hit: Option<RouteShape> = None;
     visit_laravel_routes(root, bytes, target, controller, &mut hit);
     hit
 }
@@ -417,7 +429,7 @@ fn visit_laravel_routes<'a>(
     bytes: &'a [u8],
     target: &str,
     controller: Option<&str>,
-    out: &mut Option<(HttpMethod, String)>,
+    out: &mut Option<RouteShape>,
 ) {
     if out.is_some() {
         return;
@@ -439,20 +451,81 @@ fn try_laravel_route<'a>(
     bytes: &'a [u8],
     target: &str,
     controller: Option<&str>,
-) -> Option<(HttpMethod, String)> {
+) -> Option<RouteShape> {
     let scope = call.child_by_field_name("scope")?.utf8_text(bytes).ok()?;
     let scope_leaf = scope.rsplit('\\').next().unwrap_or(scope);
     if scope_leaf != "Route" {
         return None;
     }
     let verb_node = call.child_by_field_name("name")?.utf8_text(bytes).ok()?;
-    let method = verb_method(verb_node)?;
     let args = call.child_by_field_name("arguments")?;
-    let path = first_php_string_arg(args, bytes)?;
-    if !laravel_callable_matches(args, bytes, target, controller) {
+    let methods = laravel_route_methods(verb_node, args, bytes)?;
+    let path = laravel_route_path(verb_node, args, bytes)?;
+    if !laravel_callable_matches(verb_node, args, bytes, target, controller) {
         return None;
     }
-    Some((method, path))
+    Some(if methods.len() > 1 {
+        RouteShape::multi(methods, path)
+    } else {
+        RouteShape::single(methods[0], path)
+    })
+}
+
+fn laravel_route_methods(verb: &str, arguments: Node<'_>, bytes: &[u8]) -> Option<Vec<HttpMethod>> {
+    match verb {
+        "any" => Some(vec![
+            HttpMethod::GET,
+            HttpMethod::HEAD,
+            HttpMethod::POST,
+            HttpMethod::PUT,
+            HttpMethod::PATCH,
+            HttpMethod::DELETE,
+            HttpMethod::OPTIONS,
+        ]),
+        "match" => {
+            let first = positional_arg_values(arguments).into_iter().next()?;
+            let mut methods = Vec::new();
+            collect_http_methods(first, bytes, &mut methods);
+            if methods.is_empty() {
+                None
+            } else {
+                Some(methods)
+            }
+        }
+        other => verb_method(other).map(|method| vec![method]),
+    }
+}
+
+fn laravel_route_path(verb: &str, arguments: Node<'_>, bytes: &[u8]) -> Option<String> {
+    if verb != "match" {
+        return first_php_string_arg(arguments, bytes);
+    }
+    positional_arg_values(arguments)
+        .get(1)
+        .and_then(|value| string_content(*value, bytes))
+}
+
+fn positional_arg_values<'a>(arguments: Node<'a>) -> Vec<Node<'a>> {
+    let mut cur = arguments.walk();
+    arguments
+        .named_children(&mut cur)
+        .filter(|arg| arg.kind() == "argument" && arg.child_by_field_name("name").is_none())
+        .filter_map(|arg| arg.named_child(0))
+        .collect()
+}
+
+fn collect_http_methods(node: Node<'_>, bytes: &[u8], out: &mut Vec<HttpMethod>) {
+    if matches!(node.kind(), "string" | "encapsed_string")
+        && let Some(raw) = string_content(node, bytes)
+        && let Some(method) = HttpMethod::from_ident(&raw)
+        && !out.contains(&method)
+    {
+        out.push(method);
+    }
+    let mut cur = node.walk();
+    for child in node.named_children(&mut cur) {
+        collect_http_methods(child, bytes, out);
+    }
 }
 
 /// Check the second positional arg of a `Route::verb('/x', ...)` call
@@ -462,26 +535,15 @@ fn try_laravel_route<'a>(
 ///   - `'Controller@method'` / `'Controller::method'` strings
 ///   - `[ Controller::class, 'method' ]` arrays
 fn laravel_callable_matches(
+    verb: &str,
     arguments: Node<'_>,
     bytes: &[u8],
     target: &str,
     controller: Option<&str>,
 ) -> bool {
-    let mut cur = arguments.walk();
-    let mut positional: Vec<Node<'_>> = Vec::new();
-    for arg in arguments.named_children(&mut cur) {
-        if arg.kind() != "argument" {
-            continue;
-        }
-        if arg.child_by_field_name("name").is_some() {
-            continue;
-        }
-        positional.push(arg);
-    }
-    let Some(callable_arg) = positional.get(1) else {
-        return false;
-    };
-    let Some(value) = callable_arg.named_child(0) else {
+    let callable_idx = if verb == "match" { 2 } else { 1 };
+    let positional = positional_arg_values(arguments);
+    let Some(value) = positional.get(callable_idx).copied() else {
         return false;
     };
     match value.kind() {
@@ -557,7 +619,6 @@ fn verb_method(verb: &str) -> Option<HttpMethod> {
         "delete" => Some(HttpMethod::DELETE),
         "options" => Some(HttpMethod::OPTIONS),
         "head" => Some(HttpMethod::HEAD),
-        "any" | "match" => Some(HttpMethod::GET),
         _ => None,
     }
 }
@@ -893,6 +954,46 @@ mod tests {
         let hit = find_laravel_static_route(tree.root_node(), src, "anything", None).unwrap();
         assert_eq!(hit.0, HttpMethod::POST);
         assert_eq!(hit.1, "/users");
+    }
+
+    #[test]
+    fn finds_laravel_any_route_with_all_supported_methods() {
+        let src: &[u8] =
+            b"<?php\nRoute::any('/run', 'JobController@run');\nclass JobController { public function run() {} }\n";
+        let tree = parse(src);
+        let route =
+            find_laravel_static_route_shape(tree.root_node(), src, "run", Some("JobController"))
+                .unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(
+            route.reachable_methods(),
+            vec![
+                HttpMethod::GET,
+                HttpMethod::HEAD,
+                HttpMethod::POST,
+                HttpMethod::PUT,
+                HttpMethod::PATCH,
+                HttpMethod::DELETE,
+                HttpMethod::OPTIONS,
+            ]
+        );
+        assert_eq!(route.path, "/run");
+    }
+
+    #[test]
+    fn finds_laravel_match_route_with_declared_methods() {
+        let src: &[u8] =
+            b"<?php\nRoute::match(['POST', 'PUT'], '/run', [JobController::class, 'run']);\nclass JobController { public function run() {} }\n";
+        let tree = parse(src);
+        let route =
+            find_laravel_static_route_shape(tree.root_node(), src, "run", Some("JobController"))
+                .unwrap();
+        assert_eq!(route.method, HttpMethod::POST);
+        assert_eq!(
+            route.reachable_methods(),
+            vec![HttpMethod::POST, HttpMethod::PUT]
+        );
+        assert_eq!(route.path, "/run");
     }
 
     #[test]

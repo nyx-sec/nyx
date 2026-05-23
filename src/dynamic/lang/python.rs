@@ -4706,8 +4706,7 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source
-                .contains("def _nyx_idor_via_fixture(payload):"),
+            h.source.contains("def _nyx_idor_via_fixture(payload):"),
             "Python UNAUTHORIZED_ID harness must define the fixture-routing helper",
         );
         assert!(h.source.contains("importlib.import_module(\"vuln\")"));
@@ -4718,10 +4717,8 @@ mod tests {
 
     #[test]
     fn emit_unauthorized_id_harness_derives_module_name_from_entry_file() {
-        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
-            "/abs/path/benign.py",
-            "run",
-        ));
+        let h =
+            emit_unauthorized_id_harness(&make_unauthorized_id_spec("/abs/path/benign.py", "run"));
         assert!(h.source.contains("importlib.import_module(\"benign\")"));
     }
 
@@ -4758,7 +4755,10 @@ mod tests {
             "run",
         ));
         assert!(h.source.contains("urllib.request.urlopen = _nyx_urlopen"));
-        assert!(h.source.contains("def _nyx_urlopen(url, data=None, timeout=None, *args, **kwargs):"));
+        assert!(
+            h.source
+                .contains("def _nyx_urlopen(url, data=None, timeout=None, *args, **kwargs):")
+        );
         assert!(
             h.source.contains("class _NyxFakeResponse(io.BytesIO):"),
             "harness must return a fake response so the fixture does not block on real network egress",
@@ -4806,10 +4806,7 @@ mod tests {
 
     #[test]
     fn emit_data_exfil_harness_derives_module_name_from_entry_file() {
-        let h = emit_data_exfil_harness(&make_data_exfil_spec(
-            "/abs/path/benign.py",
-            "run",
-        ));
+        let h = emit_data_exfil_harness(&make_data_exfil_spec("/abs/path/benign.py", "run"));
         assert!(h.source.contains("importlib.import_module(\"benign\")"));
     }
 }

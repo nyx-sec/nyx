@@ -122,7 +122,8 @@ mod tests {
 
     #[test]
     fn fires_on_math_random_key() {
-        let src: &[u8] = b"function run(value) { return Math.random(); }\nmodule.exports = { run };\n";
+        let src: &[u8] =
+            b"function run(value) { return Math.random(); }\nmodule.exports = { run };\n";
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "run".into(),

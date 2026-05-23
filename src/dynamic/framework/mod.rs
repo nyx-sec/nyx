@@ -37,10 +37,54 @@ pub use crate::entry_points::HttpMethod;
 pub struct RouteShape {
     /// HTTP verb (`GET`, `POST`, …).
     pub method: HttpMethod,
+    /// Additional HTTP verbs that reach the same handler.  Empty for
+    /// single-verb routes; when populated, [`Self::method`] is the
+    /// first element for backward-compatible callers that still need a
+    /// single representative method.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<HttpMethod>,
     /// Route path template as registered with the framework (e.g.
     /// `"/users/{id}"`).  Adapter-specific placeholder syntax is
     /// preserved verbatim.
     pub path: String,
+}
+
+impl RouteShape {
+    /// Construct a single-method route while preserving the legacy
+    /// empty-`methods` representation.
+    pub fn single(method: HttpMethod, path: impl Into<String>) -> Self {
+        Self {
+            method,
+            methods: Vec::new(),
+            path: path.into(),
+        }
+    }
+
+    /// Construct a route reachable through multiple HTTP methods.
+    pub fn multi(methods: Vec<HttpMethod>, path: impl Into<String>) -> Self {
+        let mut deduped = Vec::new();
+        for method in methods {
+            if !deduped.contains(&method) {
+                deduped.push(method);
+            }
+        }
+        let method = deduped.first().copied().unwrap_or(HttpMethod::GET);
+        Self {
+            method,
+            methods: deduped,
+            path: path.into(),
+        }
+    }
+
+    /// Return every method that reaches this route.  Legacy single-method
+    /// shapes return a one-element vector containing [`Self::method`].
+    pub fn reachable_methods(&self) -> Vec<HttpMethod> {
+        if self.methods.is_empty() {
+            vec![self.method]
+        } else {
+            self.methods.clone()
+        }
+    }
 }
 
 /// Where on the external surface a function formal originates from.
@@ -532,10 +576,7 @@ mod tests {
         let original = FrameworkBinding {
             adapter: "flask".into(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: HttpMethod::POST,
-                path: "/users/{id}".into(),
-            }),
+            route: Some(RouteShape::single(HttpMethod::POST, "/users/{id}")),
             request_params: vec![ParamBinding {
                 index: 0,
                 name: "id".into(),

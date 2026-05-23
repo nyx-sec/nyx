@@ -1616,6 +1616,10 @@ fn run_process(
 
     // Strip all env and pass only the allowlist + harness env + payload.
     cmd.env_clear();
+    // Keep a minimal executable search path so harnessed code that launches
+    // common system tools by bare name (notably Go's exec.Command("sh", ...))
+    // exercises the sink instead of failing before the oracle can observe it.
+    cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
     for k in &opts.env_passthrough {
         if let Ok(v) = std::env::var(k) {
             cmd.env(k, v);

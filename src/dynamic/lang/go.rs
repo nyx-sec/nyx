@@ -1531,11 +1531,7 @@ func nyxJsonParseViaFixture(payload string) (int, bool, bool) {{
 "##
         );
         let invoke = "\tdepth, excessive, fixtureInvoked := nyxJsonParseViaFixture(payload)\n\tif !fixtureInvoked {\n\t\tdepth = 0\n\t\texcessive = false\n\t}\n\tnyxJsonParseProbe(depth, excessive)\n".to_owned();
-        (
-            "\n\t\"nyx-harness/internal/vulnentry\"\n",
-            decl,
-            invoke,
-        )
+        ("\n\t\"nyx-harness/internal/vulnentry\"\n", decl, invoke)
     } else {
         (
             "",
@@ -1775,10 +1771,10 @@ func nyxInstallHttpTransport() {
 
 func nyxDataExfilViaFixture(payload string) {
 	defer func() { _ = recover() }()
-	vulnentry."##.to_owned()
+	vulnentry."##
+            .to_owned()
             + &format!("{entry_fn}(payload)\n}}\n\n");
-        let invoke =
-            "\tnyxInstallHttpTransport()\n\tnyxDataExfilViaFixture(payload)\n".to_owned();
+        let invoke = "\tnyxInstallHttpTransport()\n\tnyxDataExfilViaFixture(payload)\n".to_owned();
         (
             "\t\"bytes\"\n\t\"io\"\n\t\"net/http\"\n\n\t\"nyx-harness/internal/vulnentry\"\n",
             decl,
@@ -1855,9 +1851,15 @@ fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"reflect"
+	"strings"
+	"syscall"
+	"time"
 
 	"nyx-harness/entry"
 )
@@ -1882,6 +1884,11 @@ func nyxBuildReceiver(structName string) (reflect.Value, error) {{
 func nyxPayload() string {{
 	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
 		return v
+	}}
+	if b64 := os.Getenv("NYX_PAYLOAD_B64"); b64 != "" {{
+		if data, err := base64.StdEncoding.DecodeString(b64); err == nil {{
+			return string(data)
+		}}
 	}}
 	return ""
 }}
@@ -2037,7 +2044,7 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
 		if got.Type().AssignableTo(want) {{
 			args[i] = got
 		}} else if want.Kind() == reflect.String {{
-			args[i] = reflect.ValueOf(os.Getenv("NYX_PAYLOAD"))
+			args[i] = reflect.ValueOf(nyxPayload())
 		}} else {{
 			args[i] = reflect.Zero(want)
 		}}
@@ -2053,9 +2060,15 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"reflect"
+	"strings"
+	"syscall"
+	"time"
 
 	"nyx-harness/entry"
 )
@@ -2069,6 +2082,11 @@ import (
 func nyxPayload() string {{
 	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
 		return v
+	}}
+	if b64 := os.Getenv("NYX_PAYLOAD_B64"); b64 != "" {{
+		if data, err := base64.StdEncoding.DecodeString(b64); err == nil {{
+			return string(data)
+		}}
 	}}
 	return ""
 }}
@@ -3170,7 +3188,8 @@ mod tests {
             "Go UNAUTHORIZED_ID harness must pin caller_id to \"alice\"",
         );
         assert!(
-            h.source.contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
+            h.source
+                .contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
             "Go UNAUTHORIZED_ID harness must call probe with caller_id + payload-as-owner",
         );
     }
@@ -3182,7 +3201,8 @@ mod tests {
             "Run",
         ));
         assert!(
-            h.source.contains("if nyxUnauthorizedIdViaFixture(payload) {"),
+            h.source
+                .contains("if nyxUnauthorizedIdViaFixture(payload) {"),
             "Go UNAUTHORIZED_ID harness must gate probe emission on a present record so the benign fixture's empty-string rejection clears the predicate",
         );
         assert!(
@@ -3236,7 +3256,8 @@ mod tests {
             "fallback path must not stage a vulnentry copy when the fixture cannot be read",
         );
         assert!(
-            h.source.contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
+            h.source
+                .contains("nyxIdorAccessProbe(_NYX_CALLER_ID, payload)"),
             "fallback path must still emit an IDOR probe so the universal sink-hit path fires",
         );
     }

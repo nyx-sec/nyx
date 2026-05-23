@@ -1593,8 +1593,7 @@ pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
         )
     } else {
         let extras: Vec<(String, String)> = vec![("Cargo.toml".into(), cargo_toml)];
-        let invoke =
-            "    nyx_idor_access_probe(_NYX_CALLER_ID, &payload);\n".to_owned();
+        let invoke = "    nyx_idor_access_probe(_NYX_CALLER_ID, &payload);\n".to_owned();
         (
             String::new(),
             invoke,
@@ -1700,11 +1699,12 @@ pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
         let extras: Vec<(String, String)> = vec![
             ("Cargo.toml".into(), cargo_toml),
             ("src/entry.rs".into(), rewritten),
-            ("src/nyx_http.rs".into(), nyx_http_module_source().to_owned()),
+            (
+                "src/nyx_http.rs".into(),
+                nyx_http_module_source().to_owned(),
+            ),
         ];
-        let invoke = format!(
-            "    let _ = entry::{entry_fn}(&payload);\n",
-        );
+        let invoke = format!("    let _ = entry::{entry_fn}(&payload);\n",);
         (
             "mod entry;\nmod nyx_http;\n".to_owned(),
             invoke,
@@ -3702,8 +3702,7 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source
-                .contains("const _NYX_CALLER_ID: &str = \"alice\";"),
+            h.source.contains("const _NYX_CALLER_ID: &str = \"alice\";"),
             "Rust UNAUTHORIZED_ID harness must pin caller_id to \"alice\"",
         );
         assert!(

@@ -140,7 +140,9 @@ mod tests {
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "sign".into(),
-            callees: vec![crate::summary::CalleeSite::bare("MessageDigest.getInstance")],
+            callees: vec![crate::summary::CalleeSite::bare(
+                "MessageDigest.getInstance",
+            )],
             ..Default::default()
         };
         assert!(
@@ -169,7 +171,8 @@ mod tests {
 
     #[test]
     fn skips_plain_method() {
-        let src: &[u8] = b"public class Plain { public static int add(int a, int b) { return a + b; } }\n";
+        let src: &[u8] =
+            b"public class Plain { public static int add(int a, int b) { return a + b; } }\n";
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "add".into(),

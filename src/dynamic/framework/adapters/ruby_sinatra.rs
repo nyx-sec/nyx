@@ -153,10 +153,7 @@ impl FrameworkAdapter for RubySinatraAdapter {
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: route.method,
-                path: route.path.clone(),
-            }),
+            route: Some(RouteShape::single(route.method, route.path.clone())),
             request_params,
             response_writer: None,
             middleware,

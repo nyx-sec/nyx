@@ -3986,10 +3986,8 @@ mod tests {
 
     #[test]
     fn emit_unauthorized_id_harness_derives_basename_from_entry_file() {
-        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
-            "/abs/path/benign.php",
-            "run",
-        ));
+        let h =
+            emit_unauthorized_id_harness(&make_unauthorized_id_spec("/abs/path/benign.php", "run"));
         assert!(
             h.source.contains("\"benign.php\""),
             "PHP UNAUTHORIZED_ID harness must use the entry-file basename, not a hard-coded literal: {}",

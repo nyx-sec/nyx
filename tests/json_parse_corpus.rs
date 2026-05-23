@@ -183,7 +183,9 @@ mod e2e_json_parse_depth {
                 Lang::Go => "go",
                 Lang::Rust => "rust",
                 Lang::Java => "java",
-                _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"),
+                _ => unreachable!(
+                    "JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"
+                ),
             })
             .join(fixture);
         let tmp = TempDir::new().expect("create tempdir");
@@ -230,7 +232,9 @@ mod e2e_json_parse_depth {
             Lang::Go => "go",
             Lang::Rust => "cargo",
             Lang::Java => "javac",
-            _ => unreachable!("JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"),
+            _ => unreachable!(
+                "JSON_PARSE depth e2e covers JS / Python / Ruby / PHP / Go / Rust / Java only"
+            ),
         };
         if !command_available(required) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");

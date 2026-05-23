@@ -19,15 +19,7 @@ fn callee_is_outbound_http(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "urlopen"
-            | "get"
-            | "post"
-            | "put"
-            | "patch"
-            | "delete"
-            | "request"
-            | "Request"
-            | "send"
+        "urlopen" | "get" | "post" | "put" | "patch" | "delete" | "request" | "Request" | "send"
     ) || matches!(
         name,
         "urllib.request.urlopen"

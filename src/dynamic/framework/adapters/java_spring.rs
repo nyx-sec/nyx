@@ -128,10 +128,7 @@ fn detect_spring(
     Some(FrameworkBinding {
         adapter: ADAPTER_NAME.to_owned(),
         kind: EntryKind::HttpRoute,
-        route: Some(RouteShape {
-            method: http_method,
-            path,
-        }),
+        route: Some(RouteShape::single(http_method, path)),
         request_params,
         response_writer: None,
         middleware,

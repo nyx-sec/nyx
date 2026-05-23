@@ -545,6 +545,9 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
 
 fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
     let go_bin = std::env::var("NYX_GO_BIN").unwrap_or_else(|_| "go".to_owned());
+    let go_cache = std::env::var("GOCACHE")
+        .unwrap_or_else(|_| workdir.join(".gocache").to_string_lossy().into_owned());
+    std::fs::create_dir_all(&go_cache).map_err(|e| format!("create GOCACHE: {e}"))?;
     let output = Command::new(&go_bin)
         .args([
             "build",
@@ -556,6 +559,7 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("GOCACHE", go_cache)
         .env(
             "GOPATH",
             std::env::var("GOPATH").unwrap_or_else(|_| {

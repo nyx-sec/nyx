@@ -2864,7 +2864,10 @@ mod tests {
             "tests/dynamic_fixtures/json_parse_depth/ruby/vuln.rb",
             "run",
         ));
-        assert!(h.source.contains("_nyx_orig_json_parse = JSON.method(:parse)"));
+        assert!(
+            h.source
+                .contains("_nyx_orig_json_parse = JSON.method(:parse)")
+        );
         assert!(
             h.source.contains("JSON.define_singleton_method(:parse)"),
             "must rebind JSON.parse: {}",
@@ -2956,8 +2959,7 @@ mod tests {
             h.source
         );
         assert!(
-            h.source
-                .contains("_nyx_idor_probe(NYX_CALLER_ID, payload)"),
+            h.source.contains("_nyx_idor_probe(NYX_CALLER_ID, payload)"),
             "harness must emit the IDOR probe with the hard-coded caller and the payload owner_id: {}",
             h.source
         );
@@ -2983,8 +2985,7 @@ mod tests {
             "run",
         ));
         assert!(
-            h.source
-                .contains("def _nyx_idor_via_fixture(payload)"),
+            h.source.contains("def _nyx_idor_via_fixture(payload)"),
             "Ruby UNAUTHORIZED_ID harness must define the fixture-routing helper: {}",
             h.source
         );
@@ -2996,10 +2997,8 @@ mod tests {
 
     #[test]
     fn emit_unauthorized_id_harness_derives_entry_basename_from_entry_file() {
-        let h = emit_unauthorized_id_harness(&make_unauthorized_id_spec(
-            "/abs/path/benign.rb",
-            "run",
-        ));
+        let h =
+            emit_unauthorized_id_harness(&make_unauthorized_id_spec("/abs/path/benign.rb", "run"));
         assert!(h.source.contains("require_relative './benign'"));
     }
 
@@ -3019,8 +3018,7 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            h.source
-                .contains("Net::HTTP.define_singleton_method(:get)"),
+            h.source.contains("Net::HTTP.define_singleton_method(:get)"),
             "dispatcher must short-circuit Cap::DATA_EXFIL into emit_data_exfil_harness: {}",
             h.source
         );

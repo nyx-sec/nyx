@@ -148,7 +148,7 @@ fn detect_koa(
         return Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape { method, path }),
+            route: Some(RouteShape::single(method, path)),
             request_params,
             response_writer: None,
             middleware,
@@ -162,10 +162,7 @@ fn detect_koa(
         return Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: HttpMethod::GET,
-                path: "/".to_owned(),
-            }),
+            route: Some(RouteShape::single(HttpMethod::GET, "/")),
             request_params,
             response_writer: None,
             middleware: vec![MiddlewareShape {

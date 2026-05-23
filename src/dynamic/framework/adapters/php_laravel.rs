@@ -14,15 +14,15 @@
 
 #[cfg(test)]
 use crate::dynamic::framework::HttpMethod;
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
+use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::php_routes::{
-    bind_php_path_params, collect_php_middleware, find_laravel_static_route, find_php_function,
-    php_class_name, php_formal_names, source_imports_laravel,
+    bind_php_path_params, collect_php_middleware, find_laravel_static_route_shape,
+    find_php_function, php_class_name, php_formal_names, source_imports_laravel,
 };
 
 pub struct PhpLaravelAdapter;
@@ -50,16 +50,16 @@ impl FrameworkAdapter for PhpLaravelAdapter {
         let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
         let controller = class.and_then(|c| php_class_name(c, file_bytes));
 
-        let (method, path) = find_laravel_static_route(ast, file_bytes, &summary.name, controller)?;
+        let route = find_laravel_static_route_shape(ast, file_bytes, &summary.name, controller)?;
 
         let formals = php_formal_names(func_node, file_bytes);
-        let request_params = bind_php_path_params(&formals, &path);
+        let request_params = bind_php_path_params(&formals, &route.path);
         let middleware = collect_php_middleware(ast, file_bytes);
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape { method, path }),
+            route: Some(route),
             request_params,
             response_writer: None,
             middleware,
@@ -137,6 +137,22 @@ mod tests {
             .detect(&summary("destroy"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::DELETE);
+    }
+
+    #[test]
+    fn preserves_match_route_methods() {
+        let src: &[u8] = b"<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::match(['POST', 'PATCH'], '/jobs/{id}', [JobController::class, 'run']);\nclass JobController {\n  public function run($id) { return $id; }\n}\n";
+        let tree = parse(src);
+        let binding = PhpLaravelAdapter
+            .detect(&summary("run"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::POST);
+        assert_eq!(
+            route.reachable_methods(),
+            vec![HttpMethod::POST, HttpMethod::PATCH]
+        );
+        assert_eq!(route.path, "/jobs/{id}");
     }
 
     #[test]

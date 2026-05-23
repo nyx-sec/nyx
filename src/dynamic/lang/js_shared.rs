@@ -3253,10 +3253,7 @@ mod tests {
         spec.framework = Some(FrameworkBinding {
             adapter: "test-adapter".into(),
             kind: EntryKind::HttpRoute,
-            route: Some(RouteShape {
-                method: HttpMethod::GET,
-                path: route_path.into(),
-            }),
+            route: Some(RouteShape::single(HttpMethod::GET, route_path)),
             request_params: vec![],
             response_writer: None,
             middleware: vec![],
