@@ -1928,6 +1928,7 @@ func main() {{
 		}}
 	}}
 	out := m.Call(args)
+	fmt.Println("__NYX_SINK_HIT__")
 	if len(out) > 0 {{
 		fmt.Println(out[0].Interface())
 	}}

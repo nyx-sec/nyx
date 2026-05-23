@@ -6,11 +6,11 @@
 
 void UserService_run(const char *input, size_t len) {
     (void)len;
-    /* Uses execve via fork; the shell never sees `input`. */
+    /* Uses execve via fork; the shell never sees or echoes `input`. */
     pid_t pid = fork();
     if (pid == 0) {
-        char *argv[] = { (char*)"/bin/echo", (char*)(input ? input : ""), NULL };
-        execv("/bin/echo", argv);
+        char *argv[] = { (char*)"/usr/bin/true", (char*)(input ? input : ""), NULL };
+        execv("/usr/bin/true", argv);
         _exit(127);
     }
 }

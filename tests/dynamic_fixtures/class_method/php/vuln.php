@@ -9,6 +9,6 @@ class UserService {
 
     public function run($input) {
         // SINK: tainted input → shell.
-        return shell_exec('echo ' . $input);
+        return shell_exec('true ' . $input);
     }
 }

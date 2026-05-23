@@ -5,6 +5,6 @@ class UserService {
     public function __construct() {}
 
     public function run($input) {
-        return shell_exec('echo ' . escapeshellarg($input));
+        return shell_exec('true ' . escapeshellarg($input));
     }
 }

@@ -11,6 +11,8 @@
 
 #![cfg(feature = "dynamic")]
 
+mod common;
+
 use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
@@ -65,6 +67,24 @@ fn laravel_benign_fixture_binds_same_route_shape() {
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "/run");
     assert_eq!(route.method, HttpMethod::GET);
+}
+
+#[test]
+fn laravel_multi_verb_fixture_preserves_match_methods() {
+    let path = "tests/dynamic_fixtures/php_frameworks/laravel_multi_verb/vuln.php";
+    let bytes = std::fs::read(path).expect("laravel multi-verb fixture exists");
+    let tree = parse_php(&bytes);
+    let summary = summary_for("run", path);
+    let binding = detect_binding(&summary, tree.root_node(), &bytes, Lang::Php)
+        .expect("laravel adapter must bind multi-verb fixture");
+    assert_eq!(binding.adapter, "php-laravel");
+    let route = binding.route.as_ref().expect("route");
+    assert_eq!(route.path, "/run");
+    assert_eq!(route.method, HttpMethod::GET);
+    assert_eq!(
+        route.reachable_methods(),
+        vec![HttpMethod::GET, HttpMethod::POST]
+    );
 }
 
 #[test]
@@ -134,4 +154,135 @@ fn laravel_adapter_ignores_helper_method() {
     let summary = summary_for("nonexistent_helper", path);
     let binding = detect_binding(&summary, tree.root_node(), &bytes, Lang::Php);
     assert!(binding.is_none());
+}
+
+mod e2e_phase_16_laravel_multi_verb {
+    use super::{common::fixture_harness::FIXTURE_LOCK, parse_php, summary_for};
+    use nyx_scanner::dynamic::framework::{HttpMethod, detect_binding};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::spec::{
+        EntryKind, HarnessSpec, JavaToolchain, PayloadSlot, SpecDerivationStrategy,
+        default_toolchain_id,
+    };
+    use nyx_scanner::evidence::DifferentialVerdict;
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn command_available(bin: &str) -> bool {
+        Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn fixture_path(file: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/php_frameworks/laravel_multi_verb")
+            .join(file)
+    }
+
+    fn build_spec(file: &str) -> (HarnessSpec, TempDir) {
+        let src = fixture_path(file);
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(file);
+        std::fs::copy(&src, &dst).expect("copy fixture into tempdir");
+        let entry_file = dst.to_string_lossy().into_owned();
+        let bytes = std::fs::read(&dst).expect("copied fixture readable");
+        let tree = parse_php(&bytes);
+        let summary = summary_for("run", &entry_file);
+        let framework = detect_binding(&summary, tree.root_node(), &bytes, Lang::Php)
+            .expect("multi-verb Laravel fixture must bind");
+        let route = framework.route.as_ref().expect("route");
+        assert_eq!(
+            route.reachable_methods(),
+            vec![HttpMethod::GET, HttpMethod::POST],
+            "fixture must exercise GET+POST fanout"
+        );
+
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase16-e2e-php-laravel-multi-verb|");
+        digest.update(file.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: "run".to_owned(),
+            entry_kind: EntryKind::HttpRoute,
+            lang: Lang::Php,
+            toolchain_id: default_toolchain_id(Lang::Php).to_owned(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::CODE_EXEC,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash,
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: Some(framework),
+            java_toolchain: JavaToolchain::default(),
+        };
+        (spec, tmp)
+    }
+
+    fn run(file: &str) -> Option<RunOutcome> {
+        if !command_available("php") {
+            eprintln!("SKIP laravel_multi_verb/{file}: missing php");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(file);
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP laravel_multi_verb/{file}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec(laravel_multi_verb/{file}) errored: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn laravel_match_post_branch_confirms_via_run_spec() {
+        let Some(outcome) = run("vuln.php") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Laravel Route::match vuln must Confirm via POST fanout; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry differential outcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn laravel_match_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run("benign.php") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Laravel Route::match benign control must not Confirm; got {outcome:?}",
+        );
+        if let Some(diff) = &outcome.differential {
+            assert_ne!(diff.verdict, DifferentialVerdict::Confirmed);
+        }
+    }
 }

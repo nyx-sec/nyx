@@ -6,6 +6,6 @@ import "os/exec"
 type UserService struct{}
 
 func (UserService) Run(input string) string {
-	out, _ := exec.Command("/bin/echo", input).Output()
+	out, _ := exec.Command("true", input).Output()
 	return string(out)
 }

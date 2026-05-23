@@ -10,7 +10,7 @@ class UserService {
 public:
     UserService() = default;
     void run(const std::string& input) {
-        std::string cmd = std::string("echo ") + input;
+        std::string cmd = std::string("true ") + input;
         // SINK: tainted input → system(3)
         std::system(cmd.c_str());
     }

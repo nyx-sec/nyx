@@ -10,7 +10,7 @@ pub struct UserService;
 impl UserService {
     pub fn run(&self, input: &str) -> String {
         // SINK: tainted input → shell -c
-        let cmd = format!("echo {}", input);
+        let cmd = format!("true {}", input);
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(&cmd)

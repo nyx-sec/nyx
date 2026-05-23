@@ -607,6 +607,7 @@ unless instance.respond_to?({method:?})
 end
 begin
   result = instance.send({method:?}, $nyx_payload)
+  puts "__NYX_SINK_HIT__"
   print(result.to_s) if result
 rescue StandardError => e
   STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")

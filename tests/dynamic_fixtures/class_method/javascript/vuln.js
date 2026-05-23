@@ -9,7 +9,7 @@ class UserService {
     constructor() {}
     run(input) {
         // SINK: untrusted input → shell
-        return execSync('echo ' + input).toString();
+        return execSync('true ' + input).toString();
     }
 }
 

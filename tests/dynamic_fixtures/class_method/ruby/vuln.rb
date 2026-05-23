@@ -8,6 +8,6 @@ class UserService
 
   def run(input)
     # SINK: tainted input → shell
-    `echo #{input}`
+    `true #{input}`
   end
 end

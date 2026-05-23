@@ -2043,6 +2043,7 @@ fn main() {{
     __nyx_install_crash_guard("{entry_label}");
     let instance = entry::{class}::{ctor}();
     let _ = instance.{method}(&payload);
+    println!("__NYX_SINK_HIT__");
 }}
 
 fn nyx_payload() -> String {{

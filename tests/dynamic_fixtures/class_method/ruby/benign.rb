@@ -6,6 +6,6 @@ class UserService
   end
 
   def run(input)
-    `echo #{Shellwords.escape(input)}`
+    `true #{Shellwords.escape(input)}`
   end
 end

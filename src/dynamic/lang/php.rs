@@ -29,6 +29,7 @@
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
+use crate::dynamic::framework::HttpMethod;
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
@@ -1943,6 +1944,7 @@ fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let call_expr = build_call_expr(spec, shape, entry_fn);
     let shim = probe_shim();
     let toolchain_marker = build_toolchain_marker(shape);
+    let route_methods_fn = build_route_methods_fn(spec);
     let crash_callee = if entry_fn.is_empty() {
         "main"
     } else {
@@ -1966,6 +1968,8 @@ function nyx_payload(): string {{
     return '';
 }}
 
+{route_methods_fn}
+
 $payload = nyx_payload();
 
 // Phase 08 sink-site signal handler: install AFTER payload decode so a crash
@@ -1980,13 +1984,21 @@ __nyx_install_crash_guard('{crash_callee}');
 {entry_block}
 // ── Framework toolchain marker (Phase 16 — Track L.14) ────────────────────────
 {toolchain_marker}// ── Call entry point ──────────────────────────────────────────────────────────
-try {{
-    $result = {call_expr};
-    if ($result !== null) {{
-        echo $result . "\n";
+foreach (__nyx_route_methods() as $__nyx_method) {{
+    if ($__nyx_method !== '') {{
+        $_SERVER['REQUEST_METHOD'] = $__nyx_method;
+        putenv('REQUEST_METHOD=' . $__nyx_method);
+        $_ENV['REQUEST_METHOD'] = $__nyx_method;
+        $GLOBALS['__nyx_request_method'] = $__nyx_method;
     }}
-}} catch (Throwable $e) {{
-    fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+    try {{
+        $result = {call_expr};
+        if ($result !== null) {{
+            echo $result . "\n";
+        }}
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+    }}
 }}
 "#,
         shape = shape,
@@ -1995,8 +2007,43 @@ try {{
         call_expr = call_expr,
         shim = shim,
         toolchain_marker = toolchain_marker,
+        route_methods_fn = route_methods_fn,
         crash_callee = crash_callee,
     )
+}
+
+fn build_route_methods_fn(spec: &HarnessSpec) -> String {
+    let mut methods = spec
+        .framework
+        .as_ref()
+        .and_then(|binding| binding.route.as_ref())
+        .map(|route| route.reachable_methods())
+        .unwrap_or_default();
+    if methods.is_empty() && matches!(spec.entry_kind, crate::evidence::EntryKind::HttpRoute) {
+        methods.push(HttpMethod::GET);
+    }
+    let body = if methods.is_empty() {
+        "''".to_owned()
+    } else {
+        methods
+            .iter()
+            .map(|method| format!("'{}'", http_method_name(*method)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("function __nyx_route_methods(): array {{\n    return [{body}];\n}}\n",)
+}
+
+fn http_method_name(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::GET => "GET",
+        HttpMethod::HEAD => "HEAD",
+        HttpMethod::POST => "POST",
+        HttpMethod::PUT => "PUT",
+        HttpMethod::PATCH => "PATCH",
+        HttpMethod::DELETE => "DELETE",
+        HttpMethod::OPTIONS => "OPTIONS",
+    }
 }
 
 fn build_pre_call(spec: &HarnessSpec, shape: PhpShape) -> String {
@@ -2671,6 +2718,7 @@ if (!method_exists($instance, {method_lit:?})) {{
 }}
 try {{
     $result = call_user_func([$instance, {method_lit:?}], $payload);
+    echo "__NYX_SINK_HIT__\n";
     if ($result !== null) {{
         echo $result . "\n";
     }}
@@ -2889,6 +2937,7 @@ fn function_exists_call(_func: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic::framework::{FrameworkBinding, RouteShape};
     use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
@@ -3046,6 +3095,26 @@ mod tests {
         let src = generate_source(&spec, PhpShape::LaravelRoute);
         assert!(src.contains("NYX_LARAVEL_TEST=1"));
         assert!(src.contains("$GLOBALS['__nyx_route']"));
+    }
+
+    #[test]
+    fn laravel_shape_fans_out_framework_route_methods() {
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        spec.framework = Some(FrameworkBinding {
+            adapter: "php-laravel".to_owned(),
+            kind: EntryKind::HttpRoute,
+            route: Some(RouteShape::multi(
+                vec![HttpMethod::GET, HttpMethod::POST, HttpMethod::PATCH],
+                "/run",
+            )),
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        });
+        let src = generate_source(&spec, PhpShape::LaravelRoute);
+        assert!(src.contains("return ['GET', 'POST', 'PATCH'];"));
+        assert!(src.contains("foreach (__nyx_route_methods() as $__nyx_method)"));
+        assert!(src.contains("$_SERVER['REQUEST_METHOD'] = $__nyx_method;"));
     }
 
     #[test]

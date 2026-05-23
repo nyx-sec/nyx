@@ -503,6 +503,7 @@ int main(int argc, char *argv[]) {{
     if (!payload) payload = (char*)"";
     __nyx_install_crash_guard("{symbol}");
     {symbol}(payload, strlen(payload));
+    puts("__NYX_SINK_HIT__");
     return 0;
 }}
 

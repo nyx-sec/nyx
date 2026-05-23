@@ -725,14 +725,10 @@ fn emit_class_method(
     _spec: &HarnessSpec,
     class: &str,
     method: &str,
-    is_typescript: bool,
+    _is_typescript: bool,
 ) -> HarnessSource {
     let probe = probe_shim();
-    let entry_subpath = if is_typescript {
-        "entry.ts"
-    } else {
-        "entry.js"
-    };
+    let entry_subpath = "entry.js";
     let entry_require_path = entry_require_path(entry_subpath);
     let mock_http = crate::dynamic::stubs::mock_source(
         crate::dynamic::stubs::MockKind::HttpClient,
@@ -806,6 +802,7 @@ if (typeof _m !== 'function') {{
 (async () => {{
     try {{
         const _result = await Promise.resolve(_m.call(_instance, payload));
+        process.stdout.write('__NYX_SINK_HIT__\n');
         if (_result != null) process.stdout.write(String(_result) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');

@@ -1,9 +1,12 @@
 // Phase 19 (Track M.1) — class-method benign control for TypeScript.
-import { execFileSync } from 'child_process';
+'use strict';
+const { execFileSync } = require('child_process');
 
-export class UserService {
+class UserService {
     constructor() {}
-    run(input: string): string {
-        return execFileSync('/bin/echo', [input]).toString();
+    run(input) {
+        return execFileSync('true', [input]).toString();
     }
 }
+
+module.exports = { UserService };

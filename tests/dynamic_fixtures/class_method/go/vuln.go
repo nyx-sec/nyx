@@ -12,6 +12,6 @@ type UserService struct{}
 
 func (UserService) Run(input string) string {
 	// SINK: tainted input → shell -c
-	out, _ := exec.Command("sh", "-c", "echo "+input).Output()
+	out, _ := exec.Command("sh", "-c", "true "+input).Output()
 	return string(out)
 }

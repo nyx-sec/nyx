@@ -3383,6 +3383,7 @@ public class NyxHarness {{
                 mArgs[i] = params[i].equals(String.class) ? payload : nyxStubForType(params[i]);
             }}
             match.invoke(instance, mArgs);
+            System.out.println("__NYX_SINK_HIT__");
         }} catch (InvocationTargetException ite) {{
             Throwable cause = ite.getCause() == null ? ite : ite.getCause();
             System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());

@@ -5,7 +5,7 @@ pub struct UserService;
 
 impl UserService {
     pub fn run(&self, input: &str) -> String {
-        let out = std::process::Command::new("/bin/echo")
+        let out = std::process::Command::new("true")
             .arg(input)
             .output()
             .expect("exec");

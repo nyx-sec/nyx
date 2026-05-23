@@ -9,8 +9,8 @@ public:
     void run(const std::string& input) {
         pid_t pid = fork();
         if (pid == 0) {
-            const char* argv[] = { "/bin/echo", input.c_str(), nullptr };
-            execv("/bin/echo", const_cast<char* const*>(argv));
+            const char* argv[] = { "/usr/bin/true", input.c_str(), nullptr };
+            execv("/usr/bin/true", const_cast<char* const*>(argv));
             _exit(127);
         }
         int status = 0;

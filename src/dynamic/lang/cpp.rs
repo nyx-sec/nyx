@@ -451,6 +451,7 @@ int main(int argc, char *argv[]) {{
     __nyx_install_crash_guard("{class}::{method}");
     {class} instance;
     instance.{method}(payload);
+    std::cout << "__NYX_SINK_HIT__" << std::endl;
     return 0;
 }}
 

@@ -10,7 +10,7 @@
 void UserService_run(const char *input, size_t len) {
     (void)len;
     char buf[512];
-    snprintf(buf, sizeof(buf), "echo %s", input ? input : "");
+    snprintf(buf, sizeof(buf), "true %s", input ? input : "");
     /* SINK: tainted input → system(3) */
     system(buf);
 }

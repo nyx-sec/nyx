@@ -875,6 +875,7 @@ try:
         print("NYX_METHOD_NOT_FOUND: " + {method:?}, file=sys.stderr, flush=True)
         sys.exit(78)
     _result = _m(payload)
+    print("__NYX_SINK_HIT__", flush=True)
     if _result is not None:
         try:
             print(str(_result), flush=True)
