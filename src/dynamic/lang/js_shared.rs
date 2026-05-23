@@ -894,7 +894,7 @@ _broker.subscribe({queue:?}, async (envelope) => {{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: message_handler_dependency_files(spec),
         entry_subpath: Some(entry_subpath.to_owned()),
     }
 }
@@ -2446,6 +2446,65 @@ fn read_entry_source(entry_file: &str) -> String {
     String::new()
 }
 
+fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let source = read_entry_source(&spec.entry_file);
+    let deps = js_message_handler_deps(&source);
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        (
+            "package.json".to_owned(),
+            package_json_multi("nyx-harness-message-handler", &deps),
+        ),
+        (
+            "package-lock.json".to_owned(),
+            package_lock_skeleton("nyx-harness-message-handler"),
+        ),
+    ]
+}
+
+fn js_message_handler_deps(source: &str) -> Vec<(&'static str, &'static str)> {
+    let mut deps = Vec::new();
+    for raw_line in source.lines() {
+        let line = raw_line.trim_start();
+        if line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
+            continue;
+        }
+        if (line.contains("= require('@aws-sdk/client-sqs')")
+            || line.contains("= require(\"@aws-sdk/client-sqs\")")
+            || line.starts_with("import ")
+                && (line.contains(" from '@aws-sdk/client-sqs'")
+                    || line.contains(" from \"@aws-sdk/client-sqs\"")))
+            && !deps.iter().any(|(name, _)| *name == "@aws-sdk/client-sqs")
+        {
+            deps.push(("@aws-sdk/client-sqs", "^3.583.0"));
+        }
+        if (line.contains("= require('aws-sdk/clients/sqs')")
+            || line.contains("= require(\"aws-sdk/clients/sqs\")")
+            || line.starts_with("import ")
+                && (line.contains(" from 'aws-sdk/clients/sqs'")
+                    || line.contains(" from \"aws-sdk/clients/sqs\"")))
+            && !deps.iter().any(|(name, _)| *name == "aws-sdk")
+        {
+            deps.push(("aws-sdk", "^2.1692.0"));
+        }
+        if (line.contains("= require('sqs-consumer')")
+            || line.contains("= require(\"sqs-consumer\")")
+            || line.starts_with("import ")
+                && (line.contains(" from 'sqs-consumer'")
+                    || line.contains(" from \"sqs-consumer\"")))
+            && !deps.iter().any(|(name, _)| *name == "sqs-consumer")
+        {
+            deps.push(("sqs-consumer", "^11.5.0"));
+        }
+    }
+    deps
+}
+
 /// File name the harness's `require` / `import()` will reach for.
 ///
 /// Both JS and TS fixtures stage their entry source at `workdir/entry.js`
@@ -3338,6 +3397,63 @@ mod tests {
     fn extra_files_for_commonjs_is_empty() {
         let extras = extra_files_for_shape(JsShape::CommonJsExport);
         assert!(extras.is_empty());
+    }
+
+    #[test]
+    fn message_handler_deps_ignore_string_markers() {
+        let src = r#"
+const _markerRequire = "require('sqs-consumer')";
+const _markerImport = "@aws-sdk/client-sqs";
+"#;
+        assert!(js_message_handler_deps(src).is_empty());
+    }
+
+    #[test]
+    fn message_handler_deps_detect_real_sqs_imports() {
+        let src = r#"
+const { Consumer } = require('sqs-consumer');
+const { SQSClient } = require('@aws-sdk/client-sqs');
+const SQS = require('aws-sdk/clients/sqs');
+"#;
+        let deps = js_message_handler_deps(src);
+        assert!(deps.iter().any(|(name, _)| *name == "sqs-consumer"));
+        assert!(deps.iter().any(|(name, _)| *name == "@aws-sdk/client-sqs"));
+        assert!(deps.iter().any(|(name, _)| *name == "aws-sdk"));
+    }
+
+    #[test]
+    fn emit_message_handler_stages_package_json_for_hard_imports() {
+        let dir = std::env::temp_dir().join("nyx_message_handler_node_deps");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("entry.js");
+        std::fs::write(
+            &entry,
+            "const { Consumer } = require('sqs-consumer');\n\
+             function handler(envelope) { return envelope.Body; }\n\
+             module.exports = { handler };\n",
+        )
+        .unwrap();
+
+        let mut spec = make_spec(
+            EntryKind::MessageHandler {
+                queue: "jobs".to_owned(),
+                message_schema: None,
+            },
+            "handler",
+            PayloadSlot::Param(0),
+        );
+        spec.entry_file = entry.to_string_lossy().into_owned();
+
+        let h = emit(&spec, false).unwrap();
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(p, c)| p == "package.json" && c.contains("sqs-consumer")),
+            "message handler must stage package.json for hard broker imports"
+        );
+        assert!(h.extra_files.iter().any(|(p, _)| p == "package-lock.json"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1009,7 +1009,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: message_handler_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -3072,6 +3072,55 @@ fn read_entry_source(entry_file: &str) -> String {
     String::new()
 }
 
+fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let source = read_entry_source(&spec.entry_file);
+    let deps = python_message_handler_deps(&source);
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    let mut body = String::new();
+    for dep in deps {
+        body.push_str(dep);
+        body.push('\n');
+    }
+    vec![("requirements.txt".to_owned(), body)]
+}
+
+fn python_message_handler_deps(source: &str) -> Vec<&'static str> {
+    let mut deps = Vec::new();
+    for raw_line in source.lines() {
+        let line = raw_line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        if (line.starts_with("from kafka import") || line.starts_with("import kafka"))
+            && !deps.contains(&"kafka-python")
+        {
+            deps.push("kafka-python");
+        }
+        if (line.starts_with("import boto3") || line.starts_with("from boto3 import"))
+            && !deps.contains(&"boto3")
+        {
+            deps.push("boto3");
+        }
+        if (line.starts_with("from google.cloud import pubsub")
+            || line.starts_with("import google.cloud.pubsub"))
+            && !deps.contains(&"google-cloud-pubsub")
+        {
+            deps.push("google-cloud-pubsub");
+        }
+        if (line.starts_with("import pika") || line.starts_with("from pika import"))
+            && !deps.contains(&"pika")
+        {
+            deps.push("pika");
+        }
+    }
+    deps
+}
+
 fn extra_files_for_shape(shape: PythonShape) -> Vec<(String, String)> {
     match shape {
         PythonShape::FlaskRoute => vec![("requirements.txt".to_owned(), "Flask\n".to_owned())],
@@ -3996,6 +4045,61 @@ mod tests {
         assert!(extras.iter().any(|(p, c)| p == "requirements.txt"
             && c.contains("starlette")
             && c.contains("httpx")));
+    }
+
+    #[test]
+    fn message_handler_deps_ignore_string_markers() {
+        let src = r#"
+_NYX_ADAPTER_MARKER = "from kafka import KafkaConsumer"
+_OTHER = "boto3.client('sqs')"
+"#;
+        assert!(python_message_handler_deps(src).is_empty());
+    }
+
+    #[test]
+    fn message_handler_deps_detect_real_python_broker_imports() {
+        let src = r#"
+from kafka import KafkaConsumer
+import boto3
+from google.cloud import pubsub_v1
+import pika
+"#;
+        assert_eq!(
+            python_message_handler_deps(src),
+            vec!["kafka-python", "boto3", "google-cloud-pubsub", "pika"]
+        );
+    }
+
+    #[test]
+    fn emit_message_handler_stages_requirements_for_hard_imports() {
+        let dir = std::env::temp_dir().join("nyx_message_handler_python_deps");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("entry.py");
+        std::fs::write(
+            &entry,
+            "from kafka import KafkaConsumer\n\
+             def handler(message):\n\
+                 return str(message)\n",
+        )
+        .unwrap();
+
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_file = entry.to_string_lossy().into_owned();
+        spec.entry_name = "handler".to_owned();
+        spec.entry_kind = EntryKind::MessageHandler {
+            queue: "orders".to_owned(),
+            message_schema: None,
+        };
+        spec.expected_cap = Cap::CODE_EXEC;
+
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.extra_files
+                .iter()
+                .any(|(p, c)| { p == "requirements.txt" && c.contains("kafka-python") })
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn make_spec_with(kind: EntryKind, name: &str) -> HarnessSpec {
