@@ -8,6 +8,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct MigrationPrismaAdapter;
@@ -44,6 +45,15 @@ fn source_imports_prisma_migration(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+fn name_is_prisma_migration_entry(name: &str) -> bool {
+    matches!(name, "up" | "down" | "migrate" | "deploy" | "seed")
+}
+
+fn typed_container_allows_prisma(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("prisma")
+}
+
 impl FrameworkAdapter for MigrationPrismaAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -56,29 +66,56 @@ impl FrameworkAdapter for MigrationPrismaAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_prisma_migration);
-        let matches_source = source_imports_prisma_migration(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Migration { version: None },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
-        }
+        detect_prisma_migration(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_prisma_migration(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_prisma_migration(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_prisma_migration(file_bytes) {
+        return None;
+    }
+    let raw_call = super::any_callee_matches(summary, callee_is_prisma_migration)
+        && super::typed_receiver_facts_allow(
+            summary,
+            ssa_summary,
+            callee_is_prisma_migration,
+            typed_container_allows_prisma,
+        );
+    if !(name_is_prisma_migration_entry(&summary.name) || raw_call) {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::Migration { version: None },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_js(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -101,5 +138,75 @@ mod tests {
             .expect("prisma migration binds");
         assert_eq!(binding.adapter, "migration-prisma");
         assert!(matches!(binding.kind, EntryKind::Migration { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_prisma_file() {
+        let src: &[u8] = b"const { PrismaClient } = require('@prisma/client');\nconst prisma = new PrismaClient();\n\
+            function formatName(name) { return String(name).trim(); }\n\
+            async function up(name) { await prisma.$executeRawUnsafe('CREATE TABLE ' + name); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "formatName".into(),
+            ..Default::default()
+        };
+        assert!(
+            MigrationPrismaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none(),
+            "Prisma import plus migration entry must not bind unrelated helpers",
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_prisma_raw_call() {
+        let src: &[u8] = b"const { PrismaClient } = require('@prisma/client');\n\
+            async function helper(sql) { await cache.$executeRawUnsafe(sql); }\n";
+        let tree = parse_js(src);
+        let mut summary = FuncSummary {
+            name: "helper".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "cache.$executeRawUnsafe".to_owned(),
+            receiver: Some("cache".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let ssa = SsaFuncSummary {
+            typed_call_receivers: vec![(0, "CacheClient".to_owned())],
+            ..Default::default()
+        };
+        assert!(
+            MigrationPrismaAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_prisma_raw_call() {
+        let src: &[u8] = b"const { PrismaClient } = require('@prisma/client');\n\
+            async function helper(sql) { await prisma.$executeRawUnsafe(sql); }\n";
+        let tree = parse_js(src);
+        let mut summary = FuncSummary {
+            name: "helper".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "prisma.$executeRawUnsafe".to_owned(),
+            receiver: Some("prisma".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let ssa = SsaFuncSummary {
+            typed_call_receivers: vec![(0, "PrismaClient".to_owned())],
+            ..Default::default()
+        };
+        assert!(
+            MigrationPrismaAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

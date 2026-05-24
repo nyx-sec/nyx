@@ -407,6 +407,13 @@ fn is_message_middleware_site(callee: &str, text: &str) -> bool {
         || text_lc.contains("validator")
         || text_lc.contains("interceptor")
         || text_lc.contains("middlewarestack")
+        || text_lc.contains("errorhandler")
+        || text_lc.contains("deadletter")
+        || text_lc.contains("dlq")
+        || text_lc.contains("visibilitytimeout")
+        || text_lc.contains("visibility_timeout")
+        || text_lc.contains("queuegroup")
+        || text_lc.contains("queue_group")
 }
 
 fn push_annotation_candidates(lang: Lang, text: &str, out: &mut Vec<MiddlewareShape>) {
@@ -470,7 +477,6 @@ fn is_message_setup_method(name: &str) -> bool {
             | "withValidator"
             | "withMessageValidator"
             | "UseMiddleware"
-            | "QueueSubscribe"
     )
 }
 

@@ -12,11 +12,12 @@
 //! [`FrameworkBinding::middleware`] with the names of every middleware /
 //! decorator / interceptor / filter recorded at adapter time.  The
 //! [`crate::dynamic::framework::auth_markers`] registry then classifies
-//! each name into one of six categories.  Only `InputValidation` and
+//! each name into a coarse category.  Only `InputValidation` and
 //! `OutputSanitization` actually mitigate injection sinks: an
 //! authentication check rejects requests without a valid principal but
 //! does not sanitize the request bytes; a CSRF guard does not stop SSRF;
-//! a rate limiter just delays the inevitable.  So the demotion rule is
+//! a rate limiter or broker dead-letter/error/visibility policy changes
+//! delivery semantics but not payload safety.  So the demotion rule is
 //! tight: a `Confirmed`/`ConfirmedProvenOob` verdict whose binding's
 //! middleware vec contains at least one `InputValidation` or
 //! `OutputSanitization` entry is downgraded to
@@ -93,7 +94,8 @@ pub fn is_confirmed_class(verdict: DifferentialVerdict) -> bool {
 /// `InputValidation` and `OutputSanitization` qualify; authentication /
 /// authorization rejects unauthorised callers but does not sanitize the
 /// bytes the caller sends, CSRF protects against cross-origin abuse,
-/// and rate limiting throttles rather than scrubs.
+/// and rate limiting / broker-runtime guards throttle or reroute rather
+/// than scrub.
 fn is_demoting_category(kind: AuthMarkerKind) -> bool {
     matches!(
         kind,
@@ -212,6 +214,21 @@ mod tests {
         let kinds = apply_demotion(&mut outcome, Some(&binding), Lang::JavaScript);
         assert!(kinds.is_empty());
         assert_eq!(outcome.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn broker_runtime_guards_do_not_demote() {
+        let mut outcome = make_outcome(DifferentialVerdict::Confirmed);
+        let binding = make_binding(vec![
+            "visibilityTimeout",
+            "deadLetterQueue",
+            "errorHandler",
+            "queueGroup",
+        ]);
+        let kinds = apply_demotion(&mut outcome, Some(&binding), Lang::JavaScript);
+        assert!(kinds.is_empty());
+        assert_eq!(outcome.verdict, DifferentialVerdict::Confirmed);
+        assert!(outcome.known_guards.is_empty());
     }
 
     #[test]

@@ -344,6 +344,14 @@ def handler(envelope):\n    validate_request(envelope)\n",
             &["validateMessage"],
         ),
         (
+            Lang::JavaScript,
+            b"const { Consumer } = require('sqs-consumer');\n\
+              function handler(env) {}\n\
+              Consumer.create({ queueUrl: 'http://localhost/q', visibilityTimeout: 30, handleMessage: handler });\n",
+            "handler",
+            &["visibilityTimeout"],
+        ),
+        (
             Lang::Python,
             b"from google.cloud import pubsub_v1\n\
 def callback(message):\n    validate_schema(message)\n\
@@ -380,13 +388,26 @@ def on_message(ch, method, properties, body):\n    validate_request(body)\n",
             &["ValidatingMessageConverter"],
         ),
         (
+            Lang::Java,
+            b"import org.springframework.amqp.rabbit.annotation.RabbitListener;\n\
+              public class Vuln {\n\
+                @RabbitListener(queues = \"work\")\n\
+                public void onMessage(String body) {}\n\
+                public void configure(Factory factory) {\n\
+                  factory.setCommonErrorHandler(new DefaultErrorHandler());\n\
+                }\n\
+              }\n",
+            "onMessage",
+            &["DefaultErrorHandler"],
+        ),
+        (
             Lang::Go,
             b"package entry\n\
               import \"github.com/nats-io/nats.go\"\n\
               func OnMessage(msg *nats.Msg) { ValidatePayload(msg.Data) }\n\
               func init() { nc.QueueSubscribe(\"events\", \"workers\", OnMessage) }\n",
             "OnMessage",
-            &["ValidatePayload"],
+            &["ValidatePayload", "QueueSubscribe"],
         ),
     ];
 

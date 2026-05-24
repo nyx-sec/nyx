@@ -21,7 +21,7 @@
 //!
 //! Distinct from `crate::auth_analysis::auth_markers`, which serves the
 //! static analyser and tracks router auth-gating only (no
-//! CSRF / validation / sanitization / rate-limit categories).  Both
+//! CSRF / validation / sanitization / broker-runtime categories).  Both
 //! modules can grow new entries independently; the static side gates
 //! route-level finding suppression at scan time, this side gates
 //! verifier-side verdict demotion at oracle time.
@@ -56,6 +56,15 @@ pub enum AuthMarkerKind {
     /// Request-rate throttling.  Examples: `rateLimit`,
     /// `ThrottleRequests`, `Rack::Attack`.
     RateLimit,
+    /// Broker error-handler or retry policy.  These preserve useful
+    /// operator context but do not sanitize payload bytes.
+    ErrorHandling,
+    /// Broker dead-letter queue or dead-letter handler.
+    DeadLetterHandling,
+    /// Broker visibility-timeout / lease-extension policy.
+    VisibilityTimeout,
+    /// Broker queue-group / consumer-group delivery guard.
+    QueueGroup,
 }
 
 type ExactRow = (&'static str, AuthMarkerKind);
@@ -105,6 +114,16 @@ const JS_EXACT: &[ExactRow] = &[
     ("expressRateLimit", AuthMarkerKind::RateLimit),
     ("slowDown", AuthMarkerKind::RateLimit),
     ("ThrottlerGuard", AuthMarkerKind::RateLimit),
+    ("errorHandler", AuthMarkerKind::ErrorHandling),
+    ("handleError", AuthMarkerKind::ErrorHandling),
+    ("deadLetterHandler", AuthMarkerKind::DeadLetterHandling),
+    ("deadLetterQueue", AuthMarkerKind::DeadLetterHandling),
+    ("dlq", AuthMarkerKind::DeadLetterHandling),
+    ("visibilityTimeout", AuthMarkerKind::VisibilityTimeout),
+    ("changeMessageVisibility", AuthMarkerKind::VisibilityTimeout),
+    ("queueGroup", AuthMarkerKind::QueueGroup),
+    ("consumerGroup", AuthMarkerKind::QueueGroup),
+    ("groupId", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for Python middleware (Django, Flask, FastAPI,
@@ -141,6 +160,19 @@ const PYTHON_EXACT: &[ExactRow] = &[
     ("RateLimitMiddleware", AuthMarkerKind::RateLimit),
     ("ratelimit", AuthMarkerKind::RateLimit),
     ("throttle", AuthMarkerKind::RateLimit),
+    ("error_handler", AuthMarkerKind::ErrorHandling),
+    ("handle_error", AuthMarkerKind::ErrorHandling),
+    ("dead_letter_handler", AuthMarkerKind::DeadLetterHandling),
+    ("dead_letter_queue", AuthMarkerKind::DeadLetterHandling),
+    ("dlq", AuthMarkerKind::DeadLetterHandling),
+    ("visibility_timeout", AuthMarkerKind::VisibilityTimeout),
+    (
+        "change_message_visibility",
+        AuthMarkerKind::VisibilityTimeout,
+    ),
+    ("queue_group", AuthMarkerKind::QueueGroup),
+    ("consumer_group", AuthMarkerKind::QueueGroup),
+    ("group_id", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for Java middleware (Spring, Quarkus, Micronaut,
@@ -169,6 +201,21 @@ const JAVA_EXACT: &[ExactRow] = &[
         AuthMarkerKind::InputValidation,
     ),
     ("@RateLimited", AuthMarkerKind::RateLimit),
+    ("DefaultErrorHandler", AuthMarkerKind::ErrorHandling),
+    ("CommonErrorHandler", AuthMarkerKind::ErrorHandling),
+    ("ErrorHandler", AuthMarkerKind::ErrorHandling),
+    (
+        "DeadLetterPublishingRecoverer",
+        AuthMarkerKind::DeadLetterHandling,
+    ),
+    ("DeadLetterQueue", AuthMarkerKind::DeadLetterHandling),
+    ("VisibilityTimeout", AuthMarkerKind::VisibilityTimeout),
+    (
+        "ChangeMessageVisibilityRequest",
+        AuthMarkerKind::VisibilityTimeout,
+    ),
+    ("ConsumerGroup", AuthMarkerKind::QueueGroup),
+    ("GroupId", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for PHP middleware (Laravel, Symfony, CodeIgniter).
@@ -191,6 +238,11 @@ const PHP_EXACT: &[ExactRow] = &[
     ("validated", AuthMarkerKind::InputValidation),
     ("throttle", AuthMarkerKind::RateLimit),
     ("ThrottleRequests", AuthMarkerKind::RateLimit),
+    ("error_handler", AuthMarkerKind::ErrorHandling),
+    ("dead_letter_queue", AuthMarkerKind::DeadLetterHandling),
+    ("dlq", AuthMarkerKind::DeadLetterHandling),
+    ("visibility_timeout", AuthMarkerKind::VisibilityTimeout),
+    ("queue_group", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for Ruby middleware (Rails, Sinatra, Hanami, Rack).
@@ -211,6 +263,11 @@ const RUBY_EXACT: &[ExactRow] = &[
     ("validate_params", AuthMarkerKind::InputValidation),
     ("Rack::Attack", AuthMarkerKind::RateLimit),
     ("throttle", AuthMarkerKind::RateLimit),
+    ("error_handler", AuthMarkerKind::ErrorHandling),
+    ("dead_letter_queue", AuthMarkerKind::DeadLetterHandling),
+    ("dlq", AuthMarkerKind::DeadLetterHandling),
+    ("visibility_timeout", AuthMarkerKind::VisibilityTimeout),
+    ("queue_group", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for Go middleware (gin / echo / fiber / chi).
@@ -232,6 +289,15 @@ const GO_EXACT: &[ExactRow] = &[
     ("RateLimit", AuthMarkerKind::RateLimit),
     ("limiter.New", AuthMarkerKind::RateLimit),
     ("middleware.RateLimit", AuthMarkerKind::RateLimit),
+    ("ErrorHandler", AuthMarkerKind::ErrorHandling),
+    ("DeadLetterHandler", AuthMarkerKind::DeadLetterHandling),
+    ("DeadLetterQueue", AuthMarkerKind::DeadLetterHandling),
+    ("DLQ", AuthMarkerKind::DeadLetterHandling),
+    ("ChangeVisibility", AuthMarkerKind::VisibilityTimeout),
+    ("ChangeMessageVisibility", AuthMarkerKind::VisibilityTimeout),
+    ("QueueSubscribe", AuthMarkerKind::QueueGroup),
+    ("QueueGroup", AuthMarkerKind::QueueGroup),
+    ("ConsumerGroup", AuthMarkerKind::QueueGroup),
 ];
 
 /// Exact-name table for Rust middleware (axum / actix / rocket / warp).
@@ -250,6 +316,11 @@ const RUST_EXACT: &[ExactRow] = &[
     ("rate_limit", AuthMarkerKind::RateLimit),
     ("RateLimitLayer", AuthMarkerKind::RateLimit),
     ("tower_governor", AuthMarkerKind::RateLimit),
+    ("error_handler", AuthMarkerKind::ErrorHandling),
+    ("dead_letter_queue", AuthMarkerKind::DeadLetterHandling),
+    ("dlq", AuthMarkerKind::DeadLetterHandling),
+    ("visibility_timeout", AuthMarkerKind::VisibilityTimeout),
+    ("queue_group", AuthMarkerKind::QueueGroup),
 ];
 
 /// Per-language exact-name table dispatch.  Returns the slice that
@@ -541,6 +612,26 @@ mod tests {
         assert_eq!(
             classify(Lang::Rust, "RateLimitLayer"),
             Some(AuthMarkerKind::RateLimit)
+        );
+    }
+
+    #[test]
+    fn broker_runtime_markers_classified_as_non_demoting_context() {
+        assert_eq!(
+            classify(Lang::JavaScript, "visibilityTimeout"),
+            Some(AuthMarkerKind::VisibilityTimeout)
+        );
+        assert_eq!(
+            classify(Lang::Java, "DefaultErrorHandler"),
+            Some(AuthMarkerKind::ErrorHandling)
+        );
+        assert_eq!(
+            classify(Lang::Go, "QueueSubscribe"),
+            Some(AuthMarkerKind::QueueGroup)
+        );
+        assert_eq!(
+            classify(Lang::Python, "dead_letter_queue"),
+            Some(AuthMarkerKind::DeadLetterHandling)
         );
     }
 

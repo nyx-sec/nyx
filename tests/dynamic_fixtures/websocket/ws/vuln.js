@@ -4,6 +4,7 @@
 // WebSocketServer instance.  It splices the message bytes into a
 // child-process command — classic WS → cmdi shape.
 const _NYX_ADAPTER_MARKER = "require('ws')";
+const _NYX_WS_MESSAGE_MARKER = "wss.on('connection', ws => ws.on('message', onMessage))";
 
 const { execSync } = require('child_process');
 
