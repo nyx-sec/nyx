@@ -196,15 +196,31 @@ fn ts_language_for(lang: Lang) -> tree_sitter::Language {
 
 fn detect_for(lang: Lang, fixture: &str, handler: &str) -> Option<FrameworkBinding> {
     let bytes = std::fs::read(fixture).expect("fixture exists");
+    detect_from_bytes(lang, &bytes, handler)
+}
+
+fn detect_inline(lang: Lang, src: &[u8], handler: &str) -> FrameworkBinding {
+    detect_from_bytes(lang, src, handler).expect("inline source binds")
+}
+
+fn detect_from_bytes(lang: Lang, bytes: &[u8], handler: &str) -> Option<FrameworkBinding> {
     let ts_lang = ts_language_for(lang);
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&ts_lang).unwrap();
-    let tree = parser.parse(&bytes, None).unwrap();
+    let tree = parser.parse(bytes, None).unwrap();
     let summary = FuncSummary {
         name: handler.into(),
         ..Default::default()
     };
-    detect_binding(&summary, tree.root_node(), &bytes, lang)
+    detect_binding(&summary, tree.root_node(), bytes, lang)
+}
+
+fn middleware_names(binding: &FrameworkBinding) -> Vec<String> {
+    binding
+        .middleware
+        .iter()
+        .map(|mw| mw.name.clone())
+        .collect()
 }
 
 #[test]
@@ -273,6 +289,111 @@ fn rabbit_java_adapter_binds_message_handler_kind() {
 fn nats_go_adapter_binds_message_handler_kind() {
     let b = detect_for(Lang::Go, entry_file("nats_go"), "OnMessage").expect("nats-go detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
+}
+
+#[test]
+fn phase20_broker_adapters_collect_guard_middleware() {
+    let cases: &[(Lang, &[u8], &str, &[&str])] = &[
+        (
+            Lang::Python,
+            b"from kafka import KafkaConsumer\n\
+def handler(msg):\n    validate_schema(msg)\n\
+consumer = KafkaConsumer('orders')\n",
+            "handler",
+            &["validate_schema"],
+        ),
+        (
+            Lang::Java,
+            b"import org.springframework.kafka.annotation.KafkaListener;\n\
+              public class Vuln {\n\
+                @KafkaListener(topics = \"orders\")\n\
+                public void onMessage(String body) {}\n\
+                public void configure(Factory factory) {\n\
+                  factory.setRecordInterceptor(new ValidationInterceptor());\n\
+                }\n\
+              }\n",
+            "onMessage",
+            &["ValidationInterceptor"],
+        ),
+        (
+            Lang::Python,
+            b"import boto3\n\
+sq = boto3.client('sqs')\n\
+def handler(envelope):\n    validate_request(envelope)\n",
+            "handler",
+            &["validate_request"],
+        ),
+        (
+            Lang::Java,
+            b"import io.awspring.cloud.sqs.annotation.SqsListener;\n\
+              import javax.validation.Valid;\n\
+              public class Vuln {\n\
+                @SqsListener(\"jobs\")\n\
+                public void handleMessage(@Valid String env) {}\n\
+              }\n",
+            "handleMessage",
+            &["@Valid"],
+        ),
+        (
+            Lang::JavaScript,
+            b"const { SQSClient } = require('@aws-sdk/client-sqs');\n\
+              const client = new SQSClient({});\n\
+              client.middlewareStack.add(validateMessage);\n\
+              function handler(env) {}\n",
+            "handler",
+            &["validateMessage"],
+        ),
+        (
+            Lang::Python,
+            b"from google.cloud import pubsub_v1\n\
+def callback(message):\n    validate_schema(message)\n\
+subscriber = pubsub_v1.SubscriberClient()\n",
+            "callback",
+            &["validate_schema"],
+        ),
+        (
+            Lang::Go,
+            b"package entry\n\
+              import \"cloud.google.com/go/pubsub\"\n\
+              func OnMessage(msg *pubsub.Message) { ValidatePayload(msg.Data) }\n",
+            "OnMessage",
+            &["ValidatePayload"],
+        ),
+        (
+            Lang::Python,
+            b"import pika\n\
+def on_message(ch, method, properties, body):\n    validate_request(body)\n",
+            "on_message",
+            &["validate_request"],
+        ),
+        (
+            Lang::Java,
+            b"import org.springframework.amqp.rabbit.annotation.RabbitListener;\n\
+              public class Vuln {\n\
+                @RabbitListener(queues = \"work\")\n\
+                public void onMessage(String body) {}\n\
+                public void configure(Factory factory) {\n\
+                  factory.setMessageConverter(new ValidatingMessageConverter());\n\
+                }\n\
+              }\n",
+            "onMessage",
+            &["ValidatingMessageConverter"],
+        ),
+        (
+            Lang::Go,
+            b"package entry\n\
+              import \"github.com/nats-io/nats.go\"\n\
+              func OnMessage(msg *nats.Msg) { ValidatePayload(msg.Data) }\n\
+              func init() { nc.QueueSubscribe(\"events\", \"workers\", OnMessage) }\n",
+            "OnMessage",
+            &["ValidatePayload"],
+        ),
+    ];
+
+    for (lang, src, handler, expected) in cases {
+        let binding = detect_inline(*lang, src, handler);
+        assert_eq!(middleware_names(&binding), *expected);
+    }
 }
 
 #[test]

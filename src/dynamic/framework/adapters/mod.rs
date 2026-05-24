@@ -254,6 +254,9 @@ pub use xxe_php::XxePhpAdapter;
 pub use xxe_python::XxePythonAdapter;
 pub use xxe_ruby::XxeRubyAdapter;
 
+use crate::dynamic::framework::{MiddlewareShape, auth_markers};
+use crate::symbol::Lang;
+
 /// True when any callee in `summary.callees` matches `predicate`.
 fn any_callee_matches(
     summary: &crate::summary::FuncSummary,
@@ -294,6 +297,202 @@ fn typed_receiver_facts_allow(
         }
     }
     true
+}
+
+/// Walk a broker consumer source file and collect validator /
+/// middleware names attached around the consumer setup.
+///
+/// The Phase 20 broker adapters all stamp [`EntryKind::MessageHandler`]
+/// bindings, but the protective layer vocabulary is language-wide: JSON
+/// schema validators, Spring AMQP interceptors, SQS middleware stacks, and
+/// Go payload validators should be reported uniformly regardless of broker.
+/// This helper keeps that matching in one place and intentionally returns
+/// only names recognised by the verifier-side auth marker registry.
+fn collect_message_middleware(
+    lang: Lang,
+    root: tree_sitter::Node<'_>,
+    bytes: &[u8],
+) -> Vec<MiddlewareShape> {
+    let mut out = Vec::new();
+    walk_message_middleware(lang, root, bytes, &mut out);
+    out
+}
+
+fn walk_message_middleware(
+    lang: Lang,
+    node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    out: &mut Vec<MiddlewareShape>,
+) {
+    match node.kind() {
+        "call"
+        | "call_expression"
+        | "method_call"
+        | "method_invocation"
+        | "object_creation_expression"
+        | "decorator"
+        | "annotation"
+        | "marker_annotation" => {
+            inspect_message_middleware_node(lang, node, bytes, out);
+        }
+        _ => {}
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_message_middleware(lang, child, bytes, out);
+    }
+}
+
+fn inspect_message_middleware_node(
+    lang: Lang,
+    node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    out: &mut Vec<MiddlewareShape>,
+) {
+    let text = node.utf8_text(bytes).unwrap_or("");
+    if matches!(
+        node.kind(),
+        "decorator" | "annotation" | "marker_annotation"
+    ) {
+        push_annotation_candidates(lang, text, out);
+        return;
+    }
+
+    let callee = message_call_callee(node, bytes).unwrap_or_default();
+    push_candidate_if_protective(lang, &callee, out);
+    if !is_message_middleware_site(&callee, text) {
+        return;
+    }
+    push_tokens_if_protective(lang, text, out);
+}
+
+fn message_call_callee(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    if let Some(function) = node.child_by_field_name("function") {
+        return function.utf8_text(bytes).ok().map(|s| s.trim().to_owned());
+    }
+    if let Some(name) = node.child_by_field_name("name") {
+        return name.utf8_text(bytes).ok().map(|s| s.trim().to_owned());
+    }
+    if let Some(ty) = node.child_by_field_name("type") {
+        return ty.utf8_text(bytes).ok().map(|s| s.trim().to_owned());
+    }
+    None
+}
+
+fn is_message_middleware_site(callee: &str, text: &str) -> bool {
+    let last = last_message_segment(callee);
+    let text_lc = text.to_ascii_lowercase();
+    let callee_lc = callee.to_ascii_lowercase();
+
+    matches!(
+        last,
+        "batch_processor"
+            | "sqs_batch_processor"
+            | "middleware"
+            | "middlewareStack"
+            | "setErrorHandler"
+            | "setCommonErrorHandler"
+            | "setRecordInterceptor"
+            | "setBatchInterceptor"
+            | "setAdviceChain"
+            | "setAfterReceivePostProcessors"
+            | "setMessageConverter"
+            | "setValidator"
+            | "withValidator"
+            | "withMessageValidator"
+            | "UseMiddleware"
+            | "QueueSubscribe"
+    ) || ((last == "add" || last == "use") && callee_lc.contains("middlewarestack"))
+        || text_lc.contains("validationrules")
+        || text_lc.contains("validator")
+        || text_lc.contains("interceptor")
+        || text_lc.contains("middlewarestack")
+}
+
+fn push_annotation_candidates(lang: Lang, text: &str, out: &mut Vec<MiddlewareShape>) {
+    let trimmed = text.trim();
+    if let Some(rest) = trimmed.strip_prefix('@')
+        && let Some(name) = rest
+            .split(|ch: char| !is_message_name_char(ch))
+            .find(|part| !part.is_empty())
+    {
+        if lang == Lang::Java {
+            push_candidate_if_protective(lang, &format!("@{name}"), out);
+        }
+        push_candidate_if_protective(lang, name, out);
+    }
+    push_tokens_if_protective(lang, trimmed, out);
+}
+
+fn push_tokens_if_protective(lang: Lang, text: &str, out: &mut Vec<MiddlewareShape>) {
+    let mut token = String::new();
+    for ch in text.chars() {
+        if is_message_name_char(ch) {
+            token.push(ch);
+        } else if !token.is_empty() {
+            push_candidate_if_protective(lang, &token, out);
+            token.clear();
+        }
+    }
+    if !token.is_empty() {
+        push_candidate_if_protective(lang, &token, out);
+    }
+}
+
+fn is_message_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '!')
+}
+
+fn push_candidate_if_protective(lang: Lang, candidate: &str, out: &mut Vec<MiddlewareShape>) {
+    for name in candidate_variants(candidate) {
+        if is_message_setup_method(&name) {
+            continue;
+        }
+        if auth_markers::is_protective(lang, &name) && !out.iter().any(|m| m.name == name) {
+            out.push(MiddlewareShape { name });
+        }
+    }
+}
+
+fn is_message_setup_method(name: &str) -> bool {
+    matches!(
+        last_message_segment(name),
+        "add"
+            | "use"
+            | "setErrorHandler"
+            | "setCommonErrorHandler"
+            | "setRecordInterceptor"
+            | "setBatchInterceptor"
+            | "setAdviceChain"
+            | "setAfterReceivePostProcessors"
+            | "setMessageConverter"
+            | "setValidator"
+            | "withValidator"
+            | "withMessageValidator"
+            | "UseMiddleware"
+            | "QueueSubscribe"
+    )
+}
+
+fn candidate_variants(candidate: &str) -> Vec<String> {
+    let trimmed = candidate
+        .trim()
+        .trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}'));
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![trimmed.to_owned()];
+    let last = last_message_segment(trimmed);
+    if last != trimmed {
+        out.push(last.to_owned());
+    }
+    out
+}
+
+fn last_message_segment(name: &str) -> &str {
+    name.rsplit(['.', ':', '/', '\\', '#'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(name)
 }
 
 /// True when any callee in `summary.callees` matches `name_pred` AND

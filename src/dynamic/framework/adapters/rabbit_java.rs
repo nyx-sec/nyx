@@ -81,7 +81,7 @@ impl FrameworkAdapter for RabbitJavaAdapter {
 fn detect_rabbit_java(
     summary: &FuncSummary,
     ssa_summary: Option<&SsaFuncSummary>,
-    _ast: tree_sitter::Node<'_>,
+    ast: tree_sitter::Node<'_>,
     file_bytes: &[u8],
 ) -> Option<FrameworkBinding> {
     let matches_call = super::any_callee_matches(summary, callee_is_rabbit);
@@ -106,7 +106,7 @@ fn detect_rabbit_java(
         route: None,
         request_params: Vec::new(),
         response_writer: None,
-        middleware: Vec::new(),
+        middleware: super::collect_message_middleware(Lang::Java, ast, file_bytes),
     })
 }
 

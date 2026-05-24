@@ -85,7 +85,11 @@ const JS_EXACT: &[ExactRow] = &[
     ("validateBody", AuthMarkerKind::InputValidation),
     ("validateRequest", AuthMarkerKind::InputValidation),
     ("validateSchema", AuthMarkerKind::InputValidation),
+    ("validateMessage", AuthMarkerKind::InputValidation),
+    ("validateEvent", AuthMarkerKind::InputValidation),
     ("schemaValidator", AuthMarkerKind::InputValidation),
+    ("jsonSchemaValidator", AuthMarkerKind::InputValidation),
+    ("ajvValidate", AuthMarkerKind::InputValidation),
     ("celebrate", AuthMarkerKind::InputValidation),
     ("joiValidate", AuthMarkerKind::InputValidation),
     ("zodValidate", AuthMarkerKind::InputValidation),
@@ -125,6 +129,7 @@ const PYTHON_EXACT: &[ExactRow] = &[
     ("CSRFProtect", AuthMarkerKind::Csrf),
     ("validate", AuthMarkerKind::InputValidation),
     ("validate_request", AuthMarkerKind::InputValidation),
+    ("validate_schema", AuthMarkerKind::InputValidation),
     ("ValidationMiddleware", AuthMarkerKind::InputValidation),
     ("pydantic_validate", AuthMarkerKind::InputValidation),
     ("SecurityMiddleware", AuthMarkerKind::OutputSanitization),
@@ -159,6 +164,10 @@ const JAVA_EXACT: &[ExactRow] = &[
     ("@Valid", AuthMarkerKind::InputValidation),
     ("@Validated", AuthMarkerKind::InputValidation),
     ("ValidationFilter", AuthMarkerKind::InputValidation),
+    (
+        "ValidatingMessageConverter",
+        AuthMarkerKind::InputValidation,
+    ),
     ("@RateLimited", AuthMarkerKind::RateLimit),
 ];
 
@@ -277,6 +286,15 @@ fn classify_by_suffix(name: &str) -> Option<AuthMarkerKind> {
         return Some(AuthMarkerKind::Authentication);
     }
     if name.ends_with("Interceptor") {
+        if name.contains("Validation") || name.contains("Validator") {
+            return Some(AuthMarkerKind::InputValidation);
+        }
+        if name.contains("Role") || name.contains("Permission") {
+            return Some(AuthMarkerKind::Authorization);
+        }
+        if name.contains("Auth") {
+            return Some(AuthMarkerKind::Authentication);
+        }
         return Some(AuthMarkerKind::Authentication);
     }
     if name.ends_with("Authenticator") {

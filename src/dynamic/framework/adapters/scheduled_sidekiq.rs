@@ -17,6 +17,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct ScheduledSidekiqAdapter;
@@ -86,34 +87,65 @@ impl FrameworkAdapter for ScheduledSidekiqAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let has_shape = source_has_sidekiq_shape(file_bytes);
-        if !has_shape {
-            return None;
-        }
-        let name_matches = name_is_sidekiq_entry(&summary.name);
-        let body_schedules = super::any_callee_matches(summary, callee_schedules_sidekiq);
-        if !(name_matches || body_schedules) {
-            return None;
-        }
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::ScheduledJob {
-                schedule: extract_schedule(file_bytes),
-            },
-            route: None,
-            request_params: Vec::new(),
-            response_writer: None,
-            middleware: Vec::new(),
-        })
+        detect_sidekiq(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_sidekiq(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_sidekiq(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    let has_shape = source_has_sidekiq_shape(file_bytes);
+    if !has_shape {
+        return None;
+    }
+    let name_matches = name_is_sidekiq_entry(&summary.name);
+    let body_schedules = super::any_callee_matches(summary, callee_schedules_sidekiq)
+        && super::typed_receiver_facts_allow(
+            summary,
+            ssa_summary,
+            callee_schedules_sidekiq,
+            typed_container_allows_sidekiq,
+        );
+    if !(name_matches || body_schedules) {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::ScheduledJob {
+            schedule: extract_schedule(file_bytes),
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_sidekiq(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("sidekiq") || lc.ends_with("worker") || lc.ends_with("job")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_ruby(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -172,6 +204,52 @@ mod tests {
                 .detect(&summary, tree.root_node(), src)
                 .is_none(),
             "non-worker helper in a Sidekiq file must not bind",
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_sidekiq_scheduler_collision() {
+        let src: &[u8] = b"# include Sidekiq::Worker\nclass Enqueuer\n  def enqueue(payload)\n    mailer.perform_async(payload)\n  end\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "enqueue".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "mailer.perform_async".to_owned(),
+            receiver: Some("mailer".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "Mailer".to_owned()));
+        assert!(
+            ScheduledSidekiqAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_keeps_sidekiq_scheduler_receiver() {
+        let src: &[u8] = b"class TickWorker\n  include Sidekiq::Worker\n  def enqueue(payload)\n    TickWorker.perform_async(payload)\n  end\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "enqueue".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "TickWorker.perform_async".to_owned(),
+            receiver: Some("TickWorker".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "TickWorker".to_owned()));
+        assert!(
+            ScheduledSidekiqAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_some()
         );
     }
 }
