@@ -19,6 +19,7 @@
 use crate::dynamic::framework::auth_markers;
 use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
 use crate::symbol::Lang;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known gin markers.
@@ -229,6 +230,57 @@ fn is_implicit_formal(name: &str) -> bool {
     matches!(name, "c" | "ctx" | "w" | "r" | "req" | "res" | "rw")
 }
 
+/// Go router family whose route-registration receiver can be checked
+/// from local source context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoRouteFramework {
+    Gin,
+    Echo,
+    Fiber,
+    Chi,
+}
+
+impl GoRouteFramework {
+    fn marker_comment(self) -> &'static str {
+        match self {
+            Self::Gin => "// nyx-shape: gin",
+            Self::Echo => "// nyx-shape: echo",
+            Self::Fiber => "// nyx-shape: fiber",
+            Self::Chi => "// nyx-shape: chi",
+        }
+    }
+
+    fn constructor_markers(self) -> &'static [&'static str] {
+        match self {
+            Self::Gin => &["gin.Default(", "gin.New("],
+            Self::Echo => &["echo.New("],
+            Self::Fiber => &["fiber.New("],
+            Self::Chi => &["chi.NewRouter("],
+        }
+    }
+
+    fn type_markers(self) -> &'static [&'static str] {
+        match self {
+            Self::Gin => &[
+                "*gin.Engine",
+                "gin.Engine",
+                "*gin.RouterGroup",
+                "gin.RouterGroup",
+            ],
+            Self::Echo => &["*echo.Echo", "echo.Echo", "*echo.Group", "echo.Group"],
+            Self::Fiber => &["*fiber.App", "fiber.App", "*fiber.Group", "fiber.Group"],
+            Self::Chi => &["chi.Router", "*chi.Mux", "chi.Mux"],
+        }
+    }
+
+    fn grouping_methods(self) -> &'static [&'static str] {
+        match self {
+            Self::Gin | Self::Echo | Self::Fiber => &["Group"],
+            Self::Chi => &["Group", "Route", "With"],
+        }
+    }
+}
+
 /// Parse Go verb-method names: `GET`, `POST`, `PUT`, `PATCH`,
 /// `DELETE`, `HEAD`, `OPTIONS` (case-insensitive — gin uses upper,
 /// echo / chi use upper, fiber uses pascal-cased like `Get`,
@@ -355,28 +407,64 @@ pub fn find_route_for_callee<'a>(
     target: &str,
 ) -> Option<(HttpMethod, String)> {
     let mut hit: Option<(HttpMethod, String)> = None;
-    walk_routes(root, bytes, target, &mut hit);
+    walk_routes(root, bytes, target, None, &mut hit);
     hit
+}
+
+/// Receiver-aware sibling of [`find_route_for_callee`].
+///
+/// A file can import a framework while also using ordinary objects with
+/// route-like method names, for example `cache.Get(key)` or
+/// `repo.Post(message)`.  The broad helper above intentionally keeps
+/// the old name-only behavior for legacy callers and unit tests; the
+/// framework adapters call this variant so the registration receiver
+/// must be a locally recognised router/app value.
+pub fn find_route_for_callee_in_framework<'a>(
+    root: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+    framework: GoRouteFramework,
+) -> Option<(HttpMethod, String)> {
+    let receivers = collect_framework_receivers(root, bytes, framework);
+    let marker_fallback = receivers.is_empty()
+        && std::str::from_utf8(bytes)
+            .map(|s| s.contains(framework.marker_comment()))
+            .unwrap_or(false);
+    let filter = RouteReceiverFilter {
+        framework,
+        receivers: &receivers,
+        marker_fallback,
+    };
+    let mut hit: Option<(HttpMethod, String)> = None;
+    walk_routes(root, bytes, target, Some(&filter), &mut hit);
+    hit
+}
+
+struct RouteReceiverFilter<'a> {
+    framework: GoRouteFramework,
+    receivers: &'a HashSet<String>,
+    marker_fallback: bool,
 }
 
 fn walk_routes<'a>(
     node: Node<'a>,
     bytes: &'a [u8],
     target: &str,
+    receiver_filter: Option<&RouteReceiverFilter<'_>>,
     out: &mut Option<(HttpMethod, String)>,
 ) {
     if out.is_some() {
         return;
     }
     if node.kind() == "call_expression"
-        && let Some(found) = try_route_call(node, bytes, target)
+        && let Some(found) = try_route_call(node, bytes, target, receiver_filter)
     {
         *out = Some(found);
         return;
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
-        walk_routes(child, bytes, target, out);
+        walk_routes(child, bytes, target, receiver_filter, out);
     }
 }
 
@@ -384,6 +472,7 @@ fn try_route_call<'a>(
     call: Node<'a>,
     bytes: &'a [u8],
     target: &str,
+    receiver_filter: Option<&RouteReceiverFilter<'_>>,
 ) -> Option<(HttpMethod, String)> {
     let callee = call.child_by_field_name("function")?;
     if callee.kind() != "selector_expression" {
@@ -391,6 +480,11 @@ fn try_route_call<'a>(
     }
     let verb_node = callee.child_by_field_name("field")?.utf8_text(bytes).ok()?;
     let method = verb_from_method(verb_node)?;
+    if let Some(filter) = receiver_filter
+        && !route_receiver_matches(callee, bytes, filter)
+    {
+        return None;
+    }
     let args = call.child_by_field_name("arguments")?;
     let positional: Vec<Node<'_>> = {
         let mut cur = args.walk();
@@ -406,6 +500,199 @@ fn try_route_call<'a>(
         return None;
     }
     Some((method, path))
+}
+
+fn route_receiver_matches(
+    selector: Node<'_>,
+    bytes: &[u8],
+    filter: &RouteReceiverFilter<'_>,
+) -> bool {
+    let Some(receiver) = selector.child_by_field_name("operand") else {
+        return filter.marker_fallback;
+    };
+    let Ok(expr) = receiver.utf8_text(bytes) else {
+        return filter.marker_fallback;
+    };
+    receiver_expr_matches_framework(expr.trim(), filter.framework, filter.receivers)
+        || filter.marker_fallback
+}
+
+fn receiver_expr_matches_framework(
+    expr: &str,
+    framework: GoRouteFramework,
+    receivers: &HashSet<String>,
+) -> bool {
+    let expr = trim_wrapping_parens(expr.trim());
+    if receivers.contains(expr) {
+        return true;
+    }
+    if framework
+        .constructor_markers()
+        .iter()
+        .any(|marker| expr.starts_with(marker))
+    {
+        return true;
+    }
+    rhs_uses_known_router(expr, framework, receivers)
+}
+
+fn collect_framework_receivers(
+    root: Node<'_>,
+    bytes: &[u8],
+    framework: GoRouteFramework,
+) -> HashSet<String> {
+    let mut receivers = HashSet::new();
+    let mut assignment_snippets = Vec::new();
+    collect_receiver_snippets(
+        root,
+        bytes,
+        framework,
+        &mut receivers,
+        &mut assignment_snippets,
+    );
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for snippet in &assignment_snippets {
+            if assignment_rhs_matches_framework(snippet, framework, &receivers) {
+                for ident in assignment_lhs_identifiers(snippet) {
+                    changed |= receivers.insert(ident);
+                }
+            }
+        }
+    }
+
+    receivers
+}
+
+fn collect_receiver_snippets(
+    node: Node<'_>,
+    bytes: &[u8],
+    framework: GoRouteFramework,
+    receivers: &mut HashSet<String>,
+    assignment_snippets: &mut Vec<String>,
+) {
+    match node.kind() {
+        "parameter_declaration" | "var_spec" => {
+            if let Ok(text) = node.utf8_text(bytes) {
+                for ident in typed_decl_identifiers(text, framework) {
+                    receivers.insert(ident);
+                }
+                if node.kind() == "var_spec" {
+                    assignment_snippets.push(text.to_owned());
+                }
+            }
+        }
+        "short_var_declaration" | "assignment_statement" => {
+            if let Ok(text) = node.utf8_text(bytes) {
+                assignment_snippets.push(text.to_owned());
+            }
+        }
+        _ => {}
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        collect_receiver_snippets(child, bytes, framework, receivers, assignment_snippets);
+    }
+}
+
+fn typed_decl_identifiers(text: &str, framework: GoRouteFramework) -> Vec<String> {
+    let Some(marker_pos) = framework
+        .type_markers()
+        .iter()
+        .filter_map(|marker| text.find(marker))
+        .min()
+    else {
+        return Vec::new();
+    };
+    identifiers_from_list(strip_var_prefix(&text[..marker_pos]))
+}
+
+fn assignment_rhs_matches_framework(
+    text: &str,
+    framework: GoRouteFramework,
+    receivers: &HashSet<String>,
+) -> bool {
+    let Some((_, rhs)) = split_assignment(text) else {
+        return false;
+    };
+    let rhs = rhs.trim();
+    framework
+        .constructor_markers()
+        .iter()
+        .any(|marker| rhs.contains(marker))
+        || rhs_uses_known_router(rhs, framework, receivers)
+}
+
+fn assignment_lhs_identifiers(text: &str) -> Vec<String> {
+    let Some((lhs, _)) = split_assignment(text) else {
+        return Vec::new();
+    };
+    identifiers_from_list(strip_var_prefix(lhs))
+}
+
+fn split_assignment(text: &str) -> Option<(&str, &str)> {
+    text.split_once(":=").or_else(|| text.split_once('='))
+}
+
+fn strip_var_prefix(text: &str) -> &str {
+    let text = text.trim();
+    text.strip_prefix("var ").unwrap_or(text).trim()
+}
+
+fn rhs_uses_known_router(
+    rhs: &str,
+    framework: GoRouteFramework,
+    receivers: &HashSet<String>,
+) -> bool {
+    let rhs = trim_wrapping_parens(rhs.trim());
+    for receiver in receivers {
+        let Some(rest) = rhs.strip_prefix(receiver).and_then(|s| s.strip_prefix('.')) else {
+            continue;
+        };
+        if framework
+            .grouping_methods()
+            .iter()
+            .any(|method| rest.starts_with(&format!("{method}(")))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn identifiers_from_list(text: &str) -> Vec<String> {
+    text.split(',')
+        .filter_map(|part| {
+            let token = part.split_whitespace().next()?.trim();
+            if is_go_identifier(token) {
+                Some(token.to_owned())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn is_go_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn trim_wrapping_parens(mut s: &str) -> &str {
+    loop {
+        let trimmed = s.trim();
+        if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() > 2 {
+            s = &trimmed[1..trimmed.len() - 1];
+        } else {
+            return trimmed;
+        }
+    }
 }
 
 /// Read a Go interpreted_string_literal's content, dropping the
@@ -524,6 +811,67 @@ mod tests {
         let tree = parse(src);
         let (method, path) = find_route_for_callee(tree.root_node(), src, "Show").expect("hit");
         assert_eq!(method, HttpMethod::GET);
+        assert_eq!(path, "/x");
+    }
+
+    #[test]
+    fn receiver_aware_route_accepts_framework_constructor_receiver() {
+        let src: &[u8] =
+            b"package main\nfunc init() { r := gin.New(); r.GET(\"/x\", Show) }\nfunc Show(c interface{}) {}\n";
+        let tree = parse(src);
+        let (method, path) = find_route_for_callee_in_framework(
+            tree.root_node(),
+            src,
+            "Show",
+            GoRouteFramework::Gin,
+        )
+        .expect("hit");
+        assert_eq!(method, HttpMethod::GET);
+        assert_eq!(path, "/x");
+    }
+
+    #[test]
+    fn receiver_aware_route_rejects_cache_get_collision() {
+        let src: &[u8] = b"package main\nimport \"github.com/gin-gonic/gin\"\n\
+            func init() { r := gin.New(); _ = r; cache.Get(\"/x\", Show) }\n\
+            func Show(c interface{}) {}\n";
+        let tree = parse(src);
+        assert!(
+            find_route_for_callee_in_framework(
+                tree.root_node(),
+                src,
+                "Show",
+                GoRouteFramework::Gin,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn receiver_aware_route_accepts_typed_param_receiver() {
+        let src: &[u8] = b"package main\nfunc register(r *gin.Engine) { r.GET(\"/x\", Show) }\nfunc Show(c interface{}) {}\n";
+        let tree = parse(src);
+        let (_, path) = find_route_for_callee_in_framework(
+            tree.root_node(),
+            src,
+            "Show",
+            GoRouteFramework::Gin,
+        )
+        .expect("hit");
+        assert_eq!(path, "/x");
+    }
+
+    #[test]
+    fn receiver_aware_route_accepts_group_receiver_assignment() {
+        let src: &[u8] = b"package main\nfunc init() { r := chi.NewRouter(); auth := r.With(AuthMiddleware); auth.Get(\"/x\", Show) }\nfunc Show(w interface{}, r interface{}) {}\n";
+        let tree = parse(src);
+        let (_, path) = find_route_for_callee_in_framework(
+            tree.root_node(),
+            src,
+            "Show",
+            GoRouteFramework::Chi,
+        )
+        .expect("hit");
         assert_eq!(path, "/x");
     }
 

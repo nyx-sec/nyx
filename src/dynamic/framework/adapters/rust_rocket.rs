@@ -23,8 +23,9 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, collect_rust_middleware, find_method_attribute, find_rust_function,
-    rust_formal_names, source_imports_rocket,
+    RustRouteAttributeFramework, bind_rust_path_params, collect_rust_middleware,
+    find_method_attribute_for_framework, find_rust_function, rust_formal_names,
+    source_imports_rocket,
 };
 
 pub struct RustRocketAdapter;
@@ -50,7 +51,11 @@ impl FrameworkAdapter for RustRocketAdapter {
             return None;
         }
         let func = find_rust_function(ast, file_bytes, &summary.name)?;
-        let (method, path) = find_method_attribute(func, file_bytes)?;
+        let (method, path) = find_method_attribute_for_framework(
+            func,
+            file_bytes,
+            RustRouteAttributeFramework::Rocket,
+        )?;
         let formals = rust_formal_names(func, file_bytes);
         let request_params = bind_rust_path_params(&formals, &path);
         let middleware = collect_rust_middleware(ast, file_bytes);
@@ -137,5 +142,27 @@ mod tests {
                 .detect(&summary("show"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn skips_actix_get_macro_in_rocket_file() {
+        let src: &[u8] = b"use rocket::routes;\nuse actix_web::get;\n#[get(\"/u\")]\nfn show() -> &'static str { \"ok\" }\n";
+        let tree = parse(src);
+        assert!(
+            RustRocketAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn accepts_scoped_rocket_get_macro() {
+        let src: &[u8] =
+            b"use rocket::routes;\n#[rocket::get(\"/u\")]\nfn show() -> &'static str { \"ok\" }\n";
+        let tree = parse(src);
+        let binding = RustRocketAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.route.unwrap().path, "/u");
     }
 }

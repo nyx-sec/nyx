@@ -20,8 +20,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::go_routes::{
-    bind_go_path_params, collect_use_middleware, find_go_function, find_route_for_callee,
-    go_formal_names, source_imports_fiber,
+    GoRouteFramework, bind_go_path_params, collect_use_middleware, find_go_function,
+    find_route_for_callee_in_framework, go_formal_names, source_imports_fiber,
 };
 
 pub struct GoFiberAdapter;
@@ -46,7 +46,12 @@ impl FrameworkAdapter for GoFiberAdapter {
         if !source_imports_fiber(file_bytes) {
             return None;
         }
-        let (method, path) = find_route_for_callee(ast, file_bytes, &summary.name)?;
+        let (method, path) = find_route_for_callee_in_framework(
+            ast,
+            file_bytes,
+            &summary.name,
+            GoRouteFramework::Fiber,
+        )?;
         let request_params = find_go_function(ast, file_bytes, &summary.name)
             .map(|func| {
                 let formals = go_formal_names(func, file_bytes);

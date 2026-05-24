@@ -289,6 +289,36 @@ pub fn verb_from_ident(ident: &str) -> Option<HttpMethod> {
     }
 }
 
+/// Framework that owns a bare or scoped Rust route attribute macro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustRouteAttributeFramework {
+    Actix,
+    Rocket,
+}
+
+impl RustRouteAttributeFramework {
+    fn scoped_prefix(self) -> &'static str {
+        match self {
+            Self::Actix => "actix_web::",
+            Self::Rocket => "rocket::",
+        }
+    }
+
+    fn marker_comment(self) -> &'static str {
+        match self {
+            Self::Actix => "// nyx-shape: actix",
+            Self::Rocket => "// nyx-shape: rocket",
+        }
+    }
+
+    fn import_roots(self) -> &'static [&'static str] {
+        match self {
+            Self::Actix => &["use actix_web::"],
+            Self::Rocket => &["use rocket::", "#[macro_use] extern crate rocket"],
+        }
+    }
+}
+
 /// Walk every method-chain call in the file whose field name is one
 /// of the known middleware-attach verbs and collect argument
 /// expressions whose names match a known Rust middleware marker (see
@@ -461,6 +491,28 @@ pub fn rust_string_literal(node: Node<'_>, bytes: &[u8]) -> Option<String> {
 /// Returns `(method, path)` on first match.  Used by both actix-web
 /// (`#[get("/path")]`) and rocket (same syntax).
 pub fn find_method_attribute<'a>(func: Node<'a>, bytes: &'a [u8]) -> Option<(HttpMethod, String)> {
+    find_method_attribute_inner(func, bytes, None)
+}
+
+/// Framework-aware sibling of [`find_method_attribute`].
+///
+/// Actix and Rocket share bare `#[get("/x")]` / `#[post("/x")]`
+/// macro names.  This variant rejects a bare attribute unless the
+/// source imports the matching framework's macro, and it rejects a
+/// scoped attribute unless the scope belongs to that framework.
+pub fn find_method_attribute_for_framework<'a>(
+    func: Node<'a>,
+    bytes: &'a [u8],
+    framework: RustRouteAttributeFramework,
+) -> Option<(HttpMethod, String)> {
+    find_method_attribute_inner(func, bytes, Some(framework))
+}
+
+fn find_method_attribute_inner<'a>(
+    func: Node<'a>,
+    bytes: &'a [u8],
+    framework: Option<RustRouteAttributeFramework>,
+) -> Option<(HttpMethod, String)> {
     let parent = func.parent()?;
     let mut cur = parent.walk();
     let children: Vec<Node<'_>> = parent.children(&mut cur).collect();
@@ -469,7 +521,7 @@ pub fn find_method_attribute<'a>(func: Node<'a>, bytes: &'a [u8]) -> Option<(Htt
     // function declaration.
     for child in children[..pos].iter().rev() {
         if child.kind() == "attribute_item" {
-            if let Some(hit) = read_route_attribute(*child, bytes) {
+            if let Some(hit) = read_route_attribute(*child, bytes, framework) {
                 return Some(hit);
             }
             continue;
@@ -492,7 +544,7 @@ pub fn find_method_attribute<'a>(func: Node<'a>, bytes: &'a [u8]) -> Option<(Htt
     let mut cur = func.walk();
     for c in func.children(&mut cur) {
         if c.kind() == "attribute_item"
-            && let Some(hit) = read_route_attribute(c, bytes)
+            && let Some(hit) = read_route_attribute(c, bytes, framework)
         {
             return Some(hit);
         }
@@ -500,7 +552,11 @@ pub fn find_method_attribute<'a>(func: Node<'a>, bytes: &'a [u8]) -> Option<(Htt
     None
 }
 
-fn read_route_attribute(attr: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> {
+fn read_route_attribute(
+    attr: Node<'_>,
+    bytes: &[u8],
+    framework: Option<RustRouteAttributeFramework>,
+) -> Option<(HttpMethod, String)> {
     let mut cur = attr.walk();
     let attribute = attr
         .named_children(&mut cur)
@@ -513,11 +569,13 @@ fn read_route_attribute(attr: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, Str
     let mut ac = attribute.walk();
     let children: Vec<Node<'_>> = attribute.named_children(&mut ac).collect();
     let head = children.first()?;
-    let verb_text = match head.kind() {
-        "identifier" => head.utf8_text(bytes).ok()?.to_owned(),
+    let (verb_text, scoped_head) = match head.kind() {
+        "identifier" => (head.utf8_text(bytes).ok()?.to_owned(), None),
         "scoped_identifier" => {
+            let full = head.utf8_text(bytes).ok()?.to_owned();
             let mut sc = head.walk();
-            head.named_children(&mut sc)
+            let leaf = head
+                .named_children(&mut sc)
                 .filter_map(|c| {
                     if c.kind() == "identifier" {
                         c.utf8_text(bytes).ok()
@@ -526,11 +584,15 @@ fn read_route_attribute(attr: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, Str
                     }
                 })
                 .last()?
-                .to_owned()
+                .to_owned();
+            (leaf, Some(full))
         }
         _ => return None,
     };
     let method = verb_from_ident(&verb_text)?;
+    if !route_attribute_belongs_to_framework(&verb_text, scoped_head.as_deref(), bytes, framework) {
+        return None;
+    }
     for child in &children[1..] {
         if child.kind() == "token_tree" {
             // Recurse to find the first string_literal under the
@@ -545,6 +607,64 @@ fn read_route_attribute(attr: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, Str
         }
     }
     None
+}
+
+fn route_attribute_belongs_to_framework(
+    verb: &str,
+    scoped_head: Option<&str>,
+    bytes: &[u8],
+    framework: Option<RustRouteAttributeFramework>,
+) -> bool {
+    let Some(framework) = framework else {
+        return true;
+    };
+    if let Some(head) = scoped_head {
+        return head.starts_with(framework.scoped_prefix());
+    }
+    bare_route_attribute_imported_from_framework(bytes, verb, framework)
+}
+
+fn bare_route_attribute_imported_from_framework(
+    bytes: &[u8],
+    verb: &str,
+    framework: RustRouteAttributeFramework,
+) -> bool {
+    let Ok(source) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    if source.contains(framework.marker_comment()) {
+        return true;
+    }
+    for line in source.lines().map(str::trim) {
+        for root in framework.import_roots() {
+            if *root == "#[macro_use] extern crate rocket" {
+                if line.contains(root) {
+                    return true;
+                }
+                continue;
+            }
+            if !line.contains(root) {
+                continue;
+            }
+            if line.contains(&format!("{root}{verb};"))
+                || line.contains(&format!("{root}{verb} as "))
+            {
+                return true;
+            }
+            if let Some((_, imports)) = line.split_once('{') {
+                let imports = imports.split('}').next().unwrap_or(imports);
+                if imports
+                    .split(',')
+                    .map(str::trim)
+                    .filter_map(|part| part.split_ascii_whitespace().next())
+                    .any(|name| name == verb)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn first_string_in(node: Node<'_>, bytes: &[u8]) -> Option<String> {

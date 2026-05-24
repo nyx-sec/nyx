@@ -128,3 +128,17 @@ fn gin_adapter_ignores_unrelated_function() {
     let binding = detect_binding(&summary, tree.root_node(), &bytes, Lang::Go);
     assert!(binding.is_none());
 }
+
+#[test]
+fn gin_adapter_rejects_cache_get_receiver_collision() {
+    let src: &[u8] = b"package main\nimport \"github.com/gin-gonic/gin\"\n\
+        func init() { r := gin.New(); _ = r; cache.Get(\"/run\", Run) }\n\
+        func Run(c interface{}) {}\n";
+    let tree = parse_go(src);
+    let summary = summary_for("Run", "synthetic/gin_cache_collision.go");
+    let binding = detect_binding(&summary, tree.root_node(), src, Lang::Go);
+    assert!(
+        binding.is_none(),
+        "cache.Get must not be treated as a gin route registration"
+    );
+}

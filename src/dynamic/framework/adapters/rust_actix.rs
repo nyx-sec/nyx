@@ -19,8 +19,9 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::rust_routes::{
-    bind_rust_path_params, collect_rust_middleware, find_actix_route_chain, find_method_attribute,
-    find_rust_function, rust_formal_names, source_imports_actix,
+    RustRouteAttributeFramework, bind_rust_path_params, collect_rust_middleware,
+    find_actix_route_chain, find_method_attribute_for_framework, find_rust_function,
+    rust_formal_names, source_imports_actix,
 };
 
 pub struct RustActixAdapter;
@@ -46,8 +47,12 @@ impl FrameworkAdapter for RustActixAdapter {
             return None;
         }
         let func = find_rust_function(ast, file_bytes, &summary.name)?;
-        let (method, path) = find_method_attribute(func, file_bytes)
-            .or_else(|| find_actix_route_chain(ast, file_bytes, &summary.name))?;
+        let (method, path) = find_method_attribute_for_framework(
+            func,
+            file_bytes,
+            RustRouteAttributeFramework::Actix,
+        )
+        .or_else(|| find_actix_route_chain(ast, file_bytes, &summary.name))?;
         let formals = rust_formal_names(func, file_bytes);
         let request_params = bind_rust_path_params(&formals, &path);
         let middleware = collect_rust_middleware(ast, file_bytes);
@@ -120,6 +125,27 @@ mod tests {
                 .detect(&summary("show"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn skips_rocket_get_macro_in_actix_file() {
+        let src: &[u8] = b"use actix_web::HttpResponse;\nuse rocket::get;\n#[get(\"/u\")]\nasync fn show() -> HttpResponse { HttpResponse::Ok().finish() }\n";
+        let tree = parse(src);
+        assert!(
+            RustActixAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn accepts_scoped_actix_get_macro() {
+        let src: &[u8] = b"use actix_web::HttpResponse;\n#[actix_web::get(\"/u\")]\nasync fn show() -> HttpResponse { HttpResponse::Ok().finish() }\n";
+        let tree = parse(src);
+        let binding = RustActixAdapter
+            .detect(&summary("show"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.route.unwrap().path, "/u");
     }
 
     #[test]
