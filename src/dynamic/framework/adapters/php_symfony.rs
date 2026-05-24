@@ -185,6 +185,18 @@ mod tests {
     }
 
     #[test]
+    fn skips_custom_abstract_controller_without_symfony_import() {
+        let src: &[u8] = b"<?php\nclass AbstractController {}\nclass Route { public function __construct($path) {} }\nclass C extends AbstractController {\n  #[Route('/x')]\n  public function show() { return 1; }\n}\n";
+        let tree = parse(src);
+        assert!(
+            PhpSymfonyAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none(),
+            "bare custom AbstractController / Route aliases are not enough for Symfony binding",
+        );
+    }
+
+    #[test]
     fn skips_when_method_has_no_route_attribute() {
         let src: &[u8] = b"<?php\nuse Symfony\\Component\\Routing\\Annotation\\Route;\nclass C {\n  public function helper($x) { return $x; }\n}\n";
         let tree = parse(src);

@@ -12,6 +12,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct MigrationRailsAdapter;
@@ -66,32 +67,66 @@ impl FrameworkAdapter for MigrationRailsAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let has_shape = source_has_migration_shape(file_bytes);
-        let name_matches = name_is_migration_entry(&summary.name);
-        let body_runs_ddl = super::any_callee_matches(summary, callee_is_rails_migration);
-        let binds = (name_matches || body_runs_ddl) && has_shape;
-        if !binds {
-            return None;
-        }
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::Migration {
-                version: extract_version(file_bytes),
-            },
-            route: None,
-            request_params: Vec::new(),
-            response_writer: None,
-            middleware: Vec::new(),
-        })
+        detect_rails_migration(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_rails_migration(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_rails_migration(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    let has_shape = source_has_migration_shape(file_bytes);
+    let name_matches = name_is_migration_entry(&summary.name);
+    let receiver_facts_allow = super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_rails_migration,
+        typed_container_allows_rails_migration,
+    );
+    if !receiver_facts_allow {
+        return None;
+    }
+    let body_runs_ddl = super::any_callee_matches(summary, callee_is_rails_migration);
+    let binds = (name_matches || body_runs_ddl) && has_shape;
+    if !binds {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::Migration {
+            version: extract_version(file_bytes),
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_rails_migration(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("activerecord") || lc.contains("migration") || lc.contains("connection")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_ruby(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -131,5 +166,55 @@ mod tests {
                 .is_none(),
             "db/schema.rb dump must not bind as migration",
         );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_migration_execute_collision() {
+        let src: &[u8] = b"# class AddIndex < ActiveRecord::Migration[7.0]\ndef helper(builder)\n  builder.execute('x')\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "up".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "builder.execute".into(),
+            receiver: Some("builder".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "SqlStringBuilder".to_owned()));
+        assert!(
+            MigrationRailsAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none(),
+            "builder.execute should not bind as an ActiveRecord migration DDL call",
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_allows_active_record_connection() {
+        let src: &[u8] = b"# class AddIndex < ActiveRecord::Migration[7.0]\ndef helper(conn)\n  conn.execute('x')\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "helper".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "conn.execute".into(),
+            receiver: Some("conn".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((
+            0,
+            "ActiveRecord::ConnectionAdapters::DatabaseStatements".to_owned(),
+        ));
+        let binding = MigrationRailsAdapter
+            .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+            .expect("ActiveRecord receiver should bind");
+        assert_eq!(binding.adapter, "migration-rails");
     }
 }

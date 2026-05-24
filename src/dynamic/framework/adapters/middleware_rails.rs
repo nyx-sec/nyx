@@ -14,6 +14,7 @@
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 
 pub struct MiddlewareRailsAdapter;
@@ -67,35 +68,69 @@ impl FrameworkAdapter for MiddlewareRailsAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if looks_like_rails_controller(file_bytes) {
-            return None;
-        }
-        let has_middleware_shape = source_has_rack_middleware_shape(file_bytes);
-        let name_matches = name_is_rack_entry(&summary.name);
-        let body_mounts_middleware = super::any_callee_matches(summary, callee_is_rails_middleware);
-        let binds = (name_matches && has_middleware_shape) || body_mounts_middleware;
-        if !binds {
-            return None;
-        }
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::Middleware {
-                name: summary.name.clone(),
-            },
-            route: None,
-            request_params: Vec::new(),
-            response_writer: None,
-            middleware: Vec::new(),
-        })
+        detect_rails_middleware(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_rails_middleware(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_rails_middleware(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    _ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if looks_like_rails_controller(file_bytes) {
+        return None;
+    }
+    let has_middleware_shape = source_has_rack_middleware_shape(file_bytes);
+    let name_matches = name_is_rack_entry(&summary.name);
+    let receiver_facts_allow = super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_rails_middleware,
+        typed_container_allows_rack_middleware,
+    );
+    if !receiver_facts_allow {
+        return None;
+    }
+    let body_mounts_middleware = super::any_callee_matches(summary, callee_is_rails_middleware);
+    let binds = (name_matches && has_middleware_shape) || body_mounts_middleware;
+    if !binds {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::Middleware {
+            name: summary.name.clone(),
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
+}
+
+fn typed_container_allows_rack_middleware(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("rack") || lc.contains("rails") || lc.ends_with("middleware") || lc == "app"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::CalleeSite;
 
     fn parse_ruby(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -133,5 +168,52 @@ mod tests {
                 .is_none(),
             "controller action must not bind as Rack middleware",
         );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_proc_call_collision() {
+        let src: &[u8] = b"def call(env)\n  proc = env['callback']\n  proc.call('x')\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "call".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "proc.call".into(),
+            receiver: Some("proc".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "Proc".to_owned()));
+        assert!(
+            MiddlewareRailsAdapter
+                .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+                .is_none(),
+            "Proc#call must not bind as Rack middleware",
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_allows_rack_middleware_call() {
+        let src: &[u8] = b"def mount(app)\n  app.call({})\nend\n";
+        let tree = parse_ruby(src);
+        let mut summary = FuncSummary {
+            name: "mount".into(),
+            ..Default::default()
+        };
+        summary.callees.push(CalleeSite {
+            name: "app.call".into(),
+            receiver: Some("app".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "Rack::Builder".to_owned()));
+        let binding = MiddlewareRailsAdapter
+            .detect_with_context(&summary, Some(&ssa), tree.root_node(), src)
+            .expect("Rack receiver should bind");
+        assert_eq!(binding.adapter, "middleware-rails");
     }
 }

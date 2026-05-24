@@ -255,6 +255,120 @@ fn snake_case(input: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RubyVisibility {
+    Public,
+    Private,
+    Protected,
+}
+
+fn method_is_public_action(class: Node<'_>, method: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(target) = super::ruby_routes::method_identifier(method, bytes) else {
+        return true;
+    };
+    let mut class_cursor = class.walk();
+    let Some(body) = class
+        .named_children(&mut class_cursor)
+        .find(|c| c.kind() == "body_statement")
+    else {
+        return true;
+    };
+
+    if let Some(visibility) = explicit_visibility_for_method(body, bytes, target) {
+        return visibility == RubyVisibility::Public;
+    }
+
+    visibility_at_method(body, method, bytes) == RubyVisibility::Public
+}
+
+fn explicit_visibility_for_method(
+    body: Node<'_>,
+    bytes: &[u8],
+    target: &str,
+) -> Option<RubyVisibility> {
+    let mut out = None;
+    let mut cur = body.walk();
+    for member in body.named_children(&mut cur) {
+        let Some((visibility, args)) = visibility_call(member, bytes) else {
+            continue;
+        };
+        let Some(args) = args else {
+            continue;
+        };
+        if argument_list_mentions(args, bytes, target) {
+            out = Some(visibility);
+        }
+    }
+    out
+}
+
+fn visibility_at_method(body: Node<'_>, method: Node<'_>, bytes: &[u8]) -> RubyVisibility {
+    let mut visibility = RubyVisibility::Public;
+    let mut cur = body.walk();
+    for member in body.named_children(&mut cur) {
+        if member.byte_range() == method.byte_range() {
+            return visibility;
+        }
+        let Some((next, args)) = visibility_call(member, bytes) else {
+            continue;
+        };
+        if args.is_none() {
+            visibility = next;
+        }
+    }
+    RubyVisibility::Public
+}
+
+fn visibility_call<'a>(
+    node: Node<'a>,
+    bytes: &'a [u8],
+) -> Option<(RubyVisibility, Option<Node<'a>>)> {
+    if node.kind() == "identifier" {
+        let visibility = match node.utf8_text(bytes).ok()? {
+            "public" => RubyVisibility::Public,
+            "private" => RubyVisibility::Private,
+            "protected" => RubyVisibility::Protected,
+            _ => return None,
+        };
+        return Some((visibility, None));
+    }
+    if node.kind() != "call" {
+        return None;
+    }
+    let mut cur = node.walk();
+    let mut ident = None;
+    let mut args = None;
+    for child in node.named_children(&mut cur) {
+        match child.kind() {
+            "identifier" if ident.is_none() => ident = child.utf8_text(bytes).ok(),
+            "argument_list" => args = Some(child),
+            _ => {}
+        }
+    }
+    let visibility = match ident? {
+        "public" => RubyVisibility::Public,
+        "private" => RubyVisibility::Private,
+        "protected" => RubyVisibility::Protected,
+        _ => return None,
+    };
+    Some((visibility, args))
+}
+
+fn argument_list_mentions(args: Node<'_>, bytes: &[u8], target: &str) -> bool {
+    let mut cur = args.walk();
+    for arg in args.named_children(&mut cur) {
+        let raw = arg.utf8_text(bytes).unwrap_or("").trim();
+        let normalized = raw
+            .trim_start_matches(':')
+            .trim_matches('"')
+            .trim_matches('\'');
+        if normalized == target {
+            return true;
+        }
+    }
+    false
+}
+
 impl FrameworkAdapter for RubyRailsAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -275,6 +389,9 @@ impl FrameworkAdapter for RubyRailsAdapter {
         }
         let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
         if !class_is_rails_controller(class, file_bytes) {
+            return None;
+        }
+        if !method_is_public_action(class, method, file_bytes) {
             return None;
         }
         let controller = class_name(class, file_bytes)?;
@@ -449,6 +566,30 @@ mod tests {
             RubyRailsAdapter
                 .detect(&summary("missing"), tree.root_node(), src)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_private_helper_named_explicitly() {
+        let src: &[u8] = b"class UsersController < ApplicationController\n  def index\n    'ok'\n  end\n  def sanitize_inputs(value)\n    value\n  end\n  private :sanitize_inputs\nend\n";
+        let tree = parse(src);
+        assert!(
+            RubyRailsAdapter
+                .detect(&summary("sanitize_inputs"), tree.root_node(), src)
+                .is_none(),
+            "private controller helpers are not routable Rails actions",
+        );
+    }
+
+    #[test]
+    fn skips_methods_below_private_visibility() {
+        let src: &[u8] = b"class UsersController < ApplicationController\n  private\n  def sanitize_inputs(value)\n    value\n  end\nend\n";
+        let tree = parse(src);
+        assert!(
+            RubyRailsAdapter
+                .detect(&summary("sanitize_inputs"), tree.root_node(), src)
+                .is_none(),
+            "methods declared under `private` are not routable Rails actions",
         );
     }
 

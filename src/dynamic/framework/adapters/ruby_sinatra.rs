@@ -147,7 +147,7 @@ impl FrameworkAdapter for RubySinatraAdapter {
         let route = routes
             .iter()
             .find(|r| path_stem(&r.path) == target)
-            .or_else(|| routes.first())?;
+            .or_else(|| (routes.len() == 1).then(|| &routes[0]))?;
         let request_params = bind_path_params(&route.block_params, &route.path);
         let middleware = collect_ruby_middleware(ast, file_bytes);
         Some(FrameworkBinding {
@@ -234,14 +234,26 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_first_route_when_name_does_not_match_stem() {
-        let src: &[u8] =
-            b"require 'sinatra'\nget '/alpha' do |p|\n  p\nend\nget '/beta' do |p|\n  p\nend\n";
+    fn falls_back_to_first_route_when_single_route_name_does_not_match_stem() {
+        let src: &[u8] = b"require 'sinatra'\nget '/alpha' do |p|\n  p\nend\n";
         let tree = parse(src);
         let binding = RubySinatraAdapter
             .detect(&summary("gamma"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().path, "/alpha");
+    }
+
+    #[test]
+    fn skips_multi_route_files_when_name_does_not_match_any_stem() {
+        let src: &[u8] =
+            b"require 'sinatra'\nget '/alpha' do |p|\n  p\nend\nget '/beta' do |p|\n  p\nend\n";
+        let tree = parse(src);
+        assert!(
+            RubySinatraAdapter
+                .detect(&summary("gamma"), tree.root_node(), src)
+                .is_none(),
+            "multi-route Sinatra files must not bind an unrelated summary to the first route",
+        );
     }
 
     #[test]

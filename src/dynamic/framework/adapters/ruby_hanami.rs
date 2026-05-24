@@ -164,6 +164,9 @@ impl FrameworkAdapter for RubyHanamiAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if summary.name != "call" {
+            return None;
+        }
         if !source_imports_hanami(file_bytes) {
             return None;
         }
@@ -385,6 +388,18 @@ mod tests {
             RubyHanamiAdapter
                 .detect(&summary("call"), tree.root_node(), src)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn skips_non_call_helpers_even_when_class_mixes_in_hanami_action() {
+        let src: &[u8] = b"require 'hanami/action'\nclass Helper\n  include Hanami::Action\n  def sanitize(req)\n    req\n  end\nend\n";
+        let tree = parse(src);
+        assert!(
+            RubyHanamiAdapter
+                .detect(&summary("sanitize"), tree.root_node(), src)
+                .is_none(),
+            "Hanami actions dispatch through `call`; helper methods are not route entries",
         );
     }
 

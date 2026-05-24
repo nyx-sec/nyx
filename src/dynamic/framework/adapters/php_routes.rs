@@ -43,8 +43,8 @@ pub fn source_imports_laravel(bytes: &[u8]) -> bool {
 }
 
 /// True when `bytes` carries any of the well-known Symfony import
-/// stanzas (the `Symfony\…` namespace, the `#[Route]` attribute, the
-/// `AbstractController` base class).
+/// stanzas (the `Symfony\…` namespace, the routing attribute import,
+/// or an explicit fixture marker).
 pub fn source_imports_symfony(bytes: &[u8]) -> bool {
     contains_any(
         bytes,
@@ -55,7 +55,6 @@ pub fn source_imports_symfony(bytes: &[u8]) -> bool {
             b"use Symfony\\",
             b"Symfony\\Component\\Routing\\Annotation\\Route",
             b"Symfony\\Component\\Routing\\Attribute\\Route",
-            b"AbstractController",
             b"// nyx-shape: symfony",
         ],
     )

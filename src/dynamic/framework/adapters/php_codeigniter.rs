@@ -16,6 +16,7 @@ use crate::dynamic::framework::HttpMethod;
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
+use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use tree_sitter::Node;
 
@@ -43,33 +44,71 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_codeigniter(file_bytes) {
-            return None;
-        }
-        let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
-        let controller = class.and_then(|c| php_class_name(c, file_bytes));
-
-        let (method, path) = find_codeigniter_route(ast, file_bytes, &summary.name, controller)?;
-
-        let formals = php_formal_names(func_node, file_bytes);
-        let request_params = bind_php_path_params(&formals, &path);
-        let middleware = collect_php_middleware(ast, file_bytes);
-
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape::single(method, path)),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_codeigniter(summary, None, ast, file_bytes)
     }
+
+    fn detect_with_context(
+        &self,
+        summary: &FuncSummary,
+        ssa_summary: Option<&SsaFuncSummary>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_codeigniter(summary, ssa_summary, ast, file_bytes)
+    }
+}
+
+fn detect_codeigniter(
+    summary: &FuncSummary,
+    ssa_summary: Option<&SsaFuncSummary>,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+) -> Option<FrameworkBinding> {
+    if !source_imports_codeigniter(file_bytes) {
+        return None;
+    }
+    if !super::typed_receiver_facts_allow(
+        summary,
+        ssa_summary,
+        callee_is_codeigniter_route_registration,
+        typed_container_allows_codeigniter_routes,
+    ) {
+        return None;
+    }
+    let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
+    let controller = class.and_then(|c| php_class_name(c, file_bytes));
+
+    let (method, path) = find_codeigniter_route(ast, file_bytes, &summary.name, controller)?;
+
+    let formals = php_formal_names(func_node, file_bytes);
+    let request_params = bind_php_path_params(&formals, &path);
+    let middleware = collect_php_middleware(ast, file_bytes);
+
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape::single(method, path)),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
+}
+
+fn callee_is_codeigniter_route_registration(name: &str) -> bool {
+    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
+    matches!(last, "get" | "post" | "put" | "patch" | "delete" | "add")
+}
+
+fn typed_container_allows_codeigniter_routes(container: &str) -> bool {
+    let lc = container.to_ascii_lowercase();
+    lc.contains("codeigniter") || lc.contains("routecollection")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dynamic::framework::ParamSource;
+    use crate::summary::CalleeSite;
 
     fn parse(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
@@ -136,5 +175,46 @@ mod tests {
                 .detect(&summary("helper"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn ssa_receiver_type_rejects_non_codeigniter_routes_property() {
+        let src: &[u8] = b"<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('users/(:num)', 'UserController::show');\nclass UserController extends BaseController {\n  public function show($num) { return $num; }\n}\n";
+        let tree = parse(src);
+        let mut func = summary("show");
+        func.callees.push(CalleeSite {
+            name: "routes.get".into(),
+            receiver: Some("routes".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((0, "App\\Cache".to_owned()));
+        assert!(
+            PhpCodeIgniterAdapter
+                .detect_with_context(&func, Some(&ssa), tree.root_node(), src)
+                .is_none(),
+            "a typed non-CodeIgniter `$routes` receiver must suppress the route binding",
+        );
+    }
+
+    #[test]
+    fn ssa_receiver_type_allows_codeigniter_route_collection() {
+        let src: &[u8] = b"<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('users/(:num)', 'UserController::show');\nclass UserController extends BaseController {\n  public function show($num) { return $num; }\n}\n";
+        let tree = parse(src);
+        let mut func = summary("show");
+        func.callees.push(CalleeSite {
+            name: "routes.get".into(),
+            receiver: Some("routes".into()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((0, "CodeIgniter\\Router\\RouteCollection".to_owned()));
+        let binding = PhpCodeIgniterAdapter
+            .detect_with_context(&func, Some(&ssa), tree.root_node(), src)
+            .expect("CodeIgniter route receiver should bind");
+        assert_eq!(binding.adapter, "php-codeigniter");
     }
 }
