@@ -1743,9 +1743,9 @@ mod tests {
         use super::*;
         use std::sync::Mutex;
 
-        // Coarse lock: every test in this submodule mutates the same env
-        // var, so they have to take turns.  `Mutex` is enough because the
-        // submodule is the only writer for `NYX_BUILD_STATIC`.
+        // Coarse lock: tests in this submodule mutate process env
+        // (`NYX_BUILD_STATIC`, and for dispatch tests `NYX_BUILD_CACHE`),
+        // so they have to take turns.
         static ENV_LOCK: Mutex<()> = Mutex::new(());
 
         struct EnvGuard {
@@ -1768,6 +1768,29 @@ mod tests {
                 match self.prior.take() {
                     Some(v) => unsafe { std::env::set_var("NYX_BUILD_STATIC", v) },
                     None => unsafe { std::env::remove_var("NYX_BUILD_STATIC") },
+                }
+            }
+        }
+
+        struct BuildCacheGuard {
+            prior: Option<String>,
+            _dir: tempfile::TempDir,
+        }
+
+        impl BuildCacheGuard {
+            fn isolated() -> Self {
+                let dir = tempfile::TempDir::new().unwrap();
+                let prior = std::env::var("NYX_BUILD_CACHE").ok();
+                unsafe { std::env::set_var("NYX_BUILD_CACHE", dir.path()) };
+                Self { prior, _dir: dir }
+            }
+        }
+
+        impl Drop for BuildCacheGuard {
+            fn drop(&mut self) {
+                match self.prior.take() {
+                    Some(v) => unsafe { std::env::set_var("NYX_BUILD_CACHE", v) },
+                    None => unsafe { std::env::remove_var("NYX_BUILD_CACHE") },
                 }
             }
         }
@@ -1871,10 +1894,8 @@ mod tests {
 
         /// Scrub the cache directory `prepare_node` would land in so a
         /// fresh-cache assertion stays deterministic across reruns.  The
-        /// per-test `toolchain_id` already isolates this submodule from
-        /// every other test, but `cargo test --workspace` reruns reuse
-        /// the same `$HOME/Library/Caches/...` slot, so we have to wipe
-        /// it ourselves before asserting on the cache-miss branch.
+        /// dispatch tests install an isolated `NYX_BUILD_CACHE`, so this
+        /// only clears state from earlier calls inside the same test.
         fn purge_node_cache_for(spec: &HarnessSpec, workdir: &Path) {
             let lockfile_hash = compute_node_lockfile_hash(workdir);
             if let Ok(cache_path) = build_cache_path(&lockfile_hash, "node", &spec.toolchain_id) {
@@ -1905,6 +1926,8 @@ mod tests {
             // with cache_hit=false + duration=0 + lang=TypeScript on first
             // call.  Use TypeScript to also lock in that the JS/TS arm
             // shares one dispatch leg.
+            let _lock = ENV_LOCK.lock().unwrap();
+            let _cache = BuildCacheGuard::isolated();
             let dir = tempfile::TempDir::new().unwrap();
             let spec = mk_spec(Lang::TypeScript, "ts-no-package-json");
             purge_node_cache_for(&spec, dir.path());
@@ -1937,6 +1960,8 @@ mod tests {
             // Both JS and TS route to prepare_node so a back-to-back call
             // with the same toolchain_id + workdir contents must hit the
             // same cache.
+            let _lock = ENV_LOCK.lock().unwrap();
+            let _cache = BuildCacheGuard::isolated();
             let dir = tempfile::TempDir::new().unwrap();
             // Both specs share one toolchain suffix so they collide in
             // the same cache slot — the contract under test is that JS

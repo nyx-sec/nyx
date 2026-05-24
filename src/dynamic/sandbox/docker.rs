@@ -168,8 +168,7 @@ pub fn network_args(policy: &NetworkPolicy) -> Vec<String> {
             args.extend(["--network".to_owned(), "none".to_owned()]);
         }
         NetworkPolicy::OobOutbound { .. } => {
-            args.extend(["--network".to_owned(), "bridge".to_owned()]);
-            args.push("--add-host=host-gateway:host-gateway".to_owned());
+            args.extend(oob_outbound_network_args());
         }
         NetworkPolicy::StubsOnly { allow } => {
             args.extend(["--network".to_owned(), "bridge".to_owned()]);
@@ -185,6 +184,14 @@ pub fn network_args(policy: &NetworkPolicy) -> Vec<String> {
     args
 }
 
+fn oob_outbound_network_args() -> Vec<String> {
+    vec![
+        "--network".to_owned(),
+        "bridge".to_owned(),
+        "--add-host=host-gateway:host-gateway".to_owned(),
+    ]
+}
+
 fn add_host_arg(hp: &HostPort) -> String {
     format!("--add-host={}:host-gateway", hp.host)
 }
@@ -193,7 +200,6 @@ fn add_host_arg(hp: &HostPort) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     #[test]
     fn workdir_mount_args_uses_fixed_path() {
@@ -248,11 +254,7 @@ mod tests {
 
     #[test]
     fn network_args_oob_threads_host_gateway() {
-        let listener = Arc::new(
-            crate::dynamic::oob::OobListener::bind()
-                .expect("oob listener must bind on 127.0.0.1 in tests"),
-        );
-        let args = network_args(&NetworkPolicy::OobOutbound { listener });
+        let args = oob_outbound_network_args();
         assert!(
             args.iter()
                 .any(|a| a == "--add-host=host-gateway:host-gateway")

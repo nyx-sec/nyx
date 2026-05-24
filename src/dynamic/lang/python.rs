@@ -831,29 +831,54 @@ if _cls is None:
     print("NYX_CLASS_NOT_FOUND: " + {class:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 
-def _nyx_build_receiver(cls):
+def _nyx_known_mock_for(name):
+    n = name.lower()
+    if 'http' in n or 'client' in n:
+        return MockHttpClient()
+    if 'db' in n or 'conn' in n or 'session' in n:
+        return MockDatabaseConnection()
+    if 'log' in n:
+        return MockLogger()
+    return None
+
+def _nyx_resolve_annotation(ann):
+    if ann is None:
+        return None
+    try:
+        if isinstance(ann, str):
+            return getattr(_entry_mod, ann, None)
+        if getattr(ann, "__module__", None) == getattr(_entry_mod, "__name__", None):
+            return ann
+    except Exception:
+        return None
+    return None
+
+def _nyx_build_receiver(cls, depth=3, seen=None):
+    if seen is None:
+        seen = set()
+    if cls in seen:
+        return None
+    seen.add(cls)
     # Preferred path: zero-arg ctor.
     try:
         return cls()
     except TypeError:
         pass
-    # Fallback path: stubbed dependencies.  Walk the ctor's positional
-    # formals (best-effort via inspect.signature) and pass mocks for
-    # known shapes; default to `None` for the rest.
+    # Fallback path: recursively build in-file typed dependencies up to
+    # depth 3, then use known boundary mocks by constructor-name shape.
     import inspect
     try:
         sig = inspect.signature(cls.__init__)
         args = []
         for name, p in list(sig.parameters.items())[1:]:  # skip `self`
-            n = name.lower()
-            if 'http' in n or 'client' in n:
-                args.append(MockHttpClient())
-            elif 'db' in n or 'conn' in n or 'session' in n:
-                args.append(MockDatabaseConnection())
-            elif 'log' in n:
-                args.append(MockLogger())
-            else:
-                args.append(None)
+            dep = None
+            if depth > 0:
+                dep_cls = _nyx_resolve_annotation(getattr(p, "annotation", None))
+                if dep_cls is not None and dep_cls is not cls:
+                    dep = _nyx_build_receiver(dep_cls, depth - 1, set(seen))
+            if dep is None:
+                dep = _nyx_known_mock_for(name)
+            args.append(dep)
         return cls(*args)
     except Exception as _e:
         # Last resort: single-mock fallback so a single-arg ctor still

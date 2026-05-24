@@ -2681,8 +2681,24 @@ try {{
     exit(77);
 }}
 
-function _nyx_build_receiver(string $cls) {{
+function _nyx_known_mock_for(string $name) {{
+    $n = strtolower($name);
+    if (strpos($n, 'http') !== false || strpos($n, 'client') !== false) {{
+        return new MockHttpClient();
+    }}
+    if (strpos($n, 'db') !== false || strpos($n, 'conn') !== false || strpos($n, 'repo') !== false || strpos($n, 'session') !== false) {{
+        return new MockDatabaseConnection();
+    }}
+    if (strpos($n, 'log') !== false) {{
+        return new MockLogger();
+    }}
+    return null;
+}}
+
+function _nyx_build_receiver(string $cls, int $depth = 3, array $seen = []) {{
     if (!class_exists($cls)) return null;
+    if (isset($seen[$cls])) return null;
+    $seen[$cls] = true;
     try {{ return new $cls(); }} catch (Throwable $e) {{}}
     $rc = new ReflectionClass($cls);
     $ctor = $rc->getConstructor();
@@ -2692,16 +2708,16 @@ function _nyx_build_receiver(string $cls) {{
     }}
     $args = [];
     foreach ($ctor->getParameters() as $p) {{
-        $n = strtolower($p->getName());
-        if (strpos($n, 'http') !== false || strpos($n, 'client') !== false) {{
-            $args[] = new MockHttpClient();
-        }} elseif (strpos($n, 'db') !== false || strpos($n, 'conn') !== false || strpos($n, 'repo') !== false || strpos($n, 'session') !== false) {{
-            $args[] = new MockDatabaseConnection();
-        }} elseif (strpos($n, 'log') !== false) {{
-            $args[] = new MockLogger();
-        }} else {{
-            $args[] = null;
+        $dep = null;
+        $type = $p->getType();
+        if ($depth > 0 && $type instanceof ReflectionNamedType && !$type->isBuiltin()) {{
+            $typeName = $type->getName();
+            if (class_exists($typeName) && $typeName !== $cls) {{
+                $dep = _nyx_build_receiver($typeName, $depth - 1, $seen);
+            }}
         }}
+        if ($dep === null) $dep = _nyx_known_mock_for($p->getName());
+        $args[] = $dep;
     }}
     try {{ return $rc->newInstanceArgs($args); }} catch (Throwable $e) {{}}
     return null;

@@ -596,9 +596,14 @@ fn error_throw_terminates() {
 #[test]
 fn binary_json_output() {
     let fixture = fixture_path("rust_web_app");
+    let home = tempfile::tempdir().expect("temp home");
     #[allow(deprecated)]
     let cmd = assert_cmd::Command::cargo_bin("nyx")
         .expect("nyx binary should exist")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_DATA_HOME", home.path().join(".local/share"))
+        .env("NO_COLOR", "1")
         .arg("scan")
         .arg(fixture.to_str().unwrap())
         .arg("--no-index")

@@ -20,6 +20,7 @@
 
 use assert_cmd::Command;
 use serde_json::Value;
+use std::path::Path;
 use std::path::PathBuf;
 
 struct Scenario {
@@ -43,13 +44,20 @@ fn fixture_root(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn run_scan_json(root: &PathBuf) -> Value {
-    let assert = Command::cargo_bin("nyx")
-        .expect("nyx binary")
+fn nyx_scan_cmd(home: &Path, root: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("nyx").expect("nyx binary");
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("NO_COLOR", "1")
         .args(["scan", "--format", "json"])
-        .arg(root)
-        .assert()
-        .success();
+        .arg(root);
+    cmd
+}
+
+fn run_scan_json(root: &Path) -> Value {
+    let home = tempfile::tempdir().expect("temp home");
+    let assert = nyx_scan_cmd(home.path(), root).assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone())
         .expect("nyx scan stdout is valid UTF-8");
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
@@ -233,10 +241,8 @@ fn flask_eval_chain_replay_stable_honours_opt_in() {
 
     // Arm 1: env var unset → replay_stable must be null on the top chain
     // regardless of verdict status.
-    let assert_off = Command::cargo_bin("nyx")
-        .expect("nyx binary")
-        .args(["scan", "--format", "json"])
-        .arg(&root)
+    let home_off = tempfile::tempdir().expect("temp home");
+    let assert_off = nyx_scan_cmd(home_off.path(), &root)
         .env_remove("NYX_VERIFY_REPLAY_STABLE")
         .assert()
         .success();
@@ -260,10 +266,8 @@ fn flask_eval_chain_replay_stable_honours_opt_in() {
     // verdict is Confirmed.  When the toolchain is missing the verdict
     // stays Inconclusive and replay_stable stays null; both branches
     // are valid wiring outcomes.
-    let assert_on = Command::cargo_bin("nyx")
-        .expect("nyx binary")
-        .args(["scan", "--format", "json"])
-        .arg(&root)
+    let home_on = tempfile::tempdir().expect("temp home");
+    let assert_on = nyx_scan_cmd(home_on.path(), &root)
         .env("NYX_VERIFY_REPLAY_STABLE", "1")
         .assert()
         .success();
@@ -303,10 +307,9 @@ fn flask_eval_chain_replay_stable_honours_opt_in() {
 #[test]
 fn flask_eval_chain_dynamic_verdict_is_null_when_verify_disabled() {
     let root = fixture_root("python/flask_eval");
-    let assert = Command::cargo_bin("nyx")
-        .expect("nyx binary")
-        .args(["scan", "--no-verify", "--format", "json"])
-        .arg(&root)
+    let home = tempfile::tempdir().expect("temp home");
+    let assert = nyx_scan_cmd(home.path(), &root)
+        .arg("--no-verify")
         .assert()
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone())

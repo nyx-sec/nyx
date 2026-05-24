@@ -162,6 +162,8 @@ fn class_method_python_dispatch_reads_payload_and_invokes_method() {
     assert!(h.source.contains("UserRepository"));
     assert!(h.source.contains("find_by_name"));
     assert!(h.source.contains("_nyx_build_receiver"));
+    assert!(h.source.contains("depth=3"));
+    assert!(h.source.contains("_nyx_resolve_annotation"));
 }
 
 #[test]
@@ -251,6 +253,17 @@ mod e2e_phase_19 {
             bins: &["python3"],
         },
         Case {
+            lang: Lang::Python,
+            fixture_dir: "python_recursive_deps",
+            vuln_file: "vuln.py",
+            benign_file: "benign.py",
+            vuln_class: "UserController",
+            benign_class: "UserController",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["python3"],
+        },
+        Case {
             lang: Lang::Ruby,
             fixture_dir: "ruby",
             vuln_file: "vuln.rb",
@@ -290,6 +303,17 @@ mod e2e_phase_19 {
             benign_file: "benign.php",
             vuln_class: "UserService",
             benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["php"],
+        },
+        Case {
+            lang: Lang::Php,
+            fixture_dir: "php_recursive_deps",
+            vuln_file: "vuln.php",
+            benign_file: "benign.php",
+            vuln_class: "UserController",
+            benign_class: "UserController",
             method: "run",
             cap: Cap::CODE_EXEC,
             bins: &["php"],

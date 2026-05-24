@@ -182,6 +182,18 @@ fn parse_nonce_from_request_line(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
+
+    fn bind_or_skip(test_name: &str) -> Option<OobListener> {
+        match OobListener::bind() {
+            Ok(listener) => Some(listener),
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                eprintln!("SKIP {test_name}: loopback bind denied by test sandbox: {e}");
+                None
+            }
+            Err(e) => panic!("bind must succeed on loopback outside sandbox-denied hosts: {e}"),
+        }
+    }
 
     #[test]
     fn parse_nonce_standard_get() {
@@ -211,13 +223,17 @@ mod tests {
 
     #[test]
     fn oob_listener_bind_and_port() {
-        let listener = OobListener::bind().expect("bind must succeed on loopback");
+        let Some(listener) = bind_or_skip("oob_listener_bind_and_port") else {
+            return;
+        };
         assert_ne!(listener.port(), 0, "OS must assign a non-zero port");
     }
 
     #[test]
     fn oob_listener_records_nonce_via_http() {
-        let listener = OobListener::bind().expect("bind");
+        let Some(listener) = bind_or_skip("oob_listener_records_nonce_via_http") else {
+            return;
+        };
         let nonce = "nyx_test_nonce_abc123";
         let url = listener.nonce_url(nonce);
 
@@ -226,33 +242,42 @@ mod tests {
 
         // Make an HTTP request with the nonce in the path.
         let addr = format!("127.0.0.1:{}", listener.port());
-        if let Ok(mut stream) = TcpStream::connect(&addr) {
-            let req = format!("GET /{nonce} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
-            let _ = stream.write_all(req.as_bytes());
-            // Read response to ensure the server processed the request.
-            let mut buf = [0u8; 64];
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-            let _ = std::io::Read::read(&mut stream, &mut buf);
-        }
-
-        // Allow the handler thread to update the hits set.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut stream = match TcpStream::connect(&addr) {
+            Ok(stream) => stream,
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                eprintln!(
+                    "SKIP oob_listener_records_nonce_via_http: loopback connect denied by test sandbox: {e}"
+                );
+                return;
+            }
+            Err(e) => panic!("connect to listener {addr} must succeed: {e}"),
+        };
+        let req = format!("GET /{nonce} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
+        let _ = stream.write_all(req.as_bytes());
+        // Read response to ensure the server processed the request.
+        let mut buf = [0u8; 64];
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+        let _ = std::io::Read::read(&mut stream, &mut buf);
 
         assert!(
-            listener.was_nonce_hit(nonce),
+            listener.wait_for_nonce(nonce, std::time::Duration::from_millis(500)),
             "listener must record the nonce from the HTTP request; url={url}"
         );
     }
 
     #[test]
     fn oob_listener_unknown_nonce_not_hit() {
-        let listener = OobListener::bind().expect("bind");
+        let Some(listener) = bind_or_skip("oob_listener_unknown_nonce_not_hit") else {
+            return;
+        };
         assert!(!listener.was_nonce_hit("not_a_real_nonce_xyz"));
     }
 
     #[test]
     fn nonce_url_format() {
-        let listener = OobListener::bind().expect("bind");
+        let Some(listener) = bind_or_skip("nonce_url_format") else {
+            return;
+        };
         let port = listener.port();
         let url = listener.nonce_url("mynonce");
         assert_eq!(url, format!("http://127.0.0.1:{port}/mynonce"));
