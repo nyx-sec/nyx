@@ -13,14 +13,6 @@ pub struct MigrationSequelizeAdapter;
 
 const ADAPTER_NAME: &str = "migration-sequelize";
 
-fn callee_is_sequelize_migration(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "up" | "down" | "createTable" | "addColumn" | "dropTable" | "removeColumn" | "addIndex"
-    )
-}
-
 fn source_imports_sequelize_migration(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"require('sequelize')",
@@ -35,6 +27,10 @@ fn source_imports_sequelize_migration(file_bytes: &[u8]) -> bool {
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+fn name_is_sequelize_migration_entry(name: &str) -> bool {
+    matches!(name, "up" | "down")
 }
 
 impl FrameworkAdapter for MigrationSequelizeAdapter {
@@ -52,9 +48,8 @@ impl FrameworkAdapter for MigrationSequelizeAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_sequelize_migration);
         let matches_source = source_imports_sequelize_migration(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && name_is_sequelize_migration_entry(&summary.name) {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Migration { version: None },
@@ -93,5 +88,20 @@ mod tests {
             .expect("sequelize migration binds");
         assert_eq!(binding.adapter, "migration-sequelize");
         assert!(matches!(binding.kind, EntryKind::Migration { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_sequelize_migration_file() {
+        let src: &[u8] = b"module.exports = {\n  async up(queryInterface, Sequelize) { await queryInterface.createTable('users', {}); },\n};\nfunction normalizeName(name) { return String(name); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "normalizeName".into(),
+            ..Default::default()
+        };
+        assert!(
+            MigrationSequelizeAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -926,6 +926,27 @@ fn fp_guard_framework_express_res_json() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, broker-adapter receiver collisions: OSS-shaped handlers named
+/// `handler` / `process` and a non-SQS `.send(...)` publisher must stay
+/// ordinary helper code unless receiver facts prove the call is on a broker
+/// runtime object.
+#[test]
+fn fp_guard_broker_adapter_receiver_collisions() {
+    let dir = fixture_path("fp_guards/broker_adapter_collisions");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Phase 21 adapter collisions: framework-marked files can contain
+/// ordinary helpers, controller bootstrappers, mailer queues, and migration
+/// formatting functions that must not be promoted to dynamic entry kinds.
+#[test]
+fn fp_guard_phase21_adapter_collisions() {
+    let dir = fixture_path("fp_guards/phase21_adapter_collisions");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, FastAPI `dependencies=[Depends(requires_access_*)]`
 /// route-level guard short-circuits `auth_check_covers_subject` so
 /// the handler body's path-param ORM calls and row-variable method

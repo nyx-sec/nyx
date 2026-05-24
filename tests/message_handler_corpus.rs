@@ -17,11 +17,15 @@
 mod common;
 
 use nyx_scanner::dynamic::framework::registry::adapters_for;
-use nyx_scanner::dynamic::framework::{FrameworkBinding, detect_binding};
+use nyx_scanner::dynamic::framework::{
+    FrameworkBinding, detect_binding, detect_binding_with_context,
+};
 use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
 use nyx_scanner::labels::Cap;
+use nyx_scanner::summary::CalleeSite;
 use nyx_scanner::summary::FuncSummary;
+use nyx_scanner::summary::ssa_summary::SsaFuncSummary;
 use nyx_scanner::symbol::Lang;
 
 const SUPPORTED_LANGS: &[Lang] = &[
@@ -213,6 +217,39 @@ fn detect_from_bytes(lang: Lang, bytes: &[u8], handler: &str) -> Option<Framewor
         ..Default::default()
     };
     detect_binding(&summary, tree.root_node(), bytes, lang)
+}
+
+fn detect_collision_fixture_with_receiver(
+    lang: Lang,
+    fixture: &str,
+    handler: &str,
+    callee: &str,
+    receiver: &str,
+    receiver_ty: &str,
+) -> Option<FrameworkBinding> {
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fp_guards/broker_adapter_collisions")
+            .join(fixture),
+    )
+    .expect("collision fixture exists");
+    let ts_lang = ts_language_for(lang);
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).unwrap();
+    let tree = parser.parse(&bytes, None).unwrap();
+    let mut summary = FuncSummary {
+        name: handler.into(),
+        ..Default::default()
+    };
+    summary.callees.push(CalleeSite {
+        name: callee.to_owned(),
+        receiver: Some(receiver.to_owned()),
+        ordinal: 0,
+        ..Default::default()
+    });
+    let mut ssa = SsaFuncSummary::default();
+    ssa.typed_call_receivers.push((0, receiver_ty.to_owned()));
+    detect_binding_with_context(&summary, Some(&ssa), tree.root_node(), &bytes, lang)
 }
 
 fn middleware_names(binding: &FrameworkBinding) -> Vec<String> {
@@ -414,6 +451,51 @@ def on_message(ch, method, properties, body):\n    validate_request(body)\n",
     for (lang, src, handler, expected) in cases {
         let binding = detect_inline(*lang, src, handler);
         assert_eq!(middleware_names(&binding), *expected);
+    }
+}
+
+#[test]
+fn phase20_broker_adapter_receiver_collisions_have_fixture_anchors() {
+    let cases: &[(Lang, &str, &str, &str, &str, &str)] = &[
+        (
+            Lang::Python,
+            "python_non_broker_handler.py",
+            "handler",
+            "cache.process_message",
+            "cache",
+            "AuditCache",
+        ),
+        (
+            Lang::Python,
+            "python_non_rabbit_process.py",
+            "process",
+            "worker.process",
+            "worker",
+            "ReportWorker",
+        ),
+        (
+            Lang::JavaScript,
+            "node_non_sqs_send.js",
+            "handler",
+            "metrics.send",
+            "metrics",
+            "MetricsPublisher",
+        ),
+    ];
+
+    for (lang, fixture, handler, callee, receiver, receiver_ty) in cases {
+        let binding = detect_collision_fixture_with_receiver(
+            *lang,
+            fixture,
+            handler,
+            callee,
+            receiver,
+            receiver_ty,
+        );
+        assert!(
+            binding.is_none(),
+            "{fixture} should not bind as a broker message handler; got {binding:?}",
+        );
     }
 }
 

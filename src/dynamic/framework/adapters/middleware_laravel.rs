@@ -59,7 +59,7 @@ impl FrameworkAdapter for MiddlewareLaravelAdapter {
         let has_shape = source_has_middleware_shape(file_bytes);
         let name_matches = name_is_middleware_entry(&summary.name);
         let body_mounts_middleware =
-            super::any_callee_matches(summary, callee_is_laravel_middleware);
+            has_shape && super::any_callee_matches(summary, callee_is_laravel_middleware);
         let binds = (name_matches && has_shape) || body_mounts_middleware;
         if !binds {
             return None;
@@ -116,6 +116,27 @@ mod tests {
                 .detect(&summary, tree.root_node(), src)
                 .is_none(),
             "controller method must not bind as middleware just because the file imports Request",
+        );
+    }
+
+    #[test]
+    fn does_not_bind_with_middleware_call_without_contract_shape() {
+        let src: &[u8] = b"<?php\nclass Bootstrapper {\n  public function configure($app) { return $app->withMiddleware([]); }\n}\n";
+        let tree = parse_php(src);
+        let mut summary = FuncSummary {
+            name: "configure".into(),
+            ..Default::default()
+        };
+        summary.callees.push(crate::summary::CalleeSite {
+            name: "app.withMiddleware".to_owned(),
+            receiver: Some("app".to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        assert!(
+            MiddlewareLaravelAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
         );
     }
 }

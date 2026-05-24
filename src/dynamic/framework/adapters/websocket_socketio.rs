@@ -13,14 +13,6 @@ pub struct WebsocketSocketIoAdapter;
 
 const ADAPTER_NAME: &str = "websocket-socketio";
 
-fn callee_is_socketio(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "on" | "emit" | "send" | "AsyncServer" | "Server" | "event"
-    )
-}
-
 fn source_imports_socketio(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"import socketio",
@@ -49,6 +41,29 @@ fn extract_path(file_bytes: &[u8]) -> String {
     "/".to_owned()
 }
 
+fn name_registered_as_socketio_event(name: &str, file_bytes: &[u8]) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let text = match std::str::from_utf8(file_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let def_needle = format!("def {name}(");
+    let Some(def_idx) = text.find(&def_needle) else {
+        return false;
+    };
+    let before = &text[..def_idx];
+    let since_prev_def = before
+        .rfind("\ndef ")
+        .map(|idx| &before[idx + 1..])
+        .unwrap_or(before);
+    since_prev_def.contains("@sio.event")
+        || since_prev_def.contains("@socketio.event")
+        || since_prev_def.contains(&format!("@sio.on('{name}'"))
+        || since_prev_def.contains(&format!("@sio.on(\"{name}\""))
+}
+
 impl FrameworkAdapter for WebsocketSocketIoAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -64,9 +79,8 @@ impl FrameworkAdapter for WebsocketSocketIoAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_socketio);
-        let matches_source = source_imports_socketio(file_bytes);
-        if matches_call || matches_source {
+        let registered = name_registered_as_socketio_event(&summary.name, file_bytes);
+        if source_imports_socketio(file_bytes) && registered {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::WebSocket {
@@ -112,5 +126,24 @@ mod tests {
         if let EntryKind::WebSocket { path } = binding.kind {
             assert_eq!(path, "message");
         }
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_socketio_file() {
+        let src: &[u8] = b"import socketio\n\
+            sio = socketio.Server()\n\
+            @sio.on('message')\n\
+            def message(sid, data):\n    pass\n\
+            def normalize(data):\n    return str(data)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize".into(),
+            ..Default::default()
+        };
+        assert!(
+            WebsocketSocketIoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

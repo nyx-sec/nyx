@@ -12,20 +12,6 @@ pub struct MigrationDjangoAdapter;
 
 const ADAPTER_NAME: &str = "migration-django";
 
-fn callee_is_django_migration(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "CreateModel"
-            | "AddField"
-            | "AlterField"
-            | "DeleteModel"
-            | "RunPython"
-            | "RunSQL"
-            | "migrate"
-    )
-}
-
 fn source_imports_django_migration(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"django.db.migrations",
@@ -56,6 +42,13 @@ fn extract_version(file_bytes: &[u8]) -> Option<String> {
     None
 }
 
+fn name_is_django_migration_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "Migration" | "upgrade" | "downgrade" | "forwards" | "backwards"
+    )
+}
+
 impl FrameworkAdapter for MigrationDjangoAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -71,9 +64,8 @@ impl FrameworkAdapter for MigrationDjangoAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_django_migration);
         let matches_source = source_imports_django_migration(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && name_is_django_migration_entry(&summary.name) {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Migration {
@@ -115,5 +107,22 @@ mod tests {
             .expect("django migration binds");
         assert_eq!(binding.adapter, "migration-django");
         assert!(matches!(binding.kind, EntryKind::Migration { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_django_migration_file() {
+        let src: &[u8] = b"from django.db import migrations\n\
+            class Migration(migrations.Migration):\n    operations = [migrations.CreateModel(name='User', fields=[])]\n\
+            def normalize_name(name):\n    return str(name)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize_name".into(),
+            ..Default::default()
+        };
+        assert!(
+            MigrationDjangoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

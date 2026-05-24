@@ -42,6 +42,10 @@ fn extract_resolver(summary: &FuncSummary) -> (String, String) {
     ("Query".to_owned(), summary.name.clone())
 }
 
+fn name_is_graphene_resolver(name: &str) -> bool {
+    name.starts_with("resolve_")
+}
+
 impl FrameworkAdapter for GraphqlGrapheneAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -59,7 +63,7 @@ impl FrameworkAdapter for GraphqlGrapheneAdapter {
     ) -> Option<FrameworkBinding> {
         let matches_call = super::any_callee_matches(summary, callee_is_graphene);
         let matches_source = source_imports_graphene(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && (name_is_graphene_resolver(&summary.name) || matches_call) {
             let (type_name, field) = extract_resolver(summary);
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
@@ -103,5 +107,22 @@ mod tests {
             assert_eq!(type_name, "Query");
             assert_eq!(field, "user");
         }
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_graphene_file() {
+        let src: &[u8] = b"import graphene\n\
+            class Query(graphene.ObjectType):\n    user = graphene.String()\n\
+            def normalize_id(raw):\n    return str(raw)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize_id".into(),
+            ..Default::default()
+        };
+        assert!(
+            GraphqlGrapheneAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

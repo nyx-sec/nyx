@@ -49,6 +49,10 @@ fn extract_resolver(summary: &FuncSummary) -> (String, String) {
     ("Node".to_owned(), summary.name.clone())
 }
 
+fn name_is_relay_resolver(name: &str) -> bool {
+    name.starts_with("resolve") || name.ends_with("Resolver")
+}
+
 impl FrameworkAdapter for GraphqlRelayAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -66,7 +70,7 @@ impl FrameworkAdapter for GraphqlRelayAdapter {
     ) -> Option<FrameworkBinding> {
         let matches_call = super::any_callee_matches(summary, callee_is_relay);
         let matches_source = source_imports_relay(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && (name_is_relay_resolver(&summary.name) || matches_call) {
             let (type_name, field) = extract_resolver(summary);
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
@@ -107,5 +111,21 @@ mod tests {
             .expect("relay binds");
         assert_eq!(binding.adapter, "graphql-relay");
         assert!(matches!(binding.kind, EntryKind::GraphQLResolver { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_relay_file() {
+        let src: &[u8] = b"const { nodeDefinitions } = require('graphql-relay');\n\
+            function normalizeId(id) { return String(id); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "normalizeId".into(),
+            ..Default::default()
+        };
+        assert!(
+            GraphqlRelayAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

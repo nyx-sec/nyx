@@ -14,14 +14,6 @@ pub struct MiddlewareSpringAdapter;
 
 const ADAPTER_NAME: &str = "middleware-spring";
 
-fn callee_is_spring_middleware(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "preHandle" | "postHandle" | "afterCompletion" | "doFilter" | "addInterceptors"
-    )
-}
-
 fn source_imports_spring_middleware(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"HandlerInterceptor",
@@ -34,6 +26,13 @@ fn source_imports_spring_middleware(file_bytes: &[u8]) -> bool {
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+fn name_is_spring_middleware_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "preHandle" | "postHandle" | "afterCompletion" | "doFilter" | "addInterceptors"
+    )
 }
 
 impl FrameworkAdapter for MiddlewareSpringAdapter {
@@ -51,9 +50,9 @@ impl FrameworkAdapter for MiddlewareSpringAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_spring_middleware);
-        let matches_source = source_imports_spring_middleware(file_bytes);
-        if matches_call || matches_source {
+        if source_imports_spring_middleware(file_bytes)
+            && name_is_spring_middleware_entry(&summary.name)
+        {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Middleware {
@@ -94,5 +93,20 @@ mod tests {
             .expect("spring middleware binds");
         assert_eq!(binding.adapter, "middleware-spring");
         assert!(matches!(binding.kind, EntryKind::Middleware { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_spring_middleware_file() {
+        let src: &[u8] = b"public class AuditInterceptor implements HandlerInterceptor {\n  public boolean preHandle(Object req, Object res, Object handler) { return true; }\n  public String normalize(String payload) { return payload; }\n}\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "normalize".into(),
+            ..Default::default()
+        };
+        assert!(
+            MiddlewareSpringAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

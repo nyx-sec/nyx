@@ -39,6 +39,19 @@ fn extract_resolver(summary: &FuncSummary) -> (String, String) {
     ("Query".to_owned(), summary.name.clone())
 }
 
+fn name_is_gqlgen_resolver(name: &str, file_bytes: &[u8]) -> bool {
+    if name.starts_with("Resolve") {
+        return true;
+    }
+    let text = match std::str::from_utf8(file_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    text.contains(&format!("*queryResolver) {name}("))
+        || text.contains(&format!("*mutationResolver) {name}("))
+        || text.contains(&format!("*subscriptionResolver) {name}("))
+}
+
 impl FrameworkAdapter for GraphqlGqlgenAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -56,7 +69,7 @@ impl FrameworkAdapter for GraphqlGqlgenAdapter {
     ) -> Option<FrameworkBinding> {
         let matches_call = super::any_callee_matches(summary, callee_is_gqlgen);
         let matches_source = source_imports_gqlgen(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && (name_is_gqlgen_resolver(&summary.name, file_bytes) || matches_call) {
             let (type_name, field) = extract_resolver(summary);
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
@@ -99,5 +112,23 @@ mod tests {
             .expect("gqlgen binds");
         assert_eq!(binding.adapter, "graphql-gqlgen");
         assert!(matches!(binding.kind, EntryKind::GraphQLResolver { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_gqlgen_file() {
+        let src: &[u8] = b"package graph\n\
+            import \"github.com/99designs/gqlgen/graphql\"\n\
+            type queryResolver struct{}\n\
+            func NormalizeID(id string) string { return id }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "NormalizeID".into(),
+            ..Default::default()
+        };
+        assert!(
+            GraphqlGqlgenAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

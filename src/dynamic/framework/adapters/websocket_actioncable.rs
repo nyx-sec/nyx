@@ -13,14 +13,6 @@ pub struct WebsocketActionCableAdapter;
 
 const ADAPTER_NAME: &str = "websocket-actioncable";
 
-fn callee_is_actioncable(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "receive" | "subscribed" | "unsubscribed" | "transmit" | "broadcast"
-    )
-}
-
 fn source_imports_actioncable(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"ApplicationCable::Channel",
@@ -54,6 +46,10 @@ fn extract_path(file_bytes: &[u8]) -> String {
     "/cable".to_owned()
 }
 
+fn name_is_actioncable_entry(name: &str) -> bool {
+    matches!(name, "receive" | "subscribed" | "unsubscribed")
+}
+
 impl FrameworkAdapter for WebsocketActionCableAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -69,9 +65,7 @@ impl FrameworkAdapter for WebsocketActionCableAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_actioncable);
-        let matches_source = source_imports_actioncable(file_bytes);
-        if matches_call || matches_source {
+        if source_imports_actioncable(file_bytes) && name_is_actioncable_entry(&summary.name) {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::WebSocket {
@@ -114,5 +108,20 @@ mod tests {
         if let EntryKind::WebSocket { path } = binding.kind {
             assert_eq!(path, "chat_room");
         }
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_actioncable_file() {
+        let src: &[u8] = b"class ChatChannel < ApplicationCable::Channel\n  def receive(data)\n  end\n  def normalize(data)\n    data.to_s\n  end\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "normalize".into(),
+            ..Default::default()
+        };
+        assert!(
+            WebsocketActionCableAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

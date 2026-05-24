@@ -13,14 +13,6 @@ pub struct WebsocketChannelsAdapter;
 
 const ADAPTER_NAME: &str = "websocket-channels";
 
-fn callee_is_channels(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "receive" | "receive_json" | "connect" | "disconnect" | "send" | "send_json"
-    )
-}
-
 fn source_imports_channels(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"channels.generic.websocket",
@@ -49,6 +41,13 @@ fn extract_path(file_bytes: &[u8]) -> String {
     "/ws/".to_owned()
 }
 
+fn name_is_channels_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "receive" | "receive_json" | "connect" | "disconnect" | "websocket_receive"
+    )
+}
+
 impl FrameworkAdapter for WebsocketChannelsAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -64,9 +63,7 @@ impl FrameworkAdapter for WebsocketChannelsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_channels);
-        let matches_source = source_imports_channels(file_bytes);
-        if matches_call || matches_source {
+        if source_imports_channels(file_bytes) && name_is_channels_entry(&summary.name) {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::WebSocket {
@@ -108,5 +105,22 @@ mod tests {
             .expect("channels binds");
         assert_eq!(binding.adapter, "websocket-channels");
         assert!(matches!(binding.kind, EntryKind::WebSocket { .. }));
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_channels_file() {
+        let src: &[u8] = b"from channels.generic.websocket import WebsocketConsumer\n\
+            class ChatConsumer(WebsocketConsumer):\n    def receive(self, text_data=None):\n        pass\n\
+            def normalize_frame(text_data):\n    return str(text_data)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize_frame".into(),
+            ..Default::default()
+        };
+        assert!(
+            WebsocketChannelsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

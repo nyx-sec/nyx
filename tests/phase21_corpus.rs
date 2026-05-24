@@ -26,7 +26,8 @@ use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
 use nyx_scanner::evidence::EntryKind as EvEntryKind;
 use nyx_scanner::labels::Cap;
-use nyx_scanner::summary::FuncSummary;
+use nyx_scanner::summary::ssa_summary::SsaFuncSummary;
+use nyx_scanner::summary::{CalleeSite, FuncSummary};
 use nyx_scanner::symbol::Lang;
 
 fn make_spec(lang: Lang, kind: EvEntryKind, entry_name: &str, entry_file: &str) -> HarnessSpec {
@@ -89,6 +90,46 @@ fn run_adapter(
     adapter
         .detect(&summary, tree.root_node(), &bytes)
         .unwrap_or_else(|| panic!("{} did not fire on {fixture}", adapter.name()))
+}
+
+fn detect_phase21_fp_fixture(
+    adapter: &dyn FrameworkAdapter,
+    lang: Lang,
+    handler: &str,
+    fixture: &str,
+    typed_call: Option<(&str, &str, &str)>,
+) -> Option<FrameworkBinding> {
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fp_guards/phase21_adapter_collisions")
+            .join(fixture),
+    )
+    .unwrap_or_else(|e| panic!("read Phase 21 FP fixture {fixture}: {e}"));
+    let tree = parse(lang, &bytes);
+    let mut summary = FuncSummary {
+        name: handler.into(),
+        ..Default::default()
+    };
+    let mut ssa = SsaFuncSummary::default();
+    if let Some((callee, receiver, receiver_ty)) = typed_call {
+        summary.callees.push(CalleeSite {
+            name: callee.to_owned(),
+            receiver: Some(receiver.to_owned()),
+            ordinal: 0,
+            ..Default::default()
+        });
+        ssa.typed_call_receivers.push((0, receiver_ty.to_owned()));
+    }
+    let ssa_ref = typed_call.is_some().then_some(&ssa);
+    adapter.detect_with_context(&summary, ssa_ref, tree.root_node(), &bytes)
+}
+
+struct Phase21FpCase<'a> {
+    adapter: &'a dyn FrameworkAdapter,
+    lang: Lang,
+    handler: &'a str,
+    fixture: &'a str,
+    typed_call: Option<(&'a str, &'a str, &'a str)>,
 }
 
 // ── Supported-set assertions ──────────────────────────────────────────────────
@@ -445,6 +486,134 @@ fn migration_prisma_adapter_binds_vuln_fixture() {
         "tests/dynamic_fixtures/migration/prisma/vuln.js",
     );
     assert_eq!(b.adapter, "migration-prisma");
+}
+
+#[test]
+fn phase21_adapter_collision_fixtures_do_not_bind() {
+    let cases = [
+        Phase21FpCase {
+            adapter: &ScheduledCeleryAdapter,
+            lang: Lang::Python,
+            handler: "enqueue",
+            fixture: "python_celery_mailer_delay.py",
+            typed_call: Some(("mailer.delay", "mailer", "Mailer")),
+        },
+        Phase21FpCase {
+            adapter: &ScheduledQuartzAdapter,
+            lang: Lang::Java,
+            handler: "enqueue",
+            fixture: "java_quartz_queue_schedule.java",
+            typed_call: Some(("queue.scheduleJob", "queue", "NotificationQueue")),
+        },
+        Phase21FpCase {
+            adapter: &GraphqlGrapheneAdapter,
+            lang: Lang::Python,
+            handler: "normalize_id",
+            fixture: "python_graphene_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &GraphqlGqlgenAdapter,
+            lang: Lang::Go,
+            handler: "NormalizeID",
+            fixture: "go_gqlgen_helper.go",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &GraphqlJuniperAdapter,
+            lang: Lang::Rust,
+            handler: "normalize_id",
+            fixture: "rust_juniper_helper.rs",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &GraphqlRelayAdapter,
+            lang: Lang::JavaScript,
+            handler: "normalizeId",
+            fixture: "js_relay_helper.js",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &WebsocketSocketIoAdapter,
+            lang: Lang::Python,
+            handler: "normalize",
+            fixture: "python_socketio_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &WebsocketChannelsAdapter,
+            lang: Lang::Python,
+            handler: "normalize_frame",
+            fixture: "python_channels_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &WebsocketActionCableAdapter,
+            lang: Lang::Ruby,
+            handler: "normalize",
+            fixture: "ruby_actioncable_helper.rb",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &MiddlewareDjangoAdapter,
+            lang: Lang::Python,
+            handler: "normalize_request",
+            fixture: "python_django_middleware_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &MiddlewareLaravelAdapter,
+            lang: Lang::Php,
+            handler: "configure",
+            fixture: "php_laravel_bootstrapper.php",
+            typed_call: Some(("app.withMiddleware", "app", "ApplicationBuilder")),
+        },
+        Phase21FpCase {
+            adapter: &MiddlewareSpringAdapter,
+            lang: Lang::Java,
+            handler: "normalize",
+            fixture: "java_spring_middleware_helper.java",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &MigrationDjangoAdapter,
+            lang: Lang::Python,
+            handler: "normalize_name",
+            fixture: "python_django_migration_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &MigrationFlaskAdapter,
+            lang: Lang::Python,
+            handler: "normalize_name",
+            fixture: "python_alembic_helper.py",
+            typed_call: None,
+        },
+        Phase21FpCase {
+            adapter: &MigrationSequelizeAdapter,
+            lang: Lang::JavaScript,
+            handler: "normalizeName",
+            fixture: "js_sequelize_helper.js",
+            typed_call: None,
+        },
+    ];
+
+    for case in cases {
+        let binding = detect_phase21_fp_fixture(
+            case.adapter,
+            case.lang,
+            case.handler,
+            case.fixture,
+            case.typed_call,
+        );
+        assert!(
+            binding.is_none(),
+            "{fixture}::{handler} should not bind through {}; got {binding:?}",
+            case.adapter.name(),
+            fixture = case.fixture,
+            handler = case.handler,
+        );
+    }
 }
 
 // ── Harness emit shape ────────────────────────────────────────────────────────

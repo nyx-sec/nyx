@@ -13,20 +13,6 @@ pub struct MigrationFlaskAdapter;
 
 const ADAPTER_NAME: &str = "migration-flask";
 
-fn callee_is_flask_migration(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "upgrade"
-            | "downgrade"
-            | "execute"
-            | "create_table"
-            | "add_column"
-            | "drop_table"
-            | "alter_column"
-    )
-}
-
 fn source_imports_flask_migration(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"from alembic",
@@ -57,6 +43,10 @@ fn extract_version(file_bytes: &[u8]) -> Option<String> {
     None
 }
 
+fn name_is_flask_migration_entry(name: &str) -> bool {
+    matches!(name, "upgrade" | "downgrade")
+}
+
 impl FrameworkAdapter for MigrationFlaskAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -72,9 +62,8 @@ impl FrameworkAdapter for MigrationFlaskAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_flask_migration);
         let matches_source = source_imports_flask_migration(file_bytes);
-        if matches_call || matches_source {
+        if matches_source && name_is_flask_migration_entry(&summary.name) {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Migration {
@@ -118,5 +107,22 @@ mod tests {
         if let EntryKind::Migration { version } = binding.kind {
             assert_eq!(version.as_deref(), Some("abc123"));
         }
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_alembic_file() {
+        let src: &[u8] = b"from alembic import op\nrevision = 'abc123'\n\
+            def upgrade():\n    op.create_table('users')\n\
+            def normalize_name(name):\n    return str(name)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize_name".into(),
+            ..Default::default()
+        };
+        assert!(
+            MigrationFlaskAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -17,14 +17,6 @@ pub struct MiddlewareDjangoAdapter;
 
 const ADAPTER_NAME: &str = "middleware-django";
 
-fn callee_is_django_middleware(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "process_request" | "process_response" | "process_view" | "process_exception"
-    )
-}
-
 fn source_has_middleware_shape(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"django.utils.deprecation",
@@ -36,6 +28,31 @@ fn source_has_middleware_shape(file_bytes: &[u8]) -> bool {
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+fn name_is_django_middleware_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "__call__" | "process_request" | "process_response" | "process_view" | "process_exception"
+    )
+}
+
+fn name_wraps_django_middleware(name: &str, file_bytes: &[u8]) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let text = match std::str::from_utf8(file_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let needle = format!("def {name}(");
+    let Some(start) = text.find(&needle) else {
+        return false;
+    };
+    let rest = &text[start..];
+    let end = rest.find("\ndef ").unwrap_or(rest.len());
+    let body = &rest[..end];
+    body.contains("Middleware(") && body.contains("return ")
 }
 
 fn looks_like_settings_module(file_bytes: &[u8]) -> bool {
@@ -75,9 +92,11 @@ impl FrameworkAdapter for MiddlewareDjangoAdapter {
         if looks_like_settings_module(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_django_middleware);
         let matches_source = source_has_middleware_shape(file_bytes);
-        if matches_call || matches_source {
+        if matches_source
+            && (name_is_django_middleware_entry(&summary.name)
+                || name_wraps_django_middleware(&summary.name, file_bytes))
+        {
             Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Middleware {
@@ -134,6 +153,40 @@ mod tests {
                 .detect(&summary, tree.root_node(), src)
                 .is_none(),
             "settings.py-shaped module must not bind as middleware",
+        );
+    }
+
+    #[test]
+    fn skips_unrelated_helper_in_django_middleware_file() {
+        let src: &[u8] = b"from django.utils.deprecation import MiddlewareMixin\n\
+            class AuditMiddleware(MiddlewareMixin):\n    def process_request(self, request):\n        pass\n\
+            def normalize_request(request):\n    return request\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "normalize_request".into(),
+            ..Default::default()
+        };
+        assert!(
+            MiddlewareDjangoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn binds_module_level_factory_wrapper() {
+        let src: &[u8] = b"from django.utils.deprecation import MiddlewareMixin\n\
+            class AuditMiddleware(MiddlewareMixin):\n    def __call__(self, request):\n        pass\n\
+            def audit(get_response):\n    return AuditMiddleware(get_response)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "audit".into(),
+            ..Default::default()
+        };
+        assert!(
+            MiddlewareDjangoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
         );
     }
 }
