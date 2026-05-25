@@ -2028,11 +2028,7 @@ fn emit_class_method_harness(spec: &HarnessSpec, class: &str, method: &str) -> H
     let cargo_toml = generate_cargo_toml(spec.expected_cap);
     let entry_label = format!("{class}::{method}");
     let entry_src = read_entry_source(&spec.entry_file);
-    let ctor = if class_derives_default(&entry_src, class) {
-        "default"
-    } else {
-        "new"
-    };
+    let receiver_expr = rust_receiver_expr(&entry_src, class, 3);
     let body = format!(
         r#"//! Nyx dynamic harness — class method (Phase 19 / Track M.1).
 mod entry;
@@ -2041,7 +2037,7 @@ fn main() {{
     let payload = nyx_payload();
     let _ = &payload;
     __nyx_install_crash_guard("{entry_label}");
-    let instance = entry::{class}::{ctor}();
+    let instance = {receiver_expr};
     let _ = instance.{method}(&payload);
     println!("__NYX_SINK_HIT__");
 }}
@@ -2088,9 +2084,9 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
     Some(out)
 }}
 "#,
-        class = class,
         method = method,
         entry_label = entry_label,
+        receiver_expr = receiver_expr,
     );
     HarnessSource {
         source: body,
@@ -2098,6 +2094,150 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
         command: vec!["target/release/nyx_harness".into()],
         extra_files: vec![("Cargo.toml".into(), cargo_toml)],
         entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
+fn rust_receiver_expr(entry_src: &str, class: &str, depth: usize) -> String {
+    if class_derives_default(entry_src, class) {
+        return format!("entry::{class}::default()");
+    }
+    if class_has_new(entry_src, class) {
+        return format!("entry::{class}::new()");
+    }
+    rust_struct_literal(entry_src, class, depth).unwrap_or_else(|| format!("entry::{class}::new()"))
+}
+
+fn class_has_new(entry_src: &str, class: &str) -> bool {
+    let impl_marker = format!("impl {class}");
+    let Some(mut pos) = entry_src.find(&impl_marker) else {
+        return false;
+    };
+    loop {
+        let after = &entry_src[pos + impl_marker.len()..];
+        if let Some(open_rel) = after.find('{') {
+            let body = &after[open_rel + 1..];
+            if let Some(close_rel) = body.find("\n}")
+                && word_in_text(&body[..close_rel], "new")
+                && body[..close_rel].contains("fn new")
+            {
+                return true;
+            }
+        }
+        let next_from = pos + impl_marker.len();
+        let Some(next_rel) = entry_src[next_from..].find(&impl_marker) else {
+            return false;
+        };
+        pos = next_from + next_rel;
+    }
+}
+
+fn rust_struct_literal(entry_src: &str, class: &str, depth: usize) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    let fields = rust_struct_fields(entry_src, class)?;
+    let mut parts = Vec::new();
+    for (name, ty) in fields {
+        parts.push(format!(
+            "{name}: {}",
+            rust_value_for_type(entry_src, &ty, depth - 1)
+        ));
+    }
+    Some(format!("entry::{class} {{ {} }}", parts.join(", ")))
+}
+
+fn rust_struct_fields(entry_src: &str, class: &str) -> Option<Vec<(String, String)>> {
+    let marker = format!("struct {class}");
+    let idx = entry_src.find(&marker)?;
+    let after = &entry_src[idx + marker.len()..];
+    let open = after.find('{')?;
+    let body = balanced_block(&after[open..])?;
+    let inner = &body[1..body.len() - 1];
+    let mut out = Vec::new();
+    for part in split_top_level_commas(inner) {
+        let mut text = part.trim();
+        if text.is_empty() {
+            continue;
+        }
+        while text.starts_with("#[") {
+            let end = text.find(']')?;
+            text = text[end + 1..].trim_start();
+        }
+        let text = text.strip_prefix("pub ").unwrap_or(text).trim_start();
+        let colon = text.find(':')?;
+        let name = text[..colon].trim();
+        let ty = text[colon + 1..].trim();
+        if !name.is_empty() && !ty.is_empty() {
+            out.push((name.to_owned(), ty.to_owned()));
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn balanced_block(text: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&text[..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0isize;
+    let mut start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '<' | '(' | '[' | '{' => depth += 1,
+            '>' | ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&text[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+fn rust_value_for_type(entry_src: &str, ty: &str, depth: usize) -> String {
+    let clean = ty.trim().trim_start_matches('&').trim();
+    let bare = clean
+        .split('<')
+        .next()
+        .unwrap_or(clean)
+        .rsplit("::")
+        .next()
+        .unwrap_or(clean)
+        .trim();
+    match bare {
+        "String" => "String::new()".to_owned(),
+        "str" => "\"\"".to_owned(),
+        "bool" => "false".to_owned(),
+        "char" => "'\\0'".to_owned(),
+        "usize" | "u8" | "u16" | "u32" | "u64" | "u128" | "isize" | "i8" | "i16" | "i32"
+        | "i64" | "i128" => "0".to_owned(),
+        "f32" | "f64" => "0.0".to_owned(),
+        _ if clean.starts_with("Option<") => "None".to_owned(),
+        _ if clean.starts_with("Vec<") => "Vec::new()".to_owned(),
+        _ if clean.starts_with("Box<") && clean.ends_with('>') => {
+            let inner = &clean["Box<".len()..clean.len() - 1];
+            format!("Box::new({})", rust_value_for_type(entry_src, inner, depth))
+        }
+        _ if depth > 0 && rust_struct_fields(entry_src, bare).is_some() => {
+            rust_receiver_expr(entry_src, bare, depth)
+        }
+        _ => "Default::default()".to_owned(),
     }
 }
 

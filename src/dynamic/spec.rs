@@ -1270,6 +1270,20 @@ fn framework_project_files_for_entry(entry_file: &str, lang: Lang) -> ProjectFil
             "routes/api.php",
             "app/Config/Routes.php",
         ],
+        Lang::Java => &[
+            "changelog.xml",
+            "changelog.yaml",
+            "changelog.yml",
+            "changelog.json",
+            "db/changelog/db.changelog-master.xml",
+            "db/changelog/db.changelog-master.yaml",
+            "db/changelog/db.changelog-master.yml",
+            "db/changelog/db.changelog-master.json",
+            "src/main/resources/db/changelog/db.changelog-master.xml",
+            "src/main/resources/db/changelog/db.changelog-master.yaml",
+            "src/main/resources/db/changelog/db.changelog-master.yml",
+            "src/main/resources/db/changelog/db.changelog-master.json",
+        ],
         _ => &[],
     };
     ProjectFileIndex::from_root(&root, rel_paths)

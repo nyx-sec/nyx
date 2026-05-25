@@ -221,6 +221,20 @@ fn class_method_rust_uses_default_constructor() {
 }
 
 #[test]
+fn class_method_rust_builds_recursive_receiver_literal() {
+    let mut spec = make_spec(Lang::Rust);
+    spec.entry_file = "tests/dynamic_fixtures/class_method/rust_recursive_deps/vuln.rs".into();
+    spec.sink_file = spec.entry_file.clone();
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(
+        h.source
+            .contains("entry::UserService { runner: entry::CommandRunner")
+    );
+    assert!(!h.source.contains("UserService::default()"));
+    assert!(!h.source.contains("UserService::new()"));
+}
+
+#[test]
 fn class_method_c_collapses_to_class_underscore_method_symbol() {
     let spec = make_spec(Lang::C);
     let h = lang::emit(&spec).expect("emit ok");
@@ -420,6 +434,17 @@ mod e2e_phase_19 {
         Case {
             lang: Lang::Rust,
             fixture_dir: "rust",
+            vuln_file: "vuln.rs",
+            benign_file: "benign.rs",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["cargo"],
+        },
+        Case {
+            lang: Lang::Rust,
+            fixture_dir: "rust_recursive_deps",
             vuln_file: "vuln.rs",
             benign_file: "benign.rs",
             vuln_class: "UserService",
