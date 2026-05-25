@@ -50,6 +50,7 @@ static RUST: &[&dyn FrameworkAdapter] = &[
     &super::adapters::GraphqlJuniperAdapter,
     &super::adapters::HeaderRustAdapter,
     &super::adapters::MigrationRefineryAdapter,
+    &super::adapters::MigrationSqlxAdapter,
     &super::adapters::RedirectRustAdapter,
     &super::adapters::RustActixAdapter,
     &super::adapters::RustAxumAdapter,

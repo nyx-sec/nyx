@@ -57,6 +57,16 @@ impl ProjectFileIndex {
         index
     }
 
+    /// Add files under each project-relative directory when their
+    /// extension matches `extensions`. Missing directories are skipped.
+    pub fn include_dirs(mut self, root: &Path, rel_dirs: &[&str], extensions: &[&str]) -> Self {
+        for rel_dir in rel_dirs {
+            let dir = root.join(rel_dir);
+            self.insert_matching_files(root, &dir, extensions, 0);
+        }
+        self
+    }
+
     /// Insert or replace a project-relative file.
     pub fn insert(&mut self, rel_path: impl Into<String>, bytes: impl Into<Vec<u8>>) {
         self.files
@@ -70,9 +80,60 @@ impl ProjectFileIndex {
             .map(Vec::as_slice)
     }
 
+    /// Iterate project-relative file paths and raw bytes.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+    }
+
     /// True when the index has no files.
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    fn insert_matching_files(
+        &mut self,
+        root: &Path,
+        dir: &Path,
+        extensions: &[&str],
+        depth: usize,
+    ) {
+        const MAX_DEPTH: usize = 4;
+        if depth > MAX_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                self.insert_matching_files(root, &path, extensions, depth + 1);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            if !extensions.iter().any(|want| ext.eq_ignore_ascii_case(want)) {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let Some(rel) = rel.to_str() else {
+                continue;
+            };
+            if let Ok(bytes) = std::fs::read(&path) {
+                self.insert(rel, bytes);
+            }
+        }
     }
 }
 
@@ -509,8 +570,8 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            10,
-            "Rust must have Phase 20 baseline (6) + M.3 juniper (1) + refinery (1) + Track L.9 (CryptoRust, DataExfilRust)",
+            11,
+            "Rust must have Phase 20 baseline (6) + M.3 juniper/refinery/sqlx (3) + Track L.9 (CryptoRust, DataExfilRust)",
         );
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);

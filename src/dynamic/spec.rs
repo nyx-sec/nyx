@@ -1286,7 +1286,11 @@ fn framework_project_files_for_entry(entry_file: &str, lang: Lang) -> ProjectFil
         ],
         _ => &[],
     };
-    ProjectFileIndex::from_root(&root, rel_paths)
+    let index = ProjectFileIndex::from_root(&root, rel_paths);
+    match lang {
+        Lang::Go => index.include_dirs(&root, &["migrations", "db/migrations"], &["sql"]),
+        _ => index,
+    }
 }
 
 fn infer_framework_project_root(entry_path: &Path, lang: Lang) -> Option<PathBuf> {

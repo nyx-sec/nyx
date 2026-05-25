@@ -13,7 +13,7 @@
 //! mirror the Phase 21 binding-stealing audit applied to
 //! `migration_rails` and `migration_flyway`.
 
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
+use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, FrameworkDetectionContext};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
@@ -44,10 +44,25 @@ fn name_is_migration_entry(name: &str) -> bool {
 }
 
 /// golang-migrate uses filename-encoded versions (`000001_init.up.sql`
-/// / `000001_init.down.sql`); the Go-side runner only carries the
-/// numeric version when `m.Migrate(<n>)` is called. Scan for the
-/// argument to a `Migrate(` call as a best-effort version hint.
-fn extract_version(file_bytes: &[u8]) -> Option<String> {
+/// / `000001_init.down.sql`). When the runner calls `Migrate(<n>)`,
+/// prefer the matching migration filename from the project index;
+/// otherwise fall back to a single discovered SQL migration or the
+/// numeric version itself.
+fn extract_version(
+    file_bytes: &[u8],
+    context: Option<FrameworkDetectionContext<'_>>,
+) -> Option<String> {
+    let migrate_target = extract_migrate_target(file_bytes);
+    if let Some(context) = context
+        && let Some(filename) =
+            migration_filename_from_project_files(context, migrate_target.as_deref())
+    {
+        return Some(filename);
+    }
+    migrate_target
+}
+
+fn extract_migrate_target(file_bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(file_bytes).unwrap_or("");
     let needle = ".Migrate(";
     let idx = text.find(needle)?;
@@ -58,6 +73,66 @@ fn extract_version(file_bytes: &[u8]) -> Option<String> {
         return None;
     }
     Some(raw.to_owned())
+}
+
+fn migration_filename_from_project_files(
+    context: FrameworkDetectionContext<'_>,
+    target_version: Option<&str>,
+) -> Option<String> {
+    let mut candidates: Vec<&str> = context
+        .project_files
+        .iter()
+        .map(|(path, _)| path)
+        .filter(|path| is_go_migrate_sql_file(path))
+        .collect();
+    candidates.sort_unstable();
+
+    if let Some(target_version) = target_version
+        && let Some(path) = candidates
+            .iter()
+            .find(|path| {
+                path.ends_with(".up.sql")
+                    && migration_file_version(path)
+                        .map(|version| migration_versions_equal(version, target_version))
+                        .unwrap_or(false)
+            })
+            .or_else(|| {
+                candidates.iter().find(|path| {
+                    migration_file_version(path)
+                        .map(|version| migration_versions_equal(version, target_version))
+                        .unwrap_or(false)
+                })
+            })
+    {
+        return Some((*path).to_owned());
+    }
+
+    if candidates.len() == 1 {
+        return candidates.first().map(|path| (*path).to_owned());
+    }
+
+    None
+}
+
+fn is_go_migrate_sql_file(path: &str) -> bool {
+    path.ends_with(".up.sql") || path.ends_with(".down.sql")
+}
+
+fn migration_file_version(path: &str) -> Option<&str> {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let (version, _) = filename.split_once('_')?;
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(version)
+}
+
+fn migration_versions_equal(left: &str, right: &str) -> bool {
+    let left = left.trim_start_matches('0');
+    let right = right.trim_start_matches('0');
+    let left = if left.is_empty() { "0" } else { left };
+    let right = if right.is_empty() { "0" } else { right };
+    left == right
 }
 
 impl FrameworkAdapter for MigrationGoMigrateAdapter {
@@ -75,29 +150,48 @@ impl FrameworkAdapter for MigrationGoMigrateAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let has_shape = source_imports_go_migrate(file_bytes);
-        let name_matches = name_is_migration_entry(&summary.name);
-        let body_runs_driver = super::any_callee_matches(summary, callee_is_go_migrate);
-        let binds = has_shape && (name_matches || body_runs_driver);
-        if !binds {
-            return None;
-        }
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::Migration {
-                version: extract_version(file_bytes),
-            },
-            route: None,
-            request_params: Vec::new(),
-            response_writer: None,
-            middleware: Vec::new(),
-        })
+        detect_go_migrate(summary, file_bytes, None)
     }
+
+    fn detect_with_project_context(
+        &self,
+        summary: &FuncSummary,
+        context: FrameworkDetectionContext<'_>,
+        _ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_go_migrate(summary, file_bytes, Some(context))
+    }
+}
+
+fn detect_go_migrate(
+    summary: &FuncSummary,
+    file_bytes: &[u8],
+    context: Option<FrameworkDetectionContext<'_>>,
+) -> Option<FrameworkBinding> {
+    let has_shape = source_imports_go_migrate(file_bytes);
+    let name_matches = name_is_migration_entry(&summary.name);
+    let body_runs_driver = super::any_callee_matches(summary, callee_is_go_migrate);
+    let binds = has_shape && (name_matches || body_runs_driver);
+    if !binds {
+        return None;
+    }
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::Migration {
+            version: extract_version(file_bytes, context),
+        },
+        route: None,
+        request_params: Vec::new(),
+        response_writer: None,
+        middleware: Vec::new(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic::framework::ProjectFileIndex;
     use crate::summary::CalleeSite;
 
     fn parse_go(src: &[u8]) -> tree_sitter::Tree {
@@ -199,6 +293,80 @@ mod tests {
             .expect("binds");
         if let EntryKind::Migration { version } = binding.kind {
             assert_eq!(version.as_deref(), Some("42"));
+        } else {
+            panic!("expected Migration entry kind");
+        }
+    }
+
+    #[test]
+    fn stamps_matching_sql_migration_filename_from_project_files() {
+        let src: &[u8] = b"package entry\n\
+            import \"github.com/golang-migrate/migrate/v4\"\n\
+            func RunTo() {\n\
+                m, _ := migrate.New(\"file://./migrations\", \"postgres://x\")\n\
+                m.Migrate(42)\n\
+            }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "RunTo".into(),
+            callees: vec![CalleeSite::bare("m.Migrate")],
+            ..Default::default()
+        };
+        let mut project_files = ProjectFileIndex::new();
+        project_files.insert(
+            "migrations/000041_old.up.sql",
+            b"CREATE TABLE old_users(id int);",
+        );
+        project_files.insert(
+            "migrations/000042_init.up.sql",
+            b"CREATE TABLE users(id int);",
+        );
+        project_files.insert("migrations/000042_init.down.sql", b"DROP TABLE users;");
+        let context = FrameworkDetectionContext {
+            ssa_summary: None,
+            project_files: &project_files,
+        };
+        let binding = MigrationGoMigrateAdapter
+            .detect_with_project_context(&summary, context, tree.root_node(), src)
+            .expect("binds");
+        if let EntryKind::Migration { version } = binding.kind {
+            assert_eq!(version.as_deref(), Some("migrations/000042_init.up.sql"));
+        } else {
+            panic!("expected Migration entry kind");
+        }
+    }
+
+    #[test]
+    fn stamps_single_sql_migration_filename_for_steps_runner() {
+        let src: &[u8] = b"package entry\n\
+            import \"github.com/golang-migrate/migrate/v4\"\n\
+            func RunOne() {\n\
+                m, _ := migrate.New(\"file://./migrations\", \"postgres://x\")\n\
+                m.Steps(1)\n\
+            }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "RunOne".into(),
+            callees: vec![CalleeSite::bare("m.Steps")],
+            ..Default::default()
+        };
+        let mut project_files = ProjectFileIndex::new();
+        project_files.insert(
+            "db/migrations/000001_create_users.up.sql",
+            b"CREATE TABLE users(id int);",
+        );
+        let context = FrameworkDetectionContext {
+            ssa_summary: None,
+            project_files: &project_files,
+        };
+        let binding = MigrationGoMigrateAdapter
+            .detect_with_project_context(&summary, context, tree.root_node(), src)
+            .expect("binds");
+        if let EntryKind::Migration { version } = binding.kind {
+            assert_eq!(
+                version.as_deref(),
+                Some("db/migrations/000001_create_users.up.sql")
+            );
         } else {
             panic!("expected Migration entry kind");
         }
