@@ -1876,9 +1876,76 @@ func nyxBuildReceiver(structName string) (reflect.Value, error) {{
 	// the auto-generated file references the target type by name and
 	// the Go compiler enforces the contract.
 	if r, ok := entry.NyxAutoReceivers[structName]; ok {{
-		return reflect.ValueOf(r), nil
+		return nyxPopulateReceiver(reflect.ValueOf(r), 3), nil
 	}}
 	return reflect.Value{{}}, fmt.Errorf("class not found: %s", structName)
+}}
+
+func nyxPopulateReceiver(v reflect.Value, depth int) reflect.Value {{
+	seen := map[reflect.Type]bool{{}}
+	return nyxPopulateValue(v, depth, seen)
+}}
+
+func nyxPopulateValue(v reflect.Value, depth int, seen map[reflect.Type]bool) reflect.Value {{
+	if !v.IsValid() || depth < 0 {{
+		return v
+	}}
+	if v.Kind() == reflect.Pointer {{
+		if v.IsNil() {{
+			if v.Type().Elem().Kind() != reflect.Struct {{
+				return v
+			}}
+			v = reflect.New(v.Type().Elem())
+		}}
+		nyxPopulateStruct(v.Elem(), depth, seen)
+		return v
+	}}
+	if v.Kind() == reflect.Struct {{
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		nyxPopulateStruct(out, depth, seen)
+		return out
+	}}
+	return v
+}}
+
+func nyxPopulateStruct(v reflect.Value, depth int, seen map[reflect.Type]bool) {{
+	if !v.IsValid() || v.Kind() != reflect.Struct || depth < 0 {{
+		return
+	}}
+	t := v.Type()
+	if seen[t] {{
+		return
+	}}
+	seen[t] = true
+	defer delete(seen, t)
+	for i := 0; i < v.NumField(); i++ {{
+		field := v.Field(i)
+		if !field.CanSet() {{
+			continue
+		}}
+		dep := nyxBuildValueForType(field.Type(), depth-1, seen)
+		if dep.IsValid() && dep.Type().AssignableTo(field.Type()) {{
+			field.Set(dep)
+		}}
+	}}
+}}
+
+func nyxBuildValueForType(t reflect.Type, depth int, seen map[reflect.Type]bool) reflect.Value {{
+	if depth < 0 {{
+		return reflect.Value{{}}
+	}}
+	if t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {{
+		ptr := reflect.New(t.Elem())
+		nyxPopulateStruct(ptr.Elem(), depth, seen)
+		return ptr
+	}}
+	if t.Kind() == reflect.Struct {{
+		value := reflect.New(t).Elem()
+		nyxPopulateStruct(value, depth, seen)
+		return value
+	}}
+	return reflect.Value{{}}
 }}
 
 func nyxPayload() string {{

@@ -182,7 +182,18 @@ fn class_method_java_emits_reflective_dispatch() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("Class.forName"));
     assert!(h.source.contains("nyxBuildReceiver"));
+    assert!(h.source.contains("nyxValueForType(params[i], depth - 1"));
+    assert!(h.source.contains("Object result = match.invoke"));
     assert!(h.source.contains("UserRepository"));
+}
+
+#[test]
+fn class_method_ruby_dispatch_builds_recursive_receiver() {
+    let spec = make_spec(Lang::Ruby);
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_build_receiver(cls, depth = 3"));
+    assert!(h.source.contains("_nyx_const_for_param"));
+    assert!(h.source.contains("depth - 1"));
 }
 
 #[test]
@@ -190,6 +201,7 @@ fn class_method_go_uses_reflect_receivers_registry() {
     let spec = make_spec(Lang::Go);
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("entry.NyxAutoReceivers"));
+    assert!(h.source.contains("nyxPopulateReceiver"));
     assert!(h.source.contains("MethodByName"));
     let registry = h
         .extra_files
@@ -285,6 +297,17 @@ mod e2e_phase_19 {
             bins: &["ruby"],
         },
         Case {
+            lang: Lang::Ruby,
+            fixture_dir: "ruby_recursive_deps",
+            vuln_file: "vuln.rb",
+            benign_file: "benign.rb",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["ruby"],
+        },
+        Case {
             lang: Lang::JavaScript,
             fixture_dir: "javascript",
             vuln_file: "vuln.js",
@@ -362,8 +385,30 @@ mod e2e_phase_19 {
             bins: &["java", "javac"],
         },
         Case {
+            lang: Lang::Java,
+            fixture_dir: "java_recursive_deps",
+            vuln_file: "Vuln.java",
+            benign_file: "Benign.java",
+            vuln_class: "Vuln$UserService",
+            benign_class: "Benign$UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["java", "javac"],
+        },
+        Case {
             lang: Lang::Go,
             fixture_dir: "go",
+            vuln_file: "vuln.go",
+            benign_file: "benign.go",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "Run",
+            cap: Cap::CODE_EXEC,
+            bins: &["go"],
+        },
+        Case {
+            lang: Lang::Go,
+            fixture_dir: "go_recursive_deps",
             vuln_file: "vuln.go",
             benign_file: "benign.go",
             vuln_class: "UserService",

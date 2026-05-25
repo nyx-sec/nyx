@@ -3313,6 +3313,9 @@ fn emit_class_method_harness(
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Modifier;
+import java.util.HashSet;
+import java.util.Set;
 
 public class NyxHarness {{
 {probe}
@@ -3322,6 +3325,14 @@ public class NyxHarness {{
 {mock_log}
 
     static Object nyxBuildReceiver(Class<?> cls) throws Exception {{
+        return nyxBuildReceiver(cls, 3, new HashSet<Class<?>>());
+    }}
+
+    static Object nyxBuildReceiver(Class<?> cls, int depth, Set<Class<?>> seen) throws Exception {{
+        if (cls == null || seen.contains(cls)) {{
+            return null;
+        }}
+        seen.add(cls);
         // Preferred path: zero-arg ctor.
         try {{
             Constructor<?> c = cls.getDeclaredConstructor();
@@ -3335,22 +3346,28 @@ public class NyxHarness {{
             Class<?>[] params = c.getParameterTypes();
             Object[] args = new Object[params.length];
             for (int i = 0; i < params.length; i++) {{
-                args[i] = nyxStubForType(params[i]);
+                args[i] = nyxValueForType(params[i], depth - 1, new HashSet<Class<?>>(seen));
             }}
             try {{ return c.newInstance(args); }} catch (Exception ignore) {{}}
         }}
         return null;
     }}
 
-    static Object nyxStubForType(Class<?> t) {{
-        String n = t.getName().toLowerCase();
-        if (n.contains("http") || n.contains("client")) return new MockHttpClient();
-        if (n.contains("database") || n.contains("connection") || n.contains("session") || n.contains("repository")) return new MockDatabaseConnection();
-        if (n.contains("logger") || n.contains("log")) return new MockLogger();
+    static Object nyxValueForType(Class<?> t, int depth, Set<Class<?>> seen) {{
         if (t.equals(String.class)) return "";
         if (t.equals(int.class) || t.equals(Integer.class)) return 0;
         if (t.equals(long.class) || t.equals(Long.class)) return 0L;
         if (t.equals(boolean.class) || t.equals(Boolean.class)) return false;
+        if (depth >= 0 && !t.isPrimitive() && !t.isInterface() && !Modifier.isAbstract(t.getModifiers())) {{
+            try {{
+                Object receiver = nyxBuildReceiver(t, depth, seen);
+                if (receiver != null) return receiver;
+            }} catch (Throwable ignore) {{}}
+        }}
+        String n = t.getName().toLowerCase();
+        if (n.contains("http") || n.contains("client")) return new MockHttpClient();
+        if (n.contains("database") || n.contains("connection") || n.contains("session") || n.contains("repository")) return new MockDatabaseConnection();
+        if (n.contains("logger") || n.contains("log")) return new MockLogger();
         return null;
     }}
 
@@ -3380,10 +3397,13 @@ public class NyxHarness {{
             Class<?>[] params = match.getParameterTypes();
             Object[] mArgs = new Object[params.length];
             for (int i = 0; i < params.length; i++) {{
-                mArgs[i] = params[i].equals(String.class) ? payload : nyxStubForType(params[i]);
+                mArgs[i] = params[i].equals(String.class) ? payload : nyxValueForType(params[i], 2, new HashSet<Class<?>>());
             }}
-            match.invoke(instance, mArgs);
+            Object result = match.invoke(instance, mArgs);
             System.out.println("__NYX_SINK_HIT__");
+            if (result != null) {{
+                System.out.println(result.toString());
+            }}
         }} catch (InvocationTargetException ite) {{
             Throwable cause = ite.getCause() == null ? ite : ite.getCause();
             System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());

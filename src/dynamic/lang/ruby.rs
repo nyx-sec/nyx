@@ -578,10 +578,46 @@ unless Object.const_defined?(cls_name)
 end
 cls = Object.const_get(cls_name)
 
-def _nyx_build_receiver(cls)
+def _nyx_known_mock_for(name)
+  n = name.to_s.downcase
+  return MockHttpClient.new if n.include?('http') || n.include?('client')
+  return MockDatabaseConnection.new if n.include?('db') || n.include?('conn') || n.include?('repo') || n.include?('session')
+  return MockLogger.new if n.include?('log')
+  nil
+end
+
+def _nyx_const_for_param(name)
+  raw = name.to_s
+  camel = raw.split('_').reject(&:empty?).map {{ |part| part[0].upcase + part[1..].to_s }}.join
+  [camel, raw].each do |candidate|
+    next if candidate.empty?
+    if Object.const_defined?(candidate, false)
+      value = Object.const_get(candidate)
+      return value if value.is_a?(Class)
+    end
+  end
+  nil
+end
+
+def _nyx_build_receiver(cls, depth = 3, seen = {{}})
+  return nil if seen[cls]
+  seen = seen.merge(cls => true)
   begin
     return cls.new
   rescue ArgumentError
+  end
+  begin
+    init = cls.instance_method(:initialize)
+    deps = init.parameters.map do |_kind, name|
+      dep = nil
+      if depth > 0 && name
+        dep_cls = _nyx_const_for_param(name)
+        dep = _nyx_build_receiver(dep_cls, depth - 1, seen) if dep_cls && dep_cls != cls
+      end
+      dep || _nyx_known_mock_for(name)
+    end
+    return cls.new(*deps)
+  rescue StandardError
   end
   begin
     return cls.new(MockHttpClient.new, MockDatabaseConnection.new, MockLogger.new)
