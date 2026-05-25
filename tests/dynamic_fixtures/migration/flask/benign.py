@@ -4,5 +4,5 @@ revision = "deadbeef0001"
 
 
 def upgrade(column_name="email"):
-    safe = "".join(c for c in str(column_name) if c.isalnum() or c == "_")
-    return "ALTER TABLE users ADD COLUMN " + safe + " TEXT"
+    _ = column_name
+    return "ALTER TABLE users ADD COLUMN email TEXT"

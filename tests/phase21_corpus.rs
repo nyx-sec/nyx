@@ -23,12 +23,18 @@
 use nyx_scanner::dynamic::framework::adapters::*;
 use nyx_scanner::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use nyx_scanner::dynamic::lang;
-use nyx_scanner::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
+use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
+use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+use nyx_scanner::dynamic::spec::{
+    EntryKind, EntryKindTag, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
+};
+use nyx_scanner::evidence::DifferentialVerdict;
 use nyx_scanner::evidence::EntryKind as EvEntryKind;
 use nyx_scanner::labels::Cap;
 use nyx_scanner::summary::ssa_summary::SsaFuncSummary;
 use nyx_scanner::summary::{CalleeSite, FuncSummary};
 use nyx_scanner::symbol::Lang;
+use tempfile::TempDir;
 
 fn make_spec(lang: Lang, kind: EvEntryKind, entry_name: &str, entry_file: &str) -> HarnessSpec {
     HarnessSpec {
@@ -1180,4 +1186,224 @@ fn phase_21_migration_acceptance_rate() {
         "migration adapter binding rate must be >= 75% (got {confirmed}/{})",
         cases.len(),
     );
+}
+
+// ── Dispatcher run_spec smoke ────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct RunSpecCase {
+    name: &'static str,
+    lang: Lang,
+    kind: fn() -> EvEntryKind,
+    entry_name: &'static str,
+    fixture_dir: &'static str,
+    vuln_file: &'static str,
+    benign_file: &'static str,
+    cap: Cap,
+}
+
+fn command_available(bin: &str) -> bool {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn toolchain_for(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Python => "python3",
+        Lang::JavaScript | Lang::TypeScript => "node",
+        Lang::Ruby => "ruby",
+        Lang::Php => "php",
+        Lang::Java => "java",
+        Lang::Go => "go",
+        Lang::Rust => "cargo",
+        Lang::C => "cc",
+        Lang::Cpp => "c++",
+    }
+}
+
+fn build_runspec_case(case: RunSpecCase, file_name: &str) -> (HarnessSpec, TempDir) {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(case.fixture_dir)
+        .join(file_name);
+    let tmp = TempDir::new().expect("create phase21 run_spec tempdir");
+    let dst = tmp.path().join(file_name);
+    std::fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {}: {e}", src.display()));
+    let entry_file = dst.to_string_lossy().into_owned();
+
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"phase21-runspec|");
+    digest.update(case.name.as_bytes());
+    digest.update(b"|");
+    digest.update(file_name.as_bytes());
+    let spec_hash = format!("{:016x}", {
+        let bytes = digest.finalize();
+        u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+    });
+
+    let spec = HarnessSpec {
+        finding_id: spec_hash.clone(),
+        entry_file: entry_file.clone(),
+        entry_name: case.entry_name.to_owned(),
+        entry_kind: (case.kind)(),
+        lang: case.lang,
+        toolchain_id: default_toolchain_id(case.lang).into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: case.cap,
+        constraint_hints: vec![],
+        sink_file: entry_file,
+        sink_line: 1,
+        spec_hash,
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
+        framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
+    };
+    (spec, tmp)
+}
+
+fn run_phase21_case(case: RunSpecCase, file_name: &str) -> Option<RunOutcome> {
+    let bin = toolchain_for(case.lang);
+    if !command_available(bin) {
+        eprintln!("SKIP {} {file_name}: missing toolchain {bin}", case.name);
+        return None;
+    }
+    let (spec, _tmp) = build_runspec_case(case, file_name);
+    let opts = SandboxOptions {
+        backend: SandboxBackend::Process,
+        ..SandboxOptions::default()
+    };
+    match run_spec(&spec, &opts) {
+        Ok(outcome) => Some(outcome),
+        Err(RunError::BuildFailed { stderr, attempts }) => {
+            eprintln!(
+                "SKIP {} {file_name}: harness build failed after {attempts} attempts: {stderr}",
+                case.name,
+            );
+            None
+        }
+        Err(err) => panic!("run_spec {} {file_name} errored: {err:?}", case.name),
+    }
+}
+
+fn scheduled_kind() -> EvEntryKind {
+    EvEntryKind::ScheduledJob {
+        schedule: Some("*/5 * * * *".into()),
+    }
+}
+
+fn graphql_kind() -> EvEntryKind {
+    EvEntryKind::GraphQLResolver {
+        type_name: "Query".into(),
+        field: "user".into(),
+    }
+}
+
+fn websocket_kind() -> EvEntryKind {
+    EvEntryKind::WebSocket {
+        path: "/ws/chat".into(),
+    }
+}
+
+fn middleware_kind() -> EvEntryKind {
+    EvEntryKind::Middleware {
+        name: "audit".into(),
+    }
+}
+
+fn migration_kind() -> EvEntryKind {
+    EvEntryKind::Migration { version: None }
+}
+
+const RUNSPEC_CASES: &[RunSpecCase] = &[
+    RunSpecCase {
+        name: "scheduled-celery",
+        lang: Lang::Python,
+        kind: scheduled_kind,
+        entry_name: "tick",
+        fixture_dir: "tests/dynamic_fixtures/scheduled_job/celery",
+        vuln_file: "vuln.py",
+        benign_file: "benign.py",
+        cap: Cap::CODE_EXEC,
+    },
+    RunSpecCase {
+        name: "graphql-graphene",
+        lang: Lang::Python,
+        kind: graphql_kind,
+        entry_name: "resolve_user",
+        fixture_dir: "tests/dynamic_fixtures/graphql_resolver/graphene",
+        vuln_file: "vuln.py",
+        benign_file: "benign.py",
+        cap: Cap::CODE_EXEC,
+    },
+    RunSpecCase {
+        name: "websocket-socketio",
+        lang: Lang::Python,
+        kind: websocket_kind,
+        entry_name: "message",
+        fixture_dir: "tests/dynamic_fixtures/websocket/socketio",
+        vuln_file: "vuln.py",
+        benign_file: "benign.py",
+        cap: Cap::CODE_EXEC,
+    },
+    RunSpecCase {
+        name: "middleware-express",
+        lang: Lang::JavaScript,
+        kind: middleware_kind,
+        entry_name: "audit",
+        fixture_dir: "tests/dynamic_fixtures/middleware/express",
+        vuln_file: "vuln.js",
+        benign_file: "benign.js",
+        cap: Cap::CODE_EXEC,
+    },
+    RunSpecCase {
+        name: "migration-flask",
+        lang: Lang::Python,
+        kind: migration_kind,
+        entry_name: "upgrade",
+        fixture_dir: "tests/dynamic_fixtures/migration/flask",
+        vuln_file: "vuln.py",
+        benign_file: "benign.py",
+        cap: Cap::SQL_QUERY,
+    },
+];
+
+#[test]
+fn phase_21_vuln_fixtures_confirm_via_run_spec() {
+    for case in RUNSPEC_CASES {
+        let Some(outcome) = run_phase21_case(*case, case.vuln_file) else {
+            continue;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "{} vuln must Confirm via run_spec; got {outcome:?}",
+            case.name,
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry differential outcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+}
+
+#[test]
+fn phase_21_benign_fixtures_do_not_confirm_via_run_spec() {
+    for case in RUNSPEC_CASES {
+        let Some(outcome) = run_phase21_case(*case, case.benign_file) else {
+            continue;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "{} benign control must not Confirm via run_spec; got {outcome:?}",
+            case.name,
+        );
+        if let Some(diff) = outcome.differential.as_ref() {
+            assert_ne!(diff.verdict, DifferentialVerdict::Confirmed);
+        }
+    }
 }

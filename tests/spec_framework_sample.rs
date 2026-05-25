@@ -16,6 +16,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::commands::scan::Diag;
+use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::spec::HarnessSpec;
 use nyx_scanner::evidence::{Confidence, EntryKind, Evidence, FlowStep, FlowStepKind};
 use nyx_scanner::labels::Cap;
@@ -329,4 +330,34 @@ fn phase_15_ruby_route_findings_derive_specs_without_failure() {
         http_count,
         cases.len()
     );
+}
+
+#[test]
+fn django_class_based_view_finding_derives_class_method_spec() {
+    let path = "tests/dynamic_fixtures/python_frameworks/django_class_method/vuln.py";
+    let diag = make_diag(path, "get", 7, Cap::SHELL_ESCAPE, "py.cmdi.os_system");
+    let spec = HarnessSpec::from_finding_full(&diag, false, None, None)
+        .unwrap_or_else(|err| panic!("spec must derive for Django CBV method: {err:?}"));
+
+    assert_eq!(
+        spec.entry_kind,
+        EntryKind::ClassMethod {
+            class: "UserCommandView".into(),
+            method: "get".into(),
+        }
+    );
+    assert_eq!(
+        spec.framework
+            .as_ref()
+            .map(|binding| binding.adapter.as_str()),
+        Some("python-django")
+    );
+
+    let harness = lang::emit(&spec).expect("derived ClassMethod spec must reach emitter");
+    assert!(
+        harness
+            .source
+            .contains("getattr(_entry_mod, \"UserCommandView\"")
+    );
+    assert!(harness.source.contains("getattr(_instance, \"get\""));
 }

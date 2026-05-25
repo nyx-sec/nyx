@@ -199,10 +199,18 @@ impl FrameworkAdapter for PythonDjangoAdapter {
         let url_template =
             url_template_for(ast, file_bytes, &summary.name, cbv_class_name.as_deref());
 
-        let (method, path) = if let Some(m) = cbv_method {
-            (m, url_template.unwrap_or_else(|| "/".to_owned()))
+        let (method, path, entry_kind) = if let Some(m) = cbv_method {
+            let class = cbv_class_name.clone().unwrap_or_default();
+            (
+                m,
+                url_template.unwrap_or_else(|| "/".to_owned()),
+                EntryKind::ClassMethod {
+                    class,
+                    method: summary.name.clone(),
+                },
+            )
         } else if let Some(template) = url_template {
-            (HttpMethod::GET, template)
+            (HttpMethod::GET, template, EntryKind::HttpRoute)
         } else {
             return None;
         };
@@ -212,7 +220,7 @@ impl FrameworkAdapter for PythonDjangoAdapter {
 
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
+            kind: entry_kind,
             route: Some(RouteShape::single(method, path)),
             request_params,
             response_writer: None,
@@ -266,6 +274,13 @@ mod tests {
             .detect(&summary("get"), tree.root_node(), src)
             .unwrap();
         assert_eq!(binding.route.as_ref().unwrap().method, HttpMethod::GET);
+        assert_eq!(
+            binding.kind,
+            EntryKind::ClassMethod {
+                class: "UserView".to_owned(),
+                method: "get".to_owned(),
+            }
+        );
     }
 
     #[test]

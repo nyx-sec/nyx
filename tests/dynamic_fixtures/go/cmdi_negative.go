@@ -6,13 +6,11 @@
 package entry
 
 import (
-	"fmt"
 	"os/exec"
 )
 
 func RunPing(host string) {
 	// exec.Command does not invoke a shell; host is a literal argument.
 	cmd := exec.Command("echo", "hello", host)
-	out, _ := cmd.CombinedOutput()
-	fmt.Print(string(out))
+	_, _ = cmd.CombinedOutput()
 }

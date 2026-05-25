@@ -66,7 +66,7 @@ mod go_fixture_tests {
         }
 
         let path = fixture_path(fixture);
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new_in("/private/tmp").unwrap();
 
         unsafe {
             std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
@@ -74,6 +74,11 @@ mod go_fixture_tests {
                 "NYX_TELEMETRY_PATH",
                 tmp.path().join("events.jsonl").to_str().unwrap(),
             );
+            std::env::set_var(
+                "NYX_BUILD_CACHE",
+                tmp.path().join("build-cache").to_str().unwrap(),
+            );
+            std::env::set_var("GOCACHE", tmp.path().join("gocache").to_str().unwrap());
         }
 
         let diag = make_diag(&path, func, cap, sink_line);
@@ -83,6 +88,8 @@ mod go_fixture_tests {
         unsafe {
             std::env::remove_var("NYX_REPRO_BASE");
             std::env::remove_var("NYX_TELEMETRY_PATH");
+            std::env::remove_var("NYX_BUILD_CACHE");
+            std::env::remove_var("GOCACHE");
         }
 
         result
@@ -179,8 +186,11 @@ mod go_fixture_tests {
         assert_eq!(
             result.status,
             VerifyStatus::NotConfirmed,
-            "cmdi_negative must be NotConfirmed; got {:?}",
-            result.status
+            "cmdi_negative must be NotConfirmed; got {:?} (detail: {:?}, inconclusive: {:?}, differential: {:?})",
+            result.status,
+            result.detail,
+            result.inconclusive_reason,
+            result.differential
         );
     }
 
