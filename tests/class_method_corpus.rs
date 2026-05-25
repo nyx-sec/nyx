@@ -249,6 +249,19 @@ fn class_method_cpp_constructs_default_then_calls_method() {
     assert!(h.source.contains("instance.run"));
 }
 
+#[test]
+fn class_method_cpp_builds_recursive_receiver_initializer() {
+    let mut spec = make_spec(Lang::Cpp);
+    spec.entry_file = "tests/dynamic_fixtures/class_method/cpp_recursive_deps/vuln.cpp".into();
+    spec.sink_file = spec.entry_file.clone();
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(
+        h.source
+            .contains("UserService instance{CommandRunner{ShellRunner{}}};")
+    );
+    assert!(!h.source.contains("UserService instance;"));
+}
+
 // ── End-to-end Phase 19 acceptance via run_spec ─────────────────────────────
 
 #[cfg(test)]

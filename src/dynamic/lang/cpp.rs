@@ -397,12 +397,12 @@ fn cpp_string_literal(s: &str) -> String {
 /// Emit a C++ harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 19 (Track M.1): ClassMethod short-circuit.  The harness
-    // constructs the receiver via its default constructor and invokes
-    // `method(payload)`.  Fixtures are expected to expose a default
-    // constructor; the fallback path lets the harness build by
-    // null-filling primitive formals when the default ctor is missing.
+    // constructs the receiver and invokes `method(payload)`.  When the
+    // entry source exposes same-file constructor dependencies, build a
+    // small recursive initializer instead of requiring a zero-arg ctor.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
-        return Ok(emit_class_method_harness(class, method));
+        let entry_src = read_entry_source(&spec.entry_file);
+        return Ok(emit_class_method_harness(class, method, &entry_src));
     }
 
     let shape = detect_shape(spec);
@@ -427,11 +427,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
 /// Phase 19 (Track M.1) — class-method harness for C++.
 ///
-/// Includes `entry.cpp`, constructs the class via the default
-/// constructor (`<class> instance;`), and calls
+/// Includes `entry.cpp`, constructs the class, and calls
 /// `instance.<method>(payload)`.
-fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+fn emit_class_method_harness(class: &str, method: &str, entry_src: &str) -> HarnessSource {
     let shim = probe_shim();
+    let receiver_expr = cpp_receiver_expr(entry_src, class, 3);
+    let instance_decl = if receiver_expr.is_empty() {
+        format!("{class} instance;")
+    } else {
+        format!("{class} instance{{{receiver_expr}}};")
+    };
     let body = format!(
         r#"// Nyx dynamic harness — class method (Phase 19 / Track M.1).
 #include <cstddef>
@@ -449,7 +454,7 @@ int main(int argc, char *argv[]) {{
     (void)argc; (void)argv;
     std::string payload = nyx_payload();
     __nyx_install_crash_guard("{class}::{method}");
-    {class} instance;
+    {instance_decl}
     instance.{method}(payload);
     std::cout << "__NYX_SINK_HIT__" << std::endl;
     return 0;
@@ -464,6 +469,7 @@ static std::string nyx_payload() {{
 "#,
         class = class,
         method = method,
+        instance_decl = instance_decl,
     );
     HarnessSource {
         source: body,
@@ -471,6 +477,236 @@ static std::string nyx_payload() {{
         command: vec!["./nyx_harness".into()],
         extra_files: vec![("CMakeLists.txt".into(), generate_cmake())],
         entry_subpath: Some("entry.cpp".into()),
+    }
+}
+
+fn cpp_receiver_expr(entry_src: &str, class: &str, depth: usize) -> String {
+    if depth == 0 || cpp_has_default_constructor(entry_src, class) {
+        return String::new();
+    }
+    let Some(params) = cpp_constructor_params(entry_src, class) else {
+        return String::new();
+    };
+    if params.is_empty() {
+        return String::new();
+    }
+    params
+        .iter()
+        .map(|param| cpp_value_for_param(entry_src, param, depth - 1))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn cpp_has_default_constructor(entry_src: &str, class: &str) -> bool {
+    let pattern = format!("{class}()");
+    entry_src.contains(&pattern) || entry_src.contains(&format!("{class} ()"))
+}
+
+fn cpp_constructor_params(entry_src: &str, class: &str) -> Option<Vec<String>> {
+    let class_body = cpp_class_body(entry_src, class)?;
+    let mut search_from = 0usize;
+    while let Some(rel) = class_body[search_from..].find(class) {
+        let idx = search_from + rel;
+        let before = class_body[..idx].chars().rev().find(|c| !c.is_whitespace());
+        if before.is_some_and(|c| c == '~') {
+            search_from = idx + class.len();
+            continue;
+        }
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !cpp_constructor_prefix_allows_keyword(&class_body[..idx])
+        {
+            search_from = idx + class.len();
+            continue;
+        }
+        let after = &class_body[idx + class.len()..];
+        let after = after.trim_start();
+        if !after.starts_with('(') {
+            search_from = idx + class.len();
+            continue;
+        }
+        let Some(sig) = balanced_parens(after) else {
+            search_from = idx + class.len();
+            continue;
+        };
+        let tail = after[sig.len()..].trim_start();
+        if tail.starts_with(';') || tail.starts_with('{') || tail.starts_with(':') {
+            let inner = &sig[1..sig.len() - 1];
+            return Some(
+                split_top_level_commas(inner)
+                    .into_iter()
+                    .filter_map(|part| {
+                        let part = strip_cpp_default_value(part).trim();
+                        if part.is_empty() || part == "void" {
+                            None
+                        } else {
+                            Some(part.to_owned())
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        search_from = idx + class.len();
+    }
+    None
+}
+
+fn cpp_constructor_prefix_allows_keyword(prefix: &str) -> bool {
+    let mut chars = prefix.trim_end().chars().rev().peekable();
+    let mut word_rev = String::new();
+    while let Some(ch) = chars.peek().copied() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            word_rev.push(ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let word = word_rev.chars().rev().collect::<String>();
+    matches!(
+        word.as_str(),
+        "explicit" | "inline" | "constexpr" | "consteval"
+    )
+}
+
+fn cpp_class_body<'a>(entry_src: &'a str, class: &str) -> Option<&'a str> {
+    for keyword in ["class", "struct"] {
+        let marker = format!("{keyword} {class}");
+        let Some(idx) = entry_src.find(&marker) else {
+            continue;
+        };
+        let after = &entry_src[idx + marker.len()..];
+        let open = after.find('{')?;
+        let block = balanced_block(&after[open..])?;
+        return Some(&block[1..block.len() - 1]);
+    }
+    None
+}
+
+fn balanced_block(text: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&text[..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn balanced_parens(text: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&text[..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut angle_depth = 0isize;
+    let mut paren_depth = 0isize;
+    let mut brace_depth = 0isize;
+    let mut start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth -= 1,
+            '(' | '[' => paren_depth += 1,
+            ')' | ']' => paren_depth -= 1,
+            '{' => brace_depth += 1,
+            '}' => brace_depth -= 1,
+            ',' if angle_depth == 0 && paren_depth == 0 && brace_depth == 0 => {
+                parts.push(&text[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+fn strip_cpp_default_value(param: &str) -> &str {
+    let mut angle_depth = 0isize;
+    let mut paren_depth = 0isize;
+    for (idx, ch) in param.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' => angle_depth -= 1,
+            '(' | '[' => paren_depth += 1,
+            ')' | ']' => paren_depth -= 1,
+            '=' if angle_depth == 0 && paren_depth == 0 => return &param[..idx],
+            _ => {}
+        }
+    }
+    param
+}
+
+fn cpp_value_for_param(entry_src: &str, param: &str, depth: usize) -> String {
+    let ty = cpp_param_type(param);
+    cpp_value_for_type(entry_src, &ty, depth)
+}
+
+fn cpp_param_type(param: &str) -> String {
+    let mut tokens = param.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() > 1 {
+        tokens.pop();
+    }
+    tokens
+        .join(" ")
+        .replace(" const", "")
+        .replace("const ", "")
+        .trim()
+        .to_owned()
+}
+
+fn cpp_value_for_type(entry_src: &str, ty: &str, depth: usize) -> String {
+    let clean = ty.trim();
+    if clean.ends_with('*') {
+        return "nullptr".to_owned();
+    }
+    let bare = clean
+        .trim_end_matches('&')
+        .trim()
+        .trim_start_matches("std::")
+        .split('<')
+        .next()
+        .unwrap_or(clean)
+        .rsplit("::")
+        .next()
+        .unwrap_or(clean)
+        .trim();
+    match bare {
+        "string" => "std::string()".to_owned(),
+        "bool" => "false".to_owned(),
+        "char" => "'\\0'".to_owned(),
+        "float" | "double" => "0.0".to_owned(),
+        "short" | "int" | "long" | "size_t" | "uint8_t" | "uint16_t" | "uint32_t" | "uint64_t"
+        | "int8_t" | "int16_t" | "int32_t" | "int64_t" => "0".to_owned(),
+        _ if depth > 0 && cpp_class_body(entry_src, bare).is_some() => {
+            let nested = cpp_receiver_expr(entry_src, bare, depth);
+            if nested.is_empty() {
+                format!("{bare}{{}}")
+            } else {
+                format!("{bare}{{{nested}}}")
+            }
+        }
+        _ => format!("{bare}{{}}"),
     }
 }
 
