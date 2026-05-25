@@ -803,23 +803,18 @@ fn try_compile_java(
 
 /// Resolve the `pom.xml` declared dependencies into `workdir/lib`.
 ///
-/// Runs `mvn dependency:copy-dependencies` on the host, scoped to
-/// runtime + compile so a transitive test-scoped jar can not bleed
-/// into the harness classpath.  Honors `NYX_MAVEN_BIN` so CI hosts
-/// with a pinned Maven install can override the binary lookup.
+/// Runs `mvn dependency:copy-dependencies` on the host with test scope
+/// included. Framework harnesses often need test-only clients such as
+/// MockMvc even when the entry itself is runtime-scoped. Honors
+/// `NYX_MAVEN_BIN` so CI hosts with a pinned Maven install can override
+/// the binary lookup.
 ///
 /// Returns `Err` with the Maven output on failure so the harness
 /// build path can surface it as `BuildFailed` upstream.
 fn fetch_maven_deps(workdir: &Path) -> Result<(), String> {
     let mvn = std::env::var("NYX_MAVEN_BIN").unwrap_or_else(|_| "mvn".to_owned());
     let output = Command::new(&mvn)
-        .args([
-            "-q",
-            "-B",
-            "dependency:copy-dependencies",
-            "-DoutputDirectory=lib",
-            "-DincludeScope=runtime",
-        ])
+        .args(maven_copy_dependency_args())
         .current_dir(workdir)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -835,6 +830,16 @@ fn fetch_maven_deps(workdir: &Path) -> Result<(), String> {
         return Err(format!("mvn dependency:copy-dependencies failed: {msg}"));
     }
     Ok(())
+}
+
+fn maven_copy_dependency_args() -> [&'static str; 5] {
+    [
+        "-q",
+        "-B",
+        "dependency:copy-dependencies",
+        "-DoutputDirectory=lib",
+        "-DincludeScope=test",
+    ]
 }
 
 /// Recursively enumerate every `*.java` source file under `workdir`.
@@ -1430,8 +1435,9 @@ impl Drop for BuildContainerGuard {
 
 /// Run `cargo build --release` inside a Docker container.
 ///
-/// Provides build-time isolation: `--network none`, no host mounts. A
-/// malicious `build.rs` can only write to the container's private `/tmp`.
+/// Provides filesystem isolation: no host mounts, only a copied workdir.
+/// Network is left available so manifest-backed framework fixtures can fetch
+/// crates before the sandboxed runtime executes the harness.
 ///
 /// Returns `Ok(())` when the container started and `cargo build` was invoked
 /// (build success/failure inside the container is not checked). Returns
@@ -1440,7 +1446,7 @@ pub fn prepare_rust_in_docker(workdir: &Path) -> Result<(), String> {
     let docker = docker_bin_for_build();
     let container = build_container_id("rustbuild", workdir);
 
-    if !start_isolated_build_container(&docker, &container, "rust:slim", true) {
+    if !start_isolated_build_container(&docker, &container, "rust:slim", false) {
         return Err("failed to start rust:slim build container; image may not be available".into());
     }
 
@@ -1450,20 +1456,15 @@ pub fn prepare_rust_in_docker(workdir: &Path) -> Result<(), String> {
     };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
-    // CARGO_NET_OFFLINE prevents any registry contact; std lib is pre-built in the image.
     let _ = std::process::Command::new(&docker)
-        .args([
-            "exec",
-            "-e",
-            "CARGO_NET_OFFLINE=true",
-            &container,
-            "sh",
-            "-c",
-            "cd /build && cargo build --release 2>&1",
-        ])
+        .args(["exec", &container, "sh", "-c", rust_docker_build_script()])
         .output();
 
     Ok(())
+}
+
+fn rust_docker_build_script() -> &'static str {
+    "cd /build && cargo fetch && cargo build --release 2>&1"
 }
 
 /// Run `npm install` inside a Docker container.
@@ -1515,7 +1516,7 @@ pub fn prepare_go_in_docker(workdir: &Path) -> Result<(), String> {
     let docker = docker_bin_for_build();
     let container = build_container_id("gobuild", workdir);
 
-    if !start_isolated_build_container(&docker, &container, "golang:1.21-slim", true) {
+    if !start_isolated_build_container(&docker, &container, "golang:1.21-slim", false) {
         return Err(
             "failed to start golang:1.21-slim build container; image may not be available".into(),
         );
@@ -1527,22 +1528,23 @@ pub fn prepare_go_in_docker(workdir: &Path) -> Result<(), String> {
     };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
-    // GOPROXY=off prevents module downloads; std library is pre-compiled in the image.
     let _ = std::process::Command::new(&docker)
         .args([
             "exec",
-            "-e",
-            "GOPROXY=off",
             "-e",
             "GONOSUMDB=*",
             &container,
             "sh",
             "-c",
-            "cd /build && go build ./... 2>&1",
+            go_docker_build_script(),
         ])
         .output();
 
     Ok(())
+}
+
+fn go_docker_build_script() -> &'static str {
+    "cd /build && if [ -f go.mod ]; then go mod download; fi && go build ./... 2>&1"
 }
 
 /// Run `mvn validate` inside a Docker container.
@@ -1661,6 +1663,22 @@ mod tests {
     }
 
     #[test]
+    fn go_docker_build_script_downloads_modules_when_manifest_exists() {
+        let script = go_docker_build_script();
+        assert!(script.contains("if [ -f go.mod ]; then go mod download; fi"));
+        assert!(script.contains("go build ./..."));
+        assert!(!script.contains("GOPROXY=off"));
+    }
+
+    #[test]
+    fn rust_docker_build_script_fetches_crates() {
+        let script = rust_docker_build_script();
+        assert!(script.contains("cargo fetch"));
+        assert!(script.contains("cargo build --release"));
+        assert!(!script.contains("CARGO_NET_OFFLINE"));
+    }
+
+    #[test]
     fn java_source_hash_stable() {
         let dir = tempfile::TempDir::new().unwrap();
         let h1 = compute_java_source_hash(dir.path(), None);
@@ -1702,6 +1720,13 @@ mod tests {
         assert_eq!(java_target_release("java-6"), None);
         assert_eq!(java_target_release("java-999"), None);
         assert_eq!(java_target_release("java-abc"), None);
+    }
+
+    #[test]
+    fn maven_dependency_copy_includes_test_scope() {
+        let args = maven_copy_dependency_args();
+        assert!(args.contains(&"-DincludeScope=test"));
+        assert!(!args.contains(&"-DincludeScope=runtime"));
     }
 
     #[test]

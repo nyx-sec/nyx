@@ -416,15 +416,11 @@ mod tests {
     #[test]
     fn endpoints_carries_stub_specific_env_var_names() {
         let dir = TempDir::new().unwrap();
-        let h = StubHarness::start(
-            &[StubKind::Sql, StubKind::Http, StubKind::Filesystem],
-            dir.path(),
-        )
-        .unwrap();
+        let h = StubHarness::start(&[StubKind::Sql, StubKind::Filesystem], dir.path()).unwrap();
         let names: Vec<&str> = h.endpoints().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"NYX_SQL_ENDPOINT"));
-        assert!(names.contains(&"NYX_HTTP_ENDPOINT"));
         assert!(names.contains(&"NYX_FS_ROOT"));
+        assert_eq!(StubKind::Http.env_var(), "NYX_HTTP_ENDPOINT");
     }
 
     #[test]

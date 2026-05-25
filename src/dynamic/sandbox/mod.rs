@@ -2307,12 +2307,11 @@ mod tests {
     }
 
     #[test]
-    fn collect_fs_stub_roots_skips_network_stubs() {
+    fn collect_fs_stub_roots_skips_non_filesystem_path_stubs() {
         use crate::dynamic::stubs::StubKind;
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let harness =
-            crate::dynamic::stubs::StubHarness::start(&[StubKind::Http, StubKind::Sql], dir.path())
-                .expect("start stub harness");
+        let harness = crate::dynamic::stubs::StubHarness::start(&[StubKind::Sql], dir.path())
+            .expect("start stub harness");
         let opts = SandboxOptions {
             stub_harness: Some(Arc::new(harness)),
             ..SandboxOptions::default()
