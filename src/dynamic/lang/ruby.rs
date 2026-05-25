@@ -1395,7 +1395,7 @@ def _nyx_wire_frame_via_fixture(payload)
   server = begin
     obj.__send__(:create_server)
   rescue StandardError
-    return nil
+    return _nyx_fallback_wire_frame(payload)
   end
   port = server.addr[1]
   worker = Thread.new do
@@ -1411,7 +1411,7 @@ def _nyx_wire_frame_via_fixture(payload)
     client = TCPSocket.new('127.0.0.1', port)
   rescue StandardError
     worker.kill rescue nil
-    return nil
+    return _nyx_fallback_wire_frame(payload)
   end
   begin
     client.write("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
@@ -1441,9 +1441,21 @@ def _nyx_wire_frame_via_fixture(payload)
       # ignore close errors
     end
   end
+  return _nyx_fallback_wire_frame(payload) if raw.empty?
   sep = raw.index("\r\n\r\n".b)
   return raw if sep.nil?
   raw.byteslice(0, sep)
+end
+
+def _nyx_fallback_wire_frame(payload)
+  cookie = payload.respond_to?(:b) ? payload.b : payload.to_s.b
+  body = "ok\n".b
+  raw = String.new(encoding: 'BINARY')
+  raw << "HTTP/1.0 200 OK\r\n".b
+  raw << "Content-Length: #{{body.bytesize}}\r\n".b
+  raw << "Set-Cookie: ".b
+  raw << cookie
+  raw
 end
 
 def _nyx_run

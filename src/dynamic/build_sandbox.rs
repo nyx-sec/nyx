@@ -113,6 +113,11 @@ fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), Strin
     let compiled = workdir.join("target").join("release").join("nyx_harness");
     if compiled.exists() {
         std::fs::copy(&compiled, binary_dest).map_err(|e| format!("copy binary: {e}"))?;
+    } else {
+        return Err(format!(
+            "cargo build succeeded but expected binary was not produced at {}",
+            compiled.display()
+        ));
     }
 
     Ok(())

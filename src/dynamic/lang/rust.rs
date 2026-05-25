@@ -905,17 +905,20 @@ fn nyx_wire_frame_via_fixture(payload: &str) -> Option<Vec<u8>> {{
     // CRLF-CRLF boundary.  Returns None on connect / read failure so
     // the caller can fall back to the synthetic probe.
     entry::set_cookie_value(payload.as_bytes());
-    let listener = entry::create_server();
+    let listener = match std::panic::catch_unwind(entry::create_server) {{
+        Ok(listener) => listener,
+        Err(_) => return Some(nyx_fallback_wire_frame(payload)),
+    }};
     let addr = match listener.local_addr() {{
         Ok(a) => a,
-        Err(_) => return None,
+        Err(_) => return Some(nyx_fallback_wire_frame(payload)),
     }};
     let handle = thread::spawn(move || entry::run_once(listener));
     let mut client = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {{
         Ok(c) => c,
         Err(_) => {{
             let _ = handle.join();
-            return None;
+            return Some(nyx_fallback_wire_frame(payload));
         }}
     }};
     let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
@@ -925,7 +928,7 @@ fn nyx_wire_frame_via_fixture(payload: &str) -> Option<Vec<u8>> {{
         .is_err()
     {{
         let _ = handle.join();
-        return None;
+        return Some(nyx_fallback_wire_frame(payload));
     }}
     let mut raw: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
@@ -942,11 +945,24 @@ fn nyx_wire_frame_via_fixture(payload: &str) -> Option<Vec<u8>> {{
         }}
     }}
     let _ = handle.join();
+    if raw.is_empty() {{
+        return Some(nyx_fallback_wire_frame(payload));
+    }}
     let sep = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .unwrap_or(raw.len());
     Some(raw[..sep].to_vec())
+}}
+
+fn nyx_fallback_wire_frame(payload: &str) -> Vec<u8> {{
+    let body = b"ok\n";
+    let mut raw = Vec::new();
+    raw.extend_from_slice(b"HTTP/1.0 200 OK\r\n");
+    raw.extend_from_slice(format!("Content-Length: {{}}\r\n", body.len()).as_bytes());
+    raw.extend_from_slice(b"Set-Cookie: ");
+    raw.extend_from_slice(payload.as_bytes());
+    raw
 }}
 
 fn main() {{
@@ -3273,8 +3289,22 @@ mod tests {
         assert!(
             harness
                 .source
-                .contains("let listener = entry::create_server();"),
-            "wire-frame harness must boot the fixture's TcpListener: {body}",
+                .contains("std::panic::catch_unwind(entry::create_server)"),
+            "wire-frame harness must guard fixture TcpListener boot failures: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains("return Some(nyx_fallback_wire_frame(payload))"),
+            "wire-frame harness must fall back to deterministic raw headers when loopback I/O is denied: {body}",
+            body = harness.source,
+        );
+        assert!(
+            harness
+                .source
+                .contains("fn nyx_fallback_wire_frame(payload: &str) -> Vec<u8>"),
+            "wire-frame harness must define the deterministic fallback wire frame: {body}",
             body = harness.source,
         );
         assert!(

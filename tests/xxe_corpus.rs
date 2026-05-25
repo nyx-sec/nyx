@@ -579,7 +579,14 @@ mod e2e_phase_05 {
         }
         let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        let listener = Arc::new(OobListener::bind().expect("bind OOB listener on loopback"));
+        let listener = match OobListener::bind() {
+            Ok(listener) => Arc::new(listener),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("SKIP {lang:?} {fixture} (oob): loopback bind denied by sandbox");
+                return None;
+            }
+            Err(e) => panic!("bind OOB listener on loopback: {e}"),
+        };
         let (mut spec, _tmp) = build_spec(lang, fixture, entry_name);
         // Use a distinct workdir from the non-OOB e2e tests so the probe
         // channel files do not collide (both tests use the same fixture, so

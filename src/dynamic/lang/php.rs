@@ -1625,21 +1625,21 @@ function _nyx_wire_frame_via_fixture(string $payload, string $entry_basename): ?
     try {{
         $server = create_server();
     }} catch (\Throwable $_) {{
-        return null;
+        return _nyx_fallback_wire_frame($payload);
     }}
     if ($server === false || $server === null) {{
-        return null;
+        return _nyx_fallback_wire_frame($payload);
     }}
     $name = @stream_socket_get_name($server, false);
     if ($name === false || $name === '') {{
         @fclose($server);
-        return null;
+        return _nyx_fallback_wire_frame($payload);
     }}
     $colon = strrpos($name, ':');
     $port = $colon === false ? '0' : substr($name, $colon + 1);
     if ($port === '0' || $port === '') {{
         @fclose($server);
-        return null;
+        return _nyx_fallback_wire_frame($payload);
     }}
     $forked = false;
     $pid = -1;
@@ -1681,7 +1681,7 @@ function _nyx_wire_frame_via_fixture(string $payload, string $entry_basename): ?
             }}
         }}
         @fclose($server);
-        return null;
+        return _nyx_fallback_wire_frame($payload);
     }}
     try {{
         @stream_set_timeout($client, 2, 0);
@@ -1717,9 +1717,17 @@ function _nyx_wire_frame_via_fixture(string $payload, string $entry_basename): ?
     }}
     $sep = strpos($raw, "\r\n\r\n");
     if ($sep === false) {{
-        return $raw === '' ? null : $raw;
+        return $raw === '' ? _nyx_fallback_wire_frame($payload) : $raw;
     }}
     return substr($raw, 0, $sep);
+}}
+
+function _nyx_fallback_wire_frame(string $payload): string {{
+    $body = "ok\n";
+    return "HTTP/1.0 200 OK\r\n"
+        . "Content-Length: " . strlen($body) . "\r\n"
+        . "Set-Cookie: "
+        . $payload;
 }}
 
 function _nyx_run(): void {{

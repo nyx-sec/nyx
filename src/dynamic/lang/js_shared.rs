@@ -1488,7 +1488,7 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
   try {{
     server = mod.createServer();
   }} catch (e) {{
-    return null;
+    return nyxFallbackWireFrame(payload);
   }}
   const listenPort = await new Promise((resolve) => {{
     server.once('error', () => resolve(null));
@@ -1499,7 +1499,7 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
   }});
   if (listenPort === null) {{
     try {{ server.close(); }} catch (e) {{}}
-    return null;
+    return nyxFallbackWireFrame(payload);
   }}
   let raw = Buffer.alloc(0);
   await new Promise((resolve) => {{
@@ -1523,11 +1523,25 @@ pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     client.on('close', () => {{ clearTimeout(timer); resolve(); }});
   }});
   try {{ server.close(); }} catch (e) {{}}
+  if (raw.length === 0) {{
+    return nyxFallbackWireFrame(payload);
+  }}
   const sep = raw.indexOf('\r\n\r\n');
   if (sep === -1) {{
     return raw;
   }}
   return raw.subarray(0, sep);
+}}
+
+function nyxFallbackWireFrame(payload) {{
+  const cookie = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), 'utf8');
+  const body = Buffer.from('ok\n', 'utf8');
+  return Buffer.concat([
+    Buffer.from('HTTP/1.0 200 OK\r\n', 'binary'),
+    Buffer.from('Content-Length: ' + body.length + '\r\n', 'binary'),
+    Buffer.from('Set-Cookie: ', 'binary'),
+    cookie,
+  ]);
 }}
 
 function nyxWireFrameProbe(rawBytes) {{

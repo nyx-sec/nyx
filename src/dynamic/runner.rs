@@ -258,8 +258,17 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
                 }
-                Err(_) => {
-                    // Io: fall back to whatever command was set (will likely fail at exec).
+                Err(build_sandbox::BuildError::Io(e)) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: format!("prepare rust build cache: {e}"),
+                        attempts: 1,
+                    });
+                }
+                Err(build_sandbox::BuildError::Unsupported) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: "rust build preparation unsupported on this host".to_owned(),
+                        attempts: 1,
+                    });
                 }
             }
         }

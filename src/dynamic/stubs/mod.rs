@@ -73,7 +73,7 @@ pub use broker_sqs::{SQS_PUBLISH_MARKER, sqs_source};
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;
 pub use ldap_server::LdapStub;
-pub use mocks::{MockKind, mock_source};
+pub use mocks::{MockKind, MockStub, mock_source};
 pub use redis::RedisStub;
 pub use sql::SqlStub;
 
@@ -104,6 +104,13 @@ pub enum StubKind {
     /// one-liner documented in
     /// [`crate::dynamic::stubs::ldap_server`].
     Ldap,
+    /// Runtime provider for an injectable HTTP-client test double.
+    MockHttpClient,
+    /// Runtime provider for an injectable database-connection test
+    /// double.
+    MockDatabaseConnection,
+    /// Runtime provider for an injectable logger test double.
+    MockLogger,
 }
 
 impl StubKind {
@@ -118,6 +125,9 @@ impl StubKind {
             StubKind::Redis => "NYX_REDIS_ENDPOINT",
             StubKind::Filesystem => "NYX_FS_ROOT",
             StubKind::Ldap => ldap_server::LDAP_ENDPOINT_ENV_VAR,
+            StubKind::MockHttpClient => "NYX_MOCK_HTTP_CLIENT_ENDPOINT",
+            StubKind::MockDatabaseConnection => "NYX_MOCK_DATABASE_CONNECTION_ENDPOINT",
+            StubKind::MockLogger => "NYX_MOCK_LOGGER_ENDPOINT",
         }
     }
 
@@ -131,6 +141,9 @@ impl StubKind {
             StubKind::Redis => "redis",
             StubKind::Filesystem => "filesystem",
             StubKind::Ldap => "ldap",
+            StubKind::MockHttpClient => "mock_http_client",
+            StubKind::MockDatabaseConnection => "mock_database_connection",
+            StubKind::MockLogger => "mock_logger",
         }
     }
 
@@ -271,6 +284,13 @@ impl StubHarness {
                 StubKind::Redis => Arc::new(RedisStub::start()?),
                 StubKind::Filesystem => Arc::new(FilesystemStub::start(workdir)?),
                 StubKind::Ldap => Arc::new(LdapStub::start()?),
+                StubKind::MockHttpClient => {
+                    Arc::new(MockStub::start(MockKind::HttpClient, workdir)?)
+                }
+                StubKind::MockDatabaseConnection => {
+                    Arc::new(MockStub::start(MockKind::DatabaseConnection, workdir)?)
+                }
+                StubKind::MockLogger => Arc::new(MockStub::start(MockKind::Logger, workdir)?),
             };
             stubs.push(stub);
         }
@@ -350,6 +370,10 @@ mod tests {
             StubKind::Http,
             StubKind::Redis,
             StubKind::Filesystem,
+            StubKind::Ldap,
+            StubKind::MockHttpClient,
+            StubKind::MockDatabaseConnection,
+            StubKind::MockLogger,
         ]
         .iter()
         .map(|k| k.env_var())
@@ -416,10 +440,20 @@ mod tests {
     #[test]
     fn endpoints_carries_stub_specific_env_var_names() {
         let dir = TempDir::new().unwrap();
-        let h = StubHarness::start(&[StubKind::Sql, StubKind::Filesystem], dir.path()).unwrap();
+        let h = StubHarness::start(
+            &[
+                StubKind::Sql,
+                StubKind::Filesystem,
+                StubKind::MockHttpClient,
+            ],
+            dir.path(),
+        )
+        .unwrap();
         let names: Vec<&str> = h.endpoints().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"NYX_SQL_ENDPOINT"));
         assert!(names.contains(&"NYX_FS_ROOT"));
+        assert!(names.contains(&"NYX_MOCK_HTTP_CLIENT_ENDPOINT"));
+        assert!(names.contains(&"NYX_MOCK_HTTP_CLIENT_LOG"));
         assert_eq!(StubKind::Http.env_var(), "NYX_HTTP_ENDPOINT");
     }
 
