@@ -167,6 +167,16 @@ fn class_method_python_dispatch_reads_payload_and_invokes_method() {
 }
 
 #[test]
+fn class_method_js_dispatch_builds_recursive_receiver() {
+    let spec = make_spec(Lang::JavaScript);
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyxBuildReceiver(_Cls, 3)"));
+    assert!(h.source.contains("_nyxConstructorParams"));
+    assert!(h.source.contains("_nyxExportedClass"));
+    assert!(h.source.contains("depth = 3"));
+}
+
+#[test]
 fn class_method_java_emits_reflective_dispatch() {
     let spec = make_spec(Lang::Java);
     let h = lang::emit(&spec).expect("emit ok");
@@ -286,8 +296,30 @@ mod e2e_phase_19 {
             bins: &["node"],
         },
         Case {
+            lang: Lang::JavaScript,
+            fixture_dir: "javascript_recursive_deps",
+            vuln_file: "vuln.js",
+            benign_file: "benign.js",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["node"],
+        },
+        Case {
             lang: Lang::TypeScript,
             fixture_dir: "typescript",
+            vuln_file: "vuln.ts",
+            benign_file: "benign.ts",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["node"],
+        },
+        Case {
+            lang: Lang::TypeScript,
+            fixture_dir: "typescript_recursive_deps",
             vuln_file: "vuln.ts",
             benign_file: "benign.ts",
             vuln_class: "UserService",

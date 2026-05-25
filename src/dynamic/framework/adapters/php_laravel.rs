@@ -14,7 +14,9 @@
 
 #[cfg(test)]
 use crate::dynamic::framework::HttpMethod;
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
+use crate::dynamic::framework::{
+    FrameworkAdapter, FrameworkBinding, FrameworkDetectionContext, ProjectFileIndex, RouteShape,
+};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
@@ -44,27 +46,98 @@ impl FrameworkAdapter for PhpLaravelAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if !source_imports_laravel(file_bytes) {
-            return None;
-        }
-        let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
-        let controller = class.and_then(|c| php_class_name(c, file_bytes));
-
-        let route = find_laravel_static_route_shape(ast, file_bytes, &summary.name, controller)?;
-
-        let formals = php_formal_names(func_node, file_bytes);
-        let request_params = bind_php_path_params(&formals, &route.path);
-        let middleware = collect_php_middleware(ast, file_bytes);
-
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(route),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_laravel(summary, ast, file_bytes, None)
     }
+
+    fn detect_with_project_context(
+        &self,
+        summary: &FuncSummary,
+        context: FrameworkDetectionContext<'_>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_laravel(summary, ast, file_bytes, Some(context.project_files))
+    }
+}
+
+fn detect_laravel(
+    summary: &FuncSummary,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+    project_files: Option<&ProjectFileIndex>,
+) -> Option<FrameworkBinding> {
+    let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
+    let controller = class.and_then(|c| php_class_name(c, file_bytes));
+
+    let (route, from_project_config) = if let Some(route) =
+        find_laravel_static_route_shape(ast, file_bytes, &summary.name, controller)
+    {
+        (route, false)
+    } else {
+        (
+            project_files
+                .and_then(|files| laravel_config_route_shape(files, &summary.name, controller))?,
+            true,
+        )
+    };
+
+    if !source_imports_laravel(file_bytes) && !from_project_config {
+        return None;
+    }
+
+    let formals = php_formal_names(func_node, file_bytes);
+    let request_params = bind_php_path_params(&formals, &route.path);
+    let mut middleware = collect_php_middleware(ast, file_bytes);
+    if from_project_config && let Some(files) = project_files {
+        middleware.extend(laravel_config_middleware(files));
+    }
+
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(route),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
+}
+
+fn laravel_config_route_shape(
+    project_files: &ProjectFileIndex,
+    method_name: &str,
+    controller: Option<&str>,
+) -> Option<RouteShape> {
+    for rel in ["routes/web.php", "routes/api.php"] {
+        if let Some(bytes) = project_files.get(rel)
+            && let Some(tree) = parse_php(bytes)
+            && let Some(route) =
+                find_laravel_static_route_shape(tree.root_node(), bytes, method_name, controller)
+        {
+            return Some(route);
+        }
+    }
+    None
+}
+
+fn laravel_config_middleware(
+    project_files: &ProjectFileIndex,
+) -> Vec<crate::dynamic::framework::MiddlewareShape> {
+    let mut out = Vec::new();
+    for rel in ["routes/web.php", "routes/api.php"] {
+        if let Some(bytes) = project_files.get(rel)
+            && let Some(tree) = parse_php(bytes)
+        {
+            out.extend(collect_php_middleware(tree.root_node(), bytes));
+        }
+    }
+    out
+}
+
+fn parse_php(bytes: &[u8]) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).ok()?;
+    parser.parse(bytes, None)
 }
 
 #[cfg(test)]
@@ -82,6 +155,15 @@ mod tests {
     fn summary(name: &str) -> FuncSummary {
         FuncSummary {
             name: name.into(),
+            lang: "php".into(),
+            ..Default::default()
+        }
+    }
+
+    fn summary_at(name: &str, file_path: &str) -> FuncSummary {
+        FuncSummary {
+            name: name.into(),
+            file_path: file_path.into(),
             lang: "php".into(),
             ..Default::default()
         }
@@ -137,6 +219,37 @@ mod tests {
             .detect(&summary("destroy"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::DELETE);
+    }
+
+    #[test]
+    fn resolves_project_route_file_for_controller_method() {
+        let src: &[u8] = b"<?php\nnamespace App\\Http\\Controllers;\nclass UserController {\n  public function show($id) { return $id; }\n}\n";
+        let tree = parse(src);
+        let mut project_files = ProjectFileIndex::new();
+        project_files.insert(
+            "routes/web.php",
+            b"<?php\nuse Illuminate\\Support\\Facades\\Route;\nuse App\\Http\\Controllers\\UserController;\nRoute::get('/users/{id}', [UserController::class, 'show'])->middleware('auth');\n".to_vec(),
+        );
+        let context = FrameworkDetectionContext {
+            ssa_summary: None,
+            project_files: &project_files,
+        };
+        let binding = PhpLaravelAdapter
+            .detect_with_project_context(
+                &summary_at("show", "/tmp/app/app/Http/Controllers/UserController.php"),
+                context,
+                tree.root_node(),
+                src,
+            )
+            .expect("binding from routes/web.php");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(route.path, "/users/{id}");
+        assert!(
+            binding.middleware.iter().any(|m| m.name == "auth"),
+            "expected auth middleware from routes/web.php, got {:?}",
+            binding.middleware
+        );
     }
 
     #[test]

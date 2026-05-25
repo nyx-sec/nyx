@@ -20,7 +20,7 @@
 use crate::callgraph::{CallGraph, CallGraphAnalysis};
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
-use crate::dynamic::framework::FrameworkBinding;
+use crate::dynamic::framework::{FrameworkBinding, FrameworkDetectionContext, ProjectFileIndex};
 use crate::dynamic::stubs::StubKind;
 use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
@@ -28,7 +28,7 @@ use crate::summary::{FuncSummary, GlobalSummaries};
 use crate::symbol::{FuncKey, Lang};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Re-export of the always-present [`crate::evidence::SpecDerivationStrategy`].
 ///
@@ -1241,15 +1241,57 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
     let summary_ref = resolved.unwrap_or(&synthetic);
     let ssa_ref = summaries
         .and_then(|gs| find_ssa_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file));
-    if let Some(binding) = crate::dynamic::framework::detect_binding_with_context(
+    let project_files = framework_project_files_for_entry(&spec.entry_file, spec.lang);
+    let context = FrameworkDetectionContext {
+        ssa_summary: ssa_ref,
+        project_files: &project_files,
+    };
+    if let Some(binding) = crate::dynamic::framework::detect_binding_with_project_context(
         summary_ref,
-        ssa_ref,
+        context,
         tree.root_node(),
         &bytes,
         spec.lang,
     ) {
         stamp_framework_binding(spec, binding);
     }
+}
+
+fn framework_project_files_for_entry(entry_file: &str, lang: Lang) -> ProjectFileIndex {
+    let Some(root) = infer_framework_project_root(Path::new(entry_file), lang) else {
+        return ProjectFileIndex::new();
+    };
+    let rel_paths: &[&str] = match lang {
+        Lang::Ruby => &["config/routes.rb"],
+        Lang::Php => &[
+            "config/routes.yaml",
+            "config/routes.yml",
+            "routes/web.php",
+            "routes/api.php",
+            "app/Config/Routes.php",
+        ],
+        _ => &[],
+    };
+    ProjectFileIndex::from_root(&root, rel_paths)
+}
+
+fn infer_framework_project_root(entry_path: &Path, lang: Lang) -> Option<PathBuf> {
+    let dirs: &[&str] = match lang {
+        Lang::Ruby => &["app"],
+        Lang::Php => &["src", "app"],
+        _ => &[],
+    };
+    for ancestor in entry_path.ancestors() {
+        let Some(name) = ancestor.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if dirs.contains(&name)
+            && let Some(parent) = ancestor.parent()
+        {
+            return Some(parent.to_path_buf());
+        }
+    }
+    entry_path.parent().map(|p| p.to_path_buf())
 }
 
 /// Phase 18 (Track M.0) — apply a resolved [`FrameworkBinding`] onto
@@ -2225,6 +2267,53 @@ mod tests {
         //    hash identically.  Phase 01 contract: framework is purely
         //    descriptive metadata.
         assert_eq!(spec_no_summaries.spec_hash, spec_with_summaries.spec_hash);
+    }
+
+    #[test]
+    fn attach_framework_binding_reads_project_route_config() {
+        use crate::dynamic::framework::HttpMethod;
+        use std::fs;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let action_dir = dir.path().join("app/actions/books");
+        fs::create_dir_all(&action_dir).expect("action dir");
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        let action = action_dir.join("show.rb");
+        fs::File::create(&action)
+            .expect("action create")
+            .write_all(
+                b"require 'hanami/action'\nmodule Books\n  class Show\n    include Hanami::Action\n    def call(req)\n      system(req.params[:cmd])\n    end\n  end\nend\n",
+            )
+            .expect("action write");
+        fs::File::create(config_dir.join("routes.rb"))
+            .expect("routes create")
+            .write_all(b"Hanami.app.routes do\n  post '/books/:id', to: 'books.show'\nend\n")
+            .expect("routes write");
+        let entry_file = action.to_string_lossy().into_owned();
+
+        let ev = Evidence {
+            flow_steps: vec![source_step(&entry_file, "call"), sink_step(&entry_file)],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "rb.cmdi.system".into(),
+            path: entry_file.clone(),
+            line: 5,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev),
+            ..Default::default()
+        };
+
+        let spec = HarnessSpec::from_finding_full(&diag, false, None, None)
+            .expect("spec derives and attaches framework config");
+        let binding = spec.framework.expect("hanami binding");
+        assert_eq!(binding.adapter, "ruby-hanami");
+        let route = binding.route.expect("route");
+        assert_eq!(route.method, HttpMethod::POST);
+        assert_eq!(route.path, "/books/:id");
     }
 
     /// Phase 18 (Track M.0) deferred-fix: when a [`FrameworkBinding`]

@@ -13,7 +13,10 @@
 
 mod common;
 
-use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
+use nyx_scanner::dynamic::framework::{
+    FrameworkDetectionContext, HttpMethod, ParamSource, ProjectFileIndex, detect_binding,
+    detect_binding_with_project_context,
+};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -116,6 +119,30 @@ fn symfony_benign_fixture_binds_same_route_shape() {
 }
 
 #[test]
+fn symfony_yaml_fixture_binds_cross_file_route() {
+    let path =
+        "tests/dynamic_fixtures/php_frameworks/symfony_yaml/src/Controller/ReportController.php";
+    let routes = "tests/dynamic_fixtures/php_frameworks/symfony_yaml/config/routes.yaml";
+    let bytes = std::fs::read(path).expect("symfony yaml controller fixture exists");
+    let route_bytes = std::fs::read(routes).expect("symfony yaml routes fixture exists");
+    let tree = parse_php(&bytes);
+    let summary = summary_for("show", path);
+    let mut project_files = ProjectFileIndex::new();
+    project_files.insert("config/routes.yaml", route_bytes);
+    let context = FrameworkDetectionContext {
+        ssa_summary: None,
+        project_files: &project_files,
+    };
+    let binding =
+        detect_binding_with_project_context(&summary, context, tree.root_node(), &bytes, Lang::Php)
+            .expect("symfony adapter must bind through config/routes.yaml");
+    assert_eq!(binding.adapter, "php-symfony");
+    let route = binding.route.as_ref().expect("route");
+    assert_eq!(route.path, "/reports/{id}");
+    assert_eq!(route.method, HttpMethod::POST);
+}
+
+#[test]
 fn codeigniter_vuln_fixture_binds_route() {
     let path = "tests/dynamic_fixtures/php_frameworks/codeigniter/vuln.php";
     let bytes = std::fs::read(path).expect("codeigniter vuln fixture exists");
@@ -141,6 +168,57 @@ fn codeigniter_benign_fixture_binds_same_route_shape() {
     assert_eq!(binding.adapter, "php-codeigniter");
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "run");
+}
+
+#[test]
+fn laravel_routes_fixture_binds_cross_file_route() {
+    let path = "tests/dynamic_fixtures/php_frameworks/laravel_routes/app/Http/Controllers/UserController.php";
+    let routes = "tests/dynamic_fixtures/php_frameworks/laravel_routes/routes/web.php";
+    let bytes = std::fs::read(path).expect("laravel controller fixture exists");
+    let route_bytes = std::fs::read(routes).expect("laravel routes fixture exists");
+    let tree = parse_php(&bytes);
+    let summary = summary_for("show", path);
+    let mut project_files = ProjectFileIndex::new();
+    project_files.insert("routes/web.php", route_bytes);
+    let context = FrameworkDetectionContext {
+        ssa_summary: None,
+        project_files: &project_files,
+    };
+    let binding =
+        detect_binding_with_project_context(&summary, context, tree.root_node(), &bytes, Lang::Php)
+            .expect("laravel adapter must bind through routes/web.php");
+    assert_eq!(binding.adapter, "php-laravel");
+    let route = binding.route.as_ref().expect("route");
+    assert_eq!(route.path, "/users/{id}");
+    assert_eq!(route.method, HttpMethod::GET);
+    assert!(
+        binding.middleware.iter().any(|m| m.name == "auth"),
+        "expected auth middleware from route config, got {:?}",
+        binding.middleware
+    );
+}
+
+#[test]
+fn codeigniter_config_fixture_binds_cross_file_route() {
+    let path = "tests/dynamic_fixtures/php_frameworks/codeigniter_config/app/Controllers/UserController.php";
+    let routes = "tests/dynamic_fixtures/php_frameworks/codeigniter_config/app/Config/Routes.php";
+    let bytes = std::fs::read(path).expect("codeigniter controller fixture exists");
+    let route_bytes = std::fs::read(routes).expect("codeigniter routes fixture exists");
+    let tree = parse_php(&bytes);
+    let summary = summary_for("show", path);
+    let mut project_files = ProjectFileIndex::new();
+    project_files.insert("app/Config/Routes.php", route_bytes);
+    let context = FrameworkDetectionContext {
+        ssa_summary: None,
+        project_files: &project_files,
+    };
+    let binding =
+        detect_binding_with_project_context(&summary, context, tree.root_node(), &bytes, Lang::Php)
+            .expect("codeigniter adapter must bind through app/Config/Routes.php");
+    assert_eq!(binding.adapter, "php-codeigniter");
+    let route = binding.route.as_ref().expect("route");
+    assert_eq!(route.path, "users/(:num)");
+    assert_eq!(route.method, HttpMethod::GET);
 }
 
 #[test]

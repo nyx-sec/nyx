@@ -718,8 +718,8 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
 /// Phase 19 (Track M.1) — class-method harness for Node.js / TypeScript.
 ///
 /// Imports the entry module, locates `class` on the exported surface,
-/// instantiates via the default constructor, falls back to a single
-/// mock-dependency ctor when the zero-arg path throws, and invokes
+/// recursively instantiates same-module constructor dependencies up to
+/// depth 3, falls back to known mock dependencies, and invokes
 /// `instance[method](payload)`.
 fn emit_class_method(
     _spec: &HarnessSpec,
@@ -771,23 +771,73 @@ if (typeof _Cls !== 'function') {{
     process.exit(78);
 }}
 
-function _nyxBuildReceiver(Cls) {{
-    try {{
-        return new Cls();
-    }} catch (_e) {{
-        // Fall back to a single mock-dependency ctor.  The brief allows
-        // up to depth-3 dependency stubbing; v1 keeps the chain depth
-        // at one and lets the verifier promote precision in a later
-        // phase.
-        try {{ return new Cls(new MockHttpClient(), new MockDatabaseConnection(), new MockLogger()); }} catch (_e2) {{}}
-        try {{ return new Cls(new MockDatabaseConnection()); }} catch (_e3) {{}}
-        try {{ return new Cls(new MockHttpClient()); }} catch (_e4) {{}}
-        try {{ return new Cls(new MockLogger()); }} catch (_e5) {{}}
-        return null;
-    }}
+function _nyxExportedClass(name) {{
+    if (!name) return null;
+    if (_entry && typeof _entry[name] === 'function') return _entry[name];
+    if (_entry && _entry.default && typeof _entry.default[name] === 'function') return _entry.default[name];
+    if (_entry && typeof _entry.default === 'function' && _entry.default.name === name) return _entry.default;
+    return null;
 }}
 
-const _instance = _nyxBuildReceiver(_Cls);
+function _nyxConstructorParams(Cls) {{
+    let src = '';
+    try {{ src = Function.prototype.toString.call(Cls); }} catch (_e) {{ return []; }}
+    const match = src.match(/constructor\s*\(([^)]*)\)/m);
+    if (!match) return [];
+    return match[1]
+        .split(',')
+        .map((part) => part.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/g, '').trim())
+        .map((part) => part.replace(/^(\.\.\.)/, '').split('=')[0].trim())
+        .filter(Boolean);
+}}
+
+function _nyxClassNameFromParam(paramName) {{
+    const cleaned = String(paramName || '')
+        .replace(/^[^A-Za-z_$]+/, '')
+        .replace(/[^A-Za-z0-9_$]+(.)/g, (_m, ch) => String(ch).toUpperCase());
+    if (!cleaned) return '';
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}}
+
+function _nyxKnownMock(paramName) {{
+    const lc = String(paramName || '').toLowerCase();
+    if (lc.includes('http') || lc.includes('client')) return new MockHttpClient();
+    if (lc.includes('database') || lc.includes('db')) return new MockDatabaseConnection();
+    if (lc.includes('logger') || lc.includes('log')) return new MockLogger();
+    return null;
+}}
+
+function _nyxBuildDependency(paramName, depth, seen) {{
+    const depName = _nyxClassNameFromParam(paramName);
+    const Dep = _nyxExportedClass(depName);
+    if (typeof Dep === 'function') {{
+        const built = _nyxBuildReceiver(Dep, depth - 1, new Set(seen));
+        if (built != null) return built;
+    }}
+    return _nyxKnownMock(paramName);
+}}
+
+function _nyxBuildReceiver(Cls, depth = 3, seen = new Set()) {{
+    if (typeof Cls !== 'function') return null;
+    const clsName = Cls.name || '<anonymous>';
+    if (depth < 0 || seen.has(clsName)) return null;
+    seen.add(clsName);
+    const params = _nyxConstructorParams(Cls);
+    if (params.length > 0) {{
+        const deps = params.map((name) => _nyxBuildDependency(name, depth, seen));
+        if (deps.every((dep) => dep != null)) {{
+            try {{ return new Cls(...deps); }} catch (_e) {{}}
+        }}
+    }}
+    try {{ return new Cls(); }} catch (_e) {{}}
+    try {{ return new Cls(new MockHttpClient(), new MockDatabaseConnection(), new MockLogger()); }} catch (_e2) {{}}
+    try {{ return new Cls(new MockDatabaseConnection()); }} catch (_e3) {{}}
+    try {{ return new Cls(new MockHttpClient()); }} catch (_e4) {{}}
+    try {{ return new Cls(new MockLogger()); }} catch (_e5) {{}}
+    return null;
+}}
+
+const _instance = _nyxBuildReceiver(_Cls, 3);
 if (_instance == null) {{
     process.stderr.write('NYX_CLASS_CTOR_FAILED: ' + {class:?} + '\n');
     process.exit(78);

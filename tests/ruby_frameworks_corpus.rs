@@ -11,7 +11,10 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
+use nyx_scanner::dynamic::framework::{
+    FrameworkDetectionContext, HttpMethod, ParamSource, ProjectFileIndex, detect_binding,
+    detect_binding_with_project_context,
+};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -145,6 +148,34 @@ fn hanami_benign_fixture_binds_same_route_shape() {
     assert_eq!(binding.adapter, "ruby-hanami");
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "/run");
+}
+
+#[test]
+fn hanami_config_routes_fixture_binds_cross_file_route() {
+    let path = "tests/dynamic_fixtures/ruby/hanami_config_routes/app/actions/books/show.rb";
+    let routes = "tests/dynamic_fixtures/ruby/hanami_config_routes/config/routes.rb";
+    let bytes = std::fs::read(path).expect("hanami action fixture exists");
+    let route_bytes = std::fs::read(routes).expect("hanami routes fixture exists");
+    let tree = parse_ruby(&bytes);
+    let summary = summary_for("call", path);
+    let mut project_files = ProjectFileIndex::new();
+    project_files.insert("config/routes.rb", route_bytes);
+    let context = FrameworkDetectionContext {
+        ssa_summary: None,
+        project_files: &project_files,
+    };
+    let binding = detect_binding_with_project_context(
+        &summary,
+        context,
+        tree.root_node(),
+        &bytes,
+        Lang::Ruby,
+    )
+    .expect("hanami adapter must bind through config/routes.rb");
+    assert_eq!(binding.adapter, "ruby-hanami");
+    let route = binding.route.as_ref().expect("route");
+    assert_eq!(route.method, HttpMethod::GET);
+    assert_eq!(route.path, "/books/:id");
 }
 
 // ── Cross-adapter disambiguation ─────────────────────────────────────────────

@@ -23,6 +23,71 @@ use crate::summary::FuncSummary;
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+/// Small project-file index exposed to framework adapters that need
+/// config files outside the entry source.
+///
+/// Keys are project-relative paths using `/` separators, for example
+/// `config/routes.rb` or `routes/web.php`. Values are raw file bytes.
+/// The index is intentionally narrow: callers decide which config
+/// files to load so adapter dispatch does not walk the whole project.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectFileIndex {
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl ProjectFileIndex {
+    /// Create an empty file index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build an index from a project root and a fixed list of
+    /// project-relative paths. Missing or unreadable files are skipped.
+    pub fn from_root(root: &Path, rel_paths: &[&str]) -> Self {
+        let mut index = Self::new();
+        for rel in rel_paths {
+            let path = root.join(rel);
+            if let Ok(bytes) = std::fs::read(&path) {
+                index.insert(*rel, bytes);
+            }
+        }
+        index
+    }
+
+    /// Insert or replace a project-relative file.
+    pub fn insert(&mut self, rel_path: impl Into<String>, bytes: impl Into<Vec<u8>>) {
+        self.files
+            .insert(normalize_project_rel(rel_path), bytes.into());
+    }
+
+    /// Return bytes for `rel_path` when present.
+    pub fn get(&self, rel_path: &str) -> Option<&[u8]> {
+        self.files
+            .get(&normalize_project_rel(rel_path))
+            .map(Vec::as_slice)
+    }
+
+    /// True when the index has no files.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
+fn normalize_project_rel(rel_path: impl Into<String>) -> String {
+    rel_path.into().replace('\\', "/")
+}
+
+/// Extra context supplied to framework adapters during detection.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameworkDetectionContext<'a> {
+    /// Optional SSA summary for receiver-type-aware narrowing.
+    pub ssa_summary: Option<&'a SsaFuncSummary>,
+    /// Project config files known to the caller.
+    pub project_files: &'a ProjectFileIndex,
+}
 
 /// HTTP method recognised by route bindings.  Mirrors
 /// [`crate::entry_points::HttpMethod`] but is re-declared here so the
@@ -237,6 +302,21 @@ pub trait FrameworkAdapter: Sync {
     ) -> Option<FrameworkBinding> {
         self.detect(summary, ast, file_bytes)
     }
+
+    /// Detection variant with all optional framework context bundled
+    /// into a single struct. Adapters that need project-level route
+    /// files override this method; the default delegates to the
+    /// SSA-aware legacy method so existing adapters keep their current
+    /// behaviour.
+    fn detect_with_project_context(
+        &self,
+        summary: &FuncSummary,
+        context: FrameworkDetectionContext<'_>,
+        ast: tree_sitter::Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        self.detect_with_context(summary, context.ssa_summary, ast, file_bytes)
+    }
 }
 
 /// Walk every adapter registered for `lang` in registration order
@@ -266,6 +346,26 @@ pub fn detect_binding_with_context(
     file_bytes: &[u8],
     lang: Lang,
 ) -> Option<FrameworkBinding> {
+    let project_files = ProjectFileIndex::new();
+    let context = FrameworkDetectionContext {
+        ssa_summary,
+        project_files: &project_files,
+    };
+    detect_binding_with_project_context(summary, context, ast, file_bytes, lang)
+}
+
+/// Full-context sibling of [`detect_binding_with_context`].
+///
+/// This is the entry point used by spec derivation once it has a
+/// project root available. Test callers and single-file callers can
+/// keep using [`detect_binding`] / [`detect_binding_with_context`].
+pub fn detect_binding_with_project_context(
+    summary: &FuncSummary,
+    context: FrameworkDetectionContext<'_>,
+    ast: tree_sitter::Node<'_>,
+    file_bytes: &[u8],
+    lang: Lang,
+) -> Option<FrameworkBinding> {
     for adapter in registry::adapters_for(lang) {
         debug_assert_eq!(
             adapter.lang(),
@@ -273,7 +373,9 @@ pub fn detect_binding_with_context(
             "adapter '{}' registered under wrong lang",
             adapter.name()
         );
-        if let Some(binding) = adapter.detect_with_context(summary, ssa_summary, ast, file_bytes) {
+        if let Some(binding) =
+            adapter.detect_with_project_context(summary, context, ast, file_bytes)
+        {
             return Some(binding);
         }
     }

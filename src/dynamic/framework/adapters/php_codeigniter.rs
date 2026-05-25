@@ -13,7 +13,9 @@
 
 #[cfg(test)]
 use crate::dynamic::framework::HttpMethod;
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
+use crate::dynamic::framework::{
+    FrameworkAdapter, FrameworkBinding, FrameworkDetectionContext, ProjectFileIndex, RouteShape,
+};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::summary::ssa_summary::SsaFuncSummary;
@@ -44,7 +46,7 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        detect_codeigniter(summary, None, ast, file_bytes)
+        detect_codeigniter(summary, None, ast, file_bytes, None)
     }
 
     fn detect_with_context(
@@ -54,7 +56,23 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        detect_codeigniter(summary, ssa_summary, ast, file_bytes)
+        detect_codeigniter(summary, ssa_summary, ast, file_bytes, None)
+    }
+
+    fn detect_with_project_context(
+        &self,
+        summary: &FuncSummary,
+        context: FrameworkDetectionContext<'_>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_codeigniter(
+            summary,
+            context.ssa_summary,
+            ast,
+            file_bytes,
+            Some(context.project_files),
+        )
     }
 }
 
@@ -63,10 +81,8 @@ fn detect_codeigniter(
     ssa_summary: Option<&SsaFuncSummary>,
     ast: Node<'_>,
     file_bytes: &[u8],
+    project_files: Option<&ProjectFileIndex>,
 ) -> Option<FrameworkBinding> {
-    if !source_imports_codeigniter(file_bytes) {
-        return None;
-    }
     if !super::typed_receiver_facts_allow(
         summary,
         ssa_summary,
@@ -78,11 +94,26 @@ fn detect_codeigniter(
     let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
     let controller = class.and_then(|c| php_class_name(c, file_bytes));
 
-    let (method, path) = find_codeigniter_route(ast, file_bytes, &summary.name, controller)?;
+    let (method, path, from_project_config) = if let Some((method, path)) =
+        find_codeigniter_route(ast, file_bytes, &summary.name, controller)
+    {
+        (method, path, false)
+    } else {
+        let (method, path) = project_files
+            .and_then(|files| codeigniter_config_route(files, &summary.name, controller))?;
+        (method, path, true)
+    };
+
+    if !source_imports_codeigniter(file_bytes) && !from_project_config {
+        return None;
+    }
 
     let formals = php_formal_names(func_node, file_bytes);
     let request_params = bind_php_path_params(&formals, &path);
-    let middleware = collect_php_middleware(ast, file_bytes);
+    let mut middleware = collect_php_middleware(ast, file_bytes);
+    if from_project_config && let Some(files) = project_files {
+        middleware.extend(codeigniter_config_middleware(files));
+    }
 
     Some(FrameworkBinding {
         adapter: ADAPTER_NAME.to_owned(),
@@ -92,6 +123,35 @@ fn detect_codeigniter(
         response_writer: None,
         middleware,
     })
+}
+
+fn codeigniter_config_route(
+    project_files: &ProjectFileIndex,
+    method_name: &str,
+    controller: Option<&str>,
+) -> Option<(crate::dynamic::framework::HttpMethod, String)> {
+    let bytes = project_files.get("app/Config/Routes.php")?;
+    let tree = parse_php(bytes)?;
+    find_codeigniter_route(tree.root_node(), bytes, method_name, controller)
+}
+
+fn codeigniter_config_middleware(
+    project_files: &ProjectFileIndex,
+) -> Vec<crate::dynamic::framework::MiddlewareShape> {
+    let Some(bytes) = project_files.get("app/Config/Routes.php") else {
+        return Vec::new();
+    };
+    let Some(tree) = parse_php(bytes) else {
+        return Vec::new();
+    };
+    collect_php_middleware(tree.root_node(), bytes)
+}
+
+fn parse_php(bytes: &[u8]) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).ok()?;
+    parser.parse(bytes, None)
 }
 
 fn callee_is_codeigniter_route_registration(name: &str) -> bool {
@@ -125,6 +185,15 @@ mod tests {
         }
     }
 
+    fn summary_at(name: &str, file_path: &str) -> FuncSummary {
+        FuncSummary {
+            name: name.into(),
+            file_path: file_path.into(),
+            lang: "php".into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn fires_on_get_route_with_double_colon_callable() {
         let src: &[u8] = b"<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('users/(:num)', 'UserController::show');\nclass UserController extends BaseController {\n  public function show($num) { return $num; }\n}\n";
@@ -153,6 +222,32 @@ mod tests {
             .detect(&summary("save"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::POST);
+    }
+
+    #[test]
+    fn resolves_project_config_routes_file() {
+        let src: &[u8] = b"<?php\nnamespace App\\Controllers;\nclass UserController extends BaseController {\n  public function show($num) { return $num; }\n}\n";
+        let tree = parse(src);
+        let mut project_files = ProjectFileIndex::new();
+        project_files.insert(
+            "app/Config/Routes.php",
+            b"<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('users/(:num)', 'UserController::show');\n".to_vec(),
+        );
+        let context = FrameworkDetectionContext {
+            ssa_summary: None,
+            project_files: &project_files,
+        };
+        let binding = PhpCodeIgniterAdapter
+            .detect_with_project_context(
+                &summary_at("show", "/tmp/app/app/Controllers/UserController.php"),
+                context,
+                tree.root_node(),
+                src,
+            )
+            .expect("binding from app/Config/Routes.php");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(route.path, "users/(:num)");
     }
 
     #[test]

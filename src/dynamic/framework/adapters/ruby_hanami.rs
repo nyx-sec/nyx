@@ -4,12 +4,15 @@
 //! inherits from `Hanami::Action` (v1 idiom) or includes the
 //! `Hanami::Action` module (v2 idiom) plus a `call` method that
 //! receives the request.  When the class declaration carries a
-//! sibling `# nyx-route:` comment line the adapter pulls the path
-//! template from it; otherwise the binding falls back to
-//! `/{snake_case(class)}` so harness emitters still have a usable
-//! [`super::super::RouteShape`].
+//! sibling `# nyx-route:` comment line or a project `config/routes.rb`
+//! entry the adapter pulls the path template from it; otherwise the
+//! binding falls back to `/{snake_case(class)}` so harness emitters
+//! still have a usable [`super::super::RouteShape`].
 
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, HttpMethod, RouteShape};
+use crate::dynamic::framework::{
+    FrameworkAdapter, FrameworkBinding, FrameworkDetectionContext, HttpMethod, ProjectFileIndex,
+    RouteShape,
+};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
@@ -33,19 +36,23 @@ fn class_is_hanami_action(class: Node<'_>, bytes: &[u8]) -> bool {
 /// Resolve the route metadata for `class_name`.  Tries the inline
 /// Hanami v2 routes DSL first (`get "/run", to: "RunAction"` inside a
 /// `Hanami::Routes` / `routes do` block that co-exists with the
-/// action class in the same file), then the synthetic
-/// `# nyx-route: <METHOD> <path>` comment fixtures rely on, then
-/// finally a `(GET, fallback_path)` default.
-///
-/// Cross-file routes resolution (`config/routes.rb` + `app/actions/<slug>/<verb>.rb`)
-/// still needs a project-level file index on the adapter trait —
-/// `FrameworkAdapter::detect` only sees one file at a time.
+/// action class in the same file), then project `config/routes.rb`,
+/// then the synthetic `# nyx-route: <METHOD> <path>` comment fixtures
+/// rely on, then finally a `(GET, fallback_path)` default.
 fn route_for_class(
     file_bytes: &[u8],
     class_name: &str,
     fallback_path: &str,
+    entry_file: &str,
+    project_files: Option<&ProjectFileIndex>,
 ) -> (HttpMethod, String) {
-    if let Some(found) = parse_inline_route(file_bytes, class_name) {
+    let targets = route_targets(class_name, entry_file);
+    if let Some(found) = parse_route_source(file_bytes, &targets) {
+        return found;
+    }
+    if let Some(routes) = project_files.and_then(|files| files.get("config/routes.rb"))
+        && let Some(found) = parse_route_source(routes, &targets)
+    {
         return found;
     }
     if let Some(found) = pinned_comment_route(file_bytes) {
@@ -70,29 +77,22 @@ fn pinned_comment_route(file_bytes: &[u8]) -> Option<(HttpMethod, String)> {
     None
 }
 
-/// Parse the Hanami v2 routes DSL when the routes file and the action
-/// class co-exist in one file.  Recognises lines of the form
+/// Parse the Hanami v2 routes DSL.  Recognises lines of the form
 /// `<verb> "<path>", to: "<target>"` (or single-quoted variants) and
-/// matches `<target>` against `class_name` either by exact match or by
-/// its `snake_case` form (Hanami's container-key convention,
-/// e.g. `to: "actions.run_action"`).
-fn parse_inline_route(file_bytes: &[u8], class_name: &str) -> Option<(HttpMethod, String)> {
+/// matches `<target>` against the class name, its `snake_case` form,
+/// or the `app/actions/<slug>/<verb>.rb` container key when present.
+fn parse_route_source(file_bytes: &[u8], targets: &[String]) -> Option<(HttpMethod, String)> {
     let text = std::str::from_utf8(file_bytes).ok()?;
-    let snake = camel_to_snake(class_name);
     for raw_line in text.lines() {
         let line = raw_line.trim_start();
-        if let Some(parsed) = parse_route_line(line, class_name, &snake) {
+        if let Some(parsed) = parse_route_line(line, targets) {
             return Some(parsed);
         }
     }
     None
 }
 
-fn parse_route_line(
-    line: &str,
-    class_orig: &str,
-    class_snake: &str,
-) -> Option<(HttpMethod, String)> {
+fn parse_route_line(line: &str, targets: &[String]) -> Option<(HttpMethod, String)> {
     let (verb_tok, after) = line.split_once(char::is_whitespace)?;
     let method = HttpMethod::from_ident(verb_tok)?;
     let after = after.trim_start();
@@ -100,11 +100,58 @@ fn parse_route_line(
     let to_idx = rest.find("to:")?;
     let after_to = rest[to_idx + 3..].trim_start();
     let (target, _) = parse_quoted(after_to)?;
-    let target_last = target.rsplit_once('.').map(|(_, s)| s).unwrap_or(&target);
-    if target_last == class_orig || target_last == class_snake {
+    if target_matches(&target, targets) {
         return Some((method, path));
     }
     None
+}
+
+fn route_targets(class_name: &str, entry_file: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    push_unique(&mut out, class_name.to_owned());
+    push_unique(&mut out, camel_to_snake(class_name));
+    if class_name.contains("::") {
+        let dotted = class_name.replace("::", ".");
+        push_unique(&mut out, dotted.clone());
+        let snake_dotted = dotted
+            .split('.')
+            .map(camel_to_snake)
+            .collect::<Vec<_>>()
+            .join(".");
+        push_unique(&mut out, snake_dotted);
+    }
+    if let Some(key) = hanami_action_key_from_path(entry_file) {
+        push_unique(&mut out, key);
+    }
+    out
+}
+
+fn push_unique(out: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !out.iter().any(|existing| existing == &value) {
+        out.push(value);
+    }
+}
+
+fn hanami_action_key_from_path(entry_file: &str) -> Option<String> {
+    let normalized = entry_file.replace('\\', "/");
+    let marker = "app/actions/";
+    let rel = normalized
+        .split_once(marker)
+        .map(|(_, rest)| rest)
+        .or_else(|| normalized.strip_prefix(marker))?;
+    let stem = rel.strip_suffix(".rb").unwrap_or(rel);
+    if stem.is_empty() {
+        return None;
+    }
+    Some(stem.replace('/', "."))
+}
+
+fn target_matches(target: &str, candidates: &[String]) -> bool {
+    let normalized = target.replace("::", ".");
+    let target_last = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
+    candidates.iter().any(|candidate| {
+        normalized == *candidate || target_last == candidate || normalized.ends_with(candidate)
+    })
 }
 
 fn parse_quoted(s: &str) -> Option<(String, &str)> {
@@ -164,31 +211,56 @@ impl FrameworkAdapter for RubyHanamiAdapter {
         ast: Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        if summary.name != "call" {
-            return None;
-        }
-        if !source_imports_hanami(file_bytes) {
-            return None;
-        }
-        let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
-        if !class_is_hanami_action(class, file_bytes) {
-            return None;
-        }
-        let cls_name = class_name(class, file_bytes).unwrap_or("Entry");
-        let default = hanami_default_path(cls_name);
-        let (http_method, path) = route_for_class(file_bytes, cls_name, &default);
-        let formals = method_formal_names(method, file_bytes);
-        let request_params = bind_path_params(&formals, &path);
-        let middleware = collect_ruby_middleware(ast, file_bytes);
-        Some(FrameworkBinding {
-            adapter: ADAPTER_NAME.to_owned(),
-            kind: EntryKind::HttpRoute,
-            route: Some(RouteShape::single(http_method, path)),
-            request_params,
-            response_writer: None,
-            middleware,
-        })
+        detect_hanami(summary, ast, file_bytes, None)
     }
+
+    fn detect_with_project_context(
+        &self,
+        summary: &FuncSummary,
+        context: FrameworkDetectionContext<'_>,
+        ast: Node<'_>,
+        file_bytes: &[u8],
+    ) -> Option<FrameworkBinding> {
+        detect_hanami(summary, ast, file_bytes, Some(context.project_files))
+    }
+}
+
+fn detect_hanami(
+    summary: &FuncSummary,
+    ast: Node<'_>,
+    file_bytes: &[u8],
+    project_files: Option<&ProjectFileIndex>,
+) -> Option<FrameworkBinding> {
+    if summary.name != "call" {
+        return None;
+    }
+    if !source_imports_hanami(file_bytes) {
+        return None;
+    }
+    let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
+    if !class_is_hanami_action(class, file_bytes) {
+        return None;
+    }
+    let cls_name = class_name(class, file_bytes).unwrap_or("Entry");
+    let default = hanami_default_path(cls_name);
+    let (http_method, path) = route_for_class(
+        file_bytes,
+        cls_name,
+        &default,
+        &summary.file_path,
+        project_files,
+    );
+    let formals = method_formal_names(method, file_bytes);
+    let request_params = bind_path_params(&formals, &path);
+    let middleware = collect_ruby_middleware(ast, file_bytes);
+    Some(FrameworkBinding {
+        adapter: ADAPTER_NAME.to_owned(),
+        kind: EntryKind::HttpRoute,
+        route: Some(RouteShape::single(http_method, path)),
+        request_params,
+        response_writer: None,
+        middleware,
+    })
 }
 
 #[cfg(test)]
@@ -206,6 +278,15 @@ mod tests {
     fn summary(name: &str) -> FuncSummary {
         FuncSummary {
             name: name.into(),
+            lang: "ruby".into(),
+            ..Default::default()
+        }
+    }
+
+    fn summary_at(name: &str, file_path: &str) -> FuncSummary {
+        FuncSummary {
+            name: name.into(),
+            file_path: file_path.into(),
             lang: "ruby".into(),
             ..Default::default()
         }
@@ -248,6 +329,33 @@ mod tests {
         let route = binding.route.unwrap();
         assert_eq!(route.method, HttpMethod::POST);
         assert_eq!(route.path, "/save");
+    }
+
+    #[test]
+    fn resolves_cross_file_config_routes() {
+        let src: &[u8] =
+            b"require 'hanami/action'\nmodule Books\n  class Show\n    include Hanami::Action\n    def call(req)\n      'ok'\n    end\n  end\nend\n";
+        let tree = parse(src);
+        let mut project_files = ProjectFileIndex::new();
+        project_files.insert(
+            "config/routes.rb",
+            b"Hanami.app.routes do\n  get '/books/:id', to: 'books.show'\nend\n".to_vec(),
+        );
+        let context = FrameworkDetectionContext {
+            ssa_summary: None,
+            project_files: &project_files,
+        };
+        let binding = RubyHanamiAdapter
+            .detect_with_project_context(
+                &summary_at("call", "/tmp/shop/app/actions/books/show.rb"),
+                context,
+                tree.root_node(),
+                src,
+            )
+            .expect("binding from config/routes.rb");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(route.path, "/books/:id");
     }
 
     #[test]
