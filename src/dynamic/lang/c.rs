@@ -450,7 +450,8 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // free function whose name is the entry symbol (often
     // `Class_method` by convention) and calls it with the payload.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
-        return Ok(emit_class_method_harness(class, method));
+        let entry_src = std::fs::read_to_string(&spec.entry_file).unwrap_or_default();
+        return Ok(emit_class_method_harness(class, method, &entry_src));
     }
 
     let shape = detect_shape(spec);
@@ -482,9 +483,24 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// `entry_name` field; this fallback keeps the build path uniform
 /// for the Phase 19 acceptance harness even though the class /
 /// method projection collapses to a free-function call in C.
-fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+fn emit_class_method_harness(class: &str, method: &str, entry_src: &str) -> HarnessSource {
     let shim = probe_shim();
     let symbol = format!("{class}_{method}");
+    let receiver = c_receiver_plan(entry_src, class, &symbol);
+    let (receiver_setup, invocation) = if let Some(plan) = receiver {
+        (
+            format!("    {}\n", plan.setup_lines.join("\n    ")),
+            format!(
+                "{symbol}(&{name}, payload, strlen(payload));",
+                name = plan.root_name
+            ),
+        )
+    } else {
+        (
+            String::new(),
+            format!("{symbol}(payload, strlen(payload));"),
+        )
+    };
     let body = format!(
         r#"/* Nyx dynamic harness — class method (Phase 19 / Track M.1). */
 #include <stddef.h>
@@ -502,7 +518,7 @@ int main(int argc, char *argv[]) {{
     char *payload = nyx_payload();
     if (!payload) payload = (char*)"";
     __nyx_install_crash_guard("{symbol}");
-    {symbol}(payload, strlen(payload));
+{receiver_setup}    {invocation}
     puts("__NYX_SINK_HIT__");
     return 0;
 }}
@@ -516,6 +532,8 @@ static char *nyx_payload(void) {{
 }}
 "#,
         symbol = symbol,
+        receiver_setup = receiver_setup,
+        invocation = invocation,
     );
     HarnessSource {
         source: body,
@@ -524,6 +542,184 @@ static char *nyx_payload(void) {{
         extra_files: vec![("Makefile".into(), generate_makefile())],
         entry_subpath: Some("entry.c".into()),
     }
+}
+
+#[derive(Debug, Clone)]
+struct CReceiverPlan {
+    root_name: String,
+    setup_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CStructDef {
+    name: String,
+    fields: Vec<CStructField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CStructField {
+    ty: String,
+    name: String,
+    pointer: bool,
+}
+
+fn c_receiver_plan(entry_src: &str, class: &str, symbol: &str) -> Option<CReceiverPlan> {
+    if !c_symbol_has_receiver(entry_src, symbol, class) {
+        return None;
+    }
+    let structs = c_struct_defs(entry_src);
+    let mut setup_lines = Vec::new();
+    let root_name = "nyx_receiver".to_owned();
+    c_receiver_init(class, &structs, &root_name, 3, &mut setup_lines);
+    Some(CReceiverPlan {
+        root_name,
+        setup_lines,
+    })
+}
+
+fn c_symbol_has_receiver(entry_src: &str, symbol: &str, class: &str) -> bool {
+    let Some(params) = c_function_params(entry_src, symbol) else {
+        return false;
+    };
+    let first = params
+        .split(',')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .replace('\n', " ");
+    first.contains('*') && c_bare_type(&first) == class
+}
+
+fn c_function_params(entry_src: &str, symbol: &str) -> Option<String> {
+    let needle = format!("{symbol}(");
+    let start = entry_src.find(&needle)? + needle.len();
+    let mut depth = 1usize;
+    let mut end = start;
+    for (offset, ch) in entry_src[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    end = start + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    (end > start).then(|| entry_src[start..end].to_owned())
+}
+
+fn c_receiver_init(
+    ty: &str,
+    structs: &[CStructDef],
+    var_name: &str,
+    depth: usize,
+    lines: &mut Vec<String>,
+) {
+    let Some(def) = structs.iter().find(|def| def.name == ty) else {
+        lines.push(format!("{ty} {var_name} = {{0}};"));
+        return;
+    };
+    if depth == 0 {
+        lines.push(format!("{ty} {var_name} = {{0}};"));
+        return;
+    }
+
+    let mut initializers = Vec::new();
+    for field in &def.fields {
+        if !c_has_struct_type(structs, &field.ty) {
+            continue;
+        }
+        let child = format!("nyx_{}_{}", field.name, lines.len());
+        c_receiver_init(&field.ty, structs, &child, depth - 1, lines);
+        if field.pointer {
+            initializers.push(format!(".{} = &{child}", field.name));
+        } else {
+            initializers.push(format!(".{} = {child}", field.name));
+        }
+    }
+
+    if initializers.is_empty() {
+        lines.push(format!("{ty} {var_name} = {{0}};"));
+    } else {
+        lines.push(format!(
+            "{ty} {var_name} = {{ {} }};",
+            initializers.join(", ")
+        ));
+    }
+}
+
+fn c_has_struct_type(structs: &[CStructDef], ty: &str) -> bool {
+    structs.iter().any(|def| def.name == ty)
+}
+
+fn c_struct_defs(entry_src: &str) -> Vec<CStructDef> {
+    let mut out = Vec::new();
+    for chunk in entry_src.split("typedef struct").skip(1) {
+        let Some(open) = chunk.find('{') else {
+            continue;
+        };
+        let Some(close_rel) = chunk[open + 1..].find('}') else {
+            continue;
+        };
+        let body = &chunk[open + 1..open + 1 + close_rel];
+        let after = &chunk[open + 1 + close_rel + 1..];
+        let name = after
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .last()
+            .unwrap_or_default()
+            .trim();
+        if name.is_empty() {
+            continue;
+        }
+        let fields = body
+            .split(';')
+            .filter_map(c_struct_field)
+            .collect::<Vec<_>>();
+        out.push(CStructDef {
+            name: name.to_owned(),
+            fields,
+        });
+    }
+    out
+}
+
+fn c_struct_field(raw: &str) -> Option<CStructField> {
+    let field = raw.trim();
+    if field.is_empty() || field.contains('(') || field.contains(')') {
+        return None;
+    }
+    let name = field
+        .split_whitespace()
+        .last()?
+        .trim()
+        .trim_start_matches('*')
+        .to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    let before_name = field
+        .strip_suffix(field.split_whitespace().last()?)?
+        .trim()
+        .to_owned();
+    let pointer = field.contains('*');
+    let ty = c_bare_type(&before_name);
+    (!ty.is_empty()).then_some(CStructField { ty, name, pointer })
+}
+
+fn c_bare_type(raw: &str) -> String {
+    raw.replace('*', " ")
+        .replace("const", " ")
+        .replace("struct", " ")
+        .split_whitespace()
+        .find(|part| !matches!(*part, "volatile" | "restrict"))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Generate the harness `main.c` for the resolved shape.

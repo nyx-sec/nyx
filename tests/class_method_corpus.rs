@@ -242,6 +242,31 @@ fn class_method_c_collapses_to_class_underscore_method_symbol() {
 }
 
 #[test]
+fn class_method_c_builds_recursive_receiver_pointer() {
+    let mut spec = make_spec(Lang::C);
+    spec.entry_file = "tests/dynamic_fixtures/class_method/c_recursive_deps/vuln.c".into();
+    spec.sink_file = spec.entry_file.clone();
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("ShellRunner nyx_shell_0 = {0};"));
+    assert!(
+        h.source
+            .contains("CommandRunner nyx_runner_0 = { .shell = &nyx_shell_0 };")
+    );
+    assert!(
+        h.source
+            .contains("UserService nyx_receiver = { .runner = &nyx_runner_0 };")
+    );
+    assert!(
+        h.source
+            .contains("UserService_run(&nyx_receiver, payload, strlen(payload));")
+    );
+    assert!(
+        !h.source
+            .contains("UserService_run(payload, strlen(payload));")
+    );
+}
+
+#[test]
 fn class_method_cpp_constructs_default_then_calls_method() {
     let spec = make_spec(Lang::Cpp);
     let h = lang::emit(&spec).expect("emit ok");
@@ -469,6 +494,17 @@ mod e2e_phase_19 {
         Case {
             lang: Lang::C,
             fixture_dir: "c",
+            vuln_file: "vuln.c",
+            benign_file: "benign.c",
+            vuln_class: "UserService",
+            benign_class: "UserService",
+            method: "run",
+            cap: Cap::CODE_EXEC,
+            bins: &["cc"],
+        },
+        Case {
+            lang: Lang::C,
+            fixture_dir: "c_recursive_deps",
             vuln_file: "vuln.c",
             benign_file: "benign.c",
             vuln_class: "UserService",
