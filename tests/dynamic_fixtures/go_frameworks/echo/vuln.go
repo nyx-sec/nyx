@@ -6,6 +6,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 
 	"github.com/labstack/echo/v4"
@@ -13,7 +14,10 @@ import (
 
 func Run(c echo.Context) error {
 	cmd := c.QueryParam("cmd")
-	return exec.Command("sh", "-c", cmd).Run()
+	fmt.Print("__NYX_SINK_HIT__\n")
+	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+	fmt.Print(string(out))
+	return err
 }
 
 func main() {

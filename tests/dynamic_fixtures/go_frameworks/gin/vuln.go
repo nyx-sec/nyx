@@ -7,6 +7,7 @@
 package main
 
 import (
+	"fmt"
 	"os/exec"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +15,9 @@ import (
 
 func Run(c *gin.Context) {
 	cmd := c.Query("cmd")
-	_ = exec.Command("sh", "-c", cmd).Run()
+	fmt.Print("__NYX_SINK_HIT__\n")
+	out, _ := exec.Command("sh", "-c", cmd).CombinedOutput()
+	fmt.Print(string(out))
 }
 
 func main() {

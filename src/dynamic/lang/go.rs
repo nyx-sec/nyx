@@ -660,7 +660,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(shape);
 
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
     // Phase 15: GinHandler shape stages a minimal gin stub package so
@@ -693,7 +693,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// `main.go` — does not pull the entry package.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let source = format!(
         r##"// Nyx dynamic harness — XXE encoding/xml.Decoder (Phase 05 / Track J.3).
 package main
@@ -825,7 +825,7 @@ func main() {{
 /// dispatch pattern landed in earlier sessions.
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let tier_a_active = entry_source_imports_net_http(&entry_source);
@@ -977,7 +977,7 @@ fn rewrite_package(src: &str, target: &str) -> String {
 /// oracle still flips on the raw payload.
 pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let imports_gin = entry_source.contains("gin-gonic/gin");
@@ -1182,14 +1182,17 @@ fn imports_for_shape(shape: GoShape) -> String {
         GoShape::Generic | GoShape::FlagParseCli | GoShape::FuzzVariadic => &[],
         GoShape::HttpHandlerFunc => &["net/http", "net/http/httptest"],
         GoShape::GinHandler => &["net/http", "net/http/httptest"],
-        // Phase 17 framework variants drive a `httptest.NewServer`
-        // bootstrap so they need the full net/http surface.
-        GoShape::GinRoute | GoShape::EchoRoute | GoShape::FiberRoute | GoShape::ChiRoute => {
-            &["fmt", "net/http", "net/http/httptest"]
+        GoShape::GinRoute | GoShape::EchoRoute | GoShape::ChiRoute => {
+            &["fmt", "net/http", "net/http/httptest", "net/url"]
         }
+        GoShape::FiberRoute => &["fmt", "net/http", "net/url"],
     };
     let local_pkgs: &[&str] = match shape {
         GoShape::GinHandler => &["nyx-harness/entry", "nyx-harness/entry/gin"],
+        GoShape::GinRoute => &["github.com/gin-gonic/gin", "nyx-harness/entry"],
+        GoShape::EchoRoute => &["github.com/labstack/echo/v4", "nyx-harness/entry"],
+        GoShape::FiberRoute => &["github.com/gofiber/fiber/v2", "nyx-harness/entry"],
+        GoShape::ChiRoute => &["github.com/go-chi/chi/v5", "nyx-harness/entry"],
         _ => &["nyx-harness/entry"],
     };
 
@@ -1276,51 +1279,103 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> Strin
         }
         GoShape::FlagParseCli => format!("\tentry.{entry_fn}()\n"),
         GoShape::FuzzVariadic => format!("\t_ = entry.{entry_fn}([]byte(payload))\n"),
-        // Phase 17 framework dispatchers.  Each marker line is
-        // matched against the verifier's per-framework toolchain
-        // probe so the runner can confirm the right harness ran.
-        // v1 invocation re-uses the HttpHandlerFunc-style
-        // `httptest.NewRequest` + `httptest.NewRecorder` shape
-        // because the synthetic entry.go ships a stdlib
-        // `(w, r)` handler shim that mirrors the framework
-        // handler's body.
-        GoShape::GinRoute => {
-            framework_route_invocation(spec, "NYX_GIN_TEST=1", entry_fn, use_body, &query_param)
-        }
-        GoShape::EchoRoute => {
-            framework_route_invocation(spec, "NYX_ECHO_TEST=1", entry_fn, use_body, &query_param)
-        }
-        GoShape::FiberRoute => {
-            framework_route_invocation(spec, "NYX_FIBER_TEST=1", entry_fn, use_body, &query_param)
-        }
-        GoShape::ChiRoute => {
-            framework_route_invocation(spec, "NYX_CHI_TEST=1", entry_fn, use_body, &query_param)
-        }
+        GoShape::GinRoute => framework_route_invocation(
+            spec,
+            GoShape::GinRoute,
+            "NYX_GIN_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::EchoRoute => framework_route_invocation(
+            spec,
+            GoShape::EchoRoute,
+            "NYX_ECHO_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::FiberRoute => framework_route_invocation(
+            spec,
+            GoShape::FiberRoute,
+            "NYX_FIBER_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::ChiRoute => framework_route_invocation(
+            spec,
+            GoShape::ChiRoute,
+            "NYX_CHI_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
     }
 }
 
 fn framework_route_invocation(
     _spec: &HarnessSpec,
+    shape: GoShape,
     marker: &str,
     entry_fn: &str,
     use_body: bool,
     query_param: &str,
 ) -> String {
-    let req_setup = if use_body {
-        "\treq := httptest.NewRequest(\"POST\", \"/\", strings.NewReader(payload))\n".to_owned()
+    let target_setup = if use_body {
+        "\ttarget := \"/run\"\n".to_owned()
     } else {
         format!(
-            "\treq := httptest.NewRequest(\"GET\", \"/?{q}=\"+payload, strings.NewReader(\"\"))\n",
+            "\ttarget := \"/run?{q}=\" + url.QueryEscape(payload)\n",
             q = query_param
         )
     };
-    format!(
-        "\tfmt.Println(\"{marker}\")\n{req_setup}\trw := httptest.NewRecorder()\n\tentry.{entry_fn}(rw, req)\n\t_ = http.StatusOK\n"
-    )
+    let req_setup = if use_body {
+        "\treq := httptest.NewRequest(\"POST\", target, strings.NewReader(payload))\n"
+    } else if matches!(shape, GoShape::FiberRoute) {
+        "\treq, _ := http.NewRequest(\"GET\", target, nil)\n"
+    } else {
+        "\treq := httptest.NewRequest(\"GET\", target, strings.NewReader(\"\"))\n"
+    };
+    let dispatch = match shape {
+        GoShape::GinRoute => format!(
+            "\tr := gin.New()\n\tr.GET(\"/run\", entry.{entry_fn})\n\trw := httptest.NewRecorder()\n\tr.ServeHTTP(rw, req)\n\t_ = http.StatusOK\n"
+        ),
+        GoShape::EchoRoute => format!(
+            "\te := echo.New()\n\te.GET(\"/run\", entry.{entry_fn})\n\trw := httptest.NewRecorder()\n\te.ServeHTTP(rw, req)\n\t_ = http.StatusOK\n"
+        ),
+        GoShape::FiberRoute => format!(
+            "\tapp := fiber.New()\n\tapp.Get(\"/run\", entry.{entry_fn})\n\t_, _ = app.Test(req)\n\t_ = http.StatusOK\n"
+        ),
+        GoShape::ChiRoute => format!(
+            "\tr := chi.NewRouter()\n\tr.Get(\"/run\", entry.{entry_fn})\n\trw := httptest.NewRecorder()\n\tr.ServeHTTP(rw, req)\n\t_ = http.StatusOK\n"
+        ),
+        _ => unreachable!("framework_route_invocation only handles framework route shapes"),
+    };
+    format!("\tfmt.Println(\"{marker}\")\n{target_setup}{req_setup}{dispatch}")
 }
 
-fn generate_go_mod() -> String {
-    "module nyx-harness\n\ngo 1.21\n".to_owned()
+fn generate_go_mod(shape: GoShape) -> String {
+    let deps: &[(&str, &str)] = match shape {
+        GoShape::GinRoute => &[("github.com/gin-gonic/gin", "v1.10.0")],
+        GoShape::EchoRoute => &[("github.com/labstack/echo/v4", "v4.12.0")],
+        GoShape::FiberRoute => &[("github.com/gofiber/fiber/v2", "v2.52.5")],
+        GoShape::ChiRoute => &[("github.com/go-chi/chi/v5", "v5.0.12")],
+        _ => &[],
+    };
+    let mut out = "module nyx-harness\n\ngo 1.21\n".to_owned();
+    if !deps.is_empty() {
+        out.push_str("\nrequire (\n");
+        for (module, version) in deps {
+            out.push_str("\t");
+            out.push_str(module);
+            out.push(' ');
+            out.push_str(version);
+            out.push('\n');
+        }
+        out.push_str(")\n");
+    }
+    out
 }
 
 /// Phase 11 (Track J.9) CRYPTO harness for Go.
@@ -1338,7 +1393,7 @@ fn generate_go_mod() -> String {
 /// universal sink-hit path still fires.
 pub fn emit_crypto_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
@@ -1473,7 +1528,7 @@ func nyxWeakKeyProbe(keyInt uint64) {{
 /// path still fires.
 pub fn emit_json_parse_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
@@ -1607,7 +1662,7 @@ func nyxJsonParseProbe(depth int, excessive bool) {{
 /// unreachable so the universal sink-hit path still fires.
 pub fn emit_unauthorized_id_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
@@ -1730,7 +1785,7 @@ func nyxIdorAccessProbe(caller, owner string) {{
 /// unreachable so the universal sink-hit path still fires.
 pub fn emit_data_exfil_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let entry_fn = capitalize_first(&spec.entry_name);
     let entry_source = read_entry_source(&spec.entry_file);
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
@@ -1844,7 +1899,7 @@ func nyxOutboundProbe(host string) {{
 /// payload — supporting both value and pointer receivers.
 fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let auto_registry = generate_auto_receiver_registry(class);
     let source = format!(
         r##"// Nyx dynamic harness — class method (Phase 19 / Track M.1).
@@ -2051,7 +2106,7 @@ var NyxAutoReceivers = map[string]interface{{}}{{
 /// default → Pub/Sub.
 fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let handler = &spec.entry_name;
     let broker = go_broker_for_adapter(spec);
 
@@ -2191,7 +2246,7 @@ func main() {{
 /// invokes the resolver with the payload positionally.
 fn emit_graphql_resolver_harness(handler: &str, type_name: &str, field: &str) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod();
+    let go_mod = generate_go_mod(GoShape::Generic);
     let source = format!(
         r##"// Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
 package main
@@ -2463,7 +2518,7 @@ mod tests {
 
     #[test]
     fn go_mod_has_correct_module() {
-        let go_mod = generate_go_mod();
+        let go_mod = generate_go_mod(GoShape::Generic);
         assert!(go_mod.contains("module nyx-harness"));
         assert!(go_mod.contains("go 1.21"));
     }
@@ -2529,7 +2584,9 @@ mod tests {
             src.contains("NYX_GIN_TEST=1"),
             "GinRoute must emit NYX_GIN_TEST=1 marker, got: {src}",
         );
-        assert!(src.contains("httptest.NewRequest"));
+        assert!(src.contains("gin.New()"));
+        assert!(src.contains("r.GET(\"/run\", entry.Handle)"));
+        assert!(src.contains("r.ServeHTTP(rw, req)"));
     }
 
     #[test]
@@ -2537,6 +2594,9 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
         let src = generate_main_go(&spec, GoShape::EchoRoute);
         assert!(src.contains("NYX_ECHO_TEST=1"));
+        assert!(src.contains("echo.New()"));
+        assert!(src.contains("e.GET(\"/run\", entry.Handle)"));
+        assert!(src.contains("e.ServeHTTP(rw, req)"));
     }
 
     #[test]
@@ -2544,6 +2604,9 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
         let src = generate_main_go(&spec, GoShape::FiberRoute);
         assert!(src.contains("NYX_FIBER_TEST=1"));
+        assert!(src.contains("fiber.New()"));
+        assert!(src.contains("app.Get(\"/run\", entry.Handle)"));
+        assert!(src.contains("app.Test(req)"));
     }
 
     #[test]
@@ -2551,6 +2614,9 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
         let src = generate_main_go(&spec, GoShape::ChiRoute);
         assert!(src.contains("NYX_CHI_TEST=1"));
+        assert!(src.contains("chi.NewRouter()"));
+        assert!(src.contains("r.Get(\"/run\", entry.Handle)"));
+        assert!(src.contains("r.ServeHTTP(rw, req)"));
     }
 
     #[test]

@@ -553,6 +553,35 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
     let go_cache = std::env::var("GOCACHE")
         .unwrap_or_else(|_| workdir.join(".gocache").to_string_lossy().into_owned());
     std::fs::create_dir_all(&go_cache).map_err(|e| format!("create GOCACHE: {e}"))?;
+    let go_path = std::env::var("GOPATH").unwrap_or_else(|_| {
+        std::env::var("HOME")
+            .map(|h| format!("{h}/go"))
+            .unwrap_or_else(|_| "/tmp/go".to_owned())
+    });
+    let go_mod_cache = std::env::var("GOMODCACHE").unwrap_or_else(|_| format!("{go_path}/pkg/mod"));
+
+    if workdir.join("go.mod").exists() {
+        let output = Command::new(&go_bin)
+            .args(["mod", "tidy"])
+            .current_dir(workdir)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("GOCACHE", &go_cache)
+            .env("GOPATH", &go_path)
+            .env("GOMODCACHE", &go_mod_cache)
+            .output()
+            .map_err(|e| format!("go mod tidy: {e}"))?;
+
+        if !output.status.success() {
+            let mut msg = String::from_utf8_lossy(&output.stderr).into_owned();
+            if msg.is_empty() {
+                msg = String::from_utf8_lossy(&output.stdout).into_owned();
+            }
+            return Err(format!("go mod tidy failed: {msg}"));
+        }
+    }
+
     let output = Command::new(&go_bin)
         .args([
             "build",
@@ -565,22 +594,8 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("GOCACHE", go_cache)
-        .env(
-            "GOPATH",
-            std::env::var("GOPATH").unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| format!("{h}/go"))
-                    .unwrap_or_else(|_| "/tmp/go".to_owned())
-            }),
-        )
-        .env(
-            "GOMODCACHE",
-            std::env::var("GOMODCACHE").unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| format!("{h}/go/pkg/mod"))
-                    .unwrap_or_else(|_| "/tmp/gomod".to_owned())
-            }),
-        )
+        .env("GOPATH", go_path)
+        .env("GOMODCACHE", go_mod_cache)
         .output()
         .map_err(|e| format!("go build: {e}"))?;
 

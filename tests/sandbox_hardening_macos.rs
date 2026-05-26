@@ -333,9 +333,7 @@ except Exception as exc:
             "standard profile should not produce a hardening outcome",
         );
         if stdout.contains("xxe:network-denied") {
-            eprintln!(
-                "SKIP: host-level network policy produced EPERM outside sandbox-exec"
-            );
+            eprintln!("SKIP: host-level network policy produced EPERM outside sandbox-exec");
             return;
         }
         // The probe should NOT report EPERM under the unwrapped run —

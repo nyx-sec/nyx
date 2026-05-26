@@ -545,7 +545,9 @@ fn python_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -607,7 +609,9 @@ fn python_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fixture =
@@ -650,7 +654,9 @@ fn node_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -712,7 +718,9 @@ fn node_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fixture =
@@ -755,7 +763,9 @@ fn php_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -819,7 +829,9 @@ fn php_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fixture =
@@ -864,7 +876,9 @@ fn go_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -926,7 +940,9 @@ fn go_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fragment =
@@ -1067,7 +1083,9 @@ fn ruby_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -1129,7 +1147,9 @@ fn ruby_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fixture =
@@ -1274,7 +1294,9 @@ fn java_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -1430,7 +1452,9 @@ fn java_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fragment = std::fs::read_to_string(fixture_path("java/http/vuln/main.java.fragment"))
@@ -1531,7 +1555,9 @@ fn rust_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -1602,7 +1628,9 @@ fn rust_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fragment = std::fs::read_to_string(fixture_path("rust/http/vuln/main.rs"))
@@ -1947,7 +1975,9 @@ fn c_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -1999,7 +2029,9 @@ fn c_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fragment = std::fs::read_to_string(fixture_path("c/http/vuln/main.c.fragment"))
@@ -2127,7 +2159,9 @@ fn cpp_http_stub_captures_attempted_outbound_via_shim_recorder() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let recording = stub
@@ -2179,7 +2213,9 @@ fn cpp_http_shim_recorder_is_noop_without_log_env() {
     }
 
     let workdir = TempDir::new().expect("tempdir");
-    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else { return; };
+    let Some(stub) = start_http_stub(workdir.path(), stringify!(__NYX_HTTP_TEST__)) else {
+        return;
+    };
 
     let endpoint = stub.endpoint();
     let fragment = std::fs::read_to_string(fixture_path("cpp/http/vuln/main.cpp.fragment"))

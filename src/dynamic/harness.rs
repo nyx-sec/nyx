@@ -174,10 +174,47 @@ fn copy_entry_file(spec: &HarnessSpec, workdir: &Path, entry_subpath: Option<&st
                 };
                 workdir.join(fname)
             };
+            if spec.lang == crate::symbol::Lang::Go
+                && entry_subpath == Some("entry/entry.go")
+                && let Ok(content) = fs::read_to_string(src)
+            {
+                let rewritten = rewrite_go_package(&content, "entry");
+                let _ = fs::write(&dst, rewritten.as_bytes());
+                return;
+            }
             let _ = fs::copy(src, &dst);
             return;
         }
     }
+}
+
+fn rewrite_go_package(src: &str, target: &str) -> String {
+    let mut out = String::with_capacity(src.len() + target.len());
+    let mut replaced = false;
+    for chunk in src.split_inclusive('\n') {
+        let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let (body, newline) = if chunk.ends_with('\n') {
+            (line, "\n")
+        } else {
+            (line, "")
+        };
+        let (body_no_cr, cr) = body
+            .strip_suffix('\r')
+            .map(|s| (s, "\r"))
+            .unwrap_or((body, ""));
+        if !replaced && body_no_cr.trim_start().starts_with("package ") {
+            let indent_len = body_no_cr.len() - body_no_cr.trim_start().len();
+            out.push_str(&body_no_cr[..indent_len]);
+            out.push_str("package ");
+            out.push_str(target);
+            out.push_str(cr);
+            out.push_str(newline);
+            replaced = true;
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    if replaced { out } else { src.to_owned() }
 }
 
 /// Java shape fixtures often keep tiny annotation / framework stubs next to
