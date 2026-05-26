@@ -317,6 +317,14 @@ pub fn materialize_go(env: &Environment) -> RuntimeArtifacts {
     };
     let mut deps: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut versioned: Vec<crate::dynamic::framework::runtime_deps::VersionedPackage> = Vec::new();
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for dep in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).go_modules {
+            if seen.insert(dep.name.to_owned()) {
+                versioned.push(*dep);
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_go_stdlib(d) {
             continue;
@@ -330,8 +338,11 @@ pub fn materialize_go(env: &Environment) -> RuntimeArtifacts {
     let mut body = String::with_capacity(128);
     body.push_str("module nyx_harness\n\n");
     body.push_str(&format!("go {go_version}\n"));
-    if !deps.is_empty() {
+    if !deps.is_empty() || !versioned.is_empty() {
         body.push_str("\nrequire (\n");
+        for dep in &versioned {
+            body.push_str(&format!("\t{} {}\n", dep.name, dep.version));
+        }
         for d in &deps {
             body.push_str(&format!("\t{d} latest\n"));
         }
@@ -651,6 +662,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // GraphQLResolver short-circuit (gqlgen).
     if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
         return Ok(emit_graphql_resolver_harness(
+            spec,
             &spec.entry_name,
             type_name,
             field,
@@ -660,7 +672,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
-    let go_mod = generate_go_mod(shape);
+    let go_mod = generate_go_mod_for_spec(shape, spec);
 
     let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
     // Phase 15: GinHandler shape stages a minimal gin stub package so
@@ -1356,21 +1368,54 @@ fn framework_route_invocation(
 }
 
 fn generate_go_mod(shape: GoShape) -> String {
-    let deps: &[(&str, &str)] = match shape {
+    render_go_mod(shape_go_deps(shape), &[])
+}
+
+fn generate_go_mod_for_spec(shape: GoShape, spec: &HarnessSpec) -> String {
+    let adapter_deps = spec
+        .framework
+        .as_ref()
+        .map(|binding| {
+            crate::dynamic::framework::runtime_deps::deps_for_adapter(&binding.adapter).go_modules
+        })
+        .unwrap_or(&[]);
+    render_go_mod(shape_go_deps(shape), adapter_deps)
+}
+
+fn shape_go_deps(shape: GoShape) -> &'static [(&'static str, &'static str)] {
+    match shape {
         GoShape::GinRoute => &[("github.com/gin-gonic/gin", "v1.10.0")],
         GoShape::EchoRoute => &[("github.com/labstack/echo/v4", "v4.12.0")],
         GoShape::FiberRoute => &[("github.com/gofiber/fiber/v2", "v2.52.5")],
         GoShape::ChiRoute => &[("github.com/go-chi/chi/v5", "v5.0.12")],
         _ => &[],
-    };
+    }
+}
+
+fn render_go_mod(
+    shape_deps: &[(&str, &str)],
+    adapter_deps: &[crate::dynamic::framework::runtime_deps::VersionedPackage],
+) -> String {
     let mut out = "module nyx-harness\n\ngo 1.21\n".to_owned();
-    if !deps.is_empty() {
+    if !shape_deps.is_empty() || !adapter_deps.is_empty() {
         out.push_str("\nrequire (\n");
-        for (module, version) in deps {
+        let mut seen = std::collections::HashSet::new();
+        for (module, version) in shape_deps {
+            seen.insert(*module);
             out.push('\t');
             out.push_str(module);
             out.push(' ');
             out.push_str(version);
+            out.push('\n');
+        }
+        for dep in adapter_deps {
+            if !seen.insert(dep.name) {
+                continue;
+            }
+            out.push('\t');
+            out.push_str(dep.name);
+            out.push(' ');
+            out.push_str(dep.version);
             out.push('\n');
         }
         out.push_str(")\n");
@@ -2106,7 +2151,7 @@ var NyxAutoReceivers = map[string]interface{{}}{{
 /// default → Pub/Sub.
 fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod(GoShape::Generic);
+    let go_mod = generate_go_mod_for_spec(GoShape::Generic, spec);
     let handler = &spec.entry_name;
     let broker = go_broker_for_adapter(spec);
 
@@ -2259,9 +2304,14 @@ func main() {{
 /// map (mirrors the `NyxReceivers` / `NyxHandlers` contracts from
 /// Phase 19 / 20), constructs a synthetic `context.Background()`, and
 /// invokes the resolver with the payload positionally.
-fn emit_graphql_resolver_harness(handler: &str, type_name: &str, field: &str) -> HarnessSource {
+fn emit_graphql_resolver_harness(
+    spec: &HarnessSpec,
+    handler: &str,
+    type_name: &str,
+    field: &str,
+) -> HarnessSource {
     let shim = probe_shim();
-    let go_mod = generate_go_mod(GoShape::Generic);
+    let go_mod = generate_go_mod_for_spec(GoShape::Generic, spec);
     let source = format!(
         r##"// Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
 package main

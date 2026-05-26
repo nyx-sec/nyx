@@ -385,6 +385,13 @@ pub fn materialize_ruby(env: &Environment) -> RuntimeArtifacts {
     let mut artifacts = RuntimeArtifacts::new();
     let mut deps: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for d in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).ruby_gems {
+            if seen.insert((*d).to_owned()) {
+                deps.push((*d).to_owned());
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_ruby_stdlib(d) {
             continue;
@@ -495,25 +502,22 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
     // Phase 21 (Track M.3): ScheduledJob short-circuit (Sidekiq workers).
     if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
-        return Ok(emit_scheduled_job_harness(
-            &spec.entry_name,
-            schedule.as_deref(),
-        ));
+        return Ok(emit_scheduled_job_harness(spec, schedule.as_deref()));
     }
 
     // Phase 21 (Track M.3): WebSocket short-circuit (ActionCable channels).
     if let crate::evidence::EntryKind::WebSocket { path } = &spec.entry_kind {
-        return Ok(emit_websocket_handler_harness(&spec.entry_name, path));
+        return Ok(emit_websocket_handler_harness(spec, path));
     }
 
     // Phase 21 (Track M.3): Middleware short-circuit (Rack-shape).
     if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
-        return Ok(emit_middleware_harness(&spec.entry_name, name));
+        return Ok(emit_middleware_harness(spec, name));
     }
 
     // Phase 21 (Track M.3): Migration short-circuit (ActiveRecord up/down).
     if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
-        return Ok(emit_migration_harness(&spec.entry_name, version.as_deref()));
+        return Ok(emit_migration_harness(spec, version.as_deref()));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -727,8 +731,9 @@ puts "__NYX_SINK_HIT__"
     )
 }
 
-fn emit_scheduled_job_harness(handler: &str, schedule: Option<&str>) -> HarnessSource {
+fn emit_scheduled_job_harness(spec: &HarnessSpec, schedule: Option<&str>) -> HarnessSource {
     let preamble = nyx_ruby_preamble();
+    let handler = &spec.entry_name;
     let sched = schedule.unwrap_or("<unscheduled>");
     let body = format!(
         r#"{preamble}
@@ -773,13 +778,14 @@ end
         source: body,
         filename: "harness.rb".to_owned(),
         command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.rb".to_owned()),
     }
 }
 
-fn emit_websocket_handler_harness(handler: &str, path: &str) -> HarnessSource {
+fn emit_websocket_handler_harness(spec: &HarnessSpec, path: &str) -> HarnessSource {
     let preamble = nyx_ruby_preamble();
+    let handler = &spec.entry_name;
     let body = format!(
         r#"{preamble}
 puts "__NYX_WEBSOCKET__: " + {path:?}
@@ -823,13 +829,14 @@ end
         source: body,
         filename: "harness.rb".to_owned(),
         command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.rb".to_owned()),
     }
 }
 
-fn emit_middleware_harness(handler: &str, name: &str) -> HarnessSource {
+fn emit_middleware_harness(spec: &HarnessSpec, name: &str) -> HarnessSource {
     let preamble = nyx_ruby_preamble();
+    let handler = &spec.entry_name;
     let body = format!(
         r#"{preamble}
 puts "__NYX_MIDDLEWARE__: " + {name:?}
@@ -879,13 +886,14 @@ end
         source: body,
         filename: "harness.rb".to_owned(),
         command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.rb".to_owned()),
     }
 }
 
-fn emit_migration_harness(handler: &str, version: Option<&str>) -> HarnessSource {
+fn emit_migration_harness(spec: &HarnessSpec, version: Option<&str>) -> HarnessSource {
     let preamble = nyx_ruby_preamble();
+    let handler = &spec.entry_name;
     let ver = version.unwrap_or("<no-version>");
     let body = format!(
         r#"{preamble}
@@ -932,9 +940,32 @@ end
         source: body,
         filename: "harness.rb".to_owned(),
         command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.rb".to_owned()),
     }
+}
+
+fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
+        return Vec::new();
+    };
+    let mut deps: Vec<&'static str> =
+        crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter)
+            .ruby_gems
+            .to_vec();
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    deps.sort_unstable();
+    deps.dedup();
+    let mut body = String::from("source 'https://rubygems.org'\n");
+    for dep in deps {
+        body.push_str(&format!("gem '{dep}'\n"));
+    }
+    vec![("Gemfile".to_owned(), body)]
 }
 
 /// Phase 03 — Track J.1 deserialize harness for Ruby.

@@ -98,6 +98,33 @@ fn run_adapter(
         .unwrap_or_else(|| panic!("{} did not fire on {fixture}", adapter.name()))
 }
 
+fn framework_bound_spec(
+    lang: Lang,
+    kind: EvEntryKind,
+    entry_name: &str,
+    entry_file: &str,
+    adapter: &str,
+) -> HarnessSpec {
+    let mut spec = make_spec(lang, kind, entry_name, entry_file);
+    spec.framework = Some(FrameworkBinding {
+        adapter: adapter.to_owned(),
+        kind: spec.entry_kind.clone(),
+        route: None,
+        request_params: vec![],
+        response_writer: None,
+        middleware: vec![],
+    });
+    spec
+}
+
+fn extra_file_content<'a>(files: &'a [(String, String)], rel: &str) -> &'a str {
+    files
+        .iter()
+        .find(|(path, _)| path == rel)
+        .map(|(_, content)| content.as_str())
+        .unwrap_or_else(|| panic!("{rel} missing from extra files: {files:?}"))
+}
+
 fn detect_phase21_fp_fixture(
     adapter: &dyn FrameworkAdapter,
     lang: Lang,
@@ -918,6 +945,98 @@ fn migration_php_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddUsers"));
+}
+
+#[test]
+fn phase21_harness_emitters_stage_framework_dependency_manifests() {
+    let cases = [
+        (
+            Lang::Python,
+            EvEntryKind::ScheduledJob {
+                schedule: Some("*/5 * * * *".into()),
+            },
+            "tick",
+            "tests/dynamic_fixtures/scheduled_job/celery/vuln.py",
+            "scheduled-celery",
+            "requirements.txt",
+            "celery",
+        ),
+        (
+            Lang::JavaScript,
+            EvEntryKind::GraphQLResolver {
+                type_name: "Query".into(),
+                field: "user".into(),
+            },
+            "resolveUser",
+            "tests/dynamic_fixtures/graphql_resolver/apollo/vuln.js",
+            "graphql-apollo",
+            "package.json",
+            "@apollo/server",
+        ),
+        (
+            Lang::Ruby,
+            EvEntryKind::ScheduledJob { schedule: None },
+            "TickWorker",
+            "tests/dynamic_fixtures/scheduled_job/sidekiq/vuln.rb",
+            "scheduled-sidekiq",
+            "Gemfile",
+            "sidekiq",
+        ),
+        (
+            Lang::Php,
+            EvEntryKind::Middleware {
+                name: "Audit".into(),
+            },
+            "Audit",
+            "tests/dynamic_fixtures/middleware/laravel/vuln.php",
+            "middleware-laravel",
+            "composer.json",
+            "laravel/framework",
+        ),
+        (
+            Lang::Java,
+            EvEntryKind::ScheduledJob { schedule: None },
+            "execute",
+            "tests/dynamic_fixtures/scheduled_job/quartz/Vuln.java",
+            "scheduled-quartz",
+            "pom.xml",
+            "org.quartz-scheduler",
+        ),
+        (
+            Lang::Go,
+            EvEntryKind::GraphQLResolver {
+                type_name: "Query".into(),
+                field: "user".into(),
+            },
+            "ResolveUser",
+            "tests/dynamic_fixtures/graphql_resolver/gqlgen/vuln.go",
+            "graphql-gqlgen",
+            "go.mod",
+            "github.com/99designs/gqlgen",
+        ),
+        (
+            Lang::Rust,
+            EvEntryKind::GraphQLResolver {
+                type_name: "Query".into(),
+                field: "user".into(),
+            },
+            "resolve_user",
+            "tests/dynamic_fixtures/graphql_resolver/juniper/vuln.rs",
+            "graphql-juniper",
+            "Cargo.toml",
+            "juniper = \"0.16\"",
+        ),
+    ];
+
+    for (lang, kind, entry_name, entry_file, adapter, manifest, needle) in cases {
+        let spec = framework_bound_spec(lang, kind, entry_name, entry_file, adapter);
+        let harness = lang::emit(&spec).expect("emit ok");
+        let manifest_content = extra_file_content(&harness.extra_files, manifest);
+        assert!(
+            manifest_content.contains(needle),
+            "{adapter} manifest {manifest} missing {needle}: {manifest_content}",
+        );
+    }
 }
 
 // ── Phase 21 acceptance: ≥75% Confirmed on each fixture set ──────────────────

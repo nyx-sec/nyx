@@ -468,6 +468,15 @@ pub fn materialize_python(env: &Environment) -> RuntimeArtifacts {
     let mut deps: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for d in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).python_packages
+        {
+            let canonical = canonical_python_pkg_name(d);
+            if seen.insert(canonical.clone()) {
+                deps.push(canonical);
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_python_stdlib(d) {
             continue;
@@ -918,7 +927,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -1089,7 +1098,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -1147,7 +1156,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -1194,7 +1203,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -1250,7 +1259,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -1299,7 +1308,7 @@ except Exception as _e:
         source: format!("{preamble}\n{body}\n{postamble}"),
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: None,
     }
 }
@@ -3129,10 +3138,44 @@ fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)>
         return Vec::new();
     }
     let source = read_entry_source(&spec.entry_file);
-    let deps = python_message_handler_deps(&source);
+    let mut deps = python_message_handler_deps(&source);
+    if let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) {
+        for &dep in
+            crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).python_packages
+        {
+            if !deps.contains(&dep) {
+                deps.push(dep);
+            }
+        }
+    }
     if deps.is_empty() {
         return Vec::new();
     }
+    deps.sort_unstable();
+    let mut body = String::new();
+    for dep in deps {
+        body.push_str(dep);
+        body.push('\n');
+    }
+    vec![("requirements.txt".to_owned(), body)]
+}
+
+fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
+        return Vec::new();
+    };
+    let mut deps: Vec<&'static str> =
+        crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter)
+            .python_packages
+            .to_vec();
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    deps.sort_unstable();
+    deps.dedup();
     let mut body = String::new();
     for dep in deps {
         body.push_str(dep);

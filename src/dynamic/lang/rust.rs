@@ -147,6 +147,14 @@ pub fn materialize_rust(env: &Environment) -> RuntimeArtifacts {
     let mut artifacts = RuntimeArtifacts::new();
     let mut deps: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut versioned: Vec<crate::dynamic::framework::runtime_deps::VersionedPackage> = Vec::new();
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for dep in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).rust_crates {
+            if seen.insert(dep.name.to_owned()) {
+                versioned.push(*dep);
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_rust_stdlib(d) {
             continue;
@@ -166,6 +174,12 @@ pub fn materialize_rust(env: &Environment) -> RuntimeArtifacts {
     body.push_str("name = \"nyx_harness\"\n");
     body.push_str("path = \"src/main.rs\"\n\n");
     body.push_str("[dependencies]\n");
+    for dep in &versioned {
+        body.push_str(dep.name);
+        body.push_str(" = \"");
+        body.push_str(dep.version);
+        body.push_str("\"\n");
+    }
     for d in &deps {
         body.push_str(d);
         body.push_str(" = \"*\"\n");
@@ -2023,7 +2037,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
-    let cargo_toml = generate_cargo_toml_for_shape(spec.expected_cap, shape);
+    let cargo_toml = generate_cargo_toml_for_spec(spec.expected_cap, shape, spec);
     let main_rs = generate_main_rs(spec, shape);
 
     Ok(HarnessSource {
@@ -2348,7 +2362,7 @@ fn emit_graphql_resolver_harness(
     field: &str,
 ) -> HarnessSource {
     let shim = probe_shim();
-    let cargo_toml = generate_cargo_toml(spec.expected_cap);
+    let cargo_toml = generate_cargo_toml_for_spec(spec.expected_cap, RustShape::Generic, spec);
     let handler = &spec.entry_name;
     let label = format!("{type_name}.{field}");
     let body = format!(
@@ -2567,6 +2581,36 @@ fn generate_cargo_toml_for_shape(cap: Cap, shape: RustShape) -> String {
     };
     if let Some(deps) = deps {
         cargo.push_str(deps);
+    }
+    cargo
+}
+
+fn generate_cargo_toml_for_spec(cap: Cap, shape: RustShape, spec: &HarnessSpec) -> String {
+    let mut cargo = generate_cargo_toml_for_shape(cap, shape);
+    let Some(adapter) = spec
+        .framework
+        .as_ref()
+        .map(|binding| binding.adapter.as_str())
+    else {
+        return cargo;
+    };
+    let deps = crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter);
+    if deps.rust_crates.is_empty() {
+        return cargo;
+    }
+    let mut seen = std::collections::HashSet::new();
+    for line in cargo.lines() {
+        if let Some((name, _)) = line.split_once(" = ") {
+            seen.insert(name.trim().to_owned());
+        }
+    }
+    for dep in deps.rust_crates {
+        if seen.insert(dep.name.to_owned()) {
+            cargo.push_str(dep.name);
+            cargo.push_str(" = \"");
+            cargo.push_str(dep.version);
+            cargo.push_str("\"\n");
+        }
     }
     cargo
 }

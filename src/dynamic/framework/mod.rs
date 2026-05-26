@@ -17,6 +17,7 @@
 pub mod adapters;
 pub mod auth_markers;
 pub mod registry;
+pub mod runtime_deps;
 
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
@@ -322,6 +323,18 @@ pub trait FrameworkAdapter: Sync {
     /// Used for deterministic ordering inside the registry and for
     /// the trace-event detail string emitted by the verifier.
     fn name(&self) -> &'static str;
+
+    /// Runtime package-manager dependencies needed when a real harness
+    /// loads code matched by this adapter.
+    ///
+    /// Most adapters need no extra metadata because the entry source's
+    /// imports are enough for dependency capture.  Adapters that can bind
+    /// from route files, annotations, or marker comments use the central
+    /// adapter-id registry so manifest synthesis can still install the
+    /// actual framework library before execution.
+    fn runtime_dependencies(&self) -> runtime_deps::FrameworkRuntimeDeps {
+        runtime_deps::deps_for_adapter(self.name())
+    }
 
     /// Language this adapter targets.
     fn lang(&self) -> Lang;

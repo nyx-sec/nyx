@@ -26,6 +26,7 @@ use nyx_scanner::dynamic::environment::{
     MAX_WORKDIR_BYTES, capture_project_dependencies, capture_project_dependencies_with_context,
     stage_workdir_full,
 };
+use nyx_scanner::dynamic::framework::FrameworkBinding;
 use nyx_scanner::dynamic::lang::materialize_runtime;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
 use nyx_scanner::labels::Cap;
@@ -188,6 +189,144 @@ fn materialize_runtime_synthesises_pinned_manifest() {
     assert!(lower.contains("jinja2"));
     // spec_hash baked into the header for forensic traceability.
     assert!(content.contains(&spec.spec_hash));
+}
+
+fn adapter_bound_spec(
+    lang: Lang,
+    entry_file: &str,
+    adapter: &str,
+    entry_kind: EntryKind,
+) -> HarnessSpec {
+    HarnessSpec {
+        finding_id: format!("adapter-{adapter}"),
+        entry_file: entry_file.to_owned(),
+        entry_name: "run".to_owned(),
+        entry_kind: entry_kind.clone(),
+        lang,
+        toolchain_id: match lang {
+            Lang::Python => "python-3.11",
+            Lang::JavaScript | Lang::TypeScript => "node-20",
+            Lang::Java => "java-21",
+            Lang::Go => "go-1.21",
+            Lang::Rust => "rust-stable",
+            Lang::Php => "php-8.2",
+            Lang::Ruby => "ruby-3.2",
+            _ => "toolchain",
+        }
+        .to_owned(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::CODE_EXEC,
+        constraint_hints: vec![],
+        sink_file: entry_file.to_owned(),
+        sink_line: 1,
+        spec_hash: format!("hash-{adapter}"),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
+        framework: Some(FrameworkBinding {
+            adapter: adapter.to_owned(),
+            kind: entry_kind,
+            route: None,
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        }),
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
+    }
+}
+
+#[test]
+fn materialize_runtime_adds_framework_adapter_deps_without_imports() {
+    let root = TempDir::new().unwrap();
+    let cases = [
+        (
+            Lang::Python,
+            "task.py",
+            "scheduled-celery",
+            EntryKind::ScheduledJob {
+                schedule: Some("* * * * *".to_owned()),
+            },
+            "requirements.txt",
+            "celery",
+        ),
+        (
+            Lang::JavaScript,
+            "resolver.js",
+            "graphql-apollo",
+            EntryKind::GraphQLResolver {
+                type_name: "Query".to_owned(),
+                field: "user".to_owned(),
+            },
+            "package.json",
+            "@apollo/server",
+        ),
+        (
+            Lang::Ruby,
+            "worker.rb",
+            "scheduled-sidekiq",
+            EntryKind::ScheduledJob { schedule: None },
+            "Gemfile",
+            "sidekiq",
+        ),
+        (
+            Lang::Php,
+            "Middleware.php",
+            "middleware-laravel",
+            EntryKind::Middleware {
+                name: "AuthMiddleware".to_owned(),
+            },
+            "composer.json",
+            "laravel/framework",
+        ),
+        (
+            Lang::Java,
+            "QuartzJob.java",
+            "scheduled-quartz",
+            EntryKind::ScheduledJob { schedule: None },
+            "pom.xml",
+            "org.quartz-scheduler",
+        ),
+        (
+            Lang::Go,
+            "resolver.go",
+            "graphql-gqlgen",
+            EntryKind::GraphQLResolver {
+                type_name: "Query".to_owned(),
+                field: "user".to_owned(),
+            },
+            "go.mod",
+            "github.com/99designs/gqlgen",
+        ),
+        (
+            Lang::Rust,
+            "resolver.rs",
+            "graphql-juniper",
+            EntryKind::GraphQLResolver {
+                type_name: "Query".to_owned(),
+                field: "user".to_owned(),
+            },
+            "Cargo.toml",
+            "juniper = \"0.16\"",
+        ),
+    ];
+
+    for (lang, entry_file, adapter, entry_kind, manifest, needle) in cases {
+        std::fs::write(root.path().join(entry_file), "/* marker-only fixture */\n").unwrap();
+        let spec = adapter_bound_spec(lang, entry_file, adapter, entry_kind);
+        let captured = capture_project_dependencies(root.path(), &spec);
+        let stage = TempDir::new().unwrap();
+        let env = stage_workdir_full(&captured, stage.path(), &spec.spec_hash, lang)
+            .expect("stage workdir");
+        let artifacts = materialize_runtime(&env);
+        let (_, content) = artifacts
+            .files
+            .iter()
+            .find(|(rel, _)| rel == manifest)
+            .unwrap_or_else(|| panic!("{adapter} did not materialize {manifest}"));
+        assert!(
+            content.contains(needle),
+            "{adapter} manifest {manifest} missing {needle}: {content}",
+        );
+    }
 }
 
 #[test]

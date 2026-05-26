@@ -498,6 +498,17 @@ pub fn materialize_java(env: &Environment) -> RuntimeArtifacts {
         .to_owned();
     let mut deps: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut maven_deps: Vec<crate::dynamic::framework::runtime_deps::MavenPackage> = Vec::new();
+    let mut seen_maven: std::collections::HashSet<(&'static str, &'static str)> =
+        std::collections::HashSet::new();
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for dep in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).maven_packages
+        {
+            if seen_maven.insert((dep.group_id, dep.artifact_id)) {
+                maven_deps.push(*dep);
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_java_stdlib(d) {
             continue;
@@ -523,8 +534,18 @@ pub fn materialize_java(env: &Environment) -> RuntimeArtifacts {
         "    <maven.compiler.target>{java_version}</maven.compiler.target>\n"
     ));
     body.push_str("  </properties>\n");
-    if !deps.is_empty() {
+    if !deps.is_empty() || !maven_deps.is_empty() {
         body.push_str("  <dependencies>\n");
+        for dep in &maven_deps {
+            body.push_str("    <dependency>\n");
+            body.push_str(&format!("      <groupId>{}</groupId>\n", dep.group_id));
+            body.push_str(&format!(
+                "      <artifactId>{}</artifactId>\n",
+                dep.artifact_id
+            ));
+            body.push_str(&format!("      <version>{}</version>\n", dep.version));
+            body.push_str("    </dependency>\n");
+        }
         for d in &deps {
             body.push_str("    <dependency>\n");
             body.push_str(&format!("      <groupId>{d}</groupId>\n"));
@@ -3924,7 +3945,11 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: message_handler_annotation_stubs(),
+        extra_files: {
+            let mut files = message_handler_annotation_stubs();
+            files.extend(framework_dependency_files(spec));
+            files
+        },
         entry_subpath: Some(format!("{entry_class}.java")),
     }
 }
@@ -3967,6 +3992,52 @@ public @interface RabbitListener {
             .to_owned(),
         ),
     ]
+}
+
+fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
+        return Vec::new();
+    };
+    let deps = crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter);
+    if deps.maven_packages.is_empty() {
+        return Vec::new();
+    }
+    let java_version = spec
+        .toolchain_id
+        .strip_prefix("java-")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(21);
+    let mut body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    body.push_str("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
+    body.push_str("  <modelVersion>4.0.0</modelVersion>\n");
+    body.push_str("  <groupId>nyx</groupId>\n");
+    body.push_str("  <artifactId>harness-framework</artifactId>\n");
+    body.push_str("  <version>0.0.1</version>\n");
+    body.push_str("  <properties>\n");
+    body.push_str(&format!(
+        "    <maven.compiler.source>{java_version}</maven.compiler.source>\n"
+    ));
+    body.push_str(&format!(
+        "    <maven.compiler.target>{java_version}</maven.compiler.target>\n"
+    ));
+    body.push_str("  </properties>\n");
+    body.push_str("  <dependencies>\n");
+    for dep in deps.maven_packages {
+        body.push_str("    <dependency>\n");
+        body.push_str(&format!("      <groupId>{}</groupId>\n", dep.group_id));
+        body.push_str(&format!(
+            "      <artifactId>{}</artifactId>\n",
+            dep.artifact_id
+        ));
+        body.push_str(&format!("      <version>{}</version>\n", dep.version));
+        body.push_str("    </dependency>\n");
+    }
+    body.push_str("  </dependencies>\n");
+    body.push_str("</project>\n");
+    vec![("pom.xml".to_owned(), body)]
 }
 
 // ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
@@ -4047,7 +4118,7 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(format!("{entry_class}.java")),
     }
 }
@@ -4123,7 +4194,7 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(format!("{entry_class}.java")),
     }
 }

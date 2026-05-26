@@ -359,6 +359,13 @@ pub struct CapturedDeps {
     /// version even when the entry file imports the framework
     /// transitively.
     pub frameworks: Vec<DetectedFramework>,
+    /// Adapter id attached to the spec by framework binding detection.
+    ///
+    /// This is distinct from manifest-detected web frameworks: Phase 20/21
+    /// adapters can bind from route/config metadata or marker comments while
+    /// the entry source avoids a hard import.  The id lets manifest synthesis
+    /// add the package-manager deps required when the real import is present.
+    pub framework_adapter: Option<String>,
     /// Three-valued lang-has-framework signal (see
     /// [`FrameworkContext::lang_has_web_framework`]).
     pub framework_signal: Option<bool>,
@@ -425,6 +432,8 @@ pub struct Environment {
     pub direct_deps: Vec<String>,
     /// Frameworks detected in the project root.
     pub frameworks: Vec<DetectedFramework>,
+    /// Adapter id attached to the originating spec, when any.
+    pub framework_adapter: Option<String>,
     /// Language pinned via the originating spec.  Cached here so the
     /// emitter does not have to re-thread the spec.
     pub lang: Lang,
@@ -493,6 +502,7 @@ pub fn capture_project_dependencies_with_context(
 
     let framework_ctx = detect_frameworks(project_root);
     let frameworks = framework_ctx.frameworks.clone();
+    let framework_adapter = spec.framework.as_ref().map(|b| b.adapter.clone());
     let framework_signal = framework_ctx.lang_has_web_framework(framework_slug_for_lang(spec.lang));
 
     let config_files = collect_config_files(&entry_file, project_root);
@@ -509,6 +519,7 @@ pub fn capture_project_dependencies_with_context(
         toolchain,
         direct_deps,
         frameworks,
+        framework_adapter,
         framework_signal,
         config_files,
         source_closure,
@@ -644,6 +655,7 @@ pub fn stage_workdir_full(
         toolchain: captured.toolchain.clone(),
         direct_deps: captured.direct_deps.clone(),
         frameworks: captured.frameworks.clone(),
+        framework_adapter: captured.framework_adapter.clone(),
         lang,
     })
 }

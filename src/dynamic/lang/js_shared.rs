@@ -380,6 +380,14 @@ pub fn materialize_node(env: &Environment) -> RuntimeArtifacts {
     let mut deps: Vec<(String, &'static str)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    if let Some(adapter) = env.framework_adapter.as_deref() {
+        for dep in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).node_packages
+        {
+            if seen.insert(dep.name.to_owned()) {
+                deps.push((dep.name.to_owned(), dep.version));
+            }
+        }
+    }
     for d in &env.direct_deps {
         if is_node_builtin(d) {
             continue;
@@ -1039,7 +1047,7 @@ if (_h == null) {{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(entry_subpath),
     }
 }
@@ -1081,7 +1089,7 @@ if (_h == null) {{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(entry_subpath),
     }
 }
@@ -1125,7 +1133,7 @@ if (_h == null) {{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(entry_subpath),
     }
 }
@@ -1161,7 +1169,7 @@ const _res = {{ statusCode: 200, headers: {{}}, end: function(d){{ if (d != null
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(entry_subpath),
     }
 }
@@ -1222,7 +1230,7 @@ const _prisma = {{
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some(entry_subpath),
     }
 }
@@ -2527,10 +2535,19 @@ fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)>
         return Vec::new();
     }
     let source = read_entry_source(&spec.entry_file);
-    let deps = js_message_handler_deps(&source);
+    let mut deps = js_message_handler_deps(&source);
+    if let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) {
+        for dep in crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter).node_packages
+        {
+            if !deps.iter().any(|(name, _)| *name == dep.name) {
+                deps.push((dep.name, dep.version));
+            }
+        }
+    }
     if deps.is_empty() {
         return Vec::new();
     }
+    deps.sort_by(|a, b| a.0.cmp(b.0));
     vec![
         (
             "package.json".to_owned(),
@@ -2539,6 +2556,36 @@ fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)>
         (
             "package-lock.json".to_owned(),
             package_lock_skeleton("nyx-harness-message-handler"),
+        ),
+    ]
+}
+
+fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
+        return Vec::new();
+    };
+    let mut deps: Vec<(&'static str, &'static str)> =
+        crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter)
+            .node_packages
+            .iter()
+            .map(|dep| (dep.name, dep.version))
+            .collect();
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    deps.sort_by(|a, b| a.0.cmp(b.0));
+    deps.dedup_by(|a, b| a.0 == b.0);
+    vec![
+        (
+            "package.json".to_owned(),
+            package_json_multi("nyx-harness-framework", &deps),
+        ),
+        (
+            "package-lock.json".to_owned(),
+            package_lock_skeleton("nyx-harness-framework"),
         ),
     ]
 }

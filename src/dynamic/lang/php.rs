@@ -301,11 +301,31 @@ pub fn materialize_php(env: &Environment) -> RuntimeArtifacts {
     } else {
         php_ver
     };
+    let adapter_deps = env
+        .framework_adapter
+        .as_deref()
+        .map(crate::dynamic::framework::runtime_deps::deps_for_adapter);
+    let composer_deps = adapter_deps
+        .as_ref()
+        .map(|deps| deps.composer_packages)
+        .unwrap_or(&[]);
     let mut body = String::with_capacity(128);
     body.push_str("{\n");
     body.push_str("  \"name\": \"nyx/harness\",\n");
     body.push_str("  \"require\": {\n");
-    body.push_str(&format!("    \"php\": \">={php_ver}\"\n"));
+    body.push_str(&format!("    \"php\": \">={php_ver}\""));
+    if !composer_deps.is_empty() {
+        body.push_str(",\n");
+        for (i, dep) in composer_deps.iter().enumerate() {
+            body.push_str(&format!("    \"{}\": \"{}\"", dep.name, dep.version));
+            if i + 1 != composer_deps.len() {
+                body.push(',');
+            }
+            body.push('\n');
+        }
+    } else {
+        body.push('\n');
+    }
     body.push_str("  }\n");
     body.push_str("}\n");
     artifacts.push("composer.json", body);
@@ -567,12 +587,12 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
     // Phase 21 (Track M.3): Middleware short-circuit (Laravel handle()).
     if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
-        return Ok(emit_middleware_harness(&spec.entry_name, name));
+        return Ok(emit_middleware_harness(spec, name));
     }
 
     // Phase 21 (Track M.3): Migration short-circuit (Laravel up()).
     if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
-        return Ok(emit_migration_harness(&spec.entry_name, version.as_deref()));
+        return Ok(emit_migration_harness(spec, version.as_deref()));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -3084,8 +3104,9 @@ echo "__NYX_SINK_HIT__\n";
     )
 }
 
-fn emit_middleware_harness(handler: &str, name: &str) -> HarnessSource {
+fn emit_middleware_harness(spec: &HarnessSpec, name: &str) -> HarnessSource {
     let preamble = nyx_php_preamble();
+    let handler = &spec.entry_name;
     let body = format!(
         r#"{preamble}
 echo "__NYX_MIDDLEWARE__: " . {name:?} . "\n";
@@ -3130,13 +3151,14 @@ if (class_exists({handler:?})) {{
         source: body,
         filename: "harness.php".to_owned(),
         command: vec!["php".to_owned(), "harness.php".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.php".to_owned()),
     }
 }
 
-fn emit_migration_harness(handler: &str, version: Option<&str>) -> HarnessSource {
+fn emit_migration_harness(spec: &HarnessSpec, version: Option<&str>) -> HarnessSource {
     let preamble = nyx_php_preamble();
+    let handler = &spec.entry_name;
     let version_repr = version.unwrap_or("<no-version>");
     let body = format!(
         r#"{preamble}
@@ -3175,9 +3197,33 @@ if (class_exists({handler:?})) {{
         source: body,
         filename: "harness.php".to_owned(),
         command: vec!["php".to_owned(), "harness.php".to_owned()],
-        extra_files: vec![],
+        extra_files: framework_dependency_files(spec),
         entry_subpath: Some("entry.php".to_owned()),
     }
+}
+
+fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
+    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+        return Vec::new();
+    }
+    let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
+        return Vec::new();
+    };
+    let deps = crate::dynamic::framework::runtime_deps::deps_for_adapter(adapter);
+    if deps.composer_packages.is_empty() {
+        return Vec::new();
+    }
+    let mut body = String::from("{\n  \"name\": \"nyx/harness-framework\",\n  \"require\": {\n");
+    body.push_str("    \"php\": \">=8.1\",\n");
+    for (i, dep) in deps.composer_packages.iter().enumerate() {
+        body.push_str(&format!("    \"{}\": \"{}\"", dep.name, dep.version));
+        if i + 1 != deps.composer_packages.len() {
+            body.push(',');
+        }
+        body.push('\n');
+    }
+    body.push_str("  }\n}\n");
+    vec![("composer.json".to_owned(), body)]
 }
 
 fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
