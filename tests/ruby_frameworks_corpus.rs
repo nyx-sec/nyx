@@ -92,13 +92,16 @@ fn sinatra_vuln_fixture_binds_route() {
     assert_eq!(binding.kind, EntryKind::HttpRoute);
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.method, HttpMethod::GET);
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/:payload");
     let payload_binding = binding
         .request_params
         .iter()
         .find(|p| p.name == "payload")
-        .expect("payload block param");
-    assert!(matches!(payload_binding.source, ParamSource::QueryParam(_)));
+        .expect("payload path param");
+    assert!(matches!(
+        payload_binding.source,
+        ParamSource::PathSegment(_)
+    ));
 }
 
 #[test]
@@ -111,7 +114,7 @@ fn sinatra_benign_fixture_binds_same_route_shape() {
         .expect("sinatra adapter must bind benign fixture");
     assert_eq!(binding.adapter, "ruby-sinatra");
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/:payload");
 }
 
 // ── Hanami ───────────────────────────────────────────────────────────────────

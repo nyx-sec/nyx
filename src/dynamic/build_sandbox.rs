@@ -361,6 +361,150 @@ fn build_cache_path(
     Ok(path)
 }
 
+// ── Ruby build sandbox ───────────────────────────────────────────────────────
+
+/// Prepare Ruby dependencies for `spec` in `workdir`.
+///
+/// Runs `bundle check` first so hosts that already have the declared gems do
+/// not need network access. When the check misses, runs `bundle install` into
+/// `vendor/bundle` and caches both that tree and Bundler's local config.
+pub fn prepare_ruby(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
+    if !workdir.join("Gemfile").exists() {
+        return Ok(BuildResult {
+            venv_path: workdir.to_path_buf(),
+            cache_hit: false,
+            duration: Duration::ZERO,
+        });
+    }
+
+    let lockfile_hash = compute_ruby_lockfile_hash(workdir);
+    let cache_path = build_cache_path(&lockfile_hash, "ruby", &spec.toolchain_id).ok();
+
+    if let Some(cache_path) = &cache_path
+        && cache_path.join(".ruby_cache_done").exists()
+    {
+        restore_cached_ruby_bundle(cache_path, workdir);
+        return Ok(BuildResult {
+            venv_path: cache_path.clone(),
+            cache_hit: true,
+            duration: Duration::ZERO,
+        });
+    }
+
+    let start = Instant::now();
+    const MAX_ATTEMPTS: u32 = 2;
+    const BACKOFF: [u64; 2] = [1, 4];
+    let mut last_err = String::new();
+
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_secs(BACKOFF[attempt as usize - 1]));
+        }
+        match try_bundle_install(workdir) {
+            Ok(()) => {
+                if let Some(cache_path) = &cache_path {
+                    persist_ruby_bundle(workdir, cache_path);
+                    let _ = std::fs::write(cache_path.join(".ruby_cache_done"), b"done");
+                }
+                return Ok(BuildResult {
+                    venv_path: cache_path.unwrap_or_else(|| workdir.to_path_buf()),
+                    cache_hit: false,
+                    duration: start.elapsed(),
+                });
+            }
+            Err(e) => {
+                last_err = e;
+            }
+        }
+    }
+
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
+}
+
+fn try_bundle_install(workdir: &Path) -> Result<(), String> {
+    let bundle = std::env::var("NYX_BUNDLE_BIN").unwrap_or_else(|_| "bundle".to_owned());
+    if bundle_check(&bundle, workdir)? {
+        return Ok(());
+    }
+
+    let config = Command::new(&bundle)
+        .args(["config", "set", "--local", "path", "vendor/bundle"])
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("bundle config: {e}"))?;
+    if !config.status.success() {
+        return Err(String::from_utf8_lossy(&config.stderr).into_owned());
+    }
+
+    let output = Command::new(&bundle)
+        .args(["install", "--jobs", "4", "--retry", "2"])
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("bundle install: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(())
+}
+
+fn bundle_check(bundle: &str, workdir: &Path) -> Result<bool, String> {
+    let output = Command::new(bundle)
+        .arg("check")
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("bundle check: {e}"))?;
+    Ok(output.status.success())
+}
+
+fn restore_cached_ruby_bundle(cache_path: &Path, workdir: &Path) {
+    let cached_vendor = cache_path.join("vendor").join("bundle");
+    if cached_vendor.exists() && !workdir.join("vendor").join("bundle").exists() {
+        let _ = copy_dir_all(&cached_vendor, &workdir.join("vendor").join("bundle"));
+    }
+    let cached_bundle_config = cache_path.join(".bundle");
+    if cached_bundle_config.exists() && !workdir.join(".bundle").exists() {
+        let _ = copy_dir_all(&cached_bundle_config, &workdir.join(".bundle"));
+    }
+}
+
+fn persist_ruby_bundle(workdir: &Path, cache_path: &Path) {
+    let vendor = workdir.join("vendor").join("bundle");
+    if vendor.exists() {
+        let _ = copy_dir_all(&vendor, &cache_path.join("vendor").join("bundle"));
+    }
+    let bundle_config = workdir.join(".bundle");
+    if bundle_config.exists() {
+        let _ = copy_dir_all(&bundle_config, &cache_path.join(".bundle"));
+    }
+}
+
+fn compute_ruby_lockfile_hash(workdir: &Path) -> String {
+    let mut h = Hasher::new();
+    for fname in &["Gemfile", "Gemfile.lock"] {
+        if let Ok(content) = std::fs::read(workdir.join(fname)) {
+            h.update(fname.as_bytes());
+            h.update(&content);
+        }
+    }
+    let out = h.finalize();
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
+}
+
 // ── Node.js build sandbox ─────────────────────────────────────────────────────
 
 /// Prepare a Node.js project for `spec` in `workdir`.
@@ -646,35 +790,37 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     // from the same sources targeted at `--release 21`.
     let target_release = java_target_release(&spec.toolchain_id);
     let source_hash = compute_java_source_hash(workdir, target_release);
-    let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id)?;
+    let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id).ok();
 
-    let cached_classes = collect_class_files(&cache_path);
+    if let Some(cache_path) = &cache_path {
+        let cached_classes = collect_class_files(cache_path);
 
-    // Cache hit: at least the harness class is compiled.  Restore every
-    // cached `.class` to workdir so the classpath (which points to
-    // workdir, not cache_path) can find them when a different finding
-    // hits the same compiled artefact via a fresh spec_hash.
-    if cache_path.join("NyxHarness.class").exists() {
-        for cls in &cached_classes {
-            let src = cache_path.join(cls);
-            let dst = workdir.join(cls);
-            if src.exists() && !dst.exists() {
-                let _ = std::fs::copy(&src, &dst);
+        // Cache hit: at least the harness class is compiled.  Restore every
+        // cached `.class` to workdir so the classpath (which points to
+        // workdir, not cache_path) can find them when a different finding
+        // hits the same compiled artefact via a fresh spec_hash.
+        if cache_path.join("NyxHarness.class").exists() {
+            for cls in &cached_classes {
+                let src = cache_path.join(cls);
+                let dst = workdir.join(cls);
+                if src.exists() && !dst.exists() {
+                    let _ = std::fs::copy(&src, &dst);
+                }
             }
+            // Restore cached Maven-resolved jars when the harness shipped a
+            // `pom.xml`; the harness command embeds `-cp .:lib/*` so the
+            // runtime classpath needs these jars staged in the workdir.
+            let cached_lib = cache_path.join("lib");
+            let workdir_lib = workdir.join("lib");
+            if cached_lib.exists() && !workdir_lib.exists() {
+                let _ = copy_dir_all(&cached_lib, &workdir_lib);
+            }
+            return Ok(BuildResult {
+                venv_path: cache_path.clone(),
+                cache_hit: true,
+                duration: std::time::Duration::ZERO,
+            });
         }
-        // Restore cached Maven-resolved jars when the harness shipped a
-        // `pom.xml`; the harness command embeds `-cp .:lib/*` so the
-        // runtime classpath needs these jars staged in the workdir.
-        let cached_lib = cache_path.join("lib");
-        let workdir_lib = workdir.join("lib");
-        if cached_lib.exists() && !workdir_lib.exists() {
-            let _ = copy_dir_all(&cached_lib, &workdir_lib);
-        }
-        return Ok(BuildResult {
-            venv_path: cache_path,
-            cache_hit: true,
-            duration: std::time::Duration::ZERO,
-        });
     }
 
     let start = std::time::Instant::now();
@@ -688,10 +834,12 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
                 BACKOFF[attempt as usize - 1],
             ));
         }
-        match try_compile_java(workdir, &cache_path, target_release) {
+        let compile_cache = cache_path.as_deref().unwrap_or(workdir);
+        match try_compile_java(workdir, compile_cache, target_release) {
             Ok(()) => {
+                let build_root = cache_path.clone().unwrap_or_else(|| workdir.to_path_buf());
                 return Ok(BuildResult {
-                    venv_path: cache_path,
+                    venv_path: build_root,
                     cache_hit: false,
                     duration: start.elapsed(),
                 });
@@ -700,7 +848,9 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
                 last_err = e;
                 // Best-effort clean-up: drop every cached `.class` so the
                 // next attempt re-compiles from source.
-                if let Ok(entries) = std::fs::read_dir(&cache_path) {
+                if let Some(cache_path) = &cache_path
+                    && let Ok(entries) = std::fs::read_dir(cache_path)
+                {
                     for entry in entries.flatten() {
                         if entry
                             .path()
@@ -797,25 +947,27 @@ fn try_compile_java(
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
 
-    // Copy class files to cache.  `javac -d workdir` writes nested
-    // package directories under workdir; preserve the relative layout
-    // when caching so the restore path can recreate them.
-    for cls in collect_class_files(workdir) {
-        let src = workdir.join(&cls);
-        let dst = cache_path.join(&cls);
-        if let Some(parent) = dst.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    if cache_path != workdir {
+        // Copy class files to cache.  `javac -d workdir` writes nested
+        // package directories under workdir; preserve the relative layout
+        // when caching so the restore path can recreate them.
+        for cls in collect_class_files(workdir) {
+            let src = workdir.join(&cls);
+            let dst = cache_path.join(&cls);
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if src.exists() {
+                let _ = std::fs::copy(&src, &dst);
+            }
         }
-        if src.exists() {
-            let _ = std::fs::copy(&src, &dst);
-        }
-    }
-    // Persist Maven-resolved jars alongside the class cache so cache-hit
-    // restores can rebuild the `lib/` classpath without re-running mvn.
-    if lib_on_cp {
-        let lib_src = workdir.join("lib");
-        if lib_src.exists() {
-            let _ = copy_dir_all(&lib_src, &cache_path.join("lib"));
+        // Persist Maven-resolved jars alongside the class cache so cache-hit
+        // restores can rebuild the `lib/` classpath without re-running mvn.
+        if lib_on_cp {
+            let lib_src = workdir.join("lib");
+            if lib_src.exists() {
+                let _ = copy_dir_all(&lib_src, &cache_path.join("lib"));
+            }
         }
     }
     Ok(())
@@ -1333,10 +1485,7 @@ pub struct ChainStepBuildResult {
 /// build its own per-step command vector.
 ///
 /// `profile` is consulted only on [`Lang::C`] (drives `-static`); the
-/// other per-language preparers ignore it.  [`Lang::Ruby`] returns
-/// [`BuildError::Unsupported`] because there is no `prepare_ruby` —
-/// the runner's match arm falls through to a `_ => {}` no-op for Ruby
-/// today, so the reverifier mirrors that contract.
+/// other per-language preparers ignore it.
 pub fn dispatch_prepare(
     spec: &HarnessSpec,
     workdir: &Path,
@@ -1350,9 +1499,9 @@ pub fn dispatch_prepare(
         Lang::Go => prepare_go(spec, workdir)?,
         Lang::Java => prepare_java(spec, workdir)?,
         Lang::Php => prepare_php(spec, workdir)?,
+        Lang::Ruby => prepare_ruby(spec, workdir)?,
         Lang::C => prepare_c(spec, workdir, profile)?,
         Lang::Cpp => prepare_cpp(spec, workdir)?,
-        Lang::Ruby => return Err(BuildError::Unsupported),
     };
     Ok(ChainStepBuildResult {
         lang,
@@ -1949,18 +2098,21 @@ mod tests {
         }
 
         #[test]
-        fn dispatch_prepare_ruby_returns_unsupported() {
-            // Ruby has no prepare_ruby — the runner falls through to a `_`
-            // no-op for it.  The dispatcher mirrors that contract so the
-            // composite-chain reverifier can distinguish "build skipped"
-            // from "build failed" instead of silently producing a result.
+        fn dispatch_prepare_ruby_routes_to_bundler_no_gemfile_path() {
+            // Ruby now has the same dependency-prep leg as the other
+            // interpreted framework harnesses.  With no Gemfile present,
+            // prepare_ruby takes the cheap path and records an empty cache
+            // entry without invoking Bundler.
+            let _lock = ENV_LOCK.lock().unwrap();
+            let _cache = BuildCacheGuard::isolated();
             let dir = tempfile::TempDir::new().unwrap();
-            let spec = mk_spec(Lang::Ruby, "ruby-unsupported");
-            let result = dispatch_prepare(&spec, dir.path(), ProcessHardeningProfile::Standard);
-            assert!(
-                matches!(result, Err(BuildError::Unsupported)),
-                "Ruby must route to BuildError::Unsupported; got {result:?}",
-            );
+            let spec = mk_spec(Lang::Ruby, "ruby-no-gemfile");
+            let result = dispatch_prepare(&spec, dir.path(), ProcessHardeningProfile::Standard)
+                .expect("Ruby dispatch must succeed on a workdir with no Gemfile");
+            assert_eq!(result.lang, Lang::Ruby);
+            assert!(!result.cache_hit);
+            assert_eq!(result.duration, Duration::ZERO);
+            assert!(result.build_root.exists());
         }
 
         #[test]

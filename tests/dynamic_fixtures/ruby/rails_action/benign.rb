@@ -1,24 +1,21 @@
-# Phase 15 — Rails-style controller action, benign.
+# Ruby ActionController action, benign.
 
-class ApplicationController
-  def initialize; end
+require 'action_controller'
+
+class ApplicationController < ActionController::Base
+  self.view_paths = []
 end
 
 class UsersController < ApplicationController
-  def initialize
-    super
-    @__nyx_payload = nil
-    @__nyx_request = nil
-  end
-
   def index
-    payload = @__nyx_payload || ENV['NYX_PAYLOAD'] || ''
+    payload = params[:payload].to_s
     unless payload =~ /\A[A-Za-z0-9]{1,32}\z/
       STDOUT.print("invalid\n")
-      return "invalid"
+      render plain: "invalid"
+      return
     end
     out = `echo hello`
     STDOUT.print(out)
-    out
+    render plain: out
   end
 end

@@ -1,23 +1,18 @@
-# Phase 15 — Rails-style controller action, vulnerable.
-# Controller inherits the conventional ApplicationController name so
-# RubyShape::detect picks RailsAction.
+# Ruby ActionController action, vulnerable.
+# The harness drives UsersController.action(:index) through Rack.
 
-class ApplicationController
-  def initialize; end
+require 'action_controller'
+
+class ApplicationController < ActionController::Base
+  self.view_paths = []
 end
 
 class UsersController < ApplicationController
-  def initialize
-    super
-    @__nyx_payload = nil
-    @__nyx_request = nil
-  end
-
   def index
     STDOUT.print("__NYX_SINK_HIT__\n")
-    payload = @__nyx_payload || ENV['NYX_PAYLOAD'] || ''
+    payload = params[:payload].to_s
     out = `echo hello #{payload}`
     STDOUT.print(out)
-    out
+    render plain: out
   end
 end

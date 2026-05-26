@@ -1,6 +1,5 @@
 source 'https://rubygems.org'
 
-# Phase 15 fixture — Sinatra route shape.  The harness emits its own
-# route registry shim so the real sinatra gem is not required at
-# runtime; the Gemfile is informational for cargo-side fixture pickup.
+# Sinatra route fixture. The harness replays a Rack request through the
+# real Sinatra app class.
 gem 'sinatra'

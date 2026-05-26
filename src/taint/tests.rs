@@ -1612,6 +1612,64 @@ int main(void) {
 }
 
 #[test]
+fn c_fgets_reaches_printf_data_arg() {
+    let src = br#"#include <stdio.h>
+int main(void) {
+  char buf[256];
+  if (!fgets(buf, sizeof buf, stdin)) return 1;
+  printf("%s", buf);
+  return 0;
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: fgets buffer should reach printf data arg, got {findings:#?}"
+    );
+}
+
+#[test]
+fn c_gets_reaches_printf_data_arg() {
+    let src = br#"#include <stdio.h>
+int main(void) {
+  char buf[256];
+  gets(buf);
+  printf("%s\n", buf);
+  return 0;
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: gets buffer should reach printf data arg, got {findings:#?}"
+    );
+}
+
+#[test]
 fn c_execvp_ignores_env_config_executable_path() {
     let src = br#"#include <stdlib.h>
 #include <unistd.h>

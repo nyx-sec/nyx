@@ -1,7 +1,5 @@
 source 'https://rubygems.org'
 
-# Phase 15 fixture — Rails action shape.  The harness instantiates
-# the controller via .new and calls the action through reflection;
-# the rails gem is not actually required at runtime.  The Gemfile is
-# informational so cargo-side fixture pickup sees a non-empty manifest.
-gem 'rails'
+# ActionController fixture. The harness calls the controller's Rack
+# endpoint with Rack::MockRequest.
+gem 'actionpack'

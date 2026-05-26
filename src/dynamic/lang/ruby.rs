@@ -3,13 +3,15 @@
 //! Phase 15 (Track B Ruby vertical) replaces the previous `LangUnsupported`
 //! stub with dispatch over [`RubyShape`] — the cross product of
 //! [`EntryKind`] and a lightweight per-file shape detector that inspects
-//! the entry file for Sinatra routes, Rails controller actions, Rack
-//! middleware, and generic controller methods.
+//! the entry file for Sinatra routes, Rails controller actions, Hanami
+//! actions, Rack middleware, and generic controller methods.
 //!
 //! Each shape emits a single `harness.rb` that:
 //! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
 //! 2. Requires the entry file from the workdir (`entry.rb`).
-//! 3. Invokes the entry point via the per-shape adapter.
+//! 3. Invokes the entry point via the per-shape adapter. Framework routes
+//!    are replayed through Rack / ActionController / Hanami request entry
+//!    points instead of an in-process route registry.
 //!
 //! Sink-reachability probe: fixtures explicitly emit `__NYX_SINK_HIT__`
 //! before the actual sink call (same pattern as Rust / JS / Go fixtures).
@@ -17,14 +19,13 @@
 //! Payload slot support:
 //! - `PayloadSlot::Param(n)` — n-th positional argument.
 //! - `PayloadSlot::EnvVar(name)` — set `ENV[name]` before calling.
-//! - `PayloadSlot::QueryParam(name)` — surfaced via the per-shape
-//!   request stub for Sinatra / Rails / Rack.
-//! - `PayloadSlot::HttpBody` — surfaced via the per-shape request stub
-//!   for Sinatra / Rails / Rack.
+//! - `PayloadSlot::QueryParam(name)` — surfaced via the Rack request.
+//! - `PayloadSlot::HttpBody` — surfaced via the Rack request body.
 //! - `PayloadSlot::Argv(n)` — appended to `ARGV` for CLI-style entries.
 //! - `PayloadSlot::Stdin` — produces `UnsupportedReason::PayloadSlotUnsupported`.
 //!
-//! Build: no compilation step. Command is `ruby harness.rb`.
+//! Build: no compilation step. When the emitter stages a Gemfile,
+//! `build_sandbox::prepare_ruby` runs Bundler before `ruby harness.rb`.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
@@ -37,8 +38,8 @@ pub struct RubyEmitter;
 
 /// Entry kinds the Ruby emitter understands after Phase 15.
 ///
-/// `HttpRoute` covers Sinatra / Rails / Rack.  `CliSubcommand` covers
-/// `ARGV`-driven scripts.  `Function` covers plain methods and
+/// `HttpRoute` covers Sinatra / Rails / Hanami / Rack.  `CliSubcommand`
+/// covers `ARGV`-driven scripts.  `Function` covers plain methods and
 /// controller method shapes.
 const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
@@ -131,17 +132,18 @@ fn ruby_string_literal(s: &str) -> String {
 /// or no marker fires the detector defaults to [`RubyShape::Generic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RubyShape {
-    /// `get '/path' do ... end` Sinatra route.  Harness publishes the
-    /// payload via `ENV` + `$nyx_request` and triggers the route's
-    /// block via `$nyx_sinatra_routes`.
+    /// `get '/path' do ... end` Sinatra route. Harness sends a Rack
+    /// request into the detected Sinatra app.
     SinatraRoute,
     /// Rails controller action (e.g. `def index ... end` on a class
     /// inheriting from `ApplicationController` / `ActionController::Base`).
-    /// Harness instantiates the controller and calls the action with a
-    /// stub `request` / `params` pair.
+    /// Harness calls the controller's Rack endpoint.
     RailsAction,
+    /// Hanami action (`class RunAction < Hanami::Action` with `call`).
+    /// Harness invokes the real action object with a Rack env.
+    HanamiAction,
     /// Rack middleware: `def call(env) ... end` on a class.  Harness
-    /// builds a minimal Rack `env` hash and dispatches.
+    /// builds the env through Rack and dispatches the app.
     RackMiddleware,
     /// Generic instance method on a controller class (no framework
     /// marker).  Harness instantiates the class with `.new` and calls
@@ -168,6 +170,10 @@ impl RubyShape {
             || source.contains("ActionController::Base")
             || source.contains("ActionController::API")
             || source.contains("# nyx-shape: rails");
+        let has_hanami = source.contains("require 'hanami/action'")
+            || source.contains("require \"hanami/action\"")
+            || source.contains("Hanami::Action")
+            || source.contains("# nyx-shape: hanami");
         let has_rack = source.contains("def call(env)")
             || source.contains("Rack::")
             || source.contains("# nyx-shape: rack");
@@ -187,6 +193,9 @@ impl RubyShape {
         }
         if has_rails {
             return Self::RailsAction;
+        }
+        if has_hanami {
+            return Self::HanamiAction;
         }
         if has_rack {
             return Self::RackMiddleware;
@@ -510,14 +519,33 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
     let source = generate_source(spec, shape);
+    let extra_files = extra_files_for_shape(shape);
 
     Ok(HarnessSource {
         source,
         filename: "harness.rb".to_owned(),
         command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
-        extra_files: vec![],
+        extra_files,
         entry_subpath: Some("entry.rb".to_owned()),
     })
+}
+
+fn extra_files_for_shape(shape: RubyShape) -> Vec<(String, String)> {
+    let deps: &[&str] = match shape {
+        RubyShape::SinatraRoute => &["rack", "sinatra"],
+        RubyShape::RailsAction => &["rack", "actionpack"],
+        RubyShape::HanamiAction => &["rack", "hanami-controller"],
+        RubyShape::RackMiddleware => &["rack"],
+        RubyShape::ControllerMethod | RubyShape::Generic => &[],
+    };
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    let mut body = String::from("source 'https://rubygems.org'\n");
+    for dep in deps {
+        body.push_str(&format!("gem '{dep}'\n"));
+    }
+    vec![("Gemfile".to_owned(), body)]
 }
 
 /// Phase 19 (Track M.1) — class-method harness for Ruby.
@@ -2043,7 +2071,7 @@ STDOUT.flush
 
 fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     let entry_fn = &spec.entry_name;
-    let pre_call = build_pre_call(spec);
+    let pre_call = build_pre_call(spec, shape);
     let invocation = invoke_for_shape(spec, shape, entry_fn);
     let shim = probe_shim();
     let crash_callee = if entry_fn.is_empty() {
@@ -2053,7 +2081,7 @@ fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     };
 
     format!(
-        r#"# Nyx dynamic harness — auto-generated, do not edit (Phase 15 — RubyShape::{shape:?}).
+        r#"# Nyx dynamic harness — auto-generated, do not edit (RubyShape::{shape:?}).
 {shim}
 # ── Payload loading ──────────────────────────────────────────────────────────
 def nyx_payload
@@ -2073,26 +2101,60 @@ end
 
 $nyx_payload = nyx_payload
 
+begin
+  require 'uri'
+  require 'bundler/setup' if File.exist?(File.join(__dir__, 'Gemfile'))
+rescue LoadError, StandardError => e
+  STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+  exit 77
+end
+
+def _nyx_require_rack_mock
+  require 'rack/mock'
+rescue LoadError => e
+  STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+  exit 77
+end
+
+def _nyx_materialize_path(template, payload)
+  encoded = URI.encode_www_form_component(payload.to_s)
+  path = template.to_s.empty? ? '/' : template.to_s
+  path = path.gsub(/\{{[^}}]+\}}/, encoded)
+  path.gsub(/:[A-Za-z_][A-Za-z0-9_]*/, encoded)
+end
+
+def _nyx_request_uri
+  params = $nyx_request[:params] || {{}}
+  query = URI.encode_www_form(params)
+  path = $nyx_request[:path] || '/'
+  query.empty? ? path : path.to_s + '?' + query.to_s
+end
+
+def _nyx_rack_env
+  _nyx_require_rack_mock
+  env = Rack::MockRequest.env_for(
+    _nyx_request_uri,
+    method: ($nyx_request[:method] || 'GET'),
+    input: ($nyx_request[:body] || '')
+  )
+  env['nyx.payload'] = $nyx_payload
+  env
+end
+
+def _nyx_print_rack_body(body)
+  if body.respond_to?(:each)
+    body.each {{ |chunk| print(chunk.to_s) }}
+  elsif body
+    print(body.to_s)
+  end
+end
+
 # Phase 08 sink-site signal trap: install AFTER payload decode so a crash
 # inside `nyx_payload` writes no Crash probe and routes the verifier to
 # `Inconclusive(UnrelatedCrash)`.  A fatal signal inside the entry call
 # below DOES fire the handler and writes a Crash probe to `NYX_PROBE_PATH`.
 __nyx_install_crash_guard('{crash_callee}')
 {pre_call}
-# ── Sinatra route registry ──────────────────────────────────────────────────
-$nyx_sinatra_routes ||= []
-unless Object.method_defined?(:__nyx_register_route)
-  module Kernel
-    def get(path, &block)
-      $nyx_sinatra_routes ||= []
-      $nyx_sinatra_routes << [path, :get, block]
-    end
-    def post(path, &block)
-      $nyx_sinatra_routes ||= []
-      $nyx_sinatra_routes << [path, :post, block]
-    end
-  end
-end
 
 # ── Entry require ───────────────────────────────────────────────────────────
 begin
@@ -2115,79 +2177,198 @@ end
     )
 }
 
-fn build_pre_call(spec: &HarnessSpec) -> String {
+fn build_pre_call(spec: &HarnessSpec, shape: RubyShape) -> String {
     let mut out = String::new();
+    let (method, path_template) = route_for_spec(spec, shape);
+    let default_param = default_payload_param(spec);
+    let default_request = format!(
+        "$nyx_request = {{ method: {method:?}, path: _nyx_materialize_path({path_template:?}, $nyx_payload), params: {{ {default_param:?} => $nyx_payload }}, body: '' }}\n"
+    );
     match &spec.payload_slot {
         PayloadSlot::EnvVar(name) => {
             out.push_str(&format!("ENV[{name:?}] = $nyx_payload\n"));
+            out.push_str(&default_request);
         }
         PayloadSlot::Argv(n) => {
             for _ in 0..*n {
                 out.push_str("ARGV << ''\n");
             }
             out.push_str("ARGV << $nyx_payload\n");
+            out.push_str(&default_request);
         }
         PayloadSlot::QueryParam(name) => {
             out.push_str(&format!(
-                "$nyx_request = {{ method: 'GET', path: '/', params: {{ {name:?} => $nyx_payload }}, body: '' }}\n"
+                "$nyx_request = {{ method: {method:?}, path: _nyx_materialize_path({path_template:?}, $nyx_payload), params: {{ {name:?} => $nyx_payload }}, body: '' }}\n"
             ));
         }
         PayloadSlot::HttpBody => {
-            out.push_str(
-                "$nyx_request = { method: 'POST', path: '/', params: {}, body: $nyx_payload }\n",
-            );
+            out.push_str(&format!(
+                "$nyx_request = {{ method: 'POST', path: _nyx_materialize_path({path_template:?}, $nyx_payload), params: {{}}, body: $nyx_payload }}\n"
+            ));
         }
         _ => {
-            out.push_str(
-                "$nyx_request = { method: 'GET', path: '/', params: { 'payload' => $nyx_payload }, body: '' }\n",
-            );
+            out.push_str(&default_request);
         }
     }
     out
+}
+
+fn default_payload_param(spec: &HarnessSpec) -> String {
+    spec.framework
+        .as_ref()
+        .and_then(|binding| {
+            binding
+                .request_params
+                .iter()
+                .find_map(|param| match &param.source {
+                    crate::dynamic::framework::ParamSource::QueryParam(name)
+                    | crate::dynamic::framework::ParamSource::FormField(name)
+                    | crate::dynamic::framework::ParamSource::PathSegment(name) => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| "payload".to_owned())
+}
+
+fn route_for_spec(spec: &HarnessSpec, shape: RubyShape) -> (String, String) {
+    if let Some(route) = spec
+        .framework
+        .as_ref()
+        .and_then(|binding| binding.route.as_ref())
+    {
+        return (
+            http_method_name(route.method).to_owned(),
+            route.path.clone(),
+        );
+    }
+    let source = read_entry_source(&spec.entry_file);
+    if let Some(found) = route_from_source(&source) {
+        return found;
+    }
+    match shape {
+        RubyShape::RailsAction => ("GET".to_owned(), format!("/{}", spec.entry_name)),
+        RubyShape::RackMiddleware => ("GET".to_owned(), "/".to_owned()),
+        RubyShape::SinatraRoute | RubyShape::HanamiAction => ("GET".to_owned(), "/run".to_owned()),
+        RubyShape::ControllerMethod | RubyShape::Generic => ("GET".to_owned(), "/".to_owned()),
+    }
+}
+
+fn route_from_source(source: &str) -> Option<(String, String)> {
+    if let Some(found) = pinned_route_from_source(source) {
+        return Some(found);
+    }
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        for verb in ["get", "post", "put", "patch", "delete", "options"] {
+            if let Some(rest) = trimmed.strip_prefix(verb)
+                && rest.starts_with(char::is_whitespace)
+                && let Some(path) = first_quoted_string(rest)
+            {
+                return Some((verb.to_ascii_uppercase(), path));
+            }
+        }
+    }
+    None
+}
+
+fn pinned_route_from_source(source: &str) -> Option<(String, String)> {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("# nyx-route:") else {
+            continue;
+        };
+        let mut parts = rest.split_ascii_whitespace();
+        let method = parts.next()?.to_ascii_uppercase();
+        let path = parts.next()?.to_owned();
+        return Some((method, path));
+    }
+    None
+}
+
+fn first_quoted_string(input: &str) -> Option<String> {
+    let trimmed = input.trim_start();
+    let quote = match trimmed.as_bytes().first()? {
+        b'\'' => '\'',
+        b'"' => '"',
+        _ => return None,
+    };
+    let rest = &trimmed[1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_owned())
+}
+
+fn http_method_name(method: crate::dynamic::framework::HttpMethod) -> &'static str {
+    match method {
+        crate::dynamic::framework::HttpMethod::GET => "GET",
+        crate::dynamic::framework::HttpMethod::HEAD => "HEAD",
+        crate::dynamic::framework::HttpMethod::POST => "POST",
+        crate::dynamic::framework::HttpMethod::PUT => "PUT",
+        crate::dynamic::framework::HttpMethod::PATCH => "PATCH",
+        crate::dynamic::framework::HttpMethod::DELETE => "DELETE",
+        crate::dynamic::framework::HttpMethod::OPTIONS => "OPTIONS",
+    }
 }
 
 fn invoke_for_shape(spec: &HarnessSpec, shape: RubyShape, entry_fn: &str) -> String {
     match shape {
         RubyShape::Generic => generic_invocation(spec, entry_fn),
         RubyShape::SinatraRoute => format!(
-            r#"  route = $nyx_sinatra_routes.find {{ |_, _, b| b }}
-  if route && route[2]
-    blk = route[2]
-    result = blk.call($nyx_payload)
-    print(result.to_s)
+            r#"  _nyx_require_rack_mock
+  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
+  app = if cls && cls.respond_to?(:call)
+    cls
+  elsif defined?(Sinatra) && Sinatra.const_defined?(:Application)
+    Sinatra::Application
+  end
+  if app
+    response = Rack::MockRequest.new(app).request(
+      ($nyx_request[:method] || 'GET'),
+      _nyx_request_uri,
+      input: ($nyx_request[:body] || '')
+    )
+    print(response.body.to_s)
   elsif respond_to?({entry_fn:?})
     print(send({entry_fn:?}, $nyx_payload).to_s)
   end"#,
+            cls = entry_class_from_spec(spec),
         ),
         RubyShape::RailsAction => {
             let cls = entry_class_from_spec(spec);
             format!(
+                r#"  _nyx_require_rack_mock
+  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
+  if cls && cls.respond_to?(:action)
+    _status, _headers, body = cls.action({entry_fn:?}).call(_nyx_rack_env)
+    _nyx_print_rack_body(body)
+  end"#,
+            )
+        }
+        RubyShape::HanamiAction => {
+            let cls = entry_class_from_spec(spec);
+            format!(
                 r#"  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
   if cls
-    instance = cls.new
-    instance.instance_variable_set(:@__nyx_payload, $nyx_payload)
-    instance.instance_variable_set(:@__nyx_request, $nyx_request)
-    result = instance.send({entry_fn:?})
-    print(result.to_s) if result
+    action = cls.new
+    result = action.call(_nyx_rack_env)
+    if result.is_a?(Array) && result.length >= 3
+      _nyx_print_rack_body(result[2])
+    else
+      print(result.to_s) if result
+    end
   end"#,
             )
         }
         RubyShape::RackMiddleware => {
             let cls = entry_class_from_spec(spec);
             format!(
-                r#"  require 'stringio'
-  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
+                r#"  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
   if cls
     inner = cls.respond_to?(:new) ? (cls.method(:new).arity == 0 ? cls.new : cls.new(nil)) : nil
-    env = {{
-      'REQUEST_METHOD' => ($nyx_request[:method] rescue 'GET'),
-      'PATH_INFO' => ($nyx_request[:path] rescue '/'),
-      'QUERY_STRING' => "payload=#{{$nyx_payload}}",
-      'rack.input' => StringIO.new(($nyx_request[:body] rescue '')),
-      'nyx.payload' => $nyx_payload,
-    }}
+    env = _nyx_rack_env
     status, headers, body = inner.call(env)
-    Array(body).each {{ |chunk| print(chunk.to_s) }}
+    _nyx_print_rack_body(body)
   end"#,
             )
         }
@@ -2249,7 +2430,7 @@ fn parse_class_hosting_method(source: &str, entry_name: &str) -> Option<String> 
         if let Some(rest) = l.strip_prefix("class ") {
             let name: String = rest
                 .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
                 .collect();
             if !name.is_empty() {
                 last_class = Some(name);
@@ -2269,7 +2450,7 @@ fn parse_first_class_name(source: &str) -> Option<String> {
         if let Some(rest) = l.strip_prefix("class ") {
             let name: String = rest
                 .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
                 .collect();
             if !name.is_empty() {
                 return Some(name);
@@ -2392,6 +2573,13 @@ mod tests {
     }
 
     #[test]
+    fn shape_detect_hanami_action() {
+        let src = "require 'hanami/action'\nclass RunAction < Hanami::Action\n  def call(req)\n    'ok'\n  end\nend\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "call", "entry.rb");
+        assert_eq!(RubyShape::detect(&spec, src), RubyShape::HanamiAction);
+    }
+
+    #[test]
     fn shape_detect_rack_middleware() {
         let src = "class MyMiddleware\n  def call(env)\n    [200, {}, ['ok']]\n  end\nend\n";
         let spec = make_spec_with(EntryKind::HttpRoute, "call", "entry.rb");
@@ -2413,26 +2601,56 @@ mod tests {
     }
 
     #[test]
-    fn sinatra_shape_uses_route_registry() {
+    fn sinatra_shape_uses_rack_request() {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.rb");
         let src = generate_source(&spec, RubyShape::SinatraRoute);
-        assert!(src.contains("$nyx_sinatra_routes"));
+        assert!(src.contains("Rack::MockRequest.new(app).request"));
+        assert!(!src.contains("$nyx_sinatra_routes"));
     }
 
     #[test]
-    fn rack_shape_builds_env_hash() {
+    fn rack_shape_builds_env_through_rack() {
         let mut spec = make_spec_with(EntryKind::HttpRoute, "call", "entry.rb");
         spec.payload_slot = PayloadSlot::QueryParam("payload".into());
         let src = generate_source(&spec, RubyShape::RackMiddleware);
-        assert!(src.contains("REQUEST_METHOD"));
-        assert!(src.contains("rack.input"));
+        assert!(src.contains("Rack::MockRequest.env_for"));
+        assert!(src.contains("env['nyx.payload'] = $nyx_payload"));
     }
 
     #[test]
-    fn rails_shape_invokes_action_on_instance() {
+    fn rails_shape_invokes_action_rack_endpoint() {
         let spec = make_spec_with(EntryKind::HttpRoute, "index", "entry.rb");
         let src = generate_source(&spec, RubyShape::RailsAction);
-        assert!(src.contains("instance.send"));
+        assert!(src.contains("cls.action(\"index\").call(_nyx_rack_env)"));
+    }
+
+    #[test]
+    fn hanami_shape_invokes_action_with_rack_env() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "call", "entry.rb");
+        let src = generate_source(&spec, RubyShape::HanamiAction);
+        assert!(src.contains("action.call(_nyx_rack_env)"));
+    }
+
+    #[test]
+    fn framework_shapes_stage_gemfile() {
+        let sinatra = extra_files_for_shape(RubyShape::SinatraRoute);
+        assert!(
+            sinatra
+                .iter()
+                .any(|(p, c)| p == "Gemfile" && c.contains("sinatra"))
+        );
+        let rails = extra_files_for_shape(RubyShape::RailsAction);
+        assert!(
+            rails
+                .iter()
+                .any(|(p, c)| p == "Gemfile" && c.contains("actionpack"))
+        );
+        let hanami = extra_files_for_shape(RubyShape::HanamiAction);
+        assert!(
+            hanami
+                .iter()
+                .any(|(p, c)| p == "Gemfile" && c.contains("hanami-controller"))
+        );
     }
 
     #[test]
@@ -2451,6 +2669,10 @@ mod tests {
         assert_eq!(
             parse_first_class_name("class Bar < Base\nend\n"),
             Some("Bar".to_owned())
+        );
+        assert_eq!(
+            parse_first_class_name("class Books::Show < Hanami::Action\nend\n"),
+            Some("Books::Show".to_owned())
         );
         assert_eq!(parse_first_class_name("def foo\nend\n"), None);
     }

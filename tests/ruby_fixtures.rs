@@ -58,8 +58,28 @@ mod phase15_shape_tests {
         // Phase 29 (Track I): structured prerequisite gating replaces
         // the bespoke `ruby_available()` + per-test
         // `eprintln!("SKIP ..."); return;` pattern.
+        let mut requires = vec![Prerequisite::CommandAvailable("ruby")];
+        match shape {
+            "sinatra_route" => {
+                requires.push(Prerequisite::CommandAvailable("bundle"));
+                requires.push(Prerequisite::RubyRequireAvailable("sinatra/base"));
+            }
+            "rails_action" => {
+                requires.push(Prerequisite::CommandAvailable("bundle"));
+                requires.push(Prerequisite::RubyRequireAvailable("action_controller"));
+            }
+            "hanami_action" => {
+                requires.push(Prerequisite::CommandAvailable("bundle"));
+                requires.push(Prerequisite::RubyRequireAvailable("hanami/action"));
+            }
+            "rack_middleware" => {
+                requires.push(Prerequisite::CommandAvailable("bundle"));
+                requires.push(Prerequisite::RubyRequireAvailable("rack/mock"));
+            }
+            _ => {}
+        }
         run_shape_fixture_lang_or_skip(
-            &[Prerequisite::CommandAvailable("ruby")],
+            &requires,
             Lang::Ruby,
             "ruby",
             shape,
@@ -81,7 +101,7 @@ mod phase15_shape_tests {
             "vuln.rb",
             "run",
             Cap::CODE_EXEC,
-            7,
+            12,
             EntryKind::HttpRoute,
             PayloadSlot::Param(0),
         ) else {
@@ -97,7 +117,7 @@ mod phase15_shape_tests {
             "benign.rb",
             "run",
             Cap::CODE_EXEC,
-            10,
+            15,
             EntryKind::HttpRoute,
             PayloadSlot::Param(0),
         ) else {
@@ -115,7 +135,7 @@ mod phase15_shape_tests {
             "vuln.rb",
             "index",
             Cap::CODE_EXEC,
-            17,
+            14,
             EntryKind::HttpRoute,
             PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
@@ -131,13 +151,47 @@ mod phase15_shape_tests {
             "benign.rb",
             "index",
             Cap::CODE_EXEC,
-            20,
+            17,
             EntryKind::HttpRoute,
             PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
         assert_not_confirmed("rails_action", &r);
+    }
+
+    // ── hanami_action ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hanami_action_vuln_is_confirmed() {
+        let Some(r) = run(
+            "hanami_action",
+            "vuln.rb",
+            "call",
+            Cap::CODE_EXEC,
+            19,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
+        ) else {
+            return;
+        };
+        assert_confirmed("hanami_action", &r);
+    }
+
+    #[test]
+    fn hanami_action_benign_not_confirmed() {
+        let Some(r) = run(
+            "hanami_action",
+            "benign.rb",
+            "call",
+            Cap::CODE_EXEC,
+            21,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
+        ) else {
+            return;
+        };
+        assert_not_confirmed("hanami_action", &r);
     }
 
     // ── rack_middleware ──────────────────────────────────────────────────────
@@ -149,7 +203,7 @@ mod phase15_shape_tests {
             "vuln.rb",
             "call",
             Cap::CODE_EXEC,
-            9,
+            10,
             EntryKind::HttpRoute,
             PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {

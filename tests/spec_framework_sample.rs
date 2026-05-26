@@ -282,14 +282,14 @@ fn phase_15_ruby_route_findings_derive_specs_without_failure() {
         (
             "tests/dynamic_fixtures/ruby/rails_action/vuln.rb",
             "index",
-            19,
+            14,
             Cap::SHELL_ESCAPE,
             "rb.cmdi.backtick",
         ),
         (
             "tests/dynamic_fixtures/ruby/sinatra_route/vuln.rb",
             "run",
-            9,
+            12,
             Cap::SHELL_ESCAPE,
             "rb.cmdi.backtick",
         ),
@@ -310,7 +310,7 @@ fn phase_15_ruby_route_findings_derive_specs_without_failure() {
         (
             "tests/dynamic_fixtures/ruby/hanami_action/vuln.rb",
             "call",
-            13,
+            19,
             Cap::SHELL_ESCAPE,
             "rb.cmdi.backtick",
         ),

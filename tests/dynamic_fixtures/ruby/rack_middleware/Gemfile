@@ -1,6 +1,5 @@
 source 'https://rubygems.org'
 
-# Phase 15 fixture — Rack middleware shape.  The harness constructs
-# a Rack-shaped env hash and dispatches; the rack gem is not required
-# at runtime because the env-hash invocation pattern is standalone.
+# Rack middleware fixture. The harness builds the env through
+# Rack::MockRequest before dispatching the middleware.
 gem 'rack'

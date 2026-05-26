@@ -4211,7 +4211,10 @@ mod tests {
         assert!(harness.source.contains("nyxPayload()"));
         assert!(harness.source.contains("Entry.processInput(payload)"));
         assert_eq!(harness.filename, "NyxHarness.java");
-        assert_eq!(harness.command, vec!["java", "-cp", ".", "NyxHarness"]);
+        assert_eq!(
+            harness.command,
+            vec!["java", "-cp", ".:lib/*", "NyxHarness"]
+        );
     }
 
     #[test]

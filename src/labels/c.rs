@@ -132,6 +132,23 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // Output sinks: tainted values printed through a literal format string are
+    // not format-string vulnerabilities, but they still represent an
+    // attacker-controlled output flow in the real-world corpus.
+    SinkGate {
+        callee_matcher: "printf",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HTML_ESCAPE),
+        case_sensitive: false,
+        payload_args: crate::labels::ALL_ARGS_PAYLOAD,
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
     SinkGate {
         callee_matcher: "fprintf",
         arg_index: 1,

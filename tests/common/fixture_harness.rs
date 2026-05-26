@@ -74,6 +74,10 @@ pub enum Prerequisite {
     /// the resolution path skips with a structured reason instead of
     /// failing the test.
     NodeModuleAvailable(&'static str),
+    /// A Ruby feature must be loadable via `require`. Used by Ruby
+    /// framework-bound shape suites so hosts without preinstalled gems can
+    /// skip instead of depending on network access during tests.
+    RubyRequireAvailable(&'static str),
     /// A binary must resolve on `PATH` and respond to `--version` with
     /// exit code 0, but the binary name can be overridden via an env
     /// var.  Used by the C / C++ fixture suites where `cc` / `c++` can
@@ -97,6 +101,7 @@ pub enum SkipReason {
     DockerUnavailable,
     MissingStaticLib(&'static str),
     MissingNodeModule(&'static str),
+    MissingRubyRequire(&'static str),
 }
 
 impl std::fmt::Display for SkipReason {
@@ -109,6 +114,7 @@ impl std::fmt::Display for SkipReason {
             SkipReason::MissingNodeModule(m) => {
                 write!(f, "Node module not resolvable via require.resolve: {m}")
             }
+            SkipReason::MissingRubyRequire(r) => write!(f, "Ruby feature not loadable: {r}"),
         }
     }
 }
@@ -176,6 +182,19 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                     .unwrap_or(false);
                 if !ok {
                     return Err(SkipReason::MissingNodeModule(name));
+                }
+            }
+            Prerequisite::RubyRequireAvailable(feature) => {
+                let script = "begin; require ARGV.fetch(0); rescue LoadError; exit 1; end";
+                let ok = std::process::Command::new("ruby")
+                    .arg("-e")
+                    .arg(script)
+                    .arg(feature)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(SkipReason::MissingRubyRequire(feature));
                 }
             }
             Prerequisite::StaticLib(lib) => {

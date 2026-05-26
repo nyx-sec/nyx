@@ -354,6 +354,27 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 return Err(RunError::BuildFailed { stderr, attempts });
             }
         }
+        Lang::Ruby => {
+            // bundle install if Gemfile is present.
+            match build_sandbox::prepare_ruby(spec, &harness.workdir) {
+                Ok(_) => {}
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(build_sandbox::BuildError::Io(e)) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: format!("prepare ruby build cache: {e}"),
+                        attempts: 1,
+                    });
+                }
+                Err(build_sandbox::BuildError::Unsupported) => {
+                    return Err(RunError::BuildFailed {
+                        stderr: "ruby build preparation unsupported on this host".to_owned(),
+                        attempts: 1,
+                    });
+                }
+            }
+        }
         Lang::C => {
             // Compile the harness binary with `cc -o nyx_harness main.c`.
             // Pass the sandbox profile so the build chooses `-static` when
@@ -396,9 +417,6 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 }
                 Err(_) => {}
             }
-        }
-        _ => {
-            // No build step for other languages.
         }
     }
 
