@@ -156,6 +156,10 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("subscribe"));
+    assert!(h.source.contains("poll"));
+    assert!(h.source.contains("commit"));
+    assert!(h.source.contains("\"deliver\""));
+    assert!(h.source.contains("\"ack\""));
     assert!(h.source.contains("__NYX_BROKER_PUBLISH__"));
     assert!(h.source.contains("NYX_KAFKA_LOG"));
     assert!(h.source.contains("_nyx_record_broker_publish"));
@@ -169,6 +173,10 @@ fn message_handler_java_emits_reflective_dispatch() {
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("Class.forName"));
     assert!(h.source.contains("getDeclaredMethod"));
+    assert!(h.source.contains("brokerRef.poll"));
+    assert!(h.source.contains("brokerRef.commit"));
+    assert!(h.source.contains("\"deliver\""));
+    assert!(h.source.contains("\"ack\""));
     assert!(h.source.contains("NYX_KAFKA_LOG"));
     assert!(h.source.contains("nyxRecordBrokerPublish"));
 }
@@ -178,7 +186,10 @@ fn message_handler_node_uses_sqs_loopback() {
     let spec = make_spec(Lang::JavaScript, "jobs", "handler", entry_file("sqs_node"));
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("NyxSqsLoopback"));
-    assert!(h.source.contains("subscribe"));
+    assert!(h.source.contains("receiveMessage"));
+    assert!(h.source.contains("deleteMessage"));
+    assert!(h.source.contains("'deliver'"));
+    assert!(h.source.contains("'ack'"));
     assert!(h.source.contains("__NYX_BROKER_PUBLISH__:sqs"));
     assert!(h.source.contains("NYX_SQS_LOG"));
     assert!(h.source.contains("_nyxRecordBrokerPublish"));
@@ -550,11 +561,13 @@ mod e2e_phase_20 {
     use nyx_scanner::dynamic::spec::{
         EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
+    use nyx_scanner::dynamic::stubs::{StubHarness, StubKind};
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn command_available(bin: &str) -> bool {
@@ -592,6 +605,17 @@ mod e2e_phase_20 {
         }
     }
 
+    fn broker_stub_for_adapter(adapter: &str) -> StubKind {
+        match adapter.split_once('-').map(|(broker, _)| broker) {
+            Some("kafka") => StubKind::Kafka,
+            Some("sqs") => StubKind::Sqs,
+            Some("pubsub") => StubKind::Pubsub,
+            Some("rabbit") => StubKind::Rabbit,
+            Some("nats") => StubKind::Nats,
+            _ => panic!("adapter {adapter} is not a broker adapter"),
+        }
+    }
+
     fn build_spec(
         lang: Lang,
         fixture_dir: &str,
@@ -624,6 +648,7 @@ mod e2e_phase_20 {
         }
 
         let adapter = adapter_for(fixture_dir);
+        let stub_kind = broker_stub_for_adapter(adapter);
         let framework = Some(nyx_scanner::dynamic::framework::FrameworkBinding {
             adapter: adapter.to_owned(),
             kind: EntryKind::MessageHandler {
@@ -653,7 +678,7 @@ mod e2e_phase_20 {
             sink_line: 1,
             spec_hash: spec_hash.clone(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
-            stubs_required: vec![],
+            stubs_required: vec![stub_kind],
             framework,
             java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         };
@@ -675,8 +700,19 @@ mod e2e_phase_20 {
         }
         let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (spec, _tmp) = build_spec(lang, fixture_dir, fixture_file, handler, queue);
+        let stub_workdir = TempDir::new().expect("create broker stub tempdir");
+        let stub_harness = Arc::new(
+            StubHarness::start(&spec.stubs_required, stub_workdir.path())
+                .expect("start broker stub harness"),
+        );
+        let mut extra_env = Vec::new();
+        for (name, value) in stub_harness.endpoints() {
+            extra_env.push((name.to_owned(), value));
+        }
         let opts = SandboxOptions {
             backend: nyx_scanner::dynamic::sandbox::SandboxBackend::Process,
+            extra_env,
+            stub_harness: Some(stub_harness),
             ..SandboxOptions::default()
         };
         match run_spec(&spec, &opts) {

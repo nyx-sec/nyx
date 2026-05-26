@@ -899,15 +899,34 @@ fn emit_migration_harness(spec: &HarnessSpec, version: Option<&str>) -> HarnessS
         r#"{preamble}
 puts "__NYX_MIGRATION__: " + {ver:?}
 
+def __nyx_migration_sqlish?(value)
+  text = value.to_s.upcase
+  ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'].any? {{ |k| text.include?(k) }}
+end
+
+def __nyx_record_migration_result(value, driver)
+  return if value.nil?
+  return unless __nyx_migration_sqlish?(value)
+  __nyx_stub_sql_record(value, driver: driver, source: 'migration')
+end
+
 # ActiveRecord migrations expose `up` / `down` / `change` on a subclass.
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
   begin
     inst = cls.new
+    if inst.respond_to?(:execute, true)
+      original_execute = inst.method(:execute)
+      inst.define_singleton_method(:execute) do |sql, *args, &blk|
+        __nyx_record_migration_result(sql, 'active_record')
+        original_execute.call(sql, *args, &blk)
+      end
+    end
     %i[up change down].each do |m|
       if inst.respond_to?(m)
         begin
           result = inst.send(m)
+          __nyx_record_migration_result(result, 'active_record')
           print(result.to_s) if result
         rescue StandardError => e
           STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
@@ -923,6 +942,7 @@ end
 if respond_to?({handler:?}.to_sym, true)
   begin
     result = send({handler:?}.to_sym)
+    __nyx_record_migration_result(result, 'ruby')
     print(result.to_s) if result
   rescue StandardError => e
     STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")

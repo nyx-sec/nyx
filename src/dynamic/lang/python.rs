@@ -968,7 +968,12 @@ def _nyx_sqs_dispatch(envelope):
 _loop.subscribe({queue:?}, _nyx_sqs_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
 _nyx_record_broker_publish("NYX_SQS_LOG", {queue:?}, payload)
-_loop.publish({queue:?}, payload)"#,
+_loop.publish({queue:?}, payload)
+for _env in _loop.receive_message({queue:?}, max_number=1):
+    _nyx_record_broker_event("NYX_SQS_LOG", "deliver", {queue:?}, _env.get("Body", ""))
+    _nyx_sqs_dispatch(_env)
+    if _loop.delete_message({queue:?}, _env.get("ReceiptHandle", "")):
+        _nyx_record_broker_event("NYX_SQS_LOG", "ack", {queue:?}, _env.get("ReceiptHandle", ""))"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
@@ -1016,7 +1021,12 @@ def _nyx_kafka_dispatch(message):
 _loop.subscribe({queue:?}, _nyx_kafka_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
 _nyx_record_broker_publish("NYX_KAFKA_LOG", {queue:?}, payload)
-_loop.publish({queue:?}, payload)"#,
+_loop.publish({queue:?}, payload)
+for _record in _loop.poll({queue:?}, max_records=1):
+    _nyx_record_broker_event("NYX_KAFKA_LOG", "deliver", {queue:?}, _record.value)
+    _nyx_kafka_dispatch(_record.value)
+    _loop.commit(_record)
+    _nyx_record_broker_event("NYX_KAFKA_LOG", "ack", {queue:?}, str(_record.offset))"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
@@ -1030,15 +1040,22 @@ _loop.publish({queue:?}, payload)"#,
 {pubsub_src}
 {rabbit_src}
 
-def _nyx_record_broker_publish(env_name, destination, body):
+def _nyx_record_broker_event(env_name, action, destination, body):
     path = os.environ.get(env_name, "")
     if not path:
         return
     try:
         with open(path, "a", encoding="utf-8") as f:
-            f.write(str(destination).replace("\t", " ") + "\t" + str(body) + "\n")
+            f.write(
+                str(action).replace("\t", " ") + "\t" +
+                str(destination).replace("\t", " ") + "\t" +
+                str(body) + "\n"
+            )
     except Exception:
         pass
+
+def _nyx_record_broker_publish(env_name, destination, body):
+    _nyx_record_broker_event(env_name, "publish", destination, body)
 
 try:
 {register_and_publish}
@@ -1278,7 +1295,53 @@ _h = getattr(_entry_mod, {handler:?}, None)
 if _h is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
+
+def _nyx_migration_sql_record(sql, driver):
+    text = str(sql)
+    upper = text.upper()
+    if not any(k in upper for k in ("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP")):
+        return
+    __nyx_stub_sql_record(text, driver=driver, source="migration")
+    endpoint = os.environ.get("NYX_SQL_ENDPOINT", "")
+    if endpoint:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(endpoint)
+            try:
+                conn.execute(text)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+class _NyxMigrationOpProxy:
+    def __init__(self, inner=None):
+        self._inner = inner
+    def execute(self, sql, *args, **kwargs):
+        _nyx_migration_sql_record(sql, "alembic")
+        if self._inner is not None and self._inner is not self and hasattr(self._inner, "execute"):
+            return self._inner.execute(sql, *args, **kwargs)
+        return None
+
+def _nyx_install_migration_sql_hooks():
+    if hasattr(_entry_mod, "op"):
+        try:
+            _entry_mod.op = _NyxMigrationOpProxy(getattr(_entry_mod, "op"))
+        except Exception:
+            pass
+
+def _nyx_record_migration_result(result):
+    if result is None:
+        return
+    sql = getattr(result, "sql", None)
+    if sql is not None:
+        _nyx_migration_sql_record(sql, "django")
+    elif isinstance(result, str):
+        _nyx_migration_sql_record(result, "migration")
+
 try:
+    _nyx_install_migration_sql_hooks()
     # Migrations conventionally take no arguments; pass payload if the
     # function declares positional params (best-effort introspection).
     import inspect
@@ -1291,6 +1354,7 @@ try:
         _result = _h(payload)
     else:
         _result = _h()
+    _nyx_record_migration_result(_result)
     if _result is not None:
         try:
             print(str(_result), flush=True)

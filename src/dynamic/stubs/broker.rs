@@ -54,13 +54,37 @@ impl BrokerStub {
     /// Java, Python, Node, Go, PHP, Ruby, and Rust harnesses can append
     /// it without a JSON dependency:
     ///
-    /// `topic<TAB>payload`
+    /// `action<TAB>topic<TAB>payload`
+    ///
+    /// Older harnesses wrote `topic<TAB>payload`; `drain_events`
+    /// still accepts that form and treats it as a `publish` event.
     pub fn record_publish(&self, destination: &str, payload: &str) -> std::io::Result<()> {
+        self.record_event("publish", destination, payload)
+    }
+
+    /// Record a broker delivery observation.
+    pub fn record_delivery(&self, destination: &str, payload: &str) -> std::io::Result<()> {
+        self.record_event("deliver", destination, payload)
+    }
+
+    /// Record an ack/commit/delete observation. The `payload` field
+    /// carries the broker-specific ack token when one exists.
+    pub fn record_ack(&self, destination: &str, payload: &str) -> std::io::Result<()> {
+        self.record_event("ack", destination, payload)
+    }
+
+    fn record_event(&self, action: &str, destination: &str, payload: &str) -> std::io::Result<()> {
         let mut f = OpenOptions::new()
             .append(true)
             .create(true)
             .open(&self.log_path)?;
-        writeln!(f, "{}\t{}", destination.replace('\t', " "), payload)?;
+        writeln!(
+            f,
+            "{}\t{}\t{}",
+            action.replace('\t', " "),
+            destination.replace('\t', " "),
+            payload
+        )?;
         Ok(())
     }
 }
@@ -111,12 +135,13 @@ impl StubProvider for BrokerStub {
             if line.is_empty() {
                 continue;
             }
-            let (destination, payload) = line.split_once('\t').unwrap_or((line, ""));
+            let (action, destination, payload) = parse_broker_log_line(line);
             let event = StubEvent {
                 kind: self.kind,
                 captured_at_ns: monotonic_ns(),
-                summary: format!("publish {destination}"),
+                summary: format!("{action} {destination}"),
                 detail: std::collections::BTreeMap::from([
+                    ("action".to_owned(), action.to_owned()),
                     ("destination".to_owned(), destination.to_owned()),
                     ("payload".to_owned(), payload.to_owned()),
                 ]),
@@ -125,6 +150,18 @@ impl StubProvider for BrokerStub {
         }
         *cursor += bytes_read;
         events
+    }
+}
+
+fn parse_broker_log_line(line: &str) -> (&str, &str, &str) {
+    let Some((first, rest)) = line.split_once('\t') else {
+        return ("publish", line, "");
+    };
+    if matches!(first, "publish" | "deliver" | "ack" | "nack" | "retry") {
+        let (destination, payload) = rest.split_once('\t').unwrap_or((rest, ""));
+        (first, destination, payload)
+    } else {
+        ("publish", first, rest)
     }
 }
 
@@ -160,8 +197,34 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, StubKind::Sqs);
         assert_eq!(events[0].summary, "publish queue-a");
+        assert_eq!(events[0].detail.get("action").unwrap(), "publish");
         assert_eq!(events[0].detail.get("destination").unwrap(), "queue-a");
         assert_eq!(events[0].detail.get("payload").unwrap(), "NYX_PWN_CMDI");
         assert!(stub.drain_events().is_empty(), "drain cursor must advance");
+    }
+
+    #[test]
+    fn broker_drain_understands_delivery_and_ack_events() {
+        let dir = TempDir::new().unwrap();
+        let stub = BrokerStub::start(StubKind::Kafka, dir.path()).unwrap();
+        stub.record_delivery("orders", "payload-1").unwrap();
+        stub.record_ack("orders", "offset-1").unwrap();
+        let events = stub.drain_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].summary, "deliver orders");
+        assert_eq!(events[1].summary, "ack orders");
+        assert_eq!(events[1].detail.get("payload").unwrap(), "offset-1");
+    }
+
+    #[test]
+    fn broker_drain_preserves_legacy_two_field_publish_lines() {
+        let dir = TempDir::new().unwrap();
+        let stub = BrokerStub::start(StubKind::Rabbit, dir.path()).unwrap();
+        std::fs::write(stub.log_path(), "work\tlegacy payload\n").unwrap();
+        let events = stub.drain_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].summary, "publish work");
+        assert_eq!(events[0].detail.get("action").unwrap(), "publish");
+        assert_eq!(events[0].detail.get("payload").unwrap(), "legacy payload");
     }
 }

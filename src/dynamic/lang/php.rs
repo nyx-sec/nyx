@@ -3164,11 +3164,25 @@ fn emit_migration_harness(spec: &HarnessSpec, version: Option<&str>) -> HarnessS
         r#"{preamble}
 echo "__NYX_MIGRATION__: " . {version:?} . "\n";
 
+function __nyx_migration_sqlish($value): bool {{
+    $upper = strtoupper((string)$value);
+    foreach (['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'] as $kw) {{
+        if (strpos($upper, $kw) !== false) return true;
+    }}
+    return false;
+}}
+
+function __nyx_record_migration_result($value, string $driver): void {{
+    if ($value === null || !__nyx_migration_sqlish($value)) return;
+    __nyx_stub_sql_record((string)$value, ['driver' => $driver, 'source' => 'migration']);
+}}
+
 if (class_exists({handler:?})) {{
     $inst = new {handler}();
     if (method_exists($inst, 'up')) {{
         try {{
             $result = $inst->up();
+            __nyx_record_migration_result($result, 'laravel');
             if ($result !== null) echo (string)$result . "\n";
         }} catch (Throwable $e) {{
             fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
@@ -3180,6 +3194,7 @@ if (class_exists({handler:?})) {{
 }} elseif (function_exists({handler:?})) {{
     try {{
         $result = call_user_func({handler:?});
+        __nyx_record_migration_result($result, 'php');
         if ($result !== null) echo (string)$result . "\n";
     }} catch (Throwable $e) {{
         fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");

@@ -28,12 +28,14 @@ use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
 use nyx_scanner::dynamic::spec::{
     EntryKind, EntryKindTag, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
 };
+use nyx_scanner::dynamic::stubs::{StubHarness, StubKind};
 use nyx_scanner::evidence::DifferentialVerdict;
 use nyx_scanner::evidence::EntryKind as EvEntryKind;
 use nyx_scanner::labels::Cap;
 use nyx_scanner::summary::ssa_summary::SsaFuncSummary;
 use nyx_scanner::summary::{CalleeSite, FuncSummary};
 use nyx_scanner::symbol::Lang;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn make_spec(lang: Lang, kind: EvEntryKind, entry_name: &str, entry_file: &str) -> HarnessSpec {
@@ -906,6 +908,8 @@ fn migration_python_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("\"upgrade\""));
+    assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
 
 #[test]
@@ -919,6 +923,8 @@ fn migration_js_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("\"up\""));
+    assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("global.__nyx_prisma"));
 }
 
 #[test]
@@ -932,6 +938,7 @@ fn migration_ruby_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddIndex"));
+    assert!(h.source.contains("__nyx_stub_sql_record"));
 }
 
 #[test]
@@ -945,6 +952,7 @@ fn migration_php_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddUsers"));
+    assert!(h.source.contains("__nyx_stub_sql_record"));
 }
 
 #[test]
@@ -1378,7 +1386,7 @@ fn build_runspec_case(case: RunSpecCase, file_name: &str) -> (HarnessSpec, TempD
         sink_line: 1,
         spec_hash,
         derivation: SpecDerivationStrategy::FromFlowSteps,
-        stubs_required: vec![],
+        stubs_required: StubKind::for_cap(case.cap),
         framework: None,
         java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     };
@@ -1391,11 +1399,23 @@ fn run_phase21_case(case: RunSpecCase, file_name: &str) -> Option<RunOutcome> {
         eprintln!("SKIP {} {file_name}: missing toolchain {bin}", case.name);
         return None;
     }
-    let (spec, _tmp) = build_runspec_case(case, file_name);
-    let opts = SandboxOptions {
+    let (spec, tmp) = build_runspec_case(case, file_name);
+    let mut opts = SandboxOptions {
         backend: SandboxBackend::Process,
         ..SandboxOptions::default()
     };
+    let stub_harness = if spec.stubs_required.is_empty() {
+        None
+    } else {
+        let h = Arc::new(
+            StubHarness::start(&spec.stubs_required, tmp.path()).expect("start phase21 stubs"),
+        );
+        for (name, value) in h.endpoints() {
+            opts.extra_env.push((name.to_owned(), value));
+        }
+        Some(h)
+    };
+    opts.stub_harness = stub_harness;
     match run_spec(&spec, &opts) {
         Ok(outcome) => Some(outcome),
         Err(RunError::BuildFailed { stderr, attempts }) => {

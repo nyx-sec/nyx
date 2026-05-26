@@ -3804,20 +3804,26 @@ fn emit_message_handler_harness(
             crate::dynamic::stubs::SQS_PUBLISH_MARKER,
             format!(
                 r#"            NyxSqsLoopback brokerRef = new NyxSqsLoopback();
-            brokerRef.subscribe({queue:?}, env -> {{
+            System.out.println({publish_marker:?} + " " + {queue:?});
+            nyxRecordBrokerPublish("NYX_SQS_LOG", {queue:?}, payload);
+            brokerRef.publish({queue:?}, payload);
+            for (java.util.Map<String, String> env : brokerRef.receiveMessage({queue:?}, 1)) {{
+                nyxRecordBrokerEvent("NYX_SQS_LOG", "deliver", {queue:?}, env.getOrDefault("Body", ""));
                 System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
                 try {{
                     java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, java.util.Map.class);
                     m.setAccessible(true);
                     m.invoke(entryInst, env);
+                    success = true;
                 }} catch (Exception e) {{
                     Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
                     System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
                 }}
-            }});
-            System.out.println({publish_marker:?} + " " + {queue:?});
-            nyxRecordBrokerPublish("NYX_SQS_LOG", {queue:?}, payload);
-            brokerRef.publish({queue:?}, payload);"#,
+                if (success && brokerRef.deleteMessage({queue:?}, env.getOrDefault("ReceiptHandle", ""))) {{
+                    nyxRecordBrokerEvent("NYX_SQS_LOG", "ack", {queue:?}, env.getOrDefault("ReceiptHandle", ""));
+                }}
+            }}"#,
                 handler = handler,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
@@ -3859,20 +3865,27 @@ fn emit_message_handler_harness(
             crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
             format!(
                 r#"            NyxKafkaLoopback brokerRef = new NyxKafkaLoopback();
-            brokerRef.subscribe({queue:?}, body -> {{
+            System.out.println({publish_marker:?} + " " + {queue:?});
+            nyxRecordBrokerPublish("NYX_KAFKA_LOG", {queue:?}, payload);
+            brokerRef.publish({queue:?}, payload);
+            for (NyxKafkaRecord rec : brokerRef.poll({queue:?}, 1)) {{
+                nyxRecordBrokerEvent("NYX_KAFKA_LOG", "deliver", {queue:?}, rec.value);
                 System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
                 try {{
                     java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
                     m.setAccessible(true);
-                    m.invoke(entryInst, body);
+                    m.invoke(entryInst, rec.value);
+                    success = true;
                 }} catch (Exception e) {{
                     Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
                     System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
                 }}
-            }});
-            System.out.println({publish_marker:?} + " " + {queue:?});
-            nyxRecordBrokerPublish("NYX_KAFKA_LOG", {queue:?}, payload);
-            brokerRef.publish({queue:?}, payload);"#,
+                if (success) {{
+                    brokerRef.commit(rec);
+                    nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", {queue:?}, Long.toString(rec.offset));
+                }}
+            }}"#,
                 handler = handler,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
@@ -3917,10 +3930,10 @@ public class NyxHarness {{
         return "";
     }}
 
-    static void nyxRecordBrokerPublish(String envName, String destination, String payload) {{
+    static void nyxRecordBrokerEvent(String envName, String action, String destination, String payload) {{
         String path = System.getenv(envName);
         if (path == null || path.isEmpty()) return;
-        String line = destination.replace('\t', ' ') + "\t" + payload + "\n";
+        String line = action.replace('\t', ' ') + "\t" + destination.replace('\t', ' ') + "\t" + payload + "\n";
         try {{
             java.nio.file.Files.write(
                 java.nio.file.Paths.get(path),
@@ -3930,6 +3943,10 @@ public class NyxHarness {{
             );
         }} catch (Exception ignored) {{
         }}
+    }}
+
+    static void nyxRecordBrokerPublish(String envName, String destination, String payload) {{
+        nyxRecordBrokerEvent(envName, "publish", destination, payload);
     }}
 }}
 "#,

@@ -928,32 +928,49 @@ if (typeof _handler !== 'function') {{
 }}
 
 const _broker = new NyxSqsLoopback();
-function _nyxRecordBrokerPublish(envName, destination, body) {{
+function _nyxRecordBrokerEvent(envName, action, destination, body) {{
     const path = process.env[envName] || '';
     if (!path) return;
     try {{
         require('fs').appendFileSync(
             path,
-            String(destination).replace(/\t/g, ' ') + '\t' + String(body) + '\n',
+            String(action).replace(/\t/g, ' ') + '\t' +
+                String(destination).replace(/\t/g, ' ') + '\t' +
+                String(body) + '\n',
             'utf8'
         );
     }} catch (_) {{}}
 }}
-_broker.subscribe({queue:?}, async (envelope) => {{
+function _nyxRecordBrokerPublish(envName, destination, body) {{
+    _nyxRecordBrokerEvent(envName, 'publish', destination, body);
+}}
+
+async function _nyxDispatchEnvelope(envelope) {{
     try {{
         // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
         // gate requires this byte sequence on stdout / stderr.
         process.stdout.write('__NYX_SINK_HIT__\n');
         await Promise.resolve(_handler(envelope));
+        return true;
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+        return false;
     }}
-}});
+}}
 
 (async () => {{
     process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
     _nyxRecordBrokerPublish('NYX_SQS_LOG', {queue:?}, payload);
     _broker.publish({queue:?}, payload);
+    for (const envelope of _broker.receiveMessage({queue:?}, 1)) {{
+        _nyxRecordBrokerEvent('NYX_SQS_LOG', 'deliver', {queue:?}, envelope.Body || '');
+        const ok = await _nyxDispatchEnvelope(envelope);
+        if (ok && _broker.deleteMessage({queue:?}, envelope.ReceiptHandle || '')) {{
+            _nyxRecordBrokerEvent('NYX_SQS_LOG', 'ack', {queue:?}, envelope.ReceiptHandle || '');
+        }} else {{
+            _broker.replayInflight();
+        }}
+    }}
 }})();
 "#,
         handler = handler,
@@ -1187,21 +1204,30 @@ if (_h == null) {{
     process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
-// Synthetic queryInterface for sequelize-style up/down(queryInterface, Sequelize).
+function _nyxLooksLikeSql(sql) {{
+    const upper = String(sql).toUpperCase();
+    return ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'].some((k) => upper.includes(k));
+}}
+function _nyxMigrationSqlRecord(sql, driver) {{
+    if (!_nyxLooksLikeSql(sql)) return;
+    __nyx_stub_sql_record(String(sql), {{ driver: driver, source: 'migration' }});
+}}
+// QueryInterface shim for sequelize-style up/down(queryInterface, Sequelize).
 const _qi = {{
-    createTable: async function(){{}},
-    addColumn: async function(){{}},
-    dropTable: async function(){{}},
-    removeColumn: async function(){{}},
-    bulkInsert: async function(){{}},
-    sequelize: {{ query: async function(){{}} }},
+    createTable: async function(name){{ const sql = 'CREATE TABLE ' + String(name) + ' (id INTEGER)'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
+    addColumn: async function(table, column){{ const sql = 'ALTER TABLE ' + String(table) + ' ADD COLUMN ' + String(column) + ' TEXT'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
+    dropTable: async function(name){{ const sql = 'DROP TABLE ' + String(name); _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
+    removeColumn: async function(table, column){{ const sql = 'ALTER TABLE ' + String(table) + ' DROP COLUMN ' + String(column); _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
+    bulkInsert: async function(table){{ const sql = 'INSERT INTO ' + String(table) + ' VALUES (...)'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
+    sequelize: {{ query: async function(sql){{ _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }} }},
 }};
 const _prisma = {{
-    $executeRaw: async function(){{}},
-    $executeRawUnsafe: async function(s){{ if (s) process.stdout.write('NYX_PRISMA_SQL: ' + s + '\n'); }},
-    $queryRaw: async function(){{}},
-    $queryRawUnsafe: async function(){{}},
+    $executeRaw: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
+    $executeRawUnsafe: async function(s){{ if (s) {{ _nyxMigrationSqlRecord(s, 'prisma'); process.stdout.write('NYX_PRISMA_SQL: ' + s + '\n'); }} return s; }},
+    $queryRaw: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
+    $queryRawUnsafe: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
 }};
+global.__nyx_prisma = _prisma;
 (async () => {{
     try {{
         let _result;
@@ -1216,6 +1242,7 @@ const _prisma = {{
                 _result = await Promise.resolve(_h());
             }}
         }}
+        if (typeof _result === 'string') _nyxMigrationSqlRecord(_result, 'migration');
         if (_result != null) process.stdout.write(String(_result) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');

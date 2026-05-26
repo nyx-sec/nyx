@@ -1358,6 +1358,12 @@ fn stamp_framework_binding(spec: &mut HarnessSpec, binding: FrameworkBinding) {
         spec.stubs_required.push(kind);
         hash_material_changed = true;
     }
+    if matches!(binding.kind.tag(), crate::evidence::EntryKindTag::Migration)
+        && !spec.stubs_required.contains(&StubKind::Sql)
+    {
+        spec.stubs_required.push(StubKind::Sql);
+        hash_material_changed = true;
+    }
     spec.framework = Some(binding);
     if hash_material_changed {
         spec.spec_hash = compute_spec_hash(spec);
@@ -2475,6 +2481,52 @@ mod tests {
             spec.stubs_required,
             vec![crate::dynamic::stubs::StubKind::Kafka],
             "MessageHandler specs must request the matching broker runtime provider",
+        );
+        assert_ne!(pre_hash, spec.spec_hash);
+    }
+
+    #[test]
+    fn spec_attach_framework_binding_stamps_migration_and_sets_sql_stub() {
+        let mut spec = HarnessSpec {
+            finding_id: "phase21migration0001".into(),
+            entry_file: "db/migrate/001.py".into(),
+            entry_name: "upgrade".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "phase21".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::CODE_EXEC,
+            constraint_hints: vec![],
+            sink_file: "db/migrate/001.py".into(),
+            sink_line: 1,
+            spec_hash: "phase21migration0001".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: JavaToolchain::default(),
+        };
+        let pre_hash = spec.spec_hash.clone();
+
+        let binding = FrameworkBinding {
+            adapter: "migration-django".to_owned(),
+            kind: EntryKind::Migration {
+                version: Some("001".to_owned()),
+            },
+            route: None,
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        };
+        stamp_framework_binding(&mut spec, binding);
+
+        assert_eq!(
+            spec.entry_kind.tag(),
+            crate::evidence::EntryKindTag::Migration
+        );
+        assert_eq!(
+            spec.stubs_required,
+            vec![crate::dynamic::stubs::StubKind::Sql],
+            "Migration specs must request the SQL runtime provider"
         );
         assert_ne!(pre_hash, spec.spec_hash);
     }
