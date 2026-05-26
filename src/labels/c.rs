@@ -53,11 +53,6 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["printf", "fprintf"],
-        label: DataLabel::Sink(Cap::FMT_STRING),
-        case_sensitive: false,
-    },
-    LabelRule {
         matchers: &["fopen", "open"],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
@@ -107,18 +102,109 @@ pub static RULES: &[LabelRule] = &[
 /// `cfg::mod::classify_gated_sink` for `lang == "c"`.  Header-parsing
 /// libraries (e.g. libmicrohttpd, mongoose) lack a stable surface and are
 /// left to project-specific config.
-pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
-    callee_matcher: "curl_easy_setopt",
-    arg_index: 1,
-    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-    dangerous_prefixes: &[],
-    label: DataLabel::Sink(Cap::DATA_EXFIL),
-    case_sensitive: true,
-    payload_args: &[2],
-    keyword_name: None,
-    dangerous_kwargs: &[],
-    activation: GateActivation::ValueMatch,
-}];
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_easy_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Format-string sinks: only the format parameter is dangerous. Tainted
+    // data arguments paired with a literal format string are not format-string
+    // vulnerabilities.
+    SinkGate {
+        callee_matcher: "printf",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FMT_STRING),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "fprintf",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FMT_STRING),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `execv*` forms pass argv as arg 1. The executable path at arg 0 is not
+    // shell-parsed, so narrow SHELL_ESCAPE/argv-injection checks to the vector.
+    SinkGate {
+        callee_matcher: "execv",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "execve",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "execvp",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "execvpe",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

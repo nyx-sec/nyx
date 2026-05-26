@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-11T15:19:43Z",
+  "timestamp": "2026-05-26T16:09:13Z",
   "scanner_version": "0.7.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:00a4629e50841ab26c7ba947adfdab43b909d72d7a0885d604e702cc56552eb4",
+  "ground_truth_hash": "sha256:4ec1e5ec0d72129f458db49b8aab8579a03e704ed6fe6e67ef45038924868420",
   "corpus_size": 565,
-  "cases_run": 562,
-  "cases_skipped": 3,
+  "cases_run": 564,
+  "cases_skipped": 1,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -151,11 +151,11 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "taint-unsanitised-flow (source 5:18)"
+        "cfg-unguarded-sink"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 5:18)"
+        "cfg-unguarded-sink"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -680,11 +680,11 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "taint-unsanitised-flow (source 5:18)"
+        "cfg-unguarded-sink"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 5:18)"
+        "cfg-unguarded-sink"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -1122,6 +1122,40 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "c.cmdi.system"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-c-2017-1000117-patched",
+      "file": "cve_corpus/c/CVE-2017-1000117/patched.c",
+      "language": "c",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-c-2017-1000117-vulnerable",
+      "file": "cve_corpus/c/CVE-2017-1000117/vulnerable.c",
+      "language": "c",
+      "vuln_class": "cmdi",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 95:12)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 95:12)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -10041,29 +10075,29 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 274,
+    "tp": 275,
     "fp": 0,
     "fn_": 1,
-    "tn": 287,
+    "tn": 288,
     "precision": 1.0,
-    "recall": 0.9963636363636363,
-    "f1": 0.9981785063752276
+    "recall": 0.9963768115942029,
+    "f1": 0.9981851179673321
   },
   "aggregate_rule_level": {
-    "tp": 274,
+    "tp": 275,
     "fp": 0,
     "fn_": 1,
-    "tn": 287,
+    "tn": 288,
     "precision": 1.0,
-    "recall": 0.9963636363636363,
-    "f1": 0.9981785063752276
+    "recall": 0.9963768115942029,
+    "f1": 0.9981851179673321
   },
   "by_language": {
     "c": {
-      "tp": 17,
+      "tp": 18,
       "fp": 0,
       "fn_": 0,
-      "tn": 17,
+      "tn": 18,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10170,7 +10204,7 @@
       "f1": 1.0
     },
     "cmdi": {
-      "tp": 58,
+      "tp": 59,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -10290,7 +10324,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 284,
+      "tn": 285,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10343,31 +10377,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 85,
-      "fp": 114,
-      "fn_": 190,
-      "tn": 173,
-      "precision": 0.4271356783919598,
-      "recall": 0.3090909090909091,
-      "f1": 0.3586497890295359
+      "tp": 81,
+      "fp": 118,
+      "fn_": 195,
+      "tn": 170,
+      "precision": 0.40703517587939697,
+      "recall": 0.29347826086956524,
+      "f1": 0.3410526315789474
     },
     ">=Low": {
-      "tp": 85,
-      "fp": 142,
-      "fn_": 190,
-      "tn": 145,
-      "precision": 0.3744493392070485,
-      "recall": 0.3090909090909091,
-      "f1": 0.33864541832669326
+      "tp": 81,
+      "fp": 147,
+      "fn_": 195,
+      "tn": 141,
+      "precision": 0.35526315789473684,
+      "recall": 0.29347826086956524,
+      "f1": 0.3214285714285714
     },
     ">=Medium": {
-      "tp": 85,
-      "fp": 133,
-      "fn_": 190,
-      "tn": 154,
-      "precision": 0.38990825688073394,
-      "recall": 0.3090909090909091,
-      "f1": 0.3448275862068966
+      "tp": 81,
+      "fp": 139,
+      "fn_": 195,
+      "tn": 149,
+      "precision": 0.36818181818181817,
+      "recall": 0.29347826086956524,
+      "f1": 0.3266129032258065
     }
   }
 }

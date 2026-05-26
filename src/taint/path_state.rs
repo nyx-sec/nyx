@@ -87,6 +87,10 @@ const SHELL_METACHARS: &[&str] = &[";", "|", "&", "`", "$", ">", "<", "\n", "\r"
 /// Returns `false` if the needle is a non-metachar literal or cannot be
 /// extracted, falls through to broader classification.
 fn is_shell_metachar_rejection(text: &str) -> bool {
+    if is_dash_prefix_rejection(text) {
+        return true;
+    }
+
     // Method-call form: `.contains(…)` / `.includes(…)` / `.include?(…)`
     for method in [".contains(", ".includes(", ".include?("] {
         if let Some(idx) = text.find(method) {
@@ -109,6 +113,18 @@ fn is_shell_metachar_rejection(text: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Detect the C/C++ argv-injection guard used before exec-family calls:
+/// `host[0] == '-'` means the true branch rejects an argv element that would
+/// be interpreted as an option by ssh/git/etc., while the false branch is
+/// safe for shell/argv execution.
+fn is_dash_prefix_rejection(text: &str) -> bool {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("[0]=='-'")
+        || compact.contains("[0]==\"-\"")
+        || compact.contains("'-'==")
+        || compact.contains("\"-\"==")
 }
 
 /// Extract the first string literal argument from a slice starting just after
@@ -698,7 +714,7 @@ pub fn classify_condition(text: &str) -> PredicateKind {
         || lower.contains(".has(")
         || lower.contains("in_array(")
         || lower.contains(" in ")
-        || (lower.contains('[') && !lower.contains('('))
+        || is_index_membership_check(text)
     {
         return PredicateKind::AllowlistCheck;
     }
@@ -1256,6 +1272,40 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
     None
 }
 
+/// Detect map-membership style indexing such as `allowed[cmd]` without
+/// treating ordinary array indexing/comparisons (`buf[len - 1] == '\n'`) as
+/// allowlist validation.
+fn is_index_membership_check(text: &str) -> bool {
+    let mut trimmed = text.trim();
+    while let Some(inner) = trimmed
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        trimmed = inner.trim();
+    }
+    trimmed = trimmed.strip_prefix('!').unwrap_or(trimmed).trim();
+    if trimmed.contains('(') {
+        return false;
+    }
+    let Some(open) = trimmed.find('[') else {
+        return false;
+    };
+    let Some(close_rel) = trimmed[open + 1..].find(']') else {
+        return false;
+    };
+    let close = open + 1 + close_rel;
+    let base = trimmed[..open].trim();
+    let inner = trimmed[open + 1..close].trim();
+    let after = trimmed[close + 1..].trim();
+    is_identifier(base)
+        && is_identifier(inner)
+        && (after.is_empty()
+            || after.starts_with("==")
+            || after.starts_with("!=")
+            || after.starts_with("===")
+            || after.starts_with("!=="))
+}
+
 /// Extract the target variable from a type-check guard.
 ///
 /// Handles:
@@ -1699,6 +1749,14 @@ mod tests {
             classify_condition("allowed[cmd]"),
             PredicateKind::AllowlistCheck
         );
+        assert_eq!(
+            classify_condition("!allowed[cmd]"),
+            PredicateKind::AllowlistCheck
+        );
+        assert_eq!(
+            classify_condition("(!allowed[cmd])"),
+            PredicateKind::AllowlistCheck
+        );
     }
 
     #[test]
@@ -1823,6 +1881,10 @@ mod tests {
     #[test]
     fn target_allowlist_map_lookup() {
         let (kind, target) = classify_condition_with_target("allowed[cmd]");
+        assert_eq!(kind, PredicateKind::AllowlistCheck);
+        assert_eq!(target.as_deref(), Some("cmd"));
+
+        let (kind, target) = classify_condition_with_target("!allowed[cmd]");
         assert_eq!(kind, PredicateKind::AllowlistCheck);
         assert_eq!(target.as_deref(), Some("cmd"));
     }
@@ -1989,6 +2051,18 @@ mod tests {
     }
 
     #[test]
+    fn classify_dash_prefix_rejection_for_argv_injection() {
+        assert_eq!(
+            classify_condition("ssh_host[0] == '-'"),
+            PredicateKind::ShellMetaValidated
+        );
+        assert_eq!(
+            classify_condition("\"-\" == argv0[0]"),
+            PredicateKind::ShellMetaValidated
+        );
+    }
+
+    #[test]
     fn classify_non_metachar_contains_stays_allowlist() {
         // `x.contains("foo")` must NOT be credited as a shell-metachar
         // rejection.  It falls back to the existing AllowlistCheck behavior.
@@ -2017,6 +2091,14 @@ mod tests {
         assert_eq!(
             classify_condition("cmd not in ALLOWED"),
             PredicateKind::AllowlistCheck
+        );
+    }
+
+    #[test]
+    fn classify_indexed_char_comparison_as_comparison() {
+        assert_eq!(
+            classify_condition("len && url_buf[len - 1] == '\\n'"),
+            PredicateKind::Comparison
         );
     }
 

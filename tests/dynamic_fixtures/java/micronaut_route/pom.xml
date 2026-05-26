@@ -14,5 +14,10 @@
       <artifactId>micronaut-http</artifactId>
       <version>4.4.0</version>
     </dependency>
+    <dependency>
+      <groupId>io.micronaut</groupId>
+      <artifactId>micronaut-core</artifactId>
+      <version>4.4.0</version>
+    </dependency>
   </dependencies>
 </project>

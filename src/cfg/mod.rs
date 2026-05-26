@@ -2507,6 +2507,23 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // Conditions can contain source/sink calls whose argument side effects are
+    // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
+    // Classify the condition call so output-parameter sources still lower as
+    // SSA calls while the CFG node keeps its branch shape.
+    if labels.is_empty()
+        && matches!(lookup(lang, ast.kind()), Kind::If | Kind::While)
+        && let Some(cond) = ast.child_by_field_name("condition")
+        && let Some((ident, ident_span)) = first_call_ident_with_span(cond, lang, code)
+        && let Some(l) = classify(lang, &ident, extra)
+    {
+        labels.push(l);
+        text = ident;
+        if inner_text_span.is_none() {
+            inner_text_span = Some(ident_span);
+        }
+    }
+
     // For `if let` / `while let` patterns: try to classify the value expression
     // in the let-condition as a source/sink.  E.g. `if let Ok(cmd) = env::var("CMD")`
     // should recognise `env::var` as a taint source and label this node accordingly.
@@ -3143,11 +3160,12 @@ pub(super) fn push_node<'a>(
     };
 
     // Extract condition metadata for If nodes.
-    let (condition_text, condition_vars, condition_negated) = if kind == StmtKind::If {
-        extract_condition_raw(ast, lang, code)
-    } else {
-        (None, Vec::new(), false)
-    };
+    let (condition_text, condition_vars, condition_negated) =
+        if matches!(lookup(lang, ast.kind()), Kind::If) {
+            extract_condition_raw(ast, lang, code)
+        } else {
+            (None, Vec::new(), false)
+        };
 
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.

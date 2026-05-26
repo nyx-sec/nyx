@@ -767,6 +767,40 @@ mod phase14_shape_tests {
         assert_not_confirmed("quarkus_route", &r);
     }
 
+    // ── micronaut_route ──────────────────────────────────────────────────────
+
+    #[test]
+    fn micronaut_route_vuln_is_confirmed() {
+        let Some(r) = run(
+            "micronaut_route",
+            "Vuln.java",
+            "show",
+            Cap::CODE_EXEC,
+            21,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
+        assert_confirmed("micronaut_route", &r);
+    }
+
+    #[test]
+    fn micronaut_route_benign_not_confirmed() {
+        let Some(r) = run(
+            "micronaut_route",
+            "Benign.java",
+            "show",
+            Cap::CODE_EXEC,
+            18,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
+        assert_not_confirmed("micronaut_route", &r);
+    }
+
     // ── Phase 09 staging assertion (Spring transitive dep pick-up) ──────────
 
     /// Verify the Phase 09 staging path identifies Spring when the

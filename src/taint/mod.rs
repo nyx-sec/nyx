@@ -2458,6 +2458,7 @@ fn rerun_extraction_with_augmented_summaries(
             Some(&augmented_snapshot),
             formal_destructured,
             param_types_ref,
+            Some(&callee.opt.alias_result),
         );
 
         // OR-merge sink-only fields into the existing summary.

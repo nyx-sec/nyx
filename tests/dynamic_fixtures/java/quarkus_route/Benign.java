@@ -1,6 +1,8 @@
-// Phase 14 — Quarkus reactive route, benign.
+// Quarkus reactive route, benign.
 
-// import io.quarkus.runtime.Quarkus;
+import io.quarkus.runtime.Quarkus;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

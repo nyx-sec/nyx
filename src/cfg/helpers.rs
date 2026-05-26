@@ -1018,10 +1018,10 @@ pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
 /// AST kind names for subscript / index expressions
 /// across the languages whose container-element flow we model.
 ///
-/// JS/TS use `subscript_expression`; Python uses `subscript`; Go uses
-/// `index_expression`.  Other languages either lower indexing through
-/// method calls (Rust slice indexing) or are out of scope for the
-/// initial W5 rollout (Java/Ruby/PHP/C/C++).
+/// JS/TS and C/C++ use `subscript_expression`; Python uses `subscript`;
+/// Go uses `index_expression`. Other languages either lower indexing
+/// through method calls (Rust slice indexing) or are out of scope for
+/// the initial W5 rollout (Java/Ruby/PHP).
 #[inline]
 pub(crate) fn is_subscript_kind(kind: &str) -> bool {
     matches!(
@@ -1086,7 +1086,8 @@ pub(crate) fn subscript_components<'a>(n: Node<'a>, code: &'a [u8]) -> Option<(S
         return None;
     }
     let arr_text = text_of(arr, code)?;
-    // PHP-style `$x` strip not needed here, Go/JS/Python don't use it.
+    // PHP-style `$x` strip not needed here; the supported languages
+    // don't use it for local array identifiers.
     let idx_text = text_of(idx, code)?;
     Some((arr_text, idx_text))
 }

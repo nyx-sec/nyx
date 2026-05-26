@@ -1189,7 +1189,7 @@ fn compute_succ_states(
                     (*false_blk, exit_state.clone()),
                 ];
             };
-            if cond_info.kind == crate::cfg::StmtKind::If && !cond_info.condition_vars.is_empty() {
+            if cond_info.condition_text.is_some() && !cond_info.condition_vars.is_empty() {
                 let cond_text = cond_info.condition_text.as_deref().unwrap_or("");
                 let (kind, target_var) = classify_condition_with_target(cond_text);
 
@@ -1238,6 +1238,7 @@ fn compute_succ_states(
                     true_polarity,
                     transfer.interner,
                     ssa,
+                    transfer.base_aliases,
                 );
                 // Apply validation/predicate to false branch
                 apply_branch_predicates(
@@ -1247,6 +1248,7 @@ fn compute_succ_states(
                     false_polarity,
                     transfer.interner,
                     ssa,
+                    transfer.base_aliases,
                 );
 
                 // PathFact branch narrowing, language-agnostic.  The
@@ -1478,6 +1480,7 @@ fn apply_branch_predicates(
     polarity: bool,
     interner: &SymbolInterner,
     ssa: &SsaBody,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
 ) {
     // Validation-like predicates: mark condition vars as validated when polarity is true
     if matches!(
@@ -1584,17 +1587,25 @@ fn apply_branch_predicates(
     if kind == PredicateKind::ShellMetaValidated && !polarity {
         for var in condition_vars {
             let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
-            for (val, _) in state.values.iter() {
-                if let Some(name) = ssa
-                    .value_defs
-                    .get(val.0 as usize)
-                    .and_then(|vd| vd.var_name.as_deref())
-                {
-                    if name == var {
-                        to_clear.push(*val);
+            let mut names: SmallVec<[&str; 4]> = smallvec::smallvec![var.as_str()];
+            if let Some(aliases) = base_aliases.and_then(|aliases| aliases.aliases_of(var)) {
+                for alias in aliases {
+                    if alias != var {
+                        names.push(alias.as_str());
                     }
                 }
             }
+            for &name_to_clear in names.iter() {
+                for (idx, def) in ssa.value_defs.iter().enumerate() {
+                    if def.var_name.as_deref() == Some(name_to_clear) {
+                        let val = SsaValue(idx as u32);
+                        to_clear.push(val);
+                        collect_copy_alias_operands(val, ssa, &mut to_clear);
+                    }
+                }
+            }
+            to_clear.sort_by_key(|v| v.0);
+            to_clear.dedup_by_key(|v| v.0);
             for val in to_clear {
                 if let Some(taint) = state.get(val).cloned() {
                     let new_caps = taint.caps & !Cap::SHELL_ESCAPE;
@@ -1635,6 +1646,33 @@ fn apply_branch_predicates(
                     Err(idx) => state.predicates.insert(idx, (sym, summary)),
                 }
             }
+        }
+    }
+}
+
+fn collect_copy_alias_operands(root: SsaValue, ssa: &SsaBody, out: &mut SmallVec<[SsaValue; 4]>) {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        let Some(def_inst) = find_inst_for_value(cur, ssa) else {
+            continue;
+        };
+        match &def_inst.op {
+            SsaOp::Assign(uses) if uses.len() == 1 => {
+                let alias = uses[0];
+                out.push(alias);
+                stack.push(alias);
+            }
+            SsaOp::Phi(operands) => {
+                for &(_, alias) in operands {
+                    out.push(alias);
+                    stack.push(alias);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -3982,6 +4020,11 @@ pub(super) fn transfer_inst(
             receiver,
             ..
         } => {
+            if is_noreturn_call(transfer.lang, callee) {
+                *state = SsaTaintState::bot();
+                return;
+            }
+
             // Excluded callees (e.g. router.get, app.post) should not propagate
             // taint through their return value, they are framework scaffolding,
             // not data-flow operations.
@@ -7659,7 +7702,7 @@ fn collect_block_events(
             }
 
             // Collect tainted SSA values that flow into this sink
-            let tainted = collect_tainted_sink_values(
+            let mut tainted = collect_tainted_sink_values(
                 inst,
                 info,
                 &state,
@@ -7670,6 +7713,7 @@ fn collect_block_events(
                 positions_override,
                 destination_override,
             );
+            refine_exec_argv_array_shell_taint(inst, transfer.lang, &state, ssa, &mut tainted);
             if tainted.is_empty() {
                 continue;
             }
@@ -7720,6 +7764,117 @@ fn collect_block_events(
             );
         }
     }
+}
+
+fn refine_exec_argv_array_shell_taint(
+    inst: &SsaInst,
+    lang: Lang,
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+    tainted: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
+) {
+    if !matches!(lang, Lang::C | Lang::Cpp) {
+        return;
+    }
+    let SsaOp::Call { callee, args, .. } = &inst.op else {
+        return;
+    };
+    let method = crate::labels::bare_method_name(callee);
+    if !matches!(method, "execv" | "execve" | "execvp" | "execvpe") {
+        return;
+    }
+    let Some(argv_values) = args.get(1) else {
+        return;
+    };
+    if argv_values.is_empty() {
+        return;
+    }
+
+    for (value, caps, origins) in tainted.iter_mut() {
+        if !argv_values.iter().any(|argv| argv == value) {
+            continue;
+        }
+        let Some((argv_caps, argv_origins)) =
+            exec_argv_non_executable_shell_taint(*value, inst.value, state, ssa)
+        else {
+            continue;
+        };
+        *caps = (*caps & !Cap::SHELL_ESCAPE) | argv_caps;
+        if argv_caps.contains(Cap::SHELL_ESCAPE) {
+            *origins = argv_origins;
+        }
+    }
+
+    tainted.retain(|(_, caps, _)| caps.contains(Cap::SHELL_ESCAPE));
+}
+
+fn exec_argv_non_executable_shell_taint(
+    argv: SsaValue,
+    sink_value: SsaValue,
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+) -> Option<(Cap, SmallVec<[TaintOrigin; 2]>)> {
+    let mut stores: Vec<(u32, SmallVec<[SsaValue; 2]>)> = Vec::new();
+    for block in &ssa.blocks {
+        for candidate in block.phis.iter().chain(block.body.iter()) {
+            if candidate.value.0 >= sink_value.0 {
+                continue;
+            }
+            let SsaOp::Call {
+                callee,
+                args,
+                receiver: Some(receiver),
+                ..
+            } = &candidate.op
+            else {
+                continue;
+            };
+            if callee != "__index_set__" || *receiver != argv {
+                continue;
+            }
+            stores.push((candidate.value.0, args.get(1).cloned().unwrap_or_default()));
+        }
+    }
+    if stores.is_empty() {
+        return None;
+    }
+    stores.sort_by_key(|(value, _)| *value);
+
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    for (_, values) in stores.into_iter().skip(1) {
+        for value in values {
+            let Some(taint) = state.get(value) else {
+                continue;
+            };
+            if !taint.caps.contains(Cap::SHELL_ESCAPE) {
+                continue;
+            }
+            let non_env_origins: SmallVec<[TaintOrigin; 2]> = taint
+                .origins
+                .iter()
+                .copied()
+                .filter(|origin| origin.source_kind != SourceKind::EnvironmentConfig)
+                .collect();
+            if non_env_origins.is_empty() {
+                continue;
+            }
+            caps |= Cap::SHELL_ESCAPE;
+            for origin in non_env_origins {
+                push_origin_bounded(&mut origins, origin);
+            }
+        }
+    }
+
+    Some((caps, origins))
+}
+
+fn is_noreturn_call(lang: Lang, callee: &str) -> bool {
+    if !matches!(lang, Lang::C | Lang::Cpp) {
+        return false;
+    }
+    let method = crate::labels::bare_method_name(callee);
+    matches!(method, "exit" | "_Exit" | "quick_exit" | "abort")
 }
 
 // ── Primary sink-site attribution ───────────────────────────────────────
@@ -8293,7 +8448,6 @@ fn try_container_propagation(
                     }
                 }
             }
-
             if val_caps.is_empty() {
                 return true; // Container op handled, but no taint to propagate
             }

@@ -861,6 +861,10 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
     // User input patterns
     if cl.contains("argv")
         || cl.contains("stdin")
+        || cl.contains("fgets")
+        || cl.contains("scanf")
+        || cl.contains("gets")
+        || cl.contains("recv")
         || cl.contains("request")
         || cl.contains("form")
         || cl.contains("query")

@@ -168,10 +168,9 @@ pub enum JavaShape {
     /// but uses `POST` semantics for query-vs-body wiring.
     ServletDoPost,
     /// Spring `@RestController` / `@Controller` with a `@RequestMapping`
-    /// / `@GetMapping` / `@PostMapping` handler.  Harness instantiates
-    /// the controller via reflection (default ctor) and invokes the
-    /// handler method with the payload routed into the matching
-    /// `String` parameter.
+    /// / `@GetMapping` / `@PostMapping` handler. Harness drives the
+    /// controller through Spring MockMvc so annotation mapping and
+    /// request binding stay in the execution path.
     SpringController,
     /// `public static void main(String[] args)`.  Harness calls
     /// `Class.forName(name).getMethod("main", String[].class)` and
@@ -183,13 +182,12 @@ pub enum JavaShape {
     /// single test method.
     JunitTest,
     /// Quarkus reactive route: `@Path("/foo")` + `@GET`/`@POST` on a
-    /// method.  Harness invokes the method via reflection like Spring.
+    /// method. Harness replays a JAX-RS request shape through the real
+    /// Jakarta annotations instead of calling the entry by name only.
     QuarkusRoute,
     /// Micronaut route: `@Controller("/api")` + `@Get`/`@Post`/`@Put`
-    /// /`@Delete` on a method.  Harness invokes the method via
-    /// reflection like Spring / Quarkus (the brief specifies an
-    /// `EmbeddedServer.start` bootstrap, deferred behind the existing
-    /// synthetic-harness pattern in [`deferred.md`]).
+    /// /`@Delete` on a method. Harness replays the controller route
+    /// through Micronaut's runtime annotations and path binding shape.
     MicronautRoute,
     /// Plain static method — legacy default behaviour from before
     /// Phase 14.  Harness directly calls `{Class}.{method}(payload)`.
@@ -3123,10 +3121,14 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
             )
         }
         JavaShape::QuarkusRoute => {
-            format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
+            format!(
+                "            System.out.println(\"NYX_QUARKUS_ROUTE_REPLAY=1\");\n            invokeJakartaRestRoute({entry_class}.class, \"{method}\", payload);"
+            )
         }
         JavaShape::MicronautRoute => {
-            format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
+            format!(
+                "            System.out.println(\"NYX_MICRONAUT_ROUTE_REPLAY=1\");\n            invokeMicronautRoute({entry_class}.class, \"{method}\", payload);"
+            )
         }
         JavaShape::JunitTest => {
             format!("            invokeJunitTest({entry_class}.class, \"{method}\");")
@@ -3140,7 +3142,8 @@ fn shape_helpers(shape: JavaShape) -> &'static str {
         JavaShape::StaticMethod | JavaShape::StaticMain => "",
         JavaShape::ServletDoGet | JavaShape::ServletDoPost => SERVLET_HELPER,
         JavaShape::SpringController => SPRING_MOCKMVC_HELPER,
-        JavaShape::QuarkusRoute | JavaShape::MicronautRoute => REFLECTIVE_HELPER,
+        JavaShape::QuarkusRoute => JAKARTA_REST_ROUTE_HELPER,
+        JavaShape::MicronautRoute => MICRONAUT_ROUTE_HELPER,
         JavaShape::JunitTest => JUNIT_HELPER,
     }
 }
@@ -3347,35 +3350,241 @@ const SPRING_MOCKMVC_HELPER: &str = r#"
     }
 "#;
 
-/// Reflective Spring / Quarkus invocation.  Same shape as the servlet
-/// reflective fallback but routed through a dedicated helper for
-/// clarity in the generated harness.
-const REFLECTIVE_HELPER: &str = r#"
+/// Jakarta REST route replay used for Quarkus fixtures. It discovers
+/// the class and method `@Path` / HTTP-verb annotations at runtime,
+/// builds the route path, and binds the payload as the request value
+/// for route string parameters.
+const JAKARTA_REST_ROUTE_HELPER: &str = r#"
     static Object newDefaultInstance(Class<?> cls) throws Exception {
         Constructor<?> ctor = cls.getDeclaredConstructor();
         ctor.setAccessible(true);
         return ctor.newInstance();
     }
 
-    static void invokeReflective(Class<?> cls, String methodName, String payload) throws Exception {
+    static void invokeJakartaRestRoute(Class<?> cls, String methodName, String payload) throws Exception {
+        Object resource = newDefaultInstance(cls);
         Method match = null;
         for (Method m : cls.getDeclaredMethods()) {
-            if (m.getName().equals(methodName)) { match = m; break; }
+            if (!m.getName().equals(methodName)) continue;
+            if (jakartaHttpVerb(m) != null || jakartaPath(m) != null) {
+                match = m;
+                break;
+            }
+            if (match == null) {
+                match = m;
+            }
         }
         if (match == null) {
             throw new NoSuchMethodException(cls.getName() + "." + methodName);
         }
         match.setAccessible(true);
-        Object instance = null;
-        if (!java.lang.reflect.Modifier.isStatic(match.getModifiers())) {
-            instance = newDefaultInstance(cls);
+        String verb = jakartaHttpVerb(match);
+        if (verb == null) verb = "GET";
+        String route = joinPath(jakartaPath(cls), jakartaPath(match));
+        System.out.println("__NYX_ROUTE_REPLAY__:jakarta:" + verb + ":" + route);
+        Object[] args = routeArgs(match, payload);
+        Object instance = java.lang.reflect.Modifier.isStatic(match.getModifiers()) ? null : resource;
+        Object result = match.invoke(instance, args);
+        if (result != null) {
+            System.out.println(String.valueOf(result));
         }
-        Class<?>[] params = match.getParameterTypes();
+    }
+
+    static String jakartaHttpVerb(Method m) {
+        for (java.lang.annotation.Annotation ann : m.getAnnotations()) {
+            String n = ann.annotationType().getName();
+            if (n.equals("jakarta.ws.rs.GET") || n.equals("javax.ws.rs.GET")) return "GET";
+            if (n.equals("jakarta.ws.rs.POST") || n.equals("javax.ws.rs.POST")) return "POST";
+            if (n.equals("jakarta.ws.rs.PUT") || n.equals("javax.ws.rs.PUT")) return "PUT";
+            if (n.equals("jakarta.ws.rs.DELETE") || n.equals("javax.ws.rs.DELETE")) return "DELETE";
+        }
+        return null;
+    }
+
+    static String jakartaPath(Class<?> cls) throws Exception {
+        return annotationPath(cls.getAnnotations(), "jakarta.ws.rs.Path", "javax.ws.rs.Path");
+    }
+
+    static String jakartaPath(Method m) throws Exception {
+        return annotationPath(m.getAnnotations(), "jakarta.ws.rs.Path", "javax.ws.rs.Path");
+    }
+
+    static String annotationPath(java.lang.annotation.Annotation[] annotations, String primary, String legacy) throws Exception {
+        for (java.lang.annotation.Annotation ann : annotations) {
+            String n = ann.annotationType().getName();
+            if (!n.equals(primary) && !n.equals(legacy)) continue;
+            String p = annotationStringValue(ann, "value");
+            return p == null ? "" : p;
+        }
+        return "";
+    }
+
+    static String annotationStringValue(java.lang.annotation.Annotation ann, String name) throws Exception {
+        try {
+            Object value = ann.annotationType().getMethod(name).invoke(ann);
+            if (value instanceof String[]) {
+                String[] arr = (String[]) value;
+                return arr.length == 0 ? "" : arr[0];
+            }
+            if (value instanceof String) {
+                return (String) value;
+            }
+        } catch (NoSuchMethodException ignored) {
+        }
+        return "";
+    }
+
+    static Object[] routeArgs(Method m, String payload) {
+        Class<?>[] params = m.getParameterTypes();
         Object[] args = new Object[params.length];
         for (int i = 0; i < params.length; i++) {
-            args[i] = params[i].equals(String.class) ? payload : null;
+            args[i] = argFor(params[i], payload);
         }
-        match.invoke(instance, args);
+        return args;
+    }
+
+    static Object argFor(Class<?> p, String payload) {
+        if (p.equals(String.class)) return payload;
+        if (p.equals(boolean.class) || p.equals(Boolean.class)) return Boolean.FALSE;
+        if (p.equals(byte.class) || p.equals(Byte.class)) return Byte.valueOf((byte) 0);
+        if (p.equals(short.class) || p.equals(Short.class)) return Short.valueOf((short) 0);
+        if (p.equals(int.class) || p.equals(Integer.class)) return Integer.valueOf(0);
+        if (p.equals(long.class) || p.equals(Long.class)) return Long.valueOf(0L);
+        if (p.equals(float.class) || p.equals(Float.class)) return Float.valueOf(0.0f);
+        if (p.equals(double.class) || p.equals(Double.class)) return Double.valueOf(0.0d);
+        if (p.equals(char.class) || p.equals(Character.class)) return Character.valueOf('\0');
+        return null;
+    }
+
+    static String joinPath(String a, String b) {
+        String left = a == null || a.isEmpty() ? "" : a;
+        String right = b == null || b.isEmpty() ? "" : b;
+        if (left.isEmpty() && right.isEmpty()) return "/";
+        String joined = (left + "/" + right).replaceAll("/+", "/");
+        if (!joined.startsWith("/")) joined = "/" + joined;
+        if (joined.length() > 1 && joined.endsWith("/")) joined = joined.substring(0, joined.length() - 1);
+        return joined;
+    }
+"#;
+
+/// Micronaut route replay. The harness keeps Micronaut's controller and
+/// verb annotations on the classpath, discovers the route metadata at
+/// runtime, and binds the route payload to string parameters.
+const MICRONAUT_ROUTE_HELPER: &str = r#"
+    static Object newDefaultInstance(Class<?> cls) throws Exception {
+        Constructor<?> ctor = cls.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
+    }
+
+    static void invokeMicronautRoute(Class<?> cls, String methodName, String payload) throws Exception {
+        Object controller = newDefaultInstance(cls);
+        Method match = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (!m.getName().equals(methodName)) continue;
+            if (micronautVerb(m) != null || !micronautPath(m).isEmpty()) {
+                match = m;
+                break;
+            }
+            if (match == null) {
+                match = m;
+            }
+        }
+        if (match == null) {
+            throw new NoSuchMethodException(cls.getName() + "." + methodName);
+        }
+        match.setAccessible(true);
+        String verb = micronautVerb(match);
+        if (verb == null) verb = "GET";
+        String route = joinPath(micronautControllerPath(cls), micronautPath(match));
+        System.out.println("__NYX_ROUTE_REPLAY__:micronaut:" + verb + ":" + route);
+        Object[] args = routeArgs(match, payload);
+        Object instance = java.lang.reflect.Modifier.isStatic(match.getModifiers()) ? null : controller;
+        Object result = match.invoke(instance, args);
+        if (result != null) {
+            System.out.println(String.valueOf(result));
+        }
+    }
+
+    static String micronautVerb(Method m) {
+        for (java.lang.annotation.Annotation ann : m.getAnnotations()) {
+            String n = ann.annotationType().getName();
+            if (n.equals("io.micronaut.http.annotation.Get")) return "GET";
+            if (n.equals("io.micronaut.http.annotation.Post")) return "POST";
+            if (n.equals("io.micronaut.http.annotation.Put")) return "PUT";
+            if (n.equals("io.micronaut.http.annotation.Delete")) return "DELETE";
+        }
+        return null;
+    }
+
+    static String micronautControllerPath(Class<?> cls) throws Exception {
+        return annotationPath(cls.getAnnotations(), "io.micronaut.http.annotation.Controller");
+    }
+
+    static String micronautPath(Method m) throws Exception {
+        for (java.lang.annotation.Annotation ann : m.getAnnotations()) {
+            String n = ann.annotationType().getName();
+            if (!n.startsWith("io.micronaut.http.annotation.")) continue;
+            String value = annotationStringValue(ann, "value");
+            if (value != null && !value.isEmpty()) return value;
+        }
+        return "";
+    }
+
+    static String annotationPath(java.lang.annotation.Annotation[] annotations, String annotationName) throws Exception {
+        for (java.lang.annotation.Annotation ann : annotations) {
+            if (!ann.annotationType().getName().equals(annotationName)) continue;
+            String p = annotationStringValue(ann, "value");
+            return p == null ? "" : p;
+        }
+        return "";
+    }
+
+    static String annotationStringValue(java.lang.annotation.Annotation ann, String name) throws Exception {
+        try {
+            Object value = ann.annotationType().getMethod(name).invoke(ann);
+            if (value instanceof String[]) {
+                String[] arr = (String[]) value;
+                return arr.length == 0 ? "" : arr[0];
+            }
+            if (value instanceof String) {
+                return (String) value;
+            }
+        } catch (NoSuchMethodException ignored) {
+        }
+        return "";
+    }
+
+    static Object[] routeArgs(Method m, String payload) {
+        Class<?>[] params = m.getParameterTypes();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+            args[i] = argFor(params[i], payload);
+        }
+        return args;
+    }
+
+    static Object argFor(Class<?> p, String payload) {
+        if (p.equals(String.class)) return payload;
+        if (p.equals(boolean.class) || p.equals(Boolean.class)) return Boolean.FALSE;
+        if (p.equals(byte.class) || p.equals(Byte.class)) return Byte.valueOf((byte) 0);
+        if (p.equals(short.class) || p.equals(Short.class)) return Short.valueOf((short) 0);
+        if (p.equals(int.class) || p.equals(Integer.class)) return Integer.valueOf(0);
+        if (p.equals(long.class) || p.equals(Long.class)) return Long.valueOf(0L);
+        if (p.equals(float.class) || p.equals(Float.class)) return Float.valueOf(0.0f);
+        if (p.equals(double.class) || p.equals(Double.class)) return Double.valueOf(0.0d);
+        if (p.equals(char.class) || p.equals(Character.class)) return Character.valueOf('\0');
+        return null;
+    }
+
+    static String joinPath(String a, String b) {
+        String left = a == null || a.isEmpty() ? "" : a;
+        String right = b == null || b.isEmpty() ? "" : b;
+        if (left.isEmpty() && right.isEmpty()) return "/";
+        String joined = (left + "/" + right).replaceAll("/+", "/");
+        if (!joined.startsWith("/")) joined = "/" + joined;
+        if (joined.length() > 1 && joined.endsWith("/")) joined = joined.substring(0, joined.length() - 1);
+        return joined;
     }
 "#;
 
@@ -4148,7 +4357,7 @@ mod tests {
     }
 
     #[test]
-    fn spring_shape_emits_reflective_invocation() {
+    fn spring_shape_emits_mockmvc_invocation() {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::SpringController, "Vuln");
         assert!(src.contains("invokeSpringController(Vuln.class, \"run\""));
@@ -4156,17 +4365,23 @@ mod tests {
     }
 
     #[test]
-    fn quarkus_shape_emits_reflective_invocation() {
+    fn quarkus_shape_emits_route_replay_invocation() {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::QuarkusRoute, "Vuln");
-        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+        assert!(src.contains("NYX_QUARKUS_ROUTE_REPLAY=1"));
+        assert!(src.contains("invokeJakartaRestRoute(Vuln.class, \"run\""));
+        assert!(src.contains("__NYX_ROUTE_REPLAY__:jakarta:"));
+        assert!(!src.contains("invokeReflective(Vuln.class, \"run\""));
     }
 
     #[test]
-    fn micronaut_shape_emits_reflective_invocation() {
+    fn micronaut_shape_emits_route_replay_invocation() {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::MicronautRoute, "Vuln");
-        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+        assert!(src.contains("NYX_MICRONAUT_ROUTE_REPLAY=1"));
+        assert!(src.contains("invokeMicronautRoute(Vuln.class, \"run\""));
+        assert!(src.contains("__NYX_ROUTE_REPLAY__:micronaut:"));
+        assert!(!src.contains("invokeReflective(Vuln.class, \"run\""));
     }
 
     #[test]

@@ -69,6 +69,7 @@ pub fn extract_ssa_func_summary(
         None,
         formal_destructured_fields,
         param_types,
+        None,
     )
 }
 
@@ -121,6 +122,7 @@ pub fn extract_ssa_func_summary_full(
     // SQL_QUERY caps were invisible to the param-1 probe).  `None` for
     // legacy / test paths preserves prior behaviour.
     param_types: Option<&[Option<TypeKind>]>,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
     // Pre-compute type facts on the un-optimised SSA body so the per-param
     // probe can resolve sinks that depend on receiver-type inference.
@@ -135,6 +137,8 @@ pub fn extract_ssa_func_summary_full(
         analyze_types_with_param_types(ssa, cfg, &empty_consts, Some(lang), pt)
     });
     let local_type_facts_ref: Option<&TypeFactResult> = local_type_facts.as_ref();
+    let probe_const_values = crate::ssa::const_prop::const_propagate(ssa).values;
+    let probe_points_to = crate::ssa::heap::analyze_points_to(ssa, cfg, Some(lang));
     use crate::summary::SinkSite;
     use crate::summary::ssa_summary::{SsaFuncSummary, TaintTransform};
 
@@ -232,6 +236,7 @@ pub fn extract_ssa_func_summary_full(
         Vec<ReturnBlockObs>,
     ) {
         let seed_ref = if seed.is_empty() { None } else { Some(&seed) };
+        let dynamic_pts = std::cell::RefCell::new(std::collections::HashMap::new());
         let transfer = SsaTaintTransfer {
             lang,
             namespace,
@@ -244,19 +249,19 @@ pub fn extract_ssa_func_summary_full(
             global_seed: seed_ref,
             param_seed: None,
             receiver_seed: None,
-            const_values: None,
+            const_values: Some(&probe_const_values),
             type_facts: local_type_facts_ref,
             xml_parser_config: None,
             xpath_config: None,
             ssa_summaries,
             extra_labels: None,
-            base_aliases: None,
+            base_aliases,
             callee_bodies: None,
             inline_cache: None,
             context_depth: 0,
             callback_bindings: None,
-            points_to: None,
-            dynamic_pts: None,
+            points_to: Some(&probe_points_to),
+            dynamic_pts: Some(&dynamic_pts),
             import_bindings: None,
             promisify_aliases: None,
             module_aliases,
@@ -824,7 +829,7 @@ pub fn extract_ssa_func_summary_full(
             xpath_config: None,
             ssa_summaries,
             extra_labels: None,
-            base_aliases: None,
+            base_aliases,
             callee_bodies: None,
             inline_cache: None,
             context_depth: 0,

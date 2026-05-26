@@ -1,8 +1,9 @@
-// Phase 14 — Micronaut `@Controller`, vulnerable.
+// Micronaut `@Controller`, vulnerable.
 //
 // `@Controller("/run")` on the class + `@Get("/{id}")` on the handler
-// matches the Phase 14 [`JavaShape::MicronautRoute`].  The harness
-// invokes `show(payload)` via reflection.
+// matches `JavaShape::MicronautRoute`. The harness keeps the real
+// Micronaut annotations on the classpath and replays the route through
+// those annotations.
 
 import io.micronaut.http.annotation.Controller;
 import io.micronaut.http.annotation.Get;

@@ -1,10 +1,10 @@
-// Phase 14 — Quarkus reactive route, vulnerable.
-//
-// `@Path("/run")` on the type + `@GET` on the handler matches the
-// Phase 14 [`JavaShape::detect`] for Quarkus.  The harness invokes
-// `run(payload)` via reflection.
+// Quarkus reactive route, vulnerable. The harness keeps the real
+// Jakarta REST annotations on the classpath and replays the route
+// through those annotations.
 
-// import io.quarkus.runtime.Quarkus;
+import io.quarkus.runtime.Quarkus;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

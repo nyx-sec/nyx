@@ -247,6 +247,12 @@ fn classify_cpp(method: &str) -> Option<ContainerOp> {
         "front" | "back" | "pop_back" | "pop_front" | "top" | "find" | "count" | "data" => load(),
         // Indexed reads: `vector::at(i)`, `unordered_map::at(k)`.
         "at" => load_indexed(0),
+        // Synthetic callees emitted by CFG lowering for subscript
+        // reads/writes. C arrays and C++ raw arrays use the same
+        // `subscript_expression` shape as JS/TS, so route them through
+        // the same indexed container abstraction.
+        "__index_get__" => load_indexed(0),
+        "__index_set__" => store_indexed(1, 0),
         _ => None,
     }
 }
@@ -456,11 +462,18 @@ mod tests {
     }
 
     /// W5: synthetic `__index_get__` is recognised as an indexed load
-    /// in JS/TS, Python, and Go, driving the index_arg=0 path so a
+    /// in JS/TS, Python, Go, C, and C++, driving the index_arg=0 path so a
     /// constant-key subscript read flows through `HeapSlot::Index(n)`.
     #[test]
-    fn synth_index_get_classified_as_indexed_load_js_py_go() {
-        for lang in [Lang::JavaScript, Lang::TypeScript, Lang::Python, Lang::Go] {
+    fn synth_index_get_classified_as_indexed_load_for_subscript_languages() {
+        for lang in [
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Python,
+            Lang::Go,
+            Lang::C,
+            Lang::Cpp,
+        ] {
             match classify_container_op("__index_get__", lang) {
                 Some(ContainerOp::Load { index_arg }) => {
                     assert_eq!(index_arg, Some(0), "{lang:?} should mark idx arg=0");
@@ -471,10 +484,17 @@ mod tests {
     }
 
     /// W5: synthetic `__index_set__` is recognised as an indexed store
-    /// in JS/TS, Python, and Go, value at arg 1, index at arg 0.
+    /// in JS/TS, Python, Go, C, and C++, value at arg 1, index at arg 0.
     #[test]
-    fn synth_index_set_classified_as_indexed_store_js_py_go() {
-        for lang in [Lang::JavaScript, Lang::TypeScript, Lang::Python, Lang::Go] {
+    fn synth_index_set_classified_as_indexed_store_for_subscript_languages() {
+        for lang in [
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Python,
+            Lang::Go,
+            Lang::C,
+            Lang::Cpp,
+        ] {
             match classify_container_op("__index_set__", lang) {
                 Some(ContainerOp::Store {
                     value_args,

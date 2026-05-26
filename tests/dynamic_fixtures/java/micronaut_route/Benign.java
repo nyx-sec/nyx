@@ -1,4 +1,4 @@
-// Phase 14 — Micronaut `@Controller`, benign.
+// Micronaut `@Controller`, benign.
 //
 // Same shape as the vuln but echoes a constant string instead of
 // concatenating the path variable into a shell command.
