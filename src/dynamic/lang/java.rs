@@ -3502,6 +3502,7 @@ fn emit_message_handler_harness(
                 }}
             }});
             System.out.println({publish_marker:?} + " " + {queue:?});
+            nyxRecordBrokerPublish("NYX_SQS_LOG", {queue:?}, payload);
             brokerRef.publish({queue:?}, payload);"#,
                 handler = handler,
                 queue = queue,
@@ -3533,6 +3534,7 @@ fn emit_message_handler_harness(
                 }}
             }});
             System.out.println({publish_marker:?} + " " + {queue:?});
+            nyxRecordBrokerPublish("NYX_RABBIT_LOG", {queue:?}, payload);
             chan.basicPublish("", {queue:?}, payload);"#,
                 handler = handler,
                 queue = queue,
@@ -3555,6 +3557,7 @@ fn emit_message_handler_harness(
                 }}
             }});
             System.out.println({publish_marker:?} + " " + {queue:?});
+            nyxRecordBrokerPublish("NYX_KAFKA_LOG", {queue:?}, payload);
             brokerRef.publish({queue:?}, payload);"#,
                 handler = handler,
                 queue = queue,
@@ -3598,6 +3601,21 @@ public class NyxHarness {{
             return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
         }}
         return "";
+    }}
+
+    static void nyxRecordBrokerPublish(String envName, String destination, String payload) {{
+        String path = System.getenv(envName);
+        if (path == null || path.isEmpty()) return;
+        String line = destination.replace('\t', ' ') + "\t" + payload + "\n";
+        try {{
+            java.nio.file.Files.write(
+                java.nio.file.Paths.get(path),
+                line.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND
+            );
+        }} catch (Exception ignored) {{
+        }}
     }}
 }}
 "#,

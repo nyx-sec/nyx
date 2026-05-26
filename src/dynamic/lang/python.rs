@@ -958,6 +958,7 @@ def _nyx_sqs_dispatch(envelope):
     _h(envelope)
 _loop.subscribe({queue:?}, _nyx_sqs_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
+_nyx_record_broker_publish("NYX_SQS_LOG", {queue:?}, payload)
 _loop.publish({queue:?}, payload)"#,
             handler = handler,
             queue = queue,
@@ -973,6 +974,7 @@ def _nyx_pubsub_dispatch(message):
     _h(message)
 _loop.subscribe({queue:?}, _nyx_pubsub_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
+_nyx_record_broker_publish("NYX_PUBSUB_LOG", {queue:?}, payload)
 _loop.publish({queue:?}, payload)"#,
             handler = handler,
             queue = queue,
@@ -988,6 +990,7 @@ def _nyx_rabbit_dispatch(ch, method, props, body):
     _h(ch, method, props, body)
 _chan.basic_consume(queue={queue:?}, on_message_callback=_nyx_rabbit_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
+_nyx_record_broker_publish("NYX_RABBIT_LOG", {queue:?}, payload)
 _chan.basic_publish(exchange="", routing_key={queue:?}, body=payload)"#,
             handler = handler,
             queue = queue,
@@ -1003,6 +1006,7 @@ def _nyx_kafka_dispatch(message):
     _h(message)
 _loop.subscribe({queue:?}, _nyx_kafka_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
+_nyx_record_broker_publish("NYX_KAFKA_LOG", {queue:?}, payload)
 _loop.publish({queue:?}, payload)"#,
             handler = handler,
             queue = queue,
@@ -1016,6 +1020,16 @@ _loop.publish({queue:?}, payload)"#,
 {sqs_src}
 {pubsub_src}
 {rabbit_src}
+
+def _nyx_record_broker_publish(env_name, destination, body):
+    path = os.environ.get(env_name, "")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(str(destination).replace("\t", " ") + "\t" + str(body) + "\n")
+    except Exception:
+        pass
 
 try:
 {register_and_publish}

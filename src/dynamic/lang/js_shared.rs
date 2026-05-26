@@ -920,6 +920,17 @@ if (typeof _handler !== 'function') {{
 }}
 
 const _broker = new NyxSqsLoopback();
+function _nyxRecordBrokerPublish(envName, destination, body) {{
+    const path = process.env[envName] || '';
+    if (!path) return;
+    try {{
+        require('fs').appendFileSync(
+            path,
+            String(destination).replace(/\t/g, ' ') + '\t' + String(body) + '\n',
+            'utf8'
+        );
+    }} catch (_) {{}}
+}}
 _broker.subscribe({queue:?}, async (envelope) => {{
     try {{
         // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
@@ -933,6 +944,7 @@ _broker.subscribe({queue:?}, async (envelope) => {{
 
 (async () => {{
     process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
+    _nyxRecordBrokerPublish('NYX_SQS_LOG', {queue:?}, payload);
     _broker.publish({queue:?}, payload);
 }})();
 "#,

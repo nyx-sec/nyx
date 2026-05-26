@@ -157,6 +157,8 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("subscribe"));
     assert!(h.source.contains("__NYX_BROKER_PUBLISH__"));
+    assert!(h.source.contains("NYX_KAFKA_LOG"));
+    assert!(h.source.contains("_nyx_record_broker_publish"));
     assert!(h.source.contains("payload"));
 }
 
@@ -167,6 +169,8 @@ fn message_handler_java_emits_reflective_dispatch() {
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("Class.forName"));
     assert!(h.source.contains("getDeclaredMethod"));
+    assert!(h.source.contains("NYX_KAFKA_LOG"));
+    assert!(h.source.contains("nyxRecordBrokerPublish"));
 }
 
 #[test]
@@ -176,6 +180,8 @@ fn message_handler_node_uses_sqs_loopback() {
     assert!(h.source.contains("NyxSqsLoopback"));
     assert!(h.source.contains("subscribe"));
     assert!(h.source.contains("__NYX_BROKER_PUBLISH__:sqs"));
+    assert!(h.source.contains("NYX_SQS_LOG"));
+    assert!(h.source.contains("_nyxRecordBrokerPublish"));
 }
 
 #[test]
@@ -184,6 +190,8 @@ fn message_handler_go_uses_nyx_handlers_registry() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("entry.NyxHandlers"));
     assert!(h.source.contains("NewNyxPubsubLoopback"));
+    assert!(h.source.contains("NYX_PUBSUB_LOG"));
+    assert!(h.source.contains("nyxRecordBrokerPublish"));
 }
 
 // ── Framework-adapter assertions ──────────────────────────────────────────────

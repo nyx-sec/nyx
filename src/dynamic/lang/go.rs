@@ -1367,7 +1367,7 @@ fn generate_go_mod(shape: GoShape) -> String {
     if !deps.is_empty() {
         out.push_str("\nrequire (\n");
         for (module, version) in deps {
-            out.push_str("\t");
+            out.push('\t');
             out.push_str(module);
             out.push(' ');
             out.push_str(version);
@@ -2120,6 +2120,7 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
 		nyxDispatch(msg)
 	}})
 	fmt.Println("{publish_marker} " + "{queue}")
+	nyxRecordBrokerPublish("NYX_NATS_LOG", "{queue}", payload)
 	broker.Publish("{queue}", payload)"##,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::NATS_PUBLISH_MARKER,
@@ -2134,6 +2135,7 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
 		nyxDispatch(msg)
 	}})
 	fmt.Println("{publish_marker} " + "{queue}")
+	nyxRecordBrokerPublish("NYX_PUBSUB_LOG", "{queue}", payload)
 	broker.Publish("{queue}", payload)"##,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
@@ -2212,6 +2214,19 @@ func nyxPayload() string {{
 		}}
 	}}
 	return ""
+}}
+
+func nyxRecordBrokerPublish(envName string, destination string, payload string) {{
+	path := os.Getenv(envName)
+	if path == "" {{
+		return
+	}}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {{
+		return
+	}}
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "%s\t%s\n", strings.ReplaceAll(destination, "\t", " "), payload)
 }}
 
 func main() {{

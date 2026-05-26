@@ -51,6 +51,7 @@
 //!   [`crate::dynamic::oracle::oracle_fired_with_stubs`] so the
 //!   `StubEventMatches` predicate can satisfy a payload.
 
+pub mod broker;
 pub mod broker_kafka;
 pub mod broker_nats;
 pub mod broker_pubsub;
@@ -65,6 +66,7 @@ pub mod redis;
 pub mod sql;
 pub mod xpath_document;
 
+pub use broker::BrokerStub;
 pub use broker_kafka::{KAFKA_PUBLISH_MARKER, kafka_source};
 pub use broker_nats::{NATS_PUBLISH_MARKER, nats_source};
 pub use broker_pubsub::{PUBSUB_PUBLISH_MARKER, pubsub_source};
@@ -111,6 +113,16 @@ pub enum StubKind {
     MockDatabaseConnection,
     /// Runtime provider for an injectable logger test double.
     MockLogger,
+    /// Runtime provider for a Kafka-shaped broker loopback.
+    Kafka,
+    /// Runtime provider for an SQS-shaped broker loopback.
+    Sqs,
+    /// Runtime provider for a Google Pub/Sub-shaped broker loopback.
+    Pubsub,
+    /// Runtime provider for a RabbitMQ-shaped broker loopback.
+    Rabbit,
+    /// Runtime provider for a NATS-shaped broker loopback.
+    Nats,
 }
 
 impl StubKind {
@@ -128,6 +140,11 @@ impl StubKind {
             StubKind::MockHttpClient => "NYX_MOCK_HTTP_CLIENT_ENDPOINT",
             StubKind::MockDatabaseConnection => "NYX_MOCK_DATABASE_CONNECTION_ENDPOINT",
             StubKind::MockLogger => "NYX_MOCK_LOGGER_ENDPOINT",
+            StubKind::Kafka => "NYX_KAFKA_ENDPOINT",
+            StubKind::Sqs => "NYX_SQS_ENDPOINT",
+            StubKind::Pubsub => "NYX_PUBSUB_ENDPOINT",
+            StubKind::Rabbit => "NYX_RABBIT_ENDPOINT",
+            StubKind::Nats => "NYX_NATS_ENDPOINT",
         }
     }
 
@@ -144,6 +161,32 @@ impl StubKind {
             StubKind::MockHttpClient => "mock_http_client",
             StubKind::MockDatabaseConnection => "mock_database_connection",
             StubKind::MockLogger => "mock_logger",
+            StubKind::Kafka => "kafka",
+            StubKind::Sqs => "sqs",
+            StubKind::Pubsub => "pubsub",
+            StubKind::Rabbit => "rabbit",
+            StubKind::Nats => "nats",
+        }
+    }
+
+    /// True for message-broker provider kinds.
+    pub const fn is_broker(self) -> bool {
+        matches!(
+            self,
+            StubKind::Kafka | StubKind::Sqs | StubKind::Pubsub | StubKind::Rabbit | StubKind::Nats
+        )
+    }
+
+    /// Companion log env var used by broker loopback harnesses to
+    /// append publish observations that the host drains as `StubEvent`s.
+    pub const fn broker_log_env_var(self) -> Option<&'static str> {
+        match self {
+            StubKind::Kafka => Some("NYX_KAFKA_LOG"),
+            StubKind::Sqs => Some("NYX_SQS_LOG"),
+            StubKind::Pubsub => Some("NYX_PUBSUB_LOG"),
+            StubKind::Rabbit => Some("NYX_RABBIT_LOG"),
+            StubKind::Nats => Some("NYX_NATS_LOG"),
+            _ => None,
         }
     }
 
@@ -291,6 +334,11 @@ impl StubHarness {
                     Arc::new(MockStub::start(MockKind::DatabaseConnection, workdir)?)
                 }
                 StubKind::MockLogger => Arc::new(MockStub::start(MockKind::Logger, workdir)?),
+                StubKind::Kafka
+                | StubKind::Sqs
+                | StubKind::Pubsub
+                | StubKind::Rabbit
+                | StubKind::Nats => Arc::new(BrokerStub::start(k, workdir)?),
             };
             stubs.push(stub);
         }
@@ -374,6 +422,11 @@ mod tests {
             StubKind::MockHttpClient,
             StubKind::MockDatabaseConnection,
             StubKind::MockLogger,
+            StubKind::Kafka,
+            StubKind::Sqs,
+            StubKind::Pubsub,
+            StubKind::Rabbit,
+            StubKind::Nats,
         ]
         .iter()
         .map(|k| k.env_var())
@@ -445,6 +498,7 @@ mod tests {
                 StubKind::Sql,
                 StubKind::Filesystem,
                 StubKind::MockHttpClient,
+                StubKind::Kafka,
             ],
             dir.path(),
         )
@@ -454,7 +508,37 @@ mod tests {
         assert!(names.contains(&"NYX_FS_ROOT"));
         assert!(names.contains(&"NYX_MOCK_HTTP_CLIENT_ENDPOINT"));
         assert!(names.contains(&"NYX_MOCK_HTTP_CLIENT_LOG"));
+        assert!(names.contains(&"NYX_KAFKA_ENDPOINT"));
+        assert!(names.contains(&"NYX_KAFKA_LOG"));
         assert_eq!(StubKind::Http.env_var(), "NYX_HTTP_ENDPOINT");
+    }
+
+    #[test]
+    fn broker_kinds_start_as_runtime_providers() {
+        let dir = TempDir::new().unwrap();
+        let h = StubHarness::start(
+            &[
+                StubKind::Kafka,
+                StubKind::Sqs,
+                StubKind::Pubsub,
+                StubKind::Rabbit,
+                StubKind::Nats,
+            ],
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(h.len(), 5);
+        let pairs = h.endpoints();
+        for (endpoint, log) in [
+            ("NYX_KAFKA_ENDPOINT", "NYX_KAFKA_LOG"),
+            ("NYX_SQS_ENDPOINT", "NYX_SQS_LOG"),
+            ("NYX_PUBSUB_ENDPOINT", "NYX_PUBSUB_LOG"),
+            ("NYX_RABBIT_ENDPOINT", "NYX_RABBIT_LOG"),
+            ("NYX_NATS_ENDPOINT", "NYX_NATS_LOG"),
+        ] {
+            assert!(pairs.iter().any(|(name, _)| *name == endpoint));
+            assert!(pairs.iter().any(|(name, _)| *name == log));
+        }
     }
 
     #[test]

@@ -1320,6 +1320,7 @@ fn infer_framework_project_root(entry_path: &Path, lang: Lang) -> Option<PathBuf
 /// 18 test for `spec_attach_framework_binding_stamps_new_entry_kind_variant`
 /// drives a synthetic binding through this helper directly.
 fn stamp_framework_binding(spec: &mut HarnessSpec, binding: FrameworkBinding) {
+    let mut hash_material_changed = false;
     // Phase 14 (Track L.12): flip the Spring-test toolchain knob
     // when the java-spring adapter binds, so the Java emitter
     // bootstraps `SpringApplication.run` / `MockMvc` for Spring
@@ -1349,9 +1350,29 @@ fn stamp_framework_binding(spec: &mut HarnessSpec, binding: FrameworkBinding) {
             | crate::evidence::EntryKindTag::Migration
     ) {
         spec.entry_kind = binding.kind.clone();
-        spec.spec_hash = compute_spec_hash(spec);
+        hash_material_changed = true;
+    }
+    if let Some(kind) = broker_stub_kind_for_adapter(&binding.adapter)
+        && !spec.stubs_required.contains(&kind)
+    {
+        spec.stubs_required.push(kind);
+        hash_material_changed = true;
     }
     spec.framework = Some(binding);
+    if hash_material_changed {
+        spec.spec_hash = compute_spec_hash(spec);
+    }
+}
+
+fn broker_stub_kind_for_adapter(adapter: &str) -> Option<StubKind> {
+    match adapter.split_once('-').map(|(broker, _)| broker) {
+        Some("kafka") => Some(StubKind::Kafka),
+        Some("sqs") => Some(StubKind::Sqs),
+        Some("pubsub") => Some(StubKind::Pubsub),
+        Some("rabbit") => Some(StubKind::Rabbit),
+        Some("nats") => Some(StubKind::Nats),
+        _ => None,
+    }
 }
 
 /// Pick the tree-sitter `Language` for a given [`Lang`].  Returns
@@ -2450,6 +2471,11 @@ mod tests {
         }
         let fw = spec.framework.as_ref().expect("framework must be set");
         assert_eq!(fw.adapter, "kafka-python");
+        assert_eq!(
+            spec.stubs_required,
+            vec![crate::dynamic::stubs::StubKind::Kafka],
+            "MessageHandler specs must request the matching broker runtime provider",
+        );
         assert_ne!(pre_hash, spec.spec_hash);
     }
 
