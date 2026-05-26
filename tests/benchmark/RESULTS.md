@@ -57,7 +57,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2019-18634 | C          | sudo (pwfeedback)          | ISC                  | memory_safety   | detected |
 | CVE-2019-13132 | C++        | ZeroMQ libzmq              | MPL-2.0              | memory_safety   | detected |
 | CVE-2022-1941  | C++        | Protocol Buffers           | BSD-3-Clause         | memory_safety   | detected |
-| CVE-2026-25544 | TypeScript | Payload (Drizzle adapter)  | MIT                  | sql_injection   | deferred |
+| CVE-2026-25544 | TypeScript | Payload (Drizzle adapter)  | MIT                  | sql_injection   | detected |
 | CVE-2026-42353 | JavaScript | i18next-http-middleware    | MIT                  | path_traversal  | detected |
 
 Deferred entries are real bugs Nyx can't yet detect. The fixture stays committed with `disabled: true` in ground truth so the gap remains visible.
@@ -83,6 +83,7 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-26 | Benchmark docs corrected for CVE-2026-25544: the Payload Drizzle SQL injection fixture is enabled and detected in `ground_truth.json`; only CVE-2017-1000117 remains deferred in the real-CVE table | 565 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | C cvehunt session-0014: CVE-2017-1000117 (git ssh:// hostname-as-argv injection) added in corpus disabled — three-layer C engine gap: (a) array-element taint propagation through `args[i] = ssh_host;` writes, (b) missing `c.cmdi.exec*` AST patterns in `src/patterns/c.rs`, (c) sanitizer recognition of the upstream `if (ssh_host[0] == '-') die(...)` dash-prefix guard | 565 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | JS/TS array-method validator-callback narrowing (`try_array_method_validator_callback_narrowing` in `src/taint/ssa_transfer/mod.rs`) — `<arr>.filter(<isSafeXxx>)` / `.find` / `.findLast` strips `Cap::all()` from the call result when the callback resolves to a `BooleanTrueIsValid` validator; CVE-2026-42353 (i18next-http-middleware path traversal) re-enabled in ground truth, deferred queue cleared | 563 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | JS/TS ternary-RHS source-classification fix in `src/cfg/conditions.rs::lower_ternary_branch` (segment-strip first_member_label on the branch AST) — `let arr = cond ? req.query.lng : "";` now propagates taint through the diamond's join phi instead of lowering both branches to labelless Assign-with-empty-uses; CVE-2026-42353 (i18next-http-middleware path traversal / SSRF) added in corpus disabled — needs Array.prototype.filter(known_validator_callback) precision bridge | 561 | 1.000 | 1.000 | 1.000 |

@@ -711,7 +711,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
-            ".".to_owned(),
+            ".:lib/*".to_owned(),
             "NyxHarness".to_owned(),
         ],
         extra_files,
@@ -3118,19 +3118,9 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
             "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\");"
         ),
         JavaShape::SpringController => {
-            if spec.java_toolchain.with_spring_test {
-                // Phase 14 (Track L.12) — `with_spring_test`-enabled
-                // Spring shape: the v1 implementation still drives the
-                // reflective path because the synthetic harness does
-                // not bundle SpringBoot test deps.  The flag flips a
-                // marker on stdout so the verifier can confirm the
-                // toolchain knob propagated.
-                format!(
-                    "            System.out.println(\"NYX_SPRING_TEST=1\");\n            invokeReflective({entry_class}.class, \"{method}\", payload);"
-                )
-            } else {
-                format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
-            }
+            format!(
+                "            System.out.println(\"NYX_SPRING_TEST=1\");\n            invokeSpringController({entry_class}.class, \"{method}\", payload);"
+            )
         }
         JavaShape::QuarkusRoute => {
             format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
@@ -3149,9 +3139,8 @@ fn shape_helpers(shape: JavaShape) -> &'static str {
     match shape {
         JavaShape::StaticMethod | JavaShape::StaticMain => "",
         JavaShape::ServletDoGet | JavaShape::ServletDoPost => SERVLET_HELPER,
-        JavaShape::SpringController | JavaShape::QuarkusRoute | JavaShape::MicronautRoute => {
-            REFLECTIVE_HELPER
-        }
+        JavaShape::SpringController => SPRING_MOCKMVC_HELPER,
+        JavaShape::QuarkusRoute | JavaShape::MicronautRoute => REFLECTIVE_HELPER,
         JavaShape::JunitTest => JUNIT_HELPER,
     }
 }
@@ -3260,6 +3249,101 @@ const SERVLET_HELPER: &str = r#"
             args[i] = params[i].equals(String.class) ? payload : null;
         }
         match.invoke(instance, args);
+    }
+"#;
+
+/// Spring MVC request replay through `MockMvc`. This keeps Spring's
+/// annotation mapping and request-parameter binding in the execution
+/// path instead of invoking the controller method directly.
+const SPRING_MOCKMVC_HELPER: &str = r#"
+    static void invokeSpringController(Class<?> cls, String methodName, String payload) throws Exception {
+        Object controller = newDefaultInstance(cls);
+        String[] candidatePaths = springCandidatePaths(cls, methodName);
+        org.springframework.test.web.servlet.MockMvc mvc =
+            org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        Throwable last = null;
+        for (String path : candidatePaths) {
+            try {
+                org.springframework.test.web.servlet.MvcResult result = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .get(path)
+                    .param("payload", payload)
+                    .param("id", payload)
+                    .content(payload))
+                    .andReturn();
+                int status = result.getResponse().getStatus();
+                if (status < 400) {
+                    return;
+                }
+                last = new RuntimeException("Spring MockMvc returned HTTP " + status + " for " + path);
+            } catch (Throwable t) {
+                last = t;
+            }
+        }
+        if (last instanceof Exception) {
+            throw (Exception) last;
+        }
+        if (last != null) {
+            throw new RuntimeException(last);
+        }
+        throw new NoSuchMethodException(cls.getName() + "." + methodName);
+    }
+
+    static Object newDefaultInstance(Class<?> cls) throws Exception {
+        Constructor<?> ctor = cls.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
+    }
+
+    static String[] springCandidatePaths(Class<?> cls, String methodName) throws Exception {
+        String classPath = springPathFromAnnotation(cls.getAnnotations());
+        String methodPath = "";
+        for (Method m : cls.getDeclaredMethods()) {
+            if (!m.getName().equals(methodName)) continue;
+            methodPath = springPathFromAnnotation(m.getAnnotations());
+            break;
+        }
+        String joined = springJoinPath(classPath, methodPath);
+        if (!joined.equals("/")) {
+            String fallback = classPath.isEmpty() ? "/" : springJoinPath(classPath, "");
+            return new String[] { joined, fallback, "/" };
+        }
+        return new String[] { "/" };
+    }
+
+    static String springPathFromAnnotation(java.lang.annotation.Annotation[] annotations) throws Exception {
+        for (java.lang.annotation.Annotation ann : annotations) {
+            String n = ann.annotationType().getName();
+            if (!n.startsWith("org.springframework.web.bind.annotation.")) continue;
+            String p = springAnnotationStringArrayValue(ann, "path");
+            if (p == null || p.isEmpty()) p = springAnnotationStringArrayValue(ann, "value");
+            if (p != null && !p.isEmpty()) return p;
+        }
+        return "";
+    }
+
+    static String springAnnotationStringArrayValue(java.lang.annotation.Annotation ann, String name) throws Exception {
+        try {
+            Object value = ann.annotationType().getMethod(name).invoke(ann);
+            if (value instanceof String[]) {
+                String[] arr = (String[]) value;
+                return arr.length == 0 ? "" : arr[0];
+            }
+            if (value instanceof String) {
+                return (String) value;
+            }
+        } catch (NoSuchMethodException ignored) {
+        }
+        return "";
+    }
+
+    static String springJoinPath(String a, String b) {
+        String left = a == null || a.isEmpty() ? "" : a;
+        String right = b == null || b.isEmpty() ? "" : b;
+        if (left.isEmpty() && right.isEmpty()) return "/";
+        String joined = (left + "/" + right).replaceAll("/+", "/");
+        if (!joined.startsWith("/")) joined = "/" + joined;
+        if (joined.length() > 1 && joined.endsWith("/")) joined = joined.substring(0, joined.length() - 1);
+        return joined;
     }
 "#;
 
@@ -4067,7 +4151,8 @@ mod tests {
     fn spring_shape_emits_reflective_invocation() {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::SpringController, "Vuln");
-        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+        assert!(src.contains("invokeSpringController(Vuln.class, \"run\""));
+        assert!(src.contains("MockMvcBuilders.standaloneSetup"));
     }
 
     #[test]
@@ -4093,7 +4178,8 @@ mod tests {
         let mut off = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         off.java_toolchain.with_spring_test = false;
         let src_off = generate_harness_java(&off, JavaShape::SpringController, "Vuln");
-        assert!(!src_off.contains("NYX_SPRING_TEST=1"));
+        assert!(src_off.contains("NYX_SPRING_TEST=1"));
+        assert!(src_off.contains("invokeSpringController"));
     }
 
     #[test]
@@ -4353,7 +4439,17 @@ mod tests {
         let mut spec = make_spec_with(EntryKind::HttpRoute, "run", &entry_file);
         spec.payload_slot = PayloadSlot::Param(0);
         let harness = emit(&spec).unwrap();
-        assert!(harness.extra_files.is_empty());
+        assert!(
+            harness.extra_files.iter().all(
+                |(p, _)| !p.starts_with("javax/servlet/") && !p.starts_with("jakarta/servlet/")
+            ),
+            "spring controller unexpectedly ships servlet stubs: {:?}",
+            harness
+                .extra_files
+                .iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

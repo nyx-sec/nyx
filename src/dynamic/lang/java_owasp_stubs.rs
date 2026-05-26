@@ -40,9 +40,9 @@
 //! paths, not the build-time stubs.
 //!
 //! Detection gate ([`entry_needs_owasp_stubs`]) checks the entry
-//! source for substring hits on `org.owasp.benchmark` /
-//! `org.owasp.esapi` / `org.springframework`.  Non-OWASP harnesses
-//! pay zero workdir cost.
+//! source for substring hits on `org.owasp.benchmark`,
+//! `org.owasp.esapi`, or the narrow Spring helper packages used by
+//! OWASP.  Non-OWASP harnesses pay zero workdir cost.
 
 /// Returns `(workdir_relative_path, file_content)` pairs ready to
 /// drop into [`crate::dynamic::lang::HarnessSource::extra_files`].
@@ -101,14 +101,15 @@ pub fn owasp_stub_files() -> Vec<(String, String)> {
 
 /// Substring probe to decide whether an entry source pulls in the
 /// OWASP Benchmark helper set.  Matches `org.owasp.benchmark` /
-/// `org.owasp.esapi` / `org.springframework` references, including
-/// import statements and inline FQNs.  Conservative on false
-/// positives: a fixture that only mentions one of these in a comment
-/// will still get the stubs staged, which is harmless javac work.
+/// `org.owasp.esapi` references, and the small Spring helper packages
+/// used by OWASP. Do not match generic Spring MVC annotations here:
+/// real Spring controller fixtures bring those classes from Maven.
 pub fn entry_needs_owasp_stubs(source: &str) -> bool {
     source.contains("org.owasp.benchmark")
         || source.contains("org.owasp.esapi")
-        || source.contains("org.springframework")
+        || source.contains("org.springframework.dao.")
+        || source.contains("org.springframework.jdbc.")
+        || source.contains("org.springframework.web.util.")
 }
 
 fn utils_stub() -> String {

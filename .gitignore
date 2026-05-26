@@ -8,6 +8,7 @@
 /src/server/assets/dist
 /marketing
 /.nyx
+/.nyx-build-cache
 /logs
 /book
 .DS_Store

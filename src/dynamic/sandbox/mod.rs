@@ -1107,7 +1107,11 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
             if command[i] == "-cp" || command[i] == "-classpath" {
                 args.push(command[i].clone());
                 i += 1;
-                args.push(docker::WORK_MOUNT_PATH.to_owned());
+                args.push(format!(
+                    "{}:{}/lib/*",
+                    docker::WORK_MOUNT_PATH,
+                    docker::WORK_MOUNT_PATH
+                ));
                 i += 1;
             } else {
                 args.push(command[i].clone());
@@ -2043,7 +2047,7 @@ mod tests {
         ];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["java", "-cp", "/work", "NyxHarness"]
+            vec!["java", "-cp", "/work:/work/lib/*", "NyxHarness"]
         );
     }
 

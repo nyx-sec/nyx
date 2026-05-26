@@ -315,11 +315,17 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // Compile NyxHarness.java + Entry.java with javac.
             match build_sandbox::prepare_java(spec, &harness.workdir) {
                 Ok(_) => {
-                    // Update classpath to absolute workdir path for Docker compatibility.
+                    // Update classpath to absolute workdir paths for Docker
+                    // compatibility. Include Maven-staged jars too; framework
+                    // harnesses compile with `lib/*` and need the same jars at
+                    // runtime.
+                    let workdir_cp = harness.workdir.to_string_lossy();
+                    let lib_cp = harness.workdir.join("lib/*");
+                    let cp = format!("{workdir_cp}:{}", lib_cp.to_string_lossy());
                     harness.command = vec![
                         "java".to_owned(),
                         "-cp".to_owned(),
-                        harness.workdir.to_string_lossy().into_owned(),
+                        cp,
                         "NyxHarness".to_owned(),
                     ];
                 }

@@ -217,8 +217,8 @@ fn rewrite_go_package(src: &str, target: &str) -> String {
     if replaced { out } else { src.to_owned() }
 }
 
-/// Java shape fixtures often keep tiny annotation / framework stubs next to
-/// `Vuln.java` or `Benign.java`.  Stage those siblings with the entry file so
+/// Java shape fixtures often keep helper sources and a build manifest next to
+/// `Vuln.java` or `Benign.java`. Stage those siblings with the entry file so
 /// each unique workdir is self-contained, while skipping the opposite fixture
 /// variant to avoid duplicate public-class declarations in corpus tests.
 fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
@@ -242,12 +242,16 @@ fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
     };
     for item in entries.flatten() {
         let p = item.path();
-        if !p.extension().map(|e| e == "java").unwrap_or(false) {
-            continue;
-        }
         let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        if name == "pom.xml" {
+            let _ = fs::copy(&p, workdir.join(name));
+            continue;
+        }
+        if !p.extension().map(|e| e == "java").unwrap_or(false) {
+            continue;
+        }
         if name == entry_name || name == alt_name {
             continue;
         }
@@ -385,6 +389,7 @@ mod tests {
         fs::write(&vuln, "public class Vuln {}\n").unwrap();
         fs::write(tmp.path().join("Helper.java"), "class Helper {}\n").unwrap();
         fs::write(tmp.path().join("Benign.java"), "public class Benign {}\n").unwrap();
+        fs::write(tmp.path().join("pom.xml"), "<project />\n").unwrap();
 
         let spec = HarnessSpec {
             finding_id: "0000000000000001".into(),
@@ -408,6 +413,7 @@ mod tests {
         let harness = build(&spec).unwrap();
         assert!(harness.workdir.join("Vuln.java").exists());
         assert!(harness.workdir.join("Helper.java").exists());
+        assert!(harness.workdir.join("pom.xml").exists());
         assert!(!harness.workdir.join("Benign.java").exists());
     }
 }

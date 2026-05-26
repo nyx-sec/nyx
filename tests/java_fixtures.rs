@@ -674,7 +674,7 @@ mod phase14_shape_tests {
             "Vuln.java",
             "run",
             Cap::CODE_EXEC,
-            16,
+            19,
             EntryKind::HttpRoute,
             PayloadSlot::Param(0),
         ) else {
@@ -690,7 +690,7 @@ mod phase14_shape_tests {
             "Benign.java",
             "run",
             Cap::CODE_EXEC,
-            14,
+            22,
             EntryKind::HttpRoute,
             PayloadSlot::Param(0),
         ) else {

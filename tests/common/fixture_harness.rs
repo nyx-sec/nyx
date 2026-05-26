@@ -495,8 +495,8 @@ pub fn run_shape_fixture_lang(
         java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     };
 
-    // Phase 14: Java shape fixtures bundle annotation / type stubs as
-    // sibling `*.java` files alongside `Vuln.java` / `Benign.java`.
+    // Phase 14: Java shape fixtures bundle helper sources and sometimes a
+    // Maven manifest alongside `Vuln.java` / `Benign.java`.
     // Stage those sidecars next to the temp-copied entry file so the
     // harness builder can copy them into its per-run workdir.  Skip the
     // alternate Vuln/Benign file to keep public class declarations from
@@ -519,7 +519,7 @@ pub fn run_shape_fixture_lang(
                 if name == file || name == alt_file {
                     continue;
                 }
-                if p.extension().map(|e| e == "java").unwrap_or(false) {
+                if name == "pom.xml" || p.extension().map(|e| e == "java").unwrap_or(false) {
                     let _ = std::fs::copy(&p, tmp.path().join(&name));
                 }
             }
@@ -539,6 +539,26 @@ pub fn run_shape_fixture_lang(
     // [`VerifyStatus`] directly without learning the runner's API.
     match outcome {
         Ok(run) => {
+            let detail = if run.triggered_by.is_none() {
+                Some(format!(
+                    "attempts={:?}",
+                    run.attempts
+                        .iter()
+                        .map(|a| format!(
+                            "{} fired={} triggered={} sink_hit={} exit={:?} stdout={:?} stderr={:?}",
+                            a.payload_label,
+                            a.oracle_fired,
+                            a.triggered,
+                            a.outcome.sink_hit,
+                            a.outcome.exit_code,
+                            String::from_utf8_lossy(&a.outcome.stdout),
+                            String::from_utf8_lossy(&a.outcome.stderr)
+                        ))
+                        .collect::<Vec<_>>()
+                ))
+            } else {
+                None
+            };
             let (status, inconclusive_reason) = if run.triggered_by.is_some() {
                 (VerifyStatus::Confirmed, None)
             } else if run.oracle_collision {
@@ -569,7 +589,7 @@ pub fn run_shape_fixture_lang(
                     .map(|a| a.payload_label.to_owned()),
                 reason: None,
                 inconclusive_reason,
-                detail: None,
+                detail,
                 attempts: vec![],
                 toolchain_match: None,
                 differential: None,

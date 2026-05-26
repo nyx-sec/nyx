@@ -1,10 +1,10 @@
-// Phase 14 — Spring `@RestController`, vulnerable.
-//
-// Controller declares an `@Autowired CommandRunner` field so the
-// Phase 09 Java import-extractor sees the Spring annotation surface.
-// The harness instantiates the controller via reflection and invokes
-// `run(payload)`; the field stays null at runtime (no Spring DI), so
-// the handler constructs the helper on demand.
+// Spring `@RestController`, vulnerable.
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/run")
@@ -12,7 +12,8 @@ public class Vuln {
     @Autowired
     private CommandRunner runner;
 
-    public String run(String payload) throws Exception {
+    @GetMapping
+    public String run(@RequestParam("payload") String payload) throws Exception {
         System.out.print("__NYX_SINK_HIT__\n");
         CommandRunner r = (runner != null) ? runner : new CommandRunner();
         String out = r.run("echo hello " + payload);
