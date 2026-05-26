@@ -1,46 +1,24 @@
 <?php
-// Phase 16 — CodeIgniter-style route, vulnerable.
-// `$routes->get('run', 'UserController::run')` references the
-// controller method whose body shells out without sanitisation.
+// CodeIgniter-style route, vulnerable.
 
-namespace CodeIgniter\Router {
-    class RouteCollection
-    {
-    }
-}
+namespace App\Controllers;
 
-namespace {
+use CodeIgniter\Controller;
 use CodeIgniter\Router\RouteCollection;
 
-class BaseController
+function nyx_register_routes(RouteCollection $routes): void
 {
+    $routes->get('run/(:any)', 'App\\Controllers\\UserController::run');
 }
 
-class NyxRoutes extends RouteCollection
+class UserController extends Controller
 {
-    public function get(string $path, string $callable)
-    {
-        $GLOBALS['__nyx_route'] = function (string $payload) use ($callable) {
-            [$class, $method] = explode('::', $callable, 2);
-            $controller = new $class();
-            return $controller->$method($payload);
-        };
-        return $this;
-    }
-}
-
-$routes = new NyxRoutes();
-$routes->get('run', 'UserController::run');
-
-class UserController extends BaseController
-{
-    public function run($payload)
+    public function run(string $payload): string
     {
         echo "__NYX_SINK_HIT__\n";
         $cmd = "echo hello " . $payload;
-        $out = shell_exec($cmd);
+        $out = shell_exec($cmd) ?? '';
         echo $out;
         return $out;
     }
-}
 }

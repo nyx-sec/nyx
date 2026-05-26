@@ -1,55 +1,28 @@
 <?php
 // Laravel-style multi-verb route fixture. The vulnerable sink is gated
-// to POST so verifier runs that exercise only the representative GET
-// method miss the command injection.
+// to POST so verifier runs that exercise only GET miss the command injection.
 
-namespace Illuminate\Support\Facades {
-    class Route
-    {
-        public static function match(array $methods, string $path, array $callable)
-        {
-            \NyxLaravelMultiVerb\register_route($methods, $callable);
-            return new class {
-                public function middleware($value)
-                {
-                    return $this;
-                }
-            };
-        }
-    }
+namespace App\Http\Controllers;
+
+use Illuminate\Routing\Router;
+
+function nyx_register_routes(Router $router): void
+{
+    $router->match(['GET', 'POST'], '/run/{payload}', [UserController::class, 'run']);
 }
 
-namespace NyxLaravelMultiVerb {
-    use Illuminate\Support\Facades\Route;
-
-    function register_route(array $methods, array $callable): void
+class UserController
+{
+    public function run(string $payload): ?string
     {
-        $GLOBALS['__nyx_route'] = function (string $payload) use ($methods, $callable) {
-            $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-            if (!in_array($requestMethod, $methods, true)) {
-                return null;
-            }
-            [$class, $method] = $callable;
-            $controller = new $class();
-            return $controller->$method($payload);
-        };
-    }
-
-    Route::match(['GET', 'POST'], '/run', [UserController::class, 'run']);
-
-    class UserController
-    {
-        public function run(string $payload)
-        {
-            if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
-                echo "__NYX_METHOD_SKIP__\n";
-                return null;
-            }
-            echo "__NYX_SINK_HIT__\n";
-            $cmd = "true " . $payload;
-            $out = shell_exec($cmd);
-            echo $out;
-            return $out;
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            echo "__NYX_METHOD_SKIP__\n";
+            return null;
         }
+        echo "__NYX_SINK_HIT__\n";
+        $cmd = "true " . $payload;
+        $out = shell_exec($cmd) ?? '';
+        echo $out;
+        return $out;
     }
 }

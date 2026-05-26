@@ -48,14 +48,14 @@ fn laravel_vuln_fixture_binds_route() {
     assert_eq!(binding.adapter, "php-laravel");
     assert_eq!(binding.kind, EntryKind::HttpRoute);
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/{payload}");
     assert_eq!(route.method, HttpMethod::GET);
     let payload = binding
         .request_params
         .iter()
         .find(|p| p.name == "payload")
         .expect("payload formal");
-    assert!(matches!(payload.source, ParamSource::QueryParam(_)));
+    assert!(matches!(payload.source, ParamSource::PathSegment(_)));
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn laravel_benign_fixture_binds_same_route_shape() {
         .expect("laravel adapter must bind benign fixture");
     assert_eq!(binding.adapter, "php-laravel");
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/{payload}");
     assert_eq!(route.method, HttpMethod::GET);
 }
 
@@ -82,7 +82,7 @@ fn laravel_multi_verb_fixture_preserves_match_methods() {
         .expect("laravel adapter must bind multi-verb fixture");
     assert_eq!(binding.adapter, "php-laravel");
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/{payload}");
     assert_eq!(route.method, HttpMethod::GET);
     assert_eq!(
         route.reachable_methods(),
@@ -101,7 +101,7 @@ fn symfony_vuln_fixture_binds_route_via_attribute() {
     assert_eq!(binding.adapter, "php-symfony");
     assert_eq!(binding.kind, EntryKind::HttpRoute);
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/{payload}");
     assert_eq!(route.method, HttpMethod::GET);
 }
 
@@ -115,7 +115,7 @@ fn symfony_benign_fixture_binds_same_route_shape() {
         .expect("symfony adapter must bind benign fixture");
     assert_eq!(binding.adapter, "php-symfony");
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "/run");
+    assert_eq!(route.path, "/run/{payload}");
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn codeigniter_vuln_fixture_binds_route() {
     assert_eq!(binding.adapter, "php-codeigniter");
     assert_eq!(binding.kind, EntryKind::HttpRoute);
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "run");
+    assert_eq!(route.path, "run/(:any)");
     assert_eq!(route.method, HttpMethod::GET);
 }
 
@@ -167,7 +167,7 @@ fn codeigniter_benign_fixture_binds_same_route_shape() {
         .expect("codeigniter adapter must bind benign fixture");
     assert_eq!(binding.adapter, "php-codeigniter");
     let route = binding.route.as_ref().expect("route");
-    assert_eq!(route.path, "run");
+    assert_eq!(route.path, "run/(:any)");
 }
 
 #[test]
@@ -270,6 +270,13 @@ mod e2e_phase_16_framework_dispatchers {
         let tmp = TempDir::new().expect("create tempdir");
         let dst = tmp.path().join(file);
         std::fs::copy(&src, &dst).expect("copy fixture into tempdir");
+        for manifest in ["composer.json", "composer.lock"] {
+            let candidate = src.parent().expect("fixture parent").join(manifest);
+            if candidate.exists() {
+                std::fs::copy(&candidate, tmp.path().join(manifest))
+                    .expect("copy composer manifest into tempdir");
+            }
+        }
         let entry_file = dst.to_string_lossy().into_owned();
         let bytes = std::fs::read(&dst).expect("copied fixture readable");
         let tree = parse_php(&bytes);
@@ -425,6 +432,13 @@ mod e2e_phase_16_laravel_multi_verb {
         let tmp = TempDir::new().expect("create tempdir");
         let dst = tmp.path().join(file);
         std::fs::copy(&src, &dst).expect("copy fixture into tempdir");
+        for manifest in ["composer.json", "composer.lock"] {
+            let candidate = src.parent().expect("fixture parent").join(manifest);
+            if candidate.exists() {
+                std::fs::copy(&candidate, tmp.path().join(manifest))
+                    .expect("copy composer manifest into tempdir");
+            }
+        }
         let entry_file = dst.to_string_lossy().into_owned();
         let bytes = std::fs::read(&dst).expect("copied fixture readable");
         let tree = parse_php(&bytes);

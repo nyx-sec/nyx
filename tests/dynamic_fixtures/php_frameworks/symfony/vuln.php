@@ -1,48 +1,35 @@
 <?php
-// Phase 16 — Symfony-style route via `#[Route]` attribute,
-// vulnerable.
+// Symfony-style route via RouteCollection and HttpKernel, vulnerable.
 
-namespace Symfony\Component\HttpFoundation {
-    class Response
-    {
-        public function __construct(private string $content)
-        {
-        }
-
-        public function __toString(): string
-        {
-            return $this->content;
-        }
-    }
-}
-
-namespace Symfony\Component\Routing\Annotation {
-    #[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD | \Attribute::TARGET_FUNCTION)]
-    class Route
-    {
-        public function __construct(...$args)
-        {
-        }
-    }
-}
-
-namespace App\Controller {
+namespace App\Controller;
 
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Routing\Route as SymfonyRoute;
+use Symfony\Component\Routing\RouteCollection;
+
+function nyx_register_routes(RouteCollection $routes): void
+{
+    $routes->add('nyx_run', new SymfonyRoute(
+        '/run/{payload}',
+        ['_controller' => [new UserController(), 'run']],
+        [],
+        [],
+        '',
+        [],
+        ['GET']
+    ));
+}
 
 class UserController
 {
-    #[Route('/run', methods: ['GET'])]
-    public function run($payload)
+    #[Route('/run/{payload}', methods: ['GET'])]
+    public function run(string $payload): Response
     {
         echo "__NYX_SINK_HIT__\n";
         $cmd = "echo hello " . $payload;
-        $out = shell_exec($cmd);
+        $out = shell_exec($cmd) ?? '';
         echo $out;
         return new Response($out);
     }
-}
-
-$GLOBALS['__nyx_controller'] = new UserController();
 }

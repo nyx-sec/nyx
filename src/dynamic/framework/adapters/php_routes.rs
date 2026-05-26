@@ -433,8 +433,13 @@ fn visit_laravel_routes<'a>(
     if out.is_some() {
         return;
     }
-    if node.kind() == "scoped_call_expression"
-        && let Some(found) = try_laravel_route(node, bytes, target, controller)
+    if node.kind() == "scoped_call_expression" {
+        if let Some(found) = try_laravel_route(node, bytes, target, controller) {
+            *out = Some(found);
+            return;
+        }
+    } else if node.kind() == "member_call_expression"
+        && let Some(found) = try_laravel_member_route(node, bytes, target, controller)
     {
         *out = Some(found);
         return;
@@ -454,6 +459,30 @@ fn try_laravel_route<'a>(
     let scope = call.child_by_field_name("scope")?.utf8_text(bytes).ok()?;
     let scope_leaf = scope.rsplit('\\').next().unwrap_or(scope);
     if scope_leaf != "Route" {
+        return None;
+    }
+    let verb_node = call.child_by_field_name("name")?.utf8_text(bytes).ok()?;
+    let args = call.child_by_field_name("arguments")?;
+    let methods = laravel_route_methods(verb_node, args, bytes)?;
+    let path = laravel_route_path(verb_node, args, bytes)?;
+    if !laravel_callable_matches(verb_node, args, bytes, target, controller) {
+        return None;
+    }
+    Some(if methods.len() > 1 {
+        RouteShape::multi(methods, path)
+    } else {
+        RouteShape::single(methods[0], path)
+    })
+}
+
+fn try_laravel_member_route<'a>(
+    call: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+    controller: Option<&str>,
+) -> Option<RouteShape> {
+    let object = call.child_by_field_name("object")?.utf8_text(bytes).ok()?;
+    if object.trim_start_matches('$').trim() != "router" {
         return None;
     }
     let verb_node = call.child_by_field_name("name")?.utf8_text(bytes).ok()?;

@@ -544,10 +544,14 @@ impl RustShape {
         let has_actix_strong = source.contains("use actix_web")
             || source.contains("actix_web::")
             || source.contains("// nyx-shape: actix");
-        let has_axum_strong = source.contains("use axum::")
+        let has_axum_import = source.contains("use axum::")
             || source.contains("axum::Router")
+            || source.contains("axum::routing");
+        let has_axum_route = source.contains("axum::Router")
+            || source.contains("Router::new")
             || source.contains("axum::routing")
-            || source.contains("// nyx-shape: axum");
+            || source.contains("// nyx-shape: axum")
+            || source.contains("// nyx-shape: axum-route");
         let has_attribute_route = source.contains("#[get(")
             || source.contains("#[post(")
             || source.contains("#[put(")
@@ -578,13 +582,14 @@ impl RustShape {
                 Self::ActixWebRoute
             };
         }
-        if has_axum_strong {
+        if has_axum_route {
             return Self::AxumRoute;
         }
         // Legacy weak detectors: HttpResponse / IntoResponse may
         // appear in code that does not import a known framework.
         let has_actix_weak = source.contains("HttpResponse") || source.contains("HttpRequest");
-        let has_axum_weak = source.contains("IntoResponse")
+        let has_axum_weak = has_axum_import
+            || source.contains("IntoResponse")
             || source.contains("Json(")
             || source.contains("Query(");
         if has_axum_weak {
@@ -2018,7 +2023,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
-    let cargo_toml = generate_cargo_toml(spec.expected_cap);
+    let cargo_toml = generate_cargo_toml_for_shape(spec.expected_cap, shape);
     let main_rs = generate_main_rs(spec, shape);
 
     Ok(HarnessSource {
@@ -2045,6 +2050,7 @@ fn emit_class_method_harness(spec: &HarnessSpec, class: &str, method: &str) -> H
     let entry_label = format!("{class}::{method}");
     let entry_src = read_entry_source(&spec.entry_file);
     let receiver_expr = rust_receiver_expr(&entry_src, class, 3);
+    let method_invocation = rust_class_method_invocation(&entry_src, class, method);
     let body = format!(
         r#"//! Nyx dynamic harness — class method (Phase 19 / Track M.1).
 mod entry;
@@ -2054,7 +2060,7 @@ fn main() {{
     let _ = &payload;
     __nyx_install_crash_guard("{entry_label}");
     let instance = {receiver_expr};
-    let _ = instance.{method}(&payload);
+    {method_invocation}
     println!("__NYX_SINK_HIT__");
 }}
 
@@ -2100,9 +2106,9 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
     Some(out)
 }}
 "#,
-        method = method,
         entry_label = entry_label,
         receiver_expr = receiver_expr,
+        method_invocation = method_invocation,
     );
     HarnessSource {
         source: body,
@@ -2145,6 +2151,76 @@ fn class_has_new(entry_src: &str, class: &str) -> bool {
         };
         pos = next_from + next_rel;
     }
+}
+
+fn rust_class_method_invocation(entry_src: &str, class: &str, method: &str) -> String {
+    if rust_method_returns_printable_stdout(entry_src, class, method) {
+        format!(
+            "let __nyx_result = instance.{method}(&payload);\n    print!(\"{{}}\", __nyx_result);"
+        )
+    } else {
+        format!("let _ = instance.{method}(&payload);")
+    }
+}
+
+fn rust_method_returns_printable_stdout(entry_src: &str, class: &str, method: &str) -> bool {
+    let impl_marker = format!("impl {class}");
+    let mut search_from = 0usize;
+    while let Some(rel) = entry_src[search_from..].find(&impl_marker) {
+        let impl_start = search_from + rel;
+        let after_class = impl_start + impl_marker.len();
+        if entry_src[after_class..]
+            .chars()
+            .next()
+            .is_some_and(is_ident_char)
+        {
+            search_from = after_class;
+            continue;
+        }
+        let Some(open_rel) = entry_src[after_class..].find('{') else {
+            return false;
+        };
+        let block_start = after_class + open_rel;
+        let Some(block) = balanced_block(&entry_src[block_start..]) else {
+            return false;
+        };
+        if method_body_returns_printable_stdout(&block[1..block.len() - 1], method) {
+            return true;
+        }
+        search_from = block_start + block.len();
+    }
+    false
+}
+
+fn method_body_returns_printable_stdout(impl_body: &str, method: &str) -> bool {
+    let method_marker = format!("fn {method}");
+    let mut search_from = 0usize;
+    while let Some(rel) = impl_body[search_from..].find(&method_marker) {
+        let method_start = search_from + rel;
+        let after_name = method_start + method_marker.len();
+        if impl_body[after_name..]
+            .chars()
+            .next()
+            .is_some_and(is_ident_char)
+        {
+            search_from = after_name;
+            continue;
+        }
+        let Some(body_open_rel) = impl_body[after_name..].find('{') else {
+            return false;
+        };
+        let sig = &impl_body[after_name..after_name + body_open_rel];
+        if let Some(ret) = sig.split("->").nth(1) {
+            let ret = ret.trim();
+            return ret.starts_with("String")
+                || ret.starts_with("std::string::String")
+                || ret.starts_with("&str")
+                || ret.starts_with("&'static str")
+                || ret.starts_with("& 'static str");
+        }
+        search_from = after_name;
+    }
+    false
 }
 
 fn rust_struct_literal(entry_src: &str, class: &str, depth: usize) -> Option<String> {
@@ -2456,6 +2532,10 @@ fn word_in_text(text: &str, kw: &str) -> bool {
     false
 }
 
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 /// Generate `Cargo.toml` for the harness crate.
 ///
 /// Dependencies are driven by `expected_cap`:
@@ -2468,6 +2548,27 @@ fn word_in_text(text: &str, kw: &str) -> bool {
 /// the dep must be unconditional too.
 pub fn generate_cargo_toml(cap: Cap) -> String {
     generate_cargo_toml_with_extras(cap, false)
+}
+
+fn generate_cargo_toml_for_shape(cap: Cap, shape: RustShape) -> String {
+    let mut cargo = generate_cargo_toml_with_extras(cap, false);
+    let deps = match shape {
+        RustShape::AxumRoute => Some(
+            "axum = \"0.7\"\nserde = { version = \"1\", features = [\"derive\"] }\ntokio = { version = \"1\", features = [\"full\"] }\ntower = { version = \"0.5\", features = [\"util\"] }\n",
+        ),
+        RustShape::ActixRoute => {
+            Some("actix-web = \"4\"\nserde = { version = \"1\", features = [\"derive\"] }\n")
+        }
+        RustShape::RocketRoute => Some("rocket = \"0.5\"\n"),
+        RustShape::WarpRoute => Some(
+            "serde = { version = \"1\", features = [\"derive\"] }\ntokio = { version = \"1\", features = [\"full\"] }\nwarp = \"0.3\"\n",
+        ),
+        _ => None,
+    };
+    if let Some(deps) = deps {
+        cargo.push_str(deps);
+    }
+    cargo
 }
 
 /// Variant of [`generate_cargo_toml`] that conditionally pulls in
@@ -2548,6 +2649,44 @@ fn nyx_payload() -> String {{
     String::new()
 }}
 
+fn nyx_route_uri(path: &str, query: Option<&str>, payload: &str) -> String {{
+    let mut uri = if path.starts_with('/') {{
+        path.to_owned()
+    }} else {{
+        format!("/{{path}}")
+    }};
+    if let Some(name) = query {{
+        uri.push('?');
+        uri.push_str(name);
+        uri.push('=');
+        uri.push_str(&nyx_url_encode(payload));
+    }}
+    uri
+}}
+
+fn nyx_route_payload(payload: &str) -> String {{
+    let trimmed = payload.trim_start();
+    if trimmed.starts_with(';') || trimmed.starts_with("&&") || trimmed.starts_with("||") {{
+        format!("true {{payload}}")
+    }} else {{
+        payload.to_owned()
+    }}
+}}
+
+fn nyx_url_encode(input: &str) -> String {{
+    let mut out = String::with_capacity(input.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for b in input.bytes() {{
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {{
+            out.push(b as char);
+        }} else {{
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }}
+    }}
+    out
+}}
 /// Minimal base64 decoder (no external deps).
 fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
     const TABLE: [u8; 128] = {{
@@ -2604,25 +2743,119 @@ fn build_call(spec: &HarnessSpec, func: &str, shape: RustShape) -> (String, Stri
         }
         RustShape::ActixWebRoute => actix_invocation(spec, func),
         RustShape::AxumHandler => axum_invocation(spec, func),
-        // Phase 17 framework dispatchers.  Each shape prints the
-        // matching toolchain marker before invoking the entry under
-        // the same reflective shim used by [`Self::ActixWebRoute`] /
-        // [`Self::AxumHandler`].  Real-framework bootstrap (full
-        // `Router` mount, `App::new`, `rocket::build`, `warp::serve`)
-        // is deferred behind the per-shape harness real-engine
-        // follow-up — see `.pitboss/play/deferred.md`.
-        RustShape::ActixRoute => framework_route_invocation(spec, func, "NYX_ACTIX_TEST=1"),
-        RustShape::AxumRoute => framework_route_invocation(spec, func, "NYX_AXUM_TEST=1"),
-        RustShape::RocketRoute => framework_route_invocation(spec, func, "NYX_ROCKET_TEST=1"),
-        RustShape::WarpRoute => framework_route_invocation(spec, func, "NYX_WARP_TEST=1"),
+        RustShape::ActixRoute => actix_route_invocation(spec, func),
+        RustShape::AxumRoute => axum_route_invocation(spec, func),
+        RustShape::RocketRoute => rocket_route_invocation(spec, func),
+        RustShape::WarpRoute => warp_route_invocation(spec, func),
         RustShape::ClapCli => clap_invocation(spec, func),
     }
 }
 
-fn framework_route_invocation(spec: &HarnessSpec, func: &str, marker: &str) -> (String, String) {
-    let pre = format!("    println!(\"{marker}\");\n");
-    let (inner_pre, call) = actix_invocation(spec, func);
-    (format!("{pre}{inner_pre}"), call)
+fn framework_route_uri_expr(spec: &HarnessSpec) -> String {
+    let path = spec
+        .framework
+        .as_ref()
+        .and_then(|binding| binding.route.as_ref())
+        .map(|route| route.path.as_str())
+        .unwrap_or("/run");
+    match &spec.payload_slot {
+        PayloadSlot::QueryParam(name) => {
+            let payload_expr = if spec.expected_cap.contains(Cap::CODE_EXEC) {
+                "&nyx_route_payload(&payload)"
+            } else {
+                "&payload"
+            };
+            format!(
+                "nyx_route_uri({}, Some({}), {})",
+                rust_string_literal(path),
+                rust_string_literal(name),
+                payload_expr
+            )
+        }
+        _ => format!(
+            "nyx_route_uri({}, None, &payload)",
+            rust_string_literal(path)
+        ),
+    }
+}
+
+fn axum_route_invocation(spec: &HarnessSpec, _func: &str) -> (String, String) {
+    let uri = framework_route_uri_expr(spec);
+    (
+        "    println!(\"NYX_AXUM_TEST=1\");\n".to_owned(),
+        format!(
+            r#"let __nyx_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+    __nyx_rt.block_on(async {{
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let app = entry::build();
+        let uri = {uri};
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .expect("axum request");
+        let _ = app.oneshot(request).await;
+    }});
+    println!("__NYX_SINK_HIT__");"#
+        ),
+    )
+}
+
+fn actix_route_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
+    let uri = framework_route_uri_expr(spec);
+    (
+        "    println!(\"NYX_ACTIX_TEST=1\");\n".to_owned(),
+        format!(
+            r#"actix_web::rt::System::new().block_on(async {{
+        let app = actix_web::test::init_service(actix_web::App::new().service(entry::{func})).await;
+        let uri = {uri};
+        let req = actix_web::test::TestRequest::get().uri(&uri).to_request();
+        let _ = actix_web::test::call_service(&app, req).await;
+    }});
+    println!("__NYX_SINK_HIT__");"#
+        ),
+    )
+}
+
+fn rocket_route_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
+    let uri = framework_route_uri_expr(spec);
+    (
+        "    println!(\"NYX_ROCKET_TEST=1\");\n".to_owned(),
+        format!(
+            r#"let __nyx_rt = rocket::tokio::runtime::Builder::new_current_thread().enable_all().build().expect("rocket runtime");
+    __nyx_rt.block_on(async {{
+        let rocket = rocket::build().mount("/", rocket::routes![entry::{func}]);
+        let client = rocket::local::asynchronous::Client::tracked(rocket)
+            .await
+            .expect("rocket client");
+        let uri = {uri};
+        let _ = client.get(uri).dispatch().await;
+    }});
+    println!("__NYX_SINK_HIT__");"#
+        ),
+    )
+}
+
+fn warp_route_invocation(spec: &HarnessSpec, _func: &str) -> (String, String) {
+    let uri = framework_route_uri_expr(spec);
+    (
+        "    println!(\"NYX_WARP_TEST=1\");\n".to_owned(),
+        format!(
+            r#"let __nyx_rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+    __nyx_rt.block_on(async {{
+        let filter = entry::build();
+        let uri = {uri};
+        let _ = warp::test::request()
+            .method("GET")
+            .path(&uri)
+            .reply(&filter)
+            .await;
+    }});
+    println!("__NYX_SINK_HIT__");"#
+        ),
+    )
 }
 
 fn actix_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
@@ -2788,6 +3021,35 @@ mod tests {
     }
 
     #[test]
+    fn class_method_string_return_is_printed_for_oracle_visibility() {
+        let src = r#"
+            pub struct UserService;
+            impl UserService {
+                pub fn run(&self, input: &str) -> String {
+                    input.to_owned()
+                }
+            }
+        "#;
+        let invocation = rust_class_method_invocation(src, "UserService", "run");
+        assert!(invocation.contains("let __nyx_result = instance.run(&payload);"));
+        assert!(invocation.contains("print!(\"{}\", __nyx_result);"));
+    }
+
+    #[test]
+    fn class_method_void_return_keeps_direct_invocation() {
+        let src = r#"
+            pub struct UserService;
+            impl UserService {
+                pub fn run(&self, input: &str) {
+                    let _ = input;
+                }
+            }
+        "#;
+        let invocation = rust_class_method_invocation(src, "UserService", "run");
+        assert_eq!(invocation, "let _ = instance.run(&payload);");
+    }
+
+    #[test]
     fn emit_env_var_slot() {
         let spec = make_spec(PayloadSlot::EnvVar("NYX_INPUT".into()));
         let harness = emit(&spec).unwrap();
@@ -2838,14 +3100,19 @@ mod tests {
 
     #[test]
     fn shape_detect_axum_handler() {
-        // Phase 17 — Track L.15: a strong `use axum::` import now
-        // routes to the framework-aware [`RustShape::AxumRoute`]
-        // shape; the legacy [`RustShape::AxumHandler`] fires only on
-        // weak detectors (`IntoResponse` / `Json(` without `use
-        // axum::`).
+        // Importing an extractor is a handler hint, not proof that the
+        // fixture exports an app builder.  Native Axum request replay
+        // requires a router shape.
         let src =
             "use axum::extract::Query; pub fn handler(payload: &str) -> String { String::new() }";
         let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
+        assert_eq!(RustShape::detect(&spec, src), RustShape::AxumHandler);
+    }
+
+    #[test]
+    fn shape_detect_axum_router() {
+        let src = "use axum::Router; use axum::routing::get; pub async fn run() -> String { String::new() } pub fn build() -> Router { Router::new().route(\"/run\", get(run)) }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
         assert_eq!(RustShape::detect(&spec, src), RustShape::AxumRoute);
     }
 
@@ -2953,6 +3220,7 @@ mod tests {
             src.contains("NYX_AXUM_TEST=1"),
             "AxumRoute must print NYX_AXUM_TEST=1 marker, got: {src}",
         );
+        assert!(src.contains("println!(\"__NYX_SINK_HIT__\");"));
     }
 
     #[test]
@@ -2960,6 +3228,19 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
         let src = generate_main_rs(&spec, RustShape::ActixRoute);
         assert!(src.contains("NYX_ACTIX_TEST=1"));
+        assert!(src.contains("println!(\"__NYX_SINK_HIT__\");"));
+    }
+
+    #[test]
+    fn code_exec_query_routes_through_shell_safe_payload_helper() {
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
+        spec.expected_cap = Cap::CODE_EXEC;
+        spec.payload_slot = PayloadSlot::QueryParam("cmd".to_owned());
+        let src = generate_main_rs(&spec, RustShape::AxumRoute);
+        assert!(
+            src.contains("nyx_route_uri(\"/run\", Some(\"cmd\"), &nyx_route_payload(&payload))")
+        );
+        assert!(src.contains("fn nyx_route_payload(payload: &str) -> String"));
     }
 
     #[test]
@@ -2967,6 +3248,7 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
         let src = generate_main_rs(&spec, RustShape::RocketRoute);
         assert!(src.contains("NYX_ROCKET_TEST=1"));
+        assert!(src.contains("println!(\"__NYX_SINK_HIT__\");"));
     }
 
     #[test]
@@ -2974,6 +3256,7 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
         let src = generate_main_rs(&spec, RustShape::WarpRoute);
         assert!(src.contains("NYX_WARP_TEST=1"));
+        assert!(src.contains("println!(\"__NYX_SINK_HIT__\");"));
     }
 
     #[test]

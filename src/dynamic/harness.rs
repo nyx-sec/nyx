@@ -104,6 +104,7 @@ fn stage_harness(
     // Copy the entry file into the workdir so the harness can import/include it.
     copy_entry_file(spec, &workdir, harness_src.entry_subpath.as_deref());
     copy_java_sibling_sources(spec, &workdir);
+    copy_php_project_manifests(spec, &workdir);
 
     Ok(workdir)
 }
@@ -256,6 +257,26 @@ fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
             continue;
         }
         let _ = fs::copy(&p, workdir.join(name));
+    }
+}
+
+fn copy_php_project_manifests(spec: &HarnessSpec, workdir: &Path) {
+    if spec.lang != crate::symbol::Lang::Php {
+        return;
+    }
+    let entry = PathBuf::from(&spec.entry_file);
+    let mut dir = entry.parent();
+    while let Some(current) = dir {
+        let composer_json = current.join("composer.json");
+        if composer_json.exists() {
+            let _ = fs::copy(&composer_json, workdir.join("composer.json"));
+            let composer_lock = current.join("composer.lock");
+            if composer_lock.exists() {
+                let _ = fs::copy(composer_lock, workdir.join("composer.lock"));
+            }
+            return;
+        }
+        dir = current.parent();
     }
 }
 

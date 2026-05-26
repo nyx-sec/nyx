@@ -143,22 +143,21 @@ pub enum PhpShape {
     /// stub (query/body) and invokes the closure resolved from the
     /// global (which the entry file publishes during include).
     RouteClosure,
-    /// Laravel route — `Route::get('/x', 'Controller@method')` or
-    /// closure callable.  Phase 16 v1 dispatches through the same
-    /// `$GLOBALS['__nyx_route']` channel as `RouteClosure` but
-    /// publishes a `NYX_LARAVEL_TEST=1` stdout marker so the
-    /// verifier can confirm the framework toolchain knob propagated.
+    /// Laravel route — `Route::get('/x', 'Controller@method')`,
+    /// `$router->get('/x', [Controller::class, 'method'])`, or
+    /// closure callable. The harness requires Composer autoload,
+    /// registers the fixture routes against `Illuminate\Routing\Router`,
+    /// and dispatches an `Illuminate\Http\Request`.
     LaravelRoute,
     /// Symfony route — `#[Route('/x')]` PHP attribute on a
-    /// controller method or top-level function.  Phase 16 v1
-    /// dispatches via reflective invocation (the entry file's
-    /// `entry.php` instantiates the controller class and the harness
-    /// calls the method) plus an `NYX_SYMFONY_TEST=1` stdout marker.
+    /// controller method or top-level function. The harness requires
+    /// Composer autoload, registers the fixture routes into a
+    /// `RouteCollection`, and drives `HttpKernel::handle`.
     SymfonyRoute,
     /// CodeIgniter route — `$routes->get('users/(:num)', ...)`
-    /// published from `app/Config/Routes.php`.  Phase 16 v1
-    /// dispatches via the `$GLOBALS['__nyx_route']` channel plus a
-    /// `NYX_CODEIGNITER_TEST=1` stdout marker.
+    /// published from `app/Config/Routes.php`. The harness requires
+    /// Composer autoload, registers routes against CodeIgniter's
+    /// `RouteCollection`, and replays the matching route handler.
     CodeIgniterRoute,
     /// CLI script driven by `$argv`.  Harness mutates `$argv` then
     /// includes the entry file (whose top-level body reads `$argv`),
@@ -1953,6 +1952,7 @@ fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let shim = probe_shim();
     let toolchain_marker = build_toolchain_marker(shape);
     let route_methods_fn = build_route_methods_fn(spec);
+    let framework_helpers = build_framework_helpers(spec, shape);
     let crash_callee = if entry_fn.is_empty() {
         "main"
     } else {
@@ -1976,9 +1976,10 @@ function nyx_payload(): string {{
     return '';
 }}
 
-{route_methods_fn}
-
-$payload = nyx_payload();
+	{route_methods_fn}
+	{framework_helpers}
+	
+	$payload = nyx_payload();
 
 // Phase 08 sink-site signal handler: install AFTER payload decode so a crash
 // inside `nyx_payload` writes no Crash probe and routes the verifier to
@@ -2016,8 +2017,284 @@ foreach (__nyx_route_methods() as $__nyx_method) {{
         shim = shim,
         toolchain_marker = toolchain_marker,
         route_methods_fn = route_methods_fn,
+        framework_helpers = framework_helpers,
         crash_callee = crash_callee,
     )
+}
+
+fn route_path_for_spec(spec: &HarnessSpec) -> String {
+    spec.framework
+        .as_ref()
+        .and_then(|binding| binding.route.as_ref())
+        .map(|route| route.path.clone())
+        .unwrap_or_else(|| {
+            if matches!(spec.entry_kind, crate::evidence::EntryKind::HttpRoute) {
+                "/run/{payload}".to_owned()
+            } else {
+                "/".to_owned()
+            }
+        })
+}
+
+fn build_framework_helpers(spec: &HarnessSpec, shape: PhpShape) -> String {
+    if !matches!(
+        shape,
+        PhpShape::LaravelRoute | PhpShape::SymfonyRoute | PhpShape::CodeIgniterRoute
+    ) {
+        return String::new();
+    }
+
+    let route_path = php_string_literal(&route_path_for_spec(spec));
+    let mut out = String::new();
+    out.push_str("const __NYX_ROUTE_PATH = ");
+    out.push_str(&route_path);
+    out.push_str(";\n");
+    out.push_str(
+        r#"
+function __nyx_find_user_function(string $leaf): ?string {
+    $funcs = get_defined_functions();
+    foreach (($funcs['user'] ?? []) as $fn) {
+        if ($fn === $leaf || str_ends_with($fn, '\\' . $leaf)) {
+            return $fn;
+        }
+    }
+    return null;
+}
+
+function __nyx_request_path(string $template, string $payload): string {
+    $encoded = rawurlencode($payload);
+    $path = $template;
+    $replacements = [
+        '{payload}' => $encoded,
+        '{payload?}' => $encoded,
+        '(:any)' => $encoded,
+        '(:segment)' => $encoded,
+        '(:alphanum)' => $encoded,
+        '(:alpha)' => $encoded,
+        '(:num)' => $encoded,
+        '(:hash)' => $encoded,
+    ];
+    foreach ($replacements as $needle => $value) {
+        if (str_contains($path, $needle)) {
+            $path = str_replace($needle, $value, $path);
+            break;
+        }
+    }
+    if ($path === '') {
+        $path = '/';
+    }
+    if ($path[0] !== '/') {
+        $path = '/' . $path;
+    }
+    return $path;
+}
+
+function __nyx_response_text($response): string {
+    if ($response === null) {
+        return '';
+    }
+    if (is_string($response)) {
+        return $response;
+    }
+    if (is_object($response)) {
+        if (method_exists($response, 'getContent')) {
+            return (string) $response->getContent();
+        }
+        if (method_exists($response, 'getBody')) {
+            return (string) $response->getBody();
+        }
+        if (method_exists($response, '__toString')) {
+            return (string) $response;
+        }
+    }
+    if (is_array($response)) {
+        return json_encode($response) ?: '';
+    }
+    return (string) $response;
+}
+
+function __nyx_require_registrar(): string {
+    $registrar = __nyx_find_user_function('nyx_register_routes');
+    if ($registrar === null) {
+        throw new RuntimeException('NYX_ROUTE_REGISTRAR_MISSING: nyx_register_routes');
+    }
+    return $registrar;
+}
+"#,
+    );
+
+    match shape {
+        PhpShape::LaravelRoute => out.push_str(
+            r#"
+function __nyx_dispatch_laravel(string $payload, string $method) {
+    $required = [
+        '\Illuminate\Container\Container',
+        '\Illuminate\Events\Dispatcher',
+        '\Illuminate\Http\Request',
+        '\Illuminate\Routing\Router',
+    ];
+    foreach ($required as $class) {
+        if (!class_exists($class)) {
+            throw new RuntimeException('NYX_LARAVEL_CLASS_MISSING: ' . $class);
+        }
+    }
+    $container = new \Illuminate\Container\Container();
+    \Illuminate\Container\Container::setInstance($container);
+    $events = new \Illuminate\Events\Dispatcher($container);
+    $router = new \Illuminate\Routing\Router($events, $container);
+    $registrar = __nyx_require_registrar();
+    $registrar($router);
+    $path = __nyx_request_path(__NYX_ROUTE_PATH, $payload);
+    $request = \Illuminate\Http\Request::create($path, $method, ['payload' => $payload], [], [], [], $payload);
+    $response = $router->dispatch($request);
+    return __nyx_response_text($response);
+}
+"#,
+        ),
+        PhpShape::SymfonyRoute => out.push_str(
+            r#"
+function __nyx_dispatch_symfony(string $payload, string $method) {
+    $required = [
+        '\Symfony\Component\EventDispatcher\EventDispatcher',
+        '\Symfony\Component\HttpFoundation\Request',
+        '\Symfony\Component\HttpFoundation\RequestStack',
+        '\Symfony\Component\HttpKernel\Controller\ArgumentResolver',
+        '\Symfony\Component\HttpKernel\Controller\ControllerResolver',
+        '\Symfony\Component\HttpKernel\HttpKernel',
+        '\Symfony\Component\Routing\Matcher\UrlMatcher',
+        '\Symfony\Component\Routing\RequestContext',
+        '\Symfony\Component\Routing\RouteCollection',
+    ];
+    foreach ($required as $class) {
+        if (!class_exists($class)) {
+            throw new RuntimeException('NYX_SYMFONY_CLASS_MISSING: ' . $class);
+        }
+    }
+    $routes = new \Symfony\Component\Routing\RouteCollection();
+    $registrar = __nyx_require_registrar();
+    $registrar($routes);
+    $path = __nyx_request_path(__NYX_ROUTE_PATH, $payload);
+    $request = \Symfony\Component\HttpFoundation\Request::create($path, $method, ['payload' => $payload], [], [], [], $payload);
+    $context = new \Symfony\Component\Routing\RequestContext();
+    $context->fromRequest($request);
+    $matcher = new \Symfony\Component\Routing\Matcher\UrlMatcher($routes, $context);
+    $request->attributes->add($matcher->match($request->getPathInfo()));
+    $kernel = new \Symfony\Component\HttpKernel\HttpKernel(
+        new \Symfony\Component\EventDispatcher\EventDispatcher(),
+        new \Symfony\Component\HttpKernel\Controller\ControllerResolver(),
+        new \Symfony\Component\HttpFoundation\RequestStack(),
+        new \Symfony\Component\HttpKernel\Controller\ArgumentResolver()
+    );
+    $response = $kernel->handle($request);
+    return __nyx_response_text($response);
+}
+"#,
+        ),
+        PhpShape::CodeIgniterRoute => out.push_str(
+            r#"
+function __nyx_define_codeigniter_config(): void {
+    if (!defined('ENVIRONMENT')) define('ENVIRONMENT', 'testing');
+    if (!defined('ROOTPATH')) define('ROOTPATH', __DIR__ . DIRECTORY_SEPARATOR);
+    if (!defined('APPPATH')) define('APPPATH', __DIR__ . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR);
+    if (!defined('WRITEPATH')) define('WRITEPATH', __DIR__ . DIRECTORY_SEPARATOR . 'writable' . DIRECTORY_SEPARATOR);
+    if (!defined('SYSTEMPATH')) define('SYSTEMPATH', __DIR__ . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'codeigniter4' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'system' . DIRECTORY_SEPARATOR);
+    if (!is_dir(APPPATH . 'Config')) @mkdir(APPPATH . 'Config', 0777, true);
+    if (!is_dir(WRITEPATH)) @mkdir(WRITEPATH, 0777, true);
+    if (!class_exists('Config\\Modules') && class_exists('\\CodeIgniter\\Config\\Modules')) {
+        eval('namespace Config; class Modules extends \\CodeIgniter\\Config\\Modules {}');
+    }
+    if (!class_exists('Config\\Routing') && class_exists('\\CodeIgniter\\Config\\Routing')) {
+        eval('namespace Config; class Routing extends \\CodeIgniter\\Config\\Routing {}');
+    }
+    if (!class_exists('Config\\App') && class_exists('\\CodeIgniter\\Config\\BaseConfig')) {
+        eval('namespace Config; class App extends \\CodeIgniter\\Config\\BaseConfig { public string $baseURL = "http://localhost/"; public array $supportedLocales = ["en"]; }');
+    }
+    if (!class_exists('Config\\Services') && class_exists('\\CodeIgniter\\Config\\BaseService')) {
+        eval('namespace Config; class Services extends \\CodeIgniter\\Config\\BaseService {}');
+    }
+}
+
+function __nyx_codeigniter_routes() {
+    __nyx_define_codeigniter_config();
+    if (!class_exists('\\CodeIgniter\\Router\\RouteCollection')) {
+        throw new RuntimeException('NYX_CODEIGNITER_CLASS_MISSING: \\CodeIgniter\\Router\\RouteCollection');
+    }
+    if (class_exists('\\CodeIgniter\\Config\\Services')) {
+        try {
+            $routes = \CodeIgniter\Config\Services::routes(false);
+            if ($routes !== null) {
+                return $routes;
+            }
+        } catch (Throwable $_) {
+        }
+    }
+    $modules = class_exists('Config\\Modules') ? new \Config\Modules() : null;
+    $routing = class_exists('Config\\Routing') ? new \Config\Routing() : null;
+    if ($routing !== null) {
+        $routing->defaultNamespace = 'App\\Controllers';
+        $routing->defaultController = 'Home';
+        $routing->defaultMethod = 'index';
+        $routing->translateURIDashes = false;
+        $routing->autoRoute = false;
+        $routing->routeFiles = [];
+    }
+    $locator = class_exists('\\CodeIgniter\\Autoloader\\FileLocator') && $modules !== null
+        ? new \CodeIgniter\Autoloader\FileLocator($modules)
+        : null;
+    return new \CodeIgniter\Router\RouteCollection($locator, $modules, $routing);
+}
+
+function __nyx_ci_pattern_regex(string $pattern): string {
+    $regex = str_replace(
+        ['(:any)', '(:segment)', '(:alphanum)', '(:alpha)', '(:num)', '(:hash)'],
+        ['(.+)', '([^/]+)', '([a-zA-Z0-9]+)', '([a-zA-Z]+)', '([0-9]+)', '([^/]+)'],
+        $pattern
+    );
+    return '#^' . str_replace('#', '\\#', trim($regex, '/')) . '$#u';
+}
+
+function __nyx_ci_invoke_handler($handler, array $args, string $payload) {
+    if (is_callable($handler)) {
+        return call_user_func_array($handler, $args ?: [$payload]);
+    }
+    if (!is_string($handler)) {
+        throw new RuntimeException('NYX_CODEIGNITER_HANDLER_UNSUPPORTED');
+    }
+    [$target, $_tail] = array_pad(explode('/', $handler, 2), 2, '');
+    if (!str_contains($target, '::')) {
+        throw new RuntimeException('NYX_CODEIGNITER_HANDLER_BAD: ' . $handler);
+    }
+    [$class, $method] = explode('::', $target, 2);
+    if (!class_exists($class) && class_exists('App\\Controllers\\' . ltrim($class, '\\'))) {
+        $class = 'App\\Controllers\\' . ltrim($class, '\\');
+    }
+    $controller = new $class();
+    return call_user_func_array([$controller, $method], $args ?: [$payload]);
+}
+
+function __nyx_dispatch_codeigniter(string $payload, string $method) {
+    $routes = __nyx_codeigniter_routes();
+    $registrar = __nyx_require_registrar();
+    $registrar($routes);
+    if (method_exists($routes, 'setHTTPVerb')) {
+        $routes->setHTTPVerb($method);
+    }
+    $path = ltrim(__nyx_request_path(__NYX_ROUTE_PATH, $payload), '/');
+    $map = method_exists($routes, 'getRoutes') ? $routes->getRoutes($method) : [];
+    foreach ($map as $pattern => $handler) {
+        if (preg_match(__nyx_ci_pattern_regex((string) $pattern), $path, $matches)) {
+            array_shift($matches);
+            $decoded = array_map('rawurldecode', $matches);
+            return __nyx_response_text(__nyx_ci_invoke_handler($handler, $decoded, $payload));
+        }
+    }
+    throw new RuntimeException('NYX_CODEIGNITER_ROUTE_NOT_FOUND: ' . $method . ' ' . $path);
+}
+"#,
+        ),
+        _ => {}
+    }
+    out
 }
 
 fn build_route_methods_fn(spec: &HarnessSpec) -> String {
@@ -2100,14 +2377,30 @@ fn build_pre_call(spec: &HarnessSpec, shape: PhpShape) -> String {
     out
 }
 
-fn build_entry_block(_shape: PhpShape) -> String {
-    r#"try {
+fn build_entry_block(shape: PhpShape) -> String {
+    let autoload = if matches!(
+        shape,
+        PhpShape::LaravelRoute | PhpShape::SymfonyRoute | PhpShape::CodeIgniterRoute
+    ) {
+        r#"$__nyx_autoload = __DIR__ . '/vendor/autoload.php';
+if (!is_file($__nyx_autoload)) {
+    fwrite(STDERR, 'NYX_IMPORT_ERROR: missing Composer autoload; run composer install for framework route replay' . "\n");
+    exit(77);
+}
+require_once $__nyx_autoload;
+"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{autoload}try {{
     require_once __DIR__ . '/entry.php';
-} catch (Throwable $e) {
+}} catch (Throwable $e) {{
     fwrite(STDERR, 'NYX_IMPORT_ERROR: ' . $e->getMessage() . "\n");
     exit(77);
-}"#
-    .to_owned()
+}}"#,
+        autoload = autoload
+    )
 }
 
 /// Phase 11 (Track J.9) CRYPTO harness for PHP.
@@ -2899,7 +3192,7 @@ fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
                 "null".to_owned()
             }
         }
-        PhpShape::RouteClosure | PhpShape::LaravelRoute | PhpShape::CodeIgniterRoute => {
+        PhpShape::RouteClosure => {
             // Entry script publishes the route closure via
             // `$GLOBALS['__nyx_route']`.  When the global is missing,
             // fall back to calling the named function directly.
@@ -2907,17 +3200,10 @@ fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
                 "(isset($GLOBALS['__nyx_route']) && is_callable($GLOBALS['__nyx_route'])) ? call_user_func($GLOBALS['__nyx_route'], $payload) : (function_exists({func:?}) ? {func}($payload) : null)"
             )
         }
-        PhpShape::SymfonyRoute => {
-            // Symfony controllers are normally reached through
-            // `HttpKernel::handle`.  The Phase 16 v1 harness drives
-            // the action directly: the entry file publishes a
-            // controller instance via `$GLOBALS['__nyx_controller']`
-            // and the harness reflectively invokes the action method.
-            // Falls back to calling a bare function when no
-            // controller class was published.
-            format!(
-                "(isset($GLOBALS['__nyx_controller']) && is_object($GLOBALS['__nyx_controller'])) ? $GLOBALS['__nyx_controller']->{func}($payload) : (function_exists({func:?}) ? {func}($payload) : null)"
-            )
+        PhpShape::LaravelRoute => "__nyx_dispatch_laravel($payload, $__nyx_method)".to_owned(),
+        PhpShape::SymfonyRoute => "__nyx_dispatch_symfony($payload, $__nyx_method)".to_owned(),
+        PhpShape::CodeIgniterRoute => {
+            "__nyx_dispatch_codeigniter($payload, $__nyx_method)".to_owned()
         }
         PhpShape::Generic => build_generic_call(spec, func),
     }
@@ -3118,7 +3404,9 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
         let src = generate_source(&spec, PhpShape::LaravelRoute);
         assert!(src.contains("NYX_LARAVEL_TEST=1"));
-        assert!(src.contains("$GLOBALS['__nyx_route']"));
+        assert!(src.contains("vendor/autoload.php"));
+        assert!(src.contains("__nyx_dispatch_laravel($payload, $__nyx_method)"));
+        assert!(!src.contains("$GLOBALS['__nyx_route']"));
     }
 
     #[test]
@@ -3146,8 +3434,10 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
         let src = generate_source(&spec, PhpShape::SymfonyRoute);
         assert!(src.contains("NYX_SYMFONY_TEST=1"));
-        assert!(src.contains("$GLOBALS['__nyx_controller']"));
-        assert!(src.contains("->run($payload)"));
+        assert!(src.contains("vendor/autoload.php"));
+        assert!(src.contains("Symfony\\Component\\HttpKernel\\HttpKernel"));
+        assert!(src.contains("__nyx_dispatch_symfony($payload, $__nyx_method)"));
+        assert!(!src.contains("$GLOBALS['__nyx_controller']"));
     }
 
     #[test]
@@ -3155,7 +3445,10 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
         let src = generate_source(&spec, PhpShape::CodeIgniterRoute);
         assert!(src.contains("NYX_CODEIGNITER_TEST=1"));
-        assert!(src.contains("$GLOBALS['__nyx_route']"));
+        assert!(src.contains("vendor/autoload.php"));
+        assert!(src.contains("CodeIgniter\\Router\\RouteCollection"));
+        assert!(src.contains("__nyx_dispatch_codeigniter($payload, $__nyx_method)"));
+        assert!(!src.contains("$GLOBALS['__nyx_route']"));
     }
 
     #[test]
