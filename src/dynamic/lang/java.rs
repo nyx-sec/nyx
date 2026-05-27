@@ -3873,26 +3873,29 @@ fn emit_message_handler_harness(
         JavaBroker::Kafka => (
             crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
             format!(
-                r#"            NyxKafkaLoopback brokerRef = new NyxKafkaLoopback();
-            System.out.println({publish_marker:?} + " " + {queue:?});
-            nyxRecordBrokerPublish("NYX_KAFKA_LOG", {queue:?}, payload);
-            brokerRef.publish({queue:?}, payload);
-            for (NyxKafkaRecord rec : brokerRef.poll({queue:?}, 1)) {{
-                nyxRecordBrokerEvent("NYX_KAFKA_LOG", "deliver", {queue:?}, rec.value);
-                System.out.println("__NYX_SINK_HIT__");
-                boolean success = false;
-                try {{
-                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
-                    m.setAccessible(true);
-                    m.invoke(entryInst, rec.value);
-                    success = true;
-                }} catch (Exception e) {{
-                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
-                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
-                }}
-                if (success) {{
-                    brokerRef.commit(rec);
-                    nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", {queue:?}, Long.toString(rec.offset));
+                r#"            if (!nyxTryRealKafkaClient({queue:?}, payload, entryInst, {handler:?})
+                && !nyxTryKafkaHttp({queue:?}, payload, entryInst, {handler:?})) {{
+                NyxKafkaLoopback brokerRef = new NyxKafkaLoopback();
+                System.out.println({publish_marker:?} + " " + {queue:?});
+                nyxRecordBrokerPublish("NYX_KAFKA_LOG", {queue:?}, payload);
+                brokerRef.publish({queue:?}, payload);
+                for (NyxKafkaRecord rec : brokerRef.poll({queue:?}, 1)) {{
+                    nyxRecordBrokerEvent("NYX_KAFKA_LOG", "deliver", {queue:?}, rec.value);
+                    System.out.println("__NYX_SINK_HIT__");
+                    boolean success = false;
+                    try {{
+                        java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
+                        m.setAccessible(true);
+                        m.invoke(entryInst, rec.value);
+                        success = true;
+                    }} catch (Exception e) {{
+                        Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                        System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                    }}
+                    if (success) {{
+                        brokerRef.commit(rec);
+                        nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", {queue:?}, Long.toString(rec.offset));
+                    }}
                 }}
             }}"#,
                 handler = handler,
@@ -3926,6 +3929,207 @@ public class NyxHarness {{
         }} catch (Throwable e) {{
             System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
         }}
+    }}
+
+    static boolean nyxTryKafkaHttp(String topic, String payload, Object entryInst, String handler) {{
+        String endpoint = System.getenv("NYX_KAFKA_ENDPOINT");
+        if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {{
+            return false;
+        }}
+        try {{
+            String base = endpoint.replaceAll("/+$", "");
+            String topicPath = java.net.URLEncoder.encode(topic, java.nio.charset.StandardCharsets.UTF_8);
+            System.out.println({kafka_publish_marker:?} + " " + topic);
+            nyxHttpRequest(
+                "POST",
+                base + "/topics/" + topicPath + "/messages",
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+            );
+            String recordsJson = nyxHttpRequest(
+                "GET",
+                base + "/topics/" + topicPath + "/records?max=1",
+                new byte[0]
+            );
+            if (recordsJson == null || !recordsJson.contains("\"records\"") || !recordsJson.contains("\"value\"")) {{
+                return false;
+            }}
+            String value = nyxJsonStringField(recordsJson, "value");
+            String offset = nyxJsonNumberField(recordsJson, "offset");
+            if (offset == null || offset.isEmpty()) {{
+                offset = "0";
+            }}
+            System.out.println("__NYX_SINK_HIT__");
+            boolean success = false;
+            try {{
+                java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, String.class);
+                m.setAccessible(true);
+                m.invoke(entryInst, value);
+                success = true;
+            }} catch (Exception e) {{
+                Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+            }}
+            if (success) {{
+                String body = "offset=" + java.net.URLEncoder.encode(offset, java.nio.charset.StandardCharsets.UTF_8);
+                nyxHttpRequest(
+                    "POST",
+                    base + "/topics/" + topicPath + "/commit",
+                    body.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                );
+            }}
+            return true;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_KAFKA_HTTP_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }}
+    }}
+
+    static boolean nyxTryRealKafkaClient(String topic, String payload, Object entryInst, String handler) {{
+        Object consumer = null;
+        try {{
+            Class<?> mockConsumerClass = Class.forName("org.apache.kafka.clients.consumer.MockConsumer");
+            Class<?> resetClass = Class.forName("org.apache.kafka.clients.consumer.OffsetResetStrategy");
+            Object earliest = java.lang.Enum.valueOf(resetClass.asSubclass(java.lang.Enum.class), "EARLIEST");
+            consumer = mockConsumerClass.getConstructor(resetClass).newInstance(earliest);
+
+            Class<?> topicPartitionClass = Class.forName("org.apache.kafka.common.TopicPartition");
+            Object partition = topicPartitionClass.getConstructor(String.class, int.class).newInstance(topic, 0);
+            java.util.List<Object> partitions = java.util.Collections.singletonList(partition);
+            mockConsumerClass.getMethod("subscribe", java.util.Collection.class)
+                .invoke(consumer, java.util.Collections.singletonList(topic));
+            mockConsumerClass.getMethod("rebalance", java.util.Collection.class).invoke(consumer, partitions);
+            java.util.Map<Object, Long> beginnings = new java.util.HashMap<>();
+            beginnings.put(partition, Long.valueOf(0L));
+            mockConsumerClass.getMethod("updateBeginningOffsets", java.util.Map.class).invoke(consumer, beginnings);
+
+            Class<?> recordClass = Class.forName("org.apache.kafka.clients.consumer.ConsumerRecord");
+            Object record = null;
+            for (java.lang.reflect.Constructor<?> ctor : recordClass.getConstructors()) {{
+                if (ctor.getParameterCount() == 5) {{
+                    record = ctor.newInstance(topic, Integer.valueOf(0), Long.valueOf(0L), null, payload);
+                    break;
+                }}
+            }}
+            if (record == null) {{
+                return false;
+            }}
+
+            System.out.println({kafka_publish_marker:?} + " " + topic);
+            nyxRecordBrokerPublish("NYX_KAFKA_LOG", topic, payload);
+            mockConsumerClass.getMethod("addRecord", recordClass).invoke(consumer, record);
+            Object records = mockConsumerClass.getMethod("poll", java.time.Duration.class)
+                .invoke(consumer, java.time.Duration.ofMillis(10));
+            if (!(records instanceof Iterable)) {{
+                return false;
+            }}
+
+            boolean delivered = false;
+            for (Object rec : (Iterable<?>) records) {{
+                String value = String.valueOf(rec.getClass().getMethod("value").invoke(rec));
+                long offset = ((Number) rec.getClass().getMethod("offset").invoke(rec)).longValue();
+                nyxRecordBrokerEvent("NYX_KAFKA_LOG", "deliver", topic, value);
+                System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, String.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, value);
+                    success = true;
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+                if (success) {{
+                    Class<?> offsetClass = Class.forName("org.apache.kafka.clients.consumer.OffsetAndMetadata");
+                    Object metadata = offsetClass.getConstructor(long.class).newInstance(Long.valueOf(offset + 1L));
+                    java.util.Map<Object, Object> commits = new java.util.HashMap<>();
+                    commits.put(partition, metadata);
+                    mockConsumerClass.getMethod("commitSync", java.util.Map.class).invoke(consumer, commits);
+                    nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", topic, Long.toString(offset));
+                }}
+                delivered = true;
+            }}
+            return delivered;
+        }} catch (ClassNotFoundException missingKafkaClient) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_REAL_KAFKA_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }} finally {{
+            if (consumer instanceof AutoCloseable) {{
+                try {{
+                    ((AutoCloseable) consumer).close();
+                }} catch (Exception ignored) {{
+                }}
+            }}
+        }}
+    }}
+
+    static String nyxHttpRequest(String method, String target, byte[] body) throws Exception {{
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) java.net.URI.create(target).toURL().openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(1000);
+        conn.setReadTimeout(2000);
+        if (body != null && body.length > 0) {{
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/octet-stream");
+            conn.setRequestProperty("Content-Length", Integer.toString(body.length));
+            try (java.io.OutputStream os = conn.getOutputStream()) {{
+                os.write(body);
+            }}
+        }}
+        java.io.InputStream is = conn.getResponseCode() >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        if (is == null) {{
+            return "";
+        }}
+        try (java.io.InputStream input = is) {{
+            byte[] data = input.readAllBytes();
+            return new String(data, java.nio.charset.StandardCharsets.UTF_8);
+        }} finally {{
+            conn.disconnect();
+        }}
+    }}
+
+    static String nyxJsonStringField(String json, String field) {{
+        String needle = "\"" + field + "\":\"";
+        int start = json.indexOf(needle);
+        if (start < 0) return "";
+        start += needle.length();
+        StringBuilder out = new StringBuilder();
+        boolean escaped = false;
+        for (int i = start; i < json.length(); i++) {{
+            char ch = json.charAt(i);
+            if (escaped) {{
+                switch (ch) {{
+                    case 'n': out.append('\n'); break;
+                    case 'r': out.append('\r'); break;
+                    case 't': out.append('\t'); break;
+                    case '"': out.append('"'); break;
+                    case '\\': out.append('\\'); break;
+                    default: out.append(ch); break;
+                }}
+                escaped = false;
+            }} else if (ch == '\\') {{
+                escaped = true;
+            }} else if (ch == '"') {{
+                break;
+            }} else {{
+                out.append(ch);
+            }}
+        }}
+        return out.toString();
+    }}
+
+    static String nyxJsonNumberField(String json, String field) {{
+        String needle = "\"" + field + "\":";
+        int start = json.indexOf(needle);
+        if (start < 0) return "";
+        start += needle.length();
+        int end = start;
+        while (end < json.length() && Character.isDigit(json.charAt(end))) {{
+            end++;
+        }}
+        return json.substring(start, end);
     }}
 
     static boolean nyxTryRealSqs(String queue, String payload, Object entryInst, String handler) {{
@@ -4052,6 +4256,7 @@ public class NyxHarness {{
 "#,
         entry_class = entry_class,
         dispatch_block = dispatch_block,
+        kafka_publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
         sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
     );
     HarnessSource {

@@ -945,6 +945,7 @@ fn migration_ruby_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("AddIndex"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("ActiveRecord::Base.establish_connection"));
+    assert!(h.source.contains("cls.migrate(:up)"));
     assert!(h.source.contains("SQLite3::Database"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }

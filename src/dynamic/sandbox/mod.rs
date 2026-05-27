@@ -898,8 +898,10 @@ fn rewrite_extra_env_for_container(
             {
                 return (k.clone(), format!("{}/{idx}", docker::STUB_MOUNT_ROOT));
             }
-            if matches!(k.as_str(), "NYX_HTTP_ENDPOINT" | "NYX_SQS_ENDPOINT")
-                && let Some(rest) = v.strip_prefix("http://127.0.0.1:")
+            if matches!(
+                k.as_str(),
+                "NYX_HTTP_ENDPOINT" | "NYX_KAFKA_ENDPOINT" | "NYX_SQS_ENDPOINT"
+            ) && let Some(rest) = v.strip_prefix("http://127.0.0.1:")
             {
                 return (k.clone(), format!("http://host-gateway:{rest}"));
             }
@@ -2277,6 +2279,10 @@ mod tests {
                 "http://127.0.0.1:12345".to_owned(),
             ),
             (
+                "NYX_KAFKA_ENDPOINT".to_owned(),
+                "http://127.0.0.1:22334/topics".to_owned(),
+            ),
+            (
                 "NYX_SQS_ENDPOINT".to_owned(),
                 "http://127.0.0.1:23456/jobs".to_owned(),
             ),
@@ -2288,6 +2294,10 @@ mod tests {
                 (
                     "NYX_HTTP_ENDPOINT".to_owned(),
                     "http://host-gateway:12345".to_owned(),
+                ),
+                (
+                    "NYX_KAFKA_ENDPOINT".to_owned(),
+                    "http://host-gateway:22334/topics".to_owned(),
                 ),
                 (
                     "NYX_SQS_ENDPOINT".to_owned(),

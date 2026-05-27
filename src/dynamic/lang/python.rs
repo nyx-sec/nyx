@@ -1018,22 +1018,23 @@ _chan.basic_publish(exchange="", routing_key={queue:?}, body=payload)"#,
             publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
         ),
         PythonBroker::Kafka => format!(
-            r#"_loop = NyxKafkaLoopback()
-def _nyx_kafka_dispatch(message):
-    _h = getattr(_entry_mod, {handler:?}, None)
-    if _h is None:
-        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
-        sys.exit(78)
-    _h(message)
-_loop.subscribe({queue:?}, _nyx_kafka_dispatch)
-print({publish_marker:?} + " " + {queue:?}, flush=True)
-_nyx_record_broker_publish("NYX_KAFKA_LOG", {queue:?}, payload)
-_loop.publish({queue:?}, payload)
-for _record in _loop.poll({queue:?}, max_records=1):
-    _nyx_record_broker_event("NYX_KAFKA_LOG", "deliver", {queue:?}, _record.value)
-    _nyx_kafka_dispatch(_record.value)
-    _loop.commit(_record)
-    _nyx_record_broker_event("NYX_KAFKA_LOG", "ack", {queue:?}, str(_record.offset))"#,
+            r#"if not _nyx_try_kafka_http({queue:?}, payload, {handler:?}):
+    _loop = NyxKafkaLoopback()
+    def _nyx_kafka_dispatch(message):
+        _h = getattr(_entry_mod, {handler:?}, None)
+        if _h is None:
+            print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+            sys.exit(78)
+        _h(message)
+    _loop.subscribe({queue:?}, _nyx_kafka_dispatch)
+    print({publish_marker:?} + " " + {queue:?}, flush=True)
+    _nyx_record_broker_publish("NYX_KAFKA_LOG", {queue:?}, payload)
+    _loop.publish({queue:?}, payload)
+    for _record in _loop.poll({queue:?}, max_records=1):
+        _nyx_record_broker_event("NYX_KAFKA_LOG", "deliver", {queue:?}, _record.value)
+        _nyx_kafka_dispatch(_record.value)
+        _loop.commit(_record)
+        _nyx_record_broker_event("NYX_KAFKA_LOG", "ack", {queue:?}, str(_record.offset))"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
@@ -1063,6 +1064,50 @@ def _nyx_record_broker_event(env_name, action, destination, body):
 
 def _nyx_record_broker_publish(env_name, destination, body):
     _nyx_record_broker_event(env_name, "publish", destination, body)
+
+def _nyx_try_kafka_http(topic, body, handler_name):
+    endpoint = os.environ.get("NYX_KAFKA_ENDPOINT", "")
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        return False
+    _h = getattr(_entry_mod, handler_name, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + handler_name, file=sys.stderr, flush=True)
+        sys.exit(78)
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+        base = endpoint.rstrip("/")
+        topic_path = urllib.parse.quote(str(topic), safe="")
+        print({kafka_publish_marker:?} + " " + str(topic), flush=True)
+        _send = urllib.request.Request(
+            base + "/topics/" + topic_path + "/messages",
+            data=str(body).encode("utf-8"),
+            method="POST",
+        )
+        urllib.request.urlopen(_send, timeout=2).read()
+        _records_raw = urllib.request.urlopen(
+            base + "/topics/" + topic_path + "/records?max=1",
+            timeout=2,
+        ).read()
+        _records = json.loads(_records_raw.decode("utf-8") or "{{}}").get("records", [])
+        if not _records:
+            return False
+        for _rec in _records:
+            _h(_rec.get("value", ""))
+            _offset = str(_rec.get("offset", "0"))
+            _commit = urllib.request.Request(
+                base + "/topics/" + topic_path + "/commit",
+                data=urllib.parse.urlencode({{"offset": _offset}}).encode("utf-8"),
+                method="POST",
+            )
+            urllib.request.urlopen(_commit, timeout=2).read()
+        return True
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_KAFKA_HTTP_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return False
 
 def _nyx_try_real_sqs(queue, body, handler_name):
     endpoint = os.environ.get("NYX_SQS_ENDPOINT", "")
@@ -1131,6 +1176,7 @@ except Exception as _e:
         pubsub_src = pubsub_src,
         rabbit_src = rabbit_src,
         register_and_publish = indent_lines(&register_and_publish, "    "),
+        kafka_publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
         sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
     );
     HarnessSource {

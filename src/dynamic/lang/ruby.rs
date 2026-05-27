@@ -951,10 +951,34 @@ def __nyx_try_execute_migration_sqlite(value)
   end
 end
 
+def __nyx_patch_active_record_sql_recording
+  return unless defined?(ActiveRecord::Base)
+  return unless ActiveRecord::Base.respond_to?(:connection)
+  conn = ActiveRecord::Base.connection
+  return if conn.instance_variable_defined?(:@__nyx_sql_recording_patched)
+  conn.instance_variable_set(:@__nyx_sql_recording_patched, true)
+  if conn.respond_to?(:execute)
+    original_execute = conn.method(:execute)
+    conn.define_singleton_method(:execute) do |sql, *args, &blk|
+      __nyx_record_migration_result(sql, 'active_record')
+      original_execute.call(sql, *args, &blk)
+    end
+  end
+end
+
 # ActiveRecord migrations expose `up` / `down` / `change` on a subclass.
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
   begin
+    if defined?(ActiveRecord::Migration) && cls.is_a?(Class) && cls < ActiveRecord::Migration
+      begin
+        __nyx_patch_active_record_sql_recording
+        cls.migrate(:up)
+        exit 0
+      rescue StandardError => e
+        STDERR.puts("NYX_ACTIVE_RECORD_MIGRATION_FALLBACK: #{{e.class.name}}: #{{e.message}}")
+      end
+    end
     inst = cls.new
     if inst.respond_to?(:table_name=)
       begin

@@ -176,6 +176,8 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
         entry_file("kafka_python"),
     );
     let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_try_kafka_http"));
+    assert!(h.source.contains("NYX_KAFKA_ENDPOINT"));
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("subscribe"));
     assert!(h.source.contains("poll"));
@@ -192,6 +194,11 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
 fn message_handler_java_emits_reflective_dispatch() {
     let spec = make_spec(Lang::Java, "orders", "onMessage", entry_file("kafka_java"));
     let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryRealKafkaClient"));
+    assert!(h.source.contains("MockConsumer"));
+    assert!(h.source.contains("commitSync"));
+    assert!(h.source.contains("nyxTryKafkaHttp"));
+    assert!(h.source.contains("NYX_KAFKA_ENDPOINT"));
     assert!(h.source.contains("NyxKafkaLoopback"));
     assert!(h.source.contains("Class.forName"));
     assert!(h.source.contains("getDeclaredMethod"));
