@@ -1495,7 +1495,8 @@ fn emit_migration(spec: &HarnessSpec, version: Option<&str>) -> HarnessSource {
         r#"# Shape: migration — Phase 21 / Track M.3.
 print("__NYX_MIGRATION__: " + {version:?}, flush=True)
 _h = getattr(_entry_mod, {handler:?}, None)
-if _h is None:
+_migration_cls = getattr(_entry_mod, "Migration", None)
+if _h is None and _migration_cls is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 
@@ -1504,6 +1505,7 @@ def _nyx_migration_sql_record(sql, driver):
     upper = text.upper()
     if not any(k in upper for k in ("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP")):
         return
+    print("NYX_MIGRATION_SQL: " + text, flush=True)
     __nyx_stub_sql_record(text, driver=driver, source="migration")
     endpoint = os.environ.get("NYX_SQL_ENDPOINT", "")
     if endpoint:
@@ -1521,11 +1523,38 @@ def _nyx_migration_sql_record(sql, driver):
 class _NyxMigrationOpProxy:
     def __init__(self, inner=None):
         self._inner = inner
+    def _call_inner(self, name, *args, **kwargs):
+        if self._inner is not None and self._inner is not self and hasattr(self._inner, name):
+            return getattr(self._inner, name)(*args, **kwargs)
+        return None
     def execute(self, sql, *args, **kwargs):
         _nyx_migration_sql_record(sql, "alembic")
-        if self._inner is not None and self._inner is not self and hasattr(self._inner, "execute"):
-            return self._inner.execute(sql, *args, **kwargs)
-        return None
+        return self._call_inner("execute", sql, *args, **kwargs)
+    def create_table(self, name, *args, **kwargs):
+        _nyx_migration_sql_record("CREATE TABLE " + str(name) + " (id INTEGER)", "alembic")
+        return self._call_inner("create_table", name, *args, **kwargs)
+    def drop_table(self, name, *args, **kwargs):
+        _nyx_migration_sql_record("DROP TABLE " + str(name), "alembic")
+        return self._call_inner("drop_table", name, *args, **kwargs)
+    def add_column(self, table_name, column, *args, **kwargs):
+        col_name = getattr(column, "name", column)
+        _nyx_migration_sql_record(
+            "ALTER TABLE " + str(table_name) + " ADD COLUMN " + str(col_name) + " TEXT",
+            "alembic",
+        )
+        return self._call_inner("add_column", table_name, column, *args, **kwargs)
+    def drop_column(self, table_name, column_name, *args, **kwargs):
+        _nyx_migration_sql_record(
+            "ALTER TABLE " + str(table_name) + " DROP COLUMN " + str(column_name),
+            "alembic",
+        )
+        return self._call_inner("drop_column", table_name, column_name, *args, **kwargs)
+    def alter_column(self, table_name, column_name, *args, **kwargs):
+        _nyx_migration_sql_record(
+            "ALTER TABLE " + str(table_name) + " ALTER COLUMN " + str(column_name),
+            "alembic",
+        )
+        return self._call_inner("alter_column", table_name, column_name, *args, **kwargs)
     def __getattr__(self, name):
         if self._inner is not None and self._inner is not self:
             return getattr(self._inner, name)
@@ -1572,9 +1601,7 @@ def _nyx_record_migration_result(result):
     elif isinstance(result, str):
         _nyx_migration_sql_record(result, "migration")
     elif hasattr(result, "database_forwards"):
-        sql = getattr(result, "sql", None)
-        if sql is not None:
-            _nyx_migration_sql_record(sql, "django")
+        _nyx_record_django_operation_shape(result)
         try:
             from django.conf import settings
             if not settings.configured:
@@ -1592,21 +1619,59 @@ def _nyx_record_migration_result(result):
         except Exception:
             pass
 
+def _nyx_record_django_operation_shape(op):
+    sql = getattr(op, "sql", None)
+    if sql is not None:
+        _nyx_migration_sql_record(sql, "django")
+        return
+    name = op.__class__.__name__
+    if name == "CreateModel":
+        model = getattr(op, "name", "nyx_model")
+        _nyx_migration_sql_record("CREATE TABLE " + str(model) + " (id INTEGER)", "django")
+    elif name == "DeleteModel":
+        model = getattr(op, "name", "nyx_model")
+        _nyx_migration_sql_record("DROP TABLE " + str(model), "django")
+    elif name in ("AddField", "RemoveField", "AlterField"):
+        model = getattr(op, "model_name", "nyx_model")
+        field = getattr(op, "name", "nyx_field")
+        verb = "ADD COLUMN" if name == "AddField" else ("DROP COLUMN" if name == "RemoveField" else "ALTER COLUMN")
+        _nyx_migration_sql_record("ALTER TABLE " + str(model) + " " + verb + " " + str(field), "django")
+
+def _nyx_run_django_migration_operations(cls):
+    if cls is None:
+        return False
+    operations = getattr(cls, "operations", None)
+    if operations is None:
+        try:
+            operations = cls().operations
+        except Exception:
+            operations = None
+    if not operations:
+        return False
+    for op in list(operations):
+        _nyx_record_migration_result(op)
+    return True
+
 try:
     _nyx_install_migration_sql_hooks()
-    # Migrations conventionally take no arguments; pass payload if the
-    # function declares positional params (best-effort introspection).
-    import inspect
-    sig = None
-    try:
-        sig = inspect.signature(_h)
-    except (TypeError, ValueError):
-        sig = None
-    if sig is not None and len(sig.parameters) >= 1:
-        _result = _h(payload)
+    _result = None
+    if _h is _migration_cls or ({handler:?} == "Migration" and _migration_cls is not None):
+        _nyx_run_django_migration_operations(_migration_cls)
     else:
-        _result = _h()
-    _nyx_record_migration_result(_result)
+        # Migrations conventionally take no arguments; pass payload if the
+        # function declares positional params (best-effort introspection).
+        import inspect
+        sig = None
+        try:
+            sig = inspect.signature(_h)
+        except (TypeError, ValueError):
+            sig = None
+        if sig is not None and len(sig.parameters) >= 1:
+            _result = _h(payload)
+        else:
+            _result = _h()
+        _nyx_record_migration_result(_result)
+        _nyx_run_django_migration_operations(_migration_cls)
     if _result is not None:
         try:
             print(str(_result), flush=True)

@@ -33,6 +33,7 @@ pub struct BrokerStub {
     kafka_listener: Option<KafkaListener>,
     sqs_listener: Option<SqsListener>,
     http_listener: Option<HttpBrokerListener>,
+    nats_listener: Option<NatsListener>,
 }
 
 impl BrokerStub {
@@ -54,9 +55,13 @@ impl BrokerStub {
         } else {
             None
         };
-        let http_listener = if matches!(kind, StubKind::Pubsub | StubKind::Rabbit | StubKind::Nats)
-        {
+        let http_listener = if matches!(kind, StubKind::Pubsub | StubKind::Rabbit) {
             start_http_broker_listener(kind, log_path.clone())?
+        } else {
+            None
+        };
+        let nats_listener = if kind == StubKind::Nats {
+            start_nats_listener(log_path.clone())?
         } else {
             None
         };
@@ -68,6 +73,7 @@ impl BrokerStub {
             kafka_listener,
             sqs_listener,
             http_listener,
+            nats_listener,
         })
     }
 
@@ -130,6 +136,9 @@ impl StubProvider for BrokerStub {
         }
         if let Some(listener) = &self.http_listener {
             return format!("http://127.0.0.1:{}", listener.port);
+        }
+        if let Some(listener) = &self.nats_listener {
+            return format!("nats://127.0.0.1:{}", listener.port);
         }
         format!("loopback://{}", self.kind.tag())
     }
@@ -212,6 +221,10 @@ impl Drop for BrokerStub {
             let _ = TcpStream::connect(format!("127.0.0.1:{}", listener.port));
         }
         if let Some(listener) = &self.http_listener {
+            listener.shutdown.store(true, Ordering::Relaxed);
+            let _ = TcpStream::connect(format!("127.0.0.1:{}", listener.port));
+        }
+        if let Some(listener) = &self.nats_listener {
             listener.shutdown.store(true, Ordering::Relaxed);
             let _ = TcpStream::connect(format!("127.0.0.1:{}", listener.port));
         }
@@ -675,6 +688,219 @@ fn http_broker_message_json(
     }
 }
 
+#[derive(Debug)]
+struct NatsListener {
+    port: u16,
+    shutdown: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+struct NatsSubscriber {
+    sid: String,
+    writer: Arc<Mutex<TcpStream>>,
+}
+
+#[derive(Debug, Default)]
+struct NatsState {
+    subscribers: BTreeMap<String, Vec<NatsSubscriber>>,
+}
+
+fn start_nats_listener(log_path: PathBuf) -> std::io::Result<Option<NatsListener>> {
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let port = listener.local_addr()?.port();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(Mutex::new(NatsState::default()));
+    let shutdown_clone = Arc::clone(&shutdown);
+    let state_clone = Arc::clone(&state);
+    std::thread::spawn(move || {
+        nats_accept_loop(listener, shutdown_clone, state_clone, log_path, port)
+    });
+    Ok(Some(NatsListener { port, shutdown }))
+}
+
+fn nats_accept_loop(
+    listener: TcpListener,
+    shutdown: Arc<AtomicBool>,
+    state: Arc<Mutex<NatsState>>,
+    log_path: PathBuf,
+    port: u16,
+) {
+    for stream in listener.incoming() {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        let Ok(stream) = stream else { continue };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let state = Arc::clone(&state);
+        let log_path = log_path.clone();
+        std::thread::spawn(move || handle_nats_connection(stream, state, &log_path, port));
+    }
+}
+
+fn handle_nats_connection(
+    mut stream: TcpStream,
+    state: Arc<Mutex<NatsState>>,
+    log_path: &Path,
+    port: u16,
+) {
+    let info = format!(
+        concat!(
+            "INFO {{",
+            r#""server_id":"nyx","#,
+            r#""server_name":"nyx-broker-stub","#,
+            r#""version":"0.0.0","#,
+            r#""proto":1,"#,
+            r#""go":"rust","#,
+            r#""host":"127.0.0.1","#,
+            r#""port":{port},"#,
+            r#""headers":false,"#,
+            r#""auth_required":false,"#,
+            r#""tls_required":false,"#,
+            r#""max_payload":1048576"#,
+            "}}\r\n"
+        ),
+        port = port
+    );
+    if stream.write_all(info.as_bytes()).is_err() {
+        return;
+    }
+    let writer = match stream.try_clone() {
+        Ok(stream) => Arc::new(Mutex::new(stream)),
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(stream);
+    let mut owned_sids = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(n) = reader.read_line(&mut line) else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let Some(command) = parts.next() else {
+            continue;
+        };
+        match command.to_ascii_uppercase().as_str() {
+            "CONNECT" => {
+                let _ = nats_write(&writer, b"+OK\r\n");
+            }
+            "PING" => {
+                let _ = nats_write(&writer, b"PONG\r\n");
+            }
+            "PONG" | "+OK" => {}
+            "SUB" => {
+                let Some(subject) = parts.next() else {
+                    let _ = nats_write(&writer, b"-ERR 'missing subject'\r\n");
+                    continue;
+                };
+                let fields: Vec<&str> = parts.collect();
+                let Some(sid) = fields.last() else {
+                    let _ = nats_write(&writer, b"-ERR 'missing sid'\r\n");
+                    continue;
+                };
+                if let Ok(mut guard) = state.lock() {
+                    guard
+                        .subscribers
+                        .entry(subject.to_owned())
+                        .or_default()
+                        .push(NatsSubscriber {
+                            sid: (*sid).to_owned(),
+                            writer: Arc::clone(&writer),
+                        });
+                    owned_sids.push((*sid).to_owned());
+                }
+            }
+            "UNSUB" => {
+                if let Some(sid) = parts.next() {
+                    nats_remove_subscription(&state, sid);
+                }
+            }
+            "PUB" => {
+                let Some(subject) = parts.next() else {
+                    let _ = nats_write(&writer, b"-ERR 'missing subject'\r\n");
+                    continue;
+                };
+                let fields: Vec<&str> = parts.collect();
+                let Some(size_str) = fields.last() else {
+                    let _ = nats_write(&writer, b"-ERR 'missing size'\r\n");
+                    continue;
+                };
+                let Ok(size) = size_str.parse::<usize>() else {
+                    let _ = nats_write(&writer, b"-ERR 'bad size'\r\n");
+                    continue;
+                };
+                if size > 1024 * 1024 {
+                    let _ = nats_write(&writer, b"-ERR 'payload too large'\r\n");
+                    break;
+                }
+                let mut payload = vec![0_u8; size];
+                if reader.read_exact(&mut payload).is_err() {
+                    break;
+                }
+                let mut crlf = [0_u8; 2];
+                if reader.read_exact(&mut crlf).is_err() {
+                    break;
+                }
+                let payload_text = String::from_utf8_lossy(&payload).into_owned();
+                let _ = append_broker_event(log_path, "publish", subject, &payload_text);
+                nats_deliver(&state, log_path, subject, &payload);
+            }
+            _ => {
+                let _ = nats_write(&writer, b"-ERR 'unknown command'\r\n");
+            }
+        }
+    }
+    for sid in owned_sids {
+        nats_remove_subscription(&state, &sid);
+    }
+}
+
+fn nats_write(writer: &Arc<Mutex<TcpStream>>, bytes: &[u8]) -> std::io::Result<()> {
+    let mut guard = writer
+        .lock()
+        .map_err(|_| std::io::Error::other("nats writer poisoned"))?;
+    guard.write_all(bytes)
+}
+
+fn nats_deliver(state: &Arc<Mutex<NatsState>>, log_path: &Path, subject: &str, payload: &[u8]) {
+    let subscribers = state
+        .lock()
+        .ok()
+        .and_then(|guard| guard.subscribers.get(subject).cloned())
+        .unwrap_or_default();
+    let payload_text = String::from_utf8_lossy(payload).into_owned();
+    for subscriber in subscribers {
+        let header = format!("MSG {subject} {} {}\r\n", subscriber.sid, payload.len());
+        if nats_write(&subscriber.writer, header.as_bytes())
+            .and_then(|_| nats_write(&subscriber.writer, payload))
+            .and_then(|_| nats_write(&subscriber.writer, b"\r\n"))
+            .is_ok()
+        {
+            let _ = append_broker_event(log_path, "deliver", subject, &payload_text);
+        }
+    }
+}
+
+fn nats_remove_subscription(state: &Arc<Mutex<NatsState>>, sid: &str) {
+    if let Ok(mut guard) = state.lock() {
+        for subscribers in guard.subscribers.values_mut() {
+            subscribers.retain(|subscriber| subscriber.sid != sid);
+        }
+    }
+}
+
 fn split_target(target: &str) -> (String, String) {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     (path.to_owned(), query.to_owned())
@@ -977,7 +1203,7 @@ mod tests {
 
     #[test]
     fn remaining_brokers_expose_http_emulators() {
-        for kind in [StubKind::Pubsub, StubKind::Rabbit, StubKind::Nats] {
+        for kind in [StubKind::Pubsub, StubKind::Rabbit] {
             let dir = TempDir::new().unwrap();
             let stub = BrokerStub::start(kind, dir.path()).unwrap();
             let endpoint = stub.endpoint();
@@ -989,6 +1215,20 @@ mod tests {
                 "{kind:?} endpoint should be a host-side HTTP emulator, got {endpoint}"
             );
         }
+    }
+
+    #[test]
+    fn nats_broker_exposes_protocol_endpoint() {
+        let dir = TempDir::new().unwrap();
+        let stub = BrokerStub::start(StubKind::Nats, dir.path()).unwrap();
+        let endpoint = stub.endpoint();
+        if endpoint == "loopback://nats" {
+            return;
+        }
+        assert!(
+            endpoint.starts_with("nats://127.0.0.1:"),
+            "NATS endpoint should be a protocol-compatible endpoint, got {endpoint}"
+        );
     }
 
     #[test]
@@ -1080,7 +1320,6 @@ mod tests {
         let cases = [
             (StubKind::Pubsub, "topics", "projects/p/topics/orders"),
             (StubKind::Rabbit, "queues", "work"),
-            (StubKind::Nats, "subjects", "events"),
         ];
         for (kind, root, destination) in cases {
             let dir = TempDir::new().unwrap();
@@ -1139,6 +1378,50 @@ mod tests {
     }
 
     #[test]
+    fn nats_protocol_server_records_publish_deliver() {
+        let dir = TempDir::new().unwrap();
+        let stub = BrokerStub::start(StubKind::Nats, dir.path()).unwrap();
+        let endpoint = stub.endpoint();
+        if endpoint == "loopback://nats" {
+            return;
+        }
+        let port: u16 = endpoint
+            .trim_start_matches("nats://127.0.0.1:")
+            .parse()
+            .unwrap();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        let mut reader = BufReader::new(s.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("INFO "), "{line}");
+
+        s.write_all(b"CONNECT {\"verbose\":false}\r\nPING\r\n")
+            .unwrap();
+        let handshake = read_until(&mut reader, "PONG\r\n");
+        assert!(handshake.contains("PONG"), "{handshake}");
+
+        s.write_all(b"SUB events 1\r\nPING\r\n").unwrap();
+        let flush = read_until(&mut reader, "PONG\r\n");
+        assert!(flush.contains("PONG"), "{flush}");
+
+        s.write_all(b"PUB events 11\r\nhello world\r\n").unwrap();
+        let delivery = read_until(&mut reader, "hello world\r\n");
+        assert!(
+            delivery.contains("MSG events 1 11\r\nhello world\r\n"),
+            "{delivery:?}"
+        );
+
+        let events = stub.drain_events();
+        let actions: Vec<&str> = events
+            .iter()
+            .map(|ev| ev.detail.get("action").unwrap().as_str())
+            .collect();
+        assert_eq!(actions, vec!["publish", "deliver"]);
+        assert_eq!(events[0].detail.get("destination").unwrap(), "events");
+        assert_eq!(events[1].detail.get("payload").unwrap(), "hello world");
+    }
+
+    #[test]
     fn broker_drain_understands_delivery_and_ack_events() {
         let dir = TempDir::new().unwrap();
         let stub = BrokerStub::start(StubKind::Kafka, dir.path()).unwrap();
@@ -1187,6 +1470,29 @@ mod tests {
 
     fn response_body(response: &str) -> &str {
         response.split("\r\n\r\n").nth(1).unwrap_or("")
+    }
+
+    fn read_until(reader: &mut BufReader<TcpStream>, needle: &str) -> String {
+        let mut out = String::new();
+        while !out.contains(needle) {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).unwrap();
+            if n == 0 {
+                break;
+            }
+            out.push_str(&line);
+            if line.starts_with("MSG ") {
+                let size = line
+                    .split_whitespace()
+                    .last()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap();
+                let mut payload = vec![0_u8; size + 2];
+                reader.read_exact(&mut payload).unwrap();
+                out.push_str(&String::from_utf8_lossy(&payload));
+            }
+        }
+        out
     }
 
     fn form_escape(input: &str) -> String {

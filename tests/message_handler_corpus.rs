@@ -395,6 +395,27 @@ fn message_handler_remaining_brokers_try_http_emulators_before_loopback() {
     }
 }
 
+#[test]
+fn message_handler_nats_go_tries_real_client_before_fallbacks() {
+    let spec = make_spec_with_adapter(
+        Lang::Go,
+        "events",
+        "OnMessage",
+        entry_file("nats_go"),
+        "nats-go",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryRealNats"));
+    assert!(h.source.contains("github.com/nats-io/nats.go"));
+    assert!(h.source.contains("nats.Connect"));
+    assert!(h.source.contains("nc.Subscribe"));
+    assert!(h.source.contains("nc.Publish"));
+    assert!(
+        h.source.find("nyxTryRealNats").unwrap() < h.source.find("nyxFetchHttpBroker").unwrap(),
+        "nats-go should try the real protocol client before the HTTP fallback"
+    );
+}
+
 // ── Framework-adapter assertions ──────────────────────────────────────────────
 
 fn ts_language_for(lang: Lang) -> tree_sitter::Language {

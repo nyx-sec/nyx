@@ -2155,12 +2155,65 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
     let handler = &spec.entry_name;
     let broker = go_broker_for_adapter(spec);
 
-    let (broker_src, publish_marker, dispatch) = match broker {
+    let (broker_src, publish_marker, broker_imports, broker_helpers, dispatch) = match broker {
         GoBroker::Nats => (
             crate::dynamic::stubs::nats_source(crate::symbol::Lang::Go),
             crate::dynamic::stubs::NATS_PUBLISH_MARKER,
+            "\tnats \"github.com/nats-io/nats.go\"\n",
+            r##"
+func nyxTryRealNats(subject string, payload string, dispatcher func(interface{}), marker string) bool {
+	endpoint := os.Getenv("NYX_NATS_ENDPOINT")
+	if !(strings.HasPrefix(endpoint, "nats://") || strings.HasPrefix(endpoint, "tls://")) {
+		return false
+	}
+	nc, err := nats.Connect(endpoint, nats.Name("nyx-harness"), nats.Timeout(2*time.Second))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: %v\n", err)
+		return false
+	}
+	defer nc.Close()
+	done := make(chan struct{}, 1)
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		natsMsg := &NyxNatsMsg{Subject: msg.Subject, Data: msg.Data, Reply: msg.Reply}
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "deliver", subject, string(msg.Data))
+		dispatcher(natsMsg)
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "ack", subject, msg.Subject)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: %v\n", err)
+		return false
+	}
+	defer sub.Unsubscribe()
+	if err := nc.FlushTimeout(2 * time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: %v\n", err)
+		return false
+	}
+	fmt.Println(marker + " " + subject)
+	if err := nc.Publish(subject, []byte(payload)); err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: %v\n", err)
+		return false
+	}
+	if err := nc.FlushTimeout(2 * time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: %v\n", err)
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(2 * time.Second):
+		fmt.Fprintln(os.Stderr, "NYX_NATS_CLIENT_FALLBACK: timeout waiting for delivery")
+		return false
+	}
+}
+"##,
             format!(
-                r##"	if msg, ok := nyxFetchHttpBroker("NYX_NATS_ENDPOINT", "subjects", "{queue}", payload, "{publish_marker}"); ok {{
+                r##"	if nyxTryRealNats("{queue}", payload, nyxDispatch, "{publish_marker}") {{
+		return
+	}} else if msg, ok := nyxFetchHttpBroker("NYX_NATS_ENDPOINT", "subjects", "{queue}", payload, "{publish_marker}"); ok {{
 		data := msg["data"]
 		natsMsg := &NyxNatsMsg{{Subject: msg["subject"], Data: []byte(data), Reply: msg["reply"]}}
 		if natsMsg.Subject == "" {{
@@ -2192,6 +2245,8 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
         GoBroker::Pubsub => (
             crate::dynamic::stubs::pubsub_source(crate::symbol::Lang::Go),
             crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
+            "",
+            "",
             format!(
                 r##"	if msg, ok := nyxFetchHttpBroker("NYX_PUBSUB_ENDPOINT", "topics", "{queue}", payload, "{publish_marker}"); ok {{
 		data := msg["data"]
@@ -2281,7 +2336,7 @@ import (
 	"syscall"
 	"time"
 
-	"nyx-harness/entry"
+{broker_imports}	"nyx-harness/entry"
 )
 
 {shim}
@@ -2289,6 +2344,8 @@ import (
 {broker_src}
 
 {dispatch_inner}
+
+{broker_helpers}
 
 func nyxPayload() string {{
 	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
@@ -2403,6 +2460,8 @@ func main() {{
 }}
 "##,
         broker_src = broker_src,
+        broker_imports = broker_imports,
+        broker_helpers = broker_helpers,
         dispatch_inner = dispatch_inner,
         dispatch = dispatch,
         handler = handler,

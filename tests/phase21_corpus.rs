@@ -911,6 +911,9 @@ fn migration_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("MigrationContext.configure"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
+    assert!(h.source.contains("def create_table"));
+    assert!(h.source.contains("def add_column"));
+    assert!(h.source.contains("_nyx_run_django_migration_operations"));
 }
 
 #[test]
@@ -1580,6 +1583,27 @@ fn phase_21_vuln_fixtures_confirm_via_run_spec() {
             .expect("confirmed run must carry differential outcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
+}
+
+#[test]
+fn migration_django_operations_class_confirms_via_run_spec() {
+    let case = RunSpecCase {
+        name: "migration-django-operations",
+        lang: Lang::Python,
+        kind: migration_kind,
+        entry_name: "Migration",
+        fixture_dir: "tests/dynamic_fixtures/migration/django_ops",
+        vuln_file: "vuln.py",
+        benign_file: "vuln.py",
+        cap: Cap::SQL_QUERY,
+    };
+    let Some(outcome) = run_phase21_case(case, case.vuln_file) else {
+        return;
+    };
+    assert!(
+        outcome.triggered_by.is_some(),
+        "Django Migration.operations fixture must Confirm via run_spec; got {outcome:?}",
+    );
 }
 
 #[test]

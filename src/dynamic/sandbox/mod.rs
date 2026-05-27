@@ -910,6 +910,11 @@ fn rewrite_extra_env_for_container(
             {
                 return (k.clone(), format!("http://host-gateway:{rest}"));
             }
+            if k == "NYX_NATS_ENDPOINT"
+                && let Some(rest) = v.strip_prefix("nats://127.0.0.1:")
+            {
+                return (k.clone(), format!("nats://host-gateway:{rest}"));
+            }
             (k.clone(), v.clone())
         })
         .collect()
@@ -2301,7 +2306,7 @@ mod tests {
             ),
             (
                 "NYX_NATS_ENDPOINT".to_owned(),
-                "http://127.0.0.1:56789/subjects".to_owned(),
+                "nats://127.0.0.1:56789".to_owned(),
             ),
         ];
         let out = rewrite_extra_env_for_container(&extra, &[]);
@@ -2330,7 +2335,7 @@ mod tests {
                 ),
                 (
                     "NYX_NATS_ENDPOINT".to_owned(),
-                    "http://host-gateway:56789/subjects".to_owned(),
+                    "nats://host-gateway:56789".to_owned(),
                 ),
             ]
         );
