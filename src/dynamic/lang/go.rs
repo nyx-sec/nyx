@@ -2245,10 +2245,130 @@ func nyxTryRealNats(subject string, payload string, dispatcher func(interface{})
         GoBroker::Pubsub => (
             crate::dynamic::stubs::pubsub_source(crate::symbol::Lang::Go),
             crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
-            "",
-            "",
+            "\t\"context\"\n\tpubsubapi \"cloud.google.com/go/pubsub\"\n",
+            r##"
+func nyxPubsubEmulatorHost(endpoint string) string {
+	if host := os.Getenv("PUBSUB_EMULATOR_HOST"); host != "" {
+		return host
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	for _, prefix := range []string{"grpc://", "pubsub://"} {
+		if strings.HasPrefix(endpoint, prefix) {
+			return strings.Trim(strings.TrimPrefix(endpoint, prefix), "/")
+		}
+	}
+	return ""
+}
+
+func nyxPubsubID(raw string, fallback string) string {
+	tail := strings.TrimRight(raw, "/")
+	if idx := strings.LastIndex(tail, "/"); idx >= 0 {
+		tail = tail[idx+1:]
+	}
+	var b strings.Builder
+	for _, ch := range tail {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			b.WriteRune(ch)
+		case ch >= 'A' && ch <= 'Z':
+			b.WriteRune(ch)
+		case ch >= '0' && ch <= '9':
+			b.WriteRune(ch)
+		case ch == '-' || ch == '_':
+			b.WriteRune(ch)
+		default:
+			b.WriteByte('-')
+		}
+		if b.Len() >= 200 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return fallback
+	}
+	return b.String()
+}
+
+func nyxTryRealPubsub(subscription string, payload string, dispatcher func(interface{}), marker string) bool {
+	emulatorHost := nyxPubsubEmulatorHost(os.Getenv("NYX_PUBSUB_ENDPOINT"))
+	if emulatorHost == "" {
+		return false
+	}
+	oldEmulator, hadOldEmulator := os.LookupEnv("PUBSUB_EMULATOR_HOST")
+	if !hadOldEmulator {
+		_ = os.Setenv("PUBSUB_EMULATOR_HOST", emulatorHost)
+		defer os.Unsetenv("PUBSUB_EMULATOR_HOST")
+	} else {
+		_ = oldEmulator
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := pubsubapi.NewClient(ctx, "nyx")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_REAL_PUBSUB_FALLBACK: %v\n", err)
+		return false
+	}
+	defer client.Close()
+
+	subID := nyxPubsubID(subscription, "nyx-sub")
+	topicID := nyxPubsubID(subscription+"-topic", "nyx-topic")
+	if strings.Contains(subscription, "/topics/") {
+		topicID = subID
+		subID = nyxPubsubID(topicID+"-sub", "nyx-sub")
+	}
+
+	topic, err := client.CreateTopic(ctx, topicID)
+	if err != nil {
+		topic = client.Topic(topicID)
+	}
+	if ok, err := topic.Exists(ctx); err == nil && !ok {
+		fmt.Fprintln(os.Stderr, "NYX_REAL_PUBSUB_FALLBACK: topic missing")
+		return false
+	}
+
+	sub, err := client.CreateSubscription(ctx, subID, pubsubapi.SubscriptionConfig{Topic: topic})
+	if err != nil {
+		sub = client.Subscription(subID)
+	}
+	fmt.Println(marker + " " + subscription)
+	nyxRecordBrokerPublish("NYX_PUBSUB_LOG", subscription, payload)
+	result := topic.Publish(ctx, &pubsubapi.Message{Data: []byte(payload)})
+	if _, err := result.Get(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_REAL_PUBSUB_FALLBACK: %v\n", err)
+		return false
+	}
+
+	delivered := make(chan bool, 1)
+	receiveCtx, receiveCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer receiveCancel()
+	err = sub.Receive(receiveCtx, func(ctx context.Context, msg *pubsubapi.Message) {
+		pubsubMsg := &NyxPubsubMessage{ID: msg.ID, Data: msg.Data}
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "deliver", subscription, string(msg.Data))
+		dispatcher(pubsubMsg)
+		msg.Ack()
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "ack", subscription, msg.ID)
+		select {
+		case delivered <- true:
+		default:
+		}
+		receiveCancel()
+	})
+	select {
+	case ok := <-delivered:
+		return ok
+	default:
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "NYX_REAL_PUBSUB_FALLBACK: %v\n", err)
+	}
+	return false
+}
+"##,
             format!(
-                r##"	if msg, ok := nyxFetchHttpBroker("NYX_PUBSUB_ENDPOINT", "topics", "{queue}", payload, "{publish_marker}"); ok {{
+                r##"	if nyxTryRealPubsub("{queue}", payload, nyxDispatch, "{publish_marker}") {{
+		return
+	}} else if msg, ok := nyxFetchHttpBroker("NYX_PUBSUB_ENDPOINT", "topics", "{queue}", payload, "{publish_marker}"); ok {{
 		data := msg["data"]
 		pubsubMsg := &NyxPubsubMessage{{ID: msg["id"], Data: []byte(data)}}
 		if pubsubMsg.ID == "" {{

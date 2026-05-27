@@ -3834,7 +3834,8 @@ fn emit_message_handler_harness(
         JavaBroker::Rabbit => (
             crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
             format!(
-                r#"            if (!nyxTryRabbitHttp({queue:?}, payload, entryInst, {handler:?})) {{
+                r#"            if (!nyxTryRealRabbitClient({queue:?}, payload, entryInst, {handler:?})
+                && !nyxTryRabbitHttp({queue:?}, payload, entryInst, {handler:?})) {{
                 NyxRabbitChannel chan = new NyxRabbitChannel();
                 chan.basicConsume({queue:?}, (mid, body) -> {{
                     nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", {queue:?}, body);
@@ -3875,7 +3876,8 @@ fn emit_message_handler_harness(
         JavaBroker::Kafka => (
             crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
             format!(
-                r#"            if (!nyxTryRealKafkaClient({queue:?}, payload, entryInst, {handler:?})
+                r#"            if (!nyxTryLiveKafkaClient({queue:?}, payload, entryInst, {handler:?})
+                && !nyxTryRealKafkaClient({queue:?}, payload, entryInst, {handler:?})
                 && !nyxTryKafkaHttp({queue:?}, payload, entryInst, {handler:?})) {{
                 NyxKafkaLoopback brokerRef = new NyxKafkaLoopback();
                 System.out.println({publish_marker:?} + " " + {queue:?});
@@ -3986,6 +3988,102 @@ public class NyxHarness {{
         }}
     }}
 
+    static boolean nyxTryRealRabbitClient(String queue, String payload, Object entryInst, String handler) {{
+        String endpoint = System.getenv("NYX_RABBIT_ENDPOINT");
+        if (endpoint == null || !(endpoint.startsWith("amqp://") || endpoint.startsWith("amqps://"))) {{
+            return false;
+        }}
+        Object connection = null;
+        Object channel = null;
+        try {{
+            Class<?> factoryClass = Class.forName("com.rabbitmq.client.ConnectionFactory");
+            Object factory = factoryClass.getConstructor().newInstance();
+            factoryClass.getMethod("setUri", String.class).invoke(factory, endpoint);
+            connection = factoryClass.getMethod("newConnection").invoke(factory);
+            channel = connection.getClass().getMethod("createChannel").invoke(connection);
+            Class<?> channelClass = Class.forName("com.rabbitmq.client.Channel");
+            channelClass.getMethod(
+                "queueDeclare",
+                String.class,
+                boolean.class,
+                boolean.class,
+                boolean.class,
+                java.util.Map.class
+            ).invoke(channel, queue, false, false, true, null);
+
+            Class<?> propsClass = Class.forName("com.rabbitmq.client.AMQP$BasicProperties");
+            System.out.println({rabbit_publish_marker:?} + " " + queue);
+            nyxRecordBrokerPublish("NYX_RABBIT_LOG", queue, payload);
+            channelClass.getMethod(
+                "basicPublish",
+                String.class,
+                String.class,
+                propsClass,
+                byte[].class
+            ).invoke(
+                channel,
+                "",
+                queue,
+                null,
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+            );
+
+            Object response = channelClass.getMethod("basicGet", String.class, boolean.class)
+                .invoke(channel, queue, false);
+            if (response == null) {{
+                return false;
+            }}
+            byte[] rawBody = (byte[]) response.getClass().getMethod("getBody").invoke(response);
+            String body = new String(rawBody, java.nio.charset.StandardCharsets.UTF_8);
+            Object envelope = response.getClass().getMethod("getEnvelope").invoke(response);
+            long deliveryTag = ((Number) envelope.getClass().getMethod("getDeliveryTag").invoke(envelope)).longValue();
+            String tag = Long.toString(deliveryTag);
+            nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", queue, body);
+            System.out.println("__NYX_SINK_HIT__");
+            boolean success = false;
+            try {{
+                java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, String.class, String.class);
+                m.setAccessible(true);
+                m.invoke(entryInst, tag, body);
+                success = true;
+            }} catch (NoSuchMethodException nsme) {{
+                try {{
+                    java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod(handler, String.class);
+                    m2.setAccessible(true);
+                    m2.invoke(entryInst, body);
+                    success = true;
+                }} catch (Exception ie) {{
+                    Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+            }} catch (Exception e) {{
+                Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+            }}
+            if (success) {{
+                channelClass.getMethod("basicAck", long.class, boolean.class)
+                    .invoke(channel, deliveryTag, false);
+                nyxRecordBrokerEvent("NYX_RABBIT_LOG", "ack", queue, tag);
+            }}
+            return true;
+        }} catch (ClassNotFoundException missingRabbitClient) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_REAL_RABBIT_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }} finally {{
+            for (Object closeable : new Object[] {{ channel, connection }}) {{
+                if (closeable == null) {{
+                    continue;
+                }}
+                try {{
+                    closeable.getClass().getMethod("close").invoke(closeable);
+                }} catch (Exception ignored) {{
+                }}
+            }}
+        }}
+    }}
+
     static boolean nyxTryRabbitHttp(String queue, String payload, Object entryInst, String handler) {{
         String endpoint = System.getenv("NYX_RABBIT_ENDPOINT");
         if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {{
@@ -4048,6 +4146,115 @@ public class NyxHarness {{
         }} catch (Throwable e) {{
             System.err.println("NYX_RABBIT_HTTP_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
             return false;
+        }}
+    }}
+
+    static String nyxKafkaBootstrap(String endpoint) {{
+        if (endpoint == null) {{
+            return "";
+        }}
+        endpoint = endpoint.trim();
+        if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {{
+            return "";
+        }}
+        if (endpoint.startsWith("kafka://")) {{
+            endpoint = endpoint.substring("kafka://".length());
+        }} else if (endpoint.startsWith("plaintext://")) {{
+            endpoint = endpoint.substring("plaintext://".length());
+        }}
+        while (endpoint.endsWith("/")) {{
+            endpoint = endpoint.substring(0, endpoint.length() - 1);
+        }}
+        return endpoint;
+    }}
+
+    static boolean nyxTryLiveKafkaClient(String topic, String payload, Object entryInst, String handler) {{
+        String bootstrap = nyxKafkaBootstrap(System.getenv("NYX_KAFKA_ENDPOINT"));
+        if (bootstrap.isEmpty()) {{
+            return false;
+        }}
+        Object producer = null;
+        Object consumer = null;
+        try {{
+            Class<?> producerClass = Class.forName("org.apache.kafka.clients.producer.KafkaProducer");
+            Class<?> producerRecordClass = Class.forName("org.apache.kafka.clients.producer.ProducerRecord");
+            Class<?> consumerClass = Class.forName("org.apache.kafka.clients.consumer.KafkaConsumer");
+
+            java.util.Properties producerProps = new java.util.Properties();
+            producerProps.put("bootstrap.servers", bootstrap);
+            producerProps.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProps.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProps.put("acks", "all");
+            producerProps.put("max.block.ms", "1000");
+            producerProps.put("request.timeout.ms", "1000");
+            producerProps.put("retries", "0");
+            producer = producerClass.getConstructor(java.util.Properties.class).newInstance(producerProps);
+
+            java.util.Properties consumerProps = new java.util.Properties();
+            consumerProps.put("bootstrap.servers", bootstrap);
+            consumerProps.put("group.id", "nyx-" + Long.toString(System.nanoTime()));
+            consumerProps.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            consumerProps.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            consumerProps.put("auto.offset.reset", "earliest");
+            consumerProps.put("enable.auto.commit", "false");
+            consumerProps.put("request.timeout.ms", "1000");
+            consumer = consumerClass.getConstructor(java.util.Properties.class).newInstance(consumerProps);
+
+            Object record = producerRecordClass.getConstructor(String.class, Object.class)
+                .newInstance(topic, payload);
+            System.out.println({kafka_publish_marker:?} + " " + topic);
+            nyxRecordBrokerPublish("NYX_KAFKA_LOG", topic, payload);
+            Object future = producerClass.getMethod("send", producerRecordClass).invoke(producer, record);
+            future.getClass().getMethod("get", long.class, java.util.concurrent.TimeUnit.class)
+                .invoke(future, Long.valueOf(2L), java.util.concurrent.TimeUnit.SECONDS);
+            producerClass.getMethod("flush").invoke(producer);
+
+            consumerClass.getMethod("subscribe", java.util.Collection.class)
+                .invoke(consumer, java.util.Collections.singletonList(topic));
+            Object records = consumerClass.getMethod("poll", java.time.Duration.class)
+                .invoke(consumer, java.time.Duration.ofSeconds(2));
+            if (!(records instanceof Iterable)) {{
+                return false;
+            }}
+            boolean delivered = false;
+            for (Object rec : (Iterable<?>) records) {{
+                String value = String.valueOf(rec.getClass().getMethod("value").invoke(rec));
+                long offset = ((Number) rec.getClass().getMethod("offset").invoke(rec)).longValue();
+                nyxRecordBrokerEvent("NYX_KAFKA_LOG", "deliver", topic, value);
+                System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, String.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, value);
+                    success = true;
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+                if (success) {{
+                    consumerClass.getMethod("commitSync").invoke(consumer);
+                    nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", topic, Long.toString(offset));
+                }}
+                delivered = true;
+                break;
+            }}
+            return delivered;
+        }} catch (ClassNotFoundException missingKafkaClient) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_LIVE_KAFKA_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }} finally {{
+            for (Object closeable : new Object[] {{ consumer, producer }}) {{
+                if (closeable == null) {{
+                    continue;
+                }}
+                try {{
+                    closeable.getClass().getMethod("close").invoke(closeable);
+                }} catch (Exception ignored) {{
+                }}
+            }}
         }}
     }}
 

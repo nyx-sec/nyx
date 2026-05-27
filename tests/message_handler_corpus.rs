@@ -176,6 +176,9 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
         entry_file("kafka_python"),
     );
     let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_try_real_kafka"));
+    assert!(h.source.contains("KafkaConsumer"));
+    assert!(h.source.contains("KafkaProducer"));
     assert!(h.source.contains("_nyx_try_kafka_http"));
     assert!(h.source.contains("NYX_KAFKA_ENDPOINT"));
     assert!(h.source.contains("NyxKafkaLoopback"));
@@ -188,12 +191,21 @@ fn message_handler_python_dispatch_subscribes_to_loopback() {
     assert!(h.source.contains("NYX_KAFKA_LOG"));
     assert!(h.source.contains("_nyx_record_broker_publish"));
     assert!(h.source.contains("payload"));
+    assert!(
+        h.source.find("_nyx_try_real_kafka").unwrap()
+            < h.source.find("_nyx_try_kafka_http").unwrap(),
+        "kafka-python should try the real kafka-python client before HTTP fallback"
+    );
 }
 
 #[test]
 fn message_handler_java_emits_reflective_dispatch() {
     let spec = make_spec(Lang::Java, "orders", "onMessage", entry_file("kafka_java"));
     let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryLiveKafkaClient"));
+    assert!(h.source.contains("KafkaProducer"));
+    assert!(h.source.contains("KafkaConsumer"));
+    assert!(h.source.contains("ProducerRecord"));
     assert!(h.source.contains("nyxTryRealKafkaClient"));
     assert!(h.source.contains("MockConsumer"));
     assert!(h.source.contains("commitSync"));
@@ -208,6 +220,11 @@ fn message_handler_java_emits_reflective_dispatch() {
     assert!(h.source.contains("\"ack\""));
     assert!(h.source.contains("NYX_KAFKA_LOG"));
     assert!(h.source.contains("nyxRecordBrokerPublish"));
+    assert!(
+        h.source.find("nyxTryLiveKafkaClient").unwrap()
+            < h.source.find("nyxTryRealKafkaClient").unwrap(),
+        "kafka-java should try a live Kafka client before MockConsumer"
+    );
 }
 
 #[test]
@@ -267,6 +284,95 @@ fn message_handler_java_sqs_tries_real_aws_sdk_client_first() {
     assert!(h.source.contains("DeleteMessageRequest"));
     assert!(h.command.iter().any(|arg| arg == ".:lib/*"));
     assert!(h.source.contains("NyxSqsLoopback"));
+}
+
+#[test]
+fn message_handler_python_pubsub_tries_real_client_before_fallbacks() {
+    let spec = make_spec_with_adapter(
+        Lang::Python,
+        "projects/p/subscriptions/s",
+        "callback",
+        entry_file("pubsub_python"),
+        "pubsub-python",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_try_real_pubsub"));
+    assert!(h.source.contains("google.cloud"));
+    assert!(h.source.contains("PublisherClient"));
+    assert!(h.source.contains("SubscriberClient"));
+    assert!(h.source.contains("_nyx_try_pubsub_http"));
+    assert!(
+        h.source.find("_nyx_try_real_pubsub").unwrap()
+            < h.source.find("_nyx_try_pubsub_http").unwrap(),
+        "pubsub-python should try google-cloud-pubsub before HTTP fallback"
+    );
+}
+
+#[test]
+fn message_handler_python_rabbit_tries_real_client_before_fallbacks() {
+    let spec = make_spec_with_adapter(
+        Lang::Python,
+        "work",
+        "on_message",
+        entry_file("rabbit_python"),
+        "rabbit-python",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_try_real_rabbit"));
+    assert!(h.source.contains("import pika"));
+    assert!(h.source.contains("BlockingConnection"));
+    assert!(h.source.contains("basic_get"));
+    assert!(h.source.contains("_nyx_try_rabbit_http"));
+    assert!(
+        h.source.find("_nyx_try_real_rabbit").unwrap()
+            < h.source.find("_nyx_try_rabbit_http").unwrap(),
+        "rabbit-python should try pika before HTTP fallback"
+    );
+}
+
+#[test]
+fn message_handler_java_rabbit_tries_real_client_before_fallbacks() {
+    let spec = make_spec_with_adapter(
+        Lang::Java,
+        "work",
+        "onMessage",
+        entry_file("rabbit_java"),
+        "rabbit-java",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryRealRabbitClient"));
+    assert!(h.source.contains("com.rabbitmq.client.ConnectionFactory"));
+    assert!(h.source.contains("basicPublish"));
+    assert!(h.source.contains("basicGet"));
+    assert!(h.source.contains("basicAck"));
+    assert!(h.source.contains("nyxTryRabbitHttp"));
+    assert!(h.command.iter().any(|arg| arg == ".:lib/*"));
+    assert!(
+        h.source.find("nyxTryRealRabbitClient").unwrap()
+            < h.source.find("nyxTryRabbitHttp").unwrap(),
+        "rabbit-java should try the RabbitMQ Java client before HTTP fallback"
+    );
+}
+
+#[test]
+fn message_handler_go_pubsub_tries_real_client_before_fallbacks() {
+    let spec = make_spec_with_adapter(
+        Lang::Go,
+        "my-sub",
+        "OnMessage",
+        entry_file("pubsub_go"),
+        "pubsub-go",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryRealPubsub"));
+    assert!(h.source.contains("cloud.google.com/go/pubsub"));
+    assert!(h.source.contains("pubsubapi.NewClient"));
+    assert!(h.source.contains("CreateSubscription"));
+    assert!(h.source.contains("nyxFetchHttpBroker"));
+    assert!(
+        h.source.find("nyxTryRealPubsub").unwrap() < h.source.find("nyxFetchHttpBroker").unwrap(),
+        "pubsub-go should try the real Pub/Sub client before HTTP fallback"
+    );
 }
 
 #[test]
