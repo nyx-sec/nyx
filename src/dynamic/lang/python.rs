@@ -985,7 +985,11 @@ def _nyx_pubsub_dispatch(message):
     if _h is None:
         print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
         sys.exit(78)
+    _nyx_record_broker_event("NYX_PUBSUB_LOG", "deliver", {queue:?}, getattr(message, "data", message))
     _h(message)
+    if hasattr(message, "ack"):
+        message.ack()
+    _nyx_record_broker_event("NYX_PUBSUB_LOG", "ack", {queue:?}, getattr(message, "message_id", ""))
 _loop.subscribe({queue:?}, _nyx_pubsub_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
 _nyx_record_broker_publish("NYX_PUBSUB_LOG", {queue:?}, payload)
@@ -1001,7 +1005,9 @@ def _nyx_rabbit_dispatch(ch, method, props, body):
     if _h is None:
         print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
         sys.exit(78)
+    _nyx_record_broker_event("NYX_RABBIT_LOG", "deliver", {queue:?}, body)
     _h(ch, method, props, body)
+    _nyx_record_broker_event("NYX_RABBIT_LOG", "ack", {queue:?}, getattr(method, "delivery_tag", ""))
 _chan.basic_consume(queue={queue:?}, on_message_callback=_nyx_rabbit_dispatch)
 print({publish_marker:?} + " " + {queue:?}, flush=True)
 _nyx_record_broker_publish("NYX_RABBIT_LOG", {queue:?}, payload)
@@ -1323,11 +1329,40 @@ class _NyxMigrationOpProxy:
         if self._inner is not None and self._inner is not self and hasattr(self._inner, "execute"):
             return self._inner.execute(sql, *args, **kwargs)
         return None
+    def __getattr__(self, name):
+        if self._inner is not None and self._inner is not self:
+            return getattr(self._inner, name)
+        raise AttributeError(name)
+
+_nyx_migration_cleanup = None
+
+def _nyx_real_alembic_operations():
+    endpoint = os.environ.get("NYX_SQL_ENDPOINT", "")
+    url = "sqlite:///" + endpoint if endpoint else "sqlite:///:memory:"
+    try:
+        from sqlalchemy import create_engine
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+        engine = create_engine(url)
+        conn = engine.connect()
+        ctx = MigrationContext.configure(conn)
+        ops = Operations(ctx)
+        def _cleanup():
+            try:
+                conn.close()
+            finally:
+                engine.dispose()
+        return ops, _cleanup
+    except Exception:
+        return None, None
 
 def _nyx_install_migration_sql_hooks():
+    global _nyx_migration_cleanup
     if hasattr(_entry_mod, "op"):
         try:
-            _entry_mod.op = _NyxMigrationOpProxy(getattr(_entry_mod, "op"))
+            real_ops, cleanup = _nyx_real_alembic_operations()
+            _nyx_migration_cleanup = cleanup
+            _entry_mod.op = _NyxMigrationOpProxy(real_ops or getattr(_entry_mod, "op"))
         except Exception:
             pass
 
@@ -1339,6 +1374,26 @@ def _nyx_record_migration_result(result):
         _nyx_migration_sql_record(sql, "django")
     elif isinstance(result, str):
         _nyx_migration_sql_record(result, "migration")
+    elif hasattr(result, "database_forwards"):
+        sql = getattr(result, "sql", None)
+        if sql is not None:
+            _nyx_migration_sql_record(sql, "django")
+        try:
+            from django.conf import settings
+            if not settings.configured:
+                endpoint = os.environ.get("NYX_SQL_ENDPOINT", ":memory:")
+                settings.configure(
+                    INSTALLED_APPS=[],
+                    DATABASES={{"default": {{"ENGINE": "django.db.backends.sqlite3", "NAME": endpoint}}}},
+                    SECRET_KEY="nyx-dynamic-harness",
+                )
+            import django
+            django.setup()
+            from django.db import connection
+            with connection.schema_editor() as schema_editor:
+                result.database_forwards("nyx_dynamic", schema_editor, None, None)
+        except Exception:
+            pass
 
 try:
     _nyx_install_migration_sql_hooks()
@@ -1360,10 +1415,14 @@ try:
             print(str(_result), flush=True)
         except Exception:
             pass
+    if _nyx_migration_cleanup is not None:
+        _nyx_migration_cleanup()
 except SystemExit as _e:
     sys.exit(_e.code)
 except Exception as _e:
     print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+    if _nyx_migration_cleanup is not None:
+        _nyx_migration_cleanup()
 "#,
         version = version_repr,
         handler = handler,

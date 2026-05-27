@@ -909,6 +909,7 @@ fn migration_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("\"upgrade\""));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("MigrationContext.configure"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
 
@@ -924,6 +925,8 @@ fn migration_js_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("\"up\""));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("require('sequelize')"));
+    assert!(h.source.contains("getQueryInterface"));
     assert!(h.source.contains("global.__nyx_prisma"));
     assert!(h.source.contains("node:sqlite"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
@@ -941,6 +944,7 @@ fn migration_ruby_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddIndex"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("ActiveRecord::Base.establish_connection"));
     assert!(h.source.contains("SQLite3::Database"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
@@ -957,6 +961,7 @@ fn migration_php_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddUsers"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("vendor/autoload.php"));
     assert!(h.source.contains("new SQLite3"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }

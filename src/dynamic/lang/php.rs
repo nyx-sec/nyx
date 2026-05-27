@@ -3091,6 +3091,11 @@ if ((!$payload || $payload === '') && is_string($_b64) && $_b64 !== '') {{
     if ($decoded !== false) $payload = $decoded;
 }}
 
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (is_file($autoload)) {{
+    require_once $autoload;
+}}
+
 try {{
     require_once __DIR__ . '/entry.php';
 }} catch (Throwable $e) {{

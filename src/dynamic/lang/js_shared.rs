@@ -1231,8 +1231,24 @@ function _nyxMigrationSqlRecord(sql, driver) {{
     const sqliteDriver = _nyxTryExecuteSqlite(sql);
     __nyx_stub_sql_record(String(sql), {{ driver: driver, source: 'migration', sqlite_driver: sqliteDriver }});
 }}
+function _nyxTryRealSequelize() {{
+    try {{
+        const SequelizeLib = require('sequelize');
+        const SequelizeCtor = SequelizeLib.Sequelize || SequelizeLib;
+        const endpoint = process.env.NYX_SQL_ENDPOINT || ':memory:';
+        const sequelize = new SequelizeCtor({{ dialect: 'sqlite', storage: endpoint, logging: false }});
+        return {{
+            queryInterface: sequelize.getQueryInterface(),
+            Sequelize: SequelizeLib,
+            close: async function() {{ try {{ await sequelize.close(); }} catch (e) {{}} }},
+        }};
+    }} catch (e) {{
+        return null;
+    }}
+}}
+const _realSequelize = _nyxTryRealSequelize();
 // QueryInterface shim for sequelize-style up/down(queryInterface, Sequelize).
-const _qi = {{
+const _qi = _realSequelize ? _realSequelize.queryInterface : {{
     createTable: async function(name){{ const sql = 'CREATE TABLE ' + String(name) + ' (id INTEGER)'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
     addColumn: async function(table, column){{ const sql = 'ALTER TABLE ' + String(table) + ' ADD COLUMN ' + String(column) + ' TEXT'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
     dropTable: async function(name){{ const sql = 'DROP TABLE ' + String(name); _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
@@ -1240,6 +1256,7 @@ const _qi = {{
     bulkInsert: async function(table){{ const sql = 'INSERT INTO ' + String(table) + ' VALUES (...)'; _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }},
     sequelize: {{ query: async function(sql){{ _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }} }},
 }};
+const _sequelizeNamespace = _realSequelize ? _realSequelize.Sequelize : {{}};
 const _prisma = {{
     $executeRaw: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
     $executeRawUnsafe: async function(s){{ if (s) {{ _nyxMigrationSqlRecord(s, 'prisma'); process.stdout.write('NYX_PRISMA_SQL: ' + s + '\n'); }} return s; }},
@@ -1254,7 +1271,7 @@ global.__nyx_prisma = _prisma;
         // Single-arg migrations are Prisma/raw shapes and should receive payload.
         try {{
             if (_h.length >= 2) {{
-                _result = await Promise.resolve(_h(_qi, {{}}));
+                _result = await Promise.resolve(_h(_qi, _sequelizeNamespace));
             }} else {{
                 _result = await Promise.resolve(_h(payload));
             }}
@@ -1269,6 +1286,8 @@ global.__nyx_prisma = _prisma;
         if (_result != null) process.stdout.write(String(_result) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }} finally {{
+        if (_realSequelize && _realSequelize.close) await _realSequelize.close();
     }}
 }})();
 "#,

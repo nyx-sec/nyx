@@ -137,10 +137,16 @@ const NODE_PRISMA: &[VersionedPackage] = &[VersionedPackage {
     name: "@prisma/client",
     version: "^5.14.0",
 }];
-const NODE_SEQUELIZE: &[VersionedPackage] = &[VersionedPackage {
-    name: "sequelize",
-    version: "^6.37.3",
-}];
+const NODE_SEQUELIZE: &[VersionedPackage] = &[
+    VersionedPackage {
+        name: "sequelize",
+        version: "^6.37.3",
+    },
+    VersionedPackage {
+        name: "sqlite3",
+        version: "^5.1.7",
+    },
+];
 
 const RUBY_RACK: &[&str] = &["rack"];
 const RUBY_SINATRA: &[&str] = &["rack", "sinatra"];

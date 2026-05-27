@@ -79,6 +79,28 @@ fn make_spec(lang: Lang, queue: &str, handler: &str, fixture: &str) -> HarnessSp
     }
 }
 
+fn make_spec_with_adapter(
+    lang: Lang,
+    queue: &str,
+    handler: &str,
+    fixture: &str,
+    adapter: &str,
+) -> HarnessSpec {
+    let mut spec = make_spec(lang, queue, handler, fixture);
+    spec.framework = Some(FrameworkBinding {
+        adapter: adapter.to_owned(),
+        kind: EntryKind::MessageHandler {
+            queue: queue.to_owned(),
+            message_schema: None,
+        },
+        route: None,
+        request_params: vec![],
+        response_writer: None,
+        middleware: vec![],
+    });
+    spec
+}
+
 // ── Supported-set assertions ──────────────────────────────────────────────────
 
 #[test]
@@ -203,6 +225,62 @@ fn message_handler_go_uses_nyx_handlers_registry() {
     assert!(h.source.contains("NewNyxPubsubLoopback"));
     assert!(h.source.contains("NYX_PUBSUB_LOG"));
     assert!(h.source.contains("nyxRecordBrokerPublish"));
+}
+
+#[test]
+fn message_handler_remaining_brokers_emit_delivery_and_ack_events() {
+    let cases = [
+        (
+            Lang::Python,
+            "pubsub_python",
+            "projects/p/subscriptions/s",
+            "callback",
+            "pubsub-python",
+            "NYX_PUBSUB_LOG",
+        ),
+        (
+            Lang::Python,
+            "rabbit_python",
+            "work",
+            "on_message",
+            "rabbit-python",
+            "NYX_RABBIT_LOG",
+        ),
+        (
+            Lang::Java,
+            "rabbit_java",
+            "work",
+            "onMessage",
+            "rabbit-java",
+            "NYX_RABBIT_LOG",
+        ),
+        (
+            Lang::Go,
+            "nats_go",
+            "events",
+            "OnMessage",
+            "nats-go",
+            "NYX_NATS_LOG",
+        ),
+    ];
+    for (lang, fixture, queue, handler, adapter, log_env) in cases {
+        let spec = make_spec_with_adapter(lang, queue, handler, entry_file(fixture), adapter);
+        let h = lang::emit(&spec).expect("emit ok");
+        assert!(
+            h.source.contains(log_env),
+            "{adapter} harness must write the broker log env var",
+        );
+        assert!(
+            h.source.contains("\"deliver\"") || h.source.contains("'deliver'"),
+            "{adapter} harness must record delivery events: {}",
+            h.source
+        );
+        assert!(
+            h.source.contains("\"ack\"") || h.source.contains("'ack'"),
+            "{adapter} harness must record ack events: {}",
+            h.source
+        );
+    }
 }
 
 // ── Framework-adapter assertions ──────────────────────────────────────────────

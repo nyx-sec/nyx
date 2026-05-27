@@ -719,6 +719,22 @@ end
 $nyx_payload = nyx_payload
 
 begin
+  require 'bundler/setup' if File.exist?(File.join(__dir__, 'Gemfile'))
+rescue LoadError
+end
+
+begin
+  require 'active_record'
+  endpoint = ENV['NYX_SQL_ENDPOINT']
+  if endpoint && !endpoint.empty?
+    ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: endpoint)
+    ActiveRecord::Migration.verbose = false if defined?(ActiveRecord::Migration)
+  end
+rescue LoadError, StandardError => e
+  STDERR.puts('NYX_ACTIVE_RECORD_BOOTSTRAP_SKIPPED: ' + e.class.name + ': ' + e.message) if ENV['NYX_DEBUG']
+end
+
+begin
   require_relative './entry'
 rescue LoadError, ScriptError => e
   STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
@@ -940,6 +956,12 @@ if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
   begin
     inst = cls.new
+    if inst.respond_to?(:table_name=)
+      begin
+        inst.table_name = $nyx_payload
+      rescue StandardError
+      end
+    end
     if inst.respond_to?(:execute, true)
       original_execute = inst.method(:execute)
       inst.define_singleton_method(:execute) do |sql, *args, &blk|

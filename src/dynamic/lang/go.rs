@@ -2162,7 +2162,9 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
             format!(
                 r##"	broker := NewNyxNatsLoopback()
 	broker.Subscribe("{queue}", func(msg *NyxNatsMsg) {{
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "deliver", "{queue}", string(msg.Data))
 		nyxDispatch(msg)
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "ack", "{queue}", msg.Subject)
 	}})
 	fmt.Println("{publish_marker} " + "{queue}")
 	nyxRecordBrokerPublish("NYX_NATS_LOG", "{queue}", payload)
@@ -2177,7 +2179,10 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
             format!(
                 r##"	broker := NewNyxPubsubLoopback()
 	broker.Subscribe("{queue}", func(msg *NyxPubsubMessage) {{
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "deliver", "{queue}", string(msg.Data))
 		nyxDispatch(msg)
+		msg.Ack()
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "ack", "{queue}", msg.ID)
 	}})
 	fmt.Println("{publish_marker} " + "{queue}")
 	nyxRecordBrokerPublish("NYX_PUBSUB_LOG", "{queue}", payload)
@@ -2261,7 +2266,7 @@ func nyxPayload() string {{
 	return ""
 }}
 
-func nyxRecordBrokerPublish(envName string, destination string, payload string) {{
+func nyxRecordBrokerEvent(envName string, action string, destination string, payload string) {{
 	path := os.Getenv(envName)
 	if path == "" {{
 		return
@@ -2271,7 +2276,17 @@ func nyxRecordBrokerPublish(envName string, destination string, payload string) 
 		return
 	}}
 	defer f.Close()
-	_, _ = fmt.Fprintf(f, "%s\t%s\n", strings.ReplaceAll(destination, "\t", " "), payload)
+	_, _ = fmt.Fprintf(
+		f,
+		"%s\t%s\t%s\n",
+		strings.ReplaceAll(action, "\t", " "),
+		strings.ReplaceAll(destination, "\t", " "),
+		payload,
+	)
+}}
+
+func nyxRecordBrokerPublish(envName string, destination string, payload string) {{
+	nyxRecordBrokerEvent(envName, "publish", destination, payload)
 }}
 
 func main() {{

@@ -3834,16 +3834,20 @@ fn emit_message_handler_harness(
             format!(
                 r#"            NyxRabbitChannel chan = new NyxRabbitChannel();
             chan.basicConsume({queue:?}, (mid, body) -> {{
+                nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", {queue:?}, body);
                 System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
                 try {{
                     java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class, String.class);
                     m.setAccessible(true);
                     m.invoke(entryInst, mid, body);
+                    success = true;
                 }} catch (NoSuchMethodException nsme) {{
                     try {{
                         java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
                         m2.setAccessible(true);
                         m2.invoke(entryInst, body);
+                        success = true;
                     }} catch (Exception ie) {{
                         Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
                         System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
@@ -3851,6 +3855,9 @@ fn emit_message_handler_harness(
                 }} catch (Exception e) {{
                     Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
                     System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+                if (success) {{
+                    nyxRecordBrokerEvent("NYX_RABBIT_LOG", "ack", {queue:?}, mid);
                 }}
             }});
             System.out.println({publish_marker:?} + " " + {queue:?});
