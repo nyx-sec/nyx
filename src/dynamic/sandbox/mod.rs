@@ -915,6 +915,11 @@ fn rewrite_extra_env_for_container(
             {
                 return (k.clone(), format!("nats://host-gateway:{rest}"));
             }
+            if k == "NYX_RABBIT_ENDPOINT"
+                && let Some(rest) = v.strip_prefix("amqp://127.0.0.1:")
+            {
+                return (k.clone(), format!("amqp://host-gateway:{rest}"));
+            }
             (k.clone(), v.clone())
         })
         .collect()
@@ -2302,7 +2307,7 @@ mod tests {
             ),
             (
                 "NYX_RABBIT_ENDPOINT".to_owned(),
-                "http://127.0.0.1:45678/queues".to_owned(),
+                "amqp://127.0.0.1:45678/%2f".to_owned(),
             ),
             (
                 "NYX_NATS_ENDPOINT".to_owned(),
@@ -2331,7 +2336,7 @@ mod tests {
                 ),
                 (
                     "NYX_RABBIT_ENDPOINT".to_owned(),
-                    "http://host-gateway:45678/queues".to_owned(),
+                    "amqp://host-gateway:45678/%2f".to_owned(),
                 ),
                 (
                     "NYX_NATS_ENDPOINT".to_owned(),
