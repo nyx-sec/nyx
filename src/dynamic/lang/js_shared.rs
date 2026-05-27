@@ -1208,9 +1208,28 @@ function _nyxLooksLikeSql(sql) {{
     const upper = String(sql).toUpperCase();
     return ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'].some((k) => upper.includes(k));
 }}
+function _nyxTryExecuteSqlite(sql) {{
+    const endpoint = process.env.NYX_SQL_ENDPOINT;
+    if (!endpoint) return 'none';
+    try {{
+        const {{ DatabaseSync }} = require('node:sqlite');
+        const db = new DatabaseSync(endpoint);
+        try {{
+            db.exec(String(sql));
+            return 'node:sqlite';
+        }} catch (e) {{
+            return 'node:sqlite-error:' + (e && e.constructor ? e.constructor.name : 'Error');
+        }} finally {{
+            try {{ db.close(); }} catch (e) {{}}
+        }}
+    }} catch (e) {{
+        return 'none';
+    }}
+}}
 function _nyxMigrationSqlRecord(sql, driver) {{
     if (!_nyxLooksLikeSql(sql)) return;
-    __nyx_stub_sql_record(String(sql), {{ driver: driver, source: 'migration' }});
+    const sqliteDriver = _nyxTryExecuteSqlite(sql);
+    __nyx_stub_sql_record(String(sql), {{ driver: driver, source: 'migration', sqlite_driver: sqliteDriver }});
 }}
 // QueryInterface shim for sequelize-style up/down(queryInterface, Sequelize).
 const _qi = {{
@@ -1231,11 +1250,15 @@ global.__nyx_prisma = _prisma;
 (async () => {{
     try {{
         let _result;
-        // Try the sequelize shape first (queryInterface, Sequelize).
+        // Sequelize migrations conventionally take (queryInterface, Sequelize).
+        // Single-arg migrations are Prisma/raw shapes and should receive payload.
         try {{
-            _result = await Promise.resolve(_h(_qi, {{}}));
+            if (_h.length >= 2) {{
+                _result = await Promise.resolve(_h(_qi, {{}}));
+            }} else {{
+                _result = await Promise.resolve(_h(payload));
+            }}
         }} catch (e1) {{
-            // Prisma / raw migration shape — pass payload.
             try {{
                 _result = await Promise.resolve(_h(payload));
             }} catch (e2) {{

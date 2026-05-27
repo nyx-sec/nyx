@@ -14,6 +14,7 @@
 //! | Cap bit          | Profile          |
 //! | ---------------- | ---------------- |
 //! | `FILE_IO`        | `path_traversal` |
+//! | `SQL_QUERY`      | `sql`            |
 //! | `SSRF`           | `ssrf`           |
 //! | `CODE_EXEC`      | `cmdi`           |
 //! | `DESERIALIZE`    | `deserialize`    |
@@ -123,6 +124,7 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
         "path_traversal",
         include_str!("../sandbox_profiles/path_traversal.sb"),
     ),
+    ("sql", include_str!("../sandbox_profiles/sql.sb")),
     ("ssrf", include_str!("../sandbox_profiles/ssrf.sb")),
     (
         "deserialize",
@@ -137,12 +139,13 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
 
 /// Cap → profile-name dispatch.  The most restrictive matching profile
 /// wins: filesystem caps outrank network caps outrank CODE_EXEC outranks
-/// DESERIALIZE outranks XXE.  Filesystem-shaped caps (`FILE_IO`,
-/// `SQL_QUERY` — DBs are files in WORKDIR) map to `path_traversal`;
-/// outbound-network-shaped caps (`SSRF`, `HEADER_INJECTION`,
+/// DESERIALIZE outranks XXE.  Filesystem caps (`FILE_IO`) map to
+/// `path_traversal`. SQL caps (`SQL_QUERY`) map to `sql` so the
+/// verifier-owned DB stub remains reachable while non-loopback egress is
+/// blocked. Outbound-network-shaped caps (`SSRF`, `HEADER_INJECTION`,
 /// `OPEN_REDIRECT`, `UNVALIDATED_REDIRECT`, `LDAP_INJECTION`,
 /// `XPATH_INJECTION`) map to `ssrf` since they share the "outbound
-/// allowed; host secrets denied" shape.  `XXE` maps to its own profile
+/// allowed; host secrets denied" shape. `XXE` maps to its own profile
 /// which denies non-loopback outbound (entity fetch) on top of the
 /// shared secret-file denylist.  Remaining caps with no shared shape
 /// (CRYPTO, AUTH, RACE, MEMORY_SAFETY, XSS) fall back to `base` because
@@ -161,13 +164,14 @@ pub fn profile_for_caps(caps: u32) -> &'static str {
     const UNVALIDATED_REDIRECT: u32 = 1 << 18;
     const XXE: u32 = 1 << 19;
 
-    const FS_SHAPED: u32 = FILE_IO | SQL_QUERY;
     const NET_SHAPED: u32 =
         SSRF | LDAP_INJECTION | XPATH_INJECTION | HEADER_INJECTION | UNVALIDATED_REDIRECT;
     const REDIRECT_SHAPED: u32 = OPEN_REDIRECT;
 
-    if caps & FS_SHAPED != 0 {
+    if caps & FILE_IO != 0 {
         "path_traversal"
+    } else if caps & SQL_QUERY != 0 {
+        "sql"
     } else if caps & REDIRECT_SHAPED != 0 {
         // Phase 09 (Track J.7): OPEN_REDIRECT maps to its own profile
         // so the loopback-DNS-for-attacker.test addendum is visible
@@ -336,6 +340,7 @@ pub struct WrapInput<'a> {
     pub cmd_path: &'a Path,
     pub cmd_args: &'a [String],
     pub workdir: &'a Path,
+    pub sql_stub_root: &'a Path,
     pub caps: u32,
     pub profile_override: Option<&'a str>,
 }
@@ -417,11 +422,18 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> WrapResult {
     let workdir_abs =
         std::fs::canonicalize(input.workdir).unwrap_or_else(|_| input.workdir.to_path_buf());
 
-    let mut args: Vec<String> = Vec::with_capacity(6 + input.cmd_args.len());
+    let mut args: Vec<String> = Vec::with_capacity(8 + input.cmd_args.len());
     args.push("-f".to_owned());
     args.push(profile_file.to_string_lossy().into_owned());
     args.push("-D".to_owned());
     args.push(format!("WORKDIR={}", workdir_abs.to_string_lossy()));
+    let sql_stub_root_abs = std::fs::canonicalize(input.sql_stub_root)
+        .unwrap_or_else(|_| input.sql_stub_root.to_path_buf());
+    args.push("-D".to_owned());
+    args.push(format!(
+        "SQL_STUB_ROOT={}",
+        sql_stub_root_abs.to_string_lossy()
+    ));
     args.push(input.cmd_path.to_string_lossy().into_owned());
     for a in input.cmd_args {
         args.push(a.clone());
@@ -472,15 +484,16 @@ mod tests {
     }
 
     #[test]
-    fn profile_for_caps_routes_filesystem_shaped_caps_to_path_traversal() {
-        // SQL_QUERY shares the `file-write into WORKDIR / file-read of
-        // host secrets denied` shape with FILE_IO (SQLite DBs live as
-        // files in the workdir), so it routes to the same profile.
+    fn profile_for_caps_routes_sql_query_to_sql_profile() {
+        // SQL_QUERY gets a dedicated profile: filesystem-deny shape plus
+        // non-loopback egress denial while keeping the DB stub root writable.
         const SQL_QUERY: u32 = 1 << 7;
+        const FILE_IO: u32 = 1 << 5;
         const CODE_EXEC: u32 = 1 << 10;
-        assert_eq!(profile_for_caps(SQL_QUERY), "path_traversal");
-        // Filesystem shape outranks the lesser-restrictive cmdi profile.
-        assert_eq!(profile_for_caps(SQL_QUERY | CODE_EXEC), "path_traversal");
+        assert_eq!(profile_for_caps(SQL_QUERY), "sql");
+        assert_eq!(profile_for_caps(SQL_QUERY | CODE_EXEC), "sql");
+        // FILE_IO remains stricter when both filesystem and SQL caps are present.
+        assert_eq!(profile_for_caps(SQL_QUERY | FILE_IO), "path_traversal");
     }
 
     #[test]
@@ -549,6 +562,15 @@ mod tests {
         assert!(contents.contains("(version 1)"));
         assert!(contents.contains("(deny network-outbound)"));
         assert!(contents.contains("/etc/passwd"));
+    }
+
+    #[test]
+    fn profile_path_materialises_sql_profile_source() {
+        let path = profile_path("sql").expect("sql profile");
+        let contents = std::fs::read_to_string(&path).expect("read .sb");
+        assert!(contents.contains("(deny network-outbound)"));
+        assert!(contents.contains("SQL_STUB_ROOT"));
+        assert!(contents.contains("(subpath (param \"WORKDIR\"))"));
     }
 
     #[test]
@@ -676,6 +698,7 @@ mod tests {
             cmd_path: Path::new("/usr/bin/true"),
             cmd_args: &[],
             workdir: Path::new("/tmp"),
+            sql_stub_root: Path::new("/tmp"),
             caps: 0,
             profile_override: None,
         };
@@ -700,6 +723,7 @@ mod tests {
             cmd_path: Path::new("/usr/bin/true"),
             cmd_args: &[],
             workdir: Path::new("/tmp"),
+            sql_stub_root: Path::new("/tmp/nyx-sql-stub"),
             caps: 1 << 5, // FILE_IO
             profile_override: None,
         };
@@ -709,6 +733,10 @@ mod tests {
         assert_eq!(plan.binary, PathBuf::from("/usr/bin/sandbox-exec"));
         assert!(plan.args.iter().any(|a| a == "-f"));
         assert!(plan.args.iter().any(|a| a.starts_with("WORKDIR=")));
+        assert!(
+            plan.args.iter().any(|a| a.starts_with("SQL_STUB_ROOT=")),
+            "wrap plan must define SQL_STUB_ROOT for the sql.sb profile"
+        );
         assert_eq!(result.outcome.level, HardeningLevel::Sandboxed);
         assert_eq!(result.outcome.profile, "path_traversal");
     }

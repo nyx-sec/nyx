@@ -1588,12 +1588,15 @@ fn run_process(
     // oracle verdicts to
     // [`crate::evidence::InconclusiveReason::BackendInsufficient`].
     #[cfg(target_os = "macos")]
+    let macos_sql_stub_root = sql_stub_root_from_extra_env(&opts.extra_env, &harness.workdir);
+    #[cfg(target_os = "macos")]
     let macos_wrap = {
         if matches!(opts.process_hardening, ProcessHardeningProfile::Strict) {
             Some(process_macos::wrap_plan(&process_macos::WrapInput {
                 cmd_path: &resolved_cmd_path,
                 cmd_args: &harness.command[1..],
                 workdir: &harness.workdir,
+                sql_stub_root: &macos_sql_stub_root,
                 caps: opts.seccomp_caps,
                 profile_override: None,
             }))
@@ -1771,6 +1774,22 @@ fn run_process(
         duration,
         hardening_outcome,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn sql_stub_root_from_extra_env(extra_env: &[(String, String)], workdir: &Path) -> PathBuf {
+    extra_env
+        .iter()
+        .find_map(|(k, v)| {
+            if k == "NYX_SQL_ENDPOINT" {
+                Path::new(v)
+                    .parent()
+                    .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf()))
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────

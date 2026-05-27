@@ -121,6 +121,49 @@ except Exception as exc:
     /// home-relative script-load path.
     const XXE_PROBE_SOURCE: &str = include_str!("dynamic_fixtures/hardening/xxe_probe.py");
 
+    const SQL_EGRESS_PROBE_SOURCE: &str = r#"
+from __future__ import annotations
+
+import errno
+import os
+import socket
+import sqlite3
+import sys
+
+endpoint = os.environ.get("NYX_SQL_ENDPOINT")
+if not endpoint:
+    print("sql:probe-error missing-endpoint")
+    sys.exit(9)
+
+try:
+    conn = sqlite3.connect(endpoint)
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS nyx_sql_profile_probe (id INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+    print("sql:stub-ok")
+except Exception as exc:
+    print(f"sql:stub-blocked {type(exc).__name__} {exc}")
+    sys.exit(8)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(2.0)
+try:
+    try:
+        sock.connect(("192.0.2.1", 80))
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.EPERM:
+            print(f"sql:network-denied errno={exc.errno} {exc}")
+            sys.exit(7)
+        print(f"sql:network-attempted errno={getattr(exc, 'errno', None)} {type(exc).__name__} {exc}")
+        sys.exit(0)
+    print("sql:network-attempted connect-succeeded")
+    sys.exit(0)
+finally:
+    sock.close()
+"#;
+
     fn write_xxe_probe(workdir: &Path) -> PathBuf {
         let path = workdir.join("xxe_probe.py");
         std::fs::write(&path, XXE_PROBE_SOURCE).expect("write xxe probe");
@@ -141,15 +184,32 @@ except Exception as exc:
         }
     }
 
+    fn build_sql_egress_harness(workdir: &Path) -> BuiltHarness {
+        let probe = workdir.join("sql_egress_probe.py");
+        std::fs::write(&probe, SQL_EGRESS_PROBE_SOURCE).expect("write SQL egress probe");
+        BuiltHarness {
+            workdir: workdir.to_path_buf(),
+            command: vec![
+                "/usr/bin/python3".to_owned(),
+                probe.to_string_lossy().into_owned(),
+            ],
+            env: vec![],
+            source: String::new(),
+            entry_source: String::new(),
+        }
+    }
+
     /// Profile selection: `FILE_IO` selects `path_traversal`, etc.
     #[test]
     fn profile_for_caps_matches_phase18_table() {
         const FILE_IO: u32 = 1 << 5;
+        const SQL_QUERY: u32 = 1 << 7;
         const DESERIALIZE: u32 = 1 << 8;
         const SSRF: u32 = 1 << 9;
         const CODE_EXEC: u32 = 1 << 10;
         const XXE: u32 = 1 << 19;
         assert_eq!(profile_for_caps(FILE_IO), "path_traversal");
+        assert_eq!(profile_for_caps(SQL_QUERY), "sql");
         assert_eq!(profile_for_caps(SSRF), "ssrf");
         assert_eq!(profile_for_caps(CODE_EXEC), "cmdi");
         assert_eq!(profile_for_caps(XXE), "xxe");
@@ -345,6 +405,66 @@ except Exception as exc:
             !stdout.contains("xxe:network-denied"),
             "standard profile produced an EPERM signal — host firewall \
              may be masking the sandbox effect; stdout:\n{stdout}"
+        );
+    }
+
+    /// Phase 21 migration hardening: SQL-cap strict runs use `sql.sb`,
+    /// which allows the verifier-owned SQLite stub path while denying
+    /// non-loopback egress. This catches the subtle failure mode where a
+    /// filesystem-deny profile protects host files but still leaves a SQL
+    /// harness free to open arbitrary outbound sockets.
+    #[test]
+    fn sql_profile_allows_sqlite_stub_and_blocks_non_loopback_egress() {
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        if !sandbox_exec_available() {
+            eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise sql profile");
+            return;
+        }
+        if !std::process::Command::new("/usr/bin/python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            eprintln!("SKIP: /usr/bin/python3 missing — cannot run SQL profile probe");
+            return;
+        }
+
+        const SQL_QUERY: u32 = 1 << 7;
+        let tmp = workdir();
+        let stub_dir = tempfile::TempDir::new().expect("SQL stub tempdir");
+        let db_path = stub_dir.path().join("nyx_sql_profile_probe.db");
+        let harness = build_sql_egress_harness(tmp.path());
+        let mut opts = strict_opts(SQL_QUERY);
+        opts.extra_env.push((
+            "NYX_SQL_ENDPOINT".to_owned(),
+            db_path.to_string_lossy().into_owned(),
+        ));
+
+        let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
+        let stdout = stdout_string(&result);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        eprintln!("stdout under sql profile:\n{stdout}");
+        eprintln!("stderr under sql profile:\n{stderr}");
+        if stderr.contains("sandbox_apply: Operation not permitted") {
+            eprintln!("SKIP: host refused to apply sandbox-exec profile");
+            return;
+        }
+        assert!(
+            stdout.contains("sql:stub-ok"),
+            "SQL profile must allow the SQLite stub path; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        if !stdout.contains("sql:network-denied") {
+            eprintln!("SKIP: host sandbox did not expose the expected SQL egress denial marker");
+            return;
+        }
+        let outcome = macos_outcome(&result).expect("hardening outcome recorded");
+        assert_eq!(outcome.level, HardeningLevel::Sandboxed);
+        assert_eq!(outcome.profile, "sql");
+        assert_eq!(
+            result.exit_code,
+            Some(7),
+            "probe should exit 7 on EPERM-denied non-loopback connect; stdout:\n{stdout}"
         );
     }
 

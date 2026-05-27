@@ -5,7 +5,7 @@
 class AddUsers {
     public function up() {
         $col = getenv('NYX_PAYLOAD') ?: 'email';
-        $safe = preg_replace('/[^A-Za-z0-9_]/', '_', $col);
+        $safe = strtolower(preg_replace('/[^A-Za-z0-9_]/', '_', $col));
         $stmt = "ALTER TABLE users ADD COLUMN " . $safe . " TEXT";
         echo "LARAVEL_SQL: " . $stmt . "\n";
         return $stmt;

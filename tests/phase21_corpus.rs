@@ -925,6 +925,8 @@ fn migration_js_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("\"up\""));
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("global.__nyx_prisma"));
+    assert!(h.source.contains("node:sqlite"));
+    assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
 
 #[test]
@@ -939,6 +941,8 @@ fn migration_ruby_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddIndex"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("SQLite3::Database"));
+    assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
 
 #[test]
@@ -953,6 +957,8 @@ fn migration_php_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIGRATION__"));
     assert!(h.source.contains("AddUsers"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
+    assert!(h.source.contains("new SQLite3"));
+    assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
 
 #[test]
@@ -1507,6 +1513,46 @@ const RUNSPEC_CASES: &[RunSpecCase] = &[
         fixture_dir: "tests/dynamic_fixtures/migration/flask",
         vuln_file: "vuln.py",
         benign_file: "benign.py",
+        cap: Cap::SQL_QUERY,
+    },
+    RunSpecCase {
+        name: "migration-sequelize",
+        lang: Lang::JavaScript,
+        kind: migration_kind,
+        entry_name: "up",
+        fixture_dir: "tests/dynamic_fixtures/migration/sequelize",
+        vuln_file: "vuln.js",
+        benign_file: "benign.js",
+        cap: Cap::SQL_QUERY,
+    },
+    RunSpecCase {
+        name: "migration-prisma",
+        lang: Lang::JavaScript,
+        kind: migration_kind,
+        entry_name: "up",
+        fixture_dir: "tests/dynamic_fixtures/migration/prisma",
+        vuln_file: "vuln.js",
+        benign_file: "benign.js",
+        cap: Cap::SQL_QUERY,
+    },
+    RunSpecCase {
+        name: "migration-rails",
+        lang: Lang::Ruby,
+        kind: migration_kind,
+        entry_name: "AddIndex",
+        fixture_dir: "tests/dynamic_fixtures/migration/rails",
+        vuln_file: "vuln.rb",
+        benign_file: "benign.rb",
+        cap: Cap::SQL_QUERY,
+    },
+    RunSpecCase {
+        name: "migration-laravel",
+        lang: Lang::Php,
+        kind: migration_kind,
+        entry_name: "AddUsers",
+        fixture_dir: "tests/dynamic_fixtures/migration/laravel",
+        vuln_file: "vuln.php",
+        benign_file: "benign.php",
         cap: Cap::SQL_QUERY,
     },
 ];

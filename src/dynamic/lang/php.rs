@@ -3174,7 +3174,30 @@ function __nyx_migration_sqlish($value): bool {{
 
 function __nyx_record_migration_result($value, string $driver): void {{
     if ($value === null || !__nyx_migration_sqlish($value)) return;
-    __nyx_stub_sql_record((string)$value, ['driver' => $driver, 'source' => 'migration']);
+    $sqliteDriver = __nyx_try_execute_migration_sqlite($value);
+    __nyx_stub_sql_record((string)$value, [
+        'driver' => $driver,
+        'source' => 'migration',
+        'sqlite_driver' => $sqliteDriver,
+    ]);
+}}
+
+function __nyx_try_execute_migration_sqlite($value): string {{
+    $endpoint = getenv('NYX_SQL_ENDPOINT');
+    if ($endpoint === false || $endpoint === '' || !class_exists('SQLite3')) return 'none';
+    try {{
+        $db = new SQLite3($endpoint);
+        try {{
+            $db->exec((string)$value);
+            return 'SQLite3';
+        }} catch (Throwable $e) {{
+            return 'SQLite3-error:' . get_class($e);
+        }} finally {{
+            @$db->close();
+        }}
+    }} catch (Throwable $e) {{
+        return 'SQLite3-error:' . get_class($e);
+    }}
 }}
 
 if (class_exists({handler:?})) {{

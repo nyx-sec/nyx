@@ -907,7 +907,32 @@ end
 def __nyx_record_migration_result(value, driver)
   return if value.nil?
   return unless __nyx_migration_sqlish?(value)
-  __nyx_stub_sql_record(value, driver: driver, source: 'migration')
+  sqlite_driver = __nyx_try_execute_migration_sqlite(value)
+  __nyx_stub_sql_record(value, driver: driver, source: 'migration', sqlite_driver: sqlite_driver)
+end
+
+def __nyx_try_execute_migration_sqlite(value)
+  endpoint = ENV['NYX_SQL_ENDPOINT']
+  return 'none' if endpoint.nil? || endpoint.empty?
+  begin
+    require 'sqlite3'
+    db = SQLite3::Database.new(endpoint)
+    begin
+      db.execute_batch(value.to_s)
+      'sqlite3'
+    rescue StandardError => e
+      'sqlite3-error:' + e.class.name
+    ensure
+      begin
+        db.close if db
+      rescue StandardError
+      end
+    end
+  rescue LoadError
+    'none'
+  rescue StandardError => e
+    'sqlite3-error:' + e.class.name
+  end
 end
 
 # ActiveRecord migrations expose `up` / `down` / `change` on a subclass.
