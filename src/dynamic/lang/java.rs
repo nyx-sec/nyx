@@ -3834,37 +3834,39 @@ fn emit_message_handler_harness(
         JavaBroker::Rabbit => (
             crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
             format!(
-                r#"            NyxRabbitChannel chan = new NyxRabbitChannel();
-            chan.basicConsume({queue:?}, (mid, body) -> {{
-                nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", {queue:?}, body);
-                System.out.println("__NYX_SINK_HIT__");
-                boolean success = false;
-                try {{
-                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class, String.class);
-                    m.setAccessible(true);
-                    m.invoke(entryInst, mid, body);
-                    success = true;
-                }} catch (NoSuchMethodException nsme) {{
+                r#"            if (!nyxTryRabbitHttp({queue:?}, payload, entryInst, {handler:?})) {{
+                NyxRabbitChannel chan = new NyxRabbitChannel();
+                chan.basicConsume({queue:?}, (mid, body) -> {{
+                    nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", {queue:?}, body);
+                    System.out.println("__NYX_SINK_HIT__");
+                    boolean success = false;
                     try {{
-                        java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
-                        m2.setAccessible(true);
-                        m2.invoke(entryInst, body);
+                        java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class, String.class);
+                        m.setAccessible(true);
+                        m.invoke(entryInst, mid, body);
                         success = true;
-                    }} catch (Exception ie) {{
-                        Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
+                    }} catch (NoSuchMethodException nsme) {{
+                        try {{
+                            java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
+                            m2.setAccessible(true);
+                            m2.invoke(entryInst, body);
+                            success = true;
+                        }} catch (Exception ie) {{
+                            Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
+                            System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                        }}
+                    }} catch (Exception e) {{
+                        Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
                         System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
                     }}
-                }} catch (Exception e) {{
-                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
-                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
-                }}
-                if (success) {{
-                    nyxRecordBrokerEvent("NYX_RABBIT_LOG", "ack", {queue:?}, mid);
-                }}
-            }});
-            System.out.println({publish_marker:?} + " " + {queue:?});
-            nyxRecordBrokerPublish("NYX_RABBIT_LOG", {queue:?}, payload);
-            chan.basicPublish("", {queue:?}, payload);"#,
+                    if (success) {{
+                        nyxRecordBrokerEvent("NYX_RABBIT_LOG", "ack", {queue:?}, mid);
+                    }}
+                }});
+                System.out.println({publish_marker:?} + " " + {queue:?});
+                nyxRecordBrokerPublish("NYX_RABBIT_LOG", {queue:?}, payload);
+                chan.basicPublish("", {queue:?}, payload);
+            }}"#,
                 handler = handler,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
@@ -3980,6 +3982,71 @@ public class NyxHarness {{
             return true;
         }} catch (Throwable e) {{
             System.err.println("NYX_KAFKA_HTTP_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }}
+    }}
+
+    static boolean nyxTryRabbitHttp(String queue, String payload, Object entryInst, String handler) {{
+        String endpoint = System.getenv("NYX_RABBIT_ENDPOINT");
+        if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {{
+            return false;
+        }}
+        try {{
+            String base = endpoint.replaceAll("/+$", "");
+            String queuePath = java.net.URLEncoder.encode(queue, java.nio.charset.StandardCharsets.UTF_8);
+            System.out.println({rabbit_publish_marker:?} + " " + queue);
+            nyxHttpRequest(
+                "POST",
+                base + "/queues/" + queuePath + "/messages",
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+            );
+            String messagesJson = nyxHttpRequest(
+                "GET",
+                base + "/queues/" + queuePath + "/messages?max=1",
+                new byte[0]
+            );
+            if (messagesJson == null || !messagesJson.contains("\"messages\"") || !messagesJson.contains("\"body\"")) {{
+                return false;
+            }}
+            String body = nyxJsonStringField(messagesJson, "body");
+            String tag = nyxJsonStringField(messagesJson, "delivery_tag");
+            if (tag == null || tag.isEmpty()) {{
+                tag = nyxJsonStringField(messagesJson, "ack_id");
+            }}
+            nyxRecordBrokerEvent("NYX_RABBIT_LOG", "deliver", queue, body);
+            System.out.println("__NYX_SINK_HIT__");
+            boolean success = false;
+            try {{
+                java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, String.class, String.class);
+                m.setAccessible(true);
+                m.invoke(entryInst, tag, body);
+                success = true;
+            }} catch (NoSuchMethodException nsme) {{
+                try {{
+                    java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod(handler, String.class);
+                    m2.setAccessible(true);
+                    m2.invoke(entryInst, body);
+                    success = true;
+                }} catch (Exception ie) {{
+                    Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+            }} catch (Exception e) {{
+                Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+            }}
+            if (success) {{
+                String ackBody = "ack_id=" + java.net.URLEncoder.encode(tag == null ? "" : tag, java.nio.charset.StandardCharsets.UTF_8);
+                nyxHttpRequest(
+                    "POST",
+                    base + "/queues/" + queuePath + "/ack",
+                    ackBody.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                );
+                nyxRecordBrokerEvent("NYX_RABBIT_LOG", "ack", queue, tag == null ? "" : tag);
+            }}
+            return true;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_RABBIT_HTTP_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
             return false;
         }}
     }}
@@ -4257,6 +4324,7 @@ public class NyxHarness {{
         entry_class = entry_class,
         dispatch_block = dispatch_block,
         kafka_publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
+        rabbit_publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
         sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
     );
     HarnessSource {

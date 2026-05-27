@@ -322,6 +322,11 @@ fn message_handler_remaining_brokers_emit_delivery_and_ack_events() {
             h.source.contains(log_env),
             "{adapter} harness must write the broker log env var",
         );
+        let endpoint_env = log_env.replace("_LOG", "_ENDPOINT");
+        assert!(
+            h.source.contains(&endpoint_env),
+            "{adapter} harness must try the host-side broker endpoint {endpoint_env}",
+        );
         assert!(
             h.source.contains("\"deliver\"") || h.source.contains("'deliver'"),
             "{adapter} harness must record delivery events: {}",
@@ -330,6 +335,61 @@ fn message_handler_remaining_brokers_emit_delivery_and_ack_events() {
         assert!(
             h.source.contains("\"ack\"") || h.source.contains("'ack'"),
             "{adapter} harness must record ack events: {}",
+            h.source
+        );
+    }
+}
+
+#[test]
+fn message_handler_remaining_brokers_try_http_emulators_before_loopback() {
+    let cases = [
+        (
+            Lang::Python,
+            "pubsub_python",
+            "projects/p/subscriptions/s",
+            "callback",
+            "pubsub-python",
+            "_nyx_try_pubsub_http",
+        ),
+        (
+            Lang::Python,
+            "rabbit_python",
+            "work",
+            "on_message",
+            "rabbit-python",
+            "_nyx_try_rabbit_http",
+        ),
+        (
+            Lang::Java,
+            "rabbit_java",
+            "work",
+            "onMessage",
+            "rabbit-java",
+            "nyxTryRabbitHttp",
+        ),
+        (
+            Lang::Go,
+            "pubsub_go",
+            "my-sub",
+            "OnMessage",
+            "pubsub-go",
+            "nyxFetchHttpBroker",
+        ),
+        (
+            Lang::Go,
+            "nats_go",
+            "events",
+            "OnMessage",
+            "nats-go",
+            "nyxFetchHttpBroker",
+        ),
+    ];
+    for (lang, fixture, queue, handler, adapter, helper) in cases {
+        let spec = make_spec_with_adapter(lang, queue, handler, entry_file(fixture), adapter);
+        let h = lang::emit(&spec).expect("emit ok");
+        assert!(
+            h.source.contains(helper),
+            "{adapter} harness should call {helper}: {}",
             h.source
         );
     }

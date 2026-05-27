@@ -2160,15 +2160,31 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
             crate::dynamic::stubs::nats_source(crate::symbol::Lang::Go),
             crate::dynamic::stubs::NATS_PUBLISH_MARKER,
             format!(
-                r##"	broker := NewNyxNatsLoopback()
-	broker.Subscribe("{queue}", func(msg *NyxNatsMsg) {{
-		nyxRecordBrokerEvent("NYX_NATS_LOG", "deliver", "{queue}", string(msg.Data))
-		nyxDispatch(msg)
-		nyxRecordBrokerEvent("NYX_NATS_LOG", "ack", "{queue}", msg.Subject)
-	}})
-	fmt.Println("{publish_marker} " + "{queue}")
-	nyxRecordBrokerPublish("NYX_NATS_LOG", "{queue}", payload)
-	broker.Publish("{queue}", payload)"##,
+                r##"	if msg, ok := nyxFetchHttpBroker("NYX_NATS_ENDPOINT", "subjects", "{queue}", payload, "{publish_marker}"); ok {{
+		data := msg["data"]
+		natsMsg := &NyxNatsMsg{{Subject: msg["subject"], Data: []byte(data), Reply: msg["reply"]}}
+		if natsMsg.Subject == "" {{
+			natsMsg.Subject = "{queue}"
+		}}
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "deliver", "{queue}", data)
+		nyxDispatch(natsMsg)
+		ackID := msg["ack_id"]
+		if ackID == "" {{
+			ackID = natsMsg.Subject
+		}}
+		nyxAckHttpBroker("NYX_NATS_ENDPOINT", "subjects", "{queue}", ackID)
+		nyxRecordBrokerEvent("NYX_NATS_LOG", "ack", "{queue}", ackID)
+	}} else {{
+		broker := NewNyxNatsLoopback()
+		broker.Subscribe("{queue}", func(msg *NyxNatsMsg) {{
+			nyxRecordBrokerEvent("NYX_NATS_LOG", "deliver", "{queue}", string(msg.Data))
+			nyxDispatch(msg)
+			nyxRecordBrokerEvent("NYX_NATS_LOG", "ack", "{queue}", msg.Subject)
+		}})
+		fmt.Println("{publish_marker} " + "{queue}")
+		nyxRecordBrokerPublish("NYX_NATS_LOG", "{queue}", payload)
+		broker.Publish("{queue}", payload)
+	}}"##,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::NATS_PUBLISH_MARKER,
             ),
@@ -2177,16 +2193,33 @@ fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSourc
             crate::dynamic::stubs::pubsub_source(crate::symbol::Lang::Go),
             crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
             format!(
-                r##"	broker := NewNyxPubsubLoopback()
-	broker.Subscribe("{queue}", func(msg *NyxPubsubMessage) {{
-		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "deliver", "{queue}", string(msg.Data))
-		nyxDispatch(msg)
-		msg.Ack()
-		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "ack", "{queue}", msg.ID)
-	}})
-	fmt.Println("{publish_marker} " + "{queue}")
-	nyxRecordBrokerPublish("NYX_PUBSUB_LOG", "{queue}", payload)
-	broker.Publish("{queue}", payload)"##,
+                r##"	if msg, ok := nyxFetchHttpBroker("NYX_PUBSUB_ENDPOINT", "topics", "{queue}", payload, "{publish_marker}"); ok {{
+		data := msg["data"]
+		pubsubMsg := &NyxPubsubMessage{{ID: msg["id"], Data: []byte(data)}}
+		if pubsubMsg.ID == "" {{
+			pubsubMsg.ID = msg["ack_id"]
+		}}
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "deliver", "{queue}", data)
+		nyxDispatch(pubsubMsg)
+		pubsubMsg.Ack()
+		ackID := msg["ack_id"]
+		if ackID == "" {{
+			ackID = pubsubMsg.ID
+		}}
+		nyxAckHttpBroker("NYX_PUBSUB_ENDPOINT", "topics", "{queue}", ackID)
+		nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "ack", "{queue}", ackID)
+	}} else {{
+		broker := NewNyxPubsubLoopback()
+		broker.Subscribe("{queue}", func(msg *NyxPubsubMessage) {{
+			nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "deliver", "{queue}", string(msg.Data))
+			nyxDispatch(msg)
+			msg.Ack()
+			nyxRecordBrokerEvent("NYX_PUBSUB_LOG", "ack", "{queue}", msg.ID)
+		}})
+		fmt.Println("{publish_marker} " + "{queue}")
+		nyxRecordBrokerPublish("NYX_PUBSUB_LOG", "{queue}", payload)
+		broker.Publish("{queue}", payload)
+	}}"##,
                 queue = queue,
                 publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
             ),
@@ -2238,6 +2271,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"reflect"
@@ -2287,6 +2323,77 @@ func nyxRecordBrokerEvent(envName string, action string, destination string, pay
 
 func nyxRecordBrokerPublish(envName string, destination string, payload string) {{
 	nyxRecordBrokerEvent(envName, "publish", destination, payload)
+}}
+
+func nyxFetchHttpBroker(envName string, root string, destination string, payload string, marker string) (map[string]string, bool) {{
+	endpoint := os.Getenv(envName)
+	if !(strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://")) {{
+		return nil, false
+	}}
+	client := http.Client{{Timeout: 2 * time.Second}}
+	base := strings.TrimRight(endpoint, "/")
+	escaped := url.PathEscape(destination)
+	fmt.Println(marker + " " + destination)
+	postReq, err := http.NewRequest(
+		"POST",
+		base+"/"+root+"/"+escaped+"/messages",
+		strings.NewReader(payload),
+	)
+	if err != nil {{
+		return nil, false
+	}}
+	postResp, err := client.Do(postReq)
+	if err != nil {{
+		fmt.Fprintf(os.Stderr, "NYX_BROKER_HTTP_FALLBACK: %v\n", err)
+		return nil, false
+	}}
+	_, _ = io.Copy(io.Discard, postResp.Body)
+	_ = postResp.Body.Close()
+	if postResp.StatusCode >= 400 {{
+		return nil, false
+	}}
+	getResp, err := client.Get(base + "/" + root + "/" + escaped + "/messages?max=1")
+	if err != nil {{
+		fmt.Fprintf(os.Stderr, "NYX_BROKER_HTTP_FALLBACK: %v\n", err)
+		return nil, false
+	}}
+	defer getResp.Body.Close()
+	if getResp.StatusCode >= 400 {{
+		return nil, false
+	}}
+	raw, err := io.ReadAll(getResp.Body)
+	if err != nil {{
+		return nil, false
+	}}
+	var envelope struct {{
+		Messages []map[string]string `json:"messages"`
+	}}
+	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Messages) == 0 {{
+		return nil, false
+	}}
+	return envelope.Messages[0], true
+}}
+
+func nyxAckHttpBroker(envName string, root string, destination string, ackID string) {{
+	endpoint := os.Getenv(envName)
+	if !(strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://")) {{
+		return
+	}}
+	client := http.Client{{Timeout: 2 * time.Second}}
+	base := strings.TrimRight(endpoint, "/")
+	escaped := url.PathEscape(destination)
+	values := url.Values{{}}
+	values.Set("ack_id", ackID)
+	resp, err := client.Post(
+		base+"/"+root+"/"+escaped+"/ack",
+		"application/x-www-form-urlencoded",
+		strings.NewReader(values.Encode()),
+	)
+	if err != nil {{
+		return
+	}}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }}
 
 func main() {{

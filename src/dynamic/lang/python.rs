@@ -980,8 +980,7 @@ fn emit_message_handler(spec: &HarnessSpec, queue: &str) -> HarnessSource {
             publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
         ),
         PythonBroker::Pubsub => format!(
-            r#"_loop = NyxPubsubLoopback()
-def _nyx_pubsub_dispatch(message):
+            r#"def _nyx_pubsub_dispatch(message):
     _h = getattr(_entry_mod, {handler:?}, None)
     if _h is None:
         print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
@@ -991,17 +990,18 @@ def _nyx_pubsub_dispatch(message):
     if hasattr(message, "ack"):
         message.ack()
     _nyx_record_broker_event("NYX_PUBSUB_LOG", "ack", {queue:?}, getattr(message, "message_id", ""))
-_loop.subscribe({queue:?}, _nyx_pubsub_dispatch)
-print({publish_marker:?} + " " + {queue:?}, flush=True)
-_nyx_record_broker_publish("NYX_PUBSUB_LOG", {queue:?}, payload)
-_loop.publish({queue:?}, payload)"#,
+if not _nyx_try_pubsub_http({queue:?}, payload, _nyx_pubsub_dispatch):
+    _loop = NyxPubsubLoopback()
+    _loop.subscribe({queue:?}, _nyx_pubsub_dispatch)
+    print({publish_marker:?} + " " + {queue:?}, flush=True)
+    _nyx_record_broker_publish("NYX_PUBSUB_LOG", {queue:?}, payload)
+    _loop.publish({queue:?}, payload)"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
         ),
         PythonBroker::Rabbit => format!(
-            r#"_chan = NyxRabbitChannel()
-def _nyx_rabbit_dispatch(ch, method, props, body):
+            r#"def _nyx_rabbit_dispatch(ch, method, props, body):
     _h = getattr(_entry_mod, {handler:?}, None)
     if _h is None:
         print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
@@ -1009,10 +1009,12 @@ def _nyx_rabbit_dispatch(ch, method, props, body):
     _nyx_record_broker_event("NYX_RABBIT_LOG", "deliver", {queue:?}, body)
     _h(ch, method, props, body)
     _nyx_record_broker_event("NYX_RABBIT_LOG", "ack", {queue:?}, getattr(method, "delivery_tag", ""))
-_chan.basic_consume(queue={queue:?}, on_message_callback=_nyx_rabbit_dispatch)
-print({publish_marker:?} + " " + {queue:?}, flush=True)
-_nyx_record_broker_publish("NYX_RABBIT_LOG", {queue:?}, payload)
-_chan.basic_publish(exchange="", routing_key={queue:?}, body=payload)"#,
+if not _nyx_try_rabbit_http({queue:?}, payload, _nyx_rabbit_dispatch):
+    _chan = NyxRabbitChannel()
+    _chan.basic_consume(queue={queue:?}, on_message_callback=_nyx_rabbit_dispatch)
+    print({publish_marker:?} + " " + {queue:?}, flush=True)
+    _nyx_record_broker_publish("NYX_RABBIT_LOG", {queue:?}, payload)
+    _chan.basic_publish(exchange="", routing_key={queue:?}, body=payload)"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
@@ -1109,6 +1111,96 @@ def _nyx_try_kafka_http(topic, body, handler_name):
         print(f"NYX_KAFKA_HTTP_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
         return False
 
+def _nyx_broker_http_roundtrip(env_name, root, destination, body, marker):
+    endpoint = os.environ.get(env_name, "")
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        return None
+    try:
+        import json
+        import urllib.parse
+        import urllib.request
+        base = endpoint.rstrip("/")
+        dest_path = urllib.parse.quote(str(destination), safe="")
+        print(marker + " " + str(destination), flush=True)
+        _send = urllib.request.Request(
+            base + "/" + root + "/" + dest_path + "/messages",
+            data=str(body).encode("utf-8"),
+            method="POST",
+        )
+        urllib.request.urlopen(_send, timeout=2).read()
+        _raw = urllib.request.urlopen(
+            base + "/" + root + "/" + dest_path + "/messages?max=1",
+            timeout=2,
+        ).read()
+        return json.loads(_raw.decode("utf-8") or "{{}}").get("messages", [])
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_BROKER_HTTP_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return None
+
+def _nyx_broker_http_ack(env_name, root, destination, ack_id):
+    endpoint = os.environ.get(env_name, "")
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        return
+    try:
+        import urllib.parse
+        import urllib.request
+        base = endpoint.rstrip("/")
+        dest_path = urllib.parse.quote(str(destination), safe="")
+        body = urllib.parse.urlencode({{"ack_id": str(ack_id)}}).encode("utf-8")
+        _ack = urllib.request.Request(
+            base + "/" + root + "/" + dest_path + "/ack",
+            data=body,
+            method="POST",
+        )
+        urllib.request.urlopen(_ack, timeout=2).read()
+    except Exception:
+        pass
+
+def _nyx_try_pubsub_http(topic, body, dispatcher):
+    messages = _nyx_broker_http_roundtrip(
+        "NYX_PUBSUB_ENDPOINT",
+        "topics",
+        topic,
+        body,
+        {pubsub_publish_marker:?},
+    )
+    if not messages:
+        return False
+    for _msg in messages:
+        _data = _msg.get("data", "")
+        _mid = _msg.get("id", "") or _msg.get("ack_id", "")
+        dispatcher(NyxPubsubMessage(_mid or "nyx-http", _data))
+        _nyx_broker_http_ack(
+            "NYX_PUBSUB_ENDPOINT",
+            "topics",
+            topic,
+            _msg.get("ack_id", _mid),
+        )
+    return True
+
+def _nyx_try_rabbit_http(queue, body, dispatcher):
+    messages = _nyx_broker_http_roundtrip(
+        "NYX_RABBIT_ENDPOINT",
+        "queues",
+        queue,
+        body,
+        {rabbit_publish_marker:?},
+    )
+    if not messages:
+        return False
+    _chan = NyxRabbitChannel()
+    for _msg in messages:
+        _tag = _msg.get("delivery_tag", "") or _msg.get("ack_id", "")
+        _body = _msg.get("body", "")
+        _method = NyxRabbitMethod(_tag or "nyx-http", queue)
+        _props = NyxRabbitProperties(_tag or "nyx-http")
+        _body_bytes = _body if isinstance(_body, (bytes, bytearray)) else str(_body).encode("utf-8", "replace")
+        dispatcher(_chan, _method, _props, _body_bytes)
+        _nyx_broker_http_ack("NYX_RABBIT_ENDPOINT", "queues", queue, _tag)
+    return True
+
 def _nyx_try_real_sqs(queue, body, handler_name):
     endpoint = os.environ.get("NYX_SQS_ENDPOINT", "")
     if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
@@ -1178,6 +1270,8 @@ except Exception as _e:
         register_and_publish = indent_lines(&register_and_publish, "    "),
         kafka_publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
         sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
+        pubsub_publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
+        rabbit_publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
     );
     HarnessSource {
         source: format!("{preamble}\n{body}\n{postamble}"),

@@ -900,7 +900,12 @@ fn rewrite_extra_env_for_container(
             }
             if matches!(
                 k.as_str(),
-                "NYX_HTTP_ENDPOINT" | "NYX_KAFKA_ENDPOINT" | "NYX_SQS_ENDPOINT"
+                "NYX_HTTP_ENDPOINT"
+                    | "NYX_KAFKA_ENDPOINT"
+                    | "NYX_SQS_ENDPOINT"
+                    | "NYX_PUBSUB_ENDPOINT"
+                    | "NYX_RABBIT_ENDPOINT"
+                    | "NYX_NATS_ENDPOINT"
             ) && let Some(rest) = v.strip_prefix("http://127.0.0.1:")
             {
                 return (k.clone(), format!("http://host-gateway:{rest}"));
@@ -2286,6 +2291,18 @@ mod tests {
                 "NYX_SQS_ENDPOINT".to_owned(),
                 "http://127.0.0.1:23456/jobs".to_owned(),
             ),
+            (
+                "NYX_PUBSUB_ENDPOINT".to_owned(),
+                "http://127.0.0.1:34567/topics".to_owned(),
+            ),
+            (
+                "NYX_RABBIT_ENDPOINT".to_owned(),
+                "http://127.0.0.1:45678/queues".to_owned(),
+            ),
+            (
+                "NYX_NATS_ENDPOINT".to_owned(),
+                "http://127.0.0.1:56789/subjects".to_owned(),
+            ),
         ];
         let out = rewrite_extra_env_for_container(&extra, &[]);
         assert_eq!(
@@ -2302,6 +2319,18 @@ mod tests {
                 (
                     "NYX_SQS_ENDPOINT".to_owned(),
                     "http://host-gateway:23456/jobs".to_owned(),
+                ),
+                (
+                    "NYX_PUBSUB_ENDPOINT".to_owned(),
+                    "http://host-gateway:34567/topics".to_owned(),
+                ),
+                (
+                    "NYX_RABBIT_ENDPOINT".to_owned(),
+                    "http://host-gateway:45678/queues".to_owned(),
+                ),
+                (
+                    "NYX_NATS_ENDPOINT".to_owned(),
+                    "http://host-gateway:56789/subjects".to_owned(),
                 ),
             ]
         );

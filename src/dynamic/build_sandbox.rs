@@ -338,8 +338,9 @@ fn build_cache_path(
     toolchain_id: &str,
 ) -> Result<PathBuf, BuildError> {
     // Respect test override.
-    let base = if let Ok(p) = std::env::var("NYX_BUILD_CACHE") {
-        PathBuf::from(p)
+    let override_base = std::env::var("NYX_BUILD_CACHE").ok().map(PathBuf::from);
+    let base = if let Some(p) = override_base.clone() {
+        p
     } else {
         let dirs = ProjectDirs::from("", "", "nyx").ok_or_else(|| {
             BuildError::Io(std::io::Error::new(
@@ -352,13 +353,29 @@ fn build_cache_path(
 
     let name = format!("{lockfile_hash}-{language}-{toolchain_id}");
     let path = base.join(&name);
-    std::fs::create_dir_all(&path)?;
+    match create_build_cache_dir(&path) {
+        Ok(()) => Ok(path),
+        Err(e) if override_base.is_none() && e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let fallback = std::env::temp_dir()
+                .join("nyx")
+                .join("dynamic")
+                .join("build-cache")
+                .join(&name);
+            create_build_cache_dir(&fallback)?;
+            Ok(fallback)
+        }
+        Err(e) => Err(BuildError::Io(e)),
+    }
+}
+
+fn create_build_cache_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     }
-    Ok(path)
+    Ok(())
 }
 
 // ── Ruby build sandbox ───────────────────────────────────────────────────────
