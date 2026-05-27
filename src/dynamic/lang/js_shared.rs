@@ -1165,6 +1165,57 @@ if (_h == null) {{
     process.stderr.write('NYX_RESOLVER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
+async function _nyxTryApolloServer(typeName, fieldName, resolver) {{
+    let ApolloServer;
+    let needsStart = true;
+    try {{
+        ApolloServer = require('@apollo/server').ApolloServer;
+    }} catch (_) {{
+        try {{
+            ApolloServer = require('apollo-server').ApolloServer;
+            needsStart = false;
+        }} catch (_) {{
+            return false;
+        }}
+    }}
+    if (typeof ApolloServer !== 'function') return false;
+    const safeField = /^[A-Za-z_][A-Za-z0-9_]*$/.test(fieldName) ? fieldName : 'nyxField';
+    const typeDefs = 'type Query {{ ' + safeField + '(id: String, input: String): String }}';
+    const resolvers = {{
+        Query: {{}},
+    }};
+    resolvers.Query[safeField] = async function (parent, args, context, info) {{
+        const value = await Promise.resolve(resolver(
+            parent,
+            Object.assign({{ id: payload, input: payload, value: payload }}, args || {{}}),
+            context || {{}},
+            info || {{ fieldName: safeField, parentType: typeName }}
+        ));
+        return value == null ? null : String(value);
+    }};
+    let server;
+    try {{
+        server = new ApolloServer({{ typeDefs, resolvers }});
+        if (needsStart && typeof server.start === 'function') await server.start();
+        const raw = await server.executeOperation({{
+            query: 'query($value: String) {{ ' + safeField + '(id: $value, input: $value) }}',
+            variables: {{ value: payload }},
+        }});
+        const result = raw && raw.body && raw.body.kind === 'single' ? raw.body.singleResult : raw;
+        if (result && result.errors && result.errors.length) return false;
+        if (result && result.data && result.data[safeField] != null) {{
+            process.stdout.write(String(result.data[safeField]) + '\n');
+        }}
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_APOLLO_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }} finally {{
+        if (server && typeof server.stop === 'function') {{
+            try {{ await server.stop(); }} catch (_) {{}}
+        }}
+    }}
+}}
 async function _nyxTryGraphqlJs(typeName, fieldName, resolver) {{
     let graphql;
     let buildSchema;
@@ -1206,6 +1257,7 @@ async function _nyxTryGraphqlJs(typeName, fieldName, resolver) {{
 }}
 (async () => {{
     try {{
+        if (await _nyxTryApolloServer({type_name:?}, {field:?}, _h)) return;
         if (await _nyxTryGraphqlJs({type_name:?}, {field:?}, _h)) return;
         // Apollo resolver shape: (parent, args, context, info).
         const _info = {{ fieldName: {field:?}, parentType: {type_name:?} }};

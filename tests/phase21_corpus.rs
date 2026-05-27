@@ -752,8 +752,33 @@ fn graphql_resolver_js_harness_carries_sentinel_and_field() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_GRAPHQL_RESOLVER__"));
     assert!(h.source.contains("\"resolveUser\""));
+    assert!(h.source.contains("_nyxTryApolloServer"));
+    assert!(h.source.contains("require('@apollo/server')"));
     assert!(h.source.contains("_nyxTryGraphqlJs"));
     assert!(h.source.contains("require('graphql')"));
+    assert!(
+        h.source.find("_nyxTryApolloServer").unwrap() < h.source.find("_nyxTryGraphqlJs").unwrap(),
+        "Apollo Server should run before the GraphQL.js fallback"
+    );
+}
+
+#[test]
+fn graphql_resolver_js_apollo_stages_runtime_deps() {
+    let spec = framework_bound_spec(
+        Lang::JavaScript,
+        EvEntryKind::GraphQLResolver {
+            type_name: "Query".into(),
+            field: "user".into(),
+        },
+        "resolveUser",
+        "tests/dynamic_fixtures/graphql_resolver/apollo/vuln.js",
+        "graphql-apollo",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    let package = extra_file_content(&h.extra_files, "package.json");
+    assert!(package.contains("\"@apollo/server\""));
+    assert!(package.contains("\"apollo-server\""));
+    assert!(package.contains("\"graphql\""));
 }
 
 #[test]

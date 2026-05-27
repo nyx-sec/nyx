@@ -101,6 +101,13 @@ fn make_spec_with_adapter(
     spec
 }
 
+fn assert_extra_file_contains(files: &[(String, String)], path: &str, needle: &str, context: &str) {
+    assert!(
+        files.iter().any(|(p, c)| p == path && c.contains(needle)),
+        "{context} must stage {path} containing {needle:?}; got {files:?}"
+    );
+}
+
 // ── Supported-set assertions ──────────────────────────────────────────────────
 
 #[test]
@@ -351,6 +358,129 @@ fn message_handler_java_rabbit_tries_real_client_before_fallbacks() {
         h.source.find("nyxTryRealRabbitClient").unwrap()
             < h.source.find("nyxTryRabbitHttp").unwrap(),
         "rabbit-java should try the RabbitMQ Java client before HTTP fallback"
+    );
+}
+
+#[test]
+fn message_handler_real_client_runtime_deps_are_staged_from_adapter() {
+    let py_kafka = lang::emit(&make_spec_with_adapter(
+        Lang::Python,
+        "orders",
+        "handler",
+        entry_file("kafka_python"),
+        "kafka-python",
+    ))
+    .expect("emit kafka-python");
+    assert_extra_file_contains(
+        &py_kafka.extra_files,
+        "requirements.txt",
+        "kafka-python",
+        "kafka-python",
+    );
+
+    let py_pubsub = lang::emit(&make_spec_with_adapter(
+        Lang::Python,
+        "projects/p/subscriptions/s",
+        "callback",
+        entry_file("pubsub_python"),
+        "pubsub-python",
+    ))
+    .expect("emit pubsub-python");
+    assert_extra_file_contains(
+        &py_pubsub.extra_files,
+        "requirements.txt",
+        "google-cloud-pubsub",
+        "pubsub-python",
+    );
+
+    let py_rabbit = lang::emit(&make_spec_with_adapter(
+        Lang::Python,
+        "work",
+        "on_message",
+        entry_file("rabbit_python"),
+        "rabbit-python",
+    ))
+    .expect("emit rabbit-python");
+    assert_extra_file_contains(
+        &py_rabbit.extra_files,
+        "requirements.txt",
+        "pika",
+        "rabbit-python",
+    );
+
+    let node_sqs = lang::emit(&make_spec_with_adapter(
+        Lang::JavaScript,
+        "jobs",
+        "handler",
+        entry_file("sqs_node"),
+        "sqs-node",
+    ))
+    .expect("emit sqs-node");
+    assert_extra_file_contains(
+        &node_sqs.extra_files,
+        "package.json",
+        "@aws-sdk/client-sqs",
+        "sqs-node",
+    );
+
+    let java_kafka = lang::emit(&make_spec_with_adapter(
+        Lang::Java,
+        "orders",
+        "onMessage",
+        entry_file("kafka_java"),
+        "kafka-java",
+    ))
+    .expect("emit kafka-java");
+    assert_extra_file_contains(
+        &java_kafka.extra_files,
+        "pom.xml",
+        "kafka-clients",
+        "kafka-java",
+    );
+
+    let java_rabbit = lang::emit(&make_spec_with_adapter(
+        Lang::Java,
+        "work",
+        "onMessage",
+        entry_file("rabbit_java"),
+        "rabbit-java",
+    ))
+    .expect("emit rabbit-java");
+    assert_extra_file_contains(
+        &java_rabbit.extra_files,
+        "pom.xml",
+        "amqp-client",
+        "rabbit-java",
+    );
+
+    let go_pubsub = lang::emit(&make_spec_with_adapter(
+        Lang::Go,
+        "my-sub",
+        "OnMessage",
+        entry_file("pubsub_go"),
+        "pubsub-go",
+    ))
+    .expect("emit pubsub-go");
+    assert_extra_file_contains(
+        &go_pubsub.extra_files,
+        "go.mod",
+        "cloud.google.com/go/pubsub",
+        "pubsub-go",
+    );
+
+    let go_nats = lang::emit(&make_spec_with_adapter(
+        Lang::Go,
+        "events",
+        "OnMessage",
+        entry_file("nats_go"),
+        "nats-go",
+    ))
+    .expect("emit nats-go");
+    assert_extra_file_contains(
+        &go_nats.extra_files,
+        "go.mod",
+        "github.com/nats-io/nats.go",
+        "nats-go",
     );
 }
 
