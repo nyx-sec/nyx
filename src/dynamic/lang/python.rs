@@ -1299,13 +1299,40 @@ _h = getattr(_entry_mod, {handler:?}, None)
 if _h is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
+def _nyx_try_celery_eager(task, body):
+    try:
+        import celery  # noqa: F401
+    except Exception:
+        return False
+    if not hasattr(task, "apply"):
+        return False
+    try:
+        app = getattr(task, "app", None)
+        if app is not None and hasattr(app, "conf"):
+            try:
+                app.conf.task_always_eager = True
+                app.conf.task_eager_propagates = False
+            except Exception:
+                pass
+        _result = task.apply(args=(body,), throw=False)
+        _value = getattr(_result, "result", None)
+        if _value is not None:
+            print(str(_value), flush=True)
+        return True
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_CELERY_EAGER_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return False
+
 try:
-    _result = _h(payload)
-    if _result is not None:
-        try:
-            print(str(_result), flush=True)
-        except Exception:
-            pass
+    if not _nyx_try_celery_eager(_h, payload):
+        _result = _h(payload)
+        if _result is not None:
+            try:
+                print(str(_result), flush=True)
+            except Exception:
+                pass
 except SystemExit as _e:
     sys.exit(_e.code)
 except Exception as _e:
@@ -1345,16 +1372,61 @@ if _resolver is None:
     print("NYX_RESOLVER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 try:
-    # Graphene resolvers are `resolve_field(self, info, **args)`; we
-    # synthesise `self = None`, `info = _NyxGraphQLInfo`, and pass the
-    # payload positionally so a `def resolve_foo(self, info, id):` shape
-    # binds `id = payload`.
-    _result = _resolver(None, _NyxGraphQLInfo({field:?}), payload)
-    if _result is not None:
+    def _nyx_try_graphene(resolver, type_name, field_name, body):
         try:
-            print(str(_result), flush=True)
+            import graphene
         except Exception:
-            pass
+            return False
+        safe_field = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in str(field_name))
+        if not safe_field or safe_field[0].isdigit():
+            safe_field = "nyx_" + safe_field
+        resolver_name = "resolve_" + safe_field
+        try:
+            def _nyx_resolve(root, info, id=None, input=None, **kwargs):
+                arg = id if id is not None else (input if input is not None else body)
+                try:
+                    return resolver(root, info, arg)
+                except TypeError:
+                    try:
+                        return resolver(info, arg)
+                    except TypeError:
+                        return resolver(root, info, **{{safe_field: arg}})
+
+            Query = type(
+                "NyxDynamicQuery",
+                (graphene.ObjectType,),
+                {{
+                    safe_field: graphene.String(id=graphene.String(), input=graphene.String()),
+                    resolver_name: _nyx_resolve,
+                }},
+            )
+            schema = graphene.Schema(query=Query)
+            query = "query($value: String) {{ " + safe_field + "(id: $value) }}"
+            result = schema.execute(query, variable_values={{"value": body}})
+            if getattr(result, "errors", None):
+                return False
+            data = getattr(result, "data", None) or {{}}
+            value = data.get(safe_field)
+            if value is not None:
+                print(str(value), flush=True)
+            return True
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"NYX_GRAPHENE_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+            return False
+
+    if not _nyx_try_graphene(_resolver, {type_name:?}, {field:?}, payload):
+        # Graphene resolvers are `resolve_field(self, info, **args)`; we
+        # synthesise `self = None`, `info = _NyxGraphQLInfo`, and pass the
+        # payload positionally so a `def resolve_foo(self, info, id):` shape
+        # binds `id = payload`.
+        _result = _resolver(None, _NyxGraphQLInfo({field:?}), payload)
+        if _result is not None:
+            try:
+                print(str(_result), flush=True)
+            except Exception:
+                pass
 except SystemExit as _e:
     sys.exit(_e.code)
 except TypeError:
@@ -1396,21 +1468,40 @@ if _h is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 try:
-    # python-socketio handlers are `def message(sid, data)`; Channels
-    # consumers are `def receive(self, text_data=None, bytes_data=None)`.
-    # Try (sid, payload) first, then fall back to (payload).
-    try:
-        _result = _h("nyx-sid", payload)
-    except TypeError:
+    def _nyx_try_socketio(handler_name, handler, body):
         try:
-            _result = _h(payload)
-        except TypeError:
-            _result = _h(None, payload)
-    if _result is not None:
-        try:
-            print(str(_result), flush=True)
+            import socketio
         except Exception:
-            pass
+            return False
+        try:
+            server = socketio.Server(async_mode="threading")
+            server.on(handler_name, handler=handler, namespace="/")
+            result = server._trigger_event(handler_name, "/", "nyx-sid", body)
+            if result is not None:
+                print(str(result), flush=True)
+            return True
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"NYX_SOCKETIO_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+            return False
+
+    if not _nyx_try_socketio({handler:?}, _h, payload):
+        # python-socketio handlers are `def message(sid, data)`; Channels
+        # consumers are `def receive(self, text_data=None, bytes_data=None)`.
+        # Try (sid, payload) first, then fall back to (payload).
+        try:
+            _result = _h("nyx-sid", payload)
+        except TypeError:
+            try:
+                _result = _h(payload)
+            except TypeError:
+                _result = _h(None, payload)
+        if _result is not None:
+            try:
+                print(str(_result), flush=True)
+            except Exception:
+                pass
 except SystemExit as _e:
     sys.exit(_e.code)
 except Exception as _e:
@@ -1454,19 +1545,63 @@ if _h is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 try:
-    _req = _NyxRequest(payload)
-    # Try class-shaped middleware (instantiate with a get_response stub).
-    try:
-        _mw = _h(lambda r: r)
-        _result = _mw(_req)
-    except TypeError:
-        # Method on an existing class instance.
-        _result = _h(_req)
-    if _result is not None:
+    def _nyx_try_django_middleware(factory, body):
         try:
-            print(str(_result), flush=True)
+            from django.conf import settings
+            if not settings.configured:
+                settings.configure(
+                    DEFAULT_CHARSET="utf-8",
+                    SECRET_KEY="nyx-dynamic-harness",
+                    ROOT_URLCONF=__name__,
+                    ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+                    INSTALLED_APPS=[],
+                    MIDDLEWARE=[],
+                )
+            import django
+            django.setup()
+            from django.test import RequestFactory
         except Exception:
-            pass
+            return False
+        try:
+            request = RequestFactory().post("/nyx", data={{"q": body}})
+            request._body = str(body).encode("utf-8", "replace")
+            try:
+                mw = factory(lambda req: req)
+                result = mw(request)
+            except TypeError:
+                try:
+                    instance = factory()
+                    if hasattr(instance, "process_request"):
+                        result = instance.process_request(request)
+                    elif callable(instance):
+                        result = instance(request)
+                    else:
+                        return False
+                except TypeError:
+                    result = factory(request)
+            if result is not None:
+                print(str(result), flush=True)
+            return True
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"NYX_DJANGO_MIDDLEWARE_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+            return False
+
+    if not _nyx_try_django_middleware(_h, payload):
+        _req = _NyxRequest(payload)
+        # Try class-shaped middleware (instantiate with a get_response stub).
+        try:
+            _mw = _h(lambda r: r)
+            _result = _mw(_req)
+        except TypeError:
+            # Method on an existing class instance.
+            _result = _h(_req)
+        if _result is not None:
+            try:
+                print(str(_result), flush=True)
+            except Exception:
+                pass
 except SystemExit as _e:
     sys.exit(_e.code)
 except Exception as _e:

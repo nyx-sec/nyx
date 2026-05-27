@@ -1095,8 +1095,39 @@ if (_h == null) {{
     process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
+async function _nyxTryNodeCron(schedule, handler) {{
+    let cron;
+    try {{
+        cron = require('node-cron');
+    }} catch (_) {{
+        return false;
+    }}
+    try {{
+        if (typeof cron.validate === 'function' && !cron.validate(schedule)) return false;
+        let ran = false;
+        let task = cron.schedule(schedule, async function () {{
+            ran = true;
+            const value = await Promise.resolve(handler(payload));
+            if (value != null) process.stdout.write(String(value) + '\n');
+            return value;
+        }}, {{ scheduled: false }});
+        if (task && typeof task.execute === 'function') {{
+            await Promise.resolve(task.execute());
+            if (task && typeof task.stop === 'function') task.stop();
+            if (task && typeof task.destroy === 'function') task.destroy();
+            return ran;
+        }}
+        if (task && typeof task.stop === 'function') task.stop();
+        if (task && typeof task.destroy === 'function') task.destroy();
+        return false;
+    }} catch (e) {{
+        process.stderr.write('NYX_NODE_CRON_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
+}}
 (async () => {{
     try {{
+        if (await _nyxTryNodeCron({schedule:?}, _h)) return;
         const _result = await Promise.resolve(_h(payload));
         if (_result != null) process.stdout.write(String(_result) + '\n');
     }} catch (e) {{
@@ -1134,8 +1165,48 @@ if (_h == null) {{
     process.stderr.write('NYX_RESOLVER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
+async function _nyxTryGraphqlJs(typeName, fieldName, resolver) {{
+    let graphql;
+    let buildSchema;
+    try {{
+        const gql = require('graphql');
+        graphql = gql.graphql;
+        buildSchema = gql.buildSchema;
+    }} catch (_) {{
+        return false;
+    }}
+    const safeField = /^[A-Za-z_][A-Za-z0-9_]*$/.test(fieldName) ? fieldName : 'nyxField';
+    try {{
+        const schema = buildSchema('type Query {{ ' + safeField + '(id: String, input: String): String }}');
+        const rootValue = {{}};
+        rootValue[safeField] = async function (args, context, info) {{
+            const value = await Promise.resolve(resolver(
+                null,
+                {{ id: payload, input: payload, value: payload }},
+                context || {{}},
+                info || {{ fieldName: safeField, parentType: typeName }}
+            ));
+            return value == null ? null : String(value);
+        }};
+        const result = await graphql({{
+            schema,
+            source: 'query($value: String) {{ ' + safeField + '(id: $value) }}',
+            rootValue,
+            variableValues: {{ value: payload }},
+        }});
+        if (result.errors && result.errors.length) return false;
+        if (result.data && result.data[safeField] != null) {{
+            process.stdout.write(String(result.data[safeField]) + '\n');
+        }}
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_GRAPHQL_JS_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
+}}
 (async () => {{
     try {{
+        if (await _nyxTryGraphqlJs({type_name:?}, {field:?}, _h)) return;
         // Apollo resolver shape: (parent, args, context, info).
         const _info = {{ fieldName: {field:?}, parentType: {type_name:?} }};
         const _result = await Promise.resolve(_h(null, {{ id: payload, input: payload }}, {{}}, _info));
@@ -1171,8 +1242,48 @@ if (_h == null) {{
     process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
+async function _nyxTryWs(handler) {{
+    let Ws;
+    try {{
+        Ws = require('ws');
+    }} catch (_) {{
+        return false;
+    }}
+    try {{
+        const events = require('events');
+        const Server = Ws.WebSocketServer || Ws.Server;
+        if (!Server) return false;
+        const wss = new Server({{ noServer: true }});
+        const pending = [];
+        let delivered = false;
+        wss.on('connection', (socket) => {{
+            socket.on('message', (data, isBinary) => {{
+                delivered = true;
+                pending.push(Promise.resolve(handler(data, isBinary)).then((result) => {{
+                    if (result != null) process.stdout.write(String(result) + '\n');
+                }}));
+            }});
+        }});
+        const socket = new events.EventEmitter();
+        socket.readyState = Ws.OPEN || 1;
+        socket.send = (data) => {{
+            if (data != null) process.stdout.write(String(data) + '\n');
+        }};
+        socket.close = () => {{}};
+        wss.emit('connection', socket, {{ url: {path:?}, headers: {{}} }});
+        socket.emit('message', Buffer.from(String(payload), 'utf8'), false);
+        await Promise.all(pending);
+        if (typeof wss.close === 'function') wss.close();
+        return delivered;
+    }} catch (_) {{
+        return false;
+    }}
+}}
 (async () => {{
     try {{
+        if (await _nyxTryWs(_h)) {{
+            return;
+        }}
         // ws library: handler(message); socket.io: handler(socket, data).
         let _result;
         try {{
@@ -1217,8 +1328,62 @@ if (_h == null) {{
 }}
 const _req = {{ body: payload, query: {{ q: payload }}, params: {{ id: payload }}, headers: {{}}, method: 'POST', url: '/nyx' }};
 const _res = {{ statusCode: 200, headers: {{}}, end: function(d){{ if (d != null) process.stdout.write(String(d) + '\n'); }}, setHeader: function(k, v){{ this.headers[k] = v; }} }};
+async function _nyxTryExpressMiddleware(handler) {{
+    let express;
+    try {{
+        express = require('express');
+    }} catch (_) {{
+        return false;
+    }}
+    try {{
+        const stream = require('stream');
+        const app = express();
+        app.use(express.text({{ type: '*/*' }}));
+        app.use(handler);
+        const req = new stream.Readable({{
+            read() {{
+                this.push(Buffer.from(String(payload), 'utf8'));
+                this.push(null);
+            }},
+        }});
+        req.method = 'POST';
+        req.url = '/nyx?q=' + encodeURIComponent(String(payload));
+        req.headers = {{
+            host: 'localhost',
+            'content-type': 'text/plain',
+            'content-length': Buffer.byteLength(String(payload), 'utf8'),
+        }};
+        const chunks = [];
+        await new Promise((resolve) => {{
+            const res = new stream.Writable({{
+                write(chunk, _enc, cb) {{
+                    chunks.push(Buffer.from(chunk));
+                    cb();
+                }},
+            }});
+            res.statusCode = 200;
+            res.headers = {{}};
+            res.setHeader = function (k, v) {{ this.headers[String(k).toLowerCase()] = v; }};
+            res.getHeader = function (k) {{ return this.headers[String(k).toLowerCase()]; }};
+            res.end = function (chunk) {{
+                if (chunk != null) chunks.push(Buffer.from(String(chunk)));
+                resolve();
+            }};
+            app.handle(req, res, function (err) {{
+                if (err) process.stderr.write('NYX_EXPRESS_NEXT_ERR: ' + err + '\n');
+                resolve();
+            }});
+        }});
+        if (chunks.length > 0) process.stdout.write(Buffer.concat(chunks).toString('utf8') + '\n');
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_EXPRESS_MIDDLEWARE_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
+}}
 (async () => {{
     try {{
+        if (await _nyxTryExpressMiddleware(_h)) return;
         const _result = await Promise.resolve(_h(_req, _res, function(_e){{ if (_e) process.stderr.write('NYX_NEXT_ERR: ' + _e + '\n'); }}));
         if (_result != null) process.stdout.write(String(_result) + '\n');
     }} catch (e) {{

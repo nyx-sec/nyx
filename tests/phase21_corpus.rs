@@ -667,6 +667,8 @@ fn scheduled_job_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("\"tick\""));
     assert!(h.source.contains("*/5 * * * *"));
+    assert!(h.source.contains("_nyx_try_celery_eager"));
+    assert!(h.source.contains("task.apply"));
 }
 
 #[test]
@@ -682,6 +684,8 @@ fn scheduled_job_js_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("\"tick\""));
+    assert!(h.source.contains("_nyxTryNodeCron"));
+    assert!(h.source.contains("require('node-cron')"));
 }
 
 #[test]
@@ -695,6 +699,9 @@ fn scheduled_job_java_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("\"execute\""));
+    assert!(h.source.contains("nyxTryQuartz"));
+    assert!(h.source.contains("org.quartz.JobBuilder"));
+    assert_eq!(h.command, vec!["java", "-cp", ".:lib/*", "NyxHarness"]);
 }
 
 #[test]
@@ -708,6 +715,8 @@ fn scheduled_job_ruby_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("TickWorker"));
+    assert!(h.source.contains("sidekiq/testing"));
+    assert!(h.source.contains("perform_async"));
 }
 
 #[test]
@@ -725,6 +734,8 @@ fn graphql_resolver_python_harness_carries_sentinel_and_field() {
     assert!(h.source.contains("__NYX_GRAPHQL_RESOLVER__"));
     assert!(h.source.contains("\"resolve_user\""));
     assert!(h.source.contains("\"Query\""));
+    assert!(h.source.contains("_nyx_try_graphene"));
+    assert!(h.source.contains("graphene.Schema"));
 }
 
 #[test]
@@ -741,6 +752,8 @@ fn graphql_resolver_js_harness_carries_sentinel_and_field() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_GRAPHQL_RESOLVER__"));
     assert!(h.source.contains("\"resolveUser\""));
+    assert!(h.source.contains("_nyxTryGraphqlJs"));
+    assert!(h.source.contains("require('graphql')"));
 }
 
 #[test]
@@ -790,6 +803,8 @@ fn websocket_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_WEBSOCKET__"));
     assert!(h.source.contains("\"message\""));
     assert!(h.source.contains("/ws/chat"));
+    assert!(h.source.contains("_nyx_try_socketio"));
+    assert!(h.source.contains("socketio.Server"));
 }
 
 #[test]
@@ -805,6 +820,8 @@ fn websocket_js_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_WEBSOCKET__"));
     assert!(h.source.contains("\"onMessage\""));
+    assert!(h.source.contains("_nyxTryWs"));
+    assert!(h.source.contains("require('ws')"));
 }
 
 #[test]
@@ -835,6 +852,8 @@ fn middleware_python_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("\"audit\""));
+    assert!(h.source.contains("_nyx_try_django_middleware"));
+    assert!(h.source.contains("RequestFactory"));
 }
 
 #[test]
@@ -850,6 +869,8 @@ fn middleware_js_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("\"audit\""));
+    assert!(h.source.contains("_nyxTryExpressMiddleware"));
+    assert!(h.source.contains("require('express')"));
 }
 
 #[test]
@@ -865,6 +886,8 @@ fn middleware_java_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("\"preHandle\""));
+    assert!(h.source.contains("nyxTrySpringHandlerInterceptor"));
+    assert!(h.source.contains("HttpServletRequest"));
 }
 
 #[test]
@@ -880,6 +903,8 @@ fn middleware_ruby_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("AuditMiddleware"));
+    assert!(h.source.contains("nyx_try_rack_middleware"));
+    assert!(h.source.contains("Rack::MockRequest"));
 }
 
 #[test]
@@ -895,6 +920,8 @@ fn middleware_php_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("Audit"));
+    assert!(h.source.contains("Illuminate\\Http\\Request"));
+    assert!(h.source.contains("__nyx_make_middleware_request"));
 }
 
 #[test]

@@ -3116,11 +3116,23 @@ fn emit_middleware_harness(spec: &HarnessSpec, name: &str) -> HarnessSource {
         r#"{preamble}
 echo "__NYX_MIDDLEWARE__: " . {name:?} . "\n";
 
-$req = new stdClass();
-$req->body = $payload;
-$req->path = '/nyx';
-$req->method = 'POST';
-$req->query = [ 'q' => $payload ];
+function __nyx_make_middleware_request(string $payload) {{
+    if (class_exists('Illuminate\\Http\\Request')) {{
+        try {{
+            return Illuminate\Http\Request::create('/nyx', 'POST', ['q' => $payload], [], [], [], $payload);
+        }} catch (Throwable $e) {{
+            fwrite(STDERR, 'NYX_LARAVEL_REQUEST_FALLBACK: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        }}
+    }}
+    $req = new stdClass();
+    $req->body = $payload;
+    $req->path = '/nyx';
+    $req->method = 'POST';
+    $req->query = [ 'q' => $payload ];
+    return $req;
+}}
+
+$req = __nyx_make_middleware_request($payload);
 $next = function ($r) {{ return $r; }};
 
 if (class_exists({handler:?})) {{

@@ -760,7 +760,19 @@ puts "__NYX_SCHEDULED_JOB__: " + {sched:?}
 target = nil
 if Object.const_defined?({handler:?})
   begin
-    target = Object.const_get({handler:?}).new
+    cls = Object.const_get({handler:?})
+    begin
+      require 'sidekiq/testing'
+      if cls.respond_to?(:perform_async)
+        Sidekiq::Testing.inline! do
+          cls.perform_async($nyx_payload)
+        end
+        exit 0
+      end
+    rescue LoadError, StandardError => e
+      STDERR.puts("NYX_SIDEKIQ_INLINE_FALLBACK: #{{e.class.name}}: #{{e.message}}") if ENV['NYX_DEBUG']
+    end
+    target = cls.new
     if target.respond_to?(:perform)
       begin
         result = target.perform($nyx_payload)
@@ -859,17 +871,53 @@ puts "__NYX_MIDDLEWARE__: " + {name:?}
 
 require 'stringio'
 
-# Rack-shape middleware: class with #call(env).
-env = {{
-  'REQUEST_METHOD' => 'POST',
-  'PATH_INFO' => '/nyx',
-  'QUERY_STRING' => "q=#{{$nyx_payload}}",
-  'rack.input' => StringIO.new($nyx_payload),
-  'nyx.payload' => $nyx_payload,
-}}
+def nyx_middleware_env
+  {{
+    'REQUEST_METHOD' => 'POST',
+    'PATH_INFO' => '/nyx',
+    'QUERY_STRING' => "q=#{{$nyx_payload}}",
+    'rack.input' => StringIO.new($nyx_payload),
+    'nyx.payload' => $nyx_payload,
+  }}
+end
 
+def nyx_try_rack_middleware(cls)
+  begin
+    require 'rack/mock'
+  rescue LoadError
+    return false
+  end
+  begin
+    terminal = lambda {{ |_env| [200, {{ 'content-type' => 'text/plain' }}, ['ok']] }}
+    middleware = begin
+      cls.new(terminal)
+    rescue ArgumentError
+      cls.new
+    end
+    return false unless middleware.respond_to?(:call)
+    app = lambda do |env|
+      env['nyx.payload'] = $nyx_payload
+      middleware.call(env)
+    end
+    response = Rack::MockRequest.new(app).request(
+      'POST',
+      '/nyx?q=' + Rack::Utils.escape($nyx_payload.to_s),
+      input: $nyx_payload
+    )
+    print(response.body.to_s) if response && response.respond_to?(:body) && !response.body.to_s.empty?
+    true
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+    false
+  end
+end
+
+env = nyx_middleware_env
+
+# Rack-shape middleware: class with #call(env).
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
+  exit 0 if nyx_try_rack_middleware(cls)
   begin
     inst = cls.new(lambda {{ |e| [200, {{}}, ['ok']] }})
     if inst.respond_to?(:call)

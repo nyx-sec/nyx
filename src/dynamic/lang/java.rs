@@ -4457,6 +4457,9 @@ public class NyxHarness {{
         System.out.println("__NYX_SINK_HIT__");
         try {{
             Class<?> cls = Class.forName({entry_class:?});
+            if (nyxTryQuartz(cls, payload)) {{
+                return;
+            }}
             Constructor<?> ctor = cls.getDeclaredConstructor();
             ctor.setAccessible(true);
             Object instance = ctor.newInstance();
@@ -4469,6 +4472,9 @@ public class NyxHarness {{
                 System.exit(78);
             }}
             m.setAccessible(true);
+            if (nyxTrySpringHandlerInterceptor(instance, m, payload)) {{
+                return;
+            }}
             Class<?>[] params = m.getParameterTypes();
             Object[] mArgs = new Object[params.length];
             for (int i = 0; i < params.length; i++) {{
@@ -4493,6 +4499,50 @@ public class NyxHarness {{
         }}
         return "";
     }}
+
+    static boolean nyxTryQuartz(Class<?> cls, String payload) {{
+        try {{
+            Class<?> jobClass = Class.forName("org.quartz.Job");
+            if (!jobClass.isAssignableFrom(cls)) {{
+                return false;
+            }}
+            System.setProperty("org.quartz.scheduler.skipUpdateCheck", "true");
+            System.setProperty("org.quartz.threadPool.threadCount", "1");
+
+            Class<?> jobBuilderClass = Class.forName("org.quartz.JobBuilder");
+            Object jobBuilder = jobBuilderClass.getMethod("newJob", Class.class)
+                .invoke(null, cls.asSubclass(jobClass));
+            jobBuilder = jobBuilder.getClass().getMethod("withIdentity", String.class)
+                .invoke(jobBuilder, "nyx-job");
+            jobBuilder = jobBuilder.getClass().getMethod("usingJobData", String.class, String.class)
+                .invoke(jobBuilder, "payload", payload);
+            Object jobDetail = jobBuilder.getClass().getMethod("build").invoke(jobBuilder);
+
+            Class<?> triggerBuilderClass = Class.forName("org.quartz.TriggerBuilder");
+            Object triggerBuilder = triggerBuilderClass.getMethod("newTrigger").invoke(null);
+            triggerBuilder = triggerBuilder.getClass().getMethod("withIdentity", String.class)
+                .invoke(triggerBuilder, "nyx-trigger");
+            triggerBuilder = triggerBuilder.getClass().getMethod("startNow").invoke(triggerBuilder);
+            Object trigger = triggerBuilder.getClass().getMethod("build").invoke(triggerBuilder);
+
+            Object scheduler = Class.forName("org.quartz.impl.StdSchedulerFactory")
+                .getMethod("getDefaultScheduler")
+                .invoke(null);
+            Class<?> schedulerClass = Class.forName("org.quartz.Scheduler");
+            Class<?> jobDetailClass = Class.forName("org.quartz.JobDetail");
+            Class<?> triggerClass = Class.forName("org.quartz.Trigger");
+            schedulerClass.getMethod("start").invoke(scheduler);
+            schedulerClass.getMethod("scheduleJob", jobDetailClass, triggerClass)
+                .invoke(scheduler, jobDetail, trigger);
+            schedulerClass.getMethod("shutdown", boolean.class).invoke(scheduler, true);
+            return true;
+        }} catch (ClassNotFoundException missingQuartz) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_QUARTZ_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }}
+    }}
 }}
 "#,
         entry_class = entry_class,
@@ -4506,7 +4556,7 @@ public class NyxHarness {{
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
-            ".".to_owned(),
+            ".:lib/*".to_owned(),
             "NyxHarness".to_owned(),
         ],
         extra_files: framework_dependency_files(spec),
@@ -4569,6 +4619,69 @@ public class NyxHarness {{
         }}
         return "";
     }}
+
+    static boolean nyxTrySpringHandlerInterceptor(Object instance, Method m, String payload) {{
+        Class<?>[] params = m.getParameterTypes();
+        if (params.length < 3 || !m.getName().equals("preHandle")) {{
+            return false;
+        }}
+        try {{
+            Object[] args = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {{
+                String name = params[i].getName();
+                if (name.endsWith("HttpServletRequest")) {{
+                    args[i] = nyxServletProxy(params[i], payload);
+                }} else if (name.endsWith("HttpServletResponse")) {{
+                    args[i] = nyxServletProxy(params[i], payload);
+                }} else if (params[i].equals(String.class)) {{
+                    args[i] = payload;
+                }} else {{
+                    args[i] = new Object();
+                }}
+            }}
+            m.invoke(instance, args);
+            return true;
+        }} catch (InvocationTargetException ite) {{
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            System.err.println("NYX_SPRING_INTERCEPTOR_FALLBACK: " + cause.getClass().getName() + ": " + cause.getMessage());
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_SPRING_INTERCEPTOR_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }}
+    }}
+
+    static Object nyxServletProxy(Class<?> iface, String payload) {{
+        if (!iface.isInterface()) {{
+            return null;
+        }}
+        return java.lang.reflect.Proxy.newProxyInstance(
+            iface.getClassLoader(),
+            new Class<?>[] {{ iface }},
+            (proxy, method, args) -> {{
+                String name = method.getName();
+                if (name.equals("getParameter")) return payload;
+                if (name.equals("getQueryString")) return "q=" + java.net.URLEncoder.encode(payload, java.nio.charset.StandardCharsets.UTF_8);
+                if (name.equals("getRequestURI")) return "/nyx";
+                if (name.equals("getRequestURL")) return new StringBuffer("http://localhost/nyx");
+                if (name.equals("getMethod")) return "POST";
+                if (name.equals("getHeader")) return null;
+                if (name.equals("getWriter")) return new java.io.PrintWriter(System.out, true);
+                if (name.equals("toString")) return "NyxServletProxy(" + iface.getName() + ")";
+                Class<?> ret = method.getReturnType();
+                if (!ret.isPrimitive()) return null;
+                if (ret.equals(boolean.class)) return false;
+                if (ret.equals(byte.class)) return (byte) 0;
+                if (ret.equals(short.class)) return (short) 0;
+                if (ret.equals(int.class)) return 0;
+                if (ret.equals(long.class)) return 0L;
+                if (ret.equals(float.class)) return 0.0f;
+                if (ret.equals(double.class)) return 0.0d;
+                if (ret.equals(char.class)) return '\0';
+                return null;
+            }}
+        );
+    }}
 }}
 "#,
         entry_class = entry_class,
@@ -4582,7 +4695,7 @@ public class NyxHarness {{
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
-            ".".to_owned(),
+            ".:lib/*".to_owned(),
             "NyxHarness".to_owned(),
         ],
         extra_files: framework_dependency_files(spec),
