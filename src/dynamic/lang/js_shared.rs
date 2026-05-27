@@ -945,6 +945,53 @@ function _nyxRecordBrokerPublish(envName, destination, body) {{
     _nyxRecordBrokerEvent(envName, 'publish', destination, body);
 }}
 
+async function _nyxTryRealSqs(queue, body) {{
+    const endpoint = process.env.NYX_SQS_ENDPOINT || '';
+    if (!/^https?:\/\//.test(endpoint)) return false;
+    let sqs;
+    try {{
+        sqs = require('@aws-sdk/client-sqs');
+    }} catch (_) {{
+        return false;
+    }}
+    try {{
+        const client = new sqs.SQSClient({{
+            endpoint,
+            region: 'us-east-1',
+            credentials: {{ accessKeyId: 'nyx', secretAccessKey: 'nyx' }},
+            maxAttempts: 1,
+        }});
+        const queueUrl = endpoint.replace(/\/$/, '') + '/' + String(queue).replace(/^\//, '');
+        process.stdout.write({publish_marker:?} + ' ' + queue + '\n');
+        await client.send(new sqs.SendMessageCommand({{
+            QueueUrl: queueUrl,
+            MessageBody: String(body),
+        }}));
+        const response = await client.send(new sqs.ReceiveMessageCommand({{
+            QueueUrl: queueUrl,
+            MaxNumberOfMessages: 1,
+            WaitTimeSeconds: 0,
+            AttributeNames: ['ApproximateReceiveCount'],
+        }}));
+        const messages = response.Messages || [];
+        if (messages.length === 0) return false;
+        for (const envelope of messages) {{
+            const ok = await _nyxDispatchEnvelope(envelope);
+            if (ok && envelope.ReceiptHandle) {{
+                await client.send(new sqs.DeleteMessageCommand({{
+                    QueueUrl: queueUrl,
+                    ReceiptHandle: envelope.ReceiptHandle,
+                }}));
+            }}
+        }}
+        if (typeof client.destroy === 'function') client.destroy();
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_REAL_SQS_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
+}}
+
 async function _nyxDispatchEnvelope(envelope) {{
     try {{
         // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
@@ -959,6 +1006,7 @@ async function _nyxDispatchEnvelope(envelope) {{
 }}
 
 (async () => {{
+    if (await _nyxTryRealSqs({queue:?}, payload)) return;
     process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
     _nyxRecordBrokerPublish('NYX_SQS_LOG', {queue:?}, payload);
     _broker.publish({queue:?}, payload);

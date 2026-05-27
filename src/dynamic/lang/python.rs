@@ -958,22 +958,23 @@ fn emit_message_handler(spec: &HarnessSpec, queue: &str) -> HarnessSource {
 
     let register_and_publish = match broker {
         PythonBroker::Sqs => format!(
-            r#"_loop = NyxSqsLoopback()
-def _nyx_sqs_dispatch(envelope):
-    _h = getattr(_entry_mod, {handler:?}, None)
-    if _h is None:
-        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
-        sys.exit(78)
-    _h(envelope)
-_loop.subscribe({queue:?}, _nyx_sqs_dispatch)
-print({publish_marker:?} + " " + {queue:?}, flush=True)
-_nyx_record_broker_publish("NYX_SQS_LOG", {queue:?}, payload)
-_loop.publish({queue:?}, payload)
-for _env in _loop.receive_message({queue:?}, max_number=1):
-    _nyx_record_broker_event("NYX_SQS_LOG", "deliver", {queue:?}, _env.get("Body", ""))
-    _nyx_sqs_dispatch(_env)
-    if _loop.delete_message({queue:?}, _env.get("ReceiptHandle", "")):
-        _nyx_record_broker_event("NYX_SQS_LOG", "ack", {queue:?}, _env.get("ReceiptHandle", ""))"#,
+            r#"if not _nyx_try_real_sqs({queue:?}, payload, {handler:?}):
+    _loop = NyxSqsLoopback()
+    def _nyx_sqs_dispatch(envelope):
+        _h = getattr(_entry_mod, {handler:?}, None)
+        if _h is None:
+            print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+            sys.exit(78)
+        _h(envelope)
+    _loop.subscribe({queue:?}, _nyx_sqs_dispatch)
+    print({publish_marker:?} + " " + {queue:?}, flush=True)
+    _nyx_record_broker_publish("NYX_SQS_LOG", {queue:?}, payload)
+    _loop.publish({queue:?}, payload)
+    for _env in _loop.receive_message({queue:?}, max_number=1):
+        _nyx_record_broker_event("NYX_SQS_LOG", "deliver", {queue:?}, _env.get("Body", ""))
+        _nyx_sqs_dispatch(_env)
+        if _loop.delete_message({queue:?}, _env.get("ReceiptHandle", "")):
+            _nyx_record_broker_event("NYX_SQS_LOG", "ack", {queue:?}, _env.get("ReceiptHandle", ""))"#,
             handler = handler,
             queue = queue,
             publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
@@ -1063,6 +1064,61 @@ def _nyx_record_broker_event(env_name, action, destination, body):
 def _nyx_record_broker_publish(env_name, destination, body):
     _nyx_record_broker_event(env_name, "publish", destination, body)
 
+def _nyx_try_real_sqs(queue, body, handler_name):
+    endpoint = os.environ.get("NYX_SQS_ENDPOINT", "")
+    if not (endpoint.startswith("http://") or endpoint.startswith("https://")):
+        return False
+    try:
+        import boto3
+        try:
+            from botocore.config import Config
+            _cfg = Config(
+                retries={{"max_attempts": 0}},
+                connect_timeout=1,
+                read_timeout=2,
+            )
+        except Exception:
+            _cfg = None
+    except Exception:
+        return False
+    _h = getattr(_entry_mod, handler_name, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + handler_name, file=sys.stderr, flush=True)
+        sys.exit(78)
+    try:
+        _kwargs = {{
+            "endpoint_url": endpoint,
+            "region_name": "us-east-1",
+            "aws_access_key_id": "nyx",
+            "aws_secret_access_key": "nyx",
+        }}
+        if _cfg is not None:
+            _kwargs["config"] = _cfg
+        _client = boto3.client("sqs", **_kwargs)
+        _queue_url = endpoint.rstrip("/") + "/" + str(queue).strip("/")
+        print({sqs_publish_marker:?} + " " + str(queue), flush=True)
+        _client.send_message(QueueUrl=_queue_url, MessageBody=str(body))
+        _resp = _client.receive_message(
+            QueueUrl=_queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+            AttributeNames=["ApproximateReceiveCount"],
+        )
+        _messages = _resp.get("Messages", [])
+        if not _messages:
+            return False
+        for _msg in _messages:
+            _h(_msg)
+            _receipt = _msg.get("ReceiptHandle", "")
+            if _receipt:
+                _client.delete_message(QueueUrl=_queue_url, ReceiptHandle=_receipt)
+        return True
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_REAL_SQS_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return False
+
 try:
 {register_and_publish}
 except SystemExit as _e:
@@ -1075,6 +1131,7 @@ except Exception as _e:
         pubsub_src = pubsub_src,
         rabbit_src = rabbit_src,
         register_and_publish = indent_lines(&register_and_publish, "    "),
+        sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
     );
     HarnessSource {
         source: format!("{preamble}\n{body}\n{postamble}"),

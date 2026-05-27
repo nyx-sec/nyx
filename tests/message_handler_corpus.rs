@@ -208,6 +208,11 @@ fn message_handler_node_uses_sqs_loopback() {
     let spec = make_spec(Lang::JavaScript, "jobs", "handler", entry_file("sqs_node"));
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("NyxSqsLoopback"));
+    assert!(h.source.contains("_nyxTryRealSqs"));
+    assert!(h.source.contains("@aws-sdk/client-sqs"));
+    assert!(h.source.contains("SendMessageCommand"));
+    assert!(h.source.contains("ReceiveMessageCommand"));
+    assert!(h.source.contains("DeleteMessageCommand"));
     assert!(h.source.contains("receiveMessage"));
     assert!(h.source.contains("deleteMessage"));
     assert!(h.source.contains("'deliver'"));
@@ -215,6 +220,46 @@ fn message_handler_node_uses_sqs_loopback() {
     assert!(h.source.contains("__NYX_BROKER_PUBLISH__:sqs"));
     assert!(h.source.contains("NYX_SQS_LOG"));
     assert!(h.source.contains("_nyxRecordBrokerPublish"));
+}
+
+#[test]
+fn message_handler_python_sqs_tries_real_boto3_client_first() {
+    let spec = make_spec_with_adapter(
+        Lang::Python,
+        "jobs",
+        "handler",
+        entry_file("sqs_python"),
+        "sqs-python",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyx_try_real_sqs"));
+    assert!(h.source.contains("boto3.client(\"sqs\""));
+    assert!(h.source.contains("send_message"));
+    assert!(h.source.contains("receive_message"));
+    assert!(h.source.contains("delete_message"));
+    assert!(h.source.contains("NyxSqsLoopback"));
+}
+
+#[test]
+fn message_handler_java_sqs_tries_real_aws_sdk_client_first() {
+    let spec = make_spec_with_adapter(
+        Lang::Java,
+        "jobs",
+        "onMessage",
+        entry_file("sqs_java"),
+        "sqs-java",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("nyxTryRealSqs"));
+    assert!(
+        h.source
+            .contains("software.amazon.awssdk.services.sqs.SqsClient")
+    );
+    assert!(h.source.contains("SendMessageRequest"));
+    assert!(h.source.contains("ReceiveMessageRequest"));
+    assert!(h.source.contains("DeleteMessageRequest"));
+    assert!(h.command.iter().any(|arg| arg == ".:lib/*"));
+    assert!(h.source.contains("NyxSqsLoopback"));
 }
 
 #[test]

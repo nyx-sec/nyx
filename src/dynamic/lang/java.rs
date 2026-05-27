@@ -3803,25 +3803,27 @@ fn emit_message_handler_harness(
         JavaBroker::Sqs => (
             crate::dynamic::stubs::SQS_PUBLISH_MARKER,
             format!(
-                r#"            NyxSqsLoopback brokerRef = new NyxSqsLoopback();
-            System.out.println({publish_marker:?} + " " + {queue:?});
-            nyxRecordBrokerPublish("NYX_SQS_LOG", {queue:?}, payload);
-            brokerRef.publish({queue:?}, payload);
-            for (java.util.Map<String, String> env : brokerRef.receiveMessage({queue:?}, 1)) {{
-                nyxRecordBrokerEvent("NYX_SQS_LOG", "deliver", {queue:?}, env.getOrDefault("Body", ""));
-                System.out.println("__NYX_SINK_HIT__");
-                boolean success = false;
-                try {{
-                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, java.util.Map.class);
-                    m.setAccessible(true);
-                    m.invoke(entryInst, env);
-                    success = true;
-                }} catch (Exception e) {{
-                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
-                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
-                }}
-                if (success && brokerRef.deleteMessage({queue:?}, env.getOrDefault("ReceiptHandle", ""))) {{
-                    nyxRecordBrokerEvent("NYX_SQS_LOG", "ack", {queue:?}, env.getOrDefault("ReceiptHandle", ""));
+                r#"            if (!nyxTryRealSqs({queue:?}, payload, entryInst, {handler:?})) {{
+                NyxSqsLoopback brokerRef = new NyxSqsLoopback();
+                System.out.println({publish_marker:?} + " " + {queue:?});
+                nyxRecordBrokerPublish("NYX_SQS_LOG", {queue:?}, payload);
+                brokerRef.publish({queue:?}, payload);
+                for (java.util.Map<String, String> env : brokerRef.receiveMessage({queue:?}, 1)) {{
+                    nyxRecordBrokerEvent("NYX_SQS_LOG", "deliver", {queue:?}, env.getOrDefault("Body", ""));
+                    System.out.println("__NYX_SINK_HIT__");
+                    boolean success = false;
+                    try {{
+                        java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, java.util.Map.class);
+                        m.setAccessible(true);
+                        m.invoke(entryInst, env);
+                        success = true;
+                    }} catch (Exception e) {{
+                        Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                        System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                    }}
+                    if (success && brokerRef.deleteMessage({queue:?}, env.getOrDefault("ReceiptHandle", ""))) {{
+                        nyxRecordBrokerEvent("NYX_SQS_LOG", "ack", {queue:?}, env.getOrDefault("ReceiptHandle", ""));
+                    }}
                 }}
             }}"#,
                 handler = handler,
@@ -3926,6 +3928,97 @@ public class NyxHarness {{
         }}
     }}
 
+    static boolean nyxTryRealSqs(String queue, String payload, Object entryInst, String handler) {{
+        String endpoint = System.getenv("NYX_SQS_ENDPOINT");
+        if (endpoint == null || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {{
+            return false;
+        }}
+        Object client = null;
+        try {{
+            Class<?> sqsClientClass = Class.forName("software.amazon.awssdk.services.sqs.SqsClient");
+            Object builder = sqsClientClass.getMethod("builder").invoke(null);
+            Class<?> regionClass = Class.forName("software.amazon.awssdk.regions.Region");
+            Object region = regionClass.getMethod("of", String.class).invoke(null, "us-east-1");
+            builder.getClass().getMethod("endpointOverride", java.net.URI.class)
+                .invoke(builder, java.net.URI.create(endpoint));
+            builder.getClass().getMethod("region", regionClass).invoke(builder, region);
+
+            Class<?> basicCredentialsClass = Class.forName("software.amazon.awssdk.auth.credentials.AwsBasicCredentials");
+            Class<?> credentialsClass = Class.forName("software.amazon.awssdk.auth.credentials.AwsCredentials");
+            Class<?> providerClass = Class.forName("software.amazon.awssdk.auth.credentials.StaticCredentialsProvider");
+            Class<?> providerInterface = Class.forName("software.amazon.awssdk.auth.credentials.AwsCredentialsProvider");
+            Object credentials = basicCredentialsClass.getMethod("create", String.class, String.class)
+                .invoke(null, "nyx", "nyx");
+            Object provider = providerClass.getMethod("create", credentialsClass).invoke(null, credentials);
+            builder.getClass().getMethod("credentialsProvider", providerInterface).invoke(builder, provider);
+            client = builder.getClass().getMethod("build").invoke(builder);
+
+            String queueUrl = endpoint.replaceAll("/+$", "") + "/" + queue.replaceAll("^/+", "");
+            System.out.println({sqs_publish_marker:?} + " " + queue);
+
+            Class<?> sendReqClass = Class.forName("software.amazon.awssdk.services.sqs.model.SendMessageRequest");
+            Object sendBuilder = sendReqClass.getMethod("builder").invoke(null);
+            sendBuilder.getClass().getMethod("queueUrl", String.class).invoke(sendBuilder, queueUrl);
+            sendBuilder.getClass().getMethod("messageBody", String.class).invoke(sendBuilder, payload);
+            Object sendReq = sendBuilder.getClass().getMethod("build").invoke(sendBuilder);
+            sqsClientClass.getMethod("sendMessage", sendReqClass).invoke(client, sendReq);
+
+            Class<?> receiveReqClass = Class.forName("software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest");
+            Object receiveBuilder = receiveReqClass.getMethod("builder").invoke(null);
+            receiveBuilder.getClass().getMethod("queueUrl", String.class).invoke(receiveBuilder, queueUrl);
+            receiveBuilder.getClass().getMethod("maxNumberOfMessages", Integer.class).invoke(receiveBuilder, Integer.valueOf(1));
+            receiveBuilder.getClass().getMethod("waitTimeSeconds", Integer.class).invoke(receiveBuilder, Integer.valueOf(0));
+            Object receiveReq = receiveBuilder.getClass().getMethod("build").invoke(receiveBuilder);
+            Object receiveResp = sqsClientClass.getMethod("receiveMessage", receiveReqClass).invoke(client, receiveReq);
+            java.util.List<?> messages = (java.util.List<?>) receiveResp.getClass().getMethod("messages").invoke(receiveResp);
+            if (messages == null || messages.isEmpty()) {{
+                return false;
+            }}
+
+            for (Object msg : messages) {{
+                String body = String.valueOf(msg.getClass().getMethod("body").invoke(msg));
+                String receipt = String.valueOf(msg.getClass().getMethod("receiptHandle").invoke(msg));
+                String messageId = String.valueOf(msg.getClass().getMethod("messageId").invoke(msg));
+                java.util.Map<String, String> env = new java.util.HashMap<>();
+                env.put("Body", body);
+                env.put("ReceiptHandle", receipt);
+                env.put("MessageId", messageId);
+                System.out.println("__NYX_SINK_HIT__");
+                boolean success = false;
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod(handler, java.util.Map.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, env);
+                    success = true;
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+                if (success && receipt != null && !receipt.isEmpty()) {{
+                    Class<?> deleteReqClass = Class.forName("software.amazon.awssdk.services.sqs.model.DeleteMessageRequest");
+                    Object deleteBuilder = deleteReqClass.getMethod("builder").invoke(null);
+                    deleteBuilder.getClass().getMethod("queueUrl", String.class).invoke(deleteBuilder, queueUrl);
+                    deleteBuilder.getClass().getMethod("receiptHandle", String.class).invoke(deleteBuilder, receipt);
+                    Object deleteReq = deleteBuilder.getClass().getMethod("build").invoke(deleteBuilder);
+                    sqsClientClass.getMethod("deleteMessage", deleteReqClass).invoke(client, deleteReq);
+                }}
+            }}
+            return true;
+        }} catch (ClassNotFoundException missingSdk) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_REAL_SQS_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }} finally {{
+            if (client instanceof AutoCloseable) {{
+                try {{
+                    ((AutoCloseable) client).close();
+                }} catch (Exception ignored) {{
+                }}
+            }}
+        }}
+    }}
+
     static String nyxPayload() {{
         String v = System.getenv("NYX_PAYLOAD");
         if (v != null && !v.isEmpty()) return v;
@@ -3959,6 +4052,7 @@ public class NyxHarness {{
 "#,
         entry_class = entry_class,
         dispatch_block = dispatch_block,
+        sqs_publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
     );
     HarnessSource {
         source,
@@ -3966,7 +4060,7 @@ public class NyxHarness {{
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
-            ".".to_owned(),
+            ".:lib/*".to_owned(),
             "NyxHarness".to_owned(),
         ],
         extra_files: {

@@ -898,6 +898,11 @@ fn rewrite_extra_env_for_container(
             {
                 return (k.clone(), format!("{}/{idx}", docker::STUB_MOUNT_ROOT));
             }
+            if matches!(k.as_str(), "NYX_HTTP_ENDPOINT" | "NYX_SQS_ENDPOINT")
+                && let Some(rest) = v.strip_prefix("http://127.0.0.1:")
+            {
+                return (k.clone(), format!("http://host-gateway:{rest}"));
+            }
             (k.clone(), v.clone())
         })
         .collect()
@@ -2259,15 +2264,37 @@ mod tests {
 
     #[test]
     fn rewrite_extra_env_passes_unrelated_pairs_through() {
+        let extra = vec![("NYX_SQL_ENDPOINT".to_owned(), "/tmp/abc.db".to_owned())];
+        let out = rewrite_extra_env_for_container(&extra, &[]);
+        assert_eq!(out, extra);
+    }
+
+    #[test]
+    fn rewrite_extra_env_maps_loopback_http_stubs_to_host_gateway() {
         let extra = vec![
-            ("NYX_SQL_ENDPOINT".to_owned(), "/tmp/abc.db".to_owned()),
             (
                 "NYX_HTTP_ENDPOINT".to_owned(),
                 "http://127.0.0.1:12345".to_owned(),
             ),
+            (
+                "NYX_SQS_ENDPOINT".to_owned(),
+                "http://127.0.0.1:23456/jobs".to_owned(),
+            ),
         ];
         let out = rewrite_extra_env_for_container(&extra, &[]);
-        assert_eq!(out, extra);
+        assert_eq!(
+            out,
+            vec![
+                (
+                    "NYX_HTTP_ENDPOINT".to_owned(),
+                    "http://host-gateway:12345".to_owned(),
+                ),
+                (
+                    "NYX_SQS_ENDPOINT".to_owned(),
+                    "http://host-gateway:23456/jobs".to_owned(),
+                ),
+            ]
+        );
     }
 
     #[test]
