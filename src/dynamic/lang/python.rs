@@ -1536,8 +1536,64 @@ def _nyx_try_celery_eager(task, body):
         print(f"NYX_CELERY_EAGER_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
         return False
 
+def _nyx_try_celery_registered_task(handler_name, task, body):
+    try:
+        from celery import current_app
+    except Exception:
+        return False
+    try:
+        app = getattr(task, "app", None) or current_app
+        if app is None or not hasattr(app, "tasks"):
+            return False
+        if hasattr(app, "conf"):
+            try:
+                app.conf.task_always_eager = True
+                app.conf.task_eager_propagates = False
+            except Exception:
+                pass
+        candidates = [
+            handler_name,
+            getattr(task, "name", None),
+            getattr(_entry_mod, "__name__", "") + "." + handler_name,
+        ]
+        registered = None
+        for name in candidates:
+            if not name:
+                continue
+            try:
+                registered = app.tasks.get(name)
+            except Exception:
+                registered = None
+            if registered is not None:
+                break
+        if registered is None:
+            suffix = "." + handler_name
+            try:
+                for task_name, candidate in app.tasks.items():
+                    if str(task_name).endswith(suffix):
+                        registered = candidate
+                        break
+            except Exception:
+                registered = None
+        if registered is None:
+            return False
+        if hasattr(registered, "signature"):
+            sig = registered.signature(args=(body,))
+            result = sig.apply(throw=False)
+        else:
+            result = registered.apply(args=(body,), throw=False)
+        value = getattr(result, "result", None)
+        if value is not None:
+            print(str(value), flush=True)
+        return True
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_CELERY_REGISTRY_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return False
+
 try:
-    if not _nyx_try_celery_eager(_h, payload):
+    if not _nyx_try_celery_registered_task({handler:?}, _h, payload) and not _nyx_try_celery_eager(_h, payload):
         _result = _h(payload)
         if _result is not None:
             try:
@@ -1842,7 +1898,54 @@ try:
             print(f"NYX_DJANGO_MIDDLEWARE_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
             return False
 
-    if not _nyx_try_django_middleware(_h, payload):
+    def _nyx_try_django_handler_chain(factory, body):
+        try:
+            import types
+            from django.conf import settings
+            module_name = "_nyx_phase21_middleware"
+            module = types.ModuleType(module_name)
+            setattr(module, "NyxMiddleware", factory)
+            module.urlpatterns = []
+            sys.modules[module_name] = module
+            middleware_path = module_name + ".NyxMiddleware"
+            if not settings.configured:
+                settings.configure(
+                    DEFAULT_CHARSET="utf-8",
+                    SECRET_KEY="nyx-dynamic-harness",
+                    ROOT_URLCONF=module_name,
+                    ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+                    INSTALLED_APPS=[],
+                    MIDDLEWARE=[middleware_path],
+                )
+            else:
+                try:
+                    settings.MIDDLEWARE = [middleware_path]
+                    settings.ROOT_URLCONF = module_name
+                except Exception:
+                    return False
+            import django
+            django.setup()
+            from django.core.handlers.base import BaseHandler
+            from django.test import RequestFactory
+            request = RequestFactory().post("/nyx", data={{"q": body}})
+            request._body = str(body).encode("utf-8", "replace")
+            handler = BaseHandler()
+            handler.load_middleware()
+            response = handler.get_response(request)
+            body_bytes = getattr(response, "content", None)
+            if body_bytes:
+                try:
+                    print(body_bytes.decode("utf-8", "replace"), flush=True)
+                except Exception:
+                    print(str(body_bytes), flush=True)
+            return True
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"NYX_DJANGO_HANDLER_CHAIN_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+            return False
+
+    if not _nyx_try_django_handler_chain(_h, payload) and not _nyx_try_django_middleware(_h, payload):
         _req = _NyxRequest(payload)
         # Try class-shaped middleware (instantiate with a get_response stub).
         try:

@@ -680,6 +680,9 @@ fn scheduled_job_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("\"tick\""));
     assert!(h.source.contains("*/5 * * * *"));
+    assert!(h.source.contains("_nyx_try_celery_registered_task"));
+    assert!(h.source.contains("current_app"));
+    assert!(h.source.contains("app.tasks"));
     assert!(h.source.contains("_nyx_try_celery_eager"));
     assert!(h.source.contains("task.apply"));
 }
@@ -714,6 +717,10 @@ fn scheduled_job_java_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("\"execute\""));
     assert!(h.source.contains("nyxTryQuartz"));
     assert!(h.source.contains("org.quartz.JobBuilder"));
+    assert!(
+        !h.source
+            .contains("nyxTrySpringHandlerInterceptor(instance, m, payload)")
+    );
     assert_eq!(h.command, vec!["java", "-cp", ".:lib/*", "NyxHarness"]);
 }
 
@@ -729,6 +736,7 @@ fn scheduled_job_ruby_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_SCHEDULED_JOB__"));
     assert!(h.source.contains("TickWorker"));
     assert!(h.source.contains("sidekiq/testing"));
+    assert!(h.source.contains("Sidekiq::Client.push"));
     assert!(h.source.contains("perform_async"));
 }
 
@@ -873,7 +881,34 @@ fn graphql_resolver_go_harness_carries_sentinel_and_field() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_GRAPHQL_RESOLVER__"));
     assert!(h.source.contains("ResolveUser"));
-    assert!(h.source.contains("entry.NyxResolvers"));
+    assert!(h.source.contains("reflect.ValueOf(entry.ResolveUser)"));
+    assert!(!h.source.contains("entry.NyxResolvers"));
+}
+
+#[test]
+fn graphql_resolver_go_gqlgen_harness_uses_handler_runtime() {
+    let spec = framework_bound_spec(
+        Lang::Go,
+        EvEntryKind::GraphQLResolver {
+            type_name: "Query".into(),
+            field: "user".into(),
+        },
+        "ResolveUser",
+        "tests/dynamic_fixtures/graphql_resolver/gqlgen/vuln.go",
+        "graphql-gqlgen",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(
+        h.source
+            .contains("github.com/99designs/gqlgen/graphql/handler")
+    );
+    assert!(h.source.contains("gqlhandler.NewDefaultServer"));
+    assert!(h.source.contains("httptest.NewRecorder"));
+    assert!(h.source.contains("nyxExecutableSchema"));
+    assert!(h.source.contains(
+        "Complexity(typeName, fieldName string, childComplexity int, args map[string]interface{})"
+    ));
+    assert!(!h.source.contains("entry.NyxResolvers"));
 }
 
 #[test]
@@ -945,6 +980,9 @@ fn middleware_python_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("\"audit\""));
+    assert!(h.source.contains("_nyx_try_django_handler_chain"));
+    assert!(h.source.contains("BaseHandler"));
+    assert!(h.source.contains("handler.load_middleware"));
     assert!(h.source.contains("_nyx_try_django_middleware"));
     assert!(h.source.contains("RequestFactory"));
 }
@@ -979,6 +1017,8 @@ fn middleware_java_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("\"preHandle\""));
+    assert!(h.source.contains("nyxTrySpringHandlerExecutionChain"));
+    assert!(h.source.contains("HandlerExecutionChain"));
     assert!(h.source.contains("nyxTrySpringHandlerInterceptor"));
     assert!(h.source.contains("HttpServletRequest"));
 }

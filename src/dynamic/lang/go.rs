@@ -140,6 +140,18 @@ fn go_string_literal(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+fn go_identifier_expr(name: &str) -> Option<String> {
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(format!("entry.{name}"))
+}
+
 /// Sorted, deduped tab-prefixed import lines covering the driver's
 /// `fmt` + `os` plus everything in [`SHIM_IMPORTS`].
 fn chain_step_imports() -> String {
@@ -2613,6 +2625,96 @@ fn emit_graphql_resolver_harness(
 ) -> HarnessSource {
     let shim = probe_shim();
     let go_mod = generate_go_mod_for_spec(GoShape::Generic, spec);
+    let handler_expr = go_identifier_expr(handler).unwrap_or_else(|| "nil".to_owned());
+    let use_gqlgen_runtime = spec
+        .framework
+        .as_ref()
+        .map(|binding| binding.adapter == "graphql-gqlgen")
+        .unwrap_or(false);
+    let runtime_imports = if use_gqlgen_runtime {
+        r#"	"bytes"
+	"encoding/json"
+	"net/http/httptest"
+
+	"github.com/99designs/gqlgen/graphql"
+	gqlhandler "github.com/99designs/gqlgen/graphql/handler"
+	"github.com/vektah/gqlparser/v2"
+	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/gqlerror"
+"#
+    } else {
+        ""
+    };
+    let runtime_call = if use_gqlgen_runtime {
+        "\tif nyxTryGqlgenHandler(cb, payload) {\n\t\treturn\n\t}\n"
+    } else {
+        ""
+    };
+    let runtime_helpers = if use_gqlgen_runtime {
+        format!(
+            r##"
+type nyxExecutableSchema struct {{
+	schema   *ast.Schema
+	resolver reflect.Value
+	payload  string
+	field    string
+}}
+
+func (s *nyxExecutableSchema) Schema() *ast.Schema {{
+	return s.schema
+}}
+
+func (s *nyxExecutableSchema) Complexity(typeName, fieldName string, childComplexity int, args map[string]interface{{}}) (int, bool) {{
+	return 1, true
+}}
+
+func (s *nyxExecutableSchema) Exec(ctx context.Context) graphql.ResponseHandler {{
+	return func(ctx context.Context) *graphql.Response {{
+		value, err := nyxInvokeResolverValue(s.resolver, s.payload)
+		if err != nil {{
+			return &graphql.Response{{Errors: gqlerror.List{{gqlerror.Errorf(err.Error())}}}}
+		}}
+		data, err := json.Marshal(map[string]interface{{}}{{s.field: fmt.Sprint(value)}})
+		if err != nil {{
+			return &graphql.Response{{Errors: gqlerror.List{{gqlerror.Errorf(err.Error())}}}}
+		}}
+		return &graphql.Response{{Data: json.RawMessage(data)}}
+	}}
+}}
+
+func nyxTryGqlgenHandler(cb reflect.Value, payload string) bool {{
+	schema, err := gqlparser.LoadSchema(&ast.Source{{
+		Name: "nyx.graphql",
+		Input: "schema {{ query: Query }}\ntype Query {{ {field}(id: String, input: String): String }}",
+	}})
+	if err != nil {{
+		fmt.Fprintf(os.Stderr, "NYX_GQLGEN_SCHEMA_FALLBACK: %v\n", err)
+		return false
+	}}
+	server := gqlhandler.NewDefaultServer(&nyxExecutableSchema{{
+		schema: schema, resolver: cb, payload: payload, field: "{field}",
+	}})
+	body, _ := json.Marshal(map[string]interface{{}}{{
+		"query": "query($value: String) {{ {field}(id: $value, input: $value) }}",
+		"variables": map[string]interface{{}}{{"value": payload}},
+	}})
+	req := httptest.NewRequest("POST", "/query", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code < 200 || rec.Code >= 300 {{
+		fmt.Fprintf(os.Stderr, "NYX_GQLGEN_HANDLER_FALLBACK: status=%d body=%s\n", rec.Code, rec.Body.String())
+		return false
+	}}
+	fmt.Print(rec.Body.String())
+	return true
+}}
+"##,
+            field = field
+        )
+    } else {
+        String::new()
+    };
     let source = format!(
         r##"// Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
 package main
@@ -2622,6 +2724,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+{runtime_imports}
 
 	"nyx-harness/entry"
 )
@@ -2640,37 +2743,67 @@ func main() {{
 	payload := nyxPayload()
 	fmt.Println("__NYX_GRAPHQL_RESOLVER__: " + "{type_name}" + "." + "{field}")
 	fmt.Println("__NYX_SINK_HIT__")
-	cb, ok := entry.NyxResolvers["{handler}"]
-	if !ok {{
+	cb := reflect.ValueOf({handler_expr})
+	if !cb.IsValid() || cb.Kind() != reflect.Func {{
 		fmt.Fprintln(os.Stderr, "NYX_RESOLVER_NOT_FOUND: " + "{handler}")
 		os.Exit(78)
 	}}
-	v := reflect.ValueOf(cb)
-	args := make([]reflect.Value, v.Type().NumIn())
-	for i := 0; i < v.Type().NumIn(); i++ {{
-		want := v.Type().In(i)
-		if want.Kind() == reflect.String {{
-			args[i] = reflect.ValueOf(payload)
-		}} else if want.String() == "context.Context" {{
-			args[i] = reflect.ValueOf(context.Background())
-		}} else {{
-			args[i] = reflect.Zero(want)
-		}}
-	}}
+{runtime_call}
 	defer func() {{
 		if r := recover(); r != nil {{
 			fmt.Fprintf(os.Stderr, "NYX_EXCEPTION: panic: %v\n", r)
 		}}
 	}}()
-	out := v.Call(args)
-	if len(out) > 0 {{
-		fmt.Println(out[0].Interface())
+	value, err := nyxInvokeResolverValue(cb, payload)
+	if err != nil {{
+		fmt.Fprintf(os.Stderr, "NYX_EXCEPTION: %v\n", err)
+		return
+	}}
+	if value != nil {{
+		fmt.Println(value)
 	}}
 }}
+
+func nyxInvokeResolverValue(v reflect.Value, payload string) (interface{{}}, error) {{
+	contextType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	args := make([]reflect.Value, v.Type().NumIn())
+	for i := 0; i < v.Type().NumIn(); i++ {{
+		want := v.Type().In(i)
+		if want.Kind() == reflect.String {{
+			args[i] = reflect.ValueOf(payload)
+		}} else if want.Implements(contextType) {{
+			args[i] = reflect.ValueOf(context.Background())
+		}} else if contextType.AssignableTo(want) {{
+			args[i] = reflect.ValueOf(context.Background())
+		}} else {{
+			args[i] = reflect.Zero(want)
+		}}
+	}}
+	out := v.Call(args)
+	var value interface{{}}
+	for _, item := range out {{
+		if item.Type().Implements(errorType) {{
+			if (item.Kind() == reflect.Interface || item.Kind() == reflect.Pointer) && !item.IsNil() {{
+				return nil, item.Interface().(error)
+			}}
+			continue
+		}}
+		if value == nil && item.IsValid() {{
+			value = item.Interface()
+		}}
+	}}
+	return value, nil
+}}
+{runtime_helpers}
 "##,
         handler = handler,
+        handler_expr = handler_expr,
         type_name = type_name,
         field = field,
+        runtime_imports = runtime_imports,
+        runtime_call = runtime_call,
+        runtime_helpers = runtime_helpers,
     );
     HarnessSource {
         source,

@@ -4687,9 +4687,6 @@ public class NyxHarness {{
                 System.exit(78);
             }}
             m.setAccessible(true);
-            if (nyxTrySpringHandlerInterceptor(instance, m, payload)) {{
-                return;
-            }}
             Class<?>[] params = m.getParameterTypes();
             Object[] mArgs = new Object[params.length];
             for (int i = 0; i < params.length; i++) {{
@@ -4810,6 +4807,9 @@ public class NyxHarness {{
                 System.exit(78);
             }}
             m.setAccessible(true);
+            if (nyxTrySpringHandlerExecutionChain(instance, m, payload)) {{
+                return;
+            }}
             Class<?>[] params = m.getParameterTypes();
             Object[] mArgs = new Object[params.length];
             for (int i = 0; i < params.length; i++) {{
@@ -4833,6 +4833,57 @@ public class NyxHarness {{
             return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
         }}
         return "";
+    }}
+
+    static boolean nyxTrySpringHandlerExecutionChain(Object instance, Method m, String payload) {{
+        if (!m.getName().equals("preHandle") || m.getParameterTypes().length < 3) {{
+            return false;
+        }}
+        try {{
+            Class<?> chainClass = Class.forName("org.springframework.web.servlet.HandlerExecutionChain");
+            Class<?> interceptorClass = Class.forName("org.springframework.web.servlet.HandlerInterceptor");
+            if (!interceptorClass.isAssignableFrom(instance.getClass())) {{
+                return false;
+            }}
+            Object interceptors = java.lang.reflect.Array.newInstance(interceptorClass, 1);
+            java.lang.reflect.Array.set(interceptors, 0, instance);
+            Object chain = chainClass
+                .getConstructor(Object.class, interceptors.getClass())
+                .newInstance(new Object(), interceptors);
+            Method getInterceptors = chainClass.getMethod("getInterceptors");
+            Object chainInterceptors = getInterceptors.invoke(chain);
+            int count = chainInterceptors == null ? 0 : java.lang.reflect.Array.getLength(chainInterceptors);
+            if (count == 0) {{
+                return false;
+            }}
+            Object request = null;
+            Object response = null;
+            for (Class<?> p : m.getParameterTypes()) {{
+                String name = p.getName();
+                if (request == null && name.endsWith("HttpServletRequest")) {{
+                    request = nyxServletProxy(p, payload);
+                }} else if (response == null && name.endsWith("HttpServletResponse")) {{
+                    response = nyxServletProxy(p, payload);
+                }}
+            }}
+            if (request == null || response == null) {{
+                return false;
+            }}
+            Object interceptor = java.lang.reflect.Array.get(chainInterceptors, 0);
+            Method preHandle = interceptor.getClass().getMethod(
+                "preHandle",
+                m.getParameterTypes()[0],
+                m.getParameterTypes()[1],
+                m.getParameterTypes()[2]
+            );
+            preHandle.invoke(interceptor, request, response, new Object());
+            return true;
+        }} catch (ClassNotFoundException missingSpring) {{
+            return false;
+        }} catch (Throwable e) {{
+            System.err.println("NYX_SPRING_CHAIN_FALLBACK: " + e.getClass().getName() + ": " + e.getMessage());
+            return false;
+        }}
     }}
 
     static boolean nyxTrySpringHandlerInterceptor(Object instance, Method m, String payload) {{

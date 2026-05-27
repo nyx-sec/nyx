@@ -765,7 +765,12 @@ if Object.const_defined?({handler:?})
       require 'sidekiq/testing'
       if cls.respond_to?(:perform_async)
         Sidekiq::Testing.inline! do
-          cls.perform_async($nyx_payload)
+          begin
+            require 'sidekiq/client'
+            Sidekiq::Client.push('class' => cls, 'args' => [$nyx_payload])
+          rescue LoadError, StandardError
+            cls.perform_async($nyx_payload)
+          end
         end
         exit 0
       end
