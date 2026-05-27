@@ -4192,7 +4192,6 @@ public class NyxHarness {{
 
             java.util.Properties consumerProps = new java.util.Properties();
             consumerProps.put("bootstrap.servers", bootstrap);
-            consumerProps.put("group.id", "nyx-" + Long.toString(System.nanoTime()));
             consumerProps.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
             consumerProps.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
             consumerProps.put("auto.offset.reset", "earliest");
@@ -4209,8 +4208,18 @@ public class NyxHarness {{
                 .invoke(future, Long.valueOf(2L), java.util.concurrent.TimeUnit.SECONDS);
             producerClass.getMethod("flush").invoke(producer);
 
-            consumerClass.getMethod("subscribe", java.util.Collection.class)
-                .invoke(consumer, java.util.Collections.singletonList(topic));
+            Class<?> topicPartitionClass = Class.forName("org.apache.kafka.common.TopicPartition");
+            Object partition = topicPartitionClass.getConstructor(String.class, int.class)
+                .newInstance(topic, Integer.valueOf(0));
+            java.util.List<Object> partitions = java.util.Collections.singletonList(partition);
+            consumerClass.getMethod("assign", java.util.Collection.class).invoke(consumer, partitions);
+            try {{
+                consumerClass.getMethod("seekToBeginning", java.util.Collection.class)
+                    .invoke(consumer, partitions);
+            }} catch (Throwable seekError) {{
+                consumerClass.getMethod("seek", topicPartitionClass, long.class)
+                    .invoke(consumer, partition, Long.valueOf(0L));
+            }}
             Object records = consumerClass.getMethod("poll", java.time.Duration.class)
                 .invoke(consumer, java.time.Duration.ofSeconds(2));
             if (!(records instanceof Iterable)) {{
@@ -4233,7 +4242,6 @@ public class NyxHarness {{
                     System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
                 }}
                 if (success) {{
-                    consumerClass.getMethod("commitSync").invoke(consumer);
                     nyxRecordBrokerEvent("NYX_KAFKA_LOG", "ack", topic, Long.toString(offset));
                 }}
                 delivered = true;

@@ -577,7 +577,7 @@ fn message_handler_remaining_brokers_emit_delivery_and_ack_events() {
 }
 
 #[test]
-fn message_handler_remaining_brokers_try_http_emulators_before_loopback() {
+fn message_handler_remaining_brokers_keep_http_fallbacks_after_real_clients() {
     let cases = [
         (
             Lang::Python,

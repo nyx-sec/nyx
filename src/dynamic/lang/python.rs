@@ -1085,7 +1085,7 @@ def _nyx_try_real_kafka(topic, body, handler_name):
     if not bootstrap:
         return False
     try:
-        from kafka import KafkaConsumer, KafkaProducer
+        from kafka import KafkaConsumer, KafkaProducer, TopicPartition
     except Exception:
         return False
     _h = getattr(_entry_mod, handler_name, None)
@@ -1104,9 +1104,8 @@ def _nyx_try_real_kafka(topic, body, handler_name):
             retries=0,
         )
         _consumer = KafkaConsumer(
-            str(topic),
             bootstrap_servers=[bootstrap],
-            group_id="nyx-" + str(os.getpid()),
+            group_id=None,
             auto_offset_reset="earliest",
             enable_auto_commit=False,
             consumer_timeout_ms=2000,
@@ -1118,6 +1117,23 @@ def _nyx_try_real_kafka(topic, body, handler_name):
         _nyx_record_broker_publish("NYX_KAFKA_LOG", topic, body)
         _producer.send(str(topic), body).get(timeout=2)
         _producer.flush(timeout=2)
+        _tp = TopicPartition(str(topic), 0)
+        _consumer.assign([_tp])
+        try:
+            _consumer.seek_to_beginning(_tp)
+        except Exception:
+            _consumer.seek(_tp, 0)
+        _records = _consumer.poll(timeout_ms=2000, max_records=1)
+        for _partition_records in _records.values():
+            for _record in _partition_records:
+                _nyx_record_broker_event("NYX_KAFKA_LOG", "deliver", topic, _record.value)
+                _h(_record.value)
+                try:
+                    _consumer.commit()
+                except Exception:
+                    pass
+                _nyx_record_broker_event("NYX_KAFKA_LOG", "ack", topic, str(getattr(_record, "offset", "")))
+                return True
         for _record in _consumer:
             _nyx_record_broker_event("NYX_KAFKA_LOG", "deliver", topic, _record.value)
             _h(_record.value)
