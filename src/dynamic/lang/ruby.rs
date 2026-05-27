@@ -818,10 +818,50 @@ fn emit_websocket_handler_harness(spec: &HarnessSpec, path: &str) -> HarnessSour
         r#"{preamble}
 puts "__NYX_WEBSOCKET__: " + {path:?}
 
+def nyx_try_action_cable_channel(cls)
+  begin
+    require 'action_cable/channel/base'
+    require 'logger'
+  rescue LoadError
+    return false
+  end
+  return false unless defined?(ActionCable::Channel::Base)
+  return false unless cls.is_a?(Class) && cls < ActionCable::Channel::Base
+
+  begin
+    connection = Object.new
+    def connection.transmit(data)
+      print(data.to_s) if data
+    end
+    def connection.logger
+      @logger ||= Logger.new(IO::NULL)
+    end
+    def connection.identifiers
+      []
+    end
+    def connection.connection_identifier
+      'nyx-action-cable'
+    end
+    channel = cls.new(connection, {{ 'channel' => cls.name }}, {{ 'nyx_payload' => $nyx_payload }})
+    if channel.respond_to?(:perform_action)
+      channel.perform_action({{ 'action' => 'receive', 'data' => $nyx_payload }})
+    elsif channel.respond_to?(:receive)
+      channel.receive($nyx_payload)
+    else
+      return false
+    end
+    true
+  rescue StandardError => e
+    STDERR.puts("NYX_ACTION_CABLE_FALLBACK: #{{e.class.name}}: #{{e.message}}") if ENV['NYX_DEBUG']
+    false
+  end
+end
+
 # ActionCable channels expose `receive(data)` on a subclass.  Find the
 # enclosing class via const lookup; fall back to top-level send.
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
+  exit 0 if nyx_try_action_cable_channel(cls)
   begin
     inst = cls.new rescue (cls.allocate rescue nil)
     if inst && inst.respond_to?(:receive)

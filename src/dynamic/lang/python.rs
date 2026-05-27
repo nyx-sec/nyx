@@ -1679,6 +1679,49 @@ if _h is None:
     print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
     sys.exit(78)
 try:
+    def _nyx_try_channels(handler_name, body, ws_path):
+        try:
+            import asyncio
+            from channels.testing import WebsocketCommunicator
+        except Exception:
+            return False
+
+        def _nyx_find_consumer():
+            for value in vars(_entry_mod).values():
+                if isinstance(value, type) and (
+                    hasattr(value, "as_asgi") or hasattr(value, "receive")
+                ):
+                    if value.__name__.lower().endswith(("consumer", "websocket")):
+                        return value
+            return None
+
+        async def _nyx_drive_consumer():
+            consumer_cls = _nyx_find_consumer()
+            if consumer_cls is None or not hasattr(consumer_cls, "as_asgi"):
+                return False
+            communicator = WebsocketCommunicator(consumer_cls.as_asgi(), ws_path or "/ws/")
+            connected = False
+            try:
+                connected, _subprotocol = await communicator.connect()
+                if not connected:
+                    return False
+                await communicator.send_to(text_data=body)
+                return True
+            finally:
+                if connected:
+                    try:
+                        await communicator.disconnect()
+                    except Exception:
+                        pass
+
+        try:
+            return bool(asyncio.run(_nyx_drive_consumer()))
+        except SystemExit:
+            raise
+        except Exception as _e:
+            print(f"NYX_CHANNELS_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+            return False
+
     def _nyx_try_socketio(handler_name, handler, body):
         try:
             import socketio
@@ -1697,7 +1740,7 @@ try:
             print(f"NYX_SOCKETIO_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
             return False
 
-    if not _nyx_try_socketio({handler:?}, _h, payload):
+    if not _nyx_try_channels({handler:?}, payload, {path:?}) and not _nyx_try_socketio({handler:?}, _h, payload):
         # python-socketio handlers are `def message(sid, data)`; Channels
         # consumers are `def receive(self, text_data=None, bytes_data=None)`.
         # Try (sid, payload) first, then fall back to (payload).
@@ -1938,6 +1981,94 @@ def _nyx_install_migration_sql_hooks():
         except Exception:
             pass
 
+def _nyx_try_alembic_command_upgrade():
+    try:
+        import tempfile
+        import textwrap
+        import types
+        from pathlib import Path
+        import alembic.command
+        from alembic.config import Config
+    except Exception:
+        return False
+
+    handler_name = {handler:?}
+    if handler_name not in ("upgrade", "up"):
+        return False
+
+    endpoint = os.environ.get("NYX_SQL_ENDPOINT", "")
+    url = "sqlite:///" + endpoint if endpoint else "sqlite:///:memory:"
+    root = Path(tempfile.mkdtemp(prefix="nyx-alembic-"))
+    versions = root / "versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    (root / "script.py.mako").write_text(
+        "${{up_revision}} = ${{repr(up_revision)}}\n"
+        "${{down_revision}} = ${{repr(down_revision)}}\n"
+        "def upgrade():\n    pass\n"
+        "def downgrade():\n    pass\n",
+        encoding="utf-8",
+    )
+    (root / "env.py").write_text(textwrap.dedent("""
+        from alembic import context
+        from sqlalchemy import engine_from_config, pool
+
+        target_metadata = None
+
+        def run_migrations_online():
+            cfg = context.config.get_section(context.config.config_ini_section)
+            connectable = engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool)
+            with connectable.connect() as connection:
+                context.configure(connection=connection, target_metadata=target_metadata)
+                with context.begin_transaction():
+                    context.run_migrations()
+
+        run_migrations_online()
+        """), encoding="utf-8")
+
+    hooks = types.ModuleType("nyx_alembic_hooks")
+    hooks.payload = payload
+    hooks.load_entry = lambda: _entry_mod
+    hooks.op_proxy = lambda inner=None: _NyxMigrationOpProxy(inner)
+    hooks.record_result = _nyx_record_migration_result
+    sys.modules["nyx_alembic_hooks"] = hooks
+
+    (versions / "0001_nyx_entry.py").write_text(textwrap.dedent("""
+        revision = "0001_nyx_entry"
+        down_revision = None
+        branch_labels = None
+        depends_on = None
+
+        def upgrade():
+            from alembic import op as real_op
+            from nyx_alembic_hooks import load_entry, op_proxy, payload, record_result
+            mod = load_entry()
+            if hasattr(mod, "op"):
+                mod.op = op_proxy(real_op)
+            fn = getattr(mod, "upgrade", None) or getattr(mod, "up", None)
+            if fn is None:
+                return
+            try:
+                result = fn(payload)
+            except TypeError:
+                result = fn()
+            record_result(result)
+
+        def downgrade():
+            pass
+        """), encoding="utf-8")
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(root))
+    cfg.set_main_option("sqlalchemy.url", url)
+    try:
+        alembic.command.upgrade(cfg, "head")
+        return True
+    except SystemExit:
+        raise
+    except Exception as _e:
+        print(f"NYX_ALEMBIC_COMMAND_FALLBACK: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+        return False
+
 def _nyx_record_migration_result(result):
     if result is None:
         return
@@ -2000,8 +2131,11 @@ def _nyx_run_django_migration_operations(cls):
 
 try:
     _nyx_install_migration_sql_hooks()
+    _ran_alembic_command = _nyx_try_alembic_command_upgrade()
     _result = None
-    if _h is _migration_cls or ({handler:?} == "Migration" and _migration_cls is not None):
+    if _ran_alembic_command:
+        _nyx_run_django_migration_operations(_migration_cls)
+    elif _h is _migration_cls or ({handler:?} == "Migration" and _migration_cls is not None):
         _nyx_run_django_migration_operations(_migration_cls)
     else:
         # Migrations conventionally take no arguments; pass payload if the

@@ -2365,16 +2365,75 @@ fn emit_graphql_resolver_harness(
     let cargo_toml = generate_cargo_toml_for_spec(spec.expected_cap, RustShape::Generic, spec);
     let handler = &spec.entry_name;
     let label = format!("{type_name}.{field}");
+    let use_juniper = spec
+        .framework
+        .as_ref()
+        .map(|binding| binding.adapter.as_str() == "graphql-juniper")
+        .unwrap_or(false);
+    let field_ident = safe_rust_graphql_field_ident(field);
+    let (juniper_driver, resolver_call) = if use_juniper {
+        (
+            format!(
+                r#"
+struct NyxQueryRoot;
+
+#[juniper::graphql_object]
+impl NyxQueryRoot {{
+    fn {field_ident}(id: String) -> String {{
+        entry::{handler}(&id)
+    }}
+}}
+
+fn nyx_try_juniper(payload: &str) -> bool {{
+    let ctx = ();
+    let schema = juniper::RootNode::new(
+        NyxQueryRoot,
+        juniper::EmptyMutation::<()>::new(),
+        juniper::EmptySubscription::<()>::new(),
+    );
+    let mut vars = juniper::Variables::new();
+    vars.insert("id".to_string(), juniper::InputValue::scalar(payload.to_string()));
+    let query = "query Nyx($id: String!) {{ {field_ident}(id: $id) }}";
+    match juniper::execute_sync(query, None, &schema, &vars, &ctx) {{
+        Ok((value, errors)) if errors.is_empty() => {{
+            println!("{{:?}}", value);
+            true
+        }}
+        Ok((_value, errors)) => {{
+            eprintln!("NYX_JUNIPER_ERRORS: {{:?}}", errors);
+            false
+        }}
+        Err(err) => {{
+            eprintln!("NYX_JUNIPER_FALLBACK: {{err:?}}");
+            false
+        }}
+    }}
+}}
+"#,
+                field_ident = field_ident,
+                handler = handler,
+            ),
+            "    if !nyx_try_juniper(&payload) {\n        let _ = entry::".to_owned()
+                + handler
+                + "(&payload);\n    }\n",
+        )
+    } else {
+        (
+            String::new(),
+            "    let _ = entry::".to_owned() + handler + "(&payload);\n",
+        )
+    };
     let body = format!(
         r#"//! Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
 mod entry;
 {shim}
+{juniper_driver}
 fn main() {{
     let payload = nyx_payload();
     __nyx_install_crash_guard("{label}");
     println!("__NYX_GRAPHQL_RESOLVER__: {type_name}.{field}");
     println!("__NYX_SINK_HIT__");
-    let _ = entry::{handler}(&payload);
+{resolver_call}
 }}
 
 fn nyx_payload() -> String {{
@@ -2419,10 +2478,11 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
     Some(out)
 }}
 "#,
-        handler = handler,
         type_name = type_name,
         field = field,
         label = label,
+        juniper_driver = juniper_driver,
+        resolver_call = resolver_call,
     );
     HarnessSource {
         source: body,
@@ -2431,6 +2491,60 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
         extra_files: vec![("Cargo.toml".into(), cargo_toml)],
         entry_subpath: Some("src/entry.rs".into()),
     }
+}
+
+fn safe_rust_graphql_field_ident(field: &str) -> String {
+    let mut out = String::with_capacity(field.len().max(8));
+    for ch in field.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty()
+        || out.as_bytes().first().is_some_and(|b| b.is_ascii_digit())
+        || matches!(
+            out.as_str(),
+            "as" | "break"
+                | "const"
+                | "continue"
+                | "crate"
+                | "else"
+                | "enum"
+                | "extern"
+                | "false"
+                | "fn"
+                | "for"
+                | "if"
+                | "impl"
+                | "in"
+                | "let"
+                | "loop"
+                | "match"
+                | "mod"
+                | "move"
+                | "mut"
+                | "pub"
+                | "ref"
+                | "return"
+                | "self"
+                | "Self"
+                | "static"
+                | "struct"
+                | "super"
+                | "trait"
+                | "true"
+                | "type"
+                | "unsafe"
+                | "use"
+                | "where"
+                | "while"
+        )
+    {
+        out.insert_str(0, "nyx_");
+    }
+    out
 }
 
 /// True when the entry source declares `class` as a type that derives

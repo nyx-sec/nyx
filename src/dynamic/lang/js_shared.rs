@@ -1156,14 +1156,134 @@ fn emit_graphql_resolver(
 ) -> HarnessSource {
     let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
     let handler = &spec.entry_name;
+    let framework = spec
+        .framework
+        .as_ref()
+        .map(|binding| binding.adapter.as_str())
+        .unwrap_or("");
     let body = format!(
         r#"{preamble}
 // Phase 21 (Track M.3) — GraphQL resolver.
 process.stdout.write('__NYX_GRAPHQL_RESOLVER__: ' + {type_name:?} + '.' + {field:?} + '\n');
+const _nyxFramework = {framework:?};
 const _h = _nyxResolve({handler:?});
 if (_h == null) {{
     process.stderr.write('NYX_RESOLVER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
+}}
+async function _nyxTryGraphqlRelay(typeName, fieldName, resolver) {{
+    let gql;
+    let relay;
+    try {{
+        gql = require('graphql');
+        relay = require('graphql-relay');
+    }} catch (_) {{
+        return false;
+    }}
+    const graphql = gql.graphql;
+    const GraphQLSchema = gql.GraphQLSchema;
+    const GraphQLObjectType = gql.GraphQLObjectType;
+    const GraphQLString = gql.GraphQLString;
+    const nodeDefinitions = relay.nodeDefinitions;
+    const globalIdField = relay.globalIdField;
+    const fromGlobalId = relay.fromGlobalId;
+    const toGlobalId = relay.toGlobalId;
+    if (typeof graphql !== 'function' || typeof nodeDefinitions !== 'function') return false;
+    const safeField = /^[A-Za-z_][A-Za-z0-9_]*$/.test(fieldName) ? fieldName : 'nyxField';
+    const safeType = /^[A-Za-z_][A-Za-z0-9_]*$/.test(typeName) ? typeName : 'NyxNode';
+    const nodeTypeName = (safeType === 'Query' || safeType === 'Node') ? 'NyxRelayNode' : safeType;
+    try {{
+        let NodeType;
+        const defs = nodeDefinitions(
+            async function (globalId, context, info) {{
+                let decoded = {{}};
+                try {{ decoded = fromGlobalId(globalId) || {{}}; }} catch (_) {{}}
+                const relayId = decoded.id || globalId || payload;
+                const value = await Promise.resolve(resolver(
+                    null,
+                    {{ id: relayId, input: payload, value: payload, globalId }},
+                    context || {{}},
+                    info || {{ fieldName: safeField, parentType: nodeTypeName }}
+                ));
+                return value == null ? {{ id: relayId }} : value;
+            }},
+            function () {{ return NodeType; }}
+        );
+        NodeType = new GraphQLObjectType({{
+            name: nodeTypeName,
+            interfaces: [defs.nodeInterface],
+            fields: function () {{
+                const fields = {{
+                    id: globalIdField(nodeTypeName, function (obj) {{
+                        return obj && obj.id != null ? String(obj.id) : String(payload);
+                    }}),
+                }};
+                fields[safeField] = {{
+                    type: GraphQLString,
+                    resolve: function (obj) {{
+                        if (obj == null) return null;
+                        const value = obj[safeField] != null ? obj[safeField]
+                            : (obj._sql != null ? obj._sql
+                                : (obj._query != null ? obj._query
+                                    : (obj.name != null ? obj.name : obj.id)));
+                        return value == null ? null : String(value);
+                    }},
+                }};
+                return fields;
+            }},
+        }});
+        const QueryType = new GraphQLObjectType({{
+            name: 'Query',
+            fields: function () {{
+                const fields = {{ node: defs.nodeField }};
+                fields[safeField] = {{
+                    type: GraphQLString,
+                    args: {{ id: {{ type: GraphQLString }}, input: {{ type: GraphQLString }} }},
+                    resolve: async function (_parent, args, context, info) {{
+                        const value = await Promise.resolve(resolver(
+                            null,
+                            Object.assign({{ id: payload, input: payload, value: payload }}, args || {{}}),
+                            context || {{}},
+                            info || {{ fieldName: safeField, parentType: safeType }}
+                        ));
+                        if (value == null) return null;
+                        if (typeof value === 'object') {{
+                            const out = value[safeField] != null ? value[safeField]
+                                : (value._sql != null ? value._sql
+                                    : (value._query != null ? value._query
+                                        : (value.name != null ? value.name : value.id)));
+                            return out == null ? null : String(out);
+                        }}
+                        return String(value);
+                    }},
+                }};
+                return fields;
+            }},
+        }});
+        const schema = new GraphQLSchema({{ query: QueryType, types: [NodeType] }});
+        const globalId = toGlobalId(nodeTypeName, payload);
+        const nodeSelection = safeField === 'id'
+            ? 'id'
+            : 'id ... on ' + nodeTypeName + ' {{ ' + safeField + ' }}';
+        const source = 'query($id: ID!, $value: String) {{ node(id: $id) {{ ' +
+            nodeSelection + ' }} ' + safeField + '(id: $value, input: $value) }}';
+        const result = await graphql({{
+            schema,
+            source,
+            variableValues: {{ id: globalId, value: payload }},
+        }});
+        if (result.errors && result.errors.length) return false;
+        if (result.data && result.data[safeField] != null) {{
+            process.stdout.write(String(result.data[safeField]) + '\n');
+        }}
+        if (result.data && result.data.node && result.data.node[safeField] != null) {{
+            process.stdout.write(String(result.data.node[safeField]) + '\n');
+        }}
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_GRAPHQL_RELAY_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
 }}
 async function _nyxTryApolloServer(typeName, fieldName, resolver) {{
     let ApolloServer;
@@ -1257,6 +1377,7 @@ async function _nyxTryGraphqlJs(typeName, fieldName, resolver) {{
 }}
 (async () => {{
     try {{
+        if (_nyxFramework === 'graphql-relay' && await _nyxTryGraphqlRelay({type_name:?}, {field:?}, _h)) return;
         if (await _nyxTryApolloServer({type_name:?}, {field:?}, _h)) return;
         if (await _nyxTryGraphqlJs({type_name:?}, {field:?}, _h)) return;
         // Apollo resolver shape: (parent, args, context, info).
@@ -1272,6 +1393,7 @@ async function _nyxTryGraphqlJs(typeName, fieldName, resolver) {{
         handler = handler,
         type_name = type_name,
         field = field,
+        framework = framework,
     );
     HarnessSource {
         source: body,
@@ -1522,15 +1644,100 @@ const _qi = _realSequelize ? _realSequelize.queryInterface : {{
     sequelize: {{ query: async function(sql){{ _nyxMigrationSqlRecord(sql, 'sequelize'); return sql; }} }},
 }};
 const _sequelizeNamespace = _realSequelize ? _realSequelize.Sequelize : {{}};
-const _prisma = {{
+const _nyxPrismaShim = {{
     $executeRaw: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
     $executeRawUnsafe: async function(s){{ if (s) {{ _nyxMigrationSqlRecord(s, 'prisma'); process.stdout.write('NYX_PRISMA_SQL: ' + s + '\n'); }} return s; }},
     $queryRaw: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
     $queryRawUnsafe: async function(s){{ if (s) _nyxMigrationSqlRecord(s, 'prisma'); return s; }},
 }};
+let _realPrisma = null;
+let _prisma = _nyxPrismaShim;
 global.__nyx_prisma = _prisma;
+function _nyxPrismaSqlText(statement, values) {{
+    if (Array.isArray(statement)) {{
+        let out = '';
+        for (let i = 0; i < statement.length; i++) {{
+            out += String(statement[i]);
+            if (i < values.length) out += String(values[i]);
+        }}
+        return out;
+    }}
+    if (statement && Array.isArray(statement.raw)) {{
+        return _nyxPrismaSqlText(statement.raw, values);
+    }}
+    return String(statement || '');
+}}
+async function _nyxTryRealPrismaClient() {{
+    try {{
+        const PrismaPkg = require('@prisma/client');
+        const PrismaClient = PrismaPkg.PrismaClient;
+        if (typeof PrismaClient !== 'function') return null;
+        const endpoint = process.env.NYX_SQL_ENDPOINT || '';
+        if (endpoint && !process.env.DATABASE_URL) {{
+            process.env.DATABASE_URL = 'file:' + endpoint;
+        }}
+        const client = new PrismaClient();
+        const wrapped = Object.create(client);
+        wrapped.$executeRaw = async function(statement, ...values) {{
+            const sql = _nyxPrismaSqlText(statement, values);
+            if (sql) _nyxMigrationSqlRecord(sql, 'prisma-client');
+            try {{
+                if (typeof client.$executeRawUnsafe === 'function') {{
+                    return await client.$executeRawUnsafe(sql);
+                }}
+                return await client.$executeRaw(statement, ...values);
+            }} catch (e) {{
+                process.stderr.write('NYX_PRISMA_CLIENT_EXEC_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+                return sql;
+            }}
+        }};
+        wrapped.$executeRawUnsafe = async function(statement, ...values) {{
+            const sql = _nyxPrismaSqlText(statement, values);
+            if (sql) {{
+                _nyxMigrationSqlRecord(sql, 'prisma-client');
+                process.stdout.write('NYX_PRISMA_CLIENT_SQL: ' + sql + '\n');
+            }}
+            try {{
+                return await client.$executeRawUnsafe(statement, ...values);
+            }} catch (e) {{
+                process.stderr.write('NYX_PRISMA_CLIENT_EXEC_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+                return sql;
+            }}
+        }};
+        wrapped.$queryRaw = async function(statement, ...values) {{
+            const sql = _nyxPrismaSqlText(statement, values);
+            if (sql) _nyxMigrationSqlRecord(sql, 'prisma-client');
+            try {{
+                return await client.$queryRaw(statement, ...values);
+            }} catch (e) {{
+                process.stderr.write('NYX_PRISMA_CLIENT_QUERY_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+                return sql;
+            }}
+        }};
+        wrapped.$queryRawUnsafe = async function(statement, ...values) {{
+            const sql = _nyxPrismaSqlText(statement, values);
+            if (sql) _nyxMigrationSqlRecord(sql, 'prisma-client');
+            try {{
+                return await client.$queryRawUnsafe(statement, ...values);
+            }} catch (e) {{
+                process.stderr.write('NYX_PRISMA_CLIENT_QUERY_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+                return sql;
+            }}
+        }};
+        return {{ client, prisma: wrapped }};
+    }} catch (e) {{
+        process.stderr.write('NYX_PRISMA_CLIENT_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return null;
+    }}
+}}
 (async () => {{
     try {{
+        _realPrisma = await _nyxTryRealPrismaClient();
+        if (_realPrisma && _realPrisma.prisma) {{
+            _prisma = _realPrisma.prisma;
+            global.__nyx_prisma = _prisma;
+            process.stdout.write('NYX_PRISMA_CLIENT=1\n');
+        }}
         let _result;
         // Sequelize migrations conventionally take (queryInterface, Sequelize).
         // Single-arg migrations are Prisma/raw shapes and should receive payload.
@@ -1553,6 +1760,9 @@ global.__nyx_prisma = _prisma;
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
     }} finally {{
         if (_realSequelize && _realSequelize.close) await _realSequelize.close();
+        if (_realPrisma && _realPrisma.client && typeof _realPrisma.client.$disconnect === 'function') {{
+            try {{ await _realPrisma.client.$disconnect(); }} catch (e) {{}}
+        }}
     }}
 }})();
 "#,

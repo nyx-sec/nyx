@@ -782,6 +782,34 @@ fn graphql_resolver_js_apollo_stages_runtime_deps() {
 }
 
 #[test]
+fn graphql_resolver_js_relay_harness_uses_relay_runtime() {
+    let spec = framework_bound_spec(
+        Lang::JavaScript,
+        EvEntryKind::GraphQLResolver {
+            type_name: "Node".into(),
+            field: "resolveNode".into(),
+        },
+        "resolveNode",
+        "tests/dynamic_fixtures/graphql_resolver/relay/vuln.js",
+        "graphql-relay",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("_nyxTryGraphqlRelay"));
+    assert!(h.source.contains("require('graphql-relay')"));
+    assert!(h.source.contains("nodeDefinitions"));
+    assert!(h.source.contains("toGlobalId"));
+    assert!(h.source.contains("_nyxFramework === 'graphql-relay'"));
+    assert!(
+        h.source.find("_nyxTryGraphqlRelay").unwrap()
+            < h.source.find("_nyxTryApolloServer").unwrap(),
+        "Relay runtime should be attempted before the generic Apollo path for graphql-relay specs",
+    );
+    let package = extra_file_content(&h.extra_files, "package.json");
+    assert!(package.contains("\"graphql-relay\""));
+    assert!(package.contains("\"graphql\""));
+}
+
+#[test]
 fn graphql_resolver_rust_harness_carries_sentinel_and_field() {
     let spec = make_spec(
         Lang::Rust,
@@ -795,6 +823,27 @@ fn graphql_resolver_rust_harness_carries_sentinel_and_field() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_GRAPHQL_RESOLVER__"));
     assert!(h.source.contains("entry::resolve_user"));
+}
+
+#[test]
+fn graphql_resolver_rust_juniper_harness_uses_execute_sync() {
+    let spec = framework_bound_spec(
+        Lang::Rust,
+        EvEntryKind::GraphQLResolver {
+            type_name: "Query".into(),
+            field: "user".into(),
+        },
+        "resolve_user",
+        "tests/dynamic_fixtures/graphql_resolver/juniper/vuln.rs",
+        "graphql-juniper",
+    );
+    let h = lang::emit(&spec).expect("emit ok");
+    assert!(h.source.contains("juniper::RootNode::new"));
+    assert!(h.source.contains("juniper::execute_sync"));
+    assert!(h.source.contains("fn user(id: String) -> String"));
+    assert!(h.source.contains("if !nyx_try_juniper(&payload)"));
+    let cargo = extra_file_content(&h.extra_files, "Cargo.toml");
+    assert!(cargo.contains("juniper = \"0.16\""));
 }
 
 #[test]
@@ -828,6 +877,9 @@ fn websocket_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_WEBSOCKET__"));
     assert!(h.source.contains("\"message\""));
     assert!(h.source.contains("/ws/chat"));
+    assert!(h.source.contains("_nyx_try_channels"));
+    assert!(h.source.contains("WebsocketCommunicator"));
+    assert!(h.source.contains("as_asgi"));
     assert!(h.source.contains("_nyx_try_socketio"));
     assert!(h.source.contains("socketio.Server"));
 }
@@ -862,6 +914,9 @@ fn websocket_ruby_harness_carries_sentinel_and_handler() {
     let h = lang::emit(&spec).expect("emit ok");
     assert!(h.source.contains("__NYX_WEBSOCKET__"));
     assert!(h.source.contains("ChatChannel"));
+    assert!(h.source.contains("nyx_try_action_cable_channel"));
+    assert!(h.source.contains("ActionCable::Channel::Base"));
+    assert!(h.source.contains("perform_action"));
 }
 
 #[test]
@@ -962,6 +1017,10 @@ fn migration_python_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("\"upgrade\""));
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("MigrationContext.configure"));
+    assert!(h.source.contains("_nyx_try_alembic_command_upgrade"));
+    assert!(h.source.contains("alembic.command.upgrade"));
+    assert!(h.source.contains("script_location"));
+    assert!(h.source.contains("nyx_alembic_hooks"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
     assert!(h.source.contains("def create_table"));
     assert!(h.source.contains("def add_column"));
@@ -983,6 +1042,10 @@ fn migration_js_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("require('sequelize')"));
     assert!(h.source.contains("getQueryInterface"));
     assert!(h.source.contains("global.__nyx_prisma"));
+    assert!(h.source.contains("require('@prisma/client')"));
+    assert!(h.source.contains("_nyxTryRealPrismaClient"));
+    assert!(h.source.contains("NYX_PRISMA_CLIENT_SQL"));
+    assert!(h.source.contains("$disconnect"));
     assert!(h.source.contains("node:sqlite"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
 }
