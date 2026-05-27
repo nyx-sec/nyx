@@ -698,14 +698,14 @@ fn kafka_parse_produce_request(version: i16, body: &[u8]) -> Vec<(String, i32, S
         return Vec::new();
     };
     let mut out = Vec::new();
-    for _ in 0..topic_len.max(0).min(256) {
+    for _ in 0..topic_len.clamp(0, 256) {
         let Some(topic) = reader.string() else {
             break;
         };
         let Some(partition_len) = reader.array_len() else {
             break;
         };
-        for _ in 0..partition_len.max(0).min(256) {
+        for _ in 0..partition_len.clamp(0, 256) {
             let Some(partition) = reader.i32() else {
                 break;
             };
@@ -783,7 +783,7 @@ fn kafka_parse_fetch_request(version: i16, body: &[u8]) -> BTreeMap<String, Vec<
     let Some(topic_len) = reader.array_len() else {
         return out;
     };
-    for _ in 0..topic_len.max(0).min(256) {
+    for _ in 0..topic_len.clamp(0, 256) {
         let Some(topic) = reader.string() else {
             break;
         };
@@ -791,7 +791,7 @@ fn kafka_parse_fetch_request(version: i16, body: &[u8]) -> BTreeMap<String, Vec<
             break;
         };
         let mut partitions = Vec::new();
-        for _ in 0..partition_len.max(0).min(256) {
+        for _ in 0..partition_len.clamp(0, 256) {
             let Some(partition) = reader.i32() else {
                 break;
             };
@@ -840,7 +840,7 @@ fn kafka_parse_list_offsets_request(body: &[u8]) -> BTreeMap<String, Vec<(i32, i
     let Some(topic_len) = reader.array_len() else {
         return out;
     };
-    for _ in 0..topic_len.max(0).min(256) {
+    for _ in 0..topic_len.clamp(0, 256) {
         let Some(topic) = reader.string() else {
             break;
         };
@@ -848,7 +848,7 @@ fn kafka_parse_list_offsets_request(body: &[u8]) -> BTreeMap<String, Vec<(i32, i
             break;
         };
         let mut partitions = Vec::new();
-        for _ in 0..partition_len.max(0).min(256) {
+        for _ in 0..partition_len.clamp(0, 256) {
             let Some(partition) = reader.i32() else {
                 break;
             };

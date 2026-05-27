@@ -1582,6 +1582,11 @@ fn emit_migration(spec: &HarnessSpec, version: Option<&str>, is_typescript: bool
     let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
     let handler = &spec.entry_name;
     let version_repr = version.unwrap_or("<no-version>");
+    let framework = spec
+        .framework
+        .as_ref()
+        .map(|binding| binding.adapter.as_str())
+        .unwrap_or("");
     let body = format!(
         r#"{preamble}
 // Phase 21 (Track M.3) — migration.
@@ -1591,6 +1596,7 @@ if (_h == null) {{
     process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
     process.exit(78);
 }}
+const _nyxFramework = {framework:?};
 function _nyxLooksLikeSql(sql) {{
     const upper = String(sql).toUpperCase();
     return ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'].some((k) => upper.includes(k));
@@ -1617,6 +1623,124 @@ function _nyxMigrationSqlRecord(sql, driver) {{
     if (!_nyxLooksLikeSql(sql)) return;
     const sqliteDriver = _nyxTryExecuteSqlite(sql);
     __nyx_stub_sql_record(String(sql), {{ driver: driver, source: 'migration', sqlite_driver: sqliteDriver }});
+}}
+function _nyxCliBin(names) {{
+    const fs = require('fs');
+    const path = require('path');
+    const suffix = process.platform === 'win32' ? '.cmd' : '';
+    for (const name of names) {{
+        const candidate = path.join(__dirname, 'node_modules', '.bin', name + suffix);
+        if (fs.existsSync(candidate)) return candidate;
+    }}
+    return null;
+}}
+function _nyxWriteSequelizeCliConfig(configPath) {{
+    const open = String.fromCharCode(123);
+    const close = String.fromCharCode(125);
+    const lines = [
+        "const fs = require('fs');",
+        "function record(sql) " + open,
+        "  const p = process.env.NYX_SQL_LOG;",
+        "  if (!p || !sql) return;",
+        "  let out = '# driver: sequelize-cli\\n# source: migration-cli\\n' + String(sql);",
+        "  if (!out.endsWith('\\n')) out += '\\n';",
+        "  try " + open + " fs.appendFileSync(p, out); " + close + " catch (_) " + open + close,
+        close,
+        "module.exports = " + open + " nyx: " + open + " dialect: 'sqlite', storage: process.env.NYX_SQL_ENDPOINT || 'nyx.sqlite', logging: record " + close + " " + close + ";",
+    ];
+    require('fs').writeFileSync(configPath, lines.join('\n'));
+}}
+function _nyxTrySequelizeCli() {{
+    if (_nyxFramework !== 'migration-sequelize') return false;
+    try {{
+        const fs = require('fs');
+        const path = require('path');
+        const cp = require('child_process');
+        const bin = _nyxCliBin(['sequelize', 'sequelize-cli']);
+        if (!bin) return false;
+        const migrationsDir = path.join(__dirname, 'migrations');
+        fs.mkdirSync(migrationsDir, {{ recursive: true }});
+        fs.writeFileSync(
+            path.join(migrationsDir, '00000000000000-nyx-migration.js'),
+            "module.exports = require('../" + {entry_subpath:?} + "');\n"
+        );
+        const configPath = path.join(__dirname, 'nyx-sequelize-config.cjs');
+        _nyxWriteSequelizeCliConfig(configPath);
+        const result = cp.spawnSync(bin, [
+            'db:migrate',
+            '--migrations-path', migrationsDir,
+            '--config', configPath,
+            '--env', 'nyx',
+        ], {{
+            cwd: __dirname,
+            env: process.env,
+            encoding: 'utf8',
+        }});
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        return result.status === 0;
+    }} catch (e) {{
+        process.stderr.write('NYX_SEQUELIZE_CLI_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
+}}
+function _nyxRecordPrismaMigrationFiles(schemaPath) {{
+    try {{
+        const fs = require('fs');
+        const path = require('path');
+        const root = path.dirname(schemaPath);
+        const migrations = path.join(root, 'migrations');
+        if (!fs.existsSync(migrations)) return;
+        for (const dirent of fs.readdirSync(migrations, {{ withFileTypes: true }})) {{
+            if (!dirent.isDirectory()) continue;
+            const sqlPath = path.join(migrations, dirent.name, 'migration.sql');
+            if (!fs.existsSync(sqlPath)) continue;
+            const sql = fs.readFileSync(sqlPath, 'utf8');
+            _nyxMigrationSqlRecord(sql, 'prisma-cli');
+        }}
+    }} catch (e) {{
+        process.stderr.write('NYX_PRISMA_CLI_SQLLOG_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+    }}
+}}
+function _nyxTryPrismaCli() {{
+    if (_nyxFramework !== 'migration-prisma') return false;
+    try {{
+        const fs = require('fs');
+        const path = require('path');
+        const cp = require('child_process');
+        const bin = _nyxCliBin(['prisma']);
+        if (!bin) return false;
+        const candidates = [
+            path.join(__dirname, 'prisma', 'schema.prisma'),
+            path.join(__dirname, 'schema.prisma'),
+        ];
+        const schemaPath = candidates.find((p) => fs.existsSync(p));
+        if (!schemaPath) return false;
+        if (process.env.NYX_SQL_ENDPOINT && !process.env.DATABASE_URL) {{
+            process.env.DATABASE_URL = 'file:' + process.env.NYX_SQL_ENDPOINT;
+        }}
+        let result = cp.spawnSync(bin, ['migrate', 'deploy', '--schema', schemaPath], {{
+            cwd: __dirname,
+            env: process.env,
+            encoding: 'utf8',
+        }});
+        if (result.status !== 0) {{
+            process.stderr.write('NYX_PRISMA_CLI_DEPLOY_FALLBACK: ' + (result.stderr || result.stdout || '') + '\n');
+            result = cp.spawnSync(bin, ['db', 'push', '--skip-generate', '--schema', schemaPath], {{
+                cwd: __dirname,
+                env: process.env,
+                encoding: 'utf8',
+            }});
+        }}
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.status !== 0) return false;
+        _nyxRecordPrismaMigrationFiles(schemaPath);
+        return true;
+    }} catch (e) {{
+        process.stderr.write('NYX_PRISMA_CLI_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+        return false;
+    }}
 }}
 function _nyxTryRealSequelize() {{
     try {{
@@ -1732,6 +1856,8 @@ async function _nyxTryRealPrismaClient() {{
 }}
 (async () => {{
     try {{
+        if (_nyxTryPrismaCli()) return;
+        if (_nyxTrySequelizeCli()) return;
         _realPrisma = await _nyxTryRealPrismaClient();
         if (_realPrisma && _realPrisma.prisma) {{
             _prisma = _realPrisma.prisma;
@@ -1769,6 +1895,8 @@ async function _nyxTryRealPrismaClient() {{
         preamble = preamble,
         handler = handler,
         version = version_repr,
+        framework = framework,
+        entry_subpath = entry_subpath,
     );
     HarnessSource {
         source: body,
@@ -3105,7 +3233,7 @@ fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)>
 }
 
 fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
-    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+    if !should_stage_framework_dependency_files(spec) {
         return Vec::new();
     }
     let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
@@ -3132,6 +3260,14 @@ fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
             package_lock_skeleton("nyx-harness-framework"),
         ),
     ]
+}
+
+fn should_stage_framework_dependency_files(spec: &HarnessSpec) -> bool {
+    spec.expected_cap == crate::labels::Cap::CODE_EXEC
+        || matches!(
+            &spec.entry_kind,
+            crate::evidence::EntryKind::Migration { .. }
+        )
 }
 
 fn js_message_handler_deps(source: &str) -> Vec<(&'static str, &'static str)> {

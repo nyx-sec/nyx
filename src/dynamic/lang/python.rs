@@ -4026,7 +4026,7 @@ fn message_handler_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)>
 }
 
 fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
-    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+    if !should_stage_framework_dependency_files(spec) {
         return Vec::new();
     }
     let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
@@ -4047,6 +4047,14 @@ fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
         body.push('\n');
     }
     vec![("requirements.txt".to_owned(), body)]
+}
+
+fn should_stage_framework_dependency_files(spec: &HarnessSpec) -> bool {
+    spec.expected_cap == crate::labels::Cap::CODE_EXEC
+        || matches!(
+            &spec.entry_kind,
+            crate::evidence::EntryKind::Migration { .. }
+        )
 }
 
 fn python_message_handler_deps(source: &str) -> Vec<&'static str> {

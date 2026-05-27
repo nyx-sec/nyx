@@ -119,6 +119,19 @@ fn framework_bound_spec(
     spec
 }
 
+fn framework_bound_sql_spec(
+    lang: Lang,
+    kind: EvEntryKind,
+    entry_name: &str,
+    entry_file: &str,
+    adapter: &str,
+) -> HarnessSpec {
+    let mut spec = framework_bound_spec(lang, kind, entry_name, entry_file, adapter);
+    spec.expected_cap = Cap::SQL_QUERY;
+    spec.stubs_required = StubKind::for_cap(Cap::SQL_QUERY);
+    spec
+}
+
 fn extra_file_content<'a>(files: &'a [(String, String)], rel: &str) -> &'a str {
     files
         .iter()
@@ -1001,6 +1014,7 @@ fn middleware_php_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("__NYX_MIDDLEWARE__"));
     assert!(h.source.contains("Audit"));
     assert!(h.source.contains("Illuminate\\Http\\Request"));
+    assert!(h.source.contains("Illuminate\\Pipeline\\Pipeline"));
     assert!(h.source.contains("__nyx_make_middleware_request"));
 }
 
@@ -1044,6 +1058,10 @@ fn migration_js_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("global.__nyx_prisma"));
     assert!(h.source.contains("require('@prisma/client')"));
     assert!(h.source.contains("_nyxTryRealPrismaClient"));
+    assert!(h.source.contains("_nyxTrySequelizeCli"));
+    assert!(h.source.contains("_nyxTryPrismaCli"));
+    assert!(h.source.contains("sequelize-cli"));
+    assert!(h.source.contains("'migrate', 'deploy'"));
     assert!(h.source.contains("NYX_PRISMA_CLIENT_SQL"));
     assert!(h.source.contains("$disconnect"));
     assert!(h.source.contains("node:sqlite"));
@@ -1063,6 +1081,8 @@ fn migration_ruby_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("AddIndex"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("ActiveRecord::Base.establish_connection"));
+    assert!(h.source.contains("ActiveRecord::MigrationContext"));
+    assert!(h.source.contains("__nyx_try_rails_migration_context"));
     assert!(h.source.contains("cls.migrate(:up)"));
     assert!(h.source.contains("SQLite3::Database"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
@@ -1081,8 +1101,85 @@ fn migration_php_harness_carries_sentinel_and_handler() {
     assert!(h.source.contains("AddUsers"));
     assert!(h.source.contains("__nyx_stub_sql_record"));
     assert!(h.source.contains("vendor/autoload.php"));
+    assert!(
+        h.source
+            .contains("Illuminate\\Database\\Migrations\\Migrator")
+    );
+    assert!(h.source.contains("Illuminate\\Database\\Capsule\\Manager"));
     assert!(h.source.contains("new SQLite3"));
     assert!(h.source.contains("NYX_SQL_ENDPOINT"));
+}
+
+#[test]
+fn migration_harnesses_stage_framework_deps_for_sql_specs() {
+    let cases = [
+        (
+            framework_bound_sql_spec(
+                Lang::Python,
+                EvEntryKind::Migration { version: None },
+                "upgrade",
+                "tests/dynamic_fixtures/migration/flask/vuln.py",
+                "migration-flask",
+            ),
+            "requirements.txt",
+            vec!["alembic", "Flask-Migrate"],
+        ),
+        (
+            framework_bound_sql_spec(
+                Lang::JavaScript,
+                EvEntryKind::Migration { version: None },
+                "up",
+                "tests/dynamic_fixtures/migration/sequelize/vuln.js",
+                "migration-sequelize",
+            ),
+            "package.json",
+            vec!["sequelize", "sequelize-cli", "sqlite3"],
+        ),
+        (
+            framework_bound_sql_spec(
+                Lang::JavaScript,
+                EvEntryKind::Migration { version: None },
+                "up",
+                "tests/dynamic_fixtures/migration/prisma/vuln.js",
+                "migration-prisma",
+            ),
+            "package.json",
+            vec!["@prisma/client", "\"prisma\""],
+        ),
+        (
+            framework_bound_sql_spec(
+                Lang::Ruby,
+                EvEntryKind::Migration { version: None },
+                "AddIndex",
+                "tests/dynamic_fixtures/migration/rails/vuln.rb",
+                "migration-rails",
+            ),
+            "Gemfile",
+            vec!["rails"],
+        ),
+        (
+            framework_bound_sql_spec(
+                Lang::Php,
+                EvEntryKind::Migration { version: None },
+                "AddUsers",
+                "tests/dynamic_fixtures/migration/laravel/vuln.php",
+                "migration-laravel",
+            ),
+            "composer.json",
+            vec!["laravel/framework"],
+        ),
+    ];
+
+    for (spec, manifest, needles) in cases {
+        let harness = lang::emit(&spec).expect("emit ok");
+        let manifest_content = extra_file_content(&harness.extra_files, manifest);
+        for needle in needles {
+            assert!(
+                manifest_content.contains(needle),
+                "{manifest} missing {needle}: {manifest_content}",
+            );
+        }
+    }
 }
 
 #[test]

@@ -133,14 +133,24 @@ const NODE_KNEX: &[VersionedPackage] = &[VersionedPackage {
     name: "knex",
     version: "^3.1.0",
 }];
-const NODE_PRISMA: &[VersionedPackage] = &[VersionedPackage {
-    name: "@prisma/client",
-    version: "^5.14.0",
-}];
+const NODE_PRISMA: &[VersionedPackage] = &[
+    VersionedPackage {
+        name: "@prisma/client",
+        version: "^5.14.0",
+    },
+    VersionedPackage {
+        name: "prisma",
+        version: "^5.14.0",
+    },
+];
 const NODE_SEQUELIZE: &[VersionedPackage] = &[
     VersionedPackage {
         name: "sequelize",
         version: "^6.37.3",
+    },
+    VersionedPackage {
+        name: "sequelize-cli",
+        version: "^6.6.2",
     },
     VersionedPackage {
         name: "sqlite3",

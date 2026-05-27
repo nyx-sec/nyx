@@ -3135,7 +3135,28 @@ function __nyx_make_middleware_request(string $payload) {{
 $req = __nyx_make_middleware_request($payload);
 $next = function ($r) {{ return $r; }};
 
+function __nyx_try_laravel_pipeline(string $handler, $req, callable $next): bool {{
+    if (!class_exists('Illuminate\\Pipeline\\Pipeline')) return false;
+    try {{
+        $container = class_exists('Illuminate\\Container\\Container')
+            ? new Illuminate\Container\Container()
+            : null;
+        $pipeline = $container === null
+            ? new Illuminate\Pipeline\Pipeline()
+            : new Illuminate\Pipeline\Pipeline($container);
+        $result = $pipeline->send($req)->through([$handler])->then($next);
+        if ($result !== null) echo (string)$result . "\n";
+        return true;
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_LARAVEL_PIPELINE_FALLBACK: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        return false;
+    }}
+}}
+
 if (class_exists({handler:?})) {{
+    if (__nyx_try_laravel_pipeline({handler:?}, $req, $next)) {{
+        exit(0);
+    }}
     $inst = new {handler}();
     if (method_exists($inst, 'handle')) {{
         try {{
@@ -3217,7 +3238,88 @@ function __nyx_try_execute_migration_sqlite($value): string {{
     }}
 }}
 
+function __nyx_snake_migration_name(string $class): string {{
+    $base = preg_replace('/[^A-Za-z0-9]+/', '_', $class);
+    $snake = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $base));
+    return trim($snake, '_') ?: 'nyx_migration';
+}}
+
+function __nyx_boot_laravel_database(): bool {{
+    if (!class_exists('Illuminate\\Database\\Capsule\\Manager')) return false;
+    try {{
+        $endpoint = getenv('NYX_SQL_ENDPOINT');
+        if ($endpoint === false || $endpoint === '') $endpoint = ':memory:';
+        $capsule = new Illuminate\Database\Capsule\Manager();
+        $capsule->addConnection([
+            'driver' => 'sqlite',
+            'database' => $endpoint,
+            'prefix' => '',
+        ]);
+        $capsule->setAsGlobal();
+        $capsule->bootEloquent();
+        $db = $capsule->getDatabaseManager();
+        $GLOBALS['__nyx_laravel_db'] = $db;
+        if (class_exists('Illuminate\\Container\\Container')) {{
+            $container = new Illuminate\Container\Container();
+            $container->instance('db', $db);
+            $container->instance('db.connection', $db->connection());
+            if (class_exists('Illuminate\\Support\\Facades\\Facade')) {{
+                Illuminate\Support\Facades\Facade::setFacadeApplication($container);
+            }}
+        }}
+        try {{
+            $db->connection()->listen(function ($query) {{
+                $sql = is_object($query) && isset($query->sql) ? $query->sql : (string)$query;
+                __nyx_record_migration_result($sql, 'laravel-listener');
+            }});
+        }} catch (Throwable $e) {{}}
+        return true;
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_LARAVEL_DB_BOOTSTRAP_FALLBACK: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        return false;
+    }}
+}}
+
+function __nyx_try_laravel_migrator(string $class): bool {{
+    if (!class_exists($class)) return false;
+    if (!class_exists('Illuminate\\Database\\Migrations\\Migrator')) return false;
+    if (!class_exists('Illuminate\\Database\\Migrations\\DatabaseMigrationRepository')) return false;
+    if (!class_exists('Illuminate\\Filesystem\\Filesystem')) return false;
+    if (!__nyx_boot_laravel_database()) return false;
+    try {{
+        $db = $GLOBALS['__nyx_laravel_db'] ?? null;
+        if (!$db) return false;
+    }} catch (Throwable $e) {{
+        try {{
+            $db = Illuminate\Support\Facades\DB::getFacadeRoot();
+        }} catch (Throwable $inner) {{
+            fwrite(STDERR, 'NYX_LARAVEL_MIGRATOR_DB_FALLBACK: ' . get_class($inner) . ': ' . $inner->getMessage() . "\n");
+            return false;
+        }}
+    }}
+    try {{
+        $repo = new Illuminate\Database\Migrations\DatabaseMigrationRepository($db, 'migrations');
+        if (!$repo->repositoryExists()) {{
+            $repo->createRepository();
+        }}
+        $files = new Illuminate\Filesystem\Filesystem();
+        $migrator = new Illuminate\Database\Migrations\Migrator($repo, $db, $files);
+        $dir = __DIR__ . '/nyx_laravel_migrations';
+        if (!is_dir($dir)) mkdir($dir, 0777, true);
+        $file = $dir . '/2026_01_01_000000_' . __nyx_snake_migration_name($class) . '.php';
+        file_put_contents($file, "<?php\nrequire_once __DIR__ . '/../entry.php';\n");
+        $migrator->run([$dir], ['pretend' => false]);
+        return true;
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_LARAVEL_MIGRATOR_FALLBACK: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        return false;
+    }}
+}}
+
 if (class_exists({handler:?})) {{
+    if (__nyx_try_laravel_migrator({handler:?})) {{
+        exit(0);
+    }}
     $inst = new {handler}();
     if (method_exists($inst, 'up')) {{
         try {{
@@ -3258,7 +3360,7 @@ if (class_exists({handler:?})) {{
 }
 
 fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
-    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+    if !should_stage_framework_dependency_files(spec) {
         return Vec::new();
     }
     let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
@@ -3279,6 +3381,14 @@ fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
     }
     body.push_str("  }\n}\n");
     vec![("composer.json".to_owned(), body)]
+}
+
+fn should_stage_framework_dependency_files(spec: &HarnessSpec) -> bool {
+    spec.expected_cap == crate::labels::Cap::CODE_EXEC
+        || matches!(
+            &spec.entry_kind,
+            crate::evidence::EntryKind::Migration { .. }
+        )
 }
 
 fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {

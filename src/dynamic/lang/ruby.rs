@@ -1054,6 +1054,51 @@ def __nyx_patch_active_record_sql_recording
   end
 end
 
+def __nyx_try_rails_migration_context(cls, version)
+  return false unless defined?(Rails)
+  return false unless defined?(ActiveRecord::MigrationContext)
+  return false unless Rails.respond_to?(:application) && Rails.application
+  begin
+    paths = []
+    begin
+      app_paths = Rails.application.paths if Rails.application.respond_to?(:paths)
+      if app_paths && app_paths['db/migrate']
+        paths = Array(app_paths['db/migrate'].respond_to?(:existent) ? app_paths['db/migrate'].existent : app_paths['db/migrate'])
+      end
+    rescue StandardError
+      paths = []
+    end
+    paths = [File.dirname(File.expand_path(__FILE__))] if paths.empty?
+    __nyx_patch_active_record_sql_recording
+    context = begin
+      if defined?(ActiveRecord::SchemaMigration)
+        ActiveRecord::MigrationContext.new(paths, ActiveRecord::SchemaMigration)
+      else
+        ActiveRecord::MigrationContext.new(paths)
+      end
+    end
+    target = nil
+    if version && version != '<no-version>'
+      begin
+        target = Integer(version)
+      rescue ArgumentError
+        target = nil
+      end
+    end
+    if target && target > 0 && context.respond_to?(:run)
+      context.run(:up, target)
+    elsif context.respond_to?(:up)
+      context.up
+    else
+      return false
+    end
+    true
+  rescue StandardError => e
+    STDERR.puts("NYX_RAILS_MIGRATION_CONTEXT_FALLBACK: #{{e.class.name}}: #{{e.message}}")
+    false
+  end
+end
+
 # ActiveRecord migrations expose `up` / `down` / `change` on a subclass.
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
@@ -1061,6 +1106,9 @@ if Object.const_defined?({handler:?})
     if defined?(ActiveRecord::Migration) && cls.is_a?(Class) && cls < ActiveRecord::Migration
       begin
         __nyx_patch_active_record_sql_recording
+        if __nyx_try_rails_migration_context(cls, {ver:?})
+          exit 0
+        end
         cls.migrate(:up)
         exit 0
       rescue StandardError => e
@@ -1125,7 +1173,7 @@ end
 }
 
 fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
-    if spec.expected_cap != crate::labels::Cap::CODE_EXEC {
+    if !should_stage_framework_dependency_files(spec) {
         return Vec::new();
     }
     let Some(adapter) = spec.framework.as_ref().map(|b| b.adapter.as_str()) else {
@@ -1145,6 +1193,14 @@ fn framework_dependency_files(spec: &HarnessSpec) -> Vec<(String, String)> {
         body.push_str(&format!("gem '{dep}'\n"));
     }
     vec![("Gemfile".to_owned(), body)]
+}
+
+fn should_stage_framework_dependency_files(spec: &HarnessSpec) -> bool {
+    spec.expected_cap == crate::labels::Cap::CODE_EXEC
+        || matches!(
+            &spec.entry_kind,
+            crate::evidence::EntryKind::Migration { .. }
+        )
 }
 
 /// Phase 03 — Track J.1 deserialize harness for Ruby.
