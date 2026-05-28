@@ -3,7 +3,7 @@
 //! Recognises rocket's `#[get("/path")]` / `#[post("/path")]`
 //! attribute macros plus the `routes![handler]` macro:
 //!
-//! ```rust
+//! ```rust,ignore
 //! #[get("/users/<id>")]
 //! fn show(id: String) -> String { id }
 //!

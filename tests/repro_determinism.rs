@@ -16,8 +16,37 @@ mod repro_determinism_tests {
     use nyx_scanner::evidence::{AttemptSummary, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
     use tempfile::TempDir;
+
+    static REPRO_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ReproEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prior: Option<String>,
+    }
+
+    impl ReproEnvGuard {
+        fn set(base: &Path) -> Self {
+            let lock = REPRO_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let prior = std::env::var("NYX_REPRO_BASE").ok();
+            unsafe { std::env::set_var("NYX_REPRO_BASE", base) };
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for ReproEnvGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => unsafe { std::env::set_var("NYX_REPRO_BASE", value) },
+                None => unsafe { std::env::remove_var("NYX_REPRO_BASE") },
+            }
+        }
+    }
 
     fn make_confirmed_spec(spec_hash: &str) -> HarnessSpec {
         HarnessSpec {
@@ -80,8 +109,7 @@ mod repro_determinism_tests {
     #[test]
     fn confirmed_repro_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        // Override repro base to temp dir.
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_spec("determ0000000001");
         let opts = SandboxOptions::default();
@@ -129,15 +157,13 @@ mod repro_determinism_tests {
             outcome_json_1, outcome_json_2,
             "outcome.json must be byte-identical across two runs with the same inputs"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     /// Verify that redacted outcome.json does not contain the secret.
     #[test]
     fn outcome_json_secrets_are_redacted() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_spec("determ0000000002");
         let opts = SandboxOptions::default();
@@ -166,8 +192,6 @@ mod repro_determinism_tests {
             !outcome_json.contains("AKIAFAKETEST00000000"),
             "AWS key must be redacted from outcome.json; got: {outcome_json}"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     // ── Rust repro tests ─────────────────────────────────────────────────────
@@ -210,7 +234,7 @@ fn main() {
     #[test]
     fn rust_repro_layout_is_correct() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_rust_spec("rust_determ00001");
         let opts = SandboxOptions::default();
@@ -247,15 +271,13 @@ fn main() {
         assert!(artifact.root.join("expected/outcome.json").exists());
         assert!(artifact.root.join("expected/verdict.json").exists());
         assert!(artifact.root.join("reproduce.sh").exists());
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     /// Rust repro outcome.json is byte-identical across two writes.
     #[test]
     fn rust_repro_outcome_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_rust_spec("rust_determ00002");
         let opts = SandboxOptions::default();
@@ -298,8 +320,6 @@ fn main() {
             json1, json2,
             "Rust outcome.json must be byte-identical across two writes"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     // ── JS repro tests ───────────────────────────────────────────────────────
@@ -328,7 +348,7 @@ fn main() {
     #[test]
     fn js_repro_outcome_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_js_spec("js_determ000001a");
         let opts = SandboxOptions::default();
@@ -370,8 +390,6 @@ fn main() {
             json1, json2,
             "JS outcome.json must be byte-identical across two writes"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     // ── Go repro tests ───────────────────────────────────────────────────────
@@ -400,7 +418,7 @@ fn main() {
     #[test]
     fn go_repro_outcome_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_go_spec("go_determ000001a");
         let opts = SandboxOptions::default();
@@ -442,8 +460,6 @@ fn main() {
             json1, json2,
             "Go outcome.json must be byte-identical across two writes"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     // ── Java repro tests ─────────────────────────────────────────────────────
@@ -472,7 +488,7 @@ fn main() {
     #[test]
     fn java_repro_outcome_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_java_spec("java_determ00001a");
         let opts = SandboxOptions::default();
@@ -514,8 +530,6 @@ fn main() {
             json1, json2,
             "Java outcome.json must be byte-identical across two writes"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     // ── PHP repro tests ──────────────────────────────────────────────────────
@@ -544,7 +558,7 @@ fn main() {
     #[test]
     fn php_repro_outcome_is_deterministic() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_php_spec("php_determ000001a");
         let opts = SandboxOptions::default();
@@ -586,15 +600,13 @@ fn main() {
             json1, json2,
             "PHP outcome.json must be byte-identical across two writes"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     /// Verify verdict.json is correctly structured.
     #[test]
     fn verdict_json_is_valid() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let spec = make_confirmed_spec("determ0000000003");
         let opts = SandboxOptions::default();
@@ -620,7 +632,5 @@ fn main() {
 
         assert_eq!(parsed["status"], "Confirmed");
         assert_eq!(parsed["finding_id"], "determinism00003");
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 }

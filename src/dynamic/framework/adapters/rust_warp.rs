@@ -3,7 +3,7 @@
 //! Recognises warp's `warp::path!(...)` macro chained with `.map(...)`
 //! or `.and_then(...)` to bridge into a handler function:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let r = warp::path!("users" / u32)
 //!     .and(warp::get())
 //!     .map(show);

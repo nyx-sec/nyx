@@ -2,7 +2,7 @@
 //!
 //! Recognises the canonical axum route builder:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let app = Router::new()
 //!     .route("/users/{id}", get(show))
 //!     .route("/save", post(save));

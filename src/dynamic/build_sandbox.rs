@@ -12,13 +12,17 @@
 //! Failed-build retry policy (§12 Q4): one retry on `BuildFailed` with
 //! backoff (1s, 4s), then `Inconclusive(BuildFailed, attempts: 2)`.
 
+use crate::dynamic::build_pool::java::JavacPool;
+use crate::dynamic::build_pool::{BuildPool, is_pool_enabled};
 use crate::dynamic::sandbox::ProcessHardeningProfile;
 use crate::dynamic::spec::HarnessSpec;
 use crate::symbol::Lang;
 use blake3::Hasher;
 use directories::ProjectDirs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 // ── Rust build sandbox ────────────────────────────────────────────────────────
@@ -787,6 +791,46 @@ fn compute_go_source_hash(workdir: &Path) -> String {
 
 // ── Java build sandbox ────────────────────────────────────────────────────────
 
+/// Process-wide registry of warm `javac` daemons, keyed on
+/// `spec.toolchain_id` (`"java-17"`, `"java-21"`, …).
+///
+/// One pool per toolchain id is the right shard: different `--release`
+/// targets land in different cache slots upstream, and the worker JVM
+/// itself binds to a single `javac` install at spawn time.  Cache hits
+/// are O(1) lookup; cache misses pay the bootstrap cost (compile +
+/// spawn the worker JVM) exactly once per toolchain id per process.
+///
+/// `OnceLock<Mutex<HashMap<…>>>` rather than a parameterised
+/// `OnceLock` because the toolchain id is only known at request time.
+fn javac_pool_registry() -> &'static Mutex<HashMap<String, Option<Arc<JavacPool>>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, Option<Arc<JavacPool>>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Look up (or lazily spawn) a `javac` daemon for `toolchain_id`.
+///
+/// Returns `None` when the bootstrap fails -- the caller is expected
+/// to fall back to the direct-spawn legacy path.
+fn javac_pool_for(toolchain_id: &str) -> Option<Arc<JavacPool>> {
+    let reg = javac_pool_registry();
+    let mut guard = reg.lock().ok()?;
+    if let Some(slot) = guard.get(toolchain_id) {
+        return slot.clone();
+    }
+    let pool = JavacPool::try_new(toolchain_id).ok().map(Arc::new);
+    guard.insert(toolchain_id.to_owned(), pool.clone());
+    pool
+}
+
+/// Drop the cached `javac` daemon for `toolchain_id` so the next
+/// lookup re-spawns it.  Called after the dispatcher observes the
+/// worker has crashed mid-request.
+fn drop_javac_pool(toolchain_id: &str) {
+    if let Ok(mut guard) = javac_pool_registry().lock() {
+        guard.remove(toolchain_id);
+    }
+}
+
 /// Prepare compiled Java classes for `spec`.
 ///
 /// Runs `javac` over every `*.java` file in `workdir` (recursive).  Phase 14
@@ -852,7 +896,12 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
             ));
         }
         let compile_cache = cache_path.as_deref().unwrap_or(workdir);
-        match try_compile_java(workdir, compile_cache, target_release) {
+        match try_compile_java_with_toolchain(
+            workdir,
+            compile_cache,
+            target_release,
+            &spec.toolchain_id,
+        ) {
             Ok(()) => {
                 let build_root = cache_path.clone().unwrap_or_else(|| workdir.to_path_buf());
                 return Ok(BuildResult {
@@ -916,13 +965,17 @@ fn java_target_release(toolchain_id: &str) -> Option<u32> {
     }
 }
 
-fn try_compile_java(
+/// Compile every `.java` under `workdir`.
+///
+/// `toolchain_id` is threaded down so the pool path (when enabled) can
+/// shard its cached [`JavacPool`] handles by JDK version: `"java-17"`
+/// and `"java-21"` get separate worker JVMs.
+fn try_compile_java_with_toolchain(
     workdir: &Path,
     cache_path: &Path,
     target_release: Option<u32>,
+    toolchain_id: &str,
 ) -> Result<(), String> {
-    let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
-
     // If the harness emitter shipped a `pom.xml`, stage Maven-resolved
     // jars under `workdir/lib` so javac (and the runtime classpath
     // baked into the harness command) can resolve framework imports
@@ -951,6 +1004,30 @@ fn try_compile_java(
         args.push(src.to_string_lossy().into_owned());
     }
 
+    // Route through the warm `javac` daemon when the pool is enabled
+    // and a worker can be brought up.  Bootstrap failures fall back to
+    // the direct-spawn legacy path so an operator with a broken JDK
+    // install still gets a deterministic build error from `javac`
+    // itself rather than from the pool wrapper.
+    if is_pool_enabled("java") {
+        if let Some(pool) = javac_pool_for(toolchain_id) {
+            let result = pool.compile_batch(workdir, &args);
+            if result.success {
+                return finalize_java_compile(workdir, cache_path, lib_on_cp);
+            }
+            if pool.is_healthy() {
+                // The compile itself failed (real source error) -- surface
+                // the worker's stderr verbatim.
+                return Err(result.stderr);
+            }
+            // Worker crashed: drop the cached pool so the next call
+            // re-spawns it, then fall through to the legacy direct-spawn
+            // path so this build still has a chance to succeed.
+            drop_javac_pool(toolchain_id);
+        }
+    }
+
+    let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
     let output = Command::new(&javac)
         .args(&args)
         .current_dir(workdir)
@@ -964,6 +1041,13 @@ fn try_compile_java(
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
 
+    finalize_java_compile(workdir, cache_path, lib_on_cp)
+}
+
+/// Shared post-compile step: copy class files (and any Maven `lib/`)
+/// from the workdir into the cache slot so the next cache-hit restore
+/// can rebuild the harness layout without recompiling.
+fn finalize_java_compile(workdir: &Path, cache_path: &Path, lib_on_cp: bool) -> Result<(), String> {
     if cache_path != workdir {
         // Copy class files to cache.  `javac -d workdir` writes nested
         // package directories under workdir; preserve the relative layout

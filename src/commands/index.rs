@@ -1,7 +1,6 @@
 use crate::cli::IndexAction;
-use crate::database::index::{Indexer, IssueRow};
+use crate::database::index::{IndexWriteQueue, Indexer, IssueRow};
 use crate::errors::NyxResult;
-use crate::patterns::Severity;
 use crate::server::progress::{ScanMetrics, ScanProgress, ScanStage};
 use crate::server::scan_log::ScanLogCollector;
 use crate::utils::Config;
@@ -200,108 +199,123 @@ pub fn build_index_with_observer(
     let metrics = metrics.cloned();
     let logs = logs.cloned();
     let pass1_start = std::time::Instant::now();
-    paths
-        .into_par_iter()
-        .try_for_each(|path| -> NyxResult<()> {
-            let mut idx = Indexer::from_pool(project_name, &pool)?;
+    let writer = IndexWriteQueue::start(project_name.to_owned(), Arc::clone(&pool));
+    let write_tx = writer.sender();
+    let index_result = paths.into_par_iter().try_for_each(|path| -> NyxResult<()> {
+        // Read once, hash once, pass bytes to both rule execution and
+        // summary extraction.  Use pre-computed hash for upsert to avoid
+        // a redundant file read inside upsert_file.
+        let bytes = std::fs::read(&path)?;
+        let hash = Indexer::digest_bytes(&bytes);
 
-            // Read once, hash once, pass bytes to both rule execution and
-            // summary extraction.  Use pre-computed hash for upsert to avoid
-            // a redundant file read inside upsert_file.
-            let bytes = std::fs::read(&path)?;
-            let hash = Indexer::digest_bytes(&bytes);
+        // Parse once and persist every artifact we can reuse later:
+        // findings, coarse summaries, and precise SSA summaries.
+        let fused = crate::commands::scan::analyse_file_fused(
+            &bytes,
+            &path,
+            config,
+            None,
+            Some(project_path),
+        )?;
+        if let Some(ref p) = progress {
+            p.inc_parsed(1);
+            p.set_current_file(&path.to_string_lossy());
+            if let Some(lang) = fused.summaries.first().map(|s| s.lang.as_str()) {
+                p.record_language(lang);
+            }
+        }
+        if let Some(ref m) = metrics {
+            m.cfg_nodes.fetch_add(fused.cfg_nodes as u64, Relaxed);
+        }
 
-            // Parse once and persist every artifact we can reuse later:
-            // findings, coarse summaries, and precise SSA summaries.
-            let fused = crate::commands::scan::analyse_file_fused(
-                &bytes,
-                &path,
-                config,
-                None,
-                Some(project_path),
+        let issue_rows: Vec<(String, String, i64, i64)> = fused
+            .diags
+            .iter()
+            .map(|d| {
+                (
+                    d.id.clone(),
+                    d.severity.as_db_str().to_string(),
+                    d.line as i64,
+                    d.col as i64,
+                )
+            })
+            .collect();
+
+        let summaries = fused.summaries;
+        let ssa_rows: Vec<_> = fused
+            .ssa_summaries
+            .into_iter()
+            .map(|(key, sum)| {
+                (
+                    key.name,
+                    key.arity.unwrap_or(0),
+                    key.lang.as_str().to_string(),
+                    key.namespace,
+                    key.container,
+                    key.disambig,
+                    key.kind,
+                    sum,
+                )
+            })
+            .collect();
+
+        // Persist SSA callee bodies at index-build time so CLI-initiated
+        // rebuilds (`--index rebuild`) populate the same
+        // `ssa_function_bodies` rows that `scan_with_index_parallel`
+        // would have written via its pass-1 branch.  Without this,
+        // indexed scans load zero cross-file bodies and cross-file
+        // inline silently falls back to summary resolution.
+        let body_rows: Vec<_> = fused
+            .ssa_bodies
+            .into_iter()
+            .map(|(key, body)| {
+                (
+                    key.name,
+                    key.arity.unwrap_or(0),
+                    key.lang.as_str().to_string(),
+                    key.namespace,
+                    key.container,
+                    key.disambig,
+                    key.kind,
+                    body,
+                )
+            })
+            .collect();
+
+        let path_for_write = path.clone();
+        write_tx.enqueue(move |idx| {
+            let file_id = idx.upsert_file_with_hash(&path_for_write, &hash)?;
+            idx.replace_issues(
+                file_id,
+                issue_rows
+                    .iter()
+                    .map(|(rule_id, severity, line, col)| IssueRow {
+                        rule_id: rule_id.as_str(),
+                        severity: severity.as_str(),
+                        line: *line,
+                        col: *col,
+                    }),
             )?;
-            if let Some(ref p) = progress {
-                p.inc_parsed(1);
-                p.set_current_file(&path.to_string_lossy());
-                if let Some(lang) = fused.summaries.first().map(|s| s.lang.as_str()) {
-                    p.record_language(lang);
-                }
+
+            if !summaries.is_empty() {
+                idx.replace_summaries_for_file(&path_for_write, &hash, &summaries)?;
             }
-            if let Some(ref m) = metrics {
-                m.cfg_nodes.fetch_add(fused.cfg_nodes as u64, Relaxed);
+            if !ssa_rows.is_empty() {
+                idx.replace_ssa_summaries_for_file(&path_for_write, &hash, &ssa_rows)?;
             }
-            let file_id = idx.upsert_file_with_hash(&path, &hash)?;
-
-            let rows: Vec<IssueRow> = fused
-                .diags
-                .iter()
-                .map(|d| IssueRow {
-                    rule_id: d.id.as_ref(),
-                    severity: match d.severity {
-                        Severity::High => "HIGH",
-                        Severity::Medium => "MEDIUM",
-                        Severity::Low => "LOW",
-                    },
-                    line: d.line as i64,
-                    col: d.col as i64,
-                })
-                .collect();
-
-            idx.replace_issues(file_id, rows)?;
-
-            if !fused.summaries.is_empty() {
-                idx.replace_summaries_for_file(&path, &hash, &fused.summaries)?;
+            if !body_rows.is_empty() {
+                idx.replace_ssa_bodies_for_file(&path_for_write, &hash, &body_rows)?;
             }
-
-            if !fused.ssa_summaries.is_empty() {
-                let ssa_rows: Vec<_> = fused
-                    .ssa_summaries
-                    .into_iter()
-                    .map(|(key, sum)| {
-                        (
-                            key.name,
-                            key.arity.unwrap_or(0),
-                            key.lang.as_str().to_string(),
-                            key.namespace,
-                            key.container,
-                            key.disambig,
-                            key.kind,
-                            sum,
-                        )
-                    })
-                    .collect();
-                idx.replace_ssa_summaries_for_file(&path, &hash, &ssa_rows)?;
-            }
-
-            // Persist SSA callee bodies at index-build time so CLI-initiated
-            // rebuilds (`--index rebuild`) populate the same
-            // `ssa_function_bodies` rows that `scan_with_index_parallel`
-            // would have written via its pass-1 branch.  Without this,
-            // indexed scans load zero cross-file bodies and cross-file
-            // inline silently falls back to summary resolution.
-            if !fused.ssa_bodies.is_empty() {
-                let body_rows: Vec<_> = fused
-                    .ssa_bodies
-                    .into_iter()
-                    .map(|(key, body)| {
-                        (
-                            key.name,
-                            key.arity.unwrap_or(0),
-                            key.lang.as_str().to_string(),
-                            key.namespace,
-                            key.container,
-                            key.disambig,
-                            key.kind,
-                            body,
-                        )
-                    })
-                    .collect();
-                idx.replace_ssa_bodies_for_file(&path, &hash, &body_rows)?;
-            }
-
-            pb.inc(1);
             Ok(())
         })?;
+
+        pb.inc(1);
+        Ok(())
+    });
+    drop(write_tx);
+    let writer_result = writer.finish("Index rebuild");
+    index_result?;
+    writer_result?;
     pb.finish_and_clear();
     if let Some(p) = &progress {
         p.record_pass1_ms(pass1_start.elapsed().as_millis() as u64);

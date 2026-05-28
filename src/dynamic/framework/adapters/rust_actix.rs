@@ -3,7 +3,7 @@
 //! Recognises actix's `#[get("/path")]` / `#[post("/path")]`
 //! attribute macros on handler functions:
 //!
-//! ```rust
+//! ```rust,ignore
 //! #[get("/users/{id}")]
 //! async fn show(id: web::Path<String>) -> impl Responder { id }
 //! ```

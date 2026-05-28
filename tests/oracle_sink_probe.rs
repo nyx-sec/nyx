@@ -21,8 +21,36 @@ use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{
     PROBE_PATH_ENV, ProbeArg, ProbeChannel, ProbeKind, ProbeWitness, SinkProbe,
 };
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use tempfile::TempDir;
+
+static PROBE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct ProbeEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    prior: Option<String>,
+}
+
+impl ProbeEnvGuard {
+    fn set(channel: &ProbeChannel) -> Self {
+        let lock = PROBE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior = std::env::var(PROBE_PATH_ENV).ok();
+        unsafe { std::env::set_var(PROBE_PATH_ENV, channel.path()) };
+        Self { _lock: lock, prior }
+    }
+}
+
+impl Drop for ProbeEnvGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(value) => unsafe { std::env::set_var(PROBE_PATH_ENV, value) },
+            None => unsafe { std::env::remove_var(PROBE_PATH_ENV) },
+        }
+    }
+}
 
 /// Minimal [`SandboxOutcome`] suitable for oracle evaluation when the
 /// runner-side execution path is not exercised.  All flags are off so any
@@ -77,15 +105,7 @@ fn sink_probe_oracle_confirms_when_harness_writes_probe() {
 
     // Exercise the harness env-var path so the test also locks the
     // NYX_PROBE_PATH contract the real sandbox forwards to the harness.
-    // SAFETY: each test has a fresh tempdir and the env var is consumed
-    // immediately by the synthetic harness body, then re-checked below.
-    // Tests in this binary run on isolated channels so the env var read
-    // is unambiguous.
-    // SAFETY: env_var is process-global; this binary contains only the
-    // oracle_sink_probe tests so the writes do not race other suites.
-    unsafe {
-        std::env::set_var(PROBE_PATH_ENV, channel.path());
-    }
+    let _env = ProbeEnvGuard::set(&channel);
     assert_eq!(
         std::env::var(PROBE_PATH_ENV).unwrap().as_str(),
         channel.path().to_str().unwrap(),
@@ -121,9 +141,7 @@ fn sink_probe_oracle_not_confirmed_when_harness_omits_probe() {
     let dir = TempDir::new().unwrap();
     let channel = ProbeChannel::for_workdir(dir.path()).unwrap();
 
-    unsafe {
-        std::env::set_var(PROBE_PATH_ENV, channel.path());
-    }
+    let _env = ProbeEnvGuard::set(&channel);
 
     // Control fixture: identical configuration but the harness skips its
     // probe write.  Same oracle predicate set as the Confirmed test —

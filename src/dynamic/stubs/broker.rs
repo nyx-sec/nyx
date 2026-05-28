@@ -2192,6 +2192,7 @@ fn handle_rabbit_amqp_connection(
                     break;
                 };
                 let payload = String::from_utf8_lossy(&body).into_owned();
+                let _ = append_broker_event(log_path, "publish", &routing_key, &payload);
                 let destinations =
                     rabbit_amqp_publish_destinations(&state, &exchange, &routing_key);
                 for destination in &destinations {
@@ -2204,7 +2205,6 @@ fn handle_rabbit_amqp_connection(
                         rabbit_amqp_enqueue(&state, destination, &payload);
                     }
                 }
-                let _ = append_broker_event(log_path, "publish", &routing_key, &payload);
                 if confirms_enabled {
                     next_publish_tag = next_publish_tag.saturating_add(1);
                     if amqp_write_basic_ack(&mut writer, frame.channel, next_publish_tag, false)

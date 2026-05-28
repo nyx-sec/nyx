@@ -5,7 +5,7 @@ pub(crate) use crate::ast::{
 };
 use crate::callgraph::{CallGraph, FileBatch};
 use crate::cli::{IndexMode, OutputFormat};
-use crate::database::index::{Indexer, IssueRow};
+use crate::database::index::{IndexWriteQueue, Indexer, IssueRow};
 use crate::errors::NyxResult;
 use crate::patterns::{FindingCategory, Severity, SeverityFilter};
 use crate::server::progress::{ScanMetrics, ScanProgress, ScanStage};
@@ -2577,6 +2577,8 @@ pub fn scan_with_index_parallel_observer(
         let pass1_start = std::time::Instant::now();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
         let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
+        let write_tx = writer.sender();
 
         let scan_root_ref = scan_root.to_path_buf();
         let persist_errors_ref = Arc::clone(&persist_errors);
@@ -2661,16 +2663,25 @@ pub fn scan_with_index_parallel_observer(
                                     .collect();
                                 // Single transaction for all four caches:
                                 // one fsync per file instead of four.
-                                let cpi_arg = cross_pkg_imports
-                                    .as_ref()
-                                    .map(|(ns, map)| (ns.as_str(), map.as_ref()));
-                                if let Err(e) = idx.replace_all_for_file(
-                                    path, &hash, &func_sums, &ssa_rows, &body_rows, &auth_rows,
-                                    cpi_arg,
-                                ) {
+                                let path_for_write = path.clone();
+                                let path_label = path.display().to_string();
+                                if let Err(e) = write_tx.enqueue(move |writer_idx| {
+                                    let cpi_arg = cross_pkg_imports
+                                        .as_ref()
+                                        .map(|(ns, map)| (ns.as_str(), map.as_ref()));
+                                    writer_idx.replace_all_for_file(
+                                        &path_for_write,
+                                        &hash,
+                                        &func_sums,
+                                        &ssa_rows,
+                                        &body_rows,
+                                        &auth_rows,
+                                        cpi_arg,
+                                    )
+                                }) {
                                     record_persist_error(
                                         &persist_errors_ref,
-                                        format!("summaries {}: {e}", path.display()),
+                                        format!("queue summaries {path_label}: {e}"),
                                     );
                                 }
                             }
@@ -2690,6 +2701,8 @@ pub fn scan_with_index_parallel_observer(
                 pb.inc(1);
             },
         );
+        drop(write_tx);
+        let writer_result = writer.finish("Pass 1");
         pb.finish_and_clear();
         let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
@@ -2711,6 +2724,7 @@ pub fn scan_with_index_parallel_observer(
             );
         }
         fail_if_persist_errors("Pass 1", persist_errors)?;
+        writer_result?;
     }
 
     // ── Load global summaries ────────────────────────────────────────────
@@ -2928,6 +2942,8 @@ pub fn scan_with_index_parallel_observer(
         let diag_map: DashMap<String, Vec<Diag>> = DashMap::new();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
         let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
+        let write_tx = writer.sender();
 
         let persist_errors_ref = Arc::clone(&persist_errors);
         let skipped_files_ref = Arc::clone(&skipped_files);
@@ -2964,33 +2980,42 @@ pub fn scan_with_index_parallel_observer(
                     )
                     .unwrap_or_default();
 
-                    let file_id = match &hash {
-                        Some(h) => idx.upsert_file_with_hash(&path, h),
-                        None => idx.upsert_file(&path),
-                    };
-                    match file_id {
-                        Ok(file_id) => {
-                            if let Err(e) = idx.replace_issues(
-                                file_id,
-                                d.iter().map(|d| IssueRow {
-                                    rule_id: &d.id,
-                                    severity: d.severity.as_db_str(),
-                                    line: d.line as i64,
-                                    col: d.col as i64,
+                    let issue_rows: Vec<(String, String, i64, i64)> = d
+                        .iter()
+                        .map(|d| {
+                            (
+                                d.id.clone(),
+                                d.severity.as_db_str().to_string(),
+                                d.line as i64,
+                                d.col as i64,
+                            )
+                        })
+                        .collect();
+                    let path_for_write = path.clone();
+                    let path_label = path.display().to_string();
+                    let hash_for_write = hash;
+                    if let Err(e) = write_tx.enqueue(move |writer_idx| {
+                        let file_id = match &hash_for_write {
+                            Some(h) => writer_idx.upsert_file_with_hash(&path_for_write, h),
+                            None => writer_idx.upsert_file(&path_for_write),
+                        }?;
+                        writer_idx.replace_issues(
+                            file_id,
+                            issue_rows
+                                .iter()
+                                .map(|(rule_id, severity, line, col)| IssueRow {
+                                    rule_id: rule_id.as_str(),
+                                    severity: severity.as_str(),
+                                    line: *line,
+                                    col: *col,
                                 }),
-                            ) {
-                                record_persist_error(
-                                    &persist_errors_ref,
-                                    format!("issues {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            record_persist_error(
-                                &persist_errors_ref,
-                                format!("file row {}: {e}", path.display()),
-                            );
-                        }
+                        )?;
+                        Ok(())
+                    }) {
+                        record_persist_error(
+                            &persist_errors_ref,
+                            format!("queue issues {path_label}: {e}"),
+                        );
                     }
                     d
                 } else {
@@ -3013,6 +3038,8 @@ pub fn scan_with_index_parallel_observer(
                 pb2.inc(1);
             },
         );
+        drop(write_tx);
+        let writer_result = writer.finish("AST-only pass 2");
         pb2.finish_and_clear();
         let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
@@ -3025,6 +3052,7 @@ pub fn scan_with_index_parallel_observer(
                 .store(skipped, std::sync::atomic::Ordering::Relaxed);
         }
         fail_if_persist_errors("AST-only pass 2", persist_errors)?;
+        writer_result?;
 
         let mut diags: Vec<Diag> = diag_map.into_iter().flat_map(|(_, v)| v).collect();
         let post_process_start = std::time::Instant::now();

@@ -35,8 +35,37 @@ mod repro_hermetic_tests {
     use nyx_scanner::evidence::{AttemptSummary, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
     use tempfile::TempDir;
+
+    static REPRO_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ReproEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prior: Option<String>,
+    }
+
+    impl ReproEnvGuard {
+        fn set(base: &Path) -> Self {
+            let lock = REPRO_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let prior = std::env::var("NYX_REPRO_BASE").ok();
+            unsafe { std::env::set_var("NYX_REPRO_BASE", base) };
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for ReproEnvGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(value) => unsafe { std::env::set_var("NYX_REPRO_BASE", value) },
+                None => unsafe { std::env::remove_var("NYX_REPRO_BASE") },
+            }
+        }
+    }
 
     fn make_spec() -> HarnessSpec {
         HarnessSpec {
@@ -98,7 +127,7 @@ mod repro_hermetic_tests {
     #[test]
     fn bundle_carries_toolchain_lock_with_hashes() {
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let artifact = repro::write(
             &make_spec(),
@@ -146,8 +175,6 @@ mod repro_hermetic_tests {
             lock["files"], lock2["files"],
             "lock file hashes must be deterministic"
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     #[test]
@@ -157,7 +184,7 @@ mod repro_hermetic_tests {
         // verify the script *refuses* to run rather than crashing —
         // the green path on a clean machine is via `--docker`.
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let artifact = repro::write(
             &make_spec(),
@@ -226,8 +253,6 @@ mod repro_hermetic_tests {
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr),
         );
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     #[test]
@@ -286,7 +311,7 @@ mod repro_hermetic_tests {
         // once digests land and gates against regressions where a
         // pinned toolchain stops emitting `docker_pull.sh`.
         let dir = TempDir::new().unwrap();
-        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let _env = ReproEnvGuard::set(dir.path());
 
         let mut spec = make_spec();
         spec.toolchain_id = "python-3.11".into();
@@ -316,7 +341,5 @@ mod repro_hermetic_tests {
                 "docker_pull.sh should not be emitted when toolchain is unpinned",
             );
         }
-
-        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 }

@@ -65,6 +65,7 @@
 //! [`SpecDerivationStrategy::FromFuncSummaryWalk`]: spec::SpecDerivationStrategy::FromFuncSummaryWalk
 //! [`SpecDerivationStrategy::FromCallgraphEntry`]: spec::SpecDerivationStrategy::FromCallgraphEntry
 
+pub mod build_pool;
 pub mod build_sandbox;
 pub mod corpus;
 pub mod differential;

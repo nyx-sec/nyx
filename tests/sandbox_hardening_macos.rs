@@ -17,6 +17,7 @@
 #[cfg(all(feature = "dynamic", target_os = "macos"))]
 mod hardening_tests {
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
 
     use nyx_scanner::dynamic::harness::BuiltHarness;
@@ -27,6 +28,14 @@ mod hardening_tests {
     use nyx_scanner::dynamic::sandbox::{
         self, HardeningRecord, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
     };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn macos_outcome(
         out: &sandbox::SandboxOutcome,
@@ -223,6 +232,7 @@ finally:
     /// fallback to engage — see `verify_finding_refuses_filesystem_*`.
     #[test]
     fn sandbox_exec_present_on_default_host() {
+        let _env = lock_env();
         // Clear any override left by a sibling test in the same process.
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
@@ -241,6 +251,7 @@ finally:
     /// `NotConfirmed` (exit != 0 + no sink-hit + no oracle fire).
     #[test]
     fn path_traversal_payload_blocked_under_strict() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
             eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise wrap");
@@ -279,6 +290,7 @@ finally:
     /// above is actually exercising the sandbox or a probe quirk.
     #[test]
     fn standard_profile_does_not_wrap_with_sandbox_exec() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         let tmp = workdir();
         let harness = build_harness(tmp.path());
@@ -304,6 +316,7 @@ finally:
     /// binary path via the [`SANDBOX_EXEC_BIN_ENV`] override.
     #[test]
     fn sandbox_exec_missing_records_trusted_outcome() {
+        let _env = lock_env();
         const FILE_IO: u32 = 1 << 5;
         unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
         let tmp = workdir();
@@ -324,6 +337,7 @@ finally:
     /// running unconfined.
     #[test]
     fn verify_options_from_config_sets_refuse_when_sandbox_exec_missing() {
+        let _env = lock_env();
         use nyx_scanner::dynamic::verify::VerifyOptions;
         use nyx_scanner::utils::config::Config;
         unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
@@ -344,6 +358,7 @@ finally:
     /// and exits 0 with the `network-attempted` marker.
     #[test]
     fn xxe_outbound_blocked_under_strict_xxe_profile() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
             eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise xxe profile");
@@ -381,6 +396,7 @@ finally:
     /// vacuously.
     #[test]
     fn xxe_probe_under_standard_does_not_surface_eperm() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         let tmp = workdir();
         let harness = build_xxe_harness(tmp.path());
@@ -415,6 +431,7 @@ finally:
     /// harness free to open arbitrary outbound sockets.
     #[test]
     fn sql_profile_allows_sqlite_stub_and_blocks_non_loopback_egress() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
             eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise sql profile");
@@ -472,6 +489,7 @@ finally:
     /// flag stays `false` so filesystem oracles run normally.
     #[test]
     fn verify_options_from_config_does_not_refuse_when_sandbox_exec_present() {
+        let _env = lock_env();
         use nyx_scanner::dynamic::verify::VerifyOptions;
         use nyx_scanner::utils::config::Config;
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
@@ -497,6 +515,7 @@ finally:
     /// finding's oracle.
     #[test]
     fn summarize_hardening_lands_path_traversal_on_strict_file_io_run() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
             eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise wrap");
@@ -527,6 +546,7 @@ finally:
     /// `standard_profile_does_not_wrap_with_sandbox_exec`.
     #[test]
     fn summarize_hardening_returns_none_for_standard_profile_run() {
+        let _env = lock_env();
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         let tmp = workdir();
         let harness = build_harness(tmp.path());
@@ -547,6 +567,7 @@ finally:
     /// reflect that.
     #[test]
     fn verify_finding_under_standard_leaves_hardening_outcome_unset() {
+        let _env = lock_env();
         use std::path::PathBuf;
         let python3_available = std::process::Command::new("/usr/bin/python3")
             .arg("--version")
@@ -679,6 +700,7 @@ finally:
     /// reads of host secrets are denied via the inherited denylist).
     #[test]
     fn verify_finding_under_strict_stamps_hardening_outcome() {
+        let _env = lock_env();
         use std::path::PathBuf;
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
         if !sandbox_exec_available() {
@@ -838,6 +860,7 @@ finally:
     /// before this one.
     #[test]
     fn deny_default_seed_loads_under_strict() {
+        let _env = lock_env();
         let seed_dir = tempfile::TempDir::new().expect("seed tempdir");
         // The seed body is intentionally over-permissive so the
         // /usr/bin/true probe at the end of the test can clear without

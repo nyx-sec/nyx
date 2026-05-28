@@ -20,8 +20,21 @@ use nyx_scanner::evidence::{Confidence, Evidence, VerifyStatus};
 use nyx_scanner::patterns::{FindingCategory, Severity};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::sync::{Mutex, MutexGuard};
 
 const RUN_COUNT: usize = 10;
+
+// `NYX_TELEMETRY_PATH` and the telemetry log are process-wide; cargo test
+// runs the tests in this binary in parallel by default, which would race
+// the env var and interleave writes from sibling tests into the file the
+// telemetry-determinism assertion is reading.  Serialise the tests in
+// this file with a module-level mutex so each owns the telemetry surface
+// exclusively for the duration of its run.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_telemetry() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn deny_diag(stable_hash: u64) -> Diag {
     // Triggers the credentials deny rule via the AWS-key regex from
@@ -75,6 +88,7 @@ fn strip_volatile_fields(line: &str) -> String {
 
 #[test]
 fn ten_runs_produce_byte_identical_telemetry_minus_timestamps() {
+    let _guard = lock_telemetry();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let log = tmp.path().join("events.jsonl");
     // Pin the telemetry log to the temp file and ensure the
@@ -210,6 +224,8 @@ fn confirmed_run_is_byte_identical_across_runs() {
     use nyx_scanner::labels::Cap;
     use nyx_scanner::utils::config::Config;
     use std::path::PathBuf;
+
+    let _guard = lock_telemetry();
 
     const RUN_COUNT_CONFIRMED: usize = 3;
 
@@ -364,6 +380,7 @@ fn confirmed_run_is_byte_identical_across_runs() {
 
 #[test]
 fn policy_deny_excerpt_is_stable_across_runs() {
+    let _guard = lock_telemetry();
     // The PolicyDeniedDynamic verdict carries an excerpt scrubbed via
     // the blake3-keyed `Scrubber`.  blake3 is deterministic, so the
     // excerpt should be byte-identical across runs.  Independent
