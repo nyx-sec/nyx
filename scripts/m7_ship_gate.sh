@@ -71,8 +71,8 @@ gate_1_static_corpus() {
         return 0
     fi
     cargo run --release --quiet -- scan \
-        --path "${REPO_ROOT}/tests/benchmark/corpus" \
-        --format json > /tmp/m7_gate1.json
+        --format json \
+        "${REPO_ROOT}/tests/benchmark/corpus" > /tmp/m7_gate1.json
     echo "  PASS: static scan completed"
 }
 
@@ -120,10 +120,11 @@ gate_3_verify_ratio() {
 #   $2 = 0 for static-only, 1 for --verify
 time_scan() {
     local path="$1" verify="$2"
-    local args=("--path" "${path}" "--format" "json")
+    local args=("--format" "json")
     if [[ "${verify}" == "1" ]]; then
         args+=("--verify")
     fi
+    args+=("${path}")
     local start end
     start="$(python3 -c 'import time;print(time.monotonic())')"
     cargo run --release --quiet --features dynamic -- scan "${args[@]}" > /dev/null
@@ -164,31 +165,84 @@ gate_6_owasp_scale() {
         return 0
     fi
 
-    local report="/tmp/m7_gate6_report.json"
-    local start end wallclock
-    start="$(python3 -c 'import time;print(time.monotonic())')"
-    cargo run --release --quiet --features dynamic -- scan \
-        --path "${corpus}" \
+    local scan_report="/tmp/m7_gate6_scan.json"
+    local results_report="/tmp/m7_gate6_results.json"
+    local wallclock_report="/tmp/m7_gate6_wallclock.txt"
+    local gate_home="${TMPDIR:-/tmp}/nyx_m7_gate6_home"
+    local gate_build_pool="${TMPDIR:-/tmp}/nyx_m7_gate6_build_pool"
+    local wallclock
+
+    cargo build --release --quiet --features dynamic
+    mkdir -p "${gate_home}" "${gate_build_pool}"
+    rm -f "${scan_report}" "${results_report}" "${wallclock_report}"
+
+    set +e
+    HOME="${gate_home}" \
+    NYX_BUILD_POOL_DIR="${gate_build_pool}" \
+    python3 - "${GATE6_WALLCLOCK_BUDGET}" "${scan_report}" "${wallclock_report}" \
+        "${REPO_ROOT}/target/release/nyx" scan \
         --verify \
-        --format json > "${report}"
-    end="$(python3 -c 'import time;print(time.monotonic())')"
-    wallclock="$(awk -v a="${start}" -v b="${end}" 'BEGIN { printf "%.1f", b - a }')"
+        --index off \
+        --format json \
+        --quiet \
+        "${corpus}" <<'PY'
+import subprocess
+import sys
+import time
+
+budget = float(sys.argv[1])
+scan_report = sys.argv[2]
+wallclock_report = sys.argv[3]
+cmd = sys.argv[4:]
+start = time.monotonic()
+rc = 0
+try:
+    with open(scan_report, "wb") as out:
+        completed = subprocess.run(cmd, stdout=out, timeout=budget)
+        rc = completed.returncode
+except subprocess.TimeoutExpired:
+    rc = 124
+finally:
+    elapsed = time.monotonic() - start
+    with open(wallclock_report, "w") as f:
+        f.write(f"{elapsed:.1f}\n")
+sys.exit(rc)
+PY
+    local nyx_exit=$?
+    set -e
+    wallclock="$(cat "${wallclock_report}" 2>/dev/null || printf "%s" "${GATE6_WALLCLOCK_BUDGET}")"
 
     echo "  OWASP verify wall-clock: ${wallclock}s (budget ${GATE6_WALLCLOCK_BUDGET}s)"
+
+    if [[ ${nyx_exit} -eq 124 ]]; then
+        echo "  FAIL: nyx scan exceeded wall-clock budget"
+        return 1
+    fi
+    if [[ ${nyx_exit} -ne 0 && ${nyx_exit} -ne 1 ]]; then
+        echo "  FAIL: nyx scan exited ${nyx_exit}"
+        return 1
+    fi
+    if [[ ! -s "${scan_report}" ]]; then
+        echo "  FAIL: nyx scan produced no JSON report"
+        return 1
+    fi
 
     awk -v w="${wallclock}" -v b="${GATE6_WALLCLOCK_BUDGET}" \
         'BEGIN { if (w+0 > b+0) exit 1 }' \
         || { echo "  FAIL: wall-clock exceeds budget"; return 1; }
 
-    if [[ -x "${REPO_ROOT}/tests/eval_corpus/report.py" ]]; then
-        # Per-cap confirmed-rate report; the helper exits non-zero if
-        # any cap falls below the target.
-        NYX_CONFIRMED_RATE_TARGET="${GATE6_CONFIRMED_RATE_TARGET}" \
-            python3 "${REPO_ROOT}/tests/eval_corpus/report.py" "${report}" \
-            || { echo "  FAIL: confirmed-rate below ${GATE6_CONFIRMED_RATE_TARGET}"; return 1; }
-    else
-        echo "  NOTE: tests/eval_corpus/report.py not present; skipping per-cap check"
-    fi
+    echo "[]" > "${results_report}"
+    python3 "${REPO_ROOT}/tests/eval_corpus/tabulate.py" \
+        --label owasp \
+        --scan "${scan_report}" \
+        --ground-truth "${REPO_ROOT}/tests/eval_corpus/ground_truth/owasp_benchmark_v1.2.json" \
+        --append "${results_report}" \
+        || { echo "  FAIL: OWASP result tabulation failed"; return 1; }
+
+    python3 "${REPO_ROOT}/tests/eval_corpus/report.py" \
+        --results "${results_report}" \
+        --min-confirmed-rate "${GATE6_CONFIRMED_RATE_TARGET}" \
+        || { echo "  FAIL: confirmed-rate below ${GATE6_CONFIRMED_RATE_TARGET}"; return 1; }
     echo "  PASS"
 }
 

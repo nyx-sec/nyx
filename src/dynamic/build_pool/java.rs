@@ -39,16 +39,20 @@
 //! invokes so integration tests can swap in a wrapper.
 
 use super::{BuildPool, PoolCompileResult};
+use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// Java source compiled at first use to drive the worker.
 const WORKER_SOURCE: &str = include_str!("java_worker/NyxJavacWorker.java");
 const WORKER_CLASS: &str = "NyxJavacWorker";
 const WORKER_FILENAME: &str = "NyxJavacWorker.java";
+const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const COMPILE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Live worker handle.  Held inside a `Mutex` so concurrent
 /// `compile_batch` callers serialise on the single JVM.
@@ -134,9 +138,13 @@ impl JavacPool {
             };
         }
 
-        let mut line = String::new();
-        match worker.stdout.read_line(&mut line) {
-            Ok(0) => {
+        match read_line_with_timeout(
+            &mut worker.child,
+            &mut worker.stdout,
+            COMPILE_RESPONSE_TIMEOUT,
+            "read response",
+        ) {
+            Ok(None) => {
                 *guard = None;
                 PoolCompileResult {
                     success: false,
@@ -148,11 +156,11 @@ impl JavacPool {
                 *guard = None;
                 PoolCompileResult {
                     success: false,
-                    stderr: format!("javac-pool: read failed: {e}"),
+                    stderr: e,
                     duration: start.elapsed(),
                 }
             }
-            Ok(_) => match parse_response(&line) {
+            Ok(Some(line)) => match parse_response(&line) {
                 Some((success, stderr)) => PoolCompileResult {
                     success,
                     stderr,
@@ -285,15 +293,22 @@ fn spawn_worker(dir: &Path) -> Result<Worker, String> {
         .ok_or_else(|| "javac-pool: missing stdout".to_owned())?;
     let mut stdout = BufReader::new(stdout);
 
-    // Read the banner line with a timeout via a polling read.  We
-    // can't use `read_line` with a deadline directly, so spawn a
-    // bounded waiter: if the worker doesn't announce readiness inside
-    // 10s we declare bootstrap failure.
-    let banner = read_line_with_timeout(&mut stdout, Duration::from_secs(10))?;
+    let banner =
+        match read_line_with_timeout(&mut child, &mut stdout, WORKER_READY_TIMEOUT, "read banner")?
+        {
+            Some(line) => line,
+            None => {
+                let _ = child.kill();
+                let stderr_tail = drain_stderr(&mut child);
+                return Err(format!(
+                    "javac-pool: worker closed stdout before readiness; stderr: {stderr_tail}",
+                ));
+            }
+        };
     if !banner.contains("\"ready\":true") {
         // Drain stderr for diagnostic context, then bail.
-        let stderr_tail = drain_stderr(&mut child);
         let _ = child.kill();
+        let stderr_tail = drain_stderr(&mut child);
         return Err(format!(
             "javac-pool: worker did not announce readiness; got {banner:?}; stderr: {stderr_tail}",
         ));
@@ -318,24 +333,31 @@ fn drain_stderr(child: &mut Child) -> String {
 }
 
 fn read_line_with_timeout(
+    child: &mut Child,
     stdout: &mut BufReader<ChildStdout>,
     timeout: Duration,
-) -> Result<String, String> {
-    // BufReader doesn't expose async/timeout primitives.  The worker's
-    // first line lands within < 2s on every machine we ship to, so a
-    // synchronous read_line is fine -- the timeout is enforced by an
-    // outer watchdog thread that interrupts us via stdin close on
-    // failure.  In practice if `java` blocks indefinitely the test
-    // suite catches the regression.
-    //
-    // We keep the API plumbed so the deadline can be tightened later
-    // without churning call sites.
-    let _ = timeout;
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .map_err(|e| format!("javac-pool: read banner: {e}"))?;
-    Ok(line)
+    context: &str,
+) -> Result<Option<String>, String> {
+    let (tx, rx) = mpsc::channel();
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut line = String::new();
+            let result = stdout.read_line(&mut line).map(|n| (n, line));
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(timeout) {
+            Ok(Ok((0, _))) => Ok(None),
+            Ok(Ok((_n, line))) => Ok(Some(line)),
+            Ok(Err(e)) => Err(format!("javac-pool: {context} failed: {e}")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                Err(format!("javac-pool: {context} timed out after {timeout:?}"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(format!("javac-pool: {context} reader disconnected"))
+            }
+        }
+    })
 }
 
 fn build_request(id: u64, workdir: &Path, args: &[String]) -> String {
@@ -372,61 +394,18 @@ fn append_json_string(out: &mut String, s: &str) {
 }
 
 /// Extract `(success, stderr)` from a worker JSON response line.
-///
-/// The wire shape is tightly constrained -- the worker only ever emits
-/// `{"id":"N","success":TRUE|FALSE,"stderr_b64":"…"}`, so we use a
-/// targeted decoder rather than pulling in `serde_json` and inflating
-/// the dynamic feature footprint.  Anything off-shape returns `None`
-/// and the caller flags the worker unhealthy.
 fn parse_response(line: &str) -> Option<(bool, String)> {
-    let success = extract_bool_field(line, "success")?;
-    let b64 = extract_string_field(line, "stderr_b64").unwrap_or_default();
-    let stderr = decode_b64(&b64).unwrap_or_else(|| "<unable to decode stderr>".to_owned());
-    Some((success, stderr))
+    let response: JavacWorkerResponse = serde_json::from_str(line).ok()?;
+    let stderr =
+        decode_b64(&response.stderr_b64).unwrap_or_else(|| "<unable to decode stderr>".to_owned());
+    Some((response.success, stderr))
 }
 
-fn extract_bool_field(s: &str, name: &str) -> Option<bool> {
-    let needle = format!("\"{name}\":");
-    let i = s.find(&needle)? + needle.len();
-    let rest = s[i..].trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-fn extract_string_field(s: &str, name: &str) -> Option<String> {
-    let needle = format!("\"{name}\":\"");
-    let i = s.find(&needle)? + needle.len();
-    let tail = &s[i..];
-    let mut out = String::new();
-    let mut chars = tail.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'b' => out.push('\u{08}'),
-                'f' => out.push('\u{0c}'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => {
-                    let hex: String = (&mut chars).take(4).collect();
-                    let cp = u32::from_str_radix(&hex, 16).ok()?;
-                    out.push(char::from_u32(cp)?);
-                }
-                _ => return None,
-            },
-            c => out.push(c),
-        }
-    }
-    None
+#[derive(Debug, Deserialize)]
+struct JavacWorkerResponse {
+    success: bool,
+    #[serde(default)]
+    stderr_b64: String,
 }
 
 /// Tiny RFC 4648 base64 decoder.  Used only for the worker's
@@ -518,6 +497,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_response_accepts_reordered_fields() {
+        let (ok, err) =
+            parse_response("{\"stderr_b64\":\"YQ==\",\"success\":true,\"id\":\"7\"}\n").unwrap();
+        assert!(ok);
+        assert_eq!(err, "a");
+    }
+
+    #[test]
     fn b64_decode_roundtrip() {
         for (raw, encoded) in &[
             ("", ""),
@@ -528,18 +515,5 @@ mod tests {
         ] {
             assert_eq!(decode_b64(encoded).as_deref(), Some(*raw));
         }
-    }
-
-    #[test]
-    fn extract_string_handles_escapes() {
-        let s = r#"{"id":"0","stderr_b64":"abc","note":"a\"b\\c"}"#;
-        assert_eq!(extract_string_field(s, "note").as_deref(), Some(r#"a"b\c"#));
-    }
-
-    #[test]
-    fn extract_bool_picks_first_match() {
-        let s = r#"{"success":false,"other":true}"#;
-        assert_eq!(extract_bool_field(s, "success"), Some(false));
-        assert_eq!(extract_bool_field(s, "other"), Some(true));
     }
 }

@@ -25,11 +25,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 TABULATE = REPO / "tests/eval_corpus/tabulate.py"
+REPORT = REPO / "tests/eval_corpus/report.py"
 BUDGET = REPO / "tests/eval_corpus/budget.toml"
 
 
 def run_tabulate(*args: str) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(TABULATE), *args]
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def run_report(*args: str) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, str(REPORT), *args]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
@@ -307,6 +313,40 @@ def test_budget_malformed_exits_3(tmp: Path) -> None:
     )
 
 
+def test_report_confirmed_rate_floor(tmp: Path) -> None:
+    results = tmp / "results.json"
+    write_json(
+        results,
+        [
+            {
+                "label": "owasp",
+                "total_findings": 5,
+                "cells": [
+                    {
+                        "cap": "sqli",
+                        "lang": "java",
+                        "tp": 0,
+                        "fp": 0,
+                        "fn": 0,
+                        "unsupported": 0,
+                        "confirmed": 2,
+                        "wrong_confirmed": 0,
+                        "stable_replays": 0,
+                        "total": 5,
+                    }
+                ],
+            }
+        ],
+    )
+    proc = run_report("--results", str(results), "--min-confirmed-rate", "0.40")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "All confirmed-rate floors met" in proc.stdout, proc.stdout
+
+    proc = run_report("--results", str(results), "--min-confirmed-rate", "0.50")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "FAIL" in proc.stdout and "sqli" in proc.stdout, proc.stdout
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -318,6 +358,7 @@ def main() -> int:
             test_manual_triage_stamps_wrong_confirmed,
             test_manual_triage_ignores_vuln_true_entries,
             test_budget_malformed_exits_3,
+            test_report_confirmed_rate_floor,
         ):
             sub = tmp / fn.__name__
             sub.mkdir()

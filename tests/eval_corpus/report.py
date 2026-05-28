@@ -113,6 +113,15 @@ def main() -> int:
         default="",
         help="path to a previous results.json; fail on monotonic-improvement regression",
     )
+    p.add_argument(
+        "--min-confirmed-rate",
+        type=float,
+        default=None,
+        help=(
+            "minimum Confirmed / total rate per cap; exits 2 when any cap "
+            "with findings falls below the threshold"
+        ),
+    )
     args = p.parse_args()
 
     with open(args.results) as f:
@@ -228,6 +237,35 @@ def main() -> int:
             gate_failed = True
         else:
             print("  All gate thresholds met.")
+
+    # ── Optional confirmed-rate floor ────────────────────────────────────
+    if args.min_confirmed_rate is not None:
+        print(
+            f"\n=== Confirmed-rate floor ({args.min_confirmed_rate*100:.1f}%) ==="
+        )
+        cap_totals: dict[str, dict] = defaultdict(lambda: {"confirmed": 0, "total": 0})
+        for (cap, _lang), v in agg.items():
+            cap_totals[cap]["confirmed"] += v.get("confirmed", 0)
+            cap_totals[cap]["total"] += v.get("total", 0)
+        confirmed_fails: list[str] = []
+        for cap, v in sorted(cap_totals.items()):
+            if v["total"] <= 0:
+                continue
+            rate = v["confirmed"] / v["total"]
+            line = (
+                f"  {cap:<20} {v['confirmed']:>5}/{v['total']:<5} "
+                f"{rate*100:>6.1f}%"
+            )
+            if rate < args.min_confirmed_rate:
+                confirmed_fails.append(f"{line}  FAIL")
+            else:
+                print(f"{line}  OK")
+        if confirmed_fails:
+            for line in confirmed_fails:
+                print(line)
+            gate_failed = True
+        else:
+            print("  All confirmed-rate floors met.")
 
     # ── Phase 29: monotonic-improvement diff ─────────────────────────────
     if args.diff:
