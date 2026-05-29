@@ -313,6 +313,250 @@ def test_budget_malformed_exits_3(tmp: Path) -> None:
     )
 
 
+def test_relative_gt_path_suffix_matches_absolute_finding(tmp: Path) -> None:
+    # Phase 27: ground truth stores corpus-relative paths; nyx emits absolute
+    # paths.  A relative GT path must suffix-match the absolute finding path so
+    # the committed JSON stays portable across machines / CI checkouts.
+    gt = tmp / "gt.json"
+    write_json(
+        gt,
+        [
+            {
+                "path": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest1.java",
+                "line": 0,
+                "cap": "sqli",
+                "vuln": True,
+            }
+        ],
+    )
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                # Absolute path with the GT relative path as a suffix → TP.
+                python_finding(
+                    SINK_BIT_SQL,
+                    "/home/ci/work/owasp/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest1.java",
+                    10,
+                    "Confirmed",
+                ),
+                # Different file under the same corpus → no GT positive → FP.
+                python_finding(
+                    SINK_BIT_SQL,
+                    "/home/ci/work/owasp/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest2.java",
+                    10,
+                    "NotConfirmed",
+                ),
+            ]
+        },
+    )
+    append = tmp / "results.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--append", str(append),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(append.read_text())[-1]["cells"]}
+    sqli_java = cells[("sqli", "java")]
+    assert sqli_java["tp"] == 1, f"relative GT path must suffix-match absolute finding: {sqli_java}"
+    assert sqli_java["fp"] == 1, f"benign-file finding must count as FP: {sqli_java}"
+    assert sqli_java["fn"] == 0, sqli_java
+
+
+def test_unmatched_gt_positive_lands_in_lang_cell(tmp: Path) -> None:
+    # Phase 27: a ground-truth positive with no matching finding is a FN, and
+    # it must land in the cell its file extension implies (java), not a stray
+    # "unknown" lang cell, so per-cap recall aggregation is meaningful.
+    gt = tmp / "gt.json"
+    write_json(
+        gt,
+        [
+            {
+                "path": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest9.java",
+                "line": 0,
+                "cap": "sqli",
+                "vuln": True,
+            }
+        ],
+    )
+    scan = tmp / "scan.json"
+    write_json(scan, {"findings": []})
+    append = tmp / "results.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--append", str(append),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(append.read_text())[-1]["cells"]}
+    assert ("sqli", "java") in cells, f"FN must land in the java cell: {list(cells)}"
+    assert cells[("sqli", "java")]["fn"] == 1, cells[("sqli", "java")]
+    assert ("sqli", "unknown") not in cells, f"no stray unknown-lang cell: {list(cells)}"
+
+
+def test_gt_grounded_false_confirm(tmp: Path) -> None:
+    # Phase 27: with full ground truth, a Confirmed finding that matches no GT
+    # positive is a false confirm — derived from GT, no manual-triage file
+    # needed.  vuln file → confirmed_tp; benign/other file → confirmed_fp →
+    # wrong_confirmed.  Makes false_confirmed_rate non-vacuous on a fresh corpus.
+    gt = tmp / "gt.json"
+    write_json(
+        gt,
+        [
+            {"path": "testcode/Vuln.java", "line": 0, "cap": "sqli", "vuln": True},
+            {"path": "testcode/Benign.java", "line": 0, "cap": "sqli", "vuln": False},
+        ],
+    )
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                # Correct confirm on the vuln file.
+                python_finding(SINK_BIT_SQL, "/x/testcode/Vuln.java", 10, "Confirmed"),
+                # False confirm on the benign file (no GT positive there).
+                python_finding(SINK_BIT_SQL, "/x/testcode/Benign.java", 10, "Confirmed"),
+            ]
+        },
+    )
+    append = tmp / "results.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--append", str(append),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(append.read_text())[-1]["cells"]}
+    sqli_java = cells[("sqli", "java")]
+    assert sqli_java["confirmed_tp"] == 1, sqli_java
+    assert sqli_java["confirmed_fp"] == 1, sqli_java
+    assert sqli_java["wrong_confirmed"] == 1, (
+        f"benign-file Confirmed must be a GT-derived false confirm: {sqli_java}"
+    )
+
+
+def test_budget_confirmed_rate_floor(tmp: Path) -> None:
+    # Phase 27: budget.toml may carry a per-cell `confirmed_rate` minimum.
+    # 1 Confirmed of 5 (20%) must trip a 40% floor.
+    budget = tmp / "budget.toml"
+    budget.write_text(
+        "[default]\n"
+        "[[cell]]\n"
+        'cap = "sqli"\n'
+        'lang = "java"\n'
+        "confirmed_rate = 0.40\n"
+    )
+    scan_fail = tmp / "scan_fail.json"
+    write_json(
+        scan_fail,
+        {
+            "findings": [
+                python_finding(SINK_BIT_SQL, "B.java", 10, "Confirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 20, "NotConfirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 30, "NotConfirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 40, "NotConfirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 50, "NotConfirmed"),
+            ]
+        },
+    )
+    append = tmp / "results_fail.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan_fail),
+        "--inhouse",
+        "--append", str(append),
+        "--budget", str(budget),
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "Confirmed" in proc.stdout and "sqli/java" in proc.stdout, proc.stdout
+
+    # 3 Confirmed of 5 (60%) clears the floor.
+    scan_ok = tmp / "scan_ok.json"
+    write_json(
+        scan_ok,
+        {
+            "findings": [
+                python_finding(SINK_BIT_SQL, "B.java", 10, "Confirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 20, "Confirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 30, "Confirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 40, "NotConfirmed"),
+                python_finding(SINK_BIT_SQL, "B.java", 50, "NotConfirmed"),
+            ]
+        },
+    )
+    append_ok = tmp / "results_ok.json"
+    write_json(append_ok, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan_ok),
+        "--inhouse",
+        "--append", str(append_ok),
+        "--budget", str(budget),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_report_precision_recall_floors(tmp: Path) -> None:
+    # Phase 27: report.py --min-precision / --min-recall enforce per-cap floors
+    # aggregated across langs.  cmdi precision 0.20 trips 0.85; ldap recall 0.10
+    # trips 0.40; sqli (prec 1.0, rec 0.90) clears both.
+    results = tmp / "results.json"
+
+    def cell(cap, lang, tp, fp, fn):
+        return {
+            "cap": cap, "lang": lang, "tp": tp, "fp": fp, "fn": fn,
+            "unsupported": 0, "confirmed": 0, "partially_confirmed": 0,
+            "wrong_confirmed": 0, "stable_replays": 0,
+            "total": tp + fp + fn,
+        }
+
+    write_json(
+        results,
+        [
+            {
+                "label": "owasp",
+                "total_findings": 0,
+                "cells": [
+                    cell("sqli", "java", 9, 0, 1),   # prec 1.00, rec 0.90 → OK
+                    cell("cmdi", "java", 1, 4, 0),   # prec 0.20 → FAIL precision
+                    cell("ldap_injection", "java", 1, 0, 9),  # rec 0.10 → FAIL recall
+                ],
+            }
+        ],
+    )
+    proc = run_report(
+        "--results", str(results),
+        "--min-precision", "0.85",
+        "--min-recall", "0.40",
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "PRECISION" in proc.stdout and "cmdi" in proc.stdout, proc.stdout
+    assert "RECALL" in proc.stdout and "ldap_injection" in proc.stdout, proc.stdout
+
+    # Clean: only the passing sqli cap.
+    clean = tmp / "clean.json"
+    write_json(
+        clean,
+        [{"label": "owasp", "total_findings": 0, "cells": [cell("sqli", "java", 9, 0, 1)]}],
+    )
+    proc = run_report(
+        "--results", str(clean),
+        "--min-precision", "0.85",
+        "--min-recall", "0.40",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "All per-cap precision/recall floors met" in proc.stdout, proc.stdout
+
+
 def test_report_confirmed_rate_floor(tmp: Path) -> None:
     results = tmp / "results.json"
     write_json(
@@ -358,6 +602,11 @@ def main() -> int:
             test_manual_triage_stamps_wrong_confirmed,
             test_manual_triage_ignores_vuln_true_entries,
             test_budget_malformed_exits_3,
+            test_relative_gt_path_suffix_matches_absolute_finding,
+            test_unmatched_gt_positive_lands_in_lang_cell,
+            test_gt_grounded_false_confirm,
+            test_budget_confirmed_rate_floor,
+            test_report_precision_recall_floors,
             test_report_confirmed_rate_floor,
         ):
             sub = tmp / fn.__name__

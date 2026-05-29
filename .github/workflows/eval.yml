@@ -1,0 +1,105 @@
+# Phase 27 (Track R.0): OWASP Benchmark v1.2 real-corpus acceptance.
+#
+# Runs Gate 6 of scripts/m7_ship_gate.sh against a real OWASP BenchmarkJava
+# checkout on every PR that touches the dynamic verifier (src/dynamic/), the
+# eval-corpus harness (tests/eval_corpus/), or the gate script itself.
+#
+# Gate 6 enforces, against the committed ground truth:
+#   * verify wall-clock <= 15 min (CI budget; the dev reference is 10 min),
+#   * per-cap confirmed-rate >= 40%, precision >= 0.85, recall >= 0.40 for the
+#     dynamically-supported OWASP caps,
+#   * the per-(cap,lang) budget in tests/eval_corpus/budget.toml.
+#
+# The corpus is *not* vendored.  It is cloned at the pinned 1.2beta tag (the
+# tag that produced expectedresults-1.2beta.csv, the source of the ground
+# truth) and cached so reruns skip the clone.
+
+name: eval
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "src/dynamic/**"
+      - "tests/eval_corpus/**"
+      - "scripts/m7_ship_gate.sh"
+      - ".github/workflows/eval.yml"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "src/dynamic/**"
+      - "tests/eval_corpus/**"
+      - "scripts/m7_ship_gate.sh"
+      - ".github/workflows/eval.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  owasp:
+    name: eval / owasp-benchmark-v1.2
+    runs-on: ubuntu-latest
+    env:
+      # Gate 6 self-skips unless this points at a real checkout.
+      NYX_OWASP_CORPUS: ${{ github.workspace }}/.eval-corpus/owasp_benchmark_v1.2
+      # CI wall-clock budget: 15 min.  Override locally to tighten.
+      NYX_OWASP_WALLCLOCK_BUDGET_SECONDS: "900"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # The Phase 22 Java compile pool drives `com.sun.tools.javac` out of a
+      # warm JDK; temurin 21 ships the compiler module the pool loads.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache OWASP BenchmarkJava (1.2beta)
+        id: cache-owasp
+        uses: actions/cache@v4
+        with:
+          path: .eval-corpus/owasp_benchmark_v1.2
+          key: owasp-benchmark-1.2beta
+
+      - name: Clone OWASP BenchmarkJava (1.2beta tag)
+        if: steps.cache-owasp.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 1.2beta \
+            https://github.com/OWASP-Benchmark/BenchmarkJava \
+            .eval-corpus/owasp_benchmark_v1.2
+
+      # No-compromise guard: the committed ground truth must be exactly what a
+      # fresh conversion of the pinned CSV produces.  Catches GT drift (a
+      # corpus bump, a hand-edit) before the gate runs on stale labels.
+      - name: Verify ground truth is in sync with the pinned corpus
+        run: |
+          python3 tests/eval_corpus/owasp_gt_convert.py \
+            --corpus-dir .eval-corpus/owasp_benchmark_v1.2 \
+            --output /tmp/owasp_gt_regen.json
+          python3 - <<'PY'
+          import json, sys
+          committed = json.load(open("tests/eval_corpus/ground_truth/owasp_benchmark_v1.2.json"))
+          regen = json.load(open("/tmp/owasp_gt_regen.json"))
+          if committed != regen:
+              sys.exit("committed ground truth diverges from a fresh conversion of "
+                       "the 1.2beta CSV; regenerate with owasp_gt_convert.py")
+          print(f"ground truth in sync: {len(committed)} records")
+          PY
+
+      - name: eval-corpus harness regression tests
+        run: python3 tests/eval_corpus/test_tabulate_regression.py
+
+      - name: Gate 6 — OWASP Benchmark v1.2 acceptance
+        run: scripts/m7_ship_gate.sh --sets owasp

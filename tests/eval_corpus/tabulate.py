@@ -113,6 +113,25 @@ def lang_of(finding: dict) -> str:
     return "unknown"
 
 
+def _norm_path(p: str) -> str:
+    return p.replace("\\", "/")
+
+
+def path_matches(gt_path: str, finding_path: str) -> bool:
+    """True when a ground-truth path refers to the same file as a finding path.
+
+    Ground-truth paths are stored *relative to the corpus root* so the checked-in
+    JSON stays portable, while nyx emits absolute paths rooted at wherever the
+    corpus was cloned. Match on a path-component-aligned suffix so the relative
+    GT path matches the absolute finding path (and the reverse, to keep a legacy
+    absolute GT file working). Exact equality is the fast path; the `/` boundary
+    stops `.../BenchmarkTest1.java` from matching `.../xBenchmarkTest1.java`.
+    """
+    g = _norm_path(gt_path)
+    f = _norm_path(finding_path)
+    return g == f or f.endswith("/" + g) or g.endswith("/" + f)
+
+
 # ── Budget loading ──────────────────────────────────────────────────────────
 
 
@@ -189,12 +208,20 @@ def enforce_budget(cells: list, budget: dict) -> list:
         max_unsup = b.get("unsupported_rate")
         max_false = b.get("false_confirmed_rate")
         min_stable = b.get("repro_stability")
+        min_confirmed = b.get("confirmed_rate")
 
         if isinstance(max_unsup, (int, float)) and c.get("total", 0) > 0:
             if c["unsupported_rate"] > max_unsup:
                 failures.append(
                     f"  FAIL  {cap}/{lang}: Unsupported {c['unsupported_rate']*100:.1f}%"
                     f" > budget {max_unsup*100:.1f}%"
+                )
+        if isinstance(min_confirmed, (int, float)) and c.get("total", 0) > 0:
+            rate = c.get("confirmed", 0) / c["total"]
+            if rate < min_confirmed:
+                failures.append(
+                    f"  FAIL  {cap}/{lang}: Confirmed {rate*100:.1f}%"
+                    f" < budget {min_confirmed*100:.1f}%"
                 )
         if isinstance(max_false, (int, float)) and c.get("confirmed", 0) > 0:
             rate = c.get("wrong_confirmed", 0) / c["confirmed"]
@@ -376,7 +403,7 @@ def main() -> int:
             for idx, entry in enumerate(not_vuln):
                 if idx in used:
                     continue
-                if (entry["path"] == f_path
+                if (path_matches(entry["path"], f_path)
                         and entry["cap"] == f_cap
                         and (entry["line"] == 0
                              or abs(entry["line"] - f_line) <= LINE_TOLERANCE)):
@@ -398,6 +425,12 @@ def main() -> int:
             "partially_confirmed": 0,
             "wrong_confirmed": 0,
             "stable_replays": 0,
+            # Confirmed-verdict precision/recall accounting, ground-truth-derived
+            # (only populated when --ground-truth is supplied): confirmed_tp =
+            # Confirmed findings that match a GT positive; confirmed_fp =
+            # Confirmed findings that match no GT positive (false confirms).
+            "confirmed_tp": 0,
+            "confirmed_fp": 0,
             "total": 0,
         }
     )
@@ -449,9 +482,11 @@ def main() -> int:
             cap = f_cap
             lang = lang_of(f)
             cell_key = (cap, lang)
+            dv = (f.get("evidence") or {}).get("dynamic_verdict") or {}
+            is_confirmed = dv.get("status") == "Confirmed"
             matched_idx = None
             for idx, gt_entry in enumerate(gt_true):
-                if (gt_entry["path"] == f_path
+                if (path_matches(gt_entry["path"], f_path)
                         and gt_entry["cap"] == f_cap
                         and idx not in matched_gt
                         and (gt_entry["line"] == 0
@@ -462,13 +497,30 @@ def main() -> int:
                 matched_gt.add(matched_idx)
                 found_path_caps.add((f_path, f_cap))
                 cells[cell_key]["tp"] += 1
+                if is_confirmed:
+                    cells[cell_key]["confirmed_tp"] += 1
             else:
                 cells[cell_key]["fp"] += 1
+                if is_confirmed:
+                    cells[cell_key]["confirmed_fp"] += 1
 
         for idx, gt_entry in enumerate(gt_true):
             if idx not in matched_gt:
                 cap = gt_entry["cap"]
-                cells[(cap, "unknown")]["fn"] += 1
+                # Land the FN in the cell its source language implies (from the
+                # GT path extension) so per-(cap,lang) recall is meaningful and
+                # OWASP misses show up in the java cell, not a stray "unknown".
+                cells[(cap, lang_of(gt_entry))]["fn"] += 1
+
+        # Ground-truth-derived false-confirm accounting.  When a corpus ships a
+        # vuln/benign label per file (OWASP, SARD), a Confirmed finding that
+        # matches no GT positive is a false confirm — authoritative, so it
+        # overrides any manual-triage stamping for these labelled sets.  This is
+        # what makes the per-cell `false_confirmed_rate` budget non-vacuous on a
+        # fresh eval corpus without a host-local verify-feedback log.
+        for v in cells.values():
+            if v["confirmed_tp"] or v["confirmed_fp"]:
+                v["wrong_confirmed"] = v["confirmed_fp"]
 
     result = {
         "label": args.label,

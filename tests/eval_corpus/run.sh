@@ -68,7 +68,7 @@ if [[ "$SETS" == *owasp* ]]; then
     info "  Clone from https://github.com/OWASP-Benchmark/BenchmarkJava"
     info "  into ${OWASP_DIR}"
     info "  then re-run this script."
-    info "  git clone --depth 1 --branch v1.2 \\"
+    info "  git clone --depth 1 --branch 1.2beta \\"
     info "    https://github.com/OWASP-Benchmark/BenchmarkJava \\"
     info "    ${OWASP_DIR}"
     info "Skipping OWASP set (not yet downloaded)."

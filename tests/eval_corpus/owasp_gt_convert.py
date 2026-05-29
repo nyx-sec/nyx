@@ -3,7 +3,12 @@
 
 Source: `expectedresults-1.2beta.csv` shipped in the BenchmarkJava repo.
 Output: list of `{path, line, cap, vuln}` records, where:
-  - `path` is the absolute path to the BenchmarkTest*.java under --corpus-dir.
+  - `path` is the BenchmarkTest*.java path **relative to --corpus-dir**, with
+    POSIX separators (e.g. `src/main/java/org/owasp/benchmark/testcode/
+    BenchmarkTest00001.java`).  Relative paths keep the committed ground truth
+    portable: `tabulate.py` suffix-matches them against the absolute paths nyx
+    emits, so the same JSON works on the dev laptop and on CI regardless of
+    where the corpus was cloned.
   - `line` is 0 (CSV does not pin a line; tabulate uses LINE_TOLERANCE on findings).
   - `cap` is a nyx cap label mapped from the OWASP category column.
   - `vuln` is True for `real vulnerability == true`, else False.
@@ -74,7 +79,7 @@ def main() -> int:
                 skipped += 1
                 continue
             records.append({
-                "path": str(java_file),
+                "path": java_file.relative_to(corpus).as_posix(),
                 "line": 0,
                 "cap":  cap,
                 "vuln": real_vuln == "true",

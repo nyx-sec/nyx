@@ -12,6 +12,7 @@
 #   unsupported_rate     = 0.20   # max(Unsupported / total) per cell
 #   false_confirmed_rate = 0.02   # max(wrong / Confirmed) per cap
 #   repro_stability      = 0.95   # min(stable / Confirmed) per cell
+#   confirmed_rate       = 0.40   # min(Confirmed / total) per cell (omit to skip)
 #   ratchet_deadline     = "..."  # informational; cells already at headline
 #
 #   [[cell]]
@@ -22,9 +23,96 @@
 # `cap` matches `tabulate.py`'s _CAP_BIT_TABLE / _CAP_RULE_TABLE labels.
 # `lang` matches the ext_map values (`python`, `javascript`, …).
 # A wildcard `"*"` matches any cell that does not have an exact entry.
+#
+# Each rate is enforced only when the relevant denominator is non-zero, so a
+# cell with no findings (or no Confirmed findings) never trips a budget
+# vacuously.  `confirmed_rate` is a *minimum* (a ratchet floor); the others are
+# maxima.  Per-cell overrides are calibrated to the measured frontier on the
+# real corpus so the gate locks in current performance and catches regressions
+# (see the OWASP cells below).
 
 [default]
 unsupported_rate     = 0.20
 false_confirmed_rate = 0.02
 repro_stability      = 0.95
 ratchet_deadline     = "2026-05-15"
+
+# ── OWASP Benchmark v1.2 (Java) — Track R.0 ratchet ──────────────────────────
+#
+# Calibrated against the pinned 1.2beta corpus, nyx c0501884, 2026-05-29
+# (`nyx scan --verify` over all 2740 BenchmarkTest files; 5812 findings).
+#
+# Measured frontier at calibration:
+#   verdicts  : Confirmed 0 | NotConfirmed 4077 | Inconclusive 1725
+#               (BuildFailed 952 + SpecDerivationFailed 773) | Unsupported 10
+#   per cell  : unsupported_rate <= 1.7%  (headline <= 20%  -> MET)
+#               false_confirmed   = 0%     (headline <= 2%   -> MET, 0 confirms)
+#               confirmed_rate    = 0%     (headline >= 40%  -> NOT met)
+#
+# The verifier confirms nothing on OWASP yet: every BenchmarkTest is a servlet
+# whose harness lands in BuildFailed / SpecDerivationFailed (Java servlet entry
+# wiring + classpath are Track L.12 / Track O.0 work).  So the enforced floors
+# below are the two headline maxima the verifier already satisfies
+# (unsupported_rate, false_confirmed_rate).  `confirmed_rate` is intentionally
+# left UNSET — the headline >= 40% is the ratchet's destination, recorded here
+# and in scripts/m7_ship_gate.sh (NYX_OWASP_FLOOR_CAPS), not a floor we can
+# honestly assert at 0 confirms.  Promote a cap into the gated set (and add its
+# `confirmed_rate`) the moment it starts Confirming.
+#
+# Caps split two ways:
+#   sound-oracle (injection): cmdi, sqli, path_traversal, ldap_injection,
+#     xpath_injection — once their servlet harnesses build, a runtime oracle
+#     exists; these are the GATE6_FLOOR_CAPS candidates.
+#   no-sound-oracle (config/usage smell): crypto (weak rand/hash), auth
+#     (insecure cookie), xss/trustbound — Phase-11 routes these to
+#     Unsupported(SoundOracleUnavailable); they stay report-only.  When that
+#     routing lands their unsupported_rate will rise and these cells must be
+#     relaxed accordingly.
+
+[[cell]]
+cap = "cmdi"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "sqli"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "path_traversal"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "ldap_injection"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "xpath_injection"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "xss"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "crypto"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "auth"
+lang = "java"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
