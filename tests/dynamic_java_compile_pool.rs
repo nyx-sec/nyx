@@ -76,6 +76,7 @@ fn write_harness(workdir: &Path, idx: usize) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "real-toolchain perf bench: runs 50 real `javac` compiles. Opt-in so the default suite stays hermetic + fast. Run: cargo nextest run --features dynamic --run-ignored ignored-only -E 'binary(~build_pool) | binary(~compile_pool)'"]
 fn batch_of_fifty_harness_compiles_meets_perf_target() {
     if !jdk_available() {
         eprintln!("skipping: javac / java not available on PATH");

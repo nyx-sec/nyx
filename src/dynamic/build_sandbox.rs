@@ -12,7 +12,15 @@
 //! Failed-build retry policy (§12 Q4): one retry on `BuildFailed` with
 //! backoff (1s, 4s), then `Inconclusive(BuildFailed, attempts: 2)`.
 
+use crate::dynamic::build_pool::c::CPool;
+use crate::dynamic::build_pool::cpp::CppPool;
+use crate::dynamic::build_pool::go::GoPool;
 use crate::dynamic::build_pool::java::JavacPool;
+use crate::dynamic::build_pool::node::NodePool;
+use crate::dynamic::build_pool::php::PhpPool;
+use crate::dynamic::build_pool::python::PythonPool;
+use crate::dynamic::build_pool::ruby::RubyPool;
+use crate::dynamic::build_pool::rust::RustPool;
 use crate::dynamic::build_pool::{BuildPool, is_pool_enabled};
 use crate::dynamic::sandbox::ProcessHardeningProfile;
 use crate::dynamic::spec::HarnessSpec;
@@ -65,7 +73,7 @@ pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
 
-        match try_build_rust_binary(workdir, &binary) {
+        match build_rust_binary(workdir, &binary) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -84,6 +92,27 @@ pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route the Rust harness build through [`RustPool`] when the pool is
+/// enabled, falling back to the legacy direct-spawn `cargo build` on a
+/// missing toolchain or a crashed pool.  A genuine compile error from a
+/// healthy pool is surfaced verbatim (no legacy re-run — it would fail the
+/// same way).
+fn build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+    if is_pool_enabled("rust") {
+        if let Ok(pool) = RustPool::try_new() {
+            let pool_args = [binary_dest.to_string_lossy().into_owned()];
+            let res = pool.compile_batch(workdir, &pool_args);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_build_rust_binary(workdir, binary_dest)
 }
 
 fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
@@ -242,7 +271,7 @@ pub fn prepare_python(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult,
         }
 
         let start = Instant::now();
-        match try_build_venv(&cache_path, workdir, spec) {
+        match build_venv(&cache_path, workdir, spec) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -262,6 +291,25 @@ pub fn prepare_python(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult,
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route the Python venv build through [`PythonPool`] (shared wheel cache +
+/// `compileall` bytecode warm) when enabled, else the legacy path.
+fn build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Result<(), String> {
+    if is_pool_enabled("python") {
+        let python = python_binary(spec);
+        if let Ok(pool) = PythonPool::try_new(&python) {
+            let pool_args = [venv_path.to_string_lossy().into_owned(), python.clone()];
+            let res = pool.compile_batch(workdir, &pool_args);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_build_venv(venv_path, workdir, spec)
 }
 
 fn try_build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Result<(), String> {
@@ -421,7 +469,7 @@ pub fn prepare_ruby(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         if attempt > 0 {
             std::thread::sleep(Duration::from_secs(BACKOFF[attempt as usize - 1]));
         }
-        match try_bundle_install(workdir) {
+        match bundle_install(workdir) {
             Ok(()) => {
                 if let Some(cache_path) = &cache_path {
                     persist_ruby_bundle(workdir, cache_path);
@@ -443,6 +491,23 @@ pub fn prepare_ruby(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route Bundler through [`RubyPool`] (shared Bootsnap cache) when enabled,
+/// else the legacy `bundle check`/`install` path.
+fn bundle_install(workdir: &Path) -> Result<(), String> {
+    if is_pool_enabled("ruby") {
+        if let Ok(pool) = RubyPool::try_new() {
+            let res = pool.compile_batch(workdir, &[]);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_bundle_install(workdir)
 }
 
 fn try_bundle_install(workdir: &Path) -> Result<(), String> {
@@ -572,7 +637,7 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
                 BACKOFF[attempt as usize - 1],
             ));
         }
-        match try_npm_install(workdir) {
+        match npm_install(workdir) {
             Ok(()) => {
                 // Persist node_modules to cache so future runs with the same
                 // package.json but a fresh workdir can restore without re-running npm.
@@ -597,6 +662,23 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route `npm install` through [`NodePool`] (shared npm download cache) when
+/// enabled, else the legacy direct-spawn path.
+fn npm_install(workdir: &Path) -> Result<(), String> {
+    if is_pool_enabled("node") {
+        if let Ok(pool) = NodePool::try_new() {
+            let res = pool.compile_batch(workdir, &[]);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_npm_install(workdir)
 }
 
 fn try_npm_install(workdir: &Path) -> Result<(), String> {
@@ -692,7 +774,7 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
 
-        match try_build_go_binary(workdir, &binary) {
+        match build_go_binary(workdir, &binary) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -711,6 +793,25 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route the Go harness build through [`GoPool`] (shared `GOCACHE` /
+/// `GOMODCACHE`, `-trimpath -buildvcs=false`) when enabled, else the legacy
+/// per-workdir-cache path.
+fn build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+    if is_pool_enabled("go") {
+        if let Ok(pool) = GoPool::try_new() {
+            let pool_args = [binary_dest.to_string_lossy().into_owned()];
+            let res = pool.compile_batch(workdir, &pool_args);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_build_go_binary(workdir, binary_dest)
 }
 
 fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
@@ -1236,7 +1337,7 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
                 BACKOFF[attempt as usize - 1],
             ));
         }
-        match try_composer_install(workdir) {
+        match composer_install(workdir) {
             Ok(()) => {
                 // Persist vendor/ to cache so future runs with the same
                 // composer.json but a fresh workdir can restore without re-running composer.
@@ -1261,6 +1362,23 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route Composer through [`PhpPool`] (shared download cache + opcache
+/// file-cache warm) when enabled, else the legacy direct-spawn path.
+fn composer_install(workdir: &Path) -> Result<(), String> {
+    if is_pool_enabled("php") {
+        if let Ok(pool) = PhpPool::try_new() {
+            let res = pool.compile_batch(workdir, &[]);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_composer_install(workdir)
 }
 
 fn try_composer_install(workdir: &Path) -> Result<(), String> {
@@ -1337,7 +1455,7 @@ pub fn prepare_c(
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
 
-        match try_build_c_binary(workdir, &binary, static_link) {
+        match build_c_binary(workdir, &binary, static_link) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -1356,6 +1474,29 @@ pub fn prepare_c(
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route the C harness build through [`CPool`] (`ccache` + shared object
+/// cache) when enabled, else the legacy direct-spawn `cc` path.  The
+/// static-link toggle is forwarded so the pool can reproduce the
+/// Strict-profile `-static` fallback.
+fn build_c_binary(workdir: &Path, binary_dest: &Path, static_link: bool) -> Result<(), String> {
+    if is_pool_enabled("c") {
+        if let Ok(pool) = CPool::try_new() {
+            let pool_args = [
+                binary_dest.to_string_lossy().into_owned(),
+                if static_link { "static" } else { "dynamic" }.to_owned(),
+            ];
+            let res = pool.compile_batch(workdir, &pool_args);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_build_c_binary(workdir, binary_dest, static_link)
 }
 
 fn try_build_c_binary(workdir: &Path, binary_dest: &Path, static_link: bool) -> Result<(), String> {
@@ -1484,7 +1625,7 @@ pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
 
-        match try_build_cpp_binary(workdir, &binary) {
+        match build_cpp_binary(workdir, &binary) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -1503,6 +1644,24 @@ pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         stderr: last_err,
         attempts: MAX_ATTEMPTS,
     })
+}
+
+/// Route the C++ harness build through [`CppPool`] (`ccache` + shared object
+/// cache) when enabled, else the legacy direct-spawn `c++` path.
+fn build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+    if is_pool_enabled("cpp") {
+        if let Ok(pool) = CppPool::try_new() {
+            let pool_args = [binary_dest.to_string_lossy().into_owned()];
+            let res = pool.compile_batch(workdir, &pool_args);
+            if res.success {
+                return Ok(());
+            }
+            if pool.is_healthy() {
+                return Err(res.stderr);
+            }
+        }
+    }
+    try_build_cpp_binary(workdir, binary_dest)
 }
 
 fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {

@@ -10,11 +10,11 @@
 # Gate map (kept in sync with .pitboss/play/plan.md track M.7):
 #   Gate 1: Static-only scan is green on `tests/benchmark/corpus`.
 #   Gate 2: `cargo nextest run --features dynamic` is green.
-#   Gate 3: With-verify / static-only wall-clock ratio ≤ 2× on
-#           `benches/fixtures/`.  Phase 22 lowered the bar from the
-#           original ≤ 1.5× because the dispatcher + sandbox baseline
-#           still pay the same per-finding workdir cost, even with the
-#           warm `javac` daemon.  Phase 23 will tighten this back.
+#   Gate 3: With-verify / static-only wall-clock ratio ≤ 1.5× on
+#           `benches/fixtures/`.  Phase 22 had relaxed this to ≤ 2×
+#           while only `javac` had a warm daemon; Phase 23 lands the
+#           cross-lang build pools (shared caches for Node/Python/PHP/
+#           Ruby/Go/Rust/C/C++), so the bar is tightened back to ≤ 1.5×.
 #   Gate 4: SARIF schema validation on every dynamic verdict variant.
 #   Gate 5: Layering boundary test green.
 #   Gate 6: Java OWASP Benchmark v1.2 `--verify` wall-clock ≤ 15 min on
@@ -81,14 +81,22 @@ gate_1_static_corpus() {
 gate_2_dynamic_tests() {
     echo "── Gate 2: cargo nextest run --features dynamic ──"
     cargo nextest run --features dynamic
+    # The real-toolchain build-pool perf benches (dynamic_*_build_pool +
+    # dynamic_java_compile_pool) are #[ignore]d so the default inner-loop
+    # suite stays hermetic + fast: no cargo/go/cc/c++/npm/pip/composer/
+    # bundle/javac spawns.  Run them explicitly here so CI still exercises
+    # the warm-pool compile path end to end.  They self-skip when a
+    # toolchain is missing, so a toolchain-less CI row stays green.
+    cargo nextest run --features dynamic --run-ignored ignored-only \
+        -E 'binary(~build_pool) | binary(~compile_pool)'
     echo "  PASS: dynamic test suite green"
 }
 
 # ── Gate 3: with-verify / static-only ratio ───────────────────────────────────
 
-# Phase 22 baseline: target ratio ≤ 2×.  Tightening back to ≤ 1.5×
-# is Gate 3's Phase 23 follow-up once the cross-lang pools land.
-GATE3_RATIO_TARGET="${GATE3_RATIO_TARGET:-2.0}"
+# Phase 23 target: ratio ≤ 1.5×, now that the cross-lang build pools
+# give every shipped language a warm cache (was ≤ 2× under Phase 22).
+GATE3_RATIO_TARGET="${GATE3_RATIO_TARGET:-1.5}"
 
 gate_3_verify_ratio() {
     echo "── Gate 3: with-verify / static-only ratio on benches/fixtures/ ──"
@@ -97,6 +105,11 @@ gate_3_verify_ratio() {
         echo "  SKIP: ${fixtures} not present"
         return 0
     fi
+
+    # Phase 23: the warm build pools are what buy the ≤ 1.5× ratio, so
+    # make sure they are on for both scans even if the caller's env
+    # disabled them.  Default is already ON for every shipped language.
+    export NYX_DYNAMIC_BUILD_POOL="java=1,node=1,python=1,php=1,ruby=1,go=1,rust=1,c=1,cpp=1"
 
     local static_seconds verify_seconds
     static_seconds="$(time_scan "${fixtures}" 0)"
