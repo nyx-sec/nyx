@@ -827,8 +827,7 @@ impl WorkerPool {
                 .collect();
         }
 
-        let results: Vec<Mutex<Option<O>>> =
-            (0..items.len()).map(|_| Mutex::new(None)).collect();
+        let results: Vec<Mutex<Option<O>>> = (0..items.len()).map(|_| Mutex::new(None)).collect();
 
         std::thread::scope(|scope| {
             let results = &results;

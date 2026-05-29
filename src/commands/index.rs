@@ -26,6 +26,11 @@ pub fn handle(
         IndexAction::Build { path, force } => {
             let build_path = std::path::Path::new(&path).canonicalize()?;
             let (project_name, db_path) = get_project_info(&build_path, database_dir)?;
+            let _ = crate::utils::targets::remember_target(
+                database_dir,
+                &build_path,
+                crate::utils::targets::TargetTouch::Seen,
+            );
 
             if force || !db_path.exists() {
                 build_index(

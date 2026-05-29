@@ -4,6 +4,7 @@ use crate::commands::scan::Diag;
 use crate::database::index::Indexer;
 use crate::server::app::{AppState, CachedFindings};
 use crate::server::error::{ApiError, ApiResult};
+use crate::server::jobs::JobStatus;
 use crate::server::models::{
     FilterValues, FindingSummary, FindingView, collect_filter_values, dynamic_status_label,
     finding_from_diag, finding_from_diag_with_detail, overlay_triage_states, summarize_findings,
@@ -38,23 +39,30 @@ struct LoadedFindings {
 /// Load findings for the latest completed scan, falling back to DB if no
 /// in-memory completed scan exists (e.g. after a server restart).
 fn load_latest_findings_internal(state: &AppState) -> LoadedFindings {
-    if let Some(job) = state.job_manager.get_latest_completed() {
+    let scan_root = state.active_scan_root();
+    let root_key = scan_root.display().to_string();
+    if let Some(job) = state
+        .job_manager
+        .list_jobs()
+        .into_iter()
+        .find(|job| job.status == JobStatus::Completed && job.scan_root == scan_root)
+    {
         if let Some(ref findings) = job.findings {
             return LoadedFindings {
-                cache_key: job.id.clone(),
+                cache_key: format!("{root_key}:{}", job.id),
                 findings: Arc::clone(findings),
             };
         }
     }
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(scans) = idx.list_scans(20) {
                 for scan in scans {
                     if scan.status == "completed" {
                         if let Some(json) = scan.findings_json.as_deref() {
                             if let Ok(diags) = serde_json::from_str::<Vec<Diag>>(json) {
                                 return LoadedFindings {
-                                    cache_key: format!("{DB_FALLBACK_KEY}:{}", scan.id),
+                                    cache_key: format!("{root_key}:{DB_FALLBACK_KEY}:{}", scan.id),
                                     findings: Arc::new(diags),
                                 };
                             }
@@ -65,7 +73,7 @@ fn load_latest_findings_internal(state: &AppState) -> LoadedFindings {
         }
     }
     LoadedFindings {
-        cache_key: DB_FALLBACK_KEY.to_string(),
+        cache_key: format!("{root_key}:{DB_FALLBACK_KEY}"),
         findings: Arc::new(Vec::new()),
     }
 }
@@ -120,8 +128,8 @@ fn cached_for_latest(state: &AppState) -> CachedFindings {
 /// the cached views so concurrent readers see consistent data and the cache
 /// stays valid across triage edits.
 fn apply_triage_overlay(state: &AppState, views: &mut [FindingView]) {
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_triage", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_triage", &pool) {
             let triage_map = idx.get_all_triage_states().unwrap_or_default();
             let rules = idx.get_suppression_rules().unwrap_or_default();
             overlay_triage_states(views, &triage_map, &rules);
@@ -270,7 +278,8 @@ async fn get_finding(
     let diag = findings
         .get(index)
         .ok_or_else(|| ApiError::not_found(format!("finding {index} not found")))?;
-    let mut view = finding_from_diag_with_detail(index, diag, &state.scan_root, &findings);
+    let scan_root = state.active_scan_root();
+    let mut view = finding_from_diag_with_detail(index, diag, &scan_root, &findings);
     apply_triage_overlay(&state, std::slice::from_mut(&mut view));
     Ok(Json(view))
 }

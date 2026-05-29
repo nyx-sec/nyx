@@ -437,6 +437,31 @@ fn spec_derivation_failed_verdict(
     }
 }
 
+/// Phase 25 (Track K.0): render the [`crate::dynamic::trace::TraceStage::SpecScoringResult`]
+/// detail string.
+///
+/// Deterministic and within the trace-detail budget: the winning strategy
+/// followed by the loser ranking in descending-score order, each tagged with
+/// its covered flow depth so a trace consumer sees *why* the winner won.
+fn format_spec_scoring_detail(
+    winner: SpecDerivationStrategy,
+    runners_up: &[(SpecDerivationStrategy, crate::dynamic::spec::SpecScore)],
+) -> String {
+    use std::fmt::Write as _;
+    let mut detail = format!("winner={winner} runners_up=");
+    if runners_up.is_empty() {
+        detail.push_str("none");
+    } else {
+        for (i, (strat, score)) in runners_up.iter().enumerate() {
+            if i > 0 {
+                detail.push(',');
+            }
+            let _ = write!(detail, "{strat}:{}", score.flow_depth);
+        }
+    }
+    detail
+}
+
 /// True when the finding has *some* derivable signal (rule namespace, sink
 /// caps, or evidence) so a spec-derivation failure should be surfaced as
 /// `Inconclusive` rather than `Unsupported`.
@@ -550,13 +575,23 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         };
     }
 
-    let spec = match HarnessSpec::from_finding_full(
-        diag,
+    // Phase 25 (Track K.0): derive the spec through the multi-strategy
+    // scoring path. `derive_best_ranked` runs every strategy, scores each
+    // candidate, and returns the winner plus the loser ranking for
+    // telemetry.
+    let ctx = crate::dynamic::spec::SpecDerivationCtx::new(
         opts.verify_all_confidence,
         opts.summaries.as_deref(),
         opts.callgraph.as_deref(),
-    ) {
-        Ok(s) => s,
+    );
+    let spec = match HarnessSpec::derive_best_ranked(diag, &ctx) {
+        Ok((s, runners_up)) => {
+            trace.record(
+                crate::dynamic::trace::TraceStage::SpecScoringResult,
+                Some(format_spec_scoring_detail(s.derivation, &runners_up)),
+            );
+            s
+        }
         Err(reason) => {
             trace.record(
                 crate::dynamic::trace::TraceStage::Verdict,

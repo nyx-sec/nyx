@@ -11,6 +11,16 @@ nyx serve --no-browser            # don't auto-open
 
 Persistent settings live under `[server]` in `nyx.conf` / `nyx.local`.
 
+```mermaid
+flowchart LR
+    Scan["nyx scan<br/>or UI-started scan"] --> Cache[".nyx findings<br/>plus SQLite project index"]
+    Cache --> Serve["nyx serve<br/>loopback API and embedded React UI"]
+    Serve --> Review["Review findings<br/>flow, evidence, history"]
+    Review --> Triage["Update triage state<br/>investigate, suppress, accept, fix"]
+    Triage --> Sync[".nyx/triage.json<br/>optional repo-synced state"]
+    Sync --> Cache
+```
+
 Starting a scan from the UI runs dynamic verification on `Confidence >= Medium`
 findings by default. Check "Skip dynamic verification" in the scan modal to get
 a fast static-only result. See [Dynamic verification](dynamic.md) for details.

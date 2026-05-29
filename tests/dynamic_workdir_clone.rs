@@ -74,7 +74,10 @@ fn cap_lanes_beat_single_lane_by_3x() {
     );
     let lanes = t1.elapsed();
 
-    assert_eq!(lane_out, baseline_out, "lanes must produce identical ordered results");
+    assert_eq!(
+        lane_out, baseline_out,
+        "lanes must produce identical ordered results"
+    );
 
     let speedup = single_lane.as_secs_f64() / lanes.as_secs_f64();
     eprintln!(

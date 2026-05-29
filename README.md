@@ -183,6 +183,16 @@ Fixtures live under [`tests/benchmark/cve_corpus/`](tests/benchmark/cve_corpus/)
 
 Two passes over the filesystem, with an optional SQLite index to skip unchanged files:
 
+```mermaid
+flowchart LR
+    Repo["Repository files"] --> Pass1["Pass 1 per file<br/>tree-sitter, CFG, SSA"]
+    Pass1 --> Summaries["Function summaries<br/>sources, sinks, sanitizers, points-to"]
+    Summaries --> Index["SQLite index<br/>optional incremental cache"]
+    Index --> Pass2["Pass 2 cross-file<br/>global summaries, k=1 inline, SCC fixpoint"]
+    Pass2 --> Rank["Rank and dedupe<br/>severity, evidence, exploitability"]
+    Rank --> Output["Console, JSON, SARIF<br/>and browser UI"]
+```
+
 1. **Pass 1**: parse each file via tree-sitter, build an intra-procedural CFG (petgraph), lower to pruned SSA (Cytron phi insertion over dominance frontiers), and export per-function summaries (source/sanitizer/sink caps, taint transforms, points-to, callees).
 2. **Summary merge**: union all per-file summaries into a `GlobalSummaries` map.
 3. **Pass 2**: re-analyze each file with cross-file context under bounded context sensitivity (k=1 inlining for intra-file callees, SCC fixpoint capped at 64 iterations, and summary fallback for callees above the inline body-size cap). A forward dataflow worklist propagates taint through the SSA lattice with guaranteed convergence. Call-graph SCCs iterate to fixed-point (within the cap) so mutually recursive functions get accurate summaries.

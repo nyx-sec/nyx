@@ -6,6 +6,21 @@ If you're going to act on a finding, it helps to know how the scanner got there.
 
 A scan runs in two passes over the file tree, with an optional SQLite index that lets the second scan skip files whose content hash hasn't changed.
 
+```mermaid
+flowchart TD
+    Walk["Walk file tree"] --> Pass1["Pass 1 per file<br/>tree-sitter parse, CFG, SSA"]
+    Pass1 --> Summaries["Per-function summaries<br/>sources, sinks, sanitizers, returns, points-to"]
+    Pass1 --> Hierarchy["Type hierarchy index<br/>extends, implements, impl-for, includes"]
+    Summaries --> Global["GlobalSummaries map<br/>plus optional SQLite cache"]
+    Hierarchy --> Global
+    Global --> Pass2["Pass 2 per file<br/>cross-file context"]
+    Pass2 --> Taint["Forward SSA taint worklist<br/>finite lattice, guaranteed convergence"]
+    Pass2 --> Calls["Call precision<br/>k=1 inline, summaries, SCC fixed-point"]
+    Taint --> Findings["Findings with evidence<br/>source, path, sink, engine notes"]
+    Calls --> Findings
+    Findings --> Emit["Rank, dedupe, emit<br/>console, JSON, SARIF, UI"]
+```
+
 **Pass 1, per file.** Tree-sitter parses the file. Nyx builds an intra-procedural control-flow graph, lowers it to SSA, and extracts a summary per function describing what that function does at the boundary: which arguments flow to sinks, which sources it reads from, which sinks it calls, what taint it strips, what it returns. Summaries are persisted to SQLite ([`src/summary/`](https://github.com/elicpeter/nyx/tree/master/src/summary/), [`src/database.rs`](https://github.com/elicpeter/nyx/blob/master/src/database.rs)).
 
 **Summary merge.** All per-file summaries get unioned into a global map keyed by qualified function name.

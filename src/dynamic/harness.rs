@@ -640,7 +640,10 @@ mod tests {
         let dst = tmp.path().join("clone");
         copy_workdir(&src, &dst).unwrap();
         assert_eq!(fs::read(dst.join("top.txt")).unwrap(), b"top");
-        assert_eq!(fs::read(dst.join("nested").join("deep.txt")).unwrap(), b"deep");
+        assert_eq!(
+            fs::read(dst.join("nested").join("deep.txt")).unwrap(),
+            b"deep"
+        );
     }
 
     #[cfg(unix)]
@@ -655,7 +658,10 @@ mod tests {
         copy_workdir(&src, &dst).unwrap();
         let link = dst.join("link.txt");
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "internal symlink must be preserved, not dereferenced"
         );
         assert_eq!(fs::read(&link).unwrap(), b"real");

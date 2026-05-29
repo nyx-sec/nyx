@@ -108,14 +108,7 @@ impl BuildPool for GoPool {
         }
 
         let output = base_command(&self.go_bin)
-            .args([
-                "build",
-                "-trimpath",
-                "-buildvcs=false",
-                "-o",
-                &dest,
-                ".",
-            ])
+            .args(["build", "-trimpath", "-buildvcs=false", "-o", &dest, "."])
             .current_dir(workdir)
             .env("GOCACHE", &go_cache)
             .env("GOPATH", &go_path)

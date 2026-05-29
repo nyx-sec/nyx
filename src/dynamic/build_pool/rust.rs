@@ -84,8 +84,7 @@ impl BuildPool for RustPool {
             .current_dir(workdir)
             .env(
                 "CARGO_HOME",
-                std::env::var("CARGO_HOME")
-                    .unwrap_or_else(|_| default_cargo_home()),
+                std::env::var("CARGO_HOME").unwrap_or_else(|_| default_cargo_home()),
             )
             .env(
                 "RUSTUP_HOME",

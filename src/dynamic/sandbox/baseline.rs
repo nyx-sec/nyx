@@ -147,10 +147,10 @@ fn bind_mount_ro(src: &Path, dst: &Path) -> io::Result<()> {
     const MS_REC: u64 = 0x4000;
 
     fs::create_dir_all(dst)?;
-    let csrc =
-        CString::new(src.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let cdst =
-        CString::new(dst.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let csrc = CString::new(src.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let cdst = CString::new(dst.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
     let bind = unsafe {
         mount(
@@ -240,7 +240,11 @@ mod tests {
         // Snapshot it into a fresh per-finding workdir.
         let workdir = tempfile::TempDir::new().unwrap();
         baseline.snapshot_into(workdir.path()).unwrap();
-        let cloned = workdir.path().join("node_modules").join("left-pad").join("index.js");
+        let cloned = workdir
+            .path()
+            .join("node_modules")
+            .join("left-pad")
+            .join("index.js");
         assert!(cloned.exists(), "snapshot must materialise node_modules");
         assert_eq!(fs::read(&cloned).unwrap(), b"module.exports = 1;\n");
     }

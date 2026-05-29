@@ -60,6 +60,12 @@ pub enum TraceStage {
     /// trace consumer can audit how a mixed-cap batch fanned out across
     /// lanes without head-of-line blocking.
     WorkerLaneAssigned,
+    /// Track K.0 (Phase 25) — the multi-strategy spec-derivation scoring
+    /// picked a winning candidate.  `detail` carries
+    /// `winner=<strategy> runners_up=<strategy,…>` so a trace consumer can
+    /// audit which strategies fired and which lost the score / tie-break,
+    /// making engine derivation gaps visible without re-running.
+    SpecScoringResult,
 }
 
 impl TraceStage {
@@ -79,6 +85,7 @@ impl TraceStage {
             Self::OracleObserved => "oracle_observed",
             Self::Verdict => "verdict",
             Self::WorkerLaneAssigned => "worker_lane_assigned",
+            Self::SpecScoringResult => "spec_scoring_result",
         }
     }
 }
@@ -245,6 +252,10 @@ mod tests {
         assert_eq!(
             TraceStage::WorkerLaneAssigned.as_str(),
             "worker_lane_assigned"
+        );
+        assert_eq!(
+            TraceStage::SpecScoringResult.as_str(),
+            "spec_scoring_result"
         );
     }
 }

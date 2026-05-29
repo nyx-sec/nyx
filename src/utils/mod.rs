@@ -20,6 +20,7 @@ pub mod project;
 pub(crate) mod query_cache;
 pub mod redact;
 pub(crate) mod snippet;
+pub mod targets;
 
 pub use analysis_options::{AnalysisOptions, SymexOptions};
 pub use config::Config;

@@ -342,7 +342,8 @@ pub(crate) fn verify_findings_for_scan(
         .unwrap_or(true);
 
     let results: Vec<crate::dynamic::report::VerifyResult> = if parallel && diags.len() > 1 {
-        let lane_trace = verbose.then(|| std::sync::Arc::new(crate::dynamic::trace::VerifyTrace::new()));
+        let lane_trace =
+            verbose.then(|| std::sync::Arc::new(crate::dynamic::trace::VerifyTrace::new()));
         let out = crate::dynamic::runner::WorkerPool::run_in_lanes(
             &*diags,
             lane_trace.as_ref(),
@@ -554,6 +555,11 @@ pub fn handle(
 ) -> NyxResult<()> {
     let scan_path = Path::new(path).canonicalize()?;
     let (project_name, db_path) = get_project_info(&scan_path, database_dir)?;
+    let _ = crate::utils::targets::remember_target(
+        database_dir,
+        &scan_path,
+        crate::utils::targets::TargetTouch::Scanned,
+    );
 
     // Detect frameworks from project manifests and enrich the config.
     let config = &{

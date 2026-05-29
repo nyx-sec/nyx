@@ -200,6 +200,84 @@ fn default_derivation_strategy() -> SpecDerivationStrategy {
     SpecDerivationStrategy::FromFlowSteps
 }
 
+/// Phase 25 (Track K.0) — the optional cross-file context consulted by the
+/// multi-strategy scoring derivation.
+///
+/// Bundles the three inputs every scored strategy and the cross-file source
+/// seeding read, so the public [`HarnessSpec::derive_best`] /
+/// [`HarnessSpec::derive_all_strategies`] surface takes one borrowable
+/// context rather than three positional `Option`s.  Cheap to copy (two
+/// references + a bool).
+#[derive(Clone, Copy)]
+pub struct SpecDerivationCtx<'a> {
+    /// When true, skip the `Confidence >= Medium` gate so low-confidence
+    /// findings are still attempted.
+    pub verify_all_confidence: bool,
+    /// Cross-file function summaries (`FuncSummary` + `SsaFuncSummary`),
+    /// shared by every finding in a scan.
+    pub summaries: Option<&'a GlobalSummaries>,
+    /// Whole-program call graph used for reverse-edge entry resolution and
+    /// cross-file source seeding.
+    pub callgraph: Option<&'a CallGraph>,
+}
+
+impl<'a> SpecDerivationCtx<'a> {
+    /// Construct a context from the three positional inputs the legacy
+    /// `from_finding_*` constructors take.
+    pub fn new(
+        verify_all_confidence: bool,
+        summaries: Option<&'a GlobalSummaries>,
+        callgraph: Option<&'a CallGraph>,
+    ) -> Self {
+        Self {
+            verify_all_confidence,
+            summaries,
+            callgraph,
+        }
+    }
+}
+
+/// Phase 25 (Track K.0) — one scored derivation candidate.
+///
+/// Produced by [`HarnessSpec::derive_all_strategies`]; carries both the
+/// built [`HarnessSpec`] and the [`SpecDerivationStrategy`] that produced
+/// it.  The strategy tag is retained alongside `spec.derivation` (which
+/// holds the same value) so the loser-ranking telemetry can report the tag
+/// without unwrapping the spec.
+#[derive(Debug, Clone)]
+pub struct SpecCandidate {
+    /// The derived harness recipe.
+    pub spec: HarnessSpec,
+    /// Which strategy produced [`Self::spec`].
+    pub strategy: SpecDerivationStrategy,
+}
+
+/// Phase 25 (Track K.0) — lexicographic score for a candidate spec.
+///
+/// Field declaration order *is* the comparison priority: the derived
+/// [`Ord`] compares `flow_depth` first, then `framework_bound`, then
+/// `cross_file_resolved`, then `payloads_available`.  Higher is better, so
+/// [`HarnessSpec::derive_best`] picks the candidate whose score is the
+/// maximum.  `bool` orders `false < true`, so a framework-bound /
+/// cross-file-resolved / payload-backed candidate outscores one that is
+/// not, all else equal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpecScore {
+    /// Flow-step depth the spec covers: `evidence.flow_steps.len()` plus a
+    /// hop when the entry was rewritten to an ancestor function (the
+    /// callgraph-walk strategies cover more of the call chain than the
+    /// helper that physically contains the sink).
+    pub flow_depth: u32,
+    /// A [`FrameworkBinding`] was attached to the spec.
+    pub framework_bound: bool,
+    /// The spec's entry resolves to a different file than the sink — the
+    /// source was recovered across a file boundary.
+    pub cross_file_resolved: bool,
+    /// The `(expected_cap, lang)` pair has at least one curated payload, so
+    /// the verifier has something to fire.
+    pub payloads_available: bool,
+}
+
 impl HarnessSpec {
     /// Build a spec from a finding. Returns `Err` with a typed reason when
     /// the finding cannot be driven dynamically.
@@ -291,51 +369,15 @@ impl HarnessSpec {
         summaries: Option<&GlobalSummaries>,
         callgraph: Option<&CallGraph>,
     ) -> Result<Self, UnsupportedReason> {
-        if !verify_all_confidence {
-            match diag.confidence {
-                Some(c) if c >= Confidence::Medium => {}
-                _ => return Err(UnsupportedReason::ConfidenceTooLow),
-            }
-        }
-
-        let evidence = diag
-            .evidence
-            .as_ref()
-            .ok_or(UnsupportedReason::NoFlowSteps)?;
-
-        // Phase 04 pre-step: when both callgraph *and* summaries are
-        // present, walk reverse edges to a framework-bound ancestor.
-        // Takes precedence over the four-strategy ladder because a route
-        // handler / CLI entry is always a stronger driving anchor than
-        // the helper function that physically contains the sink.
-        //
-        // Strict variant: only the reverse-edge BFS (`find_entry_via_callgraph`)
-        // counts here. The summary-entry-kind + rule-id substring fallbacks
-        // that live in `derive_from_callgraph_entry_full` stay at strategy-4
-        // priority — calling them here would short-circuit the more precise
-        // strategies (FromFlowSteps / FromRuleNamespace / FromFuncSummaryAuto)
-        // whenever the rule id happens to contain `.http.` / `.cli.`.
-        if let (Some(s), Some(cg)) = (summaries, callgraph)
-            && let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg)
-        {
-            return Ok(spec);
-        }
-
-        // Try each strategy in priority order; first non-None wins.
-        if let Some(spec) = derive_from_flow_steps(diag, evidence, summaries) {
-            return Ok(spec);
-        }
-        if let Some(spec) = derive_from_rule_namespace_with(diag, evidence, summaries) {
-            return Ok(spec);
-        }
-        if let Some(spec) = derive_from_func_summary_auto(diag, evidence, summaries) {
-            return Ok(spec);
-        }
-        if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, summaries, callgraph) {
-            return Ok(spec);
-        }
-
-        Err(UnsupportedReason::SpecDerivationFailed)
+        // Phase 25 (Track K.0): the legacy sequential first-match ladder is
+        // now a thin wrapper over the multi-strategy scoring path. Every
+        // strategy this method used to try in priority order is still run by
+        // `derive_all_strategies`; `derive_best` scores them and the
+        // ascending-precedence ordering reproduces the old tie-break
+        // (strict callgraph walk > flow_steps > rule_namespace >
+        // func_summary > callgraph fallback) when scores are equal.
+        let ctx = SpecDerivationCtx::new(verify_all_confidence, summaries, callgraph);
+        Self::derive_best(diag, &ctx)
     }
 
     /// Convenience wrapper around [`HarnessSpec::from_finding_full`] that
@@ -387,6 +429,133 @@ impl HarnessSpec {
             SpecDerivationStrategy::FromFuncSummaryWalk,
             SpecDerivationStrategy::FromCallgraphEntry,
         ]
+    }
+
+    /// Phase 25 (Track K.0) — run *every* derivation strategy and score each
+    /// resulting candidate.
+    ///
+    /// Unlike the legacy sequential first-match ladder, this evaluates all
+    /// strategies that fire for the finding and returns each as a
+    /// `(SpecCandidate, SpecScore)` pair.  The caller
+    /// ([`Self::derive_best_ranked`]) picks the maximum-scoring candidate.
+    ///
+    /// Candidates are returned in *ascending precedence* order (lowest-priority
+    /// strategy first).  This is load-bearing: [`SpecScore`] is intentionally
+    /// coarse and genuine ties are common (e.g. two strategies that both name
+    /// the sink's own enclosing function as the entry).  When scores tie, the
+    /// winner-selection in [`Self::derive_best_ranked`] keeps the *last*
+    /// maximal element, so ascending precedence here reproduces the legacy
+    /// ladder's tie-break (flow-steps beats rule-namespace beats
+    /// func-summary, and the strict callgraph walk beats every other
+    /// strategy) without baking strategy rank into the score itself.
+    ///
+    /// Returns an empty `Vec` when the finding carries no evidence or no
+    /// strategy fires.
+    pub fn derive_all_strategies(
+        diag: &Diag,
+        ctx: &SpecDerivationCtx,
+    ) -> Vec<(SpecCandidate, SpecScore)> {
+        let Some(evidence) = diag.evidence.as_ref() else {
+            return Vec::new();
+        };
+        let summaries = ctx.summaries;
+        let callgraph = ctx.callgraph;
+
+        // Build raw candidates in ascending precedence (lowest first). The
+        // two callgraph entries mirror the legacy two call sites: the
+        // `*_full` variant carries the low-precedence summary-kind / rule-id
+        // fallback, the `*_walk_only` and cross-file-seed variants are the
+        // high-precedence reverse-edge walks.
+        let mut raw: Vec<(HarnessSpec, SpecDerivationStrategy)> = Vec::new();
+        if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, summaries, callgraph) {
+            raw.push((spec, SpecDerivationStrategy::FromCallgraphEntry));
+        }
+        if let Some(spec) = derive_from_func_summary_auto(diag, evidence, summaries) {
+            raw.push((spec, SpecDerivationStrategy::FromFuncSummaryWalk));
+        }
+        if let Some(spec) = derive_from_rule_namespace_with(diag, evidence, summaries) {
+            raw.push((spec, SpecDerivationStrategy::FromRuleNamespace));
+        }
+        if let Some(spec) = derive_from_flow_steps(diag, evidence, summaries) {
+            raw.push((spec, SpecDerivationStrategy::FromFlowSteps));
+        }
+        if let (Some(s), Some(cg)) = (summaries, callgraph) {
+            if let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg) {
+                raw.push((spec, SpecDerivationStrategy::FromCallgraphEntry));
+            }
+            if let Some(spec) = derive_from_cross_file_seed(diag, evidence, s, cg) {
+                raw.push((spec, SpecDerivationStrategy::FromCallgraphEntry));
+            }
+        }
+
+        let sink_file = sink_file_of(diag, evidence);
+        raw.into_iter()
+            .map(|(spec, strategy)| {
+                let score = score_candidate(&spec, evidence, &sink_file);
+                (SpecCandidate { spec, strategy }, score)
+            })
+            .collect()
+    }
+
+    /// Phase 25 (Track K.0) — derive the single best spec for a finding.
+    ///
+    /// Runs [`Self::derive_all_strategies`] and returns the maximum-scoring
+    /// candidate's spec.  The error contract matches the legacy
+    /// [`Self::from_finding_full`]:
+    /// - `Err(UnsupportedReason::ConfidenceTooLow)` when the confidence gate
+    ///   fails (and `ctx.verify_all_confidence` is false),
+    /// - `Err(UnsupportedReason::NoFlowSteps)` when the finding carries no
+    ///   `Evidence` at all,
+    /// - `Err(UnsupportedReason::SpecDerivationFailed)` when evidence is
+    ///   present but no strategy fired.
+    pub fn derive_best(diag: &Diag, ctx: &SpecDerivationCtx) -> Result<Self, UnsupportedReason> {
+        Self::derive_best_ranked(diag, ctx).map(|(spec, _runners_up)| spec)
+    }
+
+    /// Phase 25 (Track K.0) — like [`Self::derive_best`] but also returns the
+    /// loser ranking for telemetry.
+    ///
+    /// The second tuple element lists every non-winning candidate's
+    /// `(strategy, score)` in descending score order, so the verifier can
+    /// emit a [`crate::dynamic::trace::TraceStage::SpecScoringResult`] event
+    /// that makes engine gaps visible (which strategies fired, how they
+    /// scored, and which one lost the tie-break).
+    pub fn derive_best_ranked(
+        diag: &Diag,
+        ctx: &SpecDerivationCtx,
+    ) -> Result<(Self, Vec<(SpecDerivationStrategy, SpecScore)>), UnsupportedReason> {
+        if !ctx.verify_all_confidence {
+            match diag.confidence {
+                Some(c) if c >= Confidence::Medium => {}
+                _ => return Err(UnsupportedReason::ConfidenceTooLow),
+            }
+        }
+        // Distinguish "no evidence at all" (NoFlowSteps) from "evidence
+        // present but no strategy fired" (SpecDerivationFailed) — the
+        // verifier lifts only the latter to `Inconclusive`.
+        if diag.evidence.is_none() {
+            return Err(UnsupportedReason::NoFlowSteps);
+        }
+
+        let mut scored = Self::derive_all_strategies(diag, ctx);
+        if scored.is_empty() {
+            return Err(UnsupportedReason::SpecDerivationFailed);
+        }
+
+        // Stable sort by score ascending. `derive_all_strategies` returns
+        // candidates in ascending precedence, and a stable sort preserves
+        // that order within equal scores — so the final element is the
+        // highest-scoring candidate, and on a score tie it is the
+        // highest-precedence one (legacy ladder tie-break).
+        scored.sort_by(|a, b| a.1.cmp(&b.1));
+        let (winner, _winner_score) = scored.pop().expect("non-empty checked above");
+        let mut runners_up: Vec<(SpecDerivationStrategy, SpecScore)> = scored
+            .into_iter()
+            .map(|(cand, score)| (cand.strategy, score))
+            .collect();
+        // Report losers best-first.
+        runners_up.reverse();
+        Ok((winner.spec, runners_up))
     }
 }
 
@@ -960,6 +1129,201 @@ fn find_entry_via_callgraph<'a>(
 /// (e.g. clap subcommand detection), extend this match to preserve them.
 fn entry_kind_from_summary(_kind: &crate::entry_points::EntryKind) -> EntryKind {
     EntryKind::HttpRoute
+}
+
+// ── Phase 25 (Track K.0): multi-strategy scoring + cross-file seeding ────────
+
+/// Maximum reverse-edge hops the cross-file source seeding walks before
+/// giving up.  Bounds the BFS so a deep call chain cannot stall derivation;
+/// the [`crate::dynamic::spec`] Phase 25 spec fixes this at 5.
+const CROSS_FILE_SEED_MAX_DEPTH: usize = 5;
+
+/// The sink call-site's file: the last `Sink` flow step, falling back to the
+/// diag's own path.  Used by [`score_candidate`] to decide whether a
+/// candidate's entry was resolved across a file boundary.
+fn sink_file_of(diag: &Diag, evidence: &crate::evidence::Evidence) -> String {
+    evidence
+        .flow_steps
+        .iter()
+        .rev()
+        .find(|s| matches!(s.kind, FlowStepKind::Sink))
+        .map(|s| s.file.clone())
+        .unwrap_or_else(|| diag.path.clone())
+}
+
+/// Flow-step depth a candidate covers.
+///
+/// Base is `evidence.flow_steps.len()`.  A candidate whose entry was
+/// rewritten to a *different* function than the sink's enclosing function
+/// (i.e. one of the callgraph-walk strategies climbed the call chain to a
+/// route handler / source ancestor) earns a `+1` hop bonus, so it scores
+/// strictly above the strategies that merely name the sink's own enclosing
+/// helper as the entry.  This is what lets a successful reverse-edge walk
+/// win the [`SpecScore`] comparison without baking strategy rank into the
+/// score.
+fn candidate_flow_depth(spec: &HarnessSpec, evidence: &crate::evidence::Evidence) -> u32 {
+    let base = evidence.flow_steps.len() as u32;
+    let hop = match enclosing_function_from_flow_steps(evidence) {
+        Some(ref f) if !f.is_empty() && *f != spec.entry_name => 1,
+        _ => 0,
+    };
+    base + hop
+}
+
+/// True when the `(cap, lang)` pair has at least one curated payload to fire.
+///
+/// `expected_cap` may carry several bits; a direct multi-bit lookup misses
+/// (the corpus is keyed by single caps), so on a miss we test each set bit
+/// individually.
+fn candidate_has_payloads(cap: Cap, lang: Lang) -> bool {
+    use crate::dynamic::corpus::registry::payloads_for_lang;
+    if !payloads_for_lang(cap, lang).is_empty() {
+        return true;
+    }
+    cap.iter()
+        .any(|bit| !payloads_for_lang(bit, lang).is_empty())
+}
+
+/// Score a single candidate spec on the four Phase 25 axes.
+fn score_candidate(
+    spec: &HarnessSpec,
+    evidence: &crate::evidence::Evidence,
+    sink_file: &str,
+) -> SpecScore {
+    SpecScore {
+        flow_depth: candidate_flow_depth(spec, evidence),
+        framework_bound: spec.framework.is_some(),
+        cross_file_resolved: !sink_file.is_empty()
+            && !spec.entry_file.is_empty()
+            && spec.entry_file != sink_file,
+        payloads_available: candidate_has_payloads(spec.expected_cap, spec.lang),
+    }
+}
+
+/// Phase 25 (Track K.0) deliverable 4 — cross-file source seeding.
+///
+/// Walks reverse call-graph edges from the sink's enclosing function,
+/// consulting [`GlobalSummaries::get_ssa`] (the `ssa_by_key` index) at each
+/// ancestor, until it finds either:
+/// * a **Source** — an ancestor whose [`crate::summary::ssa_summary::SsaFuncSummary::source_caps`]
+///   is non-empty, i.e. it introduces externally-controlled input, or
+/// * a **framework binding** — an ancestor that satisfies [`is_entry_point`].
+///
+/// Bounded at [`CROSS_FILE_SEED_MAX_DEPTH`] reverse hops.  Unlike
+/// [`find_entry_via_callgraph`], which stops only at framework entry points,
+/// this also stops at SSA-confirmed sources — so it recovers a drivable
+/// entry for findings whose taint originates in a cross-file helper that
+/// reads input but is not itself a route handler.  That additional reach is
+/// the lever Phase 25 pulls to cut the `Inconclusive(SpecDerivationFailed)`
+/// rate.
+fn seed_cross_file_source<'a>(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: &'a GlobalSummaries,
+    callgraph: &CallGraph,
+    lang: Lang,
+) -> Option<EntryHit<'a>> {
+    let enclosing = enclosing_function_from_flow_steps(evidence)
+        .or_else(|| resolve_enclosing_function(diag, evidence, Some(summaries), lang))?;
+    let sink_key = summaries
+        .iter()
+        .find(|(k, s)| {
+            k.lang == lang && s.name == enclosing && paths_match(&s.file_path, &diag.path)
+        })
+        .map(|(k, _)| k.clone())?;
+    let start = *callgraph.index.get(&sink_key)?;
+
+    let mut visited: HashSet<petgraph::graph::NodeIndex> = HashSet::new();
+    visited.insert(start);
+    let mut frontier: Vec<petgraph::graph::NodeIndex> = vec![start];
+    for _ in 0..CROSS_FILE_SEED_MAX_DEPTH {
+        let mut next: Vec<petgraph::graph::NodeIndex> = Vec::new();
+        for node in frontier.drain(..) {
+            for caller in callgraph
+                .graph
+                .neighbors_directed(node, petgraph::Direction::Incoming)
+            {
+                if !visited.insert(caller) {
+                    continue;
+                }
+                let caller_key = &callgraph.graph[caller];
+                let summary = summaries.get(caller_key);
+                let is_source = summaries
+                    .get_ssa(caller_key)
+                    .is_some_and(|ssa| !ssa.source_caps.is_empty());
+                let is_framework = summary.is_some_and(|s| is_entry_point(s, callgraph));
+                if (is_source || is_framework)
+                    && let Some(s) = summary
+                {
+                    return Some(EntryHit {
+                        key: caller_key.clone(),
+                        summary: s,
+                    });
+                }
+                next.push(caller);
+            }
+        }
+        frontier = next;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+    None
+}
+
+/// Strategy candidate built from [`seed_cross_file_source`].
+///
+/// Rewrites the spec's entry to the cross-file Source / framework ancestor
+/// the seed walk resolved, classifying its [`EntryKind`] from the ancestor's
+/// summary (HTTP-shaped static entry kinds → [`EntryKind::HttpRoute`], else
+/// name-based).  Tagged [`SpecDerivationStrategy::FromCallgraphEntry`] — it
+/// is a reverse-edge call-graph walk, like the other two callgraph
+/// candidates — and emitted at the highest precedence in
+/// [`HarnessSpec::derive_all_strategies`].
+fn derive_from_cross_file_seed(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: &GlobalSummaries,
+    callgraph: &CallGraph,
+) -> Option<HarnessSpec> {
+    let lang = lang_from_path(&diag.path)?;
+    let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
+    if expected_cap.is_empty() {
+        return None;
+    }
+    let found = seed_cross_file_source(diag, evidence, summaries, callgraph, lang)?;
+    let entry_kind = found
+        .summary
+        .entry_kind
+        .as_ref()
+        .map(entry_kind_from_summary)
+        .unwrap_or_else(|| name_to_entry_kind(&found.summary.name));
+    let entry_file = if !found.summary.file_path.is_empty() {
+        found.summary.file_path.clone()
+    } else {
+        diag.path.clone()
+    };
+    let (sink_file, sink_line) = evidence
+        .flow_steps
+        .iter()
+        .rev()
+        .find(|s| matches!(s.kind, FlowStepKind::Sink))
+        .map(|s| (s.file.clone(), s.line))
+        .unwrap_or_else(|| (diag.path.clone(), diag.line as u32));
+    let mut spec = finalize_spec(
+        diag,
+        entry_file,
+        found.summary.name.clone(),
+        lang,
+        expected_cap,
+        sink_file,
+        sink_line,
+        SpecDerivationStrategy::FromCallgraphEntry,
+        Some(summaries),
+    );
+    spec.entry_kind = entry_kind;
+    spec.spec_hash = compute_spec_hash(&spec);
+    Some(spec)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2572,5 +2936,251 @@ mod tests {
         );
         assert_eq!(spec.spec_hash, pre_hash);
         assert!(spec.framework.is_some());
+    }
+
+    // ── Phase 25 (Track K.0): multi-strategy scoring + cross-file seeding ────
+
+    #[test]
+    fn spec_score_orders_lexicographically() {
+        // `flow_depth` dominates every lower-priority axis.
+        let deep = SpecScore {
+            flow_depth: 3,
+            framework_bound: false,
+            cross_file_resolved: false,
+            payloads_available: false,
+        };
+        let shallow_but_rich = SpecScore {
+            flow_depth: 2,
+            framework_bound: true,
+            cross_file_resolved: true,
+            payloads_available: true,
+        };
+        assert!(deep > shallow_but_rich);
+
+        // Equal `flow_depth`: `framework_bound` breaks the tie.
+        let fw = SpecScore {
+            flow_depth: 2,
+            framework_bound: true,
+            cross_file_resolved: false,
+            payloads_available: false,
+        };
+        let no_fw = SpecScore {
+            flow_depth: 2,
+            framework_bound: false,
+            cross_file_resolved: true,
+            payloads_available: true,
+        };
+        assert!(fw > no_fw);
+
+        // Equal `flow_depth` + `framework_bound`: `cross_file_resolved` wins.
+        let xfile = SpecScore {
+            flow_depth: 1,
+            framework_bound: false,
+            cross_file_resolved: true,
+            payloads_available: false,
+        };
+        let no_xfile = SpecScore {
+            flow_depth: 1,
+            framework_bound: false,
+            cross_file_resolved: false,
+            payloads_available: true,
+        };
+        assert!(xfile > no_xfile);
+
+        // Only `payloads_available` differs: it is the final tie-breaker.
+        let with_payloads = SpecScore {
+            flow_depth: 1,
+            framework_bound: false,
+            cross_file_resolved: false,
+            payloads_available: true,
+        };
+        let without = SpecScore {
+            flow_depth: 1,
+            framework_bound: false,
+            cross_file_resolved: false,
+            payloads_available: false,
+        };
+        assert!(with_payloads > without);
+    }
+
+    #[test]
+    fn derive_all_strategies_empty_without_evidence() {
+        // No `Evidence` struct at all → no strategy has anything to derive
+        // from, so the candidate set is empty (and `derive_best_ranked`
+        // lifts this to `NoFlowSteps`, exercised separately).
+        let diag = crate::commands::scan::Diag {
+            confidence: Some(Confidence::High),
+            evidence: None,
+            ..Default::default()
+        };
+        let ctx = SpecDerivationCtx::new(false, None, None);
+        assert!(HarnessSpec::derive_all_strategies(&diag, &ctx).is_empty());
+    }
+
+    #[test]
+    fn derive_best_ranked_reports_runner_up_strategies() {
+        use crate::labels::Cap;
+        // A finding both the flow-steps and rule-namespace strategies can
+        // drive: identical entry → identical score → flow_steps wins the
+        // precedence tie-break, and rule_namespace is reported as a loser.
+        let evidence = Evidence {
+            flow_steps: vec![
+                source_step("src/handler.py", "handle_request"),
+                sink_step("src/handler.py"),
+            ],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "py.cmdi.os_system".into(),
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            path: "src/handler.py".into(),
+            ..Default::default()
+        };
+        let ctx = SpecDerivationCtx::new(false, None, None);
+        let (spec, runners_up) = HarnessSpec::derive_best_ranked(&diag, &ctx).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
+        assert!(
+            runners_up
+                .iter()
+                .any(|(s, _)| *s == SpecDerivationStrategy::FromRuleNamespace),
+            "rule-namespace strategy must appear in the runner-up ranking, got {runners_up:?}",
+        );
+    }
+
+    #[test]
+    fn seed_cross_file_source_stops_at_cross_file_source() {
+        use crate::labels::Cap;
+        use crate::summary::CalleeSite;
+        use crate::summary::ssa_summary::SsaFuncSummary;
+        use crate::symbol::FuncKey;
+
+        let mut gs = GlobalSummaries::new();
+
+        // Sink helper in db.rs — contains the dangerous call, no callees.
+        let run_query = build_summary(
+            "run_query",
+            "src/db.rs",
+            "rust",
+            Cap::SHELL_ESCAPE.bits(),
+            vec![0],
+            None,
+        );
+        let run_query_key = FuncKey::new_function(Lang::Rust, "src/db.rs", "run_query", Some(1));
+        gs.insert(run_query_key, run_query);
+
+        // Source ancestor in input.rs — reads external input, calls run_query.
+        let mut read_input = build_summary("read_input", "src/input.rs", "rust", 0, vec![], None);
+        read_input.callees = vec![CalleeSite::bare("run_query")];
+        let read_input_key =
+            FuncKey::new_function(Lang::Rust, "src/input.rs", "read_input", Some(1));
+        gs.insert(read_input_key.clone(), read_input);
+        // SSA summary marks read_input a Source (non-empty source_caps) —
+        // the signal `seed_cross_file_source` stops on.
+        gs.insert_ssa(
+            read_input_key,
+            SsaFuncSummary {
+                source_caps: Cap::SHELL_ESCAPE,
+                ..Default::default()
+            },
+        );
+
+        // A caller of read_input gives it in-degree 1, so the
+        // `is_entry_point` zero-caller heuristic does NOT fire — proving the
+        // walk stops because read_input is a SOURCE, not a framework entry.
+        let mut dispatch = build_summary("dispatch", "src/main.rs", "rust", 0, vec![], None);
+        dispatch.callees = vec![CalleeSite::bare("read_input")];
+        let dispatch_key = FuncKey::new_function(Lang::Rust, "src/main.rs", "dispatch", Some(1));
+        gs.insert(dispatch_key, dispatch);
+
+        let cg = crate::callgraph::build_call_graph(&gs, &[]);
+
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function("src/db.rs", "run_query")],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "rust.cmdi.command".into(),
+            path: "src/db.rs".into(),
+            line: 6,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev.clone()),
+            ..Default::default()
+        };
+
+        let hit = seed_cross_file_source(&diag, &ev, &gs, &cg, Lang::Rust)
+            .expect("reverse walk must reach the cross-file source ancestor");
+        assert_eq!(hit.summary.name, "read_input");
+        assert_eq!(hit.summary.file_path, "src/input.rs");
+        // read_input must not itself be a framework entry point — confirming
+        // the stop was on the source condition.
+        assert!(!is_entry_point(hit.summary, &cg));
+    }
+
+    #[test]
+    fn derive_from_cross_file_seed_rewrites_entry_across_file_boundary() {
+        use crate::labels::Cap;
+        use crate::summary::CalleeSite;
+        use crate::summary::ssa_summary::SsaFuncSummary;
+        use crate::symbol::FuncKey;
+
+        let mut gs = GlobalSummaries::new();
+        let run_query = build_summary(
+            "run_query",
+            "src/db.rs",
+            "rust",
+            Cap::SHELL_ESCAPE.bits(),
+            vec![0],
+            None,
+        );
+        gs.insert(
+            FuncKey::new_function(Lang::Rust, "src/db.rs", "run_query", Some(1)),
+            run_query,
+        );
+
+        let mut read_input = build_summary("read_input", "src/input.rs", "rust", 0, vec![], None);
+        read_input.callees = vec![CalleeSite::bare("run_query")];
+        let read_input_key =
+            FuncKey::new_function(Lang::Rust, "src/input.rs", "read_input", Some(1));
+        gs.insert(read_input_key.clone(), read_input);
+        gs.insert_ssa(
+            read_input_key,
+            SsaFuncSummary {
+                source_caps: Cap::SHELL_ESCAPE,
+                ..Default::default()
+            },
+        );
+
+        let cg = crate::callgraph::build_call_graph(&gs, &[]);
+
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function("src/db.rs", "run_query")],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "rust.cmdi.command".into(),
+            path: "src/db.rs".into(),
+            line: 6,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev.clone()),
+            ..Default::default()
+        };
+
+        let spec = derive_from_cross_file_seed(&diag, &ev, &gs, &cg)
+            .expect("cross-file seed must derive a spec");
+        assert_eq!(spec.entry_name, "read_input");
+        assert_eq!(spec.entry_file, "src/input.rs");
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
+
+        // End-to-end: the scorer prefers the cross-file entry — deeper flow
+        // (one reverse hop) plus cross-file resolution beats the sink-local
+        // strategies that name `run_query` itself as the entry.
+        let ctx = SpecDerivationCtx::new(false, Some(&gs), Some(&cg));
+        let best = HarnessSpec::derive_best(&diag, &ctx).expect("derive_best must succeed");
+        assert_eq!(best.entry_name, "read_input");
+        assert_eq!(best.derivation, SpecDerivationStrategy::FromCallgraphEntry);
     }
 }

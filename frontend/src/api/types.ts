@@ -192,6 +192,17 @@ export interface ScanView {
   metrics?: ScanMetricsSnapshot;
 }
 
+export interface TargetView {
+  id: string;
+  name: string;
+  path: string;
+  db_path: string;
+  last_seen_at: string;
+  last_scan_at?: string;
+  active: boolean;
+  exists: boolean;
+}
+
 // Scan Comparison types
 export interface CompareScanInfo {
   id: string;

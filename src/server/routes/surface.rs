@@ -20,7 +20,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 async fn get_surface(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let scan_root = state.scan_root.clone();
+    let scan_root = state.active_scan_root();
     let database_dir = state.database_dir.clone();
     let cfg = state.config.read().clone();
 
