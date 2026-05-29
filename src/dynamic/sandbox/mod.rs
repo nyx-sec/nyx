@@ -86,6 +86,15 @@ pub enum HardeningRecord {
 /// pin when one is available.
 pub mod docker;
 
+/// Phase 24 (Track P.0) — prewarmed sandbox baseline directories.
+///
+/// Holds one shared, warmed copy of each language toolchain's pinned
+/// dependency tree (`node_modules`, `vendor`, `target/`, …) and CoW-snapshots
+/// (macOS) or read-only bind-mounts (Linux) it into every per-finding workdir,
+/// so per-workdir setup cost collapses from a full dependency install to a
+/// near-free clone.
+pub mod baseline;
+
 // ── Harness interpretation probe ──────────────────────────────────────────────
 
 /// Returns true when the harness is driven by an interpreter (Python, Node, …)

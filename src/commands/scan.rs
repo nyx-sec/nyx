@@ -330,8 +330,41 @@ pub(crate) fn verify_findings_for_scan(
     }
 
     let telemetry_log = crate::dynamic::telemetry::log_path();
-    for diag in diags {
-        let mut result = crate::dynamic::verify::verify_finding(diag, &opts);
+
+    // Track P.0: route per-finding verification through cap-keyed concurrency
+    // lanes so a slow `DESERIALIZE` harness can't head-of-line block fast
+    // `SSRF` ones. `verify_finding` takes `&Diag`, so the parallel phase is a
+    // pure read; verdicts are applied back in input order afterwards, keeping
+    // the verdict sequence identical to the sequential path (determinism
+    // contract). `NYX_DYNAMIC_VERIFY_PARALLEL=0` forces the legacy loop.
+    let parallel = std::env::var("NYX_DYNAMIC_VERIFY_PARALLEL")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true);
+
+    let results: Vec<crate::dynamic::report::VerifyResult> = if parallel && diags.len() > 1 {
+        let lane_trace = verbose.then(|| std::sync::Arc::new(crate::dynamic::trace::VerifyTrace::new()));
+        let out = crate::dynamic::runner::WorkerPool::run_in_lanes(
+            &*diags,
+            lane_trace.as_ref(),
+            |d| {
+                crate::labels::Cap::from_bits_truncate(
+                    d.evidence.as_ref().map_or(0, |e| e.sink_caps),
+                )
+            },
+            |_, d| crate::dynamic::verify::verify_finding(d, &opts),
+        );
+        if let Some(trace) = &lane_trace {
+            trace.print_to_stderr();
+        }
+        out
+    } else {
+        diags
+            .iter()
+            .map(|d| crate::dynamic::verify::verify_finding(d, &opts))
+            .collect()
+    };
+
+    for (diag, mut result) in diags.iter_mut().zip(results) {
         if result.status == crate::dynamic::report::VerifyStatus::Confirmed
             && let Some(ref log_path) = telemetry_log
         {

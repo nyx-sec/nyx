@@ -20,8 +20,10 @@ use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::stubs::StubEvent;
 use crate::dynamic::trace::{TraceStage, VerifyTrace};
 use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
+use crate::labels::Cap;
 use crate::symbol::Lang;
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 /// Record a trace event on the caller's [`VerifyTrace`] handle if one
 /// was attached to [`SandboxOptions::trace`].  No-op otherwise — keeps
@@ -727,6 +729,155 @@ fn generate_nonce() -> String {
     format!("{mixed:016x}")
 }
 
+/// Per-lane bounded-channel capacity (Track P.0).
+///
+/// Small on purpose: lanes are backpressure-bounded so a fast feeder cannot
+/// queue the whole batch ahead of a slow worker, but large enough that a
+/// worker never starves waiting on the feeder for the next item.
+const LANE_CHANNEL_CAP: usize = 4;
+
+/// Cap-routed concurrency lanes for batched verification (Track P.0).
+///
+/// A single-queue verifier lets one slow `DESERIALIZE` harness (JVM spin-up,
+/// gadget-chain payloads) head-of-line block a queue full of fast `SSRF`
+/// findings. [`WorkerPool::run_in_lanes`] instead routes each finding to a
+/// lane keyed by its capability: every cap drains its *own* set of bounded
+/// channels with a per-cap worker budget from [`WorkerPool::lanes_for_cap`],
+/// and all caps run concurrently, so a slow cap throttles only itself.
+///
+/// Results are returned in input order regardless of lane scheduling, so the
+/// verdict sequence stays deterministic (the engine's determinism contract is
+/// about verdicts, not wall-clock interleaving).
+pub struct WorkerPool;
+
+impl WorkerPool {
+    /// Concurrency budget for `cap`'s lanes.
+    ///
+    /// Verification is dominated by per-harness subprocess wall-time, not CPU,
+    /// so wide lanes for cheap independent caps (SSRF) pay off even past the
+    /// core count, while expensive caps stay narrow so one harness can't
+    /// monopolise the host. Expensive caps are checked first so a combined
+    /// cap-set inherits the *narrower* lane.
+    pub fn lanes_for_cap(cap: Cap) -> usize {
+        if cap.contains(Cap::CRYPTO) {
+            1
+        } else if cap.contains(Cap::DESERIALIZE) || cap.contains(Cap::CODE_EXEC) {
+            2
+        } else if cap.contains(Cap::SSRF) {
+            8
+        } else {
+            4
+        }
+    }
+
+    /// Run `work(i, &items[i])` for every item, routed through per-cap lanes.
+    ///
+    /// `cap_of` extracts the routing capability for each item. Returns one
+    /// output per input, in input order. Empty / single-item batches run
+    /// inline (no threads) so trivial scans pay no concurrency overhead.
+    ///
+    /// `trace`, when present, receives a deterministic
+    /// [`TraceStage::WorkerLaneAssigned`] event per item (recorded in a
+    /// single-threaded pre-pass so the trace order does not depend on lane
+    /// scheduling).
+    pub fn run_in_lanes<I, O, C, W>(
+        items: &[I],
+        trace: Option<&Arc<VerifyTrace>>,
+        cap_of: C,
+        work: W,
+    ) -> Vec<O>
+    where
+        I: Sync,
+        O: Send,
+        C: Fn(&I) -> Cap + Sync,
+        W: Fn(usize, &I) -> O + Sync,
+    {
+        // Group item indices by cap (BTreeMap over the raw bits keeps both the
+        // pre-pass trace and lane spawning in a stable, reproducible order).
+        let mut groups: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (i, item) in items.iter().enumerate() {
+            groups.entry(cap_of(item).bits()).or_default().push(i);
+        }
+
+        // Deterministic lane-assignment trace, single-threaded.
+        if trace.is_some() {
+            for (bits, idxs) in &groups {
+                let cap = Cap::from_bits_truncate(*bits);
+                let lanes = Self::lanes_for_cap(cap).max(1);
+                for (pos, _) in idxs.iter().enumerate() {
+                    trace_record(
+                        trace,
+                        TraceStage::WorkerLaneAssigned,
+                        Some(format!(
+                            "cap={} lane={}",
+                            crate::labels::cap_to_name(cap),
+                            pos % lanes
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Inline fast path: nothing to parallelise.
+        if items.len() <= 1 {
+            return items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| work(i, it))
+                .collect();
+        }
+
+        let results: Vec<Mutex<Option<O>>> =
+            (0..items.len()).map(|_| Mutex::new(None)).collect();
+
+        std::thread::scope(|scope| {
+            let results = &results;
+            let work = &work;
+            for (bits, idxs) in groups {
+                let cap = Cap::from_bits_truncate(bits);
+                let lanes = Self::lanes_for_cap(cap).max(1);
+
+                // One bounded channel + one worker per lane.
+                let mut senders = Vec::with_capacity(lanes);
+                for _ in 0..lanes {
+                    let (tx, rx) = crossbeam_channel::bounded::<usize>(LANE_CHANNEL_CAP);
+                    senders.push(tx);
+                    scope.spawn(move || {
+                        while let Ok(idx) = rx.recv() {
+                            let out = work(idx, &items[idx]);
+                            if let Ok(mut slot) = results[idx].lock() {
+                                *slot = Some(out);
+                            }
+                        }
+                    });
+                }
+
+                // Dedicated feeder per cap so feeding one group never blocks
+                // another group's workers from starting (cross-cap isolation).
+                scope.spawn(move || {
+                    for (pos, idx) in idxs.into_iter().enumerate() {
+                        let lane = pos % lanes;
+                        if senders[lane].send(idx).is_err() {
+                            break;
+                        }
+                    }
+                    // `senders` drops here → each lane's rx closes → worker exits.
+                });
+            }
+        });
+
+        results
+            .into_iter()
+            .map(|m| {
+                m.into_inner()
+                    .ok()
+                    .flatten()
+                    .expect("every lane worker writes its result slot")
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,5 +952,88 @@ mod tests {
             b"some preamble\nNYX_IMPORT_ERROR: real failure\nmore noise\n",
         );
         assert!(is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn lanes_for_cap_matches_table() {
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::SSRF), 8);
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::DESERIALIZE), 2);
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::CODE_EXEC), 2);
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::CRYPTO), 1);
+        // Unlisted cap falls back to the default lane width.
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::SQL_QUERY), 4);
+        // Expensive cap wins a combined cap-set (narrower lane).
+        assert_eq!(WorkerPool::lanes_for_cap(Cap::SSRF | Cap::CRYPTO), 1);
+    }
+
+    #[test]
+    fn run_in_lanes_preserves_input_order() {
+        // Mixed caps across many items: results must come back indexed by
+        // input position regardless of which lane finished first.
+        let caps = [
+            Cap::SSRF,
+            Cap::DESERIALIZE,
+            Cap::CRYPTO,
+            Cap::SQL_QUERY,
+            Cap::SSRF,
+            Cap::CRYPTO,
+        ];
+        let items: Vec<(usize, Cap)> = caps.iter().copied().enumerate().collect();
+        let out = WorkerPool::run_in_lanes(
+            &items,
+            None,
+            |&(_, cap)| cap,
+            |i, &(orig, _)| {
+                assert_eq!(i, orig);
+                orig * 10
+            },
+        );
+        assert_eq!(out, vec![0, 10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn run_in_lanes_runs_every_item_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let items: Vec<Cap> = (0..64)
+            .map(|i| match i % 4 {
+                0 => Cap::SSRF,
+                1 => Cap::DESERIALIZE,
+                2 => Cap::CRYPTO,
+                _ => Cap::SQL_QUERY,
+            })
+            .collect();
+        let calls = AtomicUsize::new(0);
+        let out = WorkerPool::run_in_lanes(
+            &items,
+            None,
+            |c| *c,
+            |i, _| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                i
+            },
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 64);
+        assert_eq!(out, (0..64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn run_in_lanes_emits_deterministic_lane_trace() {
+        let items = [Cap::SSRF, Cap::CRYPTO, Cap::SSRF];
+        let trace_a = Arc::new(VerifyTrace::new());
+        let _ = WorkerPool::run_in_lanes(&items, Some(&trace_a), |c| *c, |i, _| i);
+        let trace_b = Arc::new(VerifyTrace::new());
+        let _ = WorkerPool::run_in_lanes(&items, Some(&trace_b), |c| *c, |i, _| i);
+
+        let events_a = trace_a.events();
+        // One WorkerLaneAssigned per item.
+        assert_eq!(
+            events_a
+                .iter()
+                .filter(|e| e.stage == TraceStage::WorkerLaneAssigned)
+                .count(),
+            3
+        );
+        // Deterministic across runs.
+        assert_eq!(trace_a.to_jsonl(), trace_b.to_jsonl());
     }
 }

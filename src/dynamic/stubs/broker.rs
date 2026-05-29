@@ -1539,18 +1539,32 @@ async fn handle_pubsub_grpc_connection(
     let Ok(mut connection) = h2::server::handshake(stream).await else {
         return;
     };
+    // Each request runs as its own task so the accept loop keeps polling the
+    // h2 connection. The single connection future is the sole driver of socket
+    // I/O: a StreamingPull handler awaits client frames and flushes responses
+    // across many turns, so running it inline would starve the driver — the
+    // queued response could never flush and the client's `response.await`
+    // would park forever (the pre-fix deadhang).
+    let mut tasks = Vec::new();
     while let Some(request) = connection.accept().await {
         let Ok((request, respond)) = request else {
             break;
         };
         let path = request.uri().path().to_owned();
         let body = request.into_body();
-        if path.ends_with("/StreamingPull") {
-            handle_pubsub_streaming_pull(body, respond, Arc::clone(&state), &log_path).await;
-        } else {
-            let body = pubsub_grpc_read_all(body).await;
-            handle_pubsub_unary(&path, &body, respond, Arc::clone(&state), &log_path).await;
-        }
+        let state = Arc::clone(&state);
+        let log_path = log_path.clone();
+        tasks.push(tokio::spawn(async move {
+            if path.ends_with("/StreamingPull") {
+                handle_pubsub_streaming_pull(body, respond, state, &log_path).await;
+            } else {
+                let body = pubsub_grpc_read_all(body).await;
+                handle_pubsub_unary(&path, &body, respond, state, &log_path).await;
+            }
+        }));
+    }
+    for task in tasks {
+        let _ = task.await;
     }
 }
 
@@ -4307,7 +4321,10 @@ mod tests {
                     .send_data(bytes::Bytes::from(pubsub_grpc_frame(&init_payload)), false)
                     .unwrap();
 
-                let response = response.await.unwrap();
+                let response = tokio::time::timeout(Duration::from_secs(2), response)
+                    .await
+                    .expect("streaming pull response headers timed out")
+                    .unwrap();
                 assert_eq!(response.status(), 200);
                 let mut body = response.into_body();
                 let mut response_buffer = Vec::new();

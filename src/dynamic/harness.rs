@@ -17,6 +17,7 @@ use crate::dynamic::lang;
 use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::UnsupportedReason;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -183,7 +184,7 @@ fn copy_entry_file(spec: &HarnessSpec, workdir: &Path, entry_subpath: Option<&st
                 let _ = fs::write(&dst, rewritten.as_bytes());
                 return;
             }
-            let _ = fs::copy(src, &dst);
+            let _ = copy_workdir(src, &dst);
             return;
         }
     }
@@ -247,7 +248,7 @@ fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
             continue;
         };
         if name == "pom.xml" {
-            let _ = fs::copy(&p, workdir.join(name));
+            let _ = copy_workdir(&p, &workdir.join(name));
             continue;
         }
         if !p.extension().map(|e| e == "java").unwrap_or(false) {
@@ -256,7 +257,7 @@ fn copy_java_sibling_sources(spec: &HarnessSpec, workdir: &Path) {
         if name == entry_name || name == alt_name {
             continue;
         }
-        let _ = fs::copy(&p, workdir.join(name));
+        let _ = copy_workdir(&p, &workdir.join(name));
     }
 }
 
@@ -269,15 +270,185 @@ fn copy_php_project_manifests(spec: &HarnessSpec, workdir: &Path) {
     while let Some(current) = dir {
         let composer_json = current.join("composer.json");
         if composer_json.exists() {
-            let _ = fs::copy(&composer_json, workdir.join("composer.json"));
+            let _ = copy_workdir(&composer_json, &workdir.join("composer.json"));
             let composer_lock = current.join("composer.lock");
             if composer_lock.exists() {
-                let _ = fs::copy(composer_lock, workdir.join("composer.lock"));
+                let _ = copy_workdir(&composer_lock, &workdir.join("composer.lock"));
             }
             return;
         }
         dir = current.parent();
     }
+}
+
+/// Copy-on-write clone of `src` into `dst` (Track P.0).
+///
+/// Per-finding workdir staging used to `std::fs::copy` every harness file,
+/// paying a full byte copy for each of the 50+ findings an OWASP run touches.
+/// On a CoW filesystem the kernel can share the underlying extents instead, so
+/// setup cost drops from tens of milliseconds to near zero:
+///
+/// - **macOS** — `clonefile(2)` clones a file *or an entire directory tree* in
+///   a single syscall (the [`clone_dir`] fast path).
+/// - **Linux** — `ioctl(FICLONE)` reflinks on btrfs/xfs; `copy_file_range(2)`
+///   is the ext4 fallback (in-kernel copy, reflink when the FS supports it).
+/// - **Anywhere else / unsupported FS** — falls back to `std::fs::copy`, so
+///   behaviour is identical, only slower.
+///
+/// The top-level `src` is resolved through symlinks (mirroring the `fs::copy`
+/// semantics the staging code relied on, so a symlinked entry file copies its
+/// target's contents). Symlinks *inside* a cloned tree are preserved verbatim
+/// so a baseline snapshot keeps the toolchain's `node_modules/.bin` /
+/// `vendor` link structure intact.
+pub(crate) fn copy_workdir(src: &Path, dst: &Path) -> io::Result<()> {
+    let meta = fs::metadata(src)?;
+    if meta.is_dir() {
+        clone_dir(src, dst)
+    } else {
+        clone_file(src, dst)
+    }
+}
+
+/// Recursively clone a directory tree, preserving internal symlinks.
+fn clone_dir(src: &Path, dst: &Path) -> io::Result<()> {
+    // macOS: `clonefile` clones the whole tree (CoW) in one syscall when the
+    // destination does not yet exist — the P50 ≤ 5ms baseline-snapshot path.
+    #[cfg(target_os = "macos")]
+    if !dst.exists() && clonefile_cow(src, dst).is_ok() {
+        return Ok(());
+    }
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            copy_symlink(&from, &to)?;
+        } else if ft.is_dir() {
+            clone_dir(&from, &to)?;
+        } else {
+            clone_file(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// CoW-clone a single regular file, falling back to a byte copy.
+fn clone_file(src: &Path, dst: &Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if clonefile_cow(src, dst).is_ok() {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if reflink_cow(src, dst).is_ok() {
+        return Ok(());
+    }
+    fs::copy(src, dst).map(|_| ())
+}
+
+/// Recreate `src` (a symlink) at `dst` rather than following it.
+fn copy_symlink(src: &Path, dst: &Path) -> io::Result<()> {
+    let _ = fs::remove_file(dst);
+    #[cfg(unix)]
+    {
+        let target = fs::read_link(src)?;
+        std::os::unix::fs::symlink(target, dst)
+    }
+    #[cfg(not(unix))]
+    {
+        // No portable symlink API: copy the resolved file contents.
+        clone_file(src, dst)
+    }
+}
+
+/// macOS `clonefile(2)` wrapper.  Honours overwrite semantics by removing an
+/// existing destination first (`clonefile` fails with `EEXIST` otherwise).
+#[cfg(target_os = "macos")]
+fn clonefile_cow(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn clonefile(src: *const i8, dst: *const i8, flags: u32) -> i32;
+    }
+
+    let _ = fs::remove_file(dst);
+    let csrc = CString::new(src.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let cdst = CString::new(dst.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // flags = 0: follow a symlinked `src` and clone its target.
+    let ret = unsafe { clonefile(csrc.as_ptr(), cdst.as_ptr(), 0) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Linux CoW clone: `ioctl(FICLONE)` reflink first, `copy_file_range(2)`
+/// fallback.  Preserves the source mode so cloned toolchain binaries keep
+/// their executable bit.
+#[cfg(target_os = "linux")]
+fn reflink_cow(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // FICLONE = _IOW(0x94, 9, int) on the asm-generic ABI (x86_64, aarch64).
+    const FICLONE: u64 = 0x4004_9409;
+
+    unsafe extern "C" {
+        fn ioctl(fd: i32, request: u64, ...) -> i32;
+        fn copy_file_range(
+            fd_in: i32,
+            off_in: *mut i64,
+            fd_out: i32,
+            off_out: *mut i64,
+            len: usize,
+            flags: u32,
+        ) -> isize;
+    }
+
+    let src_file = fs::File::open(src)?;
+    let meta = src_file.metadata()?;
+    let dst_file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dst)?;
+
+    let src_fd = src_file.as_raw_fd();
+    let dst_fd = dst_file.as_raw_fd();
+
+    // Fast path: whole-file reflink (btrfs/xfs).
+    let cloned = unsafe { ioctl(dst_fd, FICLONE, src_fd) } == 0;
+    if !cloned {
+        // ext4 / overlayfs fallback: in-kernel copy (reflink when supported).
+        let mut remaining = meta.len() as usize;
+        while remaining > 0 {
+            let n = unsafe {
+                copy_file_range(
+                    src_fd,
+                    std::ptr::null_mut(),
+                    dst_fd,
+                    std::ptr::null_mut(),
+                    remaining,
+                    0,
+                )
+            };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if n == 0 {
+                break; // short source / EOF
+            }
+            remaining -= n as usize;
+        }
+    }
+
+    // Neither FICLONE nor copy_file_range copies the mode bits.
+    fs::set_permissions(dst, meta.permissions())?;
+    Ok(())
 }
 
 /// Extract the source of the entry file (for repro bundles). Best-effort.
@@ -436,5 +607,86 @@ mod tests {
         assert!(harness.workdir.join("Helper.java").exists());
         assert!(harness.workdir.join("pom.xml").exists());
         assert!(!harness.workdir.join("Benign.java").exists());
+    }
+
+    #[test]
+    fn copy_workdir_clones_file_contents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src.txt");
+        let dst = tmp.path().join("dst.txt");
+        fs::write(&src, b"hello clonefile\n").unwrap();
+        copy_workdir(&src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"hello clonefile\n");
+    }
+
+    #[test]
+    fn copy_workdir_overwrites_existing_dest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("src.txt");
+        let dst = tmp.path().join("dst.txt");
+        fs::write(&src, b"new contents").unwrap();
+        fs::write(&dst, b"STALE STALE STALE").unwrap();
+        copy_workdir(&src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"new contents");
+    }
+
+    #[test]
+    fn copy_workdir_clones_directory_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("top.txt"), b"top").unwrap();
+        fs::write(src.join("nested").join("deep.txt"), b"deep").unwrap();
+        let dst = tmp.path().join("clone");
+        copy_workdir(&src, &dst).unwrap();
+        assert_eq!(fs::read(dst.join("top.txt")).unwrap(), b"top");
+        assert_eq!(fs::read(dst.join("nested").join("deep.txt")).unwrap(), b"deep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_workdir_preserves_internal_symlinks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("real.txt"), b"real").unwrap();
+        std::os::unix::fs::symlink("real.txt", src.join("link.txt")).unwrap();
+        let dst = tmp.path().join("clone");
+        copy_workdir(&src, &dst).unwrap();
+        let link = dst.join("link.txt");
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "internal symlink must be preserved, not dereferenced"
+        );
+        assert_eq!(fs::read(&link).unwrap(), b"real");
+    }
+
+    #[test]
+    #[ignore = "Phase 24 perf bench: per-finding workdir clone P50 ≤ 5ms (CoW). Opt-in so the default suite stays hermetic + fast. Run: cargo nextest run --features dynamic --run-ignored ignored-only -E 'test(~copy_workdir_perf)'"]
+    fn copy_workdir_perf_p50_under_5ms() {
+        use std::time::{Duration, Instant};
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Representative harness workdir: entry source + siblings + manifest.
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Vuln.java"), "public class Vuln {}\n".repeat(60)).unwrap();
+        fs::write(src.join("Helper.java"), "class Helper {}\n".repeat(20)).unwrap();
+        fs::write(src.join("pom.xml"), "<project></project>\n".repeat(30)).unwrap();
+
+        let n = 50usize;
+        let mut samples = Vec::with_capacity(n);
+        for i in 0..n {
+            let dst = tmp.path().join(format!("clone{i}"));
+            let t = Instant::now();
+            copy_workdir(&src, &dst).unwrap();
+            samples.push(t.elapsed());
+        }
+        samples.sort();
+        let p50 = samples[n / 2];
+        eprintln!("phase24 copy_workdir: P50 = {p50:?} over {n} clones");
+        assert!(
+            p50 <= Duration::from_millis(5),
+            "phase24 acceptance gate: workdir clone P50 {p50:?}, expected ≤ 5ms"
+        );
     }
 }

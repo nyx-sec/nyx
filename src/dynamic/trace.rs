@@ -55,6 +55,11 @@ pub enum TraceStage {
     OracleWait,
     OracleObserved,
     Verdict,
+    /// Track P.0 — the verifier assigned this finding to a cap-routed
+    /// concurrency lane.  `detail` carries `cap=<name> lane=<n>` so a
+    /// trace consumer can audit how a mixed-cap batch fanned out across
+    /// lanes without head-of-line blocking.
+    WorkerLaneAssigned,
 }
 
 impl TraceStage {
@@ -73,6 +78,7 @@ impl TraceStage {
             Self::OracleWait => "oracle_wait",
             Self::OracleObserved => "oracle_observed",
             Self::Verdict => "verdict",
+            Self::WorkerLaneAssigned => "worker_lane_assigned",
         }
     }
 }
@@ -236,5 +242,9 @@ mod tests {
         assert_eq!(TraceStage::OracleWait.as_str(), "oracle_wait");
         assert_eq!(TraceStage::OracleObserved.as_str(), "oracle_observed");
         assert_eq!(TraceStage::Verdict.as_str(), "verdict");
+        assert_eq!(
+            TraceStage::WorkerLaneAssigned.as_str(),
+            "worker_lane_assigned"
+        );
     }
 }
