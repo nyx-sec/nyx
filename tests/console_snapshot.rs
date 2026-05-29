@@ -76,6 +76,28 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             wrong: None,
             hardening_outcome: None,
         },
+        VerifyStatus::PartiallyConfirmed => VerifyResult {
+            finding_id: "abc123".into(),
+            status,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: Some(
+                "sink-reachability probe fired but the oracle marker was not observed; exploit chain did not complete".into(),
+            ),
+            attempts: vec![AttemptSummary {
+                payload_label: "sqli-tautology".into(),
+                exit_code: Some(0),
+                timed_out: false,
+                triggered: false,
+                sink_hit: true,
+            }],
+            toolchain_match: Some("exact".into()),
+            differential: None,
+            replay_stable: None,
+            wrong: None,
+            hardening_outcome: None,
+        },
         VerifyStatus::NotConfirmed => VerifyResult {
             finding_id: "abc123".into(),
             status,
@@ -155,6 +177,17 @@ fn console_not_confirmed_shows_annotation() {
     assert!(
         stripped.contains("[DYN: not confirmed]"),
         "expected DYN not-confirmed annotation, got:\n{stripped}"
+    );
+}
+
+#[test]
+fn console_partially_confirmed_shows_sink_reached() {
+    let diag = diag_with_verdict(VerifyStatus::PartiallyConfirmed);
+    let output = render_console(&[diag], "proj", None, &[]);
+    let stripped = strip_ansi(&output);
+    assert!(
+        stripped.contains("[DYN: partially confirmed (sink reached)]"),
+        "expected DYN partially-confirmed annotation, got:\n{stripped}"
     );
 }
 

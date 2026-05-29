@@ -2,6 +2,7 @@ import type { VerifyResult, VerifyStatus } from '../api/types';
 
 const STATUS_LABELS: Record<VerifyStatus, string> = {
   Confirmed: 'Confirmed',
+  PartiallyConfirmed: 'Partially confirmed',
   NotConfirmed: 'Not confirmed',
   Inconclusive: 'Inconclusive',
   Unsupported: 'Unsupported',
@@ -15,6 +16,10 @@ function verdictTooltip(verdict: VerifyResult): string {
       return triggered_payload
         ? `Confirmed via payload: ${triggered_payload}`
         : 'Dynamically confirmed exploitable';
+    case 'PartiallyConfirmed':
+      return detail
+        ? `Partially confirmed (sink reached): ${detail}`
+        : 'Partially confirmed: sink reached but exploit chain did not complete';
     case 'NotConfirmed':
       return (verdict.attempts?.length ?? 0) > 0
         ? `Not confirmed after ${verdict.attempts?.length ?? 0} payload attempt(s)`

@@ -244,13 +244,14 @@ export function ScannerQualityPanel({
   const dynamic = quality.dynamic_verification ?? {
     total: 0,
     confirmed: 0,
+    partially_confirmed: 0,
     not_confirmed: 0,
     inconclusive: 0,
     unsupported: 0,
   };
   const dynamicDetail =
     dynamic.total > 0
-      ? `${dynamic.total.toLocaleString()} verdicts · ${dynamic.not_confirmed.toLocaleString()} not confirmed · ${dynamic.inconclusive.toLocaleString()} inconclusive · ${dynamic.unsupported.toLocaleString()} unsupported`
+      ? `${dynamic.total.toLocaleString()} verdicts · ${dynamic.partially_confirmed.toLocaleString()} partially confirmed · ${dynamic.not_confirmed.toLocaleString()} not confirmed · ${dynamic.inconclusive.toLocaleString()} inconclusive · ${dynamic.unsupported.toLocaleString()} unsupported`
       : 'no dynamic verdicts in latest scan';
 
   const rows: Array<{

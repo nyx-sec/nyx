@@ -558,6 +558,7 @@ fn format_dynamic_verdict_annotation(dv: &crate::evidence::VerifyResult) -> Stri
             let pid = dv.triggered_payload.as_deref().unwrap_or("unknown");
             format!("[DYN: confirmed via {pid}]")
         }
+        VerifyStatus::PartiallyConfirmed => "[DYN: partially confirmed (sink reached)]".to_string(),
         VerifyStatus::NotConfirmed => "[DYN: not confirmed]".to_string(),
         VerifyStatus::Unsupported => {
             let reason = dv

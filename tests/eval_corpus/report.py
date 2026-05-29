@@ -78,6 +78,7 @@ def load_previous_agg(path: str) -> dict:
             "fn": 0,
             "unsupported": 0,
             "confirmed": 0,
+            "partially_confirmed": 0,
             "wrong_confirmed": 0,
             "stable_replays": 0,
             "total": 0,
@@ -92,6 +93,7 @@ def load_previous_agg(path: str) -> dict:
                 "fn",
                 "unsupported",
                 "confirmed",
+                "partially_confirmed",
                 "wrong_confirmed",
                 "stable_replays",
                 "total",
@@ -139,6 +141,7 @@ def main() -> int:
             "fn": 0,
             "unsupported": 0,
             "confirmed": 0,
+            "partially_confirmed": 0,
             "wrong_confirmed": 0,
             "stable_replays": 0,
             "total": 0,
@@ -153,6 +156,7 @@ def main() -> int:
                 "fn",
                 "unsupported",
                 "confirmed",
+                "partially_confirmed",
                 "wrong_confirmed",
                 "stable_replays",
                 "total",
@@ -160,17 +164,22 @@ def main() -> int:
                 agg[k][field] += c.get(field, 0)
 
     print("\n=== Aggregated eval corpus report ===")
-    print(f"{'Cap':<20} {'Lang':<12} {'TP':>5} {'FP':>5} {'FN':>5} {'Prec':>6} {'Rec':>6} {'Unsup%':>7}")
-    print("-" * 72)
+    print(
+        f"{'Cap':<20} {'Lang':<12} {'TP':>5} {'FP':>5} {'FN':>5} "
+        f"{'Prec':>6} {'Rec':>6} {'Unsup%':>7} {'Conf%':>7} {'Part%':>7}"
+    )
+    print("-" * 88)
     for k, v in sorted(agg.items()):
         prec = v["tp"] / max(v["tp"] + v["fp"], 1)
         rec = v["tp"] / max(v["tp"] + v["fn"], 1)
         unsup = v["unsupported"] / max(v["total"], 1)
+        conf = v["confirmed"] / max(v["total"], 1)
+        part = v["partially_confirmed"] / max(v["total"], 1)
         print(
             f"{k[0]:<20} {k[1]:<12} "
             f"{v['tp']:>5} {v['fp']:>5} {v['fn']:>5} "
             f"{prec:>6.2f} {rec:>6.2f} "
-            f"{unsup*100:>6.1f}%"
+            f"{unsup*100:>6.1f}% {conf*100:>6.1f}% {part*100:>6.1f}%"
         )
 
     gate_failed = False

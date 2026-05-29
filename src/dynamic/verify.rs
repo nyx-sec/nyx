@@ -987,9 +987,16 @@ fn build_verdict(
 
             if let Some(i) = run.triggered_by {
                 let triggered_payload = run.attempts[i].payload_label.to_string();
+                // Resolve repro bytes by label, not by index: OOB payloads
+                // skipped for lack of a listener leave `attempts` shorter
+                // than `vuln_payloads`, so a positional lookup can pull the
+                // wrong payload's bytes.  The label is the stable key.
                 let payloads = payloads_for(spec.expected_cap);
-                let vuln_payloads: Vec<_> = payloads.iter().filter(|p| !p.is_benign).collect();
-                let payload_bytes = vuln_payloads.get(i).map(|p| p.bytes).unwrap_or(b"");
+                let payload_bytes = payloads
+                    .iter()
+                    .find(|p| !p.is_benign && p.label == triggered_payload)
+                    .map(|p| p.bytes)
+                    .unwrap_or(b"");
                 let hardening_outcome = summarize_hardening(&run.attempts[i].outcome);
 
                 // Emit repro artifact.
@@ -1155,6 +1162,33 @@ fn build_verdict(
                         wrong: None,
                         hardening_outcome: None,
                     },
+                }
+            } else if run.sink_reached_no_oracle {
+                // Phase 26: a vuln payload's in-harness sink-reachability
+                // probe fired but its oracle marker never did, and the run
+                // produced no Confirmed-class verdict and no colliding
+                // differential.  The sink is reachable at runtime yet the
+                // exploit chain did not complete (no marker file written,
+                // no OOB callback observed, output lacked the proof token).
+                // Surface `PartiallyConfirmed` so engine work can ratchet on
+                // the real sink-reachability gap without overstating it as a
+                // confirmed exploit.  No repro artifact is written: there is
+                // no proven exploit to reproduce.
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::PartiallyConfirmed,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: None,
+                    detail: Some(
+                        "sink-reachability probe fired but the oracle marker was not observed; exploit chain did not complete".to_owned(),
+                    ),
+                    attempts,
+                    toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
                 }
             } else if run.oracle_collision {
                 // Oracle fired but the sink-hit sentinel did not —
@@ -1734,5 +1768,142 @@ mod tests {
             hit.is_some(),
             "current corpus_version entry must be a cache hit"
         );
+    }
+
+    fn partial_spec() -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "deadbeefcafef00d".into(),
+            entry_file: "app.py".into(),
+            entry_name: "login".into(),
+            entry_kind: crate::dynamic::spec::EntryKind::Function,
+            lang: crate::symbol::Lang::Python,
+            toolchain_id: "python-3.11".into(),
+            payload_slot: crate::dynamic::spec::PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "app.py".into(),
+            sink_line: 10,
+            spec_hash: "cafecafecafe0001".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
+        }
+    }
+
+    /// Phase 26: a vuln payload whose sink-reachability probe fired but whose
+    /// oracle marker never did — and no Confirmed-class verdict, no
+    /// differential outcome, no benign-control gap — must surface as
+    /// `PartiallyConfirmed`, carry no `triggered_payload`, and write no repro.
+    #[test]
+    fn build_verdict_sink_reached_no_oracle_maps_to_partially_confirmed() {
+        use crate::dynamic::runner::{Attempt, RunOutcome};
+        use crate::dynamic::sandbox::SandboxOutcome;
+
+        let opts = VerifyOptions::from_config(&Config::default());
+        let run = RunOutcome {
+            spec: partial_spec(),
+            attempts: vec![Attempt {
+                payload_label: "sqli-tautology",
+                outcome: SandboxOutcome {
+                    exit_code: Some(0),
+                    stdout: b"__NYX_SINK_HIT__".to_vec(),
+                    stderr: Vec::new(),
+                    timed_out: false,
+                    oob_callback_seen: false,
+                    sink_hit: true,
+                    duration: std::time::Duration::ZERO,
+                    hardening_outcome: None,
+                },
+                oracle_fired: false,
+                triggered: false,
+            }],
+            triggered_by: None,
+            oracle_collision: false,
+            sink_reached_no_oracle: true,
+            build_attempts: 1,
+            harness_source: String::new(),
+            entry_source: String::new(),
+            differential: None,
+            no_benign_control: false,
+            unrelated_crash: false,
+        };
+
+        let verdict = build_verdict(
+            "deadbeefcafef00d",
+            &partial_spec(),
+            Ok(run),
+            "exact",
+            &opts,
+            std::time::Duration::ZERO,
+        );
+
+        assert_eq!(verdict.status, VerifyStatus::PartiallyConfirmed);
+        assert!(
+            verdict.triggered_payload.is_none(),
+            "PartiallyConfirmed must not claim a triggering payload"
+        );
+        assert!(
+            verdict
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("sink-reachability probe fired"),
+            "detail must explain the sink reached but the chain did not complete: {:?}",
+            verdict.detail
+        );
+        // The sink-hit attempt must survive into the surfaced attempt list.
+        assert_eq!(verdict.attempts.len(), 1);
+        assert!(verdict.attempts[0].sink_hit);
+        assert!(!verdict.attempts[0].triggered);
+    }
+
+    /// Regression guard: a clean run (no sink hit, no oracle) must stay
+    /// `NotConfirmed` — the `PartiallyConfirmed` branch must not swallow the
+    /// ordinary negative case.
+    #[test]
+    fn build_verdict_clean_run_stays_not_confirmed() {
+        use crate::dynamic::runner::{Attempt, RunOutcome};
+        use crate::dynamic::sandbox::SandboxOutcome;
+
+        let opts = VerifyOptions::from_config(&Config::default());
+        let run = RunOutcome {
+            spec: partial_spec(),
+            attempts: vec![Attempt {
+                payload_label: "sqli-tautology",
+                outcome: SandboxOutcome {
+                    exit_code: Some(0),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    timed_out: false,
+                    oob_callback_seen: false,
+                    sink_hit: false,
+                    duration: std::time::Duration::ZERO,
+                    hardening_outcome: None,
+                },
+                oracle_fired: false,
+                triggered: false,
+            }],
+            triggered_by: None,
+            oracle_collision: false,
+            sink_reached_no_oracle: false,
+            build_attempts: 1,
+            harness_source: String::new(),
+            entry_source: String::new(),
+            differential: None,
+            no_benign_control: false,
+            unrelated_crash: false,
+        };
+
+        let verdict = build_verdict(
+            "deadbeefcafef00d",
+            &partial_spec(),
+            Ok(run),
+            "exact",
+            &opts,
+            std::time::Duration::ZERO,
+        );
+
+        assert_eq!(verdict.status, VerifyStatus::NotConfirmed);
     }
 }

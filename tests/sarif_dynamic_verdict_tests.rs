@@ -235,9 +235,10 @@ fn sarif_confirmed_verdict_nyx_dynamic_verdict_contains_triggered_payload() {
 }
 
 #[test]
-fn sarif_all_four_statuses_produce_partial_fingerprint() {
+fn sarif_all_statuses_produce_partial_fingerprint() {
     let statuses = [
         (VerifyStatus::Confirmed, "Confirmed"),
+        (VerifyStatus::PartiallyConfirmed, "PartiallyConfirmed"),
         (VerifyStatus::NotConfirmed, "NotConfirmed"),
         (VerifyStatus::Unsupported, "Unsupported"),
         (VerifyStatus::Inconclusive, "Inconclusive"),

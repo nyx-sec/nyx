@@ -258,6 +258,12 @@ fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
     let dv = diag.evidence.as_ref()?.dynamic_verdict.as_ref()?;
     match dv.status {
         VerifyStatus::Confirmed => Some(20.0),
+        // PartiallyConfirmed: the sink was reached at runtime but the
+        // exploit chain did not complete.  Runtime corroboration that the
+        // sink is reachable is a positive signal, but weaker than a proven
+        // exploit, so it earns a modest bump rather than the full Confirmed
+        // boost.
+        VerifyStatus::PartiallyConfirmed => Some(8.0),
         // Apply penalty only when the corpus was actually exhausted (attempts
         // were made); a NotConfirmed with zero attempts means something went
         // wrong before payload execution, which is an Inconclusive path, not

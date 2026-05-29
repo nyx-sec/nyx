@@ -43,6 +43,19 @@ describe('DynamicVerdictSection', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders PartiallyConfirmed badge', () => {
+    render(
+      <DynamicVerdictSection
+        verdict={makeVerdict('PartiallyConfirmed', {
+          detail: 'sink reached but exploit chain did not complete',
+        })}
+      />,
+    );
+    expect(
+      screen.getByTestId('verdict-badge-partiallyconfirmed'),
+    ).toBeInTheDocument();
+  });
+
   it('does not crash when the API omits an empty attempts array', () => {
     render(
       <DynamicVerdictSection
@@ -82,6 +95,7 @@ describe('DynamicVerdictSection', () => {
     unmount();
 
     for (const status of [
+      'PartiallyConfirmed',
       'NotConfirmed',
       'Unsupported',
       'Inconclusive',

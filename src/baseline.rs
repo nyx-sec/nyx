@@ -308,6 +308,10 @@ pub fn check_gate(diff: &VerdictDiff, gate: &str) -> bool {
                 && matches!(
                     e.current_status,
                     Some(VerifyStatus::Confirmed)
+                        // PartiallyConfirmed = sink still reachable at
+                        // runtime, so a baseline-Confirmed finding that is
+                        // now partial has NOT been resolved.
+                        | Some(VerifyStatus::PartiallyConfirmed)
                         | Some(VerifyStatus::Inconclusive)
                         | Some(VerifyStatus::Unsupported)
                 )
@@ -323,6 +327,7 @@ pub fn check_gate(diff: &VerdictDiff, gate: &str) -> bool {
 fn status_str(s: Option<VerifyStatus>) -> &'static str {
     match s {
         Some(VerifyStatus::Confirmed) => "Confirmed",
+        Some(VerifyStatus::PartiallyConfirmed) => "PartiallyConfirmed",
         Some(VerifyStatus::NotConfirmed) => "NotConfirmed",
         Some(VerifyStatus::Inconclusive) => "Inconclusive",
         Some(VerifyStatus::Unsupported) => "Unsupported",

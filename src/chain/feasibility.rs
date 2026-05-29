@@ -37,8 +37,11 @@ pub enum Feasibility {
     /// but where the static evidence is strong.
     InconclusiveHighConf,
     /// Everything else — no dynamic verification, dynamic verdict was
-    /// `NotConfirmed`/`Unsupported`, or dynamic was `Inconclusive` but
-    /// static confidence is not `High`.
+    /// `NotConfirmed`/`PartiallyConfirmed`/`Unsupported`, or dynamic was
+    /// `Inconclusive` but static confidence is not `High`.  A
+    /// `PartiallyConfirmed` verdict proves only that the sink is reachable,
+    /// not that the exploit chain completes, so it stays conservative here:
+    /// it must not inflate a multi-hop path score.
     Unverified,
 }
 

@@ -293,6 +293,7 @@ fn status_for_diag(d: &Diag) -> &'static str {
 pub fn dynamic_status_label(status: VerifyStatus) -> &'static str {
     match status {
         VerifyStatus::Confirmed => "Confirmed",
+        VerifyStatus::PartiallyConfirmed => "PartiallyConfirmed",
         VerifyStatus::NotConfirmed => "NotConfirmed",
         VerifyStatus::Inconclusive => "Inconclusive",
         VerifyStatus::Unsupported => "Unsupported",

@@ -3,7 +3,12 @@ export type Confidence = 'Low' | 'Medium' | 'High';
 export type FlowStepKind = 'source' | 'assignment' | 'call' | 'phi' | 'sink';
 
 // Dynamic verification types (from src/evidence.rs VerifyStatus / VerifyResult)
-export type VerifyStatus = 'Confirmed' | 'NotConfirmed' | 'Inconclusive' | 'Unsupported';
+export type VerifyStatus =
+  | 'Confirmed'
+  | 'PartiallyConfirmed'
+  | 'NotConfirmed'
+  | 'Inconclusive'
+  | 'Unsupported';
 
 export interface AttemptSummary {
   payload_label: string;
@@ -29,6 +34,7 @@ export interface VerifyResult {
 export interface DynamicVerificationSummary {
   total: number;
   confirmed: number;
+  partially_confirmed: number;
   not_confirmed: number;
   inconclusive: number;
   unsupported: number;

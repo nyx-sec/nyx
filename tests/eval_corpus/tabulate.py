@@ -387,7 +387,7 @@ def main() -> int:
                     break
 
     # Per-cell tallies: {(cap, lang): {tp, fp, fn, unsupported, confirmed,
-    # wrong_confirmed, stable_replays, total}}
+    # partially_confirmed, wrong_confirmed, stable_replays, total}}
     cells: dict[tuple[str, str], dict] = defaultdict(
         lambda: {
             "tp": 0,
@@ -395,6 +395,7 @@ def main() -> int:
             "fn": 0,
             "unsupported": 0,
             "confirmed": 0,
+            "partially_confirmed": 0,
             "wrong_confirmed": 0,
             "stable_replays": 0,
             "total": 0,
@@ -412,6 +413,8 @@ def main() -> int:
             status = dv.get("status")
             if status == "Unsupported":
                 cells[key]["unsupported"] += 1
+            elif status == "PartiallyConfirmed":
+                cells[key]["partially_confirmed"] += 1
             elif status == "Confirmed":
                 cells[key]["confirmed"] += 1
                 # Repro-stability and false-Confirmed counts are optional

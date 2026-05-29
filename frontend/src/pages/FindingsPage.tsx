@@ -31,6 +31,7 @@ function formatTriageState(state: string): string {
 
 function formatVerificationStatus(status: string): string {
   if (status === 'NotConfirmed') return 'Not confirmed';
+  if (status === 'PartiallyConfirmed') return 'Partially confirmed';
   return status || 'Unverified';
 }
 

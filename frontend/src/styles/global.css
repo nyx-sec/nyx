@@ -2668,6 +2668,10 @@ tr.selected td {
   background: var(--success-bg);
   color: var(--success);
 }
+.badge-dyn-partiallyconfirmed {
+  background: var(--conf-medium-bg);
+  color: var(--conf-medium);
+}
 .badge-dyn-notconfirmed {
   background: var(--bg-secondary);
   color: var(--text-secondary);

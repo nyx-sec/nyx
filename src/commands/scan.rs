@@ -242,6 +242,7 @@ pub fn compute_stable_hash(diag: &Diag) -> u64 {
 pub struct DynamicVerificationSummary {
     pub total: usize,
     pub confirmed: usize,
+    pub partially_confirmed: usize,
     pub not_confirmed: usize,
     pub inconclusive: usize,
     pub unsupported: usize,
@@ -261,6 +262,9 @@ impl DynamicVerificationSummary {
             summary.total += 1;
             match verdict.status {
                 crate::evidence::VerifyStatus::Confirmed => summary.confirmed += 1,
+                crate::evidence::VerifyStatus::PartiallyConfirmed => {
+                    summary.partially_confirmed += 1
+                }
                 crate::evidence::VerifyStatus::NotConfirmed => summary.not_confirmed += 1,
                 crate::evidence::VerifyStatus::Inconclusive => summary.inconclusive += 1,
                 crate::evidence::VerifyStatus::Unsupported => summary.unsupported += 1,
@@ -282,10 +286,11 @@ pub fn format_dynamic_verification_summary(summary: &DynamicVerificationSummary)
         "verdicts"
     };
     format!(
-        "{} {} ({} confirmed, {} not confirmed, {} inconclusive, {} unsupported)",
+        "{} {} ({} confirmed, {} partially confirmed, {} not confirmed, {} inconclusive, {} unsupported)",
         summary.total,
         noun,
         summary.confirmed,
+        summary.partially_confirmed,
         summary.not_confirmed,
         summary.inconclusive,
         summary.unsupported

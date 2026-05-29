@@ -1,19 +1,23 @@
-//! Differential confirmation rule for dynamic verification (Phase 07).
+//! Differential confirmation rule for dynamic verification (Phase 07 / 26).
 //!
-//! `Confirmed` requires the vulnerable payload's oracle to fire **and**
-//! the paired benign control's oracle to *not* fire (§4.1).  This module
-//! is the single source of truth for that rule.  Everything else (runner,
-//! verifier, tests) collapses to "look up paired benign + call
-//! [`evaluate`]".
+//! `Confirmed` requires **at least one** vulnerable payload's oracle to
+//! fire **and every** paired benign control's oracle to *not* fire
+//! (§4.1, extended for multi-payload aggregation in Phase 26).  This
+//! module is the single source of truth for that rule.  Everything else
+//! (runner, verifier, tests) collapses to "collect firing sets + call
+//! [`evaluate_sets`]".
 //!
-//! # Rule table
+//! # Rule table (set aggregation)
 //!
-//! | vuln fires | benign fires | verdict                       |
-//! |------------|--------------|-------------------------------|
-//! | true       | false        | `Confirmed`                    |
-//! | true       | true         | `OracleCollisionSuspected`     |
-//! | false      | false        | `NotConfirmed`                 |
-//! | false      | true         | `ReversedDifferential`         |
+//! | any vuln fires | any benign fires | verdict                    |
+//! |----------------|------------------|----------------------------|
+//! | true           | false            | `Confirmed`                 |
+//! | true           | true             | `OracleCollisionSuspected`  |
+//! | false          | false            | `NotConfirmed`              |
+//! | false          | true             | `ReversedDifferential`      |
+//!
+//! The scalar [`evaluate`] is the single-payload, single-control
+//! specialisation of [`evaluate_sets`] and delegates to it.
 //!
 //! "Fires" means [`crate::dynamic::oracle::oracle_fired`] returned `true`
 //! against the run's [`SandboxOutcome`] + drained [`SinkProbe`] set —
@@ -24,8 +28,33 @@ use crate::evidence::{
     DifferentialOutcome, DifferentialProbeArg, DifferentialProbeRecord, DifferentialVerdict,
 };
 
-/// Apply the differential confirmation rule.
+/// Apply the differential confirmation rule over **sets** of firing
+/// results (Phase 26 multi-payload aggregation).
 ///
+/// `vuln_fired` is one boolean per vulnerable payload attempt;
+/// `benign_fired` is one boolean per paired benign control that actually
+/// ran.  Aggregation is "any vuln vs any benign" with global ambient-noise
+/// scoring across the run: a *single* benign control firing anywhere
+/// vetoes `Confirmed` (the oracle cannot discriminate), and a *single*
+/// vulnerable payload firing is enough positive evidence.
+///
+/// Empty slices behave as "nothing fired" on that side, so
+/// `evaluate_sets(&[], &[])` is `NotConfirmed`.
+pub fn evaluate_sets(vuln_fired: &[bool], benign_fired: &[bool]) -> DifferentialVerdict {
+    let any_vuln = vuln_fired.iter().any(|&b| b);
+    let any_benign = benign_fired.iter().any(|&b| b);
+    match (any_vuln, any_benign) {
+        (true, false) => DifferentialVerdict::Confirmed,
+        (true, true) => DifferentialVerdict::OracleCollisionSuspected,
+        (false, false) => DifferentialVerdict::NotConfirmed,
+        (false, true) => DifferentialVerdict::ReversedDifferential,
+    }
+}
+
+/// Apply the differential confirmation rule to a single
+/// (vulnerable, benign-control) pair.
+///
+/// Single-element specialisation of [`evaluate_sets`].
 /// `vuln_probe_fires` and `benign_probe_fires` are the boolean firing
 /// results of [`crate::dynamic::oracle::oracle_fired`] for the
 /// vulnerable payload and its paired benign control respectively.  The
@@ -33,12 +62,7 @@ use crate::evidence::{
 /// callers attach those separately via [`DifferentialOutcome`] for
 /// forensic display.
 pub fn evaluate(vuln_probe_fires: bool, benign_probe_fires: bool) -> DifferentialVerdict {
-    match (vuln_probe_fires, benign_probe_fires) {
-        (true, false) => DifferentialVerdict::Confirmed,
-        (true, true) => DifferentialVerdict::OracleCollisionSuspected,
-        (false, false) => DifferentialVerdict::NotConfirmed,
-        (false, true) => DifferentialVerdict::ReversedDifferential,
-    }
+    evaluate_sets(&[vuln_probe_fires], &[benign_probe_fires])
 }
 
 /// Build a [`DifferentialOutcome`] for inclusion in a
@@ -137,6 +161,61 @@ mod tests {
             evaluate(false, true),
             DifferentialVerdict::ReversedDifferential
         );
+    }
+
+    #[test]
+    fn sets_any_vuln_no_benign_is_confirmed() {
+        // One of several vuln payloads firing is enough; no benign fired.
+        assert_eq!(
+            evaluate_sets(&[false, true, false], &[false, false]),
+            DifferentialVerdict::Confirmed
+        );
+    }
+
+    #[test]
+    fn sets_one_benign_firing_vetoes_confirmed() {
+        // A single benign control firing anywhere downgrades to collision,
+        // even when a vuln payload also fired (global ambient-noise veto).
+        assert_eq!(
+            evaluate_sets(&[true, true], &[false, true, false]),
+            DifferentialVerdict::OracleCollisionSuspected
+        );
+    }
+
+    #[test]
+    fn sets_no_vuln_no_benign_is_not_confirmed() {
+        assert_eq!(
+            evaluate_sets(&[false, false], &[false]),
+            DifferentialVerdict::NotConfirmed
+        );
+    }
+
+    #[test]
+    fn sets_no_vuln_some_benign_is_reversed() {
+        assert_eq!(
+            evaluate_sets(&[false], &[true]),
+            DifferentialVerdict::ReversedDifferential
+        );
+    }
+
+    #[test]
+    fn sets_empty_is_not_confirmed() {
+        assert_eq!(evaluate_sets(&[], &[]), DifferentialVerdict::NotConfirmed);
+    }
+
+    #[test]
+    fn sets_empty_benign_with_vuln_is_confirmed() {
+        // No benign control ran at all → no veto possible → Confirmed.
+        assert_eq!(evaluate_sets(&[true], &[]), DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn scalar_evaluate_matches_singleton_sets() {
+        for &v in &[false, true] {
+            for &b in &[false, true] {
+                assert_eq!(evaluate(v, b), evaluate_sets(&[v], &[b]));
+            }
+        }
     }
 
     #[test]

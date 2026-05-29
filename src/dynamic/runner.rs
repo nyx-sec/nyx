@@ -59,10 +59,29 @@ const MAX_BUILD_ATTEMPTS: u32 = 2;
 pub struct RunOutcome {
     pub spec: HarnessSpec,
     pub attempts: Vec<Attempt>,
-    /// First attempt that fired the sink with `oracle_fired && sink_hit`.
+    /// Index into [`Self::attempts`] of the attempt the confirm verdict is
+    /// attributed to.  Set by the Phase 26 set aggregation when
+    /// [`crate::dynamic::differential::evaluate_sets`] returns a
+    /// Confirmed-class verdict (any vuln payload fired the oracle + sink
+    /// while every paired benign control stayed clean), or when an
+    /// OOB-nonce payload self-confirmed.  `None` otherwise.
     pub triggered_by: Option<usize>,
     /// Whether the oracle fired but the sink probe did not (oracle collision).
     pub oracle_collision: bool,
+    /// Phase 26: a vuln payload's in-harness sink-reachability probe fired
+    /// (`outcome.sink_hit`) but its oracle marker was never observed (no file
+    /// write / no OOB callback / output lacked the proof token), *and* the
+    /// paired benign control neither reached the sink nor fired its oracle.
+    /// The benign-control differential is the discriminator: it proves the
+    /// vuln input specifically drives the sink, ruling out safe code that
+    /// merely reaches the sink (e.g. array-form `exec` with inert
+    /// metacharacters, which the benign control also reaches).  The verifier
+    /// maps this to [`crate::evidence::VerifyStatus::PartiallyConfirmed`]: the
+    /// sink is reachable under the vuln input but the exploit chain did not
+    /// complete.  Never set when a Confirmed-class verdict or a colliding
+    /// differential was produced (those take precedence at the verify
+    /// boundary).
+    pub sink_reached_no_oracle: bool,
     /// Number of build attempts consumed.
     pub build_attempts: u32,
     /// Harness sources for repro artifacts.
@@ -454,6 +473,24 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     let mut unrelated_crash = false;
     let mut differential_outcome: Option<DifferentialOutcome> = None;
 
+    // Phase 26 set aggregation, phase A: per-vuln-payload run record.
+    // Every vuln payload runs to completion (no early break) so the
+    // differential rule can aggregate across the whole set — a single
+    // benign control firing anywhere must be able to veto a `Confirmed`.
+    struct VulnRun {
+        /// Index into `vuln_payloads` (for benign-control resolution).
+        payload_index: usize,
+        /// Index into `attempts` (what `triggered_by` points at).
+        attempt_index: usize,
+        vuln_fired: bool,
+        sink_hit: bool,
+        oob_nonce_slot: bool,
+        oob_callback_seen: bool,
+        vuln_probes: Vec<SinkProbe>,
+    }
+    let mut vuln_runs: Vec<VulnRun> = Vec::with_capacity(vuln_payloads.len());
+
+    // ── Phase A: run every vuln payload, record its firing signals ──────
     for (i, payload) in vuln_payloads.iter().enumerate() {
         // Materialise payload bytes (OOB nonce-slot payloads generate a URL).
         let (oob_nonce, effective_bytes) = if payload.oob_nonce_slot {
@@ -480,11 +517,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             let _ = ch.clear();
         }
 
+        let attempt_index = attempts.len();
         trace_record(
             trace_handle.as_ref(),
             TraceStage::SandboxStarted,
             Some(format!(
-                "attempt={i} payload={} oracle={}",
+                "attempt={attempt_index} payload={} oracle={}",
                 payload.label,
                 oracle_short_name(&payload.oracle)
             )),
@@ -495,7 +533,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             trace_handle.as_ref(),
             TraceStage::OracleWait,
             Some(format!(
-                "attempt={i} exit_code={:?} timed_out={}",
+                "attempt={attempt_index} exit_code={:?} timed_out={}",
                 outcome.exit_code, outcome.timed_out
             )),
         );
@@ -508,9 +546,9 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         // failure — the harness "linked" against deps that don't resolve at
         // run time — so route through `RunError::BuildFailed` to keep the
         // SKIP-on-BuildFailed branch in the e2e corpus tests honest.  Only
-        // checked on the first vuln payload because the missing dep won't
-        // appear later in the run.
-        if i == 0 && is_runtime_import_error(&outcome) {
+        // checked on the first actually-run payload because the missing dep
+        // won't appear later in the run.
+        if attempts.is_empty() && is_runtime_import_error(&outcome) {
             return Err(RunError::BuildFailed {
                 stderr: String::from_utf8_lossy(&outcome.stderr).into_owned(),
                 attempts: build_attempts,
@@ -546,7 +584,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             trace_handle.as_ref(),
             TraceStage::OracleObserved,
             Some(format!(
-                "attempt={i} fired={vuln_fired} sink_hit={sink_hit}"
+                "attempt={attempt_index} fired={vuln_fired} sink_hit={sink_hit}"
             )),
         );
 
@@ -566,93 +604,152 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             unrelated_crash = true;
         }
 
-        // Differential rule (Phase 07, §4.1).  Only when the vuln oracle
-        // fired *and* the in-harness sink-hit sentinel was observed do we
-        // consult the paired benign control.  Oracle-fires-without-sink
-        // stays on the legacy `oracle_collision` path so the existing
-        // `Inconclusive(OracleCollisionSuspected)` semantics survive.
-        let triggered = if vuln_fired && sink_hit {
-            // Match the resolution scope to the payload-slice scope so a
-            // benign control declared in another language is still found
-            // when this run was driven off the lang-agnostic union (see
-            // `used_lang_slice` above).  When the run did use the
-            // per-language slice, the lang-aware resolver keeps a
-            // mismatched language from silently producing a Confirmed.
-            let resolved = if used_lang_slice {
-                resolve_benign_control_lang(payload, spec.expected_cap, spec.lang)
-            } else {
-                resolve_benign_control(payload, spec.expected_cap)
-            };
-            match resolved {
-                None => {
-                    // Phase 05 OOB closure: OOB-nonce payloads with
-                    // `benign_control = None` are structurally self-
-                    // confirming when the listener observed the callback.
-                    // A benign URL cannot hit a per-finding nonce, so the
-                    // OOB observation is independent network-level
-                    // evidence the sink fired.  Skip the no-benign-control
-                    // downgrade and emit
-                    // [`DifferentialVerdict::ConfirmedProvenOob`].
-                    if payload.oob_nonce_slot && outcome.oob_callback_seen {
-                        let mut outcome_record = differential::build_oob_self_confirmed_outcome(
-                            payload.label,
-                            &vuln_probes,
-                        );
-                        middleware_demotion::apply_demotion(
-                            &mut outcome_record,
-                            spec.framework.as_ref(),
-                            spec.lang,
-                        );
-                        let confirmed =
-                            middleware_demotion::is_triggering_verdict(outcome_record.verdict);
-                        differential_outcome = Some(outcome_record);
-                        confirmed
-                    } else {
-                        no_benign_control = true;
-                        false
-                    }
-                }
-                Some(benign) => {
-                    let benign_bytes = materialise_bytes(benign, None)
-                        .map(|b| b.into_owned())
-                        .unwrap_or_default();
-                    if let Some(ch) = &probe_channel {
-                        let _ = ch.clear();
-                    }
-                    let benign_outcome = sandbox::run(&harness, &benign_bytes, &effective_opts)?;
-                    let benign_probes: Vec<SinkProbe> = probe_channel
-                        .as_ref()
-                        .map(|ch| ch.drain())
-                        .unwrap_or_default();
-                    let benign_stub_events: Vec<StubEvent> = effective_opts
-                        .stub_harness
-                        .as_ref()
-                        .map(|h| h.drain_all())
-                        .unwrap_or_default();
-                    let benign_fired = oracle_fired_with_stubs(
-                        &benign.oracle,
-                        &benign_outcome,
-                        &benign_probes,
-                        &benign_stub_events,
+        // Legacy single-payload collision: oracle fired without the
+        // in-harness sink-hit sentinel.  Phase 26 partial-confirmation is
+        // deliberately NOT decided here: a vuln run that reaches the sink
+        // without firing its oracle is ambiguous — it could be a real engine
+        // gap (the vuln input drives the sink but the exploit chain could not
+        // be observed) or merely safe code that happens to reach the sink
+        // (e.g. array-form `exec` with inert metacharacters).  The call is
+        // deferred to the differential check in Phase B, which compares the
+        // benign control's sink reachability.
+        if vuln_fired && !sink_hit {
+            oracle_collision = true;
+        }
+
+        let oob_callback_seen = outcome.oob_callback_seen;
+        attempts.push(Attempt {
+            payload_label: payload.label,
+            outcome,
+            oracle_fired: vuln_fired,
+            triggered: false,
+        });
+        vuln_runs.push(VulnRun {
+            payload_index: i,
+            attempt_index,
+            vuln_fired,
+            sink_hit,
+            oob_nonce_slot: payload.oob_nonce_slot,
+            oob_callback_seen,
+            vuln_probes,
+        });
+    }
+
+    // ── Phase B: differential confirmation + partial-confirmation gate ──
+    // Two candidate classes drive a paired benign-control run:
+    //   • confirm candidate — vuln oracle fired *and* the in-harness sink-hit
+    //     sentinel was observed.  Collected into the set aggregation (§4.1).
+    //   • partial candidate — the sink-hit sentinel fired but the oracle did
+    //     not.  The benign control's sink reachability decides whether this is
+    //     a real engine gap (`PartiallyConfirmed`) or safe code that merely
+    //     reaches the sink (`NotConfirmed`).
+    // Oracle-fires-without-sink stays on the legacy `oracle_collision` path.
+    let mut vuln_fires: Vec<bool> = Vec::new();
+    let mut benign_fires: Vec<bool> = Vec::new();
+    // (attempt_index, differential outcome) per confirm candidate.
+    let mut candidates: Vec<(usize, DifferentialOutcome)> = Vec::new();
+    // Phase 26: set when a partial candidate's vuln run reached the sink that
+    // its benign control did *not* — a sink-reachability differential proving
+    // the vuln input specifically drives the sink even though the exploit
+    // chain could not be observed completing.
+    let mut partial_signal = false;
+
+    for vr in &vuln_runs {
+        let is_confirm_candidate = vr.vuln_fired && vr.sink_hit;
+        let is_partial_candidate = vr.sink_hit && !vr.vuln_fired;
+        if !is_confirm_candidate && !is_partial_candidate {
+            continue;
+        }
+        // The partial signal is a single bool; once established, skip further
+        // partial-only probing.  Confirm candidates always run — the set
+        // aggregation needs every one.
+        if is_partial_candidate && !is_confirm_candidate && partial_signal {
+            continue;
+        }
+        let payload = vuln_payloads[vr.payload_index];
+        // Match the resolution scope to the payload-slice scope so a benign
+        // control declared in another language is still found when this run
+        // was driven off the lang-agnostic union (see `used_lang_slice`).
+        // When the run did use the per-language slice, the lang-aware
+        // resolver keeps a mismatched language from producing a Confirmed.
+        let resolved = if used_lang_slice {
+            resolve_benign_control_lang(payload, spec.expected_cap, spec.lang)
+        } else {
+            resolve_benign_control(payload, spec.expected_cap)
+        };
+        match resolved {
+            None => {
+                // Phase 05 OOB closure: OOB-nonce payloads with
+                // `benign_control = None` are structurally self-confirming
+                // when the listener observed the callback.  A benign URL
+                // cannot hit a per-finding nonce, so the OOB observation is
+                // independent network-level evidence the sink fired.  Skip
+                // the no-benign-control downgrade and emit
+                // [`DifferentialVerdict::ConfirmedProvenOob`].
+                if is_confirm_candidate && vr.oob_nonce_slot && vr.oob_callback_seen {
+                    let mut outcome_record = differential::build_oob_self_confirmed_outcome(
+                        payload.label,
+                        &vr.vuln_probes,
                     );
+                    middleware_demotion::apply_demotion(
+                        &mut outcome_record,
+                        spec.framework.as_ref(),
+                        spec.lang,
+                    );
+                    // No paired benign control runs, so this candidate
+                    // contributes only to the vuln side of the set.
+                    vuln_fires.push(true);
+                    candidates.push((vr.attempt_index, outcome_record));
+                } else if is_confirm_candidate {
+                    no_benign_control = true;
+                }
+                // A partial candidate without a benign control cannot rule out
+                // "safe code that reaches the sink", so it raises no partial
+                // signal and falls through to `NotConfirmed`.
+            }
+            Some(benign) => {
+                let benign_bytes = materialise_bytes(benign, None)
+                    .map(|b| b.into_owned())
+                    .unwrap_or_default();
+                if let Some(ch) = &probe_channel {
+                    let _ = ch.clear();
+                }
+                let benign_outcome = sandbox::run(&harness, &benign_bytes, &effective_opts)?;
+                let benign_sink_hit = benign_outcome.sink_hit;
+                let benign_probes: Vec<SinkProbe> = probe_channel
+                    .as_ref()
+                    .map(|ch| ch.drain())
+                    .unwrap_or_default();
+                let benign_stub_events: Vec<StubEvent> = effective_opts
+                    .stub_harness
+                    .as_ref()
+                    .map(|h| h.drain_all())
+                    .unwrap_or_default();
+                let benign_fired = oracle_fired_with_stubs(
+                    &benign.oracle,
+                    &benign_outcome,
+                    &benign_probes,
+                    &benign_stub_events,
+                );
+
+                if is_confirm_candidate {
                     let mut outcome_record = differential::build_outcome(
                         payload.label,
-                        vuln_fired,
-                        &vuln_probes,
+                        vr.vuln_fired,
+                        &vr.vuln_probes,
                         benign.label,
                         benign_fired,
                         &benign_probes,
                     );
                     // Phase 05 OOB closure: when an OOB-nonce payload also
-                    // carries a paired benign control, promote
-                    // `Confirmed` → `ConfirmedProvenOob` whenever the
-                    // listener observed the per-finding nonce.  The
-                    // upgrade preserves the differential trace (benign
-                    // run still recorded) and surfaces the stronger
-                    // network-level evidence to operators.
+                    // carries a paired benign control, promote `Confirmed` →
+                    // `ConfirmedProvenOob` whenever the listener observed the
+                    // per-finding nonce.  The upgrade preserves the differential
+                    // trace (benign run still recorded) and surfaces the
+                    // stronger network-level evidence to operators.
                     if outcome_record.verdict == DifferentialVerdict::Confirmed
-                        && payload.oob_nonce_slot
-                        && outcome.oob_callback_seen
+                        && vr.oob_nonce_slot
+                        && vr.oob_callback_seen
                     {
                         outcome_record.verdict = DifferentialVerdict::ConfirmedProvenOob;
                     }
@@ -661,30 +758,68 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                         spec.framework.as_ref(),
                         spec.lang,
                     );
-                    let confirmed =
-                        middleware_demotion::is_triggering_verdict(outcome_record.verdict);
-                    differential_outcome = Some(outcome_record);
-                    confirmed
+                    vuln_fires.push(vr.vuln_fired);
+                    benign_fires.push(benign_fired);
+                    candidates.push((vr.attempt_index, outcome_record));
+                } else {
+                    // Partial candidate: the vuln run reached the sink without
+                    // firing the oracle.  It is a real engine gap only when the
+                    // benign control neither reached the sink nor fired its
+                    // oracle — i.e. the vuln input specifically drives the sink.
+                    // If the benign control also reaches the sink, the code path
+                    // is shared and safe (e.g. array-form `exec`), so no partial
+                    // signal is raised and the run stays `NotConfirmed`.
+                    if !benign_sink_hit && !benign_fired {
+                        partial_signal = true;
+                    }
                 }
             }
-        } else if vuln_fired && !sink_hit {
-            // Oracle fired but probe didn't — likely collision.
-            oracle_collision = true;
-            false
+        }
+    }
+
+    // ── Phase 26 aggregation ────────────────────────────────────────────
+    // `evaluate_sets` collapses the firing sets to a single verdict: any
+    // vuln payload firing + no benign control firing → Confirmed; any
+    // benign firing anywhere → OracleCollisionSuspected (global ambient-
+    // noise veto).  A ConfirmedProvenOob candidate is terminal positive
+    // evidence (a per-finding OOB nonce cannot be hit by ambient noise), so
+    // it confirms even if some unrelated payload's benign tripped a noisy
+    // oracle.
+    if !candidates.is_empty() {
+        let aggregate = differential::evaluate_sets(&vuln_fires, &benign_fires);
+        let has_proven_oob = candidates
+            .iter()
+            .any(|(_, r)| r.verdict == DifferentialVerdict::ConfirmedProvenOob);
+        let confirmed_class =
+            has_proven_oob || matches!(aggregate, DifferentialVerdict::Confirmed);
+        if confirmed_class {
+            // Representative outcome: prefer the strongest (ProvenOob), else
+            // the first candidate carrying a triggering verdict.  Iteration
+            // follows payload order, so the choice is deterministic.
+            let chosen = candidates
+                .iter()
+                .find(|(_, r)| r.verdict == DifferentialVerdict::ConfirmedProvenOob)
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|(_, r)| middleware_demotion::is_triggering_verdict(r.verdict))
+                })
+                .cloned();
+            if let Some((idx, record)) = chosen {
+                attempts[idx].triggered = true;
+                triggered_by = Some(idx);
+                differential_outcome = Some(record);
+            }
         } else {
-            false
-        };
-
-        attempts.push(Attempt {
-            payload_label: payload.label,
-            outcome,
-            oracle_fired: vuln_fired,
-            triggered,
-        });
-
-        if triggered {
-            triggered_by = Some(i);
-            break;
+            // Ambient-noise veto: at least one benign control fired and no
+            // terminal OOB evidence exists.  Surface a colliding candidate
+            // so the verifier downgrades to
+            // `Inconclusive(OracleCollisionSuspected)`.
+            differential_outcome = candidates
+                .iter()
+                .find(|(_, r)| r.verdict == DifferentialVerdict::OracleCollisionSuspected)
+                .or_else(|| candidates.first())
+                .map(|(_, r)| r.clone());
         }
     }
 
@@ -699,6 +834,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         differential: differential_outcome,
         no_benign_control,
         unrelated_crash,
+        sink_reached_no_oracle: partial_signal,
     })
 }
 

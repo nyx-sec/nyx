@@ -727,6 +727,14 @@ pub enum VerifyStatus {
     /// Sink fired with at least one payload. The static finding is exploitable
     /// against the live target.
     Confirmed,
+    /// The in-harness sink-reachability probe fired (sink reached) but the
+    /// oracle marker was never observed (no file write / no OOB callback /
+    /// output did not contain the proof token), so the exploit chain did not
+    /// complete. Semantically `{ sink_reached: true, exit_propagated: false }`.
+    /// Ranks above `NotConfirmed` (runtime corroboration that the sink is
+    /// reachable) but below `Confirmed` (no proven exploit). Used so engine
+    /// work can ratchet on real sink-reachability gaps without overstating.
+    PartiallyConfirmed,
     /// All payloads ran cleanly. Either the path is infeasible at runtime
     /// or the corpus is too narrow. Treat as "static-only", not "false positive".
     NotConfirmed,

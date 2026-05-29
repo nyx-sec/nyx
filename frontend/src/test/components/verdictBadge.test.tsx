@@ -35,6 +35,21 @@ describe('VerdictBadge', () => {
     expect(badge.textContent).toContain('🔥');
   });
 
+  it('renders PartiallyConfirmed badge with amber class and no flame', () => {
+    render(
+      <VerdictBadge
+        verdict={makeVerdict('PartiallyConfirmed', {
+          detail: 'sink-reachability probe fired but the oracle marker was not observed',
+        })}
+      />,
+    );
+    const badge = screen.getByTestId('verdict-badge-partiallyconfirmed');
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).toContain('badge-dyn-partiallyconfirmed');
+    expect(badge.textContent).not.toContain('🔥');
+    expect(badge.getAttribute('title')).toContain('sink reached');
+  });
+
   it('renders NotConfirmed badge with correct class', () => {
     render(<VerdictBadge verdict={makeVerdict('NotConfirmed')} />);
     const badge = screen.getByTestId('verdict-badge-notconfirmed');
@@ -107,9 +122,10 @@ describe('VerdictBadge', () => {
     expect(badge.textContent?.replace('🔥 ', '')).toBe('C');
   });
 
-  it('renders all four VerifyStatus variants without crashing', () => {
+  it('renders all five VerifyStatus variants without crashing', () => {
     const statuses: VerifyResult['status'][] = [
       'Confirmed',
+      'PartiallyConfirmed',
       'NotConfirmed',
       'Unsupported',
       'Inconclusive',

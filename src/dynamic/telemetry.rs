@@ -305,7 +305,14 @@ impl SamplingPolicy {
     /// Decide whether an event with the given status / spec_hash should be
     /// written.  Deterministic for a fixed `(self, status, spec_hash)`.
     pub fn should_sample(&self, status: VerifyStatus, spec_hash: &str) -> bool {
-        if matches!(status, VerifyStatus::Confirmed) && self.keep_all_confirmed {
+        if matches!(
+            status,
+            VerifyStatus::Confirmed | VerifyStatus::PartiallyConfirmed
+        ) && self.keep_all_confirmed
+        {
+            // PartiallyConfirmed is a low-volume, high-value triage signal
+            // (each is a candidate real engine gap), so it rides the same
+            // keep-all switch as Confirmed rather than being sampled away.
             return true;
         }
         if matches!(status, VerifyStatus::Inconclusive) && self.keep_all_inconclusive {
@@ -389,6 +396,7 @@ pub fn emit_with_policy(event: &TelemetryEvent, policy: &SamplingPolicy) {
 fn parse_status(s: &str) -> Option<VerifyStatus> {
     match s {
         "Confirmed" => Some(VerifyStatus::Confirmed),
+        "PartiallyConfirmed" => Some(VerifyStatus::PartiallyConfirmed),
         "NotConfirmed" => Some(VerifyStatus::NotConfirmed),
         "Inconclusive" => Some(VerifyStatus::Inconclusive),
         "Unsupported" => Some(VerifyStatus::Unsupported),
