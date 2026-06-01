@@ -49,6 +49,13 @@ pub enum TraceStage {
     /// so a trace consumer can audit framework-detection coverage by
     /// counting `framework_adapter_*` events.
     FrameworkAdapterNone,
+    /// The harness-build decision about which entry the synthesized
+    /// harness drives.  `detail` carries `mode=entry_function entry=<name>`
+    /// when the finding's enclosing function was determinable (the harness
+    /// invokes it so caller-side guards run), or
+    /// `mode=direct_sink fallback=no_enclosing_entry` when no entry could
+    /// be derived and the harness falls back to driving the sink directly.
+    EntryInvocation,
     BuildStarted,
     BuildDone,
     SandboxStarted,
@@ -78,6 +85,7 @@ impl TraceStage {
             Self::SpecDone => "spec_done",
             Self::FrameworkAdapterDetected => "framework_adapter_detected",
             Self::FrameworkAdapterNone => "framework_adapter_none",
+            Self::EntryInvocation => "entry_invocation",
             Self::BuildStarted => "build_started",
             Self::BuildDone => "build_done",
             Self::SandboxStarted => "sandbox_started",
@@ -243,6 +251,7 @@ mod tests {
         // to these exact tokens so audit grep queries stay stable.
         assert_eq!(TraceStage::SpecStarted.as_str(), "spec_started");
         assert_eq!(TraceStage::SpecDone.as_str(), "spec_done");
+        assert_eq!(TraceStage::EntryInvocation.as_str(), "entry_invocation");
         assert_eq!(TraceStage::BuildStarted.as_str(), "build_started");
         assert_eq!(TraceStage::BuildDone.as_str(), "build_done");
         assert_eq!(TraceStage::SandboxStarted.as_str(), "sandbox_started");

@@ -418,6 +418,22 @@ impl HarnessSpec {
         supported.contains(&self.entry_kind.tag())
     }
 
+    /// True when the spec names a concrete enclosing entry function the
+    /// harness can drive — i.e. `entry_name` resolved to a real symbol
+    /// rather than the `"<unknown>"` placeholder a rule-namespace finding
+    /// falls back to when no flow-step / summary / AST resolution can name
+    /// the function the sink sits in.
+    ///
+    /// The per-language harness emitters consult this to decide whether to
+    /// invoke the finding's enclosing function (so caller-side guards run
+    /// before the sink) or fall back to a synthetic direct-sink harness;
+    /// [`crate::dynamic::verify::verify_finding`] records the same decision
+    /// on the [`crate::dynamic::trace::VerifyTrace`] via
+    /// [`crate::dynamic::trace::TraceStage::EntryInvocation`].
+    pub fn entry_is_derivable(&self) -> bool {
+        !self.entry_name.is_empty() && self.entry_name != "<unknown>"
+    }
+
     /// Returns the ordered list of derivation strategies that
     /// [`HarnessSpec::from_finding_opts`] attempts. Used by the verifier when
     /// it needs to report which candidates were tried before declaring an
@@ -1395,17 +1411,99 @@ fn resolve_enclosing_function(
     if let Some(name) = enclosing_function_from_flow_steps(evidence) {
         return Some(name);
     }
-    let summaries = summaries?;
-    let mut hits = summaries
-        .iter()
-        .filter(|(k, _)| k.lang == lang)
-        .filter(|(_, s)| paths_match(&s.file_path, &diag.path));
-    let first = hits.next()?;
-    if hits.next().is_some() {
-        // Ambiguous: multiple functions in this file; refuse to guess.
-        return None;
+    if let Some(summaries) = summaries {
+        let mut hits = summaries
+            .iter()
+            .filter(|(k, _)| k.lang == lang)
+            .filter(|(_, s)| paths_match(&s.file_path, &diag.path));
+        if let Some(first) = hits.next()
+            && hits.next().is_none()
+        {
+            // Unambiguous: exactly one function in this file.
+            return Some(first.1.name.clone());
+        }
+        // Ambiguous (or none): fall through to AST resolution below rather
+        // than refusing to guess — the sink line disambiguates.
     }
-    Some(first.1.name.clone())
+    // Last resort: parse the file and name the innermost function whose
+    // line span contains the sink. Recovers a drivable entry for
+    // rule-namespace findings that carry no flow_steps and have no (or an
+    // ambiguous) summary — e.g. the deserialize fixtures verified with
+    // `--index off`.
+    resolve_enclosing_function_via_ast(&diag.path, diag.line, lang)
+}
+
+/// Parse `path` and return the name of the innermost function/method
+/// definition whose 1-based line span contains `line`.
+///
+/// Used as the final fallback in [`resolve_enclosing_function`] so the
+/// spec names the function a sink sits in even when the taint engine
+/// produced no flow_steps and no [`GlobalSummaries`] were threaded
+/// (the common `--index off` rule-namespace path). Best-effort: returns
+/// `None` when the file cannot be read/parsed, the grammar is missing, or
+/// the sink is at file top level with no enclosing function.
+fn resolve_enclosing_function_via_ast(path: &str, line: usize, lang: Lang) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let ts_lang = tree_sitter_lang_for(lang)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).ok()?;
+    let tree = parser.parse(&bytes, None)?;
+    let slug = lang_slug(lang);
+    let target_row = line.saturating_sub(1);
+
+    // Walk every node spanning the target row, keeping the smallest-span
+    // `Kind::Function` node (the innermost enclosing function).
+    let mut best: Option<(usize, String)> = None;
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let start_row = node.start_position().row;
+        let end_row = node.end_position().row;
+        if start_row > target_row || end_row < target_row {
+            continue;
+        }
+        if crate::labels::lookup(slug, node.kind()) == crate::labels::Kind::Function
+            && let Some(name) = function_node_name(node, &bytes)
+        {
+            let span = end_row - start_row;
+            if best.as_ref().is_none_or(|(best_span, _)| span < *best_span) {
+                best = Some((span, name));
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Extract the declared name of a `Kind::Function` AST node.
+///
+/// Prefers the grammar's `name` field (present on Java `method_declaration`,
+/// Ruby `method`, JS `function_declaration`, Python `function_definition`,
+/// …); falls back to the first identifier-shaped child for grammars that do
+/// not expose a `name` field. Returns `None` for anonymous functions.
+fn function_node_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name")
+        && let Ok(text) = name_node.utf8_text(bytes)
+        && !text.is_empty()
+    {
+        return Some(text.to_owned());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if (kind == "identifier"
+            || kind == "name"
+            || kind == "field_identifier"
+            || kind.ends_with("_identifier"))
+            && let Ok(text) = child.utf8_text(bytes)
+            && !text.is_empty()
+        {
+            return Some(text.to_owned());
+        }
+    }
+    None
 }
 
 /// Lookup a `FuncSummary` by `(lang, name)` and filter to one whose
@@ -1895,6 +1993,27 @@ mod tests {
     use super::*;
     use crate::evidence::{Evidence, FlowStep, FlowStepKind};
 
+    #[test]
+    fn ast_resolver_names_run_for_deser_fixtures() {
+        // The deserialize fixtures carry no flow_steps and resolve no
+        // summaries under `--index off`; AST resolution must still name the
+        // enclosing `run` function the sink sits in so the harness can drive
+        // it and the author's guard participates in the verdict.
+        let cases = [
+            ("tests/dynamic_fixtures/deserialize/java/Benign.java", 36, Lang::Java),
+            ("tests/dynamic_fixtures/deserialize/java/Vuln.java", 14, Lang::Java),
+            ("tests/dynamic_fixtures/deserialize/ruby/benign.rb", 14, Lang::Ruby),
+            ("tests/dynamic_fixtures/deserialize/ruby/vuln.rb", 7, Lang::Ruby),
+        ];
+        for (path, line, lang) in cases {
+            assert_eq!(
+                resolve_enclosing_function_via_ast(path, line, lang).as_deref(),
+                Some("run"),
+                "AST resolution should name `run` for {path}:{line}"
+            );
+        }
+    }
+
     fn source_step(file: &str, function: &str) -> FlowStep {
         FlowStep {
             step: 1,
@@ -2016,6 +2135,35 @@ mod tests {
         assert_eq!(spec.entry_name, "process");
         assert_eq!(spec.toolchain_id, "rust-stable");
         assert!(!spec.spec_hash.is_empty());
+        // A flow-step-named entry is drivable — the harness invokes it.
+        assert!(spec.entry_is_derivable());
+    }
+
+    #[test]
+    fn entry_is_derivable_distinguishes_real_name_from_placeholder() {
+        let mut spec = HarnessSpec {
+            finding_id: "0".into(),
+            entry_file: "src/app.rs".into(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Rust,
+            toolchain_id: "rust-stable".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/app.rs".into(),
+            sink_line: 1,
+            spec_hash: "0".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: JavaToolchain::default(),
+        };
+        assert!(spec.entry_is_derivable());
+        spec.entry_name = "<unknown>".into();
+        assert!(!spec.entry_is_derivable());
+        spec.entry_name = String::new();
+        assert!(!spec.entry_is_derivable());
     }
 
     #[test]

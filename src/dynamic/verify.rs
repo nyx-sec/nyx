@@ -633,6 +633,21 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         ),
     }
 
+    // Record whether the synthesized harness will drive the finding's
+    // enclosing entry function (so caller-side guards participate in the
+    // verdict) or fall back to a synthetic direct-sink invocation because
+    // no enclosing entry could be derived.  The per-language emitters
+    // consult the same `entry_is_derivable()` predicate, so this trace
+    // event is the build-time source of truth for the entry-vs-sink choice.
+    trace.record(
+        crate::dynamic::trace::TraceStage::EntryInvocation,
+        Some(if spec.entry_is_derivable() {
+            format!("mode=entry_function entry={}", spec.entry_name)
+        } else {
+            "mode=direct_sink fallback=no_enclosing_entry".to_owned()
+        }),
+    );
+
     // Pre-flight gate: surface a structured `Inconclusive(EntryKindUnsupported)`
     // up-front when the spec's [`EntryKind`] is not in the lang emitter's
     // supported list.  Without this, the same condition would degrade silently

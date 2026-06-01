@@ -183,6 +183,79 @@ fn lang_emitter_dispatches_to_deserialize_harness() {
 }
 
 #[test]
+fn deserialize_harness_drives_entry_when_derivable() {
+    // Java: reflectively load the fixture class and invoke the derived
+    // entry method so the fixture's own resolveClass allowlist runs before
+    // the gadget class resolves.
+    let java = lang::emit(&make_spec(
+        Lang::Java,
+        "tests/dynamic_fixtures/deserialize/java/Benign.java",
+        "run",
+    ))
+    .expect("java deser emit");
+    assert!(
+        java.source.contains("Class.forName(\"Benign\")"),
+        "Java deser harness must reflectively load the fixture class",
+    );
+    assert!(
+        java.source.contains("getMethod(\"run\""),
+        "Java deser harness must invoke the derived entry method",
+    );
+    assert!(
+        java.source.contains("nyxCauseChainHas"),
+        "Java deser harness must detect gadget resolution via the cause chain",
+    );
+
+    // Ruby: require_relative the fixture and drive its entry so the
+    // const-name guard runs before Marshal.load.
+    let ruby = lang::emit(&make_spec(
+        Lang::Ruby,
+        "tests/dynamic_fixtures/deserialize/ruby/benign.rb",
+        "run",
+    ))
+    .expect("ruby deser emit");
+    assert!(
+        ruby.source.contains("require_relative './benign'"),
+        "Ruby deser harness must require_relative the fixture",
+    );
+    assert!(
+        ruby.source.contains("__send__(:'run'"),
+        "Ruby deser harness must drive the derived entry function",
+    );
+}
+
+#[test]
+fn deserialize_harness_falls_back_to_synthetic_without_entry() {
+    // No derivable enclosing entry → direct-sink synthetic path; the
+    // harness must not attempt to load a fixture it cannot name.
+    let java = lang::emit(&make_spec(
+        Lang::Java,
+        "tests/dynamic_fixtures/deserialize/java/Vuln.java",
+        "<unknown>",
+    ))
+    .expect("java deser emit");
+    assert!(
+        !java.source.contains("Class.forName("),
+        "Java deser harness must not reflect into a fixture when no entry is derivable",
+    );
+    assert!(
+        java.source.contains("nyxSyntheticDeserialize"),
+        "Java synthetic fallback must drive the restricted-OIS path directly",
+    );
+
+    let ruby = lang::emit(&make_spec(
+        Lang::Ruby,
+        "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
+        "<unknown>",
+    ))
+    .expect("ruby deser emit");
+    assert!(
+        !ruby.source.contains("require_relative"),
+        "Ruby deser harness must not require the fixture when no entry is derivable",
+    );
+}
+
+#[test]
 fn framework_adapters_detect_deserialize_sink() {
     // Java + Python + PHP + Ruby all register their J.1 sink adapter;
     // detect_binding routes through the registry and stamps an

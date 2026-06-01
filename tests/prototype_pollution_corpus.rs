@@ -418,12 +418,13 @@ fn slug(lang: Lang) -> &'static str {
 // into the prototype chain.
 //
 // Per-lang skips mirror the Phase 08 e2e block:
-// - TypeScript: the synthetic harness short-circuits the entry
-//   source load entirely (`entry_subpath: None`), so no `tsx` /
-//   `ts-node` is needed at runtime — but on hosts without
-//   `tree_sitter_typescript` or the npm Node toolchain, the
-//   harness build will fall through `BuildFailed` and skip via the
-//   same branch.
+// - TypeScript: the entry-driven harness now loads the fixture
+//   through an in-harness type-stripping + ESM→CJS shim
+//   (`nyxLoadTsEntry`), so no `tsx` / `ts-node` is needed at
+//   runtime — but on hosts without `tree_sitter_typescript`, a Node
+//   build lacking `module.stripTypeScriptTypes`, or the npm Node
+//   toolchain, the harness build/load falls through `BuildFailed`
+//   (or the runtime tier-(b) fallback) and skips via the same branch.
 
 mod e2e_phase_10 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
@@ -540,6 +541,25 @@ mod e2e_phase_10 {
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
 
+    /// A benign control must NOT confirm: the entry-driven harness invokes
+    /// the fixture's own `run`, whose `Object.create(null)` merge target
+    /// keeps the `__proto__` payload off the shared prototype, so the
+    /// canary trap stays clear and the differential never confirms.
+    fn assert_not_confirmed(lang: Lang, outcome: &RunOutcome) {
+        assert!(
+            outcome.triggered_by.is_none(),
+            "{lang:?} PROTOTYPE_POLLUTION benign control must NOT confirm — the \
+             caller-side `Object.create(null)` guard must participate; got {outcome:?}",
+        );
+        if let Some(diff) = outcome.differential.as_ref() {
+            assert_ne!(
+                diff.verdict,
+                DifferentialVerdict::Confirmed,
+                "{lang:?} benign differential must not be Confirmed",
+            );
+        }
+    }
+
     #[test]
     fn js_vuln_confirms_via_run_spec() {
         let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
@@ -554,5 +574,21 @@ mod e2e_phase_10 {
             return;
         };
         assert_confirmed(Lang::TypeScript, &outcome);
+    }
+
+    #[test]
+    fn js_benign_not_confirmed_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "benign.js", "run") else {
+            return;
+        };
+        assert_not_confirmed(Lang::JavaScript, &outcome);
+    }
+
+    #[test]
+    fn ts_benign_not_confirmed_via_run_spec() {
+        let Some(outcome) = run(Lang::TypeScript, "benign.ts", "run") else {
+            return;
+        };
+        assert_not_confirmed(Lang::TypeScript, &outcome);
     }
 }

@@ -759,8 +759,98 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// boundary fires for both vuln and benign payloads; downstream
 /// instantiation failures (e.g. `serialVersionUID` mismatch on the
 /// allow-listed payload) are caught and treated as non-probe paths.
-pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_deserialize_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+
+    // Tier-(a) main: drive the fixture's enclosing entry with the forged
+    // blob so a caller-side mitigation (a `resolveClass` allowlist /
+    // restricted ObjectInputStream subclass) runs before the gadget class
+    // is resolved.  Detection is by exception type: a vanilla
+    // ObjectInputStream reaches `resolveClass(gadget)` and raises
+    // ClassNotFoundException (the gadget is not on the classpath) — that is
+    // unrestricted deserialization, so a probe fires.  A guarded fixture
+    // raises InvalidClassException at its allowlist check *before* the
+    // class resolves, so no probe is written.  Falls back to the tier-(b)
+    // synthetic restricted-OIS path when reflection setup fails.
+    let main_body = if spec.entry_is_derivable() {
+        let class_name = java_entry_class_name(spec);
+        let method_name = &spec.entry_name;
+        format!(
+            r#"    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String prefix = "NYX_GADGET_CLASS:";
+        boolean drove = false;
+        if (payload.startsWith(prefix)) {{
+            String cls = payload.substring(prefix.length());
+            // Tier-(a): drive `{class_name}.{method_name}(byte[])` so the
+            // fixture's own (un)restricted deserialization path runs.
+            try {{
+                byte[] blob = nyxForgeClassDescriptor(cls);
+                Class<?> entryCls = Class.forName("{class_name}");
+                java.lang.reflect.Method m = entryCls.getMethod("{method_name}", byte[].class);
+                drove = true;
+                try {{
+                    m.invoke(null, (Object) blob);
+                }} catch (java.lang.reflect.InvocationTargetException ite) {{
+                    if (nyxCauseChainHas(ite.getCause(), ClassNotFoundException.class)) {{
+                        // The fixture's deserializer reached and tried to
+                        // resolve the gadget class (unrestricted path).
+                        nyxDeserializeProbe(true);
+                    }}
+                    // InvalidClassException (a caller-side allowlist block)
+                    // lands here too but is not a ClassNotFoundException, so
+                    // a guarded fixture writes no probe.
+                }} catch (Throwable t) {{
+                    // Other reflective-call failure — non-probe path.
+                }}
+            }} catch (Throwable setup) {{
+                // Reflection setup failed (class / method missing) — fall
+                // through to the tier-(b) synthetic path below.
+                drove = false;
+            }}
+        }}
+        if (!drove) {{
+            // Tier-(b): the enclosing entry could not be driven — synthetic
+            // restricted-OIS direct path (recorded as direct-sink fallback).
+            nyxSyntheticDeserialize(payload);
+        }}
+        // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+        // gate consumes this; without it differential confirmation cannot
+        // fire even when the probe was written.
+        System.out.println("__NYX_SINK_HIT__");
+    }}
+
+    /// True when `t` or any exception in its cause chain is an instance of
+    /// `want` — used to detect the gadget-class resolution attempt that a
+    /// vanilla ObjectInputStream surfaces as ClassNotFoundException.
+    static boolean nyxCauseChainHas(Throwable t, Class<?> want) {{
+        int hops = 0;
+        while (t != null && hops < 32) {{
+            if (want.isInstance(t)) return true;
+            t = t.getCause();
+            hops++;
+        }}
+        return false;
+    }}
+"#
+        )
+    } else {
+        // No derivable enclosing entry — drive the synthetic restricted-OIS
+        // path directly.
+        r#"    public static void main(String[] args) {
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        nyxSyntheticDeserialize(payload);
+        // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+        // gate consumes this; without it differential confirmation cannot
+        // fire even when the probe was written.
+        System.out.println("__NYX_SINK_HIT__");
+    }
+"#
+        .to_owned()
+    };
+
     let source = format!(
         r#"// Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
 import java.io.ByteArrayInputStream;
@@ -835,36 +925,33 @@ public class NyxHarness {{
         return baos.toByteArray();
     }}
 
-    public static void main(String[] args) {{
-        String payload = System.getenv("NYX_PAYLOAD");
-        if (payload == null) payload = "";
+    /// Tier-(b) synthetic direct-sink: run the forged blob through a
+    /// restricted ObjectInputStream the harness controls.  Bypasses any
+    /// caller-side guard, so it is used only when the fixture's own entry
+    /// could not be driven.
+    static void nyxSyntheticDeserialize(String payload) {{
         String prefix = "NYX_GADGET_CLASS:";
-        if (payload.startsWith(prefix)) {{
-            String cls = payload.substring(prefix.length());
+        if (!payload.startsWith(prefix)) return;
+        String cls = payload.substring(prefix.length());
+        try {{
+            byte[] blob = nyxForgeClassDescriptor(cls);
+            NyxRestrictedOIS ois = new NyxRestrictedOIS(
+                new ByteArrayInputStream(blob));
             try {{
-                byte[] blob = nyxForgeClassDescriptor(cls);
-                NyxRestrictedOIS ois = new NyxRestrictedOIS(
-                    new ByteArrayInputStream(blob));
-                try {{
-                    ois.readObject();
-                }} finally {{
-                    try {{ ois.close(); }} catch (IOException ignored) {{}}
-                }}
-            }} catch (InvalidClassException e) {{
-                // Restricted block — probe already written above.
-            }} catch (Throwable t) {{
-                // Allow-listed but downstream instantiation fails (the
-                // minimal stream omits the field bytes the real class
-                // expects).  resolveClass already fired; treat as a
-                // non-probe path.
+                ois.readObject();
+            }} finally {{
+                try {{ ois.close(); }} catch (IOException ignored) {{}}
             }}
+        }} catch (InvalidClassException e) {{
+            // Restricted block — probe already written above.
+        }} catch (Throwable t) {{
+            // Allow-listed but downstream instantiation fails (the minimal
+            // stream omits the field bytes the real class expects).
+            // resolveClass already fired; treat as a non-probe path.
         }}
-        // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
-        // gate consumes this; without it differential confirmation cannot
-        // fire even when the probe was written.
-        System.out.println("__NYX_SINK_HIT__");
     }}
-}}
+
+{main_body}}}
 "#
     );
     HarnessSource {
@@ -879,6 +966,18 @@ public class NyxHarness {{
         extra_files: Vec::new(),
         entry_subpath: None,
     }
+}
+
+/// Derive the Java class that declares the entry method from the spec's
+/// `entry_file` basename (Java's public-class-per-file convention: a sink
+/// in `Vuln.java` lives in `public class Vuln`).  Used by the
+/// deserialize harness to reflectively load the fixture class.
+fn java_entry_class_name(spec: &HarnessSpec) -> String {
+    std::path::Path::new(&spec.entry_file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "NyxEntry".to_owned())
 }
 
 /// Phase 04 — Track J.2 SSTI harness for Java (Thymeleaf).

@@ -342,16 +342,19 @@ audits the tree for unseeded `rand` usage on every CI run.
 
 ## Limitations
 
-- The harness drives the sink, not always the enclosing function. When a
-  finding's safety comes from a guard in the code around the sink (a merge
-  target built with `Object.create(null)`, an `ObjectInputStream` subclass
-  whose `resolveClass` enforces an allowlist, a const-name check before
-  `Marshal.load`), the synthesized harness can exercise the sink directly and
-  miss that guard, which over-confirms. Read `Confirmed` as "this sink is
-  reachable and fires on attacker input," not "this exact code path has no
-  in-line mitigation." Framework-level guards (auth middleware, helmet) are
-  recognized and demote to `ConfirmedWithKnownGuard`; custom in-function guards
-  are not yet captured.
+- The harness drives the finding's enclosing entry function when one is
+  derivable, routing the payload to the tainted parameter, so a guard in the
+  code around the sink (a merge target built with `Object.create(null)`, an
+  `ObjectInputStream` subclass whose `resolveClass` enforces an allowlist, a
+  const-name check before `Marshal.load`) runs first and participates in the
+  verdict. The build-time choice is recorded on the verify trace as
+  `entry_invocation` (`mode=entry_function` or `mode=direct_sink`). When no
+  enclosing entry can be derived the harness falls back to driving the sink
+  directly, and that fallback can over-confirm a guard it never executes. Read
+  a `direct_sink` `Confirmed` as "this sink is reachable and fires on attacker
+  input," not "this exact code path has no in-line mitigation." Framework-level
+  guards (auth middleware, helmet) are also recognized and demote to
+  `ConfirmedWithKnownGuard`.
 - Per-language payload curation is uneven. Command and code injection ship for
   all ten languages; the classic data-style injection caps (SQL, path
   traversal, SSRF, XSS) ship a tuned set for Rust and fall back to a

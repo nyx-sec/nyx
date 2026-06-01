@@ -1210,15 +1210,21 @@ fn should_stage_framework_dependency_files(spec: &HarnessSpec) -> bool {
 
 /// Phase 03 — Track J.1 deserialize harness for Ruby.
 ///
-/// Wraps a call to `Marshal.load(input)` with a const-lookup
-/// instrumentation that asserts the requested constant is on the
-/// allowlist (`Integer`, `String`, `Array`).  When the marker class
-/// is outside the allowlist the shim writes a
-/// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe with
-/// `gadget_chain_invoked: true`.
-pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
+/// Forges a Marshal v4.8 class-reference blob for the corpus
+/// `NYX_GADGET_CLASS:<cls>` marker and observes whether the gadget class
+/// is resolved.  When the finding's enclosing entry is derivable
+/// ([`HarnessSpec::entry_is_derivable`]) the harness drives that function
+/// with the forged blob (tier-a) so a caller-side mitigation — a
+/// const-name allowlist before `Marshal.load`, a restricted loader — runs
+/// first and a guarded fixture produces no
+/// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe.  When no entry
+/// is derivable (or the fixture cannot be loaded at runtime) it falls back
+/// to driving `Marshal.load` directly (tier-b), which bypasses any
+/// caller-side guard; that fallback is recorded on the VerifyTrace.
+pub fn emit_deserialize_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
-    let body = format!(
+    // Shared helper definitions: probe writer + Marshal class-ref forger.
+    let preamble = format!(
         r#"# Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
 require 'json'
 
@@ -1256,33 +1262,82 @@ def _nyx_forge_marshal_class_ref(name)
   "\x04\x08c".b + len_byte + name.b
 end
 
-allowlist = ['Integer', 'String', 'Array']
 payload = ENV['NYX_PAYLOAD'] || ''
-if payload.start_with?('NYX_GADGET_CLASS:')
-  cls = payload[('NYX_GADGET_CLASS:'.length)..]
-  begin
-    Marshal.load(_nyx_forge_marshal_class_ref(cls))
-  rescue ArgumentError => e
-    # `undefined class/module <ns>` — the Marshal class-resolution
-    # boundary refused the lookup.  Real hardening would surface this
-    # via a `Marshal.const_defined?` pre-check + reject; we record the
-    # gadget-class invocation here.
-    if e.message.start_with?('undefined class/module')
-      _nyx_deserialize_probe(true)
+"#
+    );
+
+    // Tier-(b) synthetic direct-sink: hand the forged blob straight to the
+    // real `Marshal.load`.  Bypasses any caller-side guard, so it runs only
+    // when the fixture's own entry could not be driven.
+    let synthetic_sink = r#"  if payload.start_with?('NYX_GADGET_CLASS:')
+    cls = payload[('NYX_GADGET_CLASS:'.length)..]
+    begin
+      Marshal.load(_nyx_forge_marshal_class_ref(cls))
+    rescue ArgumentError => e
+      # `undefined class/module <ns>` — Marshal's class-resolution
+      # boundary refused the lookup; record the gadget-class invocation.
+      _nyx_deserialize_probe(true) if e.message.start_with?('undefined class/module')
+    rescue TypeError, NameError
+      # Allow-listed class that resolves cleanly (e.g. `Integer`) — no probe.
     end
-  rescue TypeError, NameError
-    # Allow-listed class that exists at load time (e.g. `Integer`)
-    # resolves cleanly via `Object.const_get` and Marshal returns the
-    # class object — no rescue path.  Other unexpected errors fall
-    # through without writing a probe.
   end
-end
-# Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+"#;
+
+    let tail = r#"# Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
 # gate consumes this; without it differential confirmation cannot
 # fire even when the probe was written.
 STDOUT.puts '__NYX_SINK_HIT__'
-"#
-    );
+"#;
+
+    let body = if spec.entry_is_derivable() {
+        let entry_basename = derive_entry_basename(&spec.entry_file);
+        let entry_name = &spec.entry_name;
+        format!(
+            r#"{preamble}
+drove = false
+if payload.start_with?('NYX_GADGET_CLASS:')
+  cls = payload[('NYX_GADGET_CLASS:'.length)..]
+  blob = _nyx_forge_marshal_class_ref(cls)
+  # Tier-(a): drive the fixture's enclosing entry `{entry_name}` so a
+  # caller-side guard (const-name allowlist, restricted loader) runs
+  # before Marshal.load.  A guarded fixture refuses the gadget blob with
+  # its own error and never reaches the unresolved-class boundary, so no
+  # probe is written.
+  loaded = false
+  begin
+    require_relative './{entry_basename}'
+    loaded = true
+  rescue Exception
+    loaded = false
+  end
+  if loaded && Object.new.respond_to?(:'{entry_name}', true)
+    drove = true
+    begin
+      Object.new.__send__(:'{entry_name}', blob)
+    rescue ArgumentError => e
+      # Vanilla Marshal.load reached the gadget class but could not
+      # resolve it → unrestricted deserialization.  A caller-side guard
+      # that raises (e.g. "blocked: ...") also lands here but with a
+      # different message, so it does not write a probe.
+      _nyx_deserialize_probe(true) if e.message.start_with?('undefined class/module')
+    rescue TypeError, NameError
+      # Allow-listed class that resolves cleanly — no probe.
+    rescue Exception
+      # Any other failure inside the fixture — no probe.
+    end
+  end
+end
+unless drove
+  # Tier-(b): the enclosing entry could not be driven — synthetic
+  # direct-sink fallback (recorded as direct-sink on the VerifyTrace).
+{synthetic_sink}end
+{tail}"#
+        )
+    } else {
+        // No derivable enclosing entry — drive Marshal.load directly.
+        format!("{preamble}\n{synthetic_sink}{tail}")
+    };
+
     HarnessSource {
         source: body,
         filename: "harness.rb".to_owned(),

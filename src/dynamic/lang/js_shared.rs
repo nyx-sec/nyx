@@ -634,7 +634,7 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
     // payload whose JSON literal carries only regular keys leaves
     // the prototype untouched.
     if spec.expected_cap == crate::labels::Cap::PROTOTYPE_POLLUTION {
-        return Ok(emit_prototype_pollution_harness(spec));
+        return Ok(emit_prototype_pollution_harness(spec, is_typescript));
     }
 
     // Phase 11 (Track J.9): JSON_PARSE depth-bomb short-circuit.  The
@@ -2611,6 +2611,61 @@ function nyxFollowLocation(location) {{
     }
 }
 
+/// In-harness TypeScript entry loader (CommonJS).
+///
+/// Node's bare `require('./entry.ts')` either cannot parse a fixture that
+/// uses ES-module imports + type annotations, or — under native `.ts`
+/// loading — applies ESM-namespace interop so a CommonJS dependency's
+/// members (e.g. `lodash.merge` reached via `import * as _ from 'lodash'`)
+/// are not exposed on the namespace.  This shim reproduces the
+/// `esModuleInterop` / `module: commonjs` semantics the fixtures were
+/// authored for: it strips TypeScript types with Node's own
+/// [`module.stripTypeScriptTypes`] (when available) then rewrites the ES
+/// module syntax to CommonJS `require` / `module.exports` with default
+/// interop, and compiles the result as a CommonJS module.  On a Node
+/// build without `stripTypeScriptTypes` the `_compile` throws and the
+/// caller falls back to the synthetic direct-sink path.
+const TS_ENTRY_LOADER_JS: &str = r#"function nyxEsmToCjs(src) {
+  const tail = [];
+  src = src
+    .replace(/^\s*import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+)['"];?\s*$/gm, "const $1 = require('$2');")
+    .replace(/^\s*import\s+\{([^}]*)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm, "const {$1} = require('$2');")
+    .replace(/^\s*import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+)['"];?\s*$/gm, "const $1 = ((m) => (m && m.__esModule ? m.default : m))(require('$2'));")
+    .replace(/^\s*import\s+['"]([^'"]+)['"];?\s*$/gm, "require('$1');");
+  src = src.replace(/^\s*export\s+default\s+/gm, "module.exports.default = ");
+  src = src.replace(/^\s*export\s+((?:async\s+)?function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm, function (m, kw, name) { tail.push([name, name]); return kw + " " + name; });
+  src = src.replace(/^\s*export\s+\{([^}]*)\};?\s*$/gm, function (m, names) {
+    names.split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (spec) {
+      const parts = spec.split(/\s+as\s+/);
+      const local = parts[0].trim();
+      const exported = (parts.length > 1 ? parts[1] : parts[0]).trim();
+      tail.push([exported, local]);
+    });
+    return "";
+  });
+  let suffix = "\n";
+  for (const pair of tail) { suffix += "module.exports[" + JSON.stringify(pair[0]) + "] = " + pair[1] + ";\n"; }
+  return src + suffix;
+}
+
+function nyxLoadTsEntry(file) {
+  const fs = require('fs');
+  const Module = require('module');
+  const path = require('path');
+  let src = fs.readFileSync(file, 'utf8');
+  if (typeof Module.stripTypeScriptTypes === 'function') {
+    try { src = Module.stripTypeScriptTypes(src, { mode: 'transform' }); } catch (e) { /* fall through with raw source */ }
+  }
+  src = nyxEsmToCjs(src);
+  const m = new Module(file, module);
+  m.filename = path.resolve(file);
+  m.paths = Module._nodeModulePaths(path.dirname(m.filename));
+  m._compile(src, m.filename);
+  return m.exports;
+}
+
+"#;
+
 /// Phase 10 — Track J.8 prototype-pollution harness for Node
 /// (`lodash.merge` / `Object.assign` / `JSON.parse`-then-deep-assign).
 ///
@@ -2629,9 +2684,14 @@ function nyxFollowLocation(location) {{
 /// literal has no `__proto__` key — or a fixture that constructs
 /// its target via `Object.create(null)` — leaves the prototype
 /// chain untouched and emits no probe.
-pub fn emit_prototype_pollution_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_prototype_pollution_harness(spec: &HarnessSpec, is_typescript: bool) -> HarnessSource {
     let shim = probe_shim();
-    let body = format!(
+
+    // Shared canary-trap preamble: installs the Object.prototype setter
+    // trap *before* any sink runs, so a write that lands on the shared
+    // prototype is observed regardless of whether it came from the
+    // fixture's own merge (tier-a) or the synthetic fallback (tier-b).
+    let preamble = format!(
         r#"// Nyx dynamic harness — PROTOTYPE_POLLUTION canary trap (Phase 10 / Track J.8).
 {shim}
 
@@ -2699,40 +2759,96 @@ function nyxPrototypePollutionProbe(value) {{
   }});
 }})();
 
-// Phase 10 sink: route the parsed payload through the real
-// `lodash.merge` pinned at lodash 4.17.4.  Lodash hardened `_.merge`
-// against the `__proto__` key starting in 4.17.5 (well before the
-// official CVE-2018-16487 fix at 4.17.11 which targeted `_.set` /
-// `_.setWith`), so the canary only fires against <= 4.17.4.  The
-// staged `package.json` pins this version exactly; `prepare_node`
-// resolves the dep via `npm install` before the harness runs.
-// Exercising the real merge implementation (vs the hand-rolled
-// `nyxDeepMerge` that previously stood in) covers lodash's actual
-// recursion / cycle / array-vs-object decision shape so a future
-// fixture that hits a patched range can be added without re-shaping
-// the harness.
-const _lodashMerge = require('lodash').merge;
-
 const payload = process.env.NYX_PAYLOAD || '';
-let parsed;
-try {{
-  parsed = JSON.parse(payload);
-}} catch (e) {{
-  parsed = {{}};
-}}
-const target = {{}};
-try {{
-  _lodashMerge(target, parsed);
-}} catch (e) {{
-  // lodash.merge can throw on weird inputs; the canary observation
-  // already wrote any probe before the throw.
-}}
-console.log('__NYX_SINK_HIT__');
-console.log(JSON.stringify({{
-  canary_present: Object.prototype.hasOwnProperty(NYX_PP_CANARY),
-}}));
 "#
     );
+
+    // Tier-(b) synthetic direct-sink block.  Routes the parsed payload
+    // through the real `lodash.merge` pinned at lodash 4.17.4 (hardened
+    // against `__proto__` from 4.17.5) into a *vanilla* `{}` target.  Used
+    // standalone when no enclosing entry is derivable, and as the runtime
+    // fallback inside the entry-driven harness when the fixture cannot be
+    // loaded.  NOTE: this drives the sink directly and therefore bypasses
+    // any caller-side mitigation — it must run only when the fixture's own
+    // entry could not be driven.
+    let synthetic_sink = r#"  const _lodashMerge = require('lodash').merge;
+  let parsed;
+  try { parsed = JSON.parse(payload); } catch (e) { parsed = {}; }
+  const target = {};
+  try {
+    _lodashMerge(target, parsed);
+  } catch (e) {
+    // lodash.merge can throw on weird inputs; the canary observation
+    // already wrote any probe before the throw.
+  }
+"#;
+
+    let tail = r#"console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({
+  canary_present: Object.prototype.hasOwnProperty(NYX_PP_CANARY),
+}));
+"#;
+
+    let (body, entry_subpath) = if spec.entry_is_derivable() {
+        let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+        let entry_name = &spec.entry_name;
+        let call_args = pp_entry_call_args(spec);
+        // TypeScript fixtures use ES-module imports + type annotations the
+        // bare CommonJS `require` cannot parse, and Node's native `.ts`
+        // loading applies ESM-namespace interop (so `import * as _ from
+        // 'lodash'` would not expose `_.merge`).  Load TS through the
+        // type-stripping + ESM→CJS shim so `esModuleInterop`-style fixtures
+        // run as the author intended.  JS fixtures are CommonJS — require
+        // them directly.
+        let loader_defs = if is_typescript { TS_ENTRY_LOADER_JS } else { "" };
+        let entry_load_expr = if is_typescript {
+            format!("nyxLoadTsEntry('./{entry_subpath}')")
+        } else {
+            format!("require('./{entry_subpath}')")
+        };
+        let body = format!(
+            r#"{preamble}
+{loader_defs}// Tier-(a): drive the fixture's enclosing entry `{entry_name}` so a
+// caller-side mitigation (a merge target built with `Object.create(null)`,
+// an allowlist, …) runs *before* the merge sink.  The Object.prototype
+// canary trap above observes any write that reaches the shared prototype,
+// so a benign fixture that builds a prototype-less target produces no
+// probe even under the `__proto__` payload.
+let _drove = false;
+let _entry;
+try {{
+  _entry = {entry_load_expr};
+}} catch (e) {{
+  // load failed (missing dep / unparseable source) — tier-(b) below.
+}}
+const _fn = _entry && (typeof _entry === 'function'
+  ? _entry
+  : (typeof _entry['{entry_name}'] === 'function'
+      ? _entry['{entry_name}']
+      : (typeof _entry.run === 'function' ? _entry.run : null)));
+if (typeof _fn === 'function') {{
+  try {{
+    _fn({call_args});
+  }} catch (e) {{
+    // The fixture threw after we drove it (e.g. JSON.parse failure or a
+    // guard that raises).  We still drove the entry, so do not fall back.
+  }}
+  _drove = true;
+}}
+if (!_drove) {{
+  // Tier-(b): the enclosing entry could not be driven at runtime — fall
+  // back to the synthetic direct-sink merge so the harness still emits a
+  // signal.  Recorded as a direct-sink fallback in the VerifyTrace.
+{synthetic_sink}}}
+{tail}"#
+        );
+        (body, Some(entry_subpath.to_owned()))
+    } else {
+        // No derivable enclosing entry — drive the sink directly.
+        let body = format!("{preamble}\n{synthetic_sink}{tail}");
+        (body, None)
+    };
+
     HarnessSource {
         source: body,
         filename: "harness.js".to_owned(),
@@ -2743,7 +2859,23 @@ console.log(JSON.stringify({{
 "#
             .to_owned(),
         )],
-        entry_subpath: None,
+        entry_subpath,
+    }
+}
+
+/// Build the JS argument list for invoking the prototype-pollution entry
+/// with the payload routed to its tainted parameter.  `PayloadSlot::Param(n)`
+/// places the payload at position `n` (earlier positions filled with
+/// `undefined`); every other slot passes the payload as the sole argument
+/// (the fixture reads its own channel — env / argv — for the rest).
+fn pp_entry_call_args(spec: &HarnessSpec) -> String {
+    match &spec.payload_slot {
+        crate::dynamic::spec::PayloadSlot::Param(n) => {
+            let mut parts = vec!["undefined"; *n];
+            parts.push("payload");
+            parts.join(", ")
+        }
+        _ => "payload".to_owned(),
     }
 }
 
