@@ -69,3 +69,38 @@ known vulns) is the meaningful metric; precision vs this partial ground
 truth is informational. Gate 7 publishes per-cap precision/recall/confirmed
 report-only by default (`NYX_JSTS_FLOOR_CAPS` empty), matching the OWASP
 gate.
+
+## Polyglot real corpora (Ruby/PHP/Python/Go/Rust — Track R.2)
+
+Phase 29 wires the remaining language families into the same machinery, one
+corpus per family, each with a curated `*.manifest.toml` → committed `*.json`:
+
+- `railsgoat.{manifest.toml,json}` — OWASP RailsGoat (Rails, `.rb`).
+- `dvwa.{manifest.toml,json}` — Damn Vulnerable Web Application (PHP). DVWA
+  ships graded source variants (`source/{low,impossible}.php`), so this is
+  the one Track R corpus besides OWASP with real vuln/benign **pairs**
+  (`low.php` = vuln, `impossible.php` = benign control) — precision is
+  meaningful here, not just informational.
+- `dvpwa.{manifest.toml,json}` — Damn Vulnerable Python Web App (aiohttp,
+  `.py`). Its parameterized DAO siblings are benign controls for the one
+  `%`-formatted SQL sink.
+- `gosec.{manifest.toml,json}` — the gosec Go SAST tool repo; the scannable,
+  `// want`-annotated sample under `goanalysis/testdata` is the curated
+  ground truth (gosec's string-embedded rule samples are not scannable, so
+  they are deliberately unlabelled).
+- `rustsec.{manifest.toml,json}` — RustSec advisory-db, a **negative
+  control**. advisory-db ships advisory metadata, not vulnerable `.rs`
+  source, so its committed ground truth is empty (`[]`) by construction. The
+  manifest sets `negative_control = true` (mutually exclusive with
+  `[[entry]]` tables); `manifest_gt_convert.py` emits the empty JSON and the
+  row asserts the Rust scan/verify path runs at scale within wall-clock and
+  Confirms nothing there (any Confirmed Rust finding is a false confirm).
+
+These are converted, validated and asserted-in-sync exactly like NodeGoat /
+Juice Shop (the `polyglot` job in `.github/workflows/eval.yml`). Because each
+corpus targets a single language, Gate 8 scopes tabulation to that language
+(`tabulate.py --lang`) so the vendored third-party JavaScript these Ruby /
+Python apps bundle does not pollute their per-cap metrics. Gate 8 publishes
+per-cap precision/recall/confirmed report-only by default
+(`NYX_POLYGLOT_FLOOR_CAPS` empty), matching the OWASP and JS/TS gates. See
+`tests/eval_corpus/budget.toml` for the per-(cap,lang) gate policy.

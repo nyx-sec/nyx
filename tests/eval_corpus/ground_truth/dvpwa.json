@@ -1,0 +1,38 @@
+[
+  {
+    "path": "sqli/dao/course.py",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": false
+  },
+  {
+    "path": "sqli/dao/mark.py",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": false
+  },
+  {
+    "path": "sqli/dao/review.py",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": false
+  },
+  {
+    "path": "sqli/dao/student.py",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": true
+  },
+  {
+    "path": "sqli/dao/user.py",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  },
+  {
+    "path": "sqli/views.py",
+    "line": 0,
+    "cap": "auth",
+    "vuln": true
+  }
+]

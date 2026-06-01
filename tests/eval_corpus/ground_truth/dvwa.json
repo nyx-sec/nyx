@@ -1,0 +1,50 @@
+[
+  {
+    "path": "vulnerabilities/exec/source/impossible.php",
+    "line": 0,
+    "cap": "cmdi",
+    "vuln": false
+  },
+  {
+    "path": "vulnerabilities/exec/source/low.php",
+    "line": 0,
+    "cap": "cmdi",
+    "vuln": true
+  },
+  {
+    "path": "vulnerabilities/open_redirect/source/impossible.php",
+    "line": 0,
+    "cap": "header_injection",
+    "vuln": false
+  },
+  {
+    "path": "vulnerabilities/open_redirect/source/impossible.php",
+    "line": 0,
+    "cap": "redirect",
+    "vuln": false
+  },
+  {
+    "path": "vulnerabilities/open_redirect/source/low.php",
+    "line": 0,
+    "cap": "header_injection",
+    "vuln": true
+  },
+  {
+    "path": "vulnerabilities/open_redirect/source/low.php",
+    "line": 0,
+    "cap": "redirect",
+    "vuln": true
+  },
+  {
+    "path": "vulnerabilities/sqli/source/impossible.php",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": false
+  },
+  {
+    "path": "vulnerabilities/sqli/source/low.php",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": true
+  }
+]

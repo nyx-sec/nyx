@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR=""
 NYX_BIN="${NYX_BIN:-${REPO_ROOT}/target/release/nyx}"
 CORPUS_CACHE="${NYX_EVAL_CORPUS_DIR:-${HOME}/.cache/nyx/eval_corpus}"
-SETS="owasp,sard,nodegoat,juiceshop,inhouse"
+SETS="owasp,sard,nodegoat,juiceshop,railsgoat,dvwa,dvpwa,gosec,rustsec,inhouse"
 # Optional per-cell budgets and monotonic-improvement diff.
 BUDGET_FILE=""
 DIFF_FILE=""
@@ -90,6 +90,42 @@ run_jsts_corpus() {
     || info "  tabulate.py failed on $label; ground truth file may be absent"
 }
 
+# Scan one Track R.2 polyglot real corpus and tabulate it against its
+# committed ground truth, SCOPED to its target language (tabulate --lang) so
+# incidental other-language assets (e.g. vendored JS in a Rails / aiohttp app)
+# do not pollute the corpus's per-cap metrics.  Self-skips when the corpus has
+# not been cloned into the cache; prints the exact clone command if so.
+#   $1 label  $2 dir  $3 ground-truth json  $4 target lang  $5 repo  $6 ref
+run_polyglot_corpus() {
+  local label="$1" dir="$2" gt="$3" lang="$4" repo="$5" ref="$6"
+  if [[ ! -d "$dir" ]]; then
+    info "Bootstrapping $label..."
+    info "  git clone --depth 1 --branch ${ref} ${repo} ${dir}"
+    info "Skipping $label set (not yet downloaded)."
+    return 0
+  fi
+  info "Running nyx scan on $label (lang scope: ${lang})..."
+  set +e
+  "$NYX_BIN" scan --format json --verify --no-index "$dir" \
+    > "/tmp/nyx_${label}.json" 2>"/tmp/nyx_${label}.stderr"
+  local rc=$?
+  set -e
+  if [[ $rc -ne 0 && $rc -ne 1 ]]; then
+    info "  nyx exited $rc on $label set (stderr follows):"
+    cat "/tmp/nyx_${label}.stderr" >&2
+    return 0
+  fi
+  python3 "${SCRIPT_DIR}/tabulate.py" \
+    --label "$label" \
+    --scan "/tmp/nyx_${label}.json" \
+    --ground-truth "$gt" \
+    --lang "$lang" \
+    --append "$RESULTS_JSON" \
+    ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+    ${DIFF_FILE:+--diff "$DIFF_FILE"} \
+    || info "  tabulate.py failed on $label; ground truth file may be absent"
+}
+
 [[ -x "$NYX_BIN" ]] || die "nyx binary not found or not executable: $NYX_BIN"
 
 mkdir -p "$CORPUS_CACHE"
@@ -141,6 +177,35 @@ fi
 if [[ "$SETS" == *juiceshop* ]]; then
   run_jsts_corpus juiceshop "${CORPUS_CACHE}/juiceshop" \
     "${SCRIPT_DIR}/ground_truth/juiceshop.json"
+fi
+
+# ── Polyglot real corpora (Ruby/PHP/Python/Go/Rust) — Track R.2 ───────────────
+if [[ "$SETS" == *railsgoat* ]]; then
+  run_polyglot_corpus railsgoat "${CORPUS_CACHE}/railsgoat" \
+    "${SCRIPT_DIR}/ground_truth/railsgoat.json" ruby \
+    https://github.com/OWASP/railsgoat rails.5.0.0
+fi
+if [[ "$SETS" == *dvwa* ]]; then
+  run_polyglot_corpus dvwa "${CORPUS_CACHE}/dvwa" \
+    "${SCRIPT_DIR}/ground_truth/dvwa.json" php \
+    https://github.com/digininja/DVWA 2.5
+fi
+if [[ "$SETS" == *dvpwa* ]]; then
+  run_polyglot_corpus dvpwa "${CORPUS_CACHE}/dvpwa" \
+    "${SCRIPT_DIR}/ground_truth/dvpwa.json" python \
+    https://github.com/anxolerd/dvpwa master
+fi
+if [[ "$SETS" == *gosec* ]]; then
+  run_polyglot_corpus gosec "${CORPUS_CACHE}/gosec" \
+    "${SCRIPT_DIR}/ground_truth/gosec.json" go \
+    https://github.com/securego/gosec v2.26.1
+fi
+# RustSec advisory-db is the Rust negative control (empty ground truth): the
+# row asserts the Rust scan/verify path runs and Confirms nothing there.
+if [[ "$SETS" == *rustsec* ]]; then
+  run_polyglot_corpus rustsec "${CORPUS_CACHE}/rustsec" \
+    "${SCRIPT_DIR}/ground_truth/rustsec.json" rust \
+    https://github.com/rustsec/advisory-db main
 fi
 
 # ── NIST SARD subset bootstrap ────────────────────────────────────────────────

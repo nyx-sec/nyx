@@ -168,7 +168,16 @@ def test_committed_gt_matches_manifest(tmp: Path) -> None:
     # Offline half of the CI in-sync guard: the committed ground-truth JSON
     # must be exactly what a fresh conversion of its manifest produces.  This
     # catches a manifest edit that was not followed by a regenerate.
-    for name in ("nodegoat", "juiceshop"):
+    for name in (
+        "nodegoat",
+        "juiceshop",
+        # Track R.2 polyglot corpora (Phase 29).
+        "railsgoat",
+        "dvwa",
+        "dvpwa",
+        "gosec",
+        "rustsec",
+    ):
         man = GT_DIR / f"{name}.manifest.toml"
         committed = GT_DIR / f"{name}.json"
         assert man.exists(), f"missing manifest: {man}"
@@ -179,6 +188,39 @@ def test_committed_gt_matches_manifest(tmp: Path) -> None:
         assert json.loads(regen.read_text()) == json.loads(committed.read_text()), (
             f"{committed} is stale — regenerate with manifest_gt_convert.py"
         )
+
+
+def test_negative_control_emits_empty(tmp: Path) -> None:
+    # A negative-control manifest (no scannable source vulns, e.g. RustSec
+    # advisory-db) declares `negative_control = true` and zero [[entry]]
+    # tables; the converter emits an empty `[]` ground truth.
+    man = tmp / "neg.manifest.toml"
+    man.write_text(
+        'corpus = "rustsec"\n'
+        'upstream = "https://example.test/advisory-db"\n'
+        'pinned_ref = "main"\n'
+        "negative_control = true\n"
+    )
+    out = tmp / "neg.json"
+    proc = run_convert("--manifest", str(man), "--output", str(out))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(out.read_text()) == [], out.read_text()
+    assert "negative-control corpus" in proc.stdout, proc.stdout
+
+
+def test_negative_control_with_entries_rejected(tmp: Path) -> None:
+    # negative_control and [[entry]] are mutually exclusive: a manifest that
+    # sets the flag yet lists a vuln must be rejected so a real positive can
+    # never be silently hidden behind the flag.
+    man = tmp / "neg_bad.manifest.toml"
+    man.write_text(
+        "negative_control = true\n"
+        '[[entry]]\npath = "a.rs"\ncap = "cmdi"\nvuln = true\n'
+    )
+    out = tmp / "neg_bad.json"
+    proc = run_convert("--manifest", str(man), "--output", str(out))
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "negative_control" in proc.stderr and "zero" in proc.stderr, proc.stderr
 
 
 def main() -> int:
@@ -193,6 +235,8 @@ def main() -> int:
             test_malformed_manifest_exits_1,
             test_empty_manifest_exits_1,
             test_committed_gt_matches_manifest,
+            test_negative_control_emits_empty,
+            test_negative_control_with_entries_rejected,
         ):
             sub = tmp / fn.__name__
             sub.mkdir()

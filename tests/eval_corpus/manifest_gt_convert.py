@@ -23,6 +23,19 @@ Manifest schema (TOML)::
     vuln = true                             # true = real vuln, false = benign control
     note = "eval() of user-supplied pre/after-tax fields (NodeGoat A1)"
 
+Negative-control corpora.  A few real corpora carry **no** scannable
+source-level vulnerabilities of their own — most notably the RustSec
+`advisory-db`, which ships advisory *metadata* (TOML/Markdown), not
+vulnerable `.rs` source.  Such a corpus has zero ground-truth positives by
+construction, yet it is still worth scanning: it exercises the language's
+scan + verify path end to end on a large real-world tree and acts as an
+over-confirmation guard (nyx must Confirm nothing on a corpus with no real
+source vulns).  Declare it with a top-level ``negative_control = true`` and
+**zero** ``[[entry]]`` tables; the converter then emits an empty ``[]``
+ground truth.  ``negative_control`` and ``[[entry]]`` are mutually
+exclusive — a manifest that sets the flag *and* lists entries is rejected,
+so a real vuln can never be silently dropped behind the flag.
+
 Output (consumed by tabulate.py): a list of `{path, line, cap, vuln}`
 records, sorted by `(path, cap)` for deterministic, diff-stable JSON.
 `note` is intentionally dropped — the ground-truth JSON keeps the exact
@@ -119,7 +132,15 @@ def main() -> int:
 
     manifest = load_manifest(Path(args.manifest).expanduser())
     entries = manifest.get("entry", []) or []
-    if not entries:
+    negative_control = bool(manifest.get("negative_control", False))
+    if negative_control and entries:
+        print(
+            f"error: negative_control manifest must declare zero [[entry]] "
+            f"tables (found {len(entries)}): {args.manifest}",
+            file=sys.stderr,
+        )
+        return 1
+    if not entries and not negative_control:
         print(f"error: manifest has no [[entry]] tables: {args.manifest}", file=sys.stderr)
         return 1
 
@@ -184,6 +205,8 @@ def main() -> int:
 
     vuln_count = sum(1 for r in records if r["vuln"])
     print(f"wrote {len(records)} records to {out}")
+    if negative_control:
+        print("  negative-control corpus: zero ground-truth positives by construction")
     print(f"  vulns:    {vuln_count}")
     print(f"  non-vuln: {len(records) - vuln_count}")
     if corpus is not None:

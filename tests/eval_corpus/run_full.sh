@@ -3,6 +3,7 @@
 #
 # Drives a complete pass against every corpus set the project knows about
 # (OWASP Benchmark v1.2, the NIST SARD subset, OWASP NodeGoat + Juice Shop,
+# the Track R.2 polyglot corpora — RailsGoat / DVWA / DVPWA / gosec / RustSec —
 # and the Nyx benchmark fixtures), then emits `tests/eval_corpus/results.json`
 # for reports, diffs, and docs.
 #
@@ -70,7 +71,7 @@ set +e
 NYX_EVAL_CORPUS_DIR="$CORPUS_CACHE" \
   bash "${SCRIPT_DIR}/run.sh" \
     --nyx     "$NYX_BIN" \
-    --sets    owasp,sard,nodegoat,juiceshop,inhouse \
+    --sets    owasp,sard,nodegoat,juiceshop,railsgoat,dvwa,dvpwa,gosec,rustsec,inhouse \
     --output  "$OUTPUT_DIR" \
     --budget  "$BUDGET_FILE" \
     ${DIFF_FILE:+--diff "$DIFF_FILE"}

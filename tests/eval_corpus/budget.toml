@@ -200,3 +200,153 @@ cap = "crypto"
 lang = "typescript"
 unsupported_rate     = 0.20
 false_confirmed_rate = 0.02
+
+# ── Polyglot real corpora (Ruby/PHP/Python/Go/Rust) — Track R.2 ──────────────
+#
+# Phase 29 wires five more intentionally-vulnerable real corpora, one per
+# remaining language family, into the same acceptance machinery as OWASP /
+# NodeGoat / Juice Shop:
+#
+#   * railsgoat  — OWASP RailsGoat (Rails, .rb)
+#   * dvwa       — Damn Vulnerable Web Application (PHP); ships graded
+#                  source variants, so low.php = vuln and impossible.php =
+#                  benign control — real vuln/benign PAIRS like OWASP.
+#   * dvpwa      — Damn Vulnerable Python Web App (aiohttp, .py); its
+#                  parameterized DAO siblings are benign controls for the
+#                  one `%`-formatted SQL sink.
+#   * gosec      — the Go SAST tool's own repo; the scannable, `// want`-
+#                  annotated sample under goanalysis/testdata is the curated
+#                  ground truth (its embedded-string rule samples are not
+#                  scannable, so they are unlabelled).
+#   * rustsec    — RustSec advisory-db: a NEGATIVE CONTROL.  It ships
+#                  advisory metadata, not vulnerable .rs source, so its
+#                  ground truth is empty by construction; the row asserts the
+#                  Rust scan/verify path runs at scale within wall-clock and
+#                  Confirms NOTHING (any Confirmed Rust finding there is a
+#                  false confirm and trips the default false_confirmed_rate).
+#
+# Each row is gated with the SAME policy as Gates 6/7 (scripts/m7_ship_gate.sh
+# Gate 8): wall-clock + the per-(cap,lang) budget below are HARD-enforced;
+# per-cap confirmed-rate / precision / recall are published report-only
+# (NYX_POLYGLOT_FLOOR_CAPS empty by default).  Because each corpus targets a
+# single language, Gate 8 scopes tabulation to that language (tabulate.py
+# --lang), so the vendored third-party JavaScript these Ruby/Python apps
+# bundle (bootstrap-colorpicker, materialize, …) — which nyx confirms as
+# prototype_pollution — does not pollute the corpus's per-cap metrics.  Those
+# JS findings are still emitted; they are simply out of scope for a Ruby /
+# Python corpus.
+#
+# Calibrated against the pinned corpora (nyx HEAD of the Phase 29 branch,
+# 2026-05-31) with `nyx scan --verify --index off`.  Measured frontier
+# (target-language scope): every curated cell sits at <= the headline maxima
+# below EXCEPT cmdi, where every finding carries a SHELL_ESCAPE sanitizer cap
+# and is therefore routed to Unsupported(SoundOracleUnavailable) — the same
+# no-sound-oracle treatment OWASP's crypto/auth cells get.  RailsGoat's
+# deserialize (Marshal.load) and redirect (open redirect) cells Confirm end to
+# end with zero false confirms — the first real polyglot confirms.
+
+# railsgoat (ruby): caps with a ground-truth label in railsgoat.manifest.toml.
+[[cell]]
+cap = "auth"
+lang = "ruby"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "crypto"
+lang = "ruby"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "deserialize"
+lang = "ruby"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "redirect"
+lang = "ruby"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "path_traversal"
+lang = "ruby"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+# cmdi/ruby is incidental (RailsGoat's `self.try(params[:graph])` reflection
+# sink); the lone finding carries a SHELL_ESCAPE sanitizer cap and routes to
+# Unsupported(SoundOracleUnavailable), so unsupported_rate is locked at the
+# measured frontier (1/1).  The false-confirm guard stays at the headline 2%.
+[[cell]]
+cap = "cmdi"
+lang = "ruby"
+unsupported_rate     = 1.00
+false_confirmed_rate = 0.02
+
+# dvwa (php): caps with a ground-truth label in dvwa.manifest.toml.
+[[cell]]
+cap = "sqli"
+lang = "php"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "redirect"
+lang = "php"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "header_injection"
+lang = "php"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+# cmdi/php: DVWA's ping handlers reach shell_exec through a SHELL_ESCAPE
+# sanitizer cap, so ~69% of the cell's findings route to
+# Unsupported(SoundOracleUnavailable).  unsupported_rate is locked to that
+# frontier with margin (a regression above 75% fails); false-confirm at 2%.
+[[cell]]
+cap = "cmdi"
+lang = "php"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+
+# dvpwa (python): caps with a ground-truth label in dvpwa.manifest.toml.
+[[cell]]
+cap = "sqli"
+lang = "python"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "crypto"
+lang = "python"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "auth"
+lang = "python"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+# gosec (go): caps with a ground-truth label in gosec.manifest.toml.
+[[cell]]
+cap = "crypto"
+lang = "go"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+# cmdi/go: the goanalysis/testdata exec.Command sample reaches the sink
+# through a SHELL_ESCAPE sanitizer cap, so every cmdi/go finding routes to
+# Unsupported(SoundOracleUnavailable).  unsupported_rate locked to the
+# measured frontier (3/3); false-confirm at the headline 2%.
+[[cell]]
+cap = "cmdi"
+lang = "go"
+unsupported_rate     = 1.00
+false_confirmed_rate = 0.02

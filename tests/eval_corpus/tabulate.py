@@ -363,14 +363,33 @@ def main() -> int:
         help="path to budget.toml (per-(cap,lang) thresholds)",
     )
     p.add_argument(
+        "--lang",
+        default="",
+        help=(
+            "comma-separated language allowlist (python, javascript, php, "
+            "ruby, go, rust, ...).  When set, only findings AND ground-truth "
+            "entries whose source language is in the list are tabulated; "
+            "everything else is dropped before tallying.  Used by the Phase 29 "
+            "polyglot corpora (Track R.2) to scope a single-language corpus to "
+            "its target language so incidental third-party assets in other "
+            "languages — e.g. the vendored JavaScript a Rails or aiohttp app "
+            "bundles — do not pollute that corpus's per-cap metrics.  Empty = "
+            "no language filter (every finding tabulated, the OWASP/JSTS "
+            "default)."
+        ),
+    )
+    p.add_argument(
         "--diff",
         default="",
         help="path to a previous results JSON; fail on monotonic-improvement regression",
     )
     args = p.parse_args()
+    lang_filter = {l.strip() for l in args.lang.split(",") if l.strip()}
 
     scan_data = load_json(args.scan)
     findings = scan_data if isinstance(scan_data, list) else scan_data.get("findings", [])
+    if lang_filter:
+        findings = [f for f in findings if lang_of(f) in lang_filter]
 
     # ── Manual-triage stamping (Phase 31 follow-up) ───────────────────────
     # Cross-reference Confirmed rows against a manual-triage file before
@@ -463,6 +482,10 @@ def main() -> int:
         # Ground truth format: list of {"path": ..., "line": ..., "cap": ..., "vuln": bool}
         gt_true: list[dict] = []
         for entry in gt if isinstance(gt, list) else []:
+            # Honour the same language scope as the findings filter so recall
+            # is measured only over the corpus's target language.
+            if lang_filter and lang_of(entry) not in lang_filter:
+                continue
             if entry.get("vuln"):
                 gt_true.append({
                     "path": entry.get("path", ""),

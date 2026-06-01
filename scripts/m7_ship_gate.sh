@@ -8,6 +8,8 @@
 #   scripts/m7_ship_gate.sh --sets owasp        # Java OWASP corpus only
 #   scripts/m7_ship_gate.sh --sets jsts         # NodeGoat + Juice Shop only
 #   scripts/m7_ship_gate.sh --sets nodegoat     # one JS/TS corpus only
+#   scripts/m7_ship_gate.sh --sets polyglot     # RailsGoat+DVWA+DVPWA+gosec+RustSec
+#   scripts/m7_ship_gate.sh --sets railsgoat    # one polyglot corpus only
 #
 # Gate map (kept in sync with .pitboss/play/plan.md track M.7):
 #   Gate 1: Static-only scan is green on `tests/benchmark/corpus`.
@@ -37,13 +39,21 @@
 #           (NYX_JSTS_FLOOR_CAPS empty by default).  Each corpus row
 #           self-skips unless its NYX_NODEGOAT_CORPUS / NYX_JUICESHOP_CORPUS
 #           points at a real checkout.
+#   Gate 8: Polyglot real-corpus acceptance (Track R.2 / Phase 29).  OWASP
+#           RailsGoat (Rails, .rb), DVWA (PHP), DVPWA (aiohttp, .py), gosec
+#           (Go) and the RustSec advisory-db (Rust negative control), one
+#           row per corpus.  Same shape as Gate 7: wall-clock budget + the
+#           per-(cap,lang) budget hard-enforced; per-cap confirmed/precision/
+#           recall report-only (NYX_POLYGLOT_FLOOR_CAPS empty by default).
+#           Each row self-skips unless its NYX_<NAME>_CORPUS points at a real
+#           checkout.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-GATES="1,2,3,4,5,6,7"
+GATES="1,2,3,4,5,6,7,8"
 SETS=""
 
 while [[ $# -gt 0 ]]; do
@@ -71,9 +81,10 @@ done
 # `jsts` (both JS/TS corpora) / `nodegoat` / `juiceshop` -> Gate 7, with the
 # corpus name passed through so Gate 7 runs only the requested row.
 case "${SETS}" in
-    owasp)                    GATES="6" ;;
-    jsts|nodegoat|juiceshop)  GATES="7" ;;
-    "")                       ;;  # no --sets: run the requested --gates
+    owasp)                                              GATES="6" ;;
+    jsts|nodegoat|juiceshop)                            GATES="7" ;;
+    polyglot|railsgoat|dvwa|dvpwa|gosec|rustsec)        GATES="8" ;;
+    "")                                                 ;;  # no --sets: run the requested --gates
     *)                        echo "unknown --sets: ${SETS}" >&2; exit 2 ;;
 esac
 
@@ -308,34 +319,31 @@ PY
     echo "  PASS"
 }
 
-# ── Gate 7: JS/TS real-corpus acceptance (NodeGoat + Juice Shop) ──────────────
-
-# Phase 28 (Track R.1) mirror of Gate 6 for the JS/TS corpora.  Same
-# wall-clock split (10 min dev reference / 15 min CI) and the same
-# report-only-by-default floor policy: NYX_JSTS_FLOOR_CAPS is empty, so the
-# per-cap confirmed-rate / precision / recall numbers are published but gate
-# nothing, while the per-(cap,lang) budget (unsupported_rate,
-# false_confirmed_rate) is hard-enforced.  Promote a cap into the floor set
-# once it starts Confirming end to end.
-GATE7_WALLCLOCK_BUDGET="${NYX_JSTS_WALLCLOCK_BUDGET_SECONDS:-900}"
-GATE7_CONFIRMED_RATE_TARGET="${NYX_JSTS_CONFIRMED_RATE_TARGET:-0.40}"
-GATE7_PRECISION_TARGET="${NYX_JSTS_PRECISION_TARGET:-0.85}"
-GATE7_RECALL_TARGET="${NYX_JSTS_RECALL_TARGET:-0.40}"
-GATE7_FLOOR_CAPS="${NYX_JSTS_FLOOR_CAPS:-}"
-GATE7_BUDGET="${NYX_JSTS_BUDGET:-${REPO_ROOT}/tests/eval_corpus/budget.toml}"
+# ── Shared real-corpus acceptance runner (Gates 7 + 8) ────────────────────────
 
 # Run one real-corpus `--verify` row: scan under a wall-clock guard,
 # tabulate against the committed ground truth, enforce the per-cell budget,
-# publish (or, when floor caps are set, enforce) the per-cap floors.
-#   $1 label  $2 corpus dir  $3 ground-truth json
+# publish (or, when floor caps are set, enforce) the per-cap floors.  Every
+# random source nyx uses is seeded from spec_hash, so reruns are
+# deterministic.  Generic across gates — all gate-specific knobs are passed
+# in so Gate 7 (JS/TS) and Gate 8 (polyglot) share one code path.
+#   $1 label        $2 corpus dir       $3 ground-truth json
+#   $4 wallclock(s) $5 budget.toml      $6 floor caps (may be empty)
+#   $7 confirmed target  $8 precision target  $9 recall target
+#   $10 floor-unset hint (e.g. "NYX_POLYGLOT_FLOOR_CAPS unset")
+#   $11 lang filter (may be empty) — scope tabulation to one language so
+#       incidental other-language assets (vendored JS in a Rails/aiohttp app)
+#       do not pollute the corpus's per-cap metrics
 # Returns 0 on pass, 1 on fail.  Caller decides skip.
-_gate7_run_corpus() {
-    local label="$1" corpus="$2" gt="$3"
-    local scan_report="/tmp/m7_gate7_${label}_scan.json"
-    local results_report="/tmp/m7_gate7_${label}_results.json"
-    local wallclock_report="/tmp/m7_gate7_${label}_wallclock.txt"
-    local gate_home="${TMPDIR:-/tmp}/nyx_m7_gate7_${label}_home"
-    local gate_build_pool="${TMPDIR:-/tmp}/nyx_m7_gate7_${label}_build_pool"
+_run_corpus_acceptance() {
+    local label="$1" corpus="$2" gt="$3" wallclock_budget="$4" budget_file="$5"
+    local floor_caps="$6" confirmed_target="$7" precision_target="$8"
+    local recall_target="$9" floor_hint="${10}" lang_filter="${11:-}"
+    local scan_report="/tmp/m7_corpus_${label}_scan.json"
+    local results_report="/tmp/m7_corpus_${label}_results.json"
+    local wallclock_report="/tmp/m7_corpus_${label}_wallclock.txt"
+    local gate_home="${TMPDIR:-/tmp}/nyx_m7_corpus_${label}_home"
+    local gate_build_pool="${TMPDIR:-/tmp}/nyx_m7_corpus_${label}_build_pool"
     local wallclock
 
     mkdir -p "${gate_home}" "${gate_build_pool}"
@@ -344,7 +352,7 @@ _gate7_run_corpus() {
     set +e
     HOME="${gate_home}" \
     NYX_BUILD_POOL_DIR="${gate_build_pool}" \
-    python3 - "${GATE7_WALLCLOCK_BUDGET}" "${scan_report}" "${wallclock_report}" \
+    python3 - "${wallclock_budget}" "${scan_report}" "${wallclock_report}" \
         "${REPO_ROOT}/target/release/nyx" scan \
         --verify \
         --index off \
@@ -375,9 +383,9 @@ sys.exit(rc)
 PY
     local nyx_exit=$?
     set -e
-    wallclock="$(cat "${wallclock_report}" 2>/dev/null || printf "%s" "${GATE7_WALLCLOCK_BUDGET}")"
+    wallclock="$(cat "${wallclock_report}" 2>/dev/null || printf "%s" "${wallclock_budget}")"
 
-    echo "    ${label} verify wall-clock: ${wallclock}s (budget ${GATE7_WALLCLOCK_BUDGET}s)"
+    echo "    ${label} verify wall-clock: ${wallclock}s (budget ${wallclock_budget}s)"
 
     if [[ ${nyx_exit} -eq 124 ]]; then
         echo "    FAIL: ${label} scan exceeded wall-clock budget"
@@ -391,37 +399,59 @@ PY
         echo "    FAIL: ${label} scan produced no JSON report"
         return 1
     fi
-    awk -v w="${wallclock}" -v b="${GATE7_WALLCLOCK_BUDGET}" \
+    awk -v w="${wallclock}" -v b="${wallclock_budget}" \
         'BEGIN { if (w+0 > b+0) exit 1 }' \
         || { echo "    FAIL: ${label} wall-clock exceeds budget"; return 1; }
 
     echo "[]" > "${results_report}"
-    python3 "${REPO_ROOT}/tests/eval_corpus/tabulate.py" \
-        --label "${label}" \
-        --scan "${scan_report}" \
-        --ground-truth "${gt}" \
-        --append "${results_report}" \
+    local -a tabulate_args=(
+        --label "${label}"
+        --scan "${scan_report}"
+        --ground-truth "${gt}"
+        --append "${results_report}"
+    )
+    if [[ -n "${lang_filter}" ]]; then
+        tabulate_args+=(--lang "${lang_filter}")
+        echo "    scoping tabulation to language(s): ${lang_filter}"
+    fi
+    python3 "${REPO_ROOT}/tests/eval_corpus/tabulate.py" "${tabulate_args[@]}" \
         || { echo "    FAIL: ${label} result tabulation failed"; return 1; }
 
     local -a report_args=(
         --results "${results_report}"
-        --budget "${GATE7_BUDGET}"
+        --budget "${budget_file}"
     )
-    if [[ -n "${GATE7_FLOOR_CAPS}" ]]; then
+    if [[ -n "${floor_caps}" ]]; then
         report_args+=(
-            --floor-caps "${GATE7_FLOOR_CAPS}"
-            --min-confirmed-rate "${GATE7_CONFIRMED_RATE_TARGET}"
-            --min-precision "${GATE7_PRECISION_TARGET}"
-            --min-recall "${GATE7_RECALL_TARGET}"
+            --floor-caps "${floor_caps}"
+            --min-confirmed-rate "${confirmed_target}"
+            --min-precision "${precision_target}"
+            --min-recall "${recall_target}"
         )
-        echo "    enforcing per-cap floors (confirmed >= ${GATE7_CONFIRMED_RATE_TARGET}, precision >= ${GATE7_PRECISION_TARGET}, recall >= ${GATE7_RECALL_TARGET}) on: ${GATE7_FLOOR_CAPS}"
+        echo "    enforcing per-cap floors (confirmed >= ${confirmed_target}, precision >= ${precision_target}, recall >= ${recall_target}) on: ${floor_caps}"
     else
-        echo "    per-cap confirmed/precision/recall: report-only (NYX_JSTS_FLOOR_CAPS unset)"
+        echo "    per-cap confirmed/precision/recall: report-only (${floor_hint})"
     fi
     python3 "${REPO_ROOT}/tests/eval_corpus/report.py" "${report_args[@]}" \
         || { echo "    FAIL: ${label} per-cell budget exceeded or a gated per-cap floor missed"; return 1; }
     return 0
 }
+
+# ── Gate 7: JS/TS real-corpus acceptance (NodeGoat + Juice Shop) ──────────────
+
+# Phase 28 (Track R.1) mirror of Gate 6 for the JS/TS corpora.  Same
+# wall-clock split (10 min dev reference / 15 min CI) and the same
+# report-only-by-default floor policy: NYX_JSTS_FLOOR_CAPS is empty, so the
+# per-cap confirmed-rate / precision / recall numbers are published but gate
+# nothing, while the per-(cap,lang) budget (unsupported_rate,
+# false_confirmed_rate) is hard-enforced.  Promote a cap into the floor set
+# once it starts Confirming end to end.
+GATE7_WALLCLOCK_BUDGET="${NYX_JSTS_WALLCLOCK_BUDGET_SECONDS:-900}"
+GATE7_CONFIRMED_RATE_TARGET="${NYX_JSTS_CONFIRMED_RATE_TARGET:-0.40}"
+GATE7_PRECISION_TARGET="${NYX_JSTS_PRECISION_TARGET:-0.85}"
+GATE7_RECALL_TARGET="${NYX_JSTS_RECALL_TARGET:-0.40}"
+GATE7_FLOOR_CAPS="${NYX_JSTS_FLOOR_CAPS:-}"
+GATE7_BUDGET="${NYX_JSTS_BUDGET:-${REPO_ROOT}/tests/eval_corpus/budget.toml}"
 
 gate_7_jsts_scale() {
     echo "── Gate 7: JS/TS real-corpus (NodeGoat + Juice Shop) verify acceptance ──"
@@ -447,8 +477,13 @@ gate_7_jsts_scale() {
         fi
         any_ran=1
         echo "  ── ${name} (${corpus}) ──"
-        if _gate7_run_corpus "${name}" "${corpus}" \
-                "${REPO_ROOT}/tests/eval_corpus/ground_truth/${gtfile}"; then
+        # No --lang scope: NodeGoat/Juice Shop are single-language (js/ts), so
+        # there is no cross-language asset noise to filter (unchanged Gate 7).
+        if _run_corpus_acceptance "${name}" "${corpus}" \
+                "${REPO_ROOT}/tests/eval_corpus/ground_truth/${gtfile}" \
+                "${GATE7_WALLCLOCK_BUDGET}" "${GATE7_BUDGET}" "${GATE7_FLOOR_CAPS}" \
+                "${GATE7_CONFIRMED_RATE_TARGET}" "${GATE7_PRECISION_TARGET}" \
+                "${GATE7_RECALL_TARGET}" "NYX_JSTS_FLOOR_CAPS unset" ""; then
             echo "  PASS ${name}"
         else
             any_failed=1
@@ -458,6 +493,76 @@ gate_7_jsts_scale() {
     if [[ ${any_ran} -eq 0 ]]; then
         echo "  SKIP: no JS/TS corpus configured (set NYX_NODEGOAT_CORPUS / NYX_JUICESHOP_CORPUS)."
         echo "        (Gate 7 is Phase 28's headline acceptance for the JS/TS real corpora.)"
+        return 0
+    fi
+    [[ ${any_failed} -eq 0 ]] || return 1
+    echo "  PASS"
+}
+
+# ── Gate 8: Polyglot real-corpus acceptance (Track R.2 / Phase 29) ────────────
+
+# RailsGoat (Rails, .rb) + DVWA (PHP) + DVPWA (aiohttp, .py) + gosec (Go) +
+# the RustSec advisory-db (Rust negative control).  Same wall-clock split and
+# the same report-only-by-default floor policy as Gates 6/7: the per-(cap,lang)
+# budget in tests/eval_corpus/budget.toml is hard-enforced, while per-cap
+# confirmed-rate / precision / recall are published but gate nothing until
+# NYX_POLYGLOT_FLOOR_CAPS names a cap.  Each row self-skips unless its
+# corpus env var points at a real checkout.  The RustSec row is a NEGATIVE
+# CONTROL: advisory-db ships advisory metadata, not vulnerable source, so its
+# ground truth is empty by construction and the row asserts nyx Confirms
+# nothing there (false_confirmed_rate guard).
+GATE8_WALLCLOCK_BUDGET="${NYX_POLYGLOT_WALLCLOCK_BUDGET_SECONDS:-900}"
+GATE8_CONFIRMED_RATE_TARGET="${NYX_POLYGLOT_CONFIRMED_RATE_TARGET:-0.40}"
+GATE8_PRECISION_TARGET="${NYX_POLYGLOT_PRECISION_TARGET:-0.85}"
+GATE8_RECALL_TARGET="${NYX_POLYGLOT_RECALL_TARGET:-0.40}"
+GATE8_FLOOR_CAPS="${NYX_POLYGLOT_FLOOR_CAPS:-}"
+GATE8_BUDGET="${NYX_POLYGLOT_BUDGET:-${REPO_ROOT}/tests/eval_corpus/budget.toml}"
+
+gate_8_polyglot_scale() {
+    echo "── Gate 8: polyglot real-corpus (RailsGoat/DVWA/DVPWA/gosec/RustSec) verify acceptance ──"
+    cargo build --release --quiet --features dynamic
+
+    # name : env var holding the corpus dir : committed ground-truth file :
+    # target language (tabulation is scoped to it so incidental other-language
+    # assets — e.g. vendored JS in the Rails / aiohttp apps — do not pollute
+    # the corpus's per-cap metrics).
+    local rows=(
+        "railsgoat:NYX_RAILSGOAT_CORPUS:railsgoat.json:ruby"
+        "dvwa:NYX_DVWA_CORPUS:dvwa.json:php"
+        "dvpwa:NYX_DVPWA_CORPUS:dvpwa.json:python"
+        "gosec:NYX_GOSEC_CORPUS:gosec.json:go"
+        "rustsec:NYX_RUSTSEC_CORPUS:rustsec.json:rust"
+    )
+    local any_ran=0 any_failed=0
+    for row in "${rows[@]}"; do
+        local name envvar gtfile lang
+        IFS=: read -r name envvar gtfile lang <<<"${row}"
+        # When --sets names a single corpus, only run that row.
+        if [[ -n "${SETS}" && "${SETS}" != "polyglot" && "${SETS}" != "${name}" ]]; then
+            continue
+        fi
+        local corpus="${!envvar:-}"
+        if [[ -z "${corpus}" || ! -d "${corpus}" ]]; then
+            echo "  SKIP ${name}: set ${envvar} to a checkout to run this row."
+            continue
+        fi
+        any_ran=1
+        echo "  ── ${name} (${corpus}) ──"
+        if _run_corpus_acceptance "${name}" "${corpus}" \
+                "${REPO_ROOT}/tests/eval_corpus/ground_truth/${gtfile}" \
+                "${GATE8_WALLCLOCK_BUDGET}" "${GATE8_BUDGET}" "${GATE8_FLOOR_CAPS}" \
+                "${GATE8_CONFIRMED_RATE_TARGET}" "${GATE8_PRECISION_TARGET}" \
+                "${GATE8_RECALL_TARGET}" "NYX_POLYGLOT_FLOOR_CAPS unset" "${lang}"; then
+            echo "  PASS ${name}"
+        else
+            any_failed=1
+        fi
+    done
+
+    if [[ ${any_ran} -eq 0 ]]; then
+        echo "  SKIP: no polyglot corpus configured (set NYX_RAILSGOAT_CORPUS /"
+        echo "        NYX_DVWA_CORPUS / NYX_DVPWA_CORPUS / NYX_GOSEC_CORPUS / NYX_RUSTSEC_CORPUS)."
+        echo "        (Gate 8 is Phase 29's headline acceptance for the polyglot real corpora.)"
         return 0
     fi
     [[ ${any_failed} -eq 0 ]] || return 1
@@ -483,6 +588,7 @@ run_gate 4 sarif_schema
 run_gate 5 layering
 run_gate 6 owasp_scale
 run_gate 7 jsts_scale
+run_gate 8 polyglot_scale
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
     echo

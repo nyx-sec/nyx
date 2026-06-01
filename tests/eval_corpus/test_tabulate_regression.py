@@ -294,6 +294,65 @@ def test_manual_triage_ignores_vuln_true_entries(tmp: Path) -> None:
     )
 
 
+def test_lang_filter_scopes_findings_and_gt(tmp: Path) -> None:
+    # Phase 29 (Track R.2): --lang scopes a single-language corpus to its
+    # target language so incidental other-language assets (e.g. the vendored
+    # JavaScript a Rails app bundles, which nyx flags as prototype_pollution)
+    # do not pollute the corpus's per-cap metrics.  The filter must drop both
+    # findings AND ground-truth entries outside the scope.
+    gt = tmp / "gt.json"
+    write_json(
+        gt,
+        [
+            {"path": "app/models/user.rb", "line": 0, "cap": "sqli", "vuln": True},
+            {"path": "app/assets/lib.js", "line": 0, "cap": "sqli", "vuln": True},
+        ],
+    )
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                python_finding(SINK_BIT_SQL, "/x/app/models/user.rb", 10, "NotConfirmed"),
+                # A vendored-JS finding nyx would otherwise Confirm — must be
+                # excluded entirely under `--lang ruby`.
+                python_finding(SINK_BIT_SQL, "/x/app/assets/lib.js", 10, "Confirmed"),
+            ]
+        },
+    )
+
+    # Unscoped: both language cells appear.
+    unscoped = tmp / "unscoped.json"
+    write_json(unscoped, [])
+    proc = run_tabulate(
+        "--label", "railsgoat",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--append", str(unscoped),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]) for c in json.loads(unscoped.read_text())[-1]["cells"]}
+    assert ("sqli", "ruby") in cells and ("sqli", "javascript") in cells, cells
+
+    # Scoped to ruby: the JS finding AND the JS ground-truth positive vanish.
+    scoped = tmp / "scoped.json"
+    write_json(scoped, [])
+    proc = run_tabulate(
+        "--label", "railsgoat",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--lang", "ruby",
+        "--append", str(scoped),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(scoped.read_text())[-1]["cells"]}
+    assert ("sqli", "javascript") not in cells, f"JS must be filtered out: {list(cells)}"
+    ruby = cells[("sqli", "ruby")]
+    assert ruby["tp"] == 1 and ruby["fn"] == 0, ruby
+    # The dropped JS positive must NOT resurface as a phantom FN in any cell.
+    assert all(lang != "javascript" for _cap, lang in cells), cells
+
+
 def test_budget_malformed_exits_3(tmp: Path) -> None:
     bad = tmp / "bad.toml"
     bad.write_text("[default]\nunsupported_rate = not_a_number\n")
@@ -601,6 +660,7 @@ def main() -> int:
             test_diff_passes_on_improvement,
             test_manual_triage_stamps_wrong_confirmed,
             test_manual_triage_ignores_vuln_true_entries,
+            test_lang_filter_scopes_findings_and_gt,
             test_budget_malformed_exits_3,
             test_relative_gt_path_suffix_matches_absolute_finding,
             test_unmatched_gt_positive_lands_in_lang_cell,
