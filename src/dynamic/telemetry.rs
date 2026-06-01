@@ -20,8 +20,8 @@
 //! ```json
 //! {
 //!   "schema_version": 1,
-//!   "nyx_version": "0.7.0",
-//!   "corpus_version": "4",
+//!   "nyx_version": "0.8.0",
+//!   "corpus_version": "15",
 //!   "kind": "verdict",
 //!   "ts": "<RFC-3339>",
 //!   "finding_id": "...",

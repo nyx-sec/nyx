@@ -76,7 +76,7 @@ Forward cross-file taint runs in every profile. Symex and the demand-driven back
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.7.0
+- uses: elicpeter/nyx@v0.8.0
   with:
     format: sarif
     fail-on: MEDIUM
@@ -202,6 +202,28 @@ Detector families: taint (cross-file source→sink, with cap-specific rule class
 
 ---
 
+## Verify findings dynamically
+
+Static analysis says a sink is reachable. Dynamic verification tries to prove it. With `--verify` (on by default), Nyx builds a small harness around each Medium-or-higher finding, runs it in a sandbox against a curated payload corpus, and stamps a verdict onto the finding.
+
+```bash
+nyx scan --verify          # build + run a harness per finding (default)
+nyx scan --no-verify       # static analysis only, for fast local loops
+```
+
+A finding is **Confirmed** only when an attacker-controlled payload fires the sink *and* a paired benign control stays clean. That differential rule, plus behavioral oracles (a template that renders `49`, a deserializer that resolves a gadget class, a redirect that leaves the origin), keeps the verifier from confirming on an echoed string. Sinks behind a recognized guard demote to `ConfirmedWithKnownGuard`; sinks reached without a completed exploit chain land as `PartiallyConfirmed`.
+
+Coverage spans 18 capability classes and 130+ framework adapters across all ten languages (Flask, Django, Express, NestJS, Spring, Rails, Laravel, Gin, Axum, and more), with per-language build pools and copy-on-write workdirs to keep the per-finding cost low. Confirmed findings write a hermetic repro bundle with a `reproduce.sh`. Runs are deterministic: every payload is seeded from the spec hash.
+
+```bash
+# CI: fail the build if a new Confirmed finding appears vs. a baseline
+nyx scan --baseline .nyx/baseline.json --gate no-new-confirmed
+```
+
+Backends: Docker (preferred, network-blocked by default) or an in-process runner with `--harden {standard,strict}`. Full matrix, oracle list, and limitations: [Dynamic verification](https://nyxscan.dev/docs/dynamic.html).
+
+---
+
 ## Configuration
 
 Config merges `nyx.conf` (defaults) and `nyx.local` (your overrides) from the platform config directory (`~/.config/nyx/` on Linux, `~/Library/Application Support/nyx/` on macOS, `%APPDATA%\elicpeter\nyx\config\` on Windows).
@@ -247,7 +269,7 @@ Limitations:
 Browse the full docs site at **[nyxscan.dev/docs](https://nyxscan.dev/docs/)**.
 
 - [Quick Start](https://nyxscan.dev/docs/quickstart.html) · [CLI Reference](https://nyxscan.dev/docs/cli.html) · [Installation](https://nyxscan.dev/docs/installation.html)
-- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html)
+- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html) · [Dynamic verification](https://nyxscan.dev/docs/dynamic.html)
 - [How it works](https://nyxscan.dev/docs/how-it-works.html) · [Detectors](https://nyxscan.dev/docs/detectors.html) ([Taint](https://nyxscan.dev/docs/detectors/taint.html), [CFG](https://nyxscan.dev/docs/detectors/cfg.html), [State](https://nyxscan.dev/docs/detectors/state.html), [AST Patterns](https://nyxscan.dev/docs/detectors/patterns.html))
 - [Rule Reference](https://nyxscan.dev/docs/rules.html) · [Language Maturity](https://nyxscan.dev/docs/language-maturity.html) · [Advanced Analysis](https://nyxscan.dev/docs/advanced-analysis.html) · [Auth Analysis](https://nyxscan.dev/docs/auth.html)
 

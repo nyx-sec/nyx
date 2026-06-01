@@ -4,9 +4,11 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-Three fronts this release: an attack-surface map, a sandboxed dynamic verifier, and a framework adapter registry that grounds both.
+## [0.8.0] - 2026-06-01
 
-The attack-surface map and chain composer turn the flat finding list into a route-to-sink graph. The dynamic verifier re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict on each. The adapter registry (116 entries across 8 languages) covers HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
+The dynamic-verification release. An attack-surface map, a sandboxed dynamic verifier, a framework adapter registry that grounds both, the per-language build infrastructure that makes per-finding verification affordable at corpus scale, and the first real-corpus acceptance gates.
+
+The attack-surface map and chain composer turn the flat finding list into a route-to-sink graph. The dynamic verifier re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / PartiallyConfirmed / NotConfirmed / Inconclusive / Unsupported verdict on each. The adapter registry (130+ entries across 8 languages) covers HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points. Per-language build pools and copy-on-write workdirs hold the with-verify wall-clock to within 1.5x of a static-only scan.
 
 ### Attack-surface map
 
@@ -36,6 +38,15 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 - **Guard-aware verdicts.** When a known input-validation or output-sanitization middleware sits in front of a Confirmed sink (Spring `@PreAuthorize`, Express `helmet`, Nest `@UseGuards`, Django `@permission_classes`, and the per-language registry in `src/dynamic/framework/auth_markers.rs`), the verdict demotes to `ConfirmedWithKnownGuard` and the guard names land on `differential.known_guards`. Authentication-only filters do not trigger the demotion since they do not mitigate injection.
 - **Repro bundles.** Every verified finding writes a hermetic bundle to `~/.cache/nyx/dynamic/repro/<spec_hash>/` with `reproduce.sh`, `expected/{verdict.json,outcome.json,trace.jsonl}`, and a `docker_pull.sh` when the toolchain is pinned in `tools/image-builder/images.toml`. `--verbose` flushes the per-step `VerifyTrace` to stderr for live triage.
 - **Real-engine harness paths.** LDAP injection routes through an embedded LDAPv3 BER server, exercised from Java via JNDI `InitialDirContext` and from Python and PHP via pure-stdlib BER clients. XPath injection runs against the live parser in each language: Java `javax.xml.xpath`, PHP `DOMXPath`, JS `xpath` npm, Python `lxml`. `Cap::CRYPTO` lands a `WeakKey` probe across Python, Go, Java, PHP, and Rust that flags sub-2^16 keys produced by non-CSPRNG sources. A new `HeaderSmuggledInWire` oracle predicate catches CRLF smuggling on hand-rolled raw-socket HTTP servers (Python `http.server`, Node `net`, Rust `std::net::TcpListener`) where framework-level CRLF strip cannot intervene.
+- **Differential rule v2 and partial confirmations.** A finding confirms when *any* vulnerable payload in the set fires and *every* paired benign control stays clean, replacing the strict pair-wise rule so a single missing control no longer downgrades a confirmable finding. A new `PartiallyConfirmed` verdict marks findings where the sink is reached but the exploit chain does not complete (no marker written, no callback observed), so engine work can ratchet without the tool overstating what it proved.
+- **Spec derivation v2.** Every derivation strategy now runs and is scored on flow-step depth, framework binding, cross-file source resolution via `GlobalSummaries`, and payload availability; the highest-scoring candidate wins and the runner-up ranking lands in the trace so engine gaps stay visible. Cross-file seeding walks the call graph (max depth 5) until a `Source` step or framework binding is found. New `EntryKind` adapters auto-recover the entry surface from framework decorators and annotations.
+
+### Performance
+
+- **Per-language build pools.** A warm `javac` daemon compiles batched harness sources in one long-lived JVM (Track O headline, Phase 22); Node, PHP, Ruby, Go, Rust, C, and C++ reuse shared module / package / object caches; Python layers a read-only venv per `requirements_hash` with a warmed bytecode cache. Target per-finding harness build: P50 ≤ 200ms hot, ≤ 1.5s cold. Pools self-skip when a toolchain is absent so toolchain-less CI rows stay green.
+- **Copy-on-write workdirs.** Per-finding workdir setup uses `clonefile` on macOS and `reflink` / `copy_file_range` on Linux instead of copying every harness file, cutting setup cost to single-digit milliseconds.
+- **Cap-routed concurrency lanes.** The verifier worker pool splits into per-cap lanes (`SSRF: 8`, `DESERIALIZE: 2`, `CRYPTO: 1`, and so on) so a slow harness for one cap cannot head-of-line block fast ones.
+- **Ship-gate budgets.** Gate 3 holds the with-verify / static-only wall-clock ratio at ≤ 1.5x on `benches/fixtures/`; Gate 6 holds the Java OWASP Benchmark `--verify` run at ≤ 15 min on CI / ≤ 10 min on the dev reference machine.
 
 ### Determinism, policy, telemetry
 
@@ -51,6 +62,8 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 - **OWASP Benchmark v1.2 importer.** `tests/eval_corpus/owasp_gt_convert.py` converts the OWASP Java Benchmark expected-results manifest into Nyx ground truth and lands a 16k-line `owasp_benchmark_v1.2.json` for evaluation.
 - **NIST SARD importer.** `tests/eval_corpus/sard_gt_convert.py` converts SARD test cases into the same format so cross-dataset recall numbers stay comparable.
 - **Evaluation corpus tooling.** `tests/eval_corpus/run_full.sh` runs the Nyx benchmark, OWASP Benchmark, and NIST SARD evaluation sets and writes `tests/eval_corpus/results.json`. `tests/eval_corpus/report.py` and `tabulate.py` produce the per-cap and per-language summary used to track coverage and accuracy.
+- **Real-corpus acceptance gates.** `scripts/m7_ship_gate.sh` adds Gate 6 (Java OWASP Benchmark v1.2), Gate 7 (NodeGoat + Juice Shop), and Gate 8 (RailsGoat, DVWA, DVPWA, gosec, RustSec). Each row enforces the per-`(cap, lang)` budget in `tests/eval_corpus/budget.toml` and publishes per-cap precision / recall / confirmed-rate against a committed ground truth. The corpora are not vendored; each row self-skips unless its `NYX_<NAME>_CORPUS` points at a checkout.
+- **Per-spec cryptographic canary.** Every oracle marker is now derived from `BLAKE3(spec_hash || run_nonce)` rather than a fixed literal, so markers are unique per finding, collision-resistant against ambient harness output, and never leak to the host. A compile-time audit rejects any new ad-hoc canary.
 
 ### Engine
 
