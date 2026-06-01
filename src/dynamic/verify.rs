@@ -577,27 +577,54 @@ fn build_failure_is_host_limitation(stderr: &str) -> bool {
 /// verdict is `Unsupported(EntryKindUnsupported)`, not
 /// engine-`Inconclusive(BuildFailed)`.
 ///
-/// Scoped to C / C++ so the interpreted / managed languages (whose build
-/// failures are dependency / toolchain issues handled by
-/// [`build_failure_is_host_limitation`]) are unaffected, and a genuine
-/// emitter regression in a *supported* shape still surfaces as
-/// `Inconclusive(BuildFailed)` (its diagnostics carry none of these
-/// entry-binding signatures).
+/// Per-language signatures (the compiler / type-checker is present and the
+/// emitted source is syntactically well-formed; it simply cannot *bind* a
+/// runnable driver to the resolved entry's shape):
+/// - **C / C++**: the harness `main` collides with a fixture that defines its
+///   own `main` (`redefinition of 'main'`), or the resolved symbol's arity /
+///   signature matches no driveable shape (`too many/few arguments`,
+///   `conflicting types for`).
+/// - **Go**: the cross-package driver references a symbol that does not
+///   resolve (`undefined: entry.Run` — the resolved entry is a *method* on a
+///   struct or an unexported function, not the package-level func the default
+///   driver calls; or `undefined: strings` — the emitter's driver for this
+///   framework shape references a package it did not import).  Either way the
+///   Go emitter cannot produce a runnable driver for this entry shape.
+/// - **Java**: the resolved entry is an *instance* method the static driver
+///   invokes without a receiver (`non-static method … cannot be referenced
+///   from a static context`).
+///
+/// These are deterministic shape-incompatibilities, not retriable build
+/// failures, so they route to `Unsupported(EntryKindUnsupported)` rather than
+/// engine-`Inconclusive(BuildFailed)`.  Genuinely-absent toolchains /
+/// dependencies are handled separately by [`build_failure_is_host_limitation`];
+/// a transient build error in an otherwise-supported shape carries none of
+/// these signatures and still surfaces as `Inconclusive(BuildFailed)`.
 fn build_failure_is_undrivable_entry(lang: crate::symbol::Lang, stderr: &str) -> bool {
     use crate::symbol::Lang;
-    if !matches!(lang, Lang::C | Lang::Cpp) {
-        return false;
+    match lang {
+        Lang::C | Lang::Cpp => {
+            const NEEDLES: &[&str] = &[
+                "redefinition of 'main'",
+                "redefinition of \u{2018}main\u{2019}", // gcc curly-quote variant
+                "too many arguments to function call",
+                "too few arguments to function call",
+                "too many arguments to function", // gcc phrasing
+                "too few arguments to function",  // gcc phrasing
+                "conflicting types for",
+            ];
+            NEEDLES.iter().any(|n| stderr.contains(n))
+        }
+        // A Go harness compile error (`undefined: …`) means the generated
+        // cross-package driver references a symbol that does not resolve — a
+        // method/unexported entry surfaced as `undefined: entry.X`, or a
+        // package the per-shape driver failed to import.  The Go emitter
+        // cannot bind a runnable driver to this entry shape.
+        Lang::Go => stderr.contains("undefined:"),
+        // The Java static driver invoked an instance method without a receiver.
+        Lang::Java => stderr.contains("cannot be referenced from a static context"),
+        _ => false,
     }
-    const NEEDLES: &[&str] = &[
-        "redefinition of 'main'",
-        "redefinition of \u{2018}main\u{2019}", // gcc curly-quote variant
-        "too many arguments to function call",
-        "too few arguments to function call",
-        "too many arguments to function",       // gcc phrasing
-        "too few arguments to function",        // gcc phrasing
-        "conflicting types for",
-    ];
-    NEEDLES.iter().any(|n| stderr.contains(n))
 }
 
 /// Try to dynamically confirm a static finding.
