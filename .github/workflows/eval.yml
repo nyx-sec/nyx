@@ -1,18 +1,25 @@
-# Phase 27 (Track R.0): OWASP Benchmark v1.2 real-corpus acceptance.
+# Real-corpus acceptance (Track R).
 #
-# Runs Gate 6 of scripts/m7_ship_gate.sh against a real OWASP BenchmarkJava
-# checkout on every PR that touches the dynamic verifier (src/dynamic/), the
+#   * owasp  (Phase 27 / Track R.0): Gate 6 vs a real OWASP BenchmarkJava
+#     checkout (Java).
+#   * jsts   (Phase 28 / Track R.1): Gate 7 vs OWASP NodeGoat (Express, .js)
+#     and OWASP Juice Shop (TypeScript, .ts), one matrix row per corpus.
+#
+# Runs on every PR that touches the dynamic verifier (src/dynamic/), the
 # eval-corpus harness (tests/eval_corpus/), or the gate script itself.
 #
-# Gate 6 enforces, against the committed ground truth:
+# Each gate enforces, against the committed ground truth:
 #   * verify wall-clock <= 15 min (CI budget; the dev reference is 10 min),
-#   * per-cap confirmed-rate >= 40%, precision >= 0.85, recall >= 0.40 for the
-#     dynamically-supported OWASP caps,
-#   * the per-(cap,lang) budget in tests/eval_corpus/budget.toml.
+#   * the per-(cap,lang) budget in tests/eval_corpus/budget.toml,
+#   * per-cap confirmed-rate / precision / recall — hard-gated only for caps
+#     in NYX_*_FLOOR_CAPS (empty by default → published report-only until a
+#     cap Confirms end to end), with destinations >= 40% / >= 0.85 / >= 0.40.
 #
-# The corpus is *not* vendored.  It is cloned at the pinned 1.2beta tag (the
-# tag that produced expectedresults-1.2beta.csv, the source of the ground
-# truth) and cached so reruns skip the clone.
+# No corpus is vendored.  Each is cloned at a pinned ref and cached so reruns
+# skip the clone.  Before the gate runs, the committed ground truth is
+# regenerated from its source against the fresh clone and asserted in sync,
+# and the converter hard-errors on any labelled path missing from the corpus,
+# so a corpus bump that drifts the labels fails the job loudly.
 
 name: eval
 
@@ -99,7 +106,98 @@ jobs:
           PY
 
       - name: eval-corpus harness regression tests
-        run: python3 tests/eval_corpus/test_tabulate_regression.py
+        run: |
+          python3 tests/eval_corpus/test_tabulate_regression.py
+          python3 tests/eval_corpus/test_manifest_gt_convert.py
 
       - name: Gate 6 — OWASP Benchmark v1.2 acceptance
         run: scripts/m7_ship_gate.sh --sets owasp
+
+  jsts:
+    name: eval / ${{ matrix.corpus.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus:
+          - name: nodegoat
+            repo: https://github.com/OWASP/NodeGoat
+            # NodeGoat ships no release tags; pin the default branch and let
+            # the cache key hold it stable.  The manifest's path layout
+            # (app/, config/) has been constant for years.
+            ref: master
+            env: NYX_NODEGOAT_CORPUS
+            manifest: nodegoat.manifest.toml
+            ground_truth: nodegoat.json
+          - name: juiceshop
+            repo: https://github.com/juice-shop/juice-shop
+            ref: v15.0.0
+            env: NYX_JUICESHOP_CORPUS
+            manifest: juiceshop.manifest.toml
+            ground_truth: juiceshop.json
+    env:
+      # CI wall-clock budget: 15 min.  Override locally to tighten.
+      NYX_JSTS_WALLCLOCK_BUDGET_SECONDS: "900"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # The dynamic verifier's Node build pool (Phase 23) compiles its
+      # harnesses with a real node/npm toolchain.
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache ${{ matrix.corpus.name }}
+        id: cache-corpus
+        uses: actions/cache@v4
+        with:
+          path: .eval-corpus/${{ matrix.corpus.name }}
+          key: jsts-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
+
+      - name: Clone ${{ matrix.corpus.name }} (${{ matrix.corpus.ref }})
+        if: steps.cache-corpus.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ matrix.corpus.ref }} \
+            ${{ matrix.corpus.repo }} \
+            .eval-corpus/${{ matrix.corpus.name }}
+
+      # No-compromise guard: the committed ground truth must be exactly what a
+      # fresh conversion of the curated manifest produces *against this
+      # corpus*.  manifest_gt_convert.py hard-errors on any labelled path that
+      # no longer exists in the clone (corpus drift / typo), and the diff
+      # below catches a stale committed JSON.
+      - name: Verify ground truth is in sync with the pinned corpus
+        run: |
+          python3 tests/eval_corpus/manifest_gt_convert.py \
+            --manifest tests/eval_corpus/ground_truth/${{ matrix.corpus.manifest }} \
+            --corpus-dir .eval-corpus/${{ matrix.corpus.name }} \
+            --output /tmp/${{ matrix.corpus.name }}_gt_regen.json
+          python3 - <<'PY'
+          import json, sys
+          name = "${{ matrix.corpus.ground_truth }}"
+          committed = json.load(open(f"tests/eval_corpus/ground_truth/{name}"))
+          regen = json.load(open("/tmp/${{ matrix.corpus.name }}_gt_regen.json"))
+          if committed != regen:
+              sys.exit("committed ground truth diverges from a fresh conversion of "
+                       "the manifest against the pinned corpus; regenerate with "
+                       "manifest_gt_convert.py")
+          print(f"ground truth in sync: {len(committed)} records")
+          PY
+
+      - name: eval-corpus harness regression tests
+        run: |
+          python3 tests/eval_corpus/test_tabulate_regression.py
+          python3 tests/eval_corpus/test_manifest_gt_convert.py
+
+      - name: Gate 7 — ${{ matrix.corpus.name }} acceptance
+        run: |
+          export ${{ matrix.corpus.env }}="${{ github.workspace }}/.eval-corpus/${{ matrix.corpus.name }}"
+          scripts/m7_ship_gate.sh --sets ${{ matrix.corpus.name }}

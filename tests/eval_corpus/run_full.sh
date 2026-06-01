@@ -2,9 +2,9 @@
 # Full eval-corpus orchestrator.
 #
 # Drives a complete pass against every corpus set the project knows about
-# (OWASP Benchmark v1.2, the NIST SARD subset, and the Nyx benchmark
-# fixtures), then emits `tests/eval_corpus/results.json` for reports,
-# diffs, and docs.
+# (OWASP Benchmark v1.2, the NIST SARD subset, OWASP NodeGoat + Juice Shop,
+# and the Nyx benchmark fixtures), then emits `tests/eval_corpus/results.json`
+# for reports, diffs, and docs.
 #
 # Usage:
 #   tests/eval_corpus/run_full.sh [--nyx BIN] [--budget FILE] [--diff FILE]
@@ -70,7 +70,7 @@ set +e
 NYX_EVAL_CORPUS_DIR="$CORPUS_CACHE" \
   bash "${SCRIPT_DIR}/run.sh" \
     --nyx     "$NYX_BIN" \
-    --sets    owasp,sard,inhouse \
+    --sets    owasp,sard,nodegoat,juiceshop,inhouse \
     --output  "$OUTPUT_DIR" \
     --budget  "$BUDGET_FILE" \
     ${DIFF_FILE:+--diff "$DIFF_FILE"}

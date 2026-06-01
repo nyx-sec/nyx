@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR=""
 NYX_BIN="${NYX_BIN:-${REPO_ROOT}/target/release/nyx}"
 CORPUS_CACHE="${NYX_EVAL_CORPUS_DIR:-${HOME}/.cache/nyx/eval_corpus}"
-SETS="owasp,sard,inhouse"
+SETS="owasp,sard,nodegoat,juiceshop,inhouse"
 # Optional per-cell budgets and monotonic-improvement diff.
 BUDGET_FILE=""
 DIFF_FILE=""
@@ -51,6 +51,44 @@ info() { echo "[eval] $*"; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 require_cmd jq
 require_cmd python3
+
+# Scan one ground-truth-labelled real corpus (NodeGoat / Juice Shop) and
+# tabulate it against its committed ground truth.  Self-skips when the
+# corpus has not been cloned into the cache.
+run_jsts_corpus() {
+  local label="$1" dir="$2" gt="$3"
+  if [[ ! -d "$dir" ]]; then
+    info "Bootstrapping $label..."
+    info "  Clone the corpus into ${dir} then re-run this script:"
+    if [[ "$label" == "nodegoat" ]]; then
+      info "    git clone --depth 1 https://github.com/OWASP/NodeGoat ${dir}"
+    else
+      info "    git clone --depth 1 --branch v15.0.0 \\"
+      info "      https://github.com/juice-shop/juice-shop ${dir}"
+    fi
+    info "Skipping $label set (not yet downloaded)."
+    return 0
+  fi
+  info "Running nyx scan on $label..."
+  set +e
+  "$NYX_BIN" scan --format json --verify --no-index "$dir" \
+    > "/tmp/nyx_${label}.json" 2>"/tmp/nyx_${label}.stderr"
+  local rc=$?
+  set -e
+  if [[ $rc -ne 0 && $rc -ne 1 ]]; then
+    info "  nyx exited $rc on $label set (stderr follows):"
+    cat "/tmp/nyx_${label}.stderr" >&2
+    return 0
+  fi
+  python3 "${SCRIPT_DIR}/tabulate.py" \
+    --label "$label" \
+    --scan "/tmp/nyx_${label}.json" \
+    --ground-truth "$gt" \
+    --append "$RESULTS_JSON" \
+    ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+    ${DIFF_FILE:+--diff "$DIFF_FILE"} \
+    || info "  tabulate.py failed on $label; ground truth file may be absent"
+}
 
 [[ -x "$NYX_BIN" ]] || die "nyx binary not found or not executable: $NYX_BIN"
 
@@ -93,6 +131,16 @@ if [[ "$SETS" == *owasp* ]]; then
         || info "  tabulate.py failed; ground truth file may be absent"
     fi
   fi
+fi
+
+# ── NodeGoat / Juice Shop (JS/TS) bootstrap — Track R.1 ───────────────────────
+if [[ "$SETS" == *nodegoat* ]]; then
+  run_jsts_corpus nodegoat "${CORPUS_CACHE}/nodegoat" \
+    "${SCRIPT_DIR}/ground_truth/nodegoat.json"
+fi
+if [[ "$SETS" == *juiceshop* ]]; then
+  run_jsts_corpus juiceshop "${CORPUS_CACHE}/juiceshop" \
+    "${SCRIPT_DIR}/ground_truth/juiceshop.json"
 fi
 
 # ── NIST SARD subset bootstrap ────────────────────────────────────────────────

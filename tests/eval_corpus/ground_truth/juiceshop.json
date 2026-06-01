@@ -1,0 +1,38 @@
+[
+  {
+    "path": "lib/insecurity.ts",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  },
+  {
+    "path": "routes/fileServer.ts",
+    "line": 0,
+    "cap": "path_traversal",
+    "vuln": true
+  },
+  {
+    "path": "routes/login.ts",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": true
+  },
+  {
+    "path": "routes/profileImageUrlUpload.ts",
+    "line": 0,
+    "cap": "ssrf",
+    "vuln": true
+  },
+  {
+    "path": "routes/redirect.ts",
+    "line": 0,
+    "cap": "redirect",
+    "vuln": true
+  },
+  {
+    "path": "routes/search.ts",
+    "line": 0,
+    "cap": "sqli",
+    "vuln": true
+  }
+]

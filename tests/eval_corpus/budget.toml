@@ -116,3 +116,87 @@ cap = "auth"
 lang = "java"
 unsupported_rate     = 0.20
 false_confirmed_rate = 0.02
+
+# ── NodeGoat / Juice Shop (JS/TS) — Track R.1 ratchet ────────────────────────
+#
+# Phase 28 wires two intentionally-vulnerable JS/TS apps into the same
+# acceptance machinery as OWASP Benchmark: OWASP NodeGoat (Express, .js)
+# and OWASP Juice Shop (TypeScript, .ts).  Unlike OWASP Benchmark, neither
+# app ships vuln/benign *pairs* — every labelled file is `vuln = true` (see
+# ground_truth/{nodegoat,juiceshop}.manifest.toml).  Two consequences for
+# these cells:
+#
+#   * false_confirmed_rate (<= 2%) is the headline maximum the verifier
+#     already satisfies and is HARD-enforced: it only trips when a Confirmed
+#     finding lands on a file with no ground-truth positive, i.e. an
+#     over-confirm.  With the verifier confirming little on real corpora yet
+#     it is satisfied, and it ratchets precision as confirms grow.
+#   * unsupported_rate (<= 20%) is HARD-enforced too.  `Unsupported` counts
+#     only NoPayloadsForCap / EntryKindUnsupported / SoundOracleUnavailable —
+#     a narrow bucket that Tracks J + M shrank — *not* BuildFailed /
+#     SpecDerivationFailed (those are Inconclusive), so it stays low.
+#
+# confirmed_rate (>= 40%), precision (>= 0.85) and recall (>= 0.40) are the
+# Phase 28 acceptance DESTINATIONS.  They are intentionally left UNSET here
+# and published report-only by Gate 7 (NYX_JSTS_FLOOR_CAPS empty by default,
+# mirroring NYX_OWASP_FLOOR_CAPS) because (a) the verifier does not yet
+# Confirm these corpora end to end and (b) the manifest labels canonical
+# vulns only, so precision vs partial ground truth is informational until
+# the labels are completed.  Promote a cap into the floor set the moment it
+# starts Confirming, exactly as for OWASP.
+
+# NodeGoat (javascript): caps with a ground-truth label in nodegoat.manifest.toml.
+[[cell]]
+cap = "cmdi"
+lang = "javascript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "xss"
+lang = "javascript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "unauthorized_id"
+lang = "javascript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "crypto"
+lang = "javascript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+# Juice Shop (typescript): caps with a ground-truth label in juiceshop.manifest.toml.
+[[cell]]
+cap = "sqli"
+lang = "typescript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "path_traversal"
+lang = "typescript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "redirect"
+lang = "typescript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "ssrf"
+lang = "typescript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02
+
+[[cell]]
+cap = "crypto"
+lang = "typescript"
+unsupported_rate     = 0.20
+false_confirmed_rate = 0.02

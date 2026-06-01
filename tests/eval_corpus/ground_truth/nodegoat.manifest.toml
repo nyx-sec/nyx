@@ -1,0 +1,62 @@
+# OWASP NodeGoat — curated vuln ground-truth manifest (Phase 28, Track R.1).
+#
+# NodeGoat is an intentionally-vulnerable Express/Node app that maps the
+# OWASP Top 10 to concrete handlers.  It ships no machine-readable per-file
+# vuln labels (unlike OWASP Benchmark's expectedresults CSV), so this
+# manifest IS the authoritative source: one [[entry]] per known-vulnerable
+# location, each curated from the project's own tutorial + the canonical
+# vuln walk-through, with a `note` citing why.
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/nodegoat.json.  CI regenerates it against a fresh clone of
+# the pinned ref and asserts byte-equality, and the converter HARD-ERRORS
+# on any path that no longer exists in the corpus, so a NodeGoat bump that
+# moves a handler fails the eval job loudly rather than silently dropping
+# recall.  Update `pinned_ref` + the paths together when re-pinning.
+#
+# `cap` is a nyx cap label (tabulate.py).  `path` is relative to the
+# NodeGoat clone root, POSIX separators.  Lang is inferred from the
+# extension (.js -> javascript).  These are all `vuln = true`: NodeGoat is
+# all-vulnerable, so there is no benign-control file to pair against (the
+# OWASP Benchmark vuln/benign pairing does not exist here).  Precision vs
+# this manifest is therefore informational (an unlabelled finding is not
+# necessarily a false positive — it may be a real vuln we did not curate),
+# while recall (did nyx catch the canonical vulns) is the meaningful floor.
+# See tests/eval_corpus/budget.toml for how the gate treats these cells.
+
+corpus = "nodegoat"
+upstream = "https://github.com/OWASP/NodeGoat"
+# NodeGoat publishes no semver tags; the eval job pins the default branch
+# via the CI cache key.  The `app/` + `config/` layout below has been
+# stable for years; re-validate the paths if the cache key is bumped.
+pinned_ref = "master"
+
+[[entry]]
+path = "app/routes/contributions.js"
+cap = "cmdi"
+vuln = true
+note = "handleContributionsUpdate eval()s the pre-tax/after-tax/roth form fields — server-side JS injection (OWASP A1 Injection); the textbook NodeGoat RCE."
+
+[[entry]]
+path = "app/routes/profile.js"
+cap = "xss"
+vuln = true
+note = "profile fields (firstName/lastName/bankAcc/...) are persisted then rendered unescaped — stored XSS (OWASP A3 / A7 XSS)."
+
+[[entry]]
+path = "app/routes/memos.js"
+cap = "xss"
+vuln = true
+note = "memo body is stored and echoed back into the memos view without output encoding — stored XSS."
+
+[[entry]]
+path = "app/routes/allocations.js"
+cap = "unauthorized_id"
+vuln = true
+note = "allocations are looked up by a userId taken from the request with no ownership check — insecure direct object reference / broken access control (OWASP A4)."
+
+[[entry]]
+path = "config/env/all.js"
+cap = "crypto"
+vuln = true
+note = "hardcoded cookieSecret / session secret committed in source — sensitive-data / weak-secret smell (OWASP A6)."
