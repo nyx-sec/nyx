@@ -5,9 +5,9 @@
 //! vulnerable and benign attempts.
 
 use super::super::{CuratedPayload, Oracle, PayloadProvenance, PayloadRef};
-use crate::dynamic::oracle::ProbePredicate;
+use crate::dynamic::oracle::{Canary, ProbePredicate};
 
-const CANARY: &str = "__nyx_canary";
+const CANARY: &str = Canary::PLACEHOLDER;
 const MAX_DEPTH: u32 = 64;
 
 pub const PAYLOADS: &[CuratedPayload] = &[

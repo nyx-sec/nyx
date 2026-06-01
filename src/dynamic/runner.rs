@@ -13,7 +13,7 @@ use crate::dynamic::corpus::{
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
 use crate::dynamic::middleware_demotion;
-use crate::dynamic::oracle::{Oracle, oracle_fired_with_stubs, probe_crash_signal};
+use crate::dynamic::oracle::{Canary, Oracle, oracle_fired_full, probe_crash_signal};
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
@@ -463,6 +463,21 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     }
     let probe_channel: Option<Arc<ProbeChannel>> = effective_opts.probe_channel.clone();
 
+    // ── Phase 30 (Track N.0): per-spec verification canary ──────────────
+    // Derive a cryptographically-random, per-`spec_hash` canary, hand it to
+    // the harness via `NYX_CANARY` (the prototype-pollution setter trap and
+    // any future per-spec sentinel read it from the environment), and thread
+    // it into the oracle match below.  Each payload's bytes have the const
+    // corpus's `Canary::PLACEHOLDER` token rewritten to this value, so the
+    // harness trap, the polluted property name, and the oracle all agree on
+    // a token unique to this finding — a stale probe from another run (or
+    // ambient output mentioning the historical `__nyx_canary` sentinel) can
+    // never satisfy this run's oracle.
+    let run_canary = Canary::for_spec(&spec.spec_hash);
+    effective_opts
+        .extra_env
+        .push(("NYX_CANARY".to_string(), run_canary.clone()));
+
     // Run only vuln (non-benign) payloads in the main loop.
     let vuln_payloads: Vec<&Payload> = payloads.iter().filter(|p| !p.is_benign).collect();
 
@@ -510,6 +525,9 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         } else {
             (None, payload.bytes.to_vec())
         };
+        // Phase 30: rewrite the corpus canary placeholder to this run's
+        // per-spec canary so the harness trap + oracle agree on it.
+        let effective_bytes = substitute_canary_bytes(effective_bytes, &run_canary);
 
         // Clear the probe channel before each payload so the oracle's
         // drained records belong unambiguously to this run.
@@ -577,8 +595,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             .map(|h| h.drain_all())
             .unwrap_or_default();
 
-        let vuln_fired =
-            oracle_fired_with_stubs(&payload.oracle, &outcome, &vuln_probes, &vuln_stub_events);
+        let vuln_fired = oracle_fired_full(
+            &payload.oracle,
+            &outcome,
+            &vuln_probes,
+            &vuln_stub_events,
+            Some(&run_canary),
+        );
         let sink_hit = outcome.sink_hit;
         trace_record(
             trace_handle.as_ref(),
@@ -708,9 +731,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 // signal and falls through to `NotConfirmed`.
             }
             Some(benign) => {
-                let benign_bytes = materialise_bytes(benign, None)
-                    .map(|b| b.into_owned())
-                    .unwrap_or_default();
+                let benign_bytes = substitute_canary_bytes(
+                    materialise_bytes(benign, None)
+                        .map(|b| b.into_owned())
+                        .unwrap_or_default(),
+                    &run_canary,
+                );
                 if let Some(ch) = &probe_channel {
                     let _ = ch.clear();
                 }
@@ -725,11 +751,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     .as_ref()
                     .map(|h| h.drain_all())
                     .unwrap_or_default();
-                let benign_fired = oracle_fired_with_stubs(
+                let benign_fired = oracle_fired_full(
                     &benign.oracle,
                     &benign_outcome,
                     &benign_probes,
                     &benign_stub_events,
+                    Some(&run_canary),
                 );
 
                 if is_confirm_candidate {
@@ -848,6 +875,38 @@ fn uses_docker_backend(opts: &SandboxOptions) -> bool {
         SandboxBackend::Auto => sandbox::docker_available(),
         SandboxBackend::Process | SandboxBackend::Firecracker => false,
     }
+}
+
+/// Rewrite every occurrence of [`Canary::PLACEHOLDER`] in `bytes` to the
+/// per-spec `canary` (Phase 30 — Track N.0).
+///
+/// Const corpus payloads embed the placeholder token; the runner swaps in
+/// the finding's per-spec canary before the harness runs so the polluted
+/// property name matches the trap the harness installed from `NYX_CANARY`
+/// and the oracle's per-spec match.  A cheap no-op for the vast majority of
+/// payloads — those that never mention the placeholder return their input
+/// buffer unchanged without reallocating.
+fn substitute_canary_bytes(bytes: Vec<u8>, canary: &str) -> Vec<u8> {
+    let needle = Canary::PLACEHOLDER.as_bytes();
+    if needle.is_empty()
+        || needle.len() > bytes.len()
+        || !bytes.windows(needle.len()).any(|w| w == needle)
+    {
+        return bytes;
+    }
+    let repl = canary.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(needle) {
+            out.extend_from_slice(repl);
+            i += needle.len();
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Generate a random 16-character hex nonce for OOB callback tracking.

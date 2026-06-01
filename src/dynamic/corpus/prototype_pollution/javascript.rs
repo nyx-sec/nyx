@@ -22,9 +22,9 @@
 //! in the payload bytes.
 
 use super::super::{CuratedPayload, Oracle, PayloadProvenance, PayloadRef};
-use crate::dynamic::oracle::ProbePredicate;
+use crate::dynamic::oracle::{Canary, ProbePredicate};
 
-const CANARY: &str = "__nyx_canary";
+const CANARY: &str = Canary::PLACEHOLDER;
 
 pub const PAYLOADS: &[CuratedPayload] = &[
     CuratedPayload {

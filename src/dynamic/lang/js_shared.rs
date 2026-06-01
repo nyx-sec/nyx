@@ -2635,7 +2635,13 @@ pub fn emit_prototype_pollution_harness(_spec: &HarnessSpec) -> HarnessSource {
         r#"// Nyx dynamic harness — PROTOTYPE_POLLUTION canary trap (Phase 10 / Track J.8).
 {shim}
 
-const NYX_PP_CANARY = '__nyx_canary';
+// Per-spec canary (Phase 30 / Track N.0): the runner derives a
+// cryptographically-random, per-`spec_hash` canary and passes it in via
+// NYX_CANARY, substituting the same value into the payload bytes and the
+// oracle match.  The '__nyx_canary' fallback keeps this source a
+// deterministic function of the spec (cache-safe) and preserves the
+// legacy behaviour for any path that does not set the env var.
+const NYX_PP_CANARY = process.env.NYX_CANARY || '__nyx_canary';
 
 function nyxPrototypePollutionProbe(value) {{
   const p = process.env.NYX_PROBE_PATH;

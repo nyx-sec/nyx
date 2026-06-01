@@ -342,10 +342,15 @@ pub enum ProbePredicate {
     /// [`Self::RedirectHostNotIn`] — evaluated across every drained
     /// probe rather than against a single record.
     PrototypeCanaryTouched {
-        /// Canary property name the harness installed on
-        /// `Object.prototype` (typically `"__nyx_canary"`).  Compared
-        /// case-sensitively against
+        /// Canary property name, compared case-sensitively against
         /// [`ProbeKind::PrototypePollution::property`].
+        ///
+        /// The const corpus stores only [`Canary::PLACEHOLDER`] here; at
+        /// run time [`oracle_fired_full`] is handed the per-spec
+        /// [`Canary`] the runner substituted into the payload bytes and
+        /// the harness's `NYX_CANARY` environment, and matches against
+        /// that instead — so this field is the low-entropy placeholder,
+        /// never the value actually compared in production.
         canary: &'static str,
     },
     /// Phase 11 (Track J.9): CRYPTO weak-key entropy predicate.
@@ -521,12 +526,43 @@ pub fn oracle_fired(oracle: &Oracle, outcome: &SandboxOutcome, probes: &[SinkPro
 /// scope.  See [`Oracle::StubEvent`] for the semantics of the new
 /// branch and [`ProbePredicate::StubEventMatches`] for the new
 /// `Oracle::SinkProbe` cross-cutting predicate.
-#[allow(deprecated)]
+///
+/// Thin wrapper over [`oracle_fired_full`] with no per-spec canary —
+/// every [`ProbePredicate::PrototypeCanaryTouched`] matches against the
+/// const corpus's stored [`Canary::PLACEHOLDER`] token.  Production
+/// callers in the runner use [`oracle_fired_full`] with the per-spec
+/// canary; this entry point is preserved for tests and pre-Phase-30
+/// callers.
 pub fn oracle_fired_with_stubs(
     oracle: &Oracle,
     outcome: &SandboxOutcome,
     probes: &[SinkProbe],
     stub_events: &[StubEvent],
+) -> bool {
+    oracle_fired_full(oracle, outcome, probes, stub_events, None)
+}
+
+/// Phase 30 (Track N.0): evaluate an oracle with the per-spec
+/// verification [`Canary`] threaded in.
+///
+/// When `canary` is `Some`, every
+/// [`ProbePredicate::PrototypeCanaryTouched`] matches the drained probe's
+/// `property` against the runtime canary the runner derived from the
+/// finding's `spec_hash` and substituted into the payload bytes + the
+/// harness's `NYX_CANARY` environment — rather than the const corpus's
+/// low-entropy [`Canary::PLACEHOLDER`] token.  Keying the match on a
+/// per-spec value means a probe record left over from one finding's run
+/// (or ambient harness output that happens to mention the historical
+/// `__nyx_canary` sentinel) can never satisfy a different finding's
+/// oracle.  `None` keeps the placeholder-match path for unit tests and
+/// any caller that has not derived a per-spec canary.
+#[allow(deprecated)]
+pub fn oracle_fired_full(
+    oracle: &Oracle,
+    outcome: &SandboxOutcome,
+    probes: &[SinkProbe],
+    stub_events: &[StubEvent],
+    canary: Option<&str>,
 ) -> bool {
     match oracle {
         Oracle::SinkProbe { predicates } => {
@@ -635,9 +671,9 @@ pub fn oracle_fired_with_stubs(
             // [`ProbeKind::PrototypePollution`] record whose
             // `property` matches the canary name.
             let canary_ok = cross.iter().all(|p| match p {
-                ProbePredicate::PrototypeCanaryTouched { canary } => {
-                    probes_satisfy_prototype_canary(probes, canary)
-                }
+                ProbePredicate::PrototypeCanaryTouched {
+                    canary: placeholder,
+                } => probes_satisfy_prototype_canary(probes, canary.unwrap_or(placeholder)),
                 _ => true,
             });
             if !canary_ok {
@@ -1210,6 +1246,140 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         | ProbeKind::OutboundNetwork { .. }
         | ProbeKind::JsonParse { .. } => None,
     }
+}
+
+/// Per-spec verification canary (Phase 30 — Track N.0).
+///
+/// Tracks J.1–J.9 (phases 03–11) seeded their probe-based oracles with a
+/// single fixed sentinel string, `__nyx_canary`: the *same* low-entropy
+/// token appeared in every spec's payload bytes, every prototype-pollution
+/// harness's setter trap, and every
+/// [`ProbePredicate::PrototypeCanaryTouched`] in the const corpus.  A fixed
+/// token is wrong on three counts the plan calls out: it is (a) not
+/// cryptographically random, (b) not collision-resistant against ambient
+/// harness output (anything that prints `__nyx_canary` matches), and (c) not
+/// per-spec — a probe record left in a reused workdir from one finding's run
+/// could satisfy a different finding's oracle.
+///
+/// `Canary` replaces it with a value derived per finding from the finding's
+/// [`spec_hash`](crate::dynamic::spec::HarnessSpec::spec_hash) and a
+/// process-global run nonce.  The const corpus carries only the
+/// [`PLACEHOLDER`](Canary::PLACEHOLDER) token; the runner computes the real
+/// canary once per spec via [`generate`](Canary::generate) +
+/// [`render`](Canary::render) and substitutes it into (1) the payload bytes,
+/// (2) the harness's `NYX_CANARY` environment variable, and (3) the oracle
+/// match (threaded through [`oracle_fired_full`]).  All three agree on the
+/// same per-spec value at run time while the corpus source stays
+/// `const`-declarable.
+///
+/// The verdict never depends on the canary's *value* — only on whether the
+/// pollution reached it — so deriving it from a fresh run nonce does not
+/// break the engine's rerun-determinism contract (identical inputs still
+/// produce identical verdicts).
+pub struct Canary;
+
+impl Canary {
+    /// Placeholder token embedded in the const corpus: payload byte
+    /// literals, the `canary` field of
+    /// [`ProbePredicate::PrototypeCanaryTouched`], and the per-language
+    /// harness's `NYX_CANARY` fallback.  Substituted with a per-spec
+    /// [`render`](Canary::render)ed value at run time.
+    ///
+    /// Kept byte-for-byte equal to the historical `__nyx_canary` sentinel so
+    /// legacy fixtures, the harness env fallback, and the colocated unit
+    /// tests that exercise the placeholder-match path keep resolving.  The
+    /// Phase 30 audit (`tests/oracle_canary_audit.rs`) asserts every
+    /// canary-bearing predicate in the corpus uses exactly this constant, so
+    /// a new ad-hoc literal fails the build.
+    pub const PLACEHOLDER: &'static str = "__nyx_canary";
+
+    /// Bits of entropy a [`render`](Canary::render)ed canary carries.
+    ///
+    /// [`generate`](Canary::generate) returns 32 bytes and `render` encodes
+    /// every byte, so a rendered canary is 256 bits — comfortably above the
+    /// 128-bit floor the Phase 30 audit enforces.
+    pub const ENTROPY_BITS: u32 = 256;
+
+    /// Derive a 32-byte canary for the finding identified by `spec_hash`.
+    ///
+    /// `BLAKE3("nyx.dynamic.canary.v1" ‖ run_nonce ‖ spec_hash)`.  The
+    /// [`run_nonce`] is a process-global value seeded once from the OS
+    /// CSPRNG (mixed with time + pid as a fallback), so two runs of the same
+    /// spec draw different canaries and a stale probe record cannot satisfy a
+    /// later run.  Keying on `spec_hash` gives every finding in a single run
+    /// a distinct canary, so one finding's canary can never collide with
+    /// another's.  Deterministic within a process — the audit relies on this.
+    pub fn generate(spec_hash: &str) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(b"nyx.dynamic.canary.v1\0");
+        h.update(&run_nonce());
+        h.update(b"\0");
+        h.update(spec_hash.as_bytes());
+        *h.finalize().as_bytes()
+    }
+
+    /// Render a generated canary as a 64-character lowercase-hex token.
+    ///
+    /// Hex keeps the canary safe to embed verbatim as a JSON object key, a
+    /// JavaScript property name, and a header / filter token without
+    /// escaping.  Every byte is encoded, so the token carries the full
+    /// [`ENTROPY_BITS`](Canary::ENTROPY_BITS).
+    pub fn render(bytes: &[u8; 32]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+            s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap());
+        }
+        s
+    }
+
+    /// Convenience: the per-spec canary already rendered to its run-time
+    /// string form.  Equivalent to `render(&generate(spec_hash))`.
+    pub fn for_spec(spec_hash: &str) -> String {
+        Self::render(&Self::generate(spec_hash))
+    }
+}
+
+/// Process-global run nonce backing [`Canary::generate`].
+///
+/// Seeded once, lazily, from the OS CSPRNG (`/dev/urandom` on Unix) mixed
+/// with the wall clock, pid, and a counter so the value is fresh per process
+/// but stable within it.  The fallback mixing guarantees a non-repeating seed
+/// even when no CSPRNG source is reachable.
+fn run_nonce() -> [u8; 32] {
+    use std::sync::OnceLock;
+    static RUN_NONCE: OnceLock<[u8; 32]> = OnceLock::new();
+    *RUN_NONCE.get_or_init(|| {
+        let mut h = blake3::Hasher::new();
+        h.update(b"nyx.dynamic.run_nonce.v1\0");
+        let mut os = [0u8; 32];
+        if read_os_entropy(&mut os) {
+            h.update(&os);
+        }
+        // Always mix time + pid + a counter so a missing or blocked CSPRNG
+        // still yields a fresh, non-repeating seed.
+        if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            h.update(&d.as_nanos().to_le_bytes());
+        }
+        h.update(&(std::process::id() as u64).to_le_bytes());
+        static CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let c = CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        h.update(&c.to_le_bytes());
+        *h.finalize().as_bytes()
+    })
+}
+
+/// Fill `buf` from the OS CSPRNG.  Returns `false` (caller falls back to the
+/// time + pid mixing) when no source is available on the platform.
+fn read_os_entropy(buf: &mut [u8]) -> bool {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            return f.read_exact(buf).is_ok();
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1828,5 +1998,94 @@ mod tests {
         // predicate even if the shim emitted both for the same payload.
         let probes = vec![header_emit_probe("Set-Cookie", "noise")];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    // ── Phase 30 (Track N.0): per-spec canary ───────────────────────────
+
+    #[test]
+    fn canary_generate_is_deterministic_within_process() {
+        let a = Canary::generate("deadbeefcafe0001");
+        let b = Canary::generate("deadbeefcafe0001");
+        assert_eq!(a, b, "same spec_hash must yield the same canary in-process");
+        assert_eq!(Canary::for_spec("h"), Canary::for_spec("h"));
+    }
+
+    #[test]
+    fn canary_render_is_64_lowercase_hex() {
+        let bytes = Canary::generate("spec-hash-xyz");
+        assert_eq!(bytes.len(), 32, "canary is 32 bytes / 256 bits");
+        let r = Canary::render(&bytes);
+        assert_eq!(r.len(), 64, "render encodes every byte as two hex digits");
+        assert!(
+            r.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "render must be lowercase hex: {r}",
+        );
+        assert!(Canary::ENTROPY_BITS >= 128);
+        assert!(r.len() * 4 >= 128, "rendered canary clears the 128-bit floor");
+    }
+
+    #[test]
+    fn canary_distinct_spec_hashes_yield_distinct_canaries() {
+        assert_ne!(Canary::for_spec("aaaa"), Canary::for_spec("bbbb"));
+        // No collisions across a large sweep of distinct spec hashes:
+        // distinct findings always get distinct canaries.
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..4096u32 {
+            let sh = format!("{i:016x}");
+            assert!(
+                seen.insert(Canary::for_spec(&sh)),
+                "canary collision at spec_hash {sh}",
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_full_canary_override_matches_runtime_property_not_placeholder() {
+        // The corpus predicate stores only the placeholder; the runner
+        // supplies the per-spec canary.  A probe whose `property` is the
+        // runtime canary must fire under the override and NOT under the
+        // stale placeholder.
+        let runtime = Canary::for_spec("phase30-spec");
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::PrototypeCanaryTouched {
+                canary: Canary::PLACEHOLDER,
+            }],
+        };
+        let probes = vec![prototype_pollution_probe(&runtime, "pwned")];
+        // With the per-spec override: fires.
+        assert!(oracle_fired_full(
+            &oracle,
+            &outcome(),
+            &probes,
+            &[],
+            Some(&runtime),
+        ));
+        // Without an override (None): the predicate's placeholder does not
+        // match the runtime property, so it does NOT fire — proving a
+        // probe carrying the per-spec canary cannot satisfy a placeholder
+        // match, and vice-versa.
+        assert!(!oracle_fired_full(&oracle, &outcome(), &probes, &[], None));
+    }
+
+    #[test]
+    fn oracle_full_canary_override_rejects_stale_placeholder_probe() {
+        // A probe carrying the historical `__nyx_canary` sentinel (e.g.
+        // left over from a pre-Phase-30 run or ambient output) must NOT
+        // satisfy a run whose per-spec canary differs.
+        let runtime = Canary::for_spec("phase30-spec-2");
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::PrototypeCanaryTouched {
+                canary: Canary::PLACEHOLDER,
+            }],
+        };
+        let probes = vec![prototype_pollution_probe(Canary::PLACEHOLDER, "pwned")];
+        assert!(!oracle_fired_full(
+            &oracle,
+            &outcome(),
+            &probes,
+            &[],
+            Some(&runtime),
+        ));
     }
 }

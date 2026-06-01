@@ -326,9 +326,12 @@ pub enum ProbeKind {
     /// `PrototypePollution` probe.
     PrototypePollution {
         /// Property name the host attempted to set on
-        /// `Object.prototype` — always `"__nyx_canary"` for Phase 10
-        /// but parametrised so future per-sink canaries reuse the
-        /// kind without proliferating variants.
+        /// `Object.prototype`.  Pre-Phase-30 this was always the fixed
+        /// `"__nyx_canary"` sentinel; Phase 30 (Track N.0) feeds the
+        /// harness a per-spec [`crate::dynamic::oracle::Canary`] via the
+        /// `NYX_CANARY` environment variable, so this carries the
+        /// cryptographically-random per-finding token the trap was
+        /// installed under.
         property: String,
         /// Stringified value the host attempted to bind.  Echoed
         /// verbatim so repro tooling can pin the exact payload bytes
