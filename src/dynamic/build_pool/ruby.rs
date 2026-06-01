@@ -9,7 +9,10 @@
 //! compiled require-cache across findings.  Falls back to the legacy path when
 //! `bundle` is not runnable.
 
-use super::{BuildPool, PoolCompileResult, base_command, binary_runnable, pool_cache_dir};
+use super::{
+    BuildPool, PoolCompileResult, base_command, binary_runnable, combine_output, pool_cache_dir,
+    ruby_hermetic_env,
+};
 use std::path::Path;
 use std::time::Instant;
 
@@ -29,6 +32,10 @@ impl RubyPool {
     fn bundle(&self, workdir: &Path) -> std::process::Command {
         let mut cmd = base_command(&self.bundle_bin);
         cmd.current_dir(workdir);
+        // Writable gem target → no privilege escalation → never `sudo`.
+        for (k, v) in ruby_hermetic_env(workdir) {
+            cmd.env(k, v);
+        }
         if let Some(cache) = pool_cache_dir("ruby", "bootsnap") {
             cmd.env("BOOTSNAP_CACHE_DIR", cache);
         }
@@ -56,31 +63,16 @@ impl BuildPool for RubyPool {
             }
         }
 
-        let config = self
-            .bundle(workdir)
-            .args(["config", "set", "--local", "path", "vendor/bundle"])
-            .output();
-        match config {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                return PoolCompileResult {
-                    success: false,
-                    stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
-                    duration: start.elapsed(),
-                };
-            }
-            Err(e) => {
-                return PoolCompileResult {
-                    success: false,
-                    stderr: format!("ruby-pool: bundle config: {e}"),
-                    duration: start.elapsed(),
-                };
-            }
-        }
-
+        // The install target is pinned to a writable vendor dir via
+        // `ruby_hermetic_env` (GEM_HOME / BUNDLE_PATH), so the legacy
+        // `bundle config set --local path …` step is gone: it is 2.x-only
+        // syntax that no-ops on Bundler 1.x (leaving the target pointed at
+        // the root-owned system dir — the `sudo` root cause).  `--local`
+        // keeps the build offline: missing gems fail fast with a
+        // host-limitation error instead of reaching for the network.
         let install = self
             .bundle(workdir)
-            .args(["install", "--jobs", "4", "--retry", "2"])
+            .args(["install", "--local", "--jobs", "4", "--retry", "0"])
             .output();
         match install {
             Ok(o) if o.status.success() => PoolCompileResult {
@@ -90,7 +82,12 @@ impl BuildPool for RubyPool {
             },
             Ok(o) => PoolCompileResult {
                 success: false,
-                stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+                // Bundler prints its dependency-resolution diagnostics
+                // ("Could not find gem '…' in any of the gem sources …") to
+                // STDOUT, leaving only the RubyGems extension warning on
+                // stderr.  Combine both so the host-limitation classifier at
+                // the verify boundary can see the real reason.
+                stderr: combine_output(&o.stdout, &o.stderr),
                 duration: start.elapsed(),
             },
             Err(e) => PoolCompileResult {

@@ -146,6 +146,63 @@ pub(crate) fn base_command(bin: &str) -> Command {
     cmd
 }
 
+/// Hermetic Bundler / RubyGems environment pinned to a writable per-workdir
+/// vendor directory.
+///
+/// Points `GEM_HOME` and `BUNDLE_PATH` at `<workdir>/vendor/bundle` so every
+/// gem *install* lands in a directory the current user owns.  This is the
+/// load-bearing fix for the harness build invoking `sudo`: legacy Bundler
+/// (1.x) shells out to `sudo` when the install target — the root-owned system
+/// gem dir (`/Library/Ruby/Gems/...`) — is not writable, which then blocks on
+/// a terminal password prompt (`sudo: a terminal is required to read the
+/// password`).  With a writable target there is no privilege escalation and
+/// no prompt, ever.
+///
+/// `GEM_PATH` is deliberately left unset so RubyGems still includes the system
+/// gem path when *resolving* (paired with `BUNDLE_DISABLE_SHARED_GEMS=false`),
+/// letting an already-installed gem satisfy the Gemfile without a network
+/// fetch — while installs of missing gems still land in the writable vendor
+/// dir.  `BUNDLE_APP_CONFIG` keeps Bundler's per-project config writable and
+/// inside the workdir.
+///
+/// Returned as env pairs (not applied to a `Command` here) so both the pooled
+/// path ([`ruby::RubyPool`]) and the legacy direct-spawn path
+/// ([`crate::dynamic::build_sandbox`]) layer them on identically.  Setting
+/// these env vars is Bundler-version-agnostic: 1.x and 2.x both honour
+/// `BUNDLE_*` / `GEM_*`, unlike the 2.x-only `bundle config set` CLI the old
+/// path relied on (which is a silent no-op on 1.x, leaving the install target
+/// pointed at the system dir — the original root cause).
+pub(crate) fn ruby_hermetic_env(workdir: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
+    let gem_dir = workdir.join("vendor").join("bundle");
+    let _ = std::fs::create_dir_all(&gem_dir);
+    vec![
+        ("GEM_HOME", gem_dir.clone().into_os_string()),
+        ("BUNDLE_PATH", gem_dir.into_os_string()),
+        ("BUNDLE_DISABLE_SHARED_GEMS", "false".into()),
+        ("BUNDLE_FROZEN", "false".into()),
+        (
+            "BUNDLE_APP_CONFIG",
+            workdir.join(".bundle").into_os_string(),
+        ),
+    ]
+}
+
+/// Merge a process's stdout and stderr into one diagnostic blob.
+///
+/// Some build tools split their failure diagnostics across streams — Bundler
+/// in particular prints "Could not find gem …" to stdout while only an
+/// unrelated RubyGems extension warning lands on stderr.  Capturing both keeps
+/// the downstream host-limitation classifier from missing the real reason.
+pub(crate) fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout);
+    let err = String::from_utf8_lossy(stderr);
+    match (out.trim().is_empty(), err.trim().is_empty()) {
+        (true, _) => err.into_owned(),
+        (false, true) => out.into_owned(),
+        (false, false) => format!("{out}\n{err}"),
+    }
+}
+
 /// Detect a runnable `ccache` binary (honouring `NYX_CCACHE_BIN`).  Shared
 /// by the C and C++ pools to front their compiler with the shared object
 /// cache; `None` means "compile bare", preserving legacy parity.

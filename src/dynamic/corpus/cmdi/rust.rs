@@ -9,9 +9,9 @@ use super::super::{CuratedPayload, Oracle, PayloadProvenance, PayloadRef};
 
 pub const PAYLOADS: &[CuratedPayload] = &[
     CuratedPayload {
-        bytes: b"; echo NYX_PWN_CMDI",
+        bytes: b":; echo NYX_PWN_$((113*7))_CMDI",
         label: "cmdi-echo-marker",
-        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
+        oracle: Oracle::OutputContains("NYX_PWN_791_CMDI"),
         is_benign: false,
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 1,
@@ -31,7 +31,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
     CuratedPayload {
         bytes: b"benign_safe_cmdi_NYX_BENIGN",
         label: "cmdi-benign",
-        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
+        oracle: Oracle::OutputContains("NYX_PWN_791_CMDI"),
         is_benign: true,
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 4,

@@ -462,20 +462,29 @@ fn format_spec_scoring_detail(
     detail
 }
 
-/// True when the finding has *some* derivable signal (rule namespace, sink
-/// caps, or evidence) so a spec-derivation failure should be surfaced as
+/// True when the finding has *some* derivable signal (rule namespace or a
+/// drivable taint flow) so a spec-derivation failure should be surfaced as
 /// `Inconclusive` rather than `Unsupported`.
+///
+/// A finding with neither a non-zero sink capability nor any flow steps has no
+/// dynamic model at all: there is no cap to select a payload corpus / oracle
+/// and no flow to drive.  This is the shape of the structural CFG / state
+/// rules (`cfg-unguarded-sink`, `cfg-resource-leak`, `state-unauthed-access`,
+/// `state-resource-leak`, `cfg-error-fallthrough`), which carry a sink span
+/// but zero cap bits.  A bare sink span is therefore *not* treated as
+/// "derivation should have worked" — such findings route to `Unsupported`
+/// (a non-engine outcome), not engine-`Inconclusive(SpecDerivationFailed)`.
 fn should_be_inconclusive(diag: &Diag) -> bool {
     let has_rule_ns = diag.id.split('.').count() >= 2
         && !diag.id.starts_with("taint-")
         && !diag.id.starts_with("cfg-")
         && !diag.id.starts_with("state-");
-    let has_evidence = diag
+    let has_drivable_evidence = diag
         .evidence
         .as_ref()
-        .map(|e| e.sink_caps != 0 || !e.flow_steps.is_empty() || e.sink.is_some())
+        .map(|e| e.sink_caps != 0 || !e.flow_steps.is_empty())
         .unwrap_or(false);
-    has_rule_ns || has_evidence
+    has_rule_ns || has_drivable_evidence
 }
 
 fn derivation_failure_hint(diag: &Diag) -> String {
@@ -499,6 +508,96 @@ fn derivation_failure_hint(diag: &Diag) -> String {
         parts.push(format!("path={}", diag.path));
     }
     parts.join("; ")
+}
+
+/// True when a build / runtime-load failure's stderr indicates a genuinely
+/// absent host dependency or toolchain rather than a defect in the harness
+/// the engine emitted.
+///
+/// These are host limitations — the dynamic verifier cannot run *this* finding
+/// on *this* host because a framework gem / Python module / npm package is not
+/// installed and could not be resolved offline, a top-level `require` /
+/// `import` / `use` failed at load time (`NYX_IMPORT_ERROR:`), or the language
+/// interpreter / compiler itself is missing.  The verdict routes to
+/// `Unsupported(LangUnsupported)` so the operator sees "not verifiable on this
+/// host", not engine-`Inconclusive(BuildFailed)`.
+///
+/// The needles are deliberately specific to dependency-resolution / load
+/// failures: a malformed emitted harness produces compiler / syntax errors
+/// (`error[E…]`, `SyntaxError`, …) that match none of these and stay
+/// `Inconclusive(BuildFailed)`, preserving visibility of real engine defects.
+fn build_failure_is_host_limitation(stderr: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        // Top-level require/import/use failure emitted by the per-language
+        // harness preambles (js_shared / ruby / php / python) with exit 77.
+        "NYX_IMPORT_ERROR:",
+        // Python: missing module / offline pip resolution miss.
+        "No module named",
+        "ModuleNotFoundError",
+        "No matching distribution found",
+        "Could not find a version that satisfies",
+        // Ruby / Bundler: gem not installed / not resolvable offline.
+        "Could not find gem",
+        "Bundler::GemNotFound",
+        "in any of the sources",
+        "Could not find ", // bundler: "Could not find X-1.2.3 in locally installed gems"
+        // Node: missing package.
+        "Cannot find module",
+        "ERR_MODULE_NOT_FOUND",
+        // Generic missing-toolchain signatures.
+        "command not found",
+        "executable file not found",
+        "No such file or directory (os error 2)",
+    ];
+    if NEEDLES.iter().any(|n| stderr.contains(n)) {
+        return true;
+    }
+    // Java / Kotlin: an `import` of a framework package that is not on the
+    // host classpath produces `error: package <pkg> does not exist`.  Offline
+    // and without the dependency JAR (e.g. Spring on a bare host), that is a
+    // host limitation, not an emitter defect.
+    if stderr.contains("does not exist") && stderr.contains("package ") {
+        return true;
+    }
+    false
+}
+
+/// True when a C / C++ harness build failure proves the emitter could not
+/// bind a standalone driver to the *resolved entry symbol*, as opposed to a
+/// fixable defect in otherwise-supported emitted code.
+///
+/// The compiler-native languages embed the fixture via `#include "entry.c"`
+/// and provide their own `main`.  When the taint sink's enclosing function is
+/// an ordinary (non-`main`) symbol inside a file that *also* defines `main`,
+/// the harness `main` collides with the fixture's (`redefinition of 'main'`),
+/// or the resolved symbol's arity / signature matches no driveable shape
+/// (`too many/few arguments to function call`, `conflicting types for`).
+/// These are structural properties of the source — the entry simply is not a
+/// driveable top-level shape for the signature-blind C emitter — so the
+/// verdict is `Unsupported(EntryKindUnsupported)`, not
+/// engine-`Inconclusive(BuildFailed)`.
+///
+/// Scoped to C / C++ so the interpreted / managed languages (whose build
+/// failures are dependency / toolchain issues handled by
+/// [`build_failure_is_host_limitation`]) are unaffected, and a genuine
+/// emitter regression in a *supported* shape still surfaces as
+/// `Inconclusive(BuildFailed)` (its diagnostics carry none of these
+/// entry-binding signatures).
+fn build_failure_is_undrivable_entry(lang: crate::symbol::Lang, stderr: &str) -> bool {
+    use crate::symbol::Lang;
+    if !matches!(lang, Lang::C | Lang::Cpp) {
+        return false;
+    }
+    const NEEDLES: &[&str] = &[
+        "redefinition of 'main'",
+        "redefinition of \u{2018}main\u{2019}", // gcc curly-quote variant
+        "too many arguments to function call",
+        "too few arguments to function call",
+        "too many arguments to function",       // gcc phrasing
+        "too few arguments to function",        // gcc phrasing
+        "conflicting types for",
+    ];
+    NEEDLES.iter().any(|n| stderr.contains(n))
 }
 
 /// Try to dynamically confirm a static finding.
@@ -1321,20 +1420,73 @@ fn build_verdict(
         Err(RunError::BuildFailed {
             stderr,
             attempts: build_att,
-        }) => VerifyResult {
-            finding_id: finding_id.to_owned(),
-            status: VerifyStatus::Inconclusive,
-            triggered_payload: None,
-            reason: None,
-            inconclusive_reason: Some(InconclusiveReason::BuildFailed),
-            detail: Some(format!("build failed after {build_att} attempts: {stderr}")),
-            attempts: vec![],
-            toolchain_match: None,
-            differential: None,
-            replay_stable: None,
-            wrong: None,
-            hardening_outcome: None,
-        },
+        }) => {
+            // A build / runtime-load failure caused by a genuinely-absent host
+            // dependency or toolchain (an offline dependency-resolution miss,
+            // a missing module / gem / package, a top-level import failure, a
+            // missing interpreter) is a host limitation, not a defect in the
+            // harness the engine emitted.  Such failures route to
+            // `Unsupported(LangUnsupported)` — a non-engine outcome — rather
+            // than `Inconclusive(BuildFailed)`, so the Inconclusive bucket
+            // stays reserved for failures the engine could plausibly fix.
+            // Real harness build defects (compiler errors, malformed emitted
+            // source) carry none of these signatures and stay `Inconclusive`.
+            if build_failure_is_host_limitation(&stderr) {
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::Unsupported,
+                    triggered_payload: None,
+                    reason: Some(UnsupportedReason::LangUnsupported),
+                    inconclusive_reason: None,
+                    detail: None,
+                    attempts: vec![],
+                    toolchain_match: None,
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
+                }
+            } else if build_failure_is_undrivable_entry(spec.lang, &stderr) {
+                // The toolchain is present and the emitted harness is
+                // well-formed, but it cannot bind a standalone driver to the
+                // resolved entry: the compiler-native langs (C / C++) reject
+                // the harness because the fixture defines its own `main` that
+                // collides with the harness `main`, or the entry's arity /
+                // signature matches no driveable shape.  That is an
+                // unsupported *entry shape* for this source, not a fixable
+                // engine defect — route to `Unsupported(EntryKindUnsupported)`
+                // rather than engine-`Inconclusive(BuildFailed)`.
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::Unsupported,
+                    triggered_payload: None,
+                    reason: Some(UnsupportedReason::EntryKindUnsupported),
+                    inconclusive_reason: None,
+                    detail: None,
+                    attempts: vec![],
+                    toolchain_match: None,
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
+                }
+            } else {
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::Inconclusive,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: Some(InconclusiveReason::BuildFailed),
+                    detail: Some(format!("build failed after {build_att} attempts: {stderr}")),
+                    attempts: vec![],
+                    toolchain_match: None,
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
+                }
+            }
+        }
         Err(RunError::Sandbox(e)) => VerifyResult {
             finding_id: finding_id.to_owned(),
             status: VerifyStatus::Inconclusive,

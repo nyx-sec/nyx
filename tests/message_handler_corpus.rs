@@ -1175,9 +1175,11 @@ mod e2e_phase_20 {
     }
 
     /// Python kafka vuln must Confirm: the synthetic Kafka loopback
-    /// delivers `; echo NYX_PWN_CMDI` to the handler's `os.system`
-    /// which prints `NYX_PWN_CMDI` to stdout and the differential
-    /// oracle reads it.
+    /// delivers `; echo NYX_PWN_$((113*7))_CMDI` to the handler's
+    /// `os.system`, which *executes* the injected `echo` and prints the
+    /// computed marker `NYX_PWN_791_CMDI` to stdout (corpus v16 — a benign
+    /// `shlex.quote` handler echoes the literal payload and never yields the
+    /// marker), and the differential oracle reads it.
     #[test]
     fn kafka_python_vuln_confirms_via_run_spec() {
         let Some(outcome) = run(Lang::Python, "kafka_python", "vuln.py", "handler", "orders")

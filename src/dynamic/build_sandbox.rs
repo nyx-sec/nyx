@@ -21,7 +21,7 @@ use crate::dynamic::build_pool::php::PhpPool;
 use crate::dynamic::build_pool::python::PythonPool;
 use crate::dynamic::build_pool::ruby::RubyPool;
 use crate::dynamic::build_pool::rust::RustPool;
-use crate::dynamic::build_pool::{BuildPool, is_pool_enabled};
+use crate::dynamic::build_pool::{BuildPool, combine_output, is_pool_enabled, ruby_hermetic_env};
 use crate::dynamic::sandbox::ProcessHardeningProfile;
 use crate::dynamic::spec::HarnessSpec;
 use crate::symbol::Lang;
@@ -516,42 +516,47 @@ fn try_bundle_install(workdir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let config = Command::new(&bundle)
-        .args(["config", "set", "--local", "path", "vendor/bundle"])
-        .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .output()
-        .map_err(|e| format!("bundle config: {e}"))?;
-    if !config.status.success() {
-        return Err(String::from_utf8_lossy(&config.stderr).into_owned());
-    }
-
-    let output = Command::new(&bundle)
-        .args(["install", "--jobs", "4", "--retry", "2"])
-        .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
+    // No `bundle config set …` step: it is 2.x-only syntax that silently
+    // no-ops on Bundler 1.x, which then installs to the root-owned system gem
+    // dir and shells out to `sudo`.  `ruby_build_command` pins a writable
+    // install target via env (GEM_HOME / BUNDLE_PATH) on every Bundler
+    // version, and `--local` keeps the build offline so an absent gem fails
+    // fast with a host-limitation error rather than reaching the network.
+    let output = ruby_build_command(&bundle, workdir)
+        .args(["install", "--local", "--jobs", "4", "--retry", "0"])
         .output()
         .map_err(|e| format!("bundle install: {e}"))?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        // Bundler's resolution error ("Could not find gem …") goes to stdout;
+        // combine both streams so the host-limitation classifier sees it.
+        return Err(combine_output(&output.stdout, &output.stderr));
     }
     Ok(())
 }
 
 fn bundle_check(bundle: &str, workdir: &Path) -> Result<bool, String> {
-    let output = Command::new(bundle)
+    let output = ruby_build_command(bundle, workdir)
         .arg("check")
-        .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("bundle check: {e}"))?;
     Ok(output.status.success())
+}
+
+/// Build a Bundler/RubyGems `Command` with a scrubbed environment plus the
+/// hermetic gem env from [`ruby_hermetic_env`] (writable `GEM_HOME` /
+/// `BUNDLE_PATH`).  This is the legacy direct-spawn sibling of
+/// [`crate::dynamic::build_pool::ruby::RubyPool::bundle`]; both guarantee the
+/// Ruby harness build never invokes `sudo` and never touches the network.
+fn ruby_build_command(bundle: &str, workdir: &Path) -> Command {
+    let mut cmd = Command::new(bundle);
+    cmd.current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default());
+    for (k, v) in ruby_hermetic_env(workdir) {
+        cmd.env(k, v);
+    }
+    cmd
 }
 
 fn restore_cached_ruby_bundle(cache_path: &Path, workdir: &Path) {

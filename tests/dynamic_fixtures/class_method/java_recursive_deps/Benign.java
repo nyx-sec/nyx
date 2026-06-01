@@ -2,7 +2,7 @@
 public class Benign {
     public static class ShellRunner {
         public String run(String command) {
-            return command.replace("NYX_PWN_CMDI", "");
+            return command.replace("NYX_PWN", "");
         }
     }
 

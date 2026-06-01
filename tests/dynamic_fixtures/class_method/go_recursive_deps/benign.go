@@ -6,7 +6,7 @@ import "strings"
 type ShellRunner struct{}
 
 func (ShellRunner) Run(command string) string {
-	return strings.ReplaceAll(command, "NYX_PWN_CMDI", "")
+	return strings.ReplaceAll(command, "NYX_PWN", "")
 }
 
 type UserRepository struct {

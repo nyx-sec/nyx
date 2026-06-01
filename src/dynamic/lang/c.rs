@@ -58,6 +58,10 @@ pub enum CShape {
     /// libFuzzer-style: `int LLVMFuzzerTestOneInput(const uint8_t *data,
     /// size_t size)`.  Harness invokes with `payload` bytes + length.
     LibfuzzerEntry,
+    /// `int main(void)` / `int main()`.  A no-argument program entry: the
+    /// harness invokes it with no arguments (calling it with `(argc, argv)`
+    /// is a "too many arguments to function call" compile error).
+    MainVoid,
     /// Free function with `(const char *, size_t)` or `(const char *)`
     /// signature.  Harness invokes directly.
     FreeFn,
@@ -80,6 +84,12 @@ impl CShape {
         if has_libfuzzer {
             return Self::LibfuzzerEntry;
         }
+        // A `main(void)` / `main()` entry takes no argv; invoking it with
+        // `(argc, argv)` is a compile error.  Route it to MainVoid so the
+        // harness calls it with no arguments.
+        if entry == "main" && main_takes_no_args(source) {
+            return Self::MainVoid;
+        }
         if entry == "main" || has_main_argv {
             return Self::MainArgv;
         }
@@ -89,6 +99,13 @@ impl CShape {
             _ => Self::FreeFn,
         }
     }
+}
+
+/// True when `source` declares a no-argument `main` (`int main(void)` or
+/// `int main()`), tolerating arbitrary internal whitespace.
+fn main_takes_no_args(source: &str) -> bool {
+    let compact: String = source.split_whitespace().collect();
+    compact.contains("main(void)") || compact.contains("main()")
 }
 
 /// Public wrapper: detect the shape for a finalised `HarnessSpec`, reading
@@ -858,6 +875,11 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
                 "    {entry_fn}((const uint8_t *)payload, strlen(payload));\n",
                 entry_fn = entry_fn,
             )
+        }
+        CShape::MainVoid => {
+            // `int main(void)` / `int main()` — renamed to `__nyx_entry_main`
+            // by the include guards; invoke with no arguments.
+            format!("    (void)payload;\n    {entry_fn}();\n")
         }
         CShape::MainArgv => {
             // Heap-allocate `new_argv` so a future `PayloadSlot::Argv(n)` with

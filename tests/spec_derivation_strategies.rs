@@ -110,7 +110,9 @@ mod spec_strategies {
         let spec = HarnessSpec::from_finding(&diag).expect("flow_steps strategy must succeed");
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
         assert_eq!(spec.entry_name, "handle_request");
-        assert_eq!(spec.expected_cap, Cap::SHELL_ESCAPE);
+        // cmdi sink cap `SHELL_ESCAPE` remaps to the driveable `CODE_EXEC` (the
+        // cap the dynamic corpus keys its command-injection oracle under).
+        assert_eq!(spec.expected_cap, Cap::CODE_EXEC);
     }
 
     // ── Strategy 2: FromRuleNamespace ────────────────────────────────────────
@@ -129,7 +131,8 @@ mod spec_strategies {
 
         let spec = HarnessSpec::from_finding(&diag).expect("rule-namespace strategy must succeed");
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
-        assert_eq!(spec.expected_cap, Cap::SHELL_ESCAPE);
+        // cmdi sink cap `SHELL_ESCAPE` remaps to the driveable `CODE_EXEC`.
+        assert_eq!(spec.expected_cap, Cap::CODE_EXEC);
         assert_eq!(spec.toolchain_id, "python-3");
     }
 

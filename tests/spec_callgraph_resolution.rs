@@ -176,7 +176,15 @@ fn assert_callgraph_rewrites_entry(
         "callgraph walk must classify the entry as HttpRoute; got {:?}",
         spec.entry_kind
     );
-    assert_eq!(spec.expected_cap, cap);
+    // Command injection's static sink cap `SHELL_ESCAPE` is remapped at spec
+    // derivation to the driveable `CODE_EXEC` (the cap the dynamic corpus keys
+    // its cmdi oracle under); every other cap passes through unchanged.
+    let expected_drivable = if cap == Cap::SHELL_ESCAPE {
+        Cap::CODE_EXEC
+    } else {
+        cap
+    };
+    assert_eq!(spec.expected_cap, expected_drivable);
     let _ = analysis; // accepted but not asserted on here.
 }
 

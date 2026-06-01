@@ -585,9 +585,6 @@ fn derive_from_flow_steps(
     if evidence.flow_steps.is_empty() {
         return None;
     }
-    let entry = outermost_entry(&evidence.flow_steps)?;
-
-    let lang = lang_from_path(&entry.file)?;
     let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
     if expected_cap.is_empty() {
         return None;
@@ -601,10 +598,38 @@ fn derive_from_flow_steps(
         .map(|s| (s.file.clone(), s.line))
         .unwrap_or_else(|| (diag.path.clone(), diag.line as u32));
 
+    // Entry resolution, in descending fidelity:
+    //   1. the outermost `Source` step that carries a function annotation
+    //      (the original behaviour — the outermost callable receiving input),
+    //   2. the first flow step carrying *any* function annotation — covers the
+    //      generic `taint-unsanitised-flow` shape whose flow begins at a `Call`
+    //      / assignment step rather than a `Source` step, so it has no
+    //      `Source`-kind step yet still names the enclosing function,
+    //   3. the enclosing function resolved from the sink's AST span, and
+    //   4. the `<unknown>` placeholder, which the per-language emitters route
+    //      to a synthetic direct-sink harness.
+    // The sink location plus a non-empty cap is enough to drive verification,
+    // so a missing `Source` step no longer aborts derivation.
+    let entry = outermost_entry(&evidence.flow_steps)
+        .or_else(|| first_annotated_entry(&evidence.flow_steps));
+    let (entry_file, entry_name) = match entry {
+        Some(e) => (e.file, e.function),
+        None => {
+            let name = lang_from_path(&sink_file)
+                .and_then(|l| {
+                    resolve_enclosing_function_via_ast(&sink_file, sink_line as usize, l)
+                })
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            (sink_file.clone(), name)
+        }
+    };
+
+    let lang = lang_from_path(&entry_file).or_else(|| lang_from_path(&sink_file))?;
+
     Some(finalize_spec(
         diag,
-        entry.file,
-        entry.function,
+        entry_file,
+        entry_name,
         lang,
         expected_cap,
         sink_file,
@@ -612,6 +637,26 @@ fn derive_from_flow_steps(
         SpecDerivationStrategy::FromFlowSteps,
         summaries,
     ))
+}
+
+/// Return an [`EntryRef`] for the first flow step that carries a non-empty
+/// `function` annotation, regardless of its [`FlowStepKind`].
+///
+/// Unlike [`outermost_entry`] (which requires a `Source`-kind step), this
+/// recovers an entry from flows that begin at a `Call` / assignment step —
+/// the common shape for the generic `taint-unsanitised-flow` rule, whose
+/// steps are annotated with the enclosing function but include no explicit
+/// `Source` step.
+fn first_annotated_entry(steps: &[crate::evidence::FlowStep]) -> Option<EntryRef> {
+    steps.iter().find_map(|s| {
+        s.function
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .map(|f| EntryRef {
+                file: s.file.clone(),
+                function: f.clone(),
+            })
+    })
 }
 
 // ── Strategy 2: from rule namespace + sink evidence ──────────────────────────
@@ -1490,6 +1535,15 @@ fn function_node_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
     {
         return Some(text.to_owned());
     }
+    // C / C++ expose the function name inside the `declarator` subtree
+    // (`function_definition` -> `function_declarator` -> `identifier`), not a
+    // `name` field, so the direct-child scan below misses it.  Descend the
+    // declarator chain first.
+    if let Some(decl) = node.child_by_field_name("declarator")
+        && let Some(name) = declarator_name(decl, bytes)
+    {
+        return Some(name);
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
@@ -1497,6 +1551,40 @@ fn function_node_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
             || kind == "name"
             || kind == "field_identifier"
             || kind.ends_with("_identifier"))
+            && let Ok(text) = child.utf8_text(bytes)
+            && !text.is_empty()
+        {
+            return Some(text.to_owned());
+        }
+    }
+    None
+}
+
+/// Follow a C / C++ declarator chain (`pointer_declarator`,
+/// `function_declarator`, `parenthesized_declarator`, `array_declarator`, …)
+/// down to the leaf identifier — the declared function name.
+fn declarator_name(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    let mut cur = node;
+    loop {
+        let kind = cur.kind();
+        if kind == "identifier" || kind == "field_identifier" || kind == "type_identifier" {
+            return cur
+                .utf8_text(bytes)
+                .ok()
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_owned());
+        }
+        match cur.child_by_field_name("declarator") {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    // Leaf was not reached via the `declarator` field (e.g. an inner
+    // `parenthesized_declarator`); scan immediate children for the identifier.
+    let mut cursor = cur.walk();
+    for child in cur.children(&mut cursor) {
+        let kind = child.kind();
+        if (kind == "identifier" || kind == "field_identifier")
             && let Ok(text) = child.utf8_text(bytes)
             && !text.is_empty()
         {
@@ -1594,6 +1682,32 @@ fn cap_for_rule_category(category: &str) -> Option<Cap> {
     }
 }
 
+/// Remap a static *sink* capability onto the capability the dynamic corpus
+/// keys its payload set + sound oracle under.
+///
+/// The static taint engine tags a shell command-injection sink with
+/// [`Cap::SHELL_ESCAPE`] — the "data reaches a shell context" property — but
+/// the dynamic corpus keys the command-injection oracle and every cmdi payload
+/// under [`Cap::CODE_EXEC`] (see [`crate::dynamic::corpus::registry`]).  Left
+/// unmapped, every command-injection finding derives a spec whose cap has no
+/// oracle and routes to `Unsupported(SoundOracleUnavailable)` instead of being
+/// executed — historically the single largest "unsupported" class.
+///
+/// `SHELL_ESCAPE` on a *sink* is always command injection, so swapping it for
+/// `CODE_EXEC` is sound now that the cmdi oracle is collision-resistant
+/// (corpus v16: the marker is produced only by executing the injected command,
+/// not by a sink that safely echoes the quoted payload — so a benign
+/// `os.system("echo " + shlex.quote(x))` control no longer false-confirms).
+/// Other set bits are preserved so a multi-cap sink keeps its other
+/// (already-driveable) capabilities.
+fn drivable_expected_cap(cap: Cap) -> Cap {
+    if cap.contains(Cap::SHELL_ESCAPE) {
+        (cap - Cap::SHELL_ESCAPE) | Cap::CODE_EXEC
+    } else {
+        cap
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_spec(
     diag: &Diag,
@@ -1606,6 +1720,10 @@ fn finalize_spec(
     derivation: SpecDerivationStrategy,
     summaries: Option<&GlobalSummaries>,
 ) -> HarnessSpec {
+    // Drive the finding against the cap the corpus actually keys an oracle
+    // under (command injection: SHELL_ESCAPE -> CODE_EXEC) instead of routing
+    // to `Unsupported(SoundOracleUnavailable)`.
+    let expected_cap = drivable_expected_cap(expected_cap);
     let toolchain_id = default_toolchain_id(lang).to_owned();
     let stubs_required = StubKind::for_cap(expected_cap);
     let mut spec = HarnessSpec {
@@ -2360,7 +2478,8 @@ mod tests {
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
         assert_eq!(spec.lang, Lang::Python);
-        assert_eq!(spec.expected_cap, Cap::SHELL_ESCAPE);
+        // cmdi sink cap `SHELL_ESCAPE` remaps to the driveable `CODE_EXEC`.
+        assert_eq!(spec.expected_cap, Cap::CODE_EXEC);
         assert_eq!(spec.entry_file, "app/handler.py");
         assert_eq!(spec.sink_line, 12);
     }
@@ -2372,6 +2491,24 @@ mod tests {
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
         assert_eq!(spec.lang, Lang::Java);
         assert_eq!(spec.expected_cap, Cap::DESERIALIZE);
+    }
+
+    #[test]
+    fn drivable_expected_cap_remaps_shell_escape_to_code_exec() {
+        // Command injection: the oracle + payloads live under `CODE_EXEC`,
+        // while the static engine tags cmdi sinks `SHELL_ESCAPE` (which has no
+        // sound oracle of its own).  The remap routes cmdi findings to the real
+        // (collision-resistant, corpus v16) oracle instead of
+        // `SoundOracleUnavailable`.
+        assert_eq!(drivable_expected_cap(Cap::SHELL_ESCAPE), Cap::CODE_EXEC);
+        // Multi-cap sinks keep their other (already-driveable) bits.
+        assert_eq!(
+            drivable_expected_cap(Cap::SHELL_ESCAPE | Cap::FILE_IO),
+            Cap::CODE_EXEC | Cap::FILE_IO
+        );
+        // Caps without SHELL_ESCAPE pass through untouched.
+        assert_eq!(drivable_expected_cap(Cap::SQL_QUERY), Cap::SQL_QUERY);
+        assert_eq!(drivable_expected_cap(Cap::CODE_EXEC), Cap::CODE_EXEC);
     }
 
     #[test]
@@ -2668,6 +2805,16 @@ mod tests {
         // name comes from the flow_steps annotation, the summary is found
         // by `(lang, name)` lookup filtered by file_path, and the spec
         // picks `tainted_sink_params[0]` as the payload slot.
+        //
+        // The evidence intentionally carries `sink_caps = 0`: this is the
+        // scenario `func_summary_auto` exists for — recovering the cap (and
+        // the tainted-param slot) from the summary when the finding's own
+        // flow evidence lacks them.  With a zero evidence cap, `FromFlowSteps`
+        // bails (it requires a non-empty cap), so `FromFuncSummaryWalk` is the
+        // strategy that supplies the cap and wins.  (When the evidence *does*
+        // carry a cap, `FromFlowSteps` derives the same enclosing-function
+        // entry directly and outranks the summary walk per the precedence
+        // ladder — that path is covered by the flow-steps tests.)
         use crate::labels::Cap;
         use crate::symbol::FuncKey;
         let mut gs = GlobalSummaries::new();
@@ -2684,7 +2831,7 @@ mod tests {
 
         let ev = Evidence {
             flow_steps: vec![sink_only_step_with_function("app/handler.py", "do_request")],
-            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            sink_caps: 0,
             ..Default::default()
         };
         let diag = crate::commands::scan::Diag {

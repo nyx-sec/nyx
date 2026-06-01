@@ -103,7 +103,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 13      | 2026-05-18 | Phase 09 / Track J.7: `OPEN_REDIRECT` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::Redirect` + `ProbePredicate::RedirectHostNotIn`; per-lang `sendRedirect` / `redirect()` shims |
 /// | 14      | 2026-05-18 | Phase 10 / Track J.8: `PROTOTYPE_POLLUTION` cap lit for JS / TS; `ProbeKind::PrototypePollution` + `ProbePredicate::PrototypeCanaryTouched`; Node harness installs `Proxy`-style canary trap on `Object.prototype.__nyx_canary` |
 /// | 15      | 2026-05-18 | Phase 11 / Track J.9: `CRYPTO` (Java/Python/PHP/Go/Rust) + `JSON_PARSE` (JS/Python/Ruby) + `UNAUTHORIZED_ID` (7 langs) + `DATA_EXFIL` (7 langs); `ProbeKind::{WeakKey,IdorAccess,OutboundNetwork}` + `ProbePredicate::{WeakKeyEntropy,IdorBoundaryCrossed,OutboundHostNotIn}`; `UnsupportedReason::SoundOracleUnavailable` for caps with no sound oracle |
-pub const CORPUS_VERSION: u32 = 15;
+/// | 16      | 2026-06-01 | Collision-resistant `cmdi` (`CODE_EXEC`) marker: payload `; echo NYX_PWN_$((113*7))_CMDI`, oracle `OutputContains("NYX_PWN_791_CMDI")`. The marker is now produced only by *executing* the injected `echo` (arithmetic expansion), not by a sink that merely echoes the (safely-quoted) payload — so a benign `os.system("echo " + shlex.quote(x))` control no longer false-confirms. Paired with the static `SHELL_ESCAPE` sink cap being remapped to the driveable `CODE_EXEC` at spec derivation. |
+pub const CORPUS_VERSION: u32 = 16;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

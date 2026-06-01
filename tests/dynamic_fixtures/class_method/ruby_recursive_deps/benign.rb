@@ -1,7 +1,7 @@
 # Benign control for recursively constructed Ruby dependencies.
 class ShellRunner
   def run(command)
-    command.gsub('NYX_PWN_CMDI', '')
+    command.gsub('NYX_PWN', '')
   end
 end
 
