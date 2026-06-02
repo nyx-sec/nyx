@@ -2493,6 +2493,18 @@ fn local_is_param_derived<'a>(
             continue;
         }
         found_def = true;
+        // A `foreach` / `for-each` loop binding iterates collection
+        // *elements*, not a direct parameter pass-through.  Even when the
+        // iterable is a bare parameter (`foreach ($param as $v)`), the
+        // per-element values are not simple wrapper plumbing, so do not
+        // clear them as parameter-derived — keep the structural finding
+        // for `foreach ($param as $v) { sink($v) }` shapes (literal-keyed
+        // arrays are already suppressed earlier by
+        // `sink_arg_uses_safe_foreach_key`).
+        if info.kind == StmtKind::Loop {
+            all_def_clear = false;
+            break;
+        }
         if info
             .taint
             .labels

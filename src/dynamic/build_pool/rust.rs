@@ -18,8 +18,8 @@
 
 use super::{BuildPool, PoolCompileResult, base_command, binary_runnable, pool_cache_dir};
 use blake3::Hasher;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub struct RustPool {
     cargo_bin: String,
@@ -78,6 +78,23 @@ impl BuildPool for RustPool {
                 };
             }
         };
+
+        // Serialise build + copy across processes for this shared target dir.
+        //
+        // The target dir is keyed only on the Cargo manifest hash, so every
+        // fixture that shares a `Cargo.toml` compiles the same bin name
+        // (`nyx_harness`) into the same `release/nyx_harness` path here.
+        // `cargo` already serialises the *build* across processes via its own
+        // target lock, but releases that lock the moment it exits — before the
+        // copy below moves `release/nyx_harness` to the caller's per-fixture
+        // cache slot.  A second process's `cargo build` landing in that window
+        // overwrites `release/nyx_harness`, so we copy a *different* fixture's
+        // binary into our slot and poison its build cache (observed as
+        // cross-fixture verdict corruption under a parallel `cargo test`).
+        // Holding this lock across build+copy folds the copy into the existing
+        // serialised section, so it adds the copy's few milliseconds, not a
+        // new build barrier.
+        let _build_lock = TargetDirLock::acquire(&target_dir);
 
         let mut cmd = base_command(&self.cargo_bin);
         cmd.args(["build", "--release"])
@@ -141,6 +158,78 @@ fn default_cargo_home() -> String {
     std::env::var("HOME")
         .map(|h| format!("{h}/.cargo"))
         .unwrap_or_else(|_| ".cargo".to_owned())
+}
+
+/// Cross-process advisory lock guarding build+copy for a shared
+/// `CARGO_TARGET_DIR` (see the call site in [`RustPool::compile_batch`]).
+///
+/// Implemented as an atomic `create_new` (O_EXCL) lockfile so it works across
+/// the separate processes a parallel `cargo test` spawns — an in-process
+/// `Mutex` would not.  A lock older than `STALE_AFTER` is stolen so a crashed
+/// holder cannot wedge the pool, and acquisition gives up after `MAX_WAIT`
+/// (proceeding unlocked) so a pathological case degrades to the pre-fix
+/// behaviour rather than deadlocking.
+struct TargetDirLock {
+    path: PathBuf,
+    /// Only the process that created the lockfile removes it on drop, so a
+    /// give-up / steal path never deletes another holder's lock.
+    owned: bool,
+}
+
+impl TargetDirLock {
+    fn acquire(target_dir: &Path) -> Self {
+        const MAX_WAIT: Duration = Duration::from_secs(300);
+        const STALE_AFTER: Duration = Duration::from_secs(180);
+        let path = target_dir.join(".nyx-pool-build.lock");
+        let start = Instant::now();
+        let mut spins: u64 = 0;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", std::process::id());
+                    return Self { path, owned: true };
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Steal a stale lock left behind by a crashed holder.
+                    if let Ok(meta) = std::fs::metadata(&path)
+                        && let Ok(mtime) = meta.modified()
+                        && mtime.elapsed().map(|d| d > STALE_AFTER).unwrap_or(false)
+                    {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if start.elapsed() > MAX_WAIT {
+                        // Best-effort: a slow build beats a deadlock.
+                        return Self { path, owned: false };
+                    }
+                    let nap = 10u64.saturating_add(spins.min(40).saturating_mul(2));
+                    std::thread::sleep(Duration::from_millis(nap));
+                    spins = spins.saturating_add(1);
+                }
+                Err(_) => {
+                    // Cannot create the lockfile (perms / race on dir) — proceed
+                    // unlocked rather than fail the build outright.
+                    return Self {
+                        path,
+                        owned: false,
+                    };
+                }
+            }
+        }
+    }
+}
+
+impl Drop for TargetDirLock {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Stable short hash of the named manifest files under `workdir`.

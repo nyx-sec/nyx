@@ -14,8 +14,17 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &[
             "getParameter",
+            // Iterable/collection-returning request accessors.  `getParameter`
+            // (word-boundary suffix match) does NOT cover `getParameterValues`
+            // etc., and these are the dominant untrusted-input shapes inside
+            // for-each loops (`for (String s : req.getParameterValues("v"))`).
+            "getParameterValues",
+            "getParameterMap",
+            "getParameterNames",
             "getInputStream",
             "getHeader",
+            "getHeaders",
+            "getHeaderNames",
             "getCookies",
             "getReader",
             "getQueryString",

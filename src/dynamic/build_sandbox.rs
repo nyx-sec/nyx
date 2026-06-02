@@ -535,8 +535,19 @@ fn try_bundle_install(workdir: &Path) -> Result<(), String> {
 }
 
 fn bundle_check(bundle: &str, workdir: &Path) -> Result<bool, String> {
-    let output = ruby_build_command(bundle, workdir)
+    // Run with the runtime environment (plain system gems), NOT the hermetic
+    // `GEM_HOME`/`BUNDLE_PATH` override that `ruby_build_command` applies.  The
+    // harness runs as `ruby harness.rb` and resolves its `require`s against the
+    // system gem path, so the check must too; the override only breaks Bundler
+    // 1.x's view of already-installed system gems and produces spurious
+    // BuildFailed for a Gemfile the host can already satisfy.  See the parallel
+    // comment in `RubyPool::compile_batch`.
+    let output = Command::new(bundle)
         .arg("check")
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("bundle check: {e}"))?;
     Ok(output.status.success())
@@ -1103,8 +1114,37 @@ fn try_compile_java_with_toolchain(
         args.push(rel.to_string());
     }
     if lib_on_cp {
+        // Build an explicit, absolute classpath: `<workdir>` plus every jar
+        // under `<workdir>/lib`.  Two independent reasons rule out the
+        // shorthand `.:lib/*`:
+        //   1. The javac pool worker is a long-lived JVM and the JDK compiler
+        //      API has no per-task working directory (it sets `user.dir`
+        //      defensively, but that does not change file/classpath
+        //      resolution in an already-running JVM), so a *relative* entry
+        //      resolves against the worker's launch dir, not `<workdir>`.
+        //   2. The `lib/*` classpath wildcard is expanded by the `javac`
+        //      launcher, not by `ToolProvider.getSystemJavaCompiler().run`
+        //      (the in-process path the pool uses), so a `*` entry silently
+        //      contributes no jars there.
+        // Either way the Maven-resolved framework jars under `<workdir>/lib`
+        // go missing and framework imports fail to compile
+        // ("package ... does not exist").  Enumerating the jars explicitly is
+        // unambiguous for both the pool and the direct-spawn javac path.
+        let mut cp = workdir.to_string_lossy().into_owned();
+        let mut jars: Vec<PathBuf> = std::fs::read_dir(workdir.join("lib"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "jar").unwrap_or(false))
+            .collect();
+        jars.sort();
+        for jar in &jars {
+            cp.push(':');
+            cp.push_str(&jar.to_string_lossy());
+        }
         args.push("-cp".to_owned());
-        args.push(".:lib/*".to_owned());
+        args.push(cp);
     }
     for src in &sources {
         args.push(src.to_string_lossy().into_owned());

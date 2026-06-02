@@ -2067,6 +2067,32 @@ fn is_binary_expr_kind(kind: &str, lang: &str) -> bool {
     }
 }
 
+/// Classification text for a for-each loop's iterable expression.
+///
+/// Subscript / index iterables (`$_GET['x']`, `params[:list]`, `arr[i]`)
+/// classify on their **base object**: taint sources are keyed on the base
+/// name (`$_GET`, `params`), and the trailing index would otherwise break
+/// the word-boundary suffix match in `classify`.  Non-subscript iterables
+/// (method calls, member chains, bare identifiers) use their full text.
+fn iterable_label_text(iter: Node, code: &[u8]) -> Option<String> {
+    if matches!(
+        iter.kind(),
+        "subscript_expression" | "subscript" | "index_expression" | "element_reference"
+    ) {
+        let base = iter
+            .child_by_field_name("object")
+            .or_else(|| iter.child_by_field_name("operand"))
+            .or_else(|| iter.child_by_field_name("value"))
+            .or_else(|| iter.child(0));
+        if let Some(b) = base
+            && let Some(t) = text_of(b, code)
+        {
+            return Some(t);
+        }
+    }
+    text_of(iter, code)
+}
+
 /// Create a node in one short borrow and optionally attach a taint label.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn push_node<'a>(
@@ -2204,6 +2230,51 @@ pub(super) fn push_node<'a>(
         && ast.kind() == "for_statement"
         && let Some(right) = ast.child_by_field_name("right")
         && let Some(iter_text) = text_of(right, code)
+    {
+        text = iter_text;
+    }
+
+    // Java `for (T x : iter)`: tree-sitter-java emits `enhanced_for_statement`
+    // with the iterable on the `value` field.  Classify against the iterable
+    // text so a source-returning call (`req.getCookies()`,
+    // `req.getParameterValues(..)`) lights up a Source on the loop node and
+    // the loop binding inherits its taint — the same loop-binding-inherits-
+    // iterator-taint contract the JS/Python rewrites above provide.  The
+    // loop variable itself is recorded as a define by `def_use`'s Kind::For
+    // arm (via the `name`/`value` mapping), so the Source-labeled loop node
+    // taints the binding directly.
+    if lang == "java"
+        && ast.kind() == "enhanced_for_statement"
+        && let Some(value) = ast.child_by_field_name("value")
+        && let Some(iter_text) = iterable_label_text(value, code)
+    {
+        text = iter_text;
+    }
+
+    // PHP `foreach ($iter as $v)` / `foreach ($iter as $k => $v)`: the
+    // iterable is the named child immediately preceding the `as` keyword
+    // (only `body` is a named field).  Classify against the iterable text so
+    // a superglobal/source iterable (`$_GET[..]`, `$_POST[..]`) taints the
+    // loop binding, matching the JS/Python/Java rewrites.
+    if lang == "php" && ast.kind() == "foreach_statement" {
+        let mut cursor = ast.walk();
+        let kids: Vec<Node> = ast.children(&mut cursor).collect();
+        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as")
+            && let Some(iter_node) = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied()
+            && let Some(iter_text) = iterable_label_text(iter_node, code)
+        {
+            text = iter_text;
+        }
+    }
+
+    // Ruby `for x in coll`: tree-sitter-ruby's `for` node carries the
+    // iterable on the `value` field.  (The idiomatic `coll.each { |x| }`
+    // form is a method call with a block and is handled by the call/block
+    // machinery, not here.)
+    if lang == "ruby"
+        && ast.kind() == "for"
+        && let Some(value) = ast.child_by_field_name("value")
+        && let Some(iter_text) = iterable_label_text(value, code)
     {
         text = iter_text;
     }

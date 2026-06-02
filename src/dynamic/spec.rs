@@ -563,7 +563,7 @@ impl HarnessSpec {
         // that order within equal scores — so the final element is the
         // highest-scoring candidate, and on a score tie it is the
         // highest-precedence one (legacy ladder tie-break).
-        scored.sort_by(|a, b| a.1.cmp(&b.1));
+        scored.sort_by_key(|a| a.1);
         let (winner, _winner_score) = scored.pop().expect("non-empty checked above");
         let mut runners_up: Vec<(SpecDerivationStrategy, SpecScore)> = scored
             .into_iter()

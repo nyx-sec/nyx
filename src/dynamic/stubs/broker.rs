@@ -2157,10 +2157,7 @@ fn handle_rabbit_amqp_connection(
     let mut owned_consumer_tags = Vec::new();
     let mut confirms_enabled = false;
     let mut next_publish_tag = 0_u64;
-    loop {
-        let Some(frame) = amqp_read_frame(&mut reader) else {
-            break;
-        };
+    while let Some(frame) = amqp_read_frame(&mut reader) {
         if frame.frame_type == AMQP_FRAME_HEARTBEAT {
             let _ = amqp_write_frame(&mut writer, AMQP_FRAME_HEARTBEAT, 0, &[]);
             continue;

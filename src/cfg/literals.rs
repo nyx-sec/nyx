@@ -2544,6 +2544,37 @@ pub(super) fn def_use(
                     }
                 }
             }
+            // Java `enhanced_for_statement` binds the loop variable on the
+            // `name` field and the iterable on the `value` field; Ruby's
+            // `for x in coll` uses `pattern`/`value`.  Neither uses the
+            // JS/Python `left`/`right` convention, so without this mapping
+            // the loop binding was never recorded as a define and taint on
+            // the iterable could not reach the loop variable (OWASP's
+            // dominant `for (Cookie c : req.getCookies())` shape).
+            if left.is_none() && right.is_none() {
+                if let Some(v) = ast.child_by_field_name("value") {
+                    left = ast
+                        .child_by_field_name("name")
+                        .or_else(|| ast.child_by_field_name("pattern"));
+                    right = Some(v);
+                }
+            }
+            // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`:
+            // the iterable and binding are unnamed children separated by the
+            // `as` keyword (only `body` is a named field).  Map the binding
+            // onto `left` and the iterable onto `right` so the shared
+            // define/use logic below records the loop variable.
+            if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
+                let mut cursor = ast.walk();
+                let kids: Vec<Node> = ast.children(&mut cursor).collect();
+                if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
+                    right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
+                    left = kids[as_pos + 1..]
+                        .iter()
+                        .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
+                        .copied();
+                }
+            }
             if left.is_none() && right.is_none() {
                 // C-style for, defer to default ident collection.
                 let mut idents = Vec::new();

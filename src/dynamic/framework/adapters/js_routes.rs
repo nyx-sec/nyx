@@ -963,10 +963,8 @@ fn collect_options_middleware_names(args: Node<'_>, bytes: &[u8], target: &str) 
             };
             let key = key_raw.trim_matches(['\'', '"', '`']);
             match key {
-                "handler" => {
-                    if view_arg_references(value, bytes, target) {
-                        handler_matches = true;
-                    }
+                "handler" if view_arg_references(value, bytes, target) => {
+                    handler_matches = true;
                 }
                 "onRequest" | "preParsing" | "preValidation" | "preHandler" => {
                     collect_hook_value_names(value, bytes, &mut hook_names);
@@ -1052,10 +1050,8 @@ fn parse_options_route(args: Node<'_>, bytes: &[u8], target: &str) -> Option<(Ht
                     let text = value.utf8_text(bytes).ok().unwrap_or("");
                     url = Some(strip_quotes(text).to_owned());
                 }
-                "handler" => {
-                    if view_arg_references(value, bytes, target) {
-                        handler_matches = true;
-                    }
+                "handler" if view_arg_references(value, bytes, target) => {
+                    handler_matches = true;
                 }
                 _ => {}
             }

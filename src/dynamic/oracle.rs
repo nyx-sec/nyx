@@ -1135,10 +1135,8 @@ fn extract_redirect_host(location: &str) -> Option<String> {
     }
     let rest = if let Some(after_scheme) = trimmed.find("://") {
         &trimmed[after_scheme + 3..]
-    } else if let Some(stripped) = trimmed.strip_prefix("//") {
-        stripped
     } else {
-        return None;
+        trimmed.strip_prefix("//")?
     };
     // Strip path / query / fragment from the host segment.
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());

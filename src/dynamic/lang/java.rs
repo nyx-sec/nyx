@@ -2399,7 +2399,7 @@ public class NyxHarness {{
             "NyxHarness".to_owned(),
         ],
         extra_files: Vec::new(),
-        entry_subpath: None,
+        entry_subpath: Some(format!("{entry_class}.java")),
     }
 }
 
@@ -6418,7 +6418,7 @@ mod tests {
     #[test]
     fn emit_dispatches_to_crypto_harness_when_cap_is_crypto() {
         let h = emit(&make_crypto_spec(
-            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "tests/dynamic_fixtures/crypto/java/vuln.java",
             "run",
         ))
         .unwrap();
@@ -6435,7 +6435,7 @@ mod tests {
     #[test]
     fn emit_crypto_harness_routes_through_reflective_entry_invocation() {
         let h = emit_crypto_harness(&make_crypto_spec(
-            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "tests/dynamic_fixtures/crypto/java/vuln.java",
             "run",
         ));
         assert!(
@@ -6460,12 +6460,17 @@ mod tests {
             h.extra_files.is_empty(),
             "Java CRYPTO harness must not stage extra files — java.util.Random + SecureRandom are JDK built-ins",
         );
+        assert!(
+            matches!(h.entry_subpath.as_deref(), Some(p) if p == "Vuln.java"),
+            "Java CRYPTO harness must stage the fixture under its public-class filename for javac on case-sensitive filesystems: {:?}",
+            h.entry_subpath,
+        );
     }
 
     #[test]
     fn emit_crypto_harness_emits_weak_key_probe_kind() {
         let h = emit_crypto_harness(&make_crypto_spec(
-            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "tests/dynamic_fixtures/crypto/java/vuln.java",
             "run",
         ));
         assert!(
@@ -6483,7 +6488,7 @@ mod tests {
     #[test]
     fn emit_crypto_harness_reduces_byte_array_returns_via_byte_buffer() {
         let h = emit_crypto_harness(&make_crypto_spec(
-            "tests/dynamic_fixtures/crypto/java/Benign.java",
+            "tests/dynamic_fixtures/crypto/java/benign.java",
             "run",
         ));
         assert!(
@@ -6504,7 +6509,7 @@ mod tests {
     #[test]
     fn emit_crypto_harness_falls_back_when_reflection_fails() {
         let h = emit_crypto_harness(&make_crypto_spec(
-            "tests/dynamic_fixtures/crypto/java/Vuln.java",
+            "tests/dynamic_fixtures/crypto/java/vuln.java",
             "run",
         ));
         assert!(

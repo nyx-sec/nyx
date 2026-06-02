@@ -53,7 +53,23 @@ impl BuildPool for RubyPool {
         let start = Instant::now();
 
         // `bundle check` short-circuits when the host already has every gem.
-        if let Ok(o) = self.bundle(workdir).arg("check").output()
+        //
+        // Run the check with the *runtime* environment — plain system gems, no
+        // `GEM_HOME`/`BUNDLE_PATH` override.  The harness is executed as
+        // `ruby harness.rb`, whose `require 'bundler/setup'` resolves against
+        // the system gem path, so the build-time check must consult that same
+        // path to predict whether the run will succeed.  The hermetic
+        // `GEM_HOME` override (below) exists only to give `bundle install` a
+        // writable, sudo-free target for *missing* gems; applying it to the
+        // check breaks Bundler 1.x's ability to see an already-installed system
+        // gem (e.g. `rack`), turning a satisfiable Gemfile into a spurious
+        // BuildFailed.
+        let mut check = base_command(&self.bundle_bin);
+        check.current_dir(workdir);
+        if let Some(cache) = pool_cache_dir("ruby", "bootsnap") {
+            check.env("BOOTSNAP_CACHE_DIR", cache);
+        }
+        if let Ok(o) = check.arg("check").output()
             && o.status.success()
         {
             return PoolCompileResult {

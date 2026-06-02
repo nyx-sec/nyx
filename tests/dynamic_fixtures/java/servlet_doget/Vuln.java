@@ -17,7 +17,7 @@ public class Vuln {
         BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
         String line;
         while ((line = reader.readLine()) != null) {
-            System.out.println(line);
+            resp.write(line + "\n");
         }
         p.waitFor();
     }
