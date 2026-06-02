@@ -101,7 +101,12 @@ pub fn optimize_ssa_with_param_types(
 ) -> OptimizeResult {
     // 1. Constant propagation (SCCP)
     let cp = const_prop::const_propagate(body);
-    let branches_pruned = const_prop::apply_const_prop(body, &cp);
+    let mut branches_pruned = const_prop::apply_const_prop(body, &cp);
+    // 1b. Fold pure integer-arithmetic comparison branch conditions that SCCP
+    //     cannot reach (the comparison is held on the terminator, not an SSA
+    //     value).  Prunes statically-dead edges + their merge-phi operands so a
+    //     dead `else bar = param` stops feeding a tainted operand into the phi.
+    branches_pruned += const_prop::fold_constant_branches(body, cfg, &cp.values);
 
     // 2. Copy propagation
     let (copies_eliminated, copy_map) = copy_prop::copy_propagate(body, cfg);

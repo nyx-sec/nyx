@@ -46,6 +46,8 @@ def write_json(path: Path, data: object) -> None:
 # Cap bit positions cribbed from tabulate.py / src/labels/mod.rs.
 SINK_BIT_SQL = 1 << 7   # SQL_QUERY
 SINK_BIT_CMDI = 1 << 10  # CODE_EXEC
+SINK_BIT_SHELL = 1 << 2  # SHELL_ESCAPE (Java/other command-exec sink)
+SINK_BIT_FILE = 1 << 5   # FILE_IO (path_traversal)
 
 
 def python_finding(cap_bit: int, path: str, line: int, status: str | None) -> dict:
@@ -351,6 +353,91 @@ def test_lang_filter_scopes_findings_and_gt(tmp: Path) -> None:
     assert ruby["tp"] == 1 and ruby["fn"] == 0, ruby
     # The dropped JS positive must NOT resurface as a phantom FN in any cell.
     assert all(lang != "javascript" for _cap, lang in cells), cells
+
+
+def test_static_lens_buckets_shell_escape_as_cmdi(tmp: Path) -> None:
+    # Caveat-1 fix: in an env with 0 dynamic confirmations a Java command-exec
+    # finding carries only SHELL_ESCAPE (1<<2), which the default bit table
+    # leaves in "other" — so the cmdi cell reads 0 TP / N FN regardless of
+    # static quality.  --static appends SHELL_ESCAPE→cmdi so static recall is
+    # measurable without dynamic confirmation.
+    gt = tmp / "gt.json"
+    write_json(
+        gt,
+        [{"path": "testcode/Cmd.java", "line": 0, "cap": "cmdi", "vuln": True}],
+    )
+    # Real Java taint findings carry id "taint-unsanitised-flow" (no cap
+    # substring), so the rule-id fallback yields "other" — not the sqli/cmdi
+    # the hand-crafted python_finding id would imply.
+    java_cmdi = {
+        "path": "/x/testcode/Cmd.java",
+        "line": 10,
+        "col": 0,
+        "id": "taint-unsanitised-flow",
+        "evidence": {"sink_caps": SINK_BIT_SHELL, "dynamic_verdict": {"status": "NotConfirmed"}},
+    }
+    scan = tmp / "scan.json"
+    write_json(scan, {"findings": [java_cmdi]})
+
+    # Default lens: the finding buckets as "other", so cmdi shows the GT
+    # positive as a pure FN (recall 0) — the measurement gap.
+    default = tmp / "default.json"
+    write_json(default, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--append", str(default),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(default.read_text())[-1]["cells"]}
+    assert ("cmdi", "java") in cells and cells[("cmdi", "java")]["tp"] == 0, cells
+    assert cells[("cmdi", "java")]["fn"] == 1, cells[("cmdi", "java")]
+    assert ("other", "java") in cells, f"SHELL_ESCAPE must bucket as other by default: {list(cells)}"
+
+    # Static lens: the finding buckets as cmdi → recall measurable (TP=1, FN=0).
+    static = tmp / "static.json"
+    write_json(static, [])
+    proc = run_tabulate(
+        "--label", "owasp",
+        "--scan", str(scan),
+        "--ground-truth", str(gt),
+        "--static",
+        "--append", str(static),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cells = {(c["cap"], c["lang"]): c for c in json.loads(static.read_text())[-1]["cells"]}
+    cmdi = cells[("cmdi", "java")]
+    assert cmdi["tp"] == 1 and cmdi["fn"] == 0, cmdi
+    assert ("other", "java") not in cells, f"static lens must reclaim the other-bucketed finding: {list(cells)}"
+
+
+def test_static_lens_preserves_higher_priority_bits(tmp: Path) -> None:
+    # A finding carrying BOTH FILE_IO and SHELL_ESCAPE must keep bucketing as
+    # path_traversal under the static lens (SHELL_ESCAPE is appended at lowest
+    # priority), so the static lens never steals a finding from a non-cmdi cell.
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                python_finding(SINK_BIT_FILE | SINK_BIT_SHELL, "B.java", 10, "NotConfirmed"),
+            ]
+        },
+    )
+    for flag in ([], ["--static"]):
+        append = tmp / f"out{len(flag)}.json"
+        write_json(append, [])
+        proc = run_tabulate(
+            "--label", "x",
+            "--scan", str(scan),
+            "--inhouse",
+            "--append", str(append),
+            *flag,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        caps = {c["cap"] for c in json.loads(append.read_text())[-1]["cells"]}
+        assert caps == {"path_traversal"}, f"flag={flag}: {caps}"
 
 
 def test_budget_malformed_exits_3(tmp: Path) -> None:
@@ -661,6 +748,8 @@ def main() -> int:
             test_manual_triage_stamps_wrong_confirmed,
             test_manual_triage_ignores_vuln_true_entries,
             test_lang_filter_scopes_findings_and_gt,
+            test_static_lens_buckets_shell_escape_as_cmdi,
+            test_static_lens_preserves_higher_priority_bits,
             test_budget_malformed_exits_3,
             test_relative_gt_path_suffix_matches_absolute_finding,
             test_unmatched_gt_positive_lands_in_lang_cell,

@@ -624,6 +624,192 @@ pub fn apply_const_prop(body: &mut SsaBody, result: &ConstPropResult) -> usize {
     pruned
 }
 
+/// Resolve a condition variable name to the SSA value reaching `block`.
+///
+/// Mirrors `constraint::lower::resolve_single_var` (the established resolver
+/// for branch-condition variables): prefer the highest-indexed definition in
+/// the branch block itself, else the highest-indexed definition elsewhere.
+/// Kept local to avoid a `ssa → constraint` dependency cycle (constraint
+/// already depends on ssa).
+fn resolve_const_var(body: &SsaBody, var_name: &str, block: BlockId) -> Option<SsaValue> {
+    let mut best_in_block: Option<SsaValue> = None;
+    let mut best_outside: Option<SsaValue> = None;
+    for (idx, vd) in body.value_defs.iter().enumerate() {
+        if vd.var_name.as_deref() != Some(var_name) {
+            continue;
+        }
+        let v = SsaValue(idx as u32);
+        if vd.block == block {
+            best_in_block = Some(match best_in_block {
+                Some(existing) if existing.0 > v.0 => existing,
+                _ => v,
+            });
+        } else {
+            best_outside = Some(match best_outside {
+                Some(existing) if existing.0 > v.0 => existing,
+                _ => v,
+            });
+        }
+    }
+    best_in_block.or(best_outside)
+}
+
+/// Fold branch conditions that are pure integer-arithmetic comparisons over
+/// constant operands, pruning the statically-dead edge.
+///
+/// Complements [`apply_const_prop`], which only folds a condition that lowers
+/// to a single SSA boolean value.  An arithmetic comparison condition such as
+/// `(7*42) - num > 200` is **never** an SSA value — condition nodes lower to
+/// `Nop` and the comparison is held structurally on the branch terminator — so
+/// SCCP cannot reach it.  This pass instead evaluates the
+/// [`crate::cfg::CondArith`] tree captured at CFG-build time, resolving each
+/// variable to its const-propagated integer.
+///
+/// Sound by construction:
+///   * A branch is pruned only when its `CondArith` evaluates to a **definite**
+///     boolean — every variable bound to a known integer constant and every
+///     operation defined (no div-by-zero / overflow).  `None`/`Varying` leaves
+///     both edges intact.
+///   * After the terminator is rewritten to `Goto(taken)` and the dead edge is
+///     dropped (symmetrically, preserving pred/succ consistency), every phi
+///     operand whose predecessor is no longer reachable from entry is removed.
+///     That last step is what actually drops the dead-branch operand from a
+///     merge phi like `bar = phi(then: "const", else: param)` — without it the
+///     taint engine's phi fallback would still read the tainted `param` from
+///     the joined entry state.
+///
+/// Returns the number of branches pruned.
+pub fn fold_constant_branches(
+    body: &mut SsaBody,
+    cfg: &crate::cfg::Cfg,
+    const_values: &HashMap<SsaValue, ConstLattice>,
+) -> usize {
+    use crate::ssa::ir::Terminator;
+
+    // 1. Collect definite fold decisions: (branch_block_idx, taken, untaken).
+    let mut prune_ops: Vec<(usize, BlockId, BlockId)> = Vec::new();
+    for (block_idx, block) in body.blocks.iter().enumerate() {
+        let Terminator::Branch {
+            cond,
+            true_blk,
+            false_blk,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        // Degenerate `cond ? X : X` (both edges to one block): nothing to prune.
+        if true_blk == false_blk {
+            continue;
+        }
+        let Some(cond_info) = cfg.node_weight(*cond) else {
+            continue;
+        };
+        let Some(arith) = cond_info.cond_arith.as_ref() else {
+            continue;
+        };
+        let branch_block = block.id;
+        let resolve = |name: &str| -> Option<i64> {
+            let v = resolve_const_var(body, name, branch_block)?;
+            match const_values.get(&v) {
+                Some(ConstLattice::Int(n)) => Some(*n),
+                _ => None,
+            }
+        };
+        match arith.eval_bool(&resolve) {
+            Some(true) => prune_ops.push((block_idx, *true_blk, *false_blk)),
+            Some(false) => prune_ops.push((block_idx, *false_blk, *true_blk)),
+            None => {}
+        }
+    }
+
+    let pruned = prune_ops.len();
+    if pruned == 0 {
+        return 0;
+    }
+
+    // 2. Rewrite terminators + drop the dead edge (symmetrically).
+    for &(block_idx, taken, untaken) in &prune_ops {
+        let pred_id = body.blocks[block_idx].id;
+        body.blocks[block_idx].terminator = Terminator::Goto(taken);
+        body.blocks[block_idx].succs.retain(|s| *s != untaken);
+        let untaken_idx = untaken.0 as usize;
+        if untaken_idx < body.blocks.len() {
+            body.blocks[untaken_idx].preds.retain(|p| *p != pred_id);
+        }
+    }
+
+    // 3. Recompute reachability from entry over the (now-pruned) succ edges.
+    let n = body.blocks.len();
+    let mut reachable = vec![false; n];
+    let mut stack = vec![body.entry];
+    if (body.entry.0 as usize) < n {
+        reachable[body.entry.0 as usize] = true;
+    }
+    while let Some(b) = stack.pop() {
+        let bidx = b.0 as usize;
+        if bidx >= n {
+            continue;
+        }
+        // Clone succs to avoid borrow conflict with `reachable`.
+        let succs: SmallVec<[BlockId; 2]> = body.blocks[bidx].succs.clone();
+        for s in succs {
+            let sidx = s.0 as usize;
+            if sidx < n && !reachable[sidx] {
+                reachable[sidx] = true;
+                stack.push(s);
+            }
+        }
+    }
+
+    // 4. Reachable blocks: drop the now-dead predecessor.  Removing the phi
+    //    operand from the merge block is what stops the tainted dead-branch
+    //    value feeding the phi; removing the pred keeps pred/succ symmetric
+    //    with step 5's succ clearing.  Operands from still-reachable
+    //    predecessors are untouched, so no live flow is lost.
+    for (bidx, block) in body.blocks.iter_mut().enumerate() {
+        if !reachable[bidx] {
+            continue;
+        }
+        block.preds.retain(|p| {
+            let pidx = p.0 as usize;
+            pidx < n && reachable[pidx]
+        });
+        for phi in &mut block.phis {
+            if let SsaOp::Phi(operands) = &mut phi.op {
+                operands.retain(|(pred, _)| {
+                    let pidx = pred.0 as usize;
+                    pidx < n && reachable[pidx]
+                });
+            }
+        }
+    }
+
+    // 5. Unreachable blocks: neutralise them so the *later* optimiser passes
+    //    (copy-prop, base-alias grouping, type-facts, points-to) and the taint
+    //    transfer never observe their dead instructions.  This is the
+    //    load-bearing step for precision: a dead `else bar = param` would
+    //    otherwise make copy-prop alias `bar`↔`param`, and
+    //    `propagate_taint_to_aliases` would then poison the *surviving const*
+    //    `bar` with `param`'s (still-reachable) taint — defeating the whole
+    //    prune.  Each instruction is rewritten to `Nop` (value + cfg_node
+    //    preserved so `value_defs` coverage holds), the terminator to
+    //    `Unreachable`, and the block is fully disconnected.
+    for (bidx, block) in body.blocks.iter_mut().enumerate() {
+        if reachable[bidx] {
+            continue;
+        }
+        for inst in block.phis.iter_mut().chain(block.body.iter_mut()) {
+            inst.op = SsaOp::Nop;
+        }
+        block.terminator = Terminator::Unreachable;
+        block.succs.clear();
+        block.preds.clear();
+    }
+
+    pruned
+}
+
 /// Collect module aliases from `require()` calls in the SSA body.
 ///
 /// Detects patterns like `const http = require("http")` and propagates

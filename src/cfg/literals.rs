@@ -1198,10 +1198,14 @@ pub(super) fn is_syntactic_literal(node: Node, code: &[u8]) -> bool {
         | "string_content"
         | "string_fragment" => !has_string_interpolation(node),
 
-        // Numbers
-        "integer" | "integer_literal" | "int_literal" | "float" | "float_literal" | "number" => {
-            true
-        }
+        // Numbers.  Java's grammar uses radix-tagged kinds
+        // (`decimal_integer_literal`, `hex_integer_literal`, …) rather than a
+        // bare `integer`, so `int num = 86;` would otherwise miss this arm and
+        // lower to `Const(None)` (Varying) instead of `Const("86")`.
+        "integer" | "integer_literal" | "int_literal" | "float" | "float_literal" | "number"
+        | "decimal_integer_literal" | "hex_integer_literal" | "octal_integer_literal"
+        | "binary_integer_literal" | "decimal_floating_point_literal"
+        | "hex_floating_point_literal" => true,
 
         // Booleans / null / nil / none
         "true" | "false" | "null" | "nil" | "none" | "null_literal" | "boolean"

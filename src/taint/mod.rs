@@ -1929,7 +1929,7 @@ pub(crate) fn extract_intra_file_ssa_summaries(
 
     for (func_name, func_entry) in &func_entries {
         let formal_params = lookup_formal_params(local_summaries, func_name);
-        let func_ssa = match crate::ssa::lower_to_ssa_with_params(
+        let mut func_ssa = match crate::ssa::lower_to_ssa_with_params(
             cfg,
             *func_entry,
             Some(func_name),
@@ -1939,6 +1939,9 @@ pub(crate) fn extract_intra_file_ssa_summaries(
             Ok(ssa) => ssa,
             Err(_) => continue,
         };
+        // Match the `_from_bodies` path: prune dead constant branches before
+        // the summary probe (see `prefold_dead_branches_for_summary`).
+        prefold_dead_branches_for_summary(&mut func_ssa, cfg);
 
         // `formal_params` is authoritative even when it is empty. SSA lowering
         // also emits Param ops for external captures; counting those as arity
@@ -2019,6 +2022,22 @@ pub(crate) fn extract_intra_file_ssa_summaries(
 /// name overloads with different arity, and anonymous bodies at distinct
 /// source spans all get distinct keys.
 #[allow(clippy::too_many_arguments)]
+/// Prune definite-constant dead branches on a freshly-lowered body *before*
+/// its interprocedural summary is extracted.
+///
+/// Summary extraction ([`ssa_transfer::extract_ssa_func_summary`]) runs on the
+/// pre-optimisation SSA, so without this a helper whose body returns a constant
+/// only because a dead `else x = param` branch is never taken would still emit
+/// a `param → return` transform — re-tainting the caller's `bar =
+/// helper(param)` and defeating the in-body branch fold.  Only
+/// [`crate::ssa::const_prop::fold_constant_branches`] is applied (no copy-prop /
+/// DCE), so the change is limited to provably-dead arithmetic-comparison
+/// branches; the body's value numbering is otherwise untouched.
+fn prefold_dead_branches_for_summary(func_ssa: &mut crate::ssa::SsaBody, cfg: &crate::cfg::Cfg) {
+    let cp = crate::ssa::const_prop::const_propagate(func_ssa);
+    crate::ssa::const_prop::fold_constant_branches(func_ssa, cfg, &cp.values);
+}
+
 pub(crate) fn lower_all_functions_from_bodies(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -2108,6 +2127,9 @@ fn lower_all_functions_from_bodies_inner(
             Err(_) => continue,
         };
         perf_lower_record(0, _t_lower.elapsed().as_micros());
+        // Prune dead constant branches before the summary probe so a helper's
+        // dead `else x = param` does not surface as a spurious param→return.
+        prefold_dead_branches_for_summary(&mut func_ssa, &body.graph);
 
         let param_count = if !formal_params.is_empty() {
             formal_params.len()

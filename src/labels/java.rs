@@ -124,6 +124,23 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // `ProcessBuilder.command(argList)` — the dominant OWASP Benchmark
+    // command-injection shape builds an argument `List<String>`, attaches it
+    // via `pb.command(argList)`, then runs `pb.start()`.  The argument list is
+    // a separate channel from the constructor, so the flat `ProcessBuilder`
+    // constructor sink above never sees the tainted args.  This rule fires
+    // only via type-qualified resolution: the receiver `pb` must carry a
+    // `TypeKind::ProcessBuilder` fact (set by `constructor_type` for
+    // `new ProcessBuilder(...)`), so the resolver rewrites `pb.command(...)` →
+    // `ProcessBuilder.command`.  Case-sensitive and receiver-typed to avoid
+    // colliding with the many unrelated `.command(...)` methods (CLI builders,
+    // JCommander, picocli, Swing actions).  The payload is restricted to arg 0
+    // (the command list) via `type_qualified_sink_payload_args`.
+    LabelRule {
+        matchers: &["ProcessBuilder.command"],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &["executeQuery", "executeUpdate"],
         label: DataLabel::Sink(Cap::SQL_QUERY),

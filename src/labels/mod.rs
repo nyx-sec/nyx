@@ -1496,7 +1496,11 @@ pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'stat
         | "TypeOrmRepo.createQueryBuilder"
         | "TypeOrmManager.query"
         | "TypeOrmManager.createQueryBuilder"
-        | "MikroOrmEm.execute" => Some(&[0]),
+        | "MikroOrmEm.execute"
+        // `ProcessBuilder.command(argList)` — arg 0 is the command list;
+        // any later positional args are not part of the v1 shape.  Restrict
+        // sink-taint scanning to arg 0 so receiver / unrelated args don't fire.
+        | "ProcessBuilder.command" => Some(&[0]),
         _ => None,
     }
 }

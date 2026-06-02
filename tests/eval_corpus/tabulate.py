@@ -55,6 +55,19 @@ _CAP_BIT_TABLE = [
     (1 << 20, "prototype_pollution"),
 ]
 
+# Static lens (see --static): SHELL_ESCAPE (1<<2) is the command-injection sink
+# cap for *every* language (`grep SHELL_ESCAPE src/labels/` — all Sink uses are
+# command-exec; CODE_EXEC=1<<10 is the eval/code-exec variant, also cmdi).  In a
+# normal `nyx scan` (no dynamic confirmation) a Java cmdi finding carries only
+# SHELL_ESCAPE; the SHELL_ESCAPE→CODE_EXEC remap that buckets it as cmdi is gated
+# on VerifyStatus::Confirmed (src/commands/scan.rs), so with 0 confirmations the
+# default table leaves these in "other" and the cmdi cell reads 0/0/N.  The
+# static lens appends SHELL_ESCAPE→cmdi at the LOWEST priority (after every other
+# bit) so a SHELL_ESCAPE-only finding buckets as cmdi while a finding that also
+# carries a higher-priority sink bit (e.g. FILE_IO) keeps its existing bucket.
+# Opt-in via --static so the default confirmed-recall bucketing is byte-identical.
+_CAP_BIT_TABLE_STATIC = _CAP_BIT_TABLE + [(1 << 2, "cmdi")]  # SHELL_ESCAPE
+
 # Substring → cap lookup for rule IDs. Order matters: most specific first.
 _CAP_RULE_TABLE = [
     ("path_traversal", "path_traversal"),
@@ -83,12 +96,13 @@ def load_json(path: str) -> object:
         return json.load(f)
 
 
-def cap_of(finding: dict) -> str:
+def cap_of(finding: dict, static_lens: bool = False) -> str:
     # 1. Prefer evidence.sink_caps bitmask — the engine's own classification.
     ev = finding.get("evidence", {}) or {}
     sink_caps = ev.get("sink_caps")
     if isinstance(sink_caps, int) and sink_caps:
-        for bit, name in _CAP_BIT_TABLE:
+        table = _CAP_BIT_TABLE_STATIC if static_lens else _CAP_BIT_TABLE
+        for bit, name in table:
             if sink_caps & bit:
                 return name
     # 2. Fall back to rule id substring (e.g. py.cmdi.os_system, java.deser.readobject).
@@ -383,6 +397,20 @@ def main() -> int:
         default="",
         help="path to a previous results JSON; fail on monotonic-improvement regression",
     )
+    p.add_argument(
+        "--static",
+        action="store_true",
+        help=(
+            "static lens: bucket SHELL_ESCAPE (1<<2) findings as cmdi even when "
+            "they are unconfirmed.  Java (and other) command-exec sinks carry "
+            "SHELL_ESCAPE and only get remapped to CODE_EXEC on dynamic Confirm; "
+            "without this flag, an env with 0 confirmations reads the cmdi cell "
+            "as 0/0/N regardless of static quality.  SHELL_ESCAPE is the "
+            "command-injection sink cap for every language, so this is sound "
+            "globally; it is opt-in only so the default confirmed-recall "
+            "bucketing stays byte-identical."
+        ),
+    )
     args = p.parse_args()
     lang_filter = {l.strip() for l in args.lang.split(",") if l.strip()}
 
@@ -418,7 +446,7 @@ def main() -> int:
                 continue
             f_path = f.get("path", "")
             f_line = f.get("line", 0)
-            f_cap = cap_of(f)
+            f_cap = cap_of(f, static_lens=args.static)
             for idx, entry in enumerate(not_vuln):
                 if idx in used:
                     continue
@@ -455,7 +483,7 @@ def main() -> int:
     )
 
     for f in findings:
-        cap = cap_of(f)
+        cap = cap_of(f, static_lens=args.static)
         lang = lang_of(f)
         key = (cap, lang)
         ev = f.get("evidence", {}) or {}
@@ -501,7 +529,7 @@ def main() -> int:
         for f in findings:
             f_path = f.get("path", "")
             f_line = f.get("line", 0)
-            f_cap = cap_of(f)
+            f_cap = cap_of(f, static_lens=args.static)
             cap = f_cap
             lang = lang_of(f)
             cell_key = (cap, lang)

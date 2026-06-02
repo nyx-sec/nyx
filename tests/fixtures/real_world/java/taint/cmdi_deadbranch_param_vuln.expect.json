@@ -1,0 +1,32 @@
+{
+  "description": "Dead-branch constant condition with VULNERABLE polarity. `(500/42) + num > 200` is `11 + 196 = 207 > 200` (integer division) — always true — and the TRUE arm assigns the tainted `param`, so the reachable branch carries taint and only the `else bar = \"...\"` arm is dead. The constant-branch fold must prune the DEAD else edge while keeping the live `bar = param`, so the command-injection finding at `r.exec(cmd + bar)` MUST still fire. Zero-false-negative guard: it proves the fold never prunes the reachable (tainted) arm.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "runtime",
+    "dead-branch",
+    "const-fold",
+    "no-false-negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "must_match": true,
+      "line_range": [
+        26,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "request.getHeader (line 15) flows into bar on the always-taken true arm (line 21), then into r.exec at line 26. Exactly one finding survives.",
+      "max_count": 1
+    }
+  ]
+}

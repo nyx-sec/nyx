@@ -1202,6 +1202,8 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::GormDb => "GormDb".into(),
         TypeKind::SqlxDb => "SqlxDb".into(),
         TypeKind::HibernateSession => "HibernateSession".into(),
+        TypeKind::ProcessBuilder => "ProcessBuilder".into(),
+        TypeKind::Runtime => "Runtime".into(),
     }
 }
 
