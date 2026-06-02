@@ -510,12 +510,14 @@ impl CondArith {
                     BinOp::BitAnd => arith(Some(lhs & rhs)),
                     BinOp::BitOr => arith(Some(lhs | rhs)),
                     BinOp::BitXor => arith(Some(lhs ^ rhs)),
-                    BinOp::LeftShift => {
-                        u32::try_from(rhs).ok().and_then(|s| lhs.checked_shl(s)).map(CondVal::Int)
-                    }
-                    BinOp::RightShift => {
-                        u32::try_from(rhs).ok().and_then(|s| lhs.checked_shr(s)).map(CondVal::Int)
-                    }
+                    BinOp::LeftShift => u32::try_from(rhs)
+                        .ok()
+                        .and_then(|s| lhs.checked_shl(s))
+                        .map(CondVal::Int),
+                    BinOp::RightShift => u32::try_from(rhs)
+                        .ok()
+                        .and_then(|s| lhs.checked_shr(s))
+                        .map(CondVal::Int),
                     BinOp::Eq => Some(CondVal::Bool(lhs == rhs)),
                     BinOp::NotEq => Some(CondVal::Bool(lhs != rhs)),
                     BinOp::Lt => Some(CondVal::Bool(lhs < rhs)),
@@ -1418,13 +1420,22 @@ fn parse_int_literal(node: Node, code: &[u8]) -> Option<i64> {
     if let Ok(v) = cleaned.parse::<i64>() {
         return Some(v);
     }
-    if let Some(h) = cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X")) {
+    if let Some(h) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
         return i64::from_str_radix(h, 16).ok();
     }
-    if let Some(o) = cleaned.strip_prefix("0o").or_else(|| cleaned.strip_prefix("0O")) {
+    if let Some(o) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
         return i64::from_str_radix(o, 8).ok();
     }
-    if let Some(b) = cleaned.strip_prefix("0b").or_else(|| cleaned.strip_prefix("0B")) {
+    if let Some(b) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
         return i64::from_str_radix(b, 2).ok();
     }
     None
@@ -1479,7 +1490,10 @@ fn build_cond_arith(node: Node, lang: &str, code: &[u8], depth: u32) -> Option<C
     let kind = node.kind();
 
     // Unwrap parentheses (transparent to value).
-    if matches!(kind, "parenthesized_expression" | "parenthesized" | "parenthesized_statement") {
+    if matches!(
+        kind,
+        "parenthesized_expression" | "parenthesized" | "parenthesized_statement"
+    ) {
         let inner = node.named_child(0)?;
         return build_cond_arith(inner, lang, code, depth + 1);
     }
@@ -1493,7 +1507,9 @@ fn build_cond_arith(node: Node, lang: &str, code: &[u8], depth: u32) -> Option<C
     if matches!(kind, "identifier" | "simple_identifier") {
         let name = text_of(node, code)?;
         if !name.is_empty()
-            && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
         {
             return Some(CondArith::Var(name));
         }

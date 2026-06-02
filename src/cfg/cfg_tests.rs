@@ -4075,7 +4075,10 @@ class C {
 "#;
     let (cfg, _entry) = parse_and_build(src, "java", ts_lang);
     let ifs = if_nodes(&cfg);
-    let arith: Vec<_> = ifs.iter().filter_map(|&n| cfg[n].cond_arith.clone()).collect();
+    let arith: Vec<_> = ifs
+        .iter()
+        .filter_map(|&n| cfg[n].cond_arith.clone())
+        .collect();
 
     // Exactly one If condition is a pure int-arith comparison; the
     // `s.length() > 200` one must NOT be captured (it contains a call).
