@@ -55,7 +55,9 @@ export function adaptSurfaceMap(data: SurfaceMap): GraphModel {
       const detail = nodeDetail(node);
       const searchText = [title, detail, loc.file].join(' ').toLowerCase();
       const authBadge =
-        node.node === 'entry_point' && node.auth_required ? ['auth'] : undefined;
+        node.node === 'entry_point' && node.auth_required
+          ? ['auth']
+          : undefined;
       return {
         key: String(index),
         rawId: index,

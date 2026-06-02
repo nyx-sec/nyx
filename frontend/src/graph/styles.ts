@@ -195,10 +195,7 @@ function cfgNodeStyle(
   }
 }
 
-function surfaceNodeStyle(
-  type: string,
-  palette: GraphThemePalette,
-): NodeStyle {
+function surfaceNodeStyle(type: string, palette: GraphThemePalette): NodeStyle {
   switch (type) {
     case 'EntryPoint':
       return {
@@ -261,7 +258,11 @@ function surfaceNodeStyle(
 function surfaceEdgeStyle(type: string, palette: GraphThemePalette): EdgeStyle {
   switch (type) {
     case 'calls':
-      return { color: withAlpha(palette.textSecondary, 0.78), width: 1.4, dash: [] };
+      return {
+        color: withAlpha(palette.textSecondary, 0.78),
+        width: 1.4,
+        dash: [],
+      };
     case 'reads_from':
       return { color: palette.success, width: 1.5, dash: [] };
     case 'writes_to':

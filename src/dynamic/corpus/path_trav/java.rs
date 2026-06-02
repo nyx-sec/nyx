@@ -27,10 +27,10 @@ use super::super::{CuratedPayload, Oracle, PayloadProvenance, PayloadRef};
 /// `../nyx_pt_canary` traversal resolves.
 pub const CANARY_FILENAME: &str = "nyx_pt_canary";
 
-/// Canary file CONTENT — the collision-resistant FILE_IO marker.  Alphanumeric
-/// + underscore so a faithful HTML/URL escaper leaves it intact when the
-/// fixture writes the read bytes to the response.  NOT a substring of any
-/// payload path.
+/// Canary file content for the collision-resistant FILE_IO marker. It uses
+/// alphanumeric characters plus underscore, so a faithful HTML/URL escaper
+/// leaves it intact when the fixture writes the read bytes to the response.
+/// NOT a substring of any payload path.
 pub const CANARY_MARKER: &str = "NYX_PATHTRAVERSAL_R34D_a7f3c1d8";
 
 pub const PAYLOADS: &[CuratedPayload] = &[

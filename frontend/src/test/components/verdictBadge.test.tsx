@@ -39,7 +39,8 @@ describe('VerdictBadge', () => {
     render(
       <VerdictBadge
         verdict={makeVerdict('PartiallyConfirmed', {
-          detail: 'sink-reachability probe fired but the oracle marker was not observed',
+          detail:
+            'sink-reachability probe fired but the oracle marker was not observed',
         })}
       />,
     );

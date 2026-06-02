@@ -102,10 +102,10 @@ impl JavacPool {
         // If a prior call torched the worker, try one re-spawn here so
         // the caller doesn't see consecutive failures from a transient
         // JVM crash.
-        if guard.is_none() {
-            if let Ok(w) = spawn_worker(&self.bootstrap_dir) {
-                *guard = Some(w);
-            }
+        if guard.is_none()
+            && let Ok(w) = spawn_worker(&self.bootstrap_dir)
+        {
+            *guard = Some(w);
         }
         let worker = match guard.as_mut() {
             Some(w) => w,
@@ -419,8 +419,7 @@ fn decode_b64(s: &str) -> Option<String> {
     }
     let bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    let mut iter = bytes.chunks(4);
-    while let Some(chunk) = iter.next() {
+    for chunk in bytes.chunks(4) {
         if chunk.len() < 2 {
             return None;
         }

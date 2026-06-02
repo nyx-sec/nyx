@@ -287,7 +287,7 @@ unsafe extern "C" {
         target: *const i8,
         fstype: *const i8,
         flags: u64,
-        data: *const i8,
+        data: *const core::ffi::c_void,
     ) -> i32;
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn __errno_location() -> *mut i32;
@@ -317,10 +317,6 @@ fn apply_no_new_privs() -> PrimitiveStatus {
     } else {
         PrimitiveStatus::Failed(last_errno())
     }
-}
-
-fn apply_unshare() -> PrimitiveStatus {
-    apply_unshare_with_flags(CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS)
 }
 
 fn apply_unshare_with_flags(flags: i32) -> PrimitiveStatus {
@@ -388,9 +384,10 @@ struct BindMount {
 /// the [`HardeningOutcome`] wire record, so callers that care about the
 /// bind-mount succeeding gate on whether the harness produced output.
 ///
-/// Called in pre_exec between [`apply_unshare`] and [`apply_chroot`] so
-/// the new mount namespace is private to the child + grandchildren and
-/// the workdir is still reachable at its host-side absolute path.
+/// Called in pre_exec after [`apply_unshare_with_flags`] and before
+/// [`apply_chroot`] so the new mount namespace is private to the child +
+/// grandchildren and the workdir is still reachable at its host-side absolute
+/// path.
 fn apply_bind_mounts(mounts: &[BindMount]) {
     let none = b"none\0";
     for m in mounts {

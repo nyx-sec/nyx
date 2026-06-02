@@ -130,10 +130,7 @@ fn corpus_canaries_use_placeholder_and_are_substitutable() {
 /// once for the oracle — and the two must agree).
 #[test]
 fn canary_entropy_and_determinism() {
-    assert!(
-        Canary::ENTROPY_BITS >= 128,
-        "Canary::ENTROPY_BITS must clear the 128-bit floor",
-    );
+    const { assert!(Canary::ENTROPY_BITS >= 128) };
 
     let bytes = Canary::generate("spec-hash-under-audit");
     assert_eq!(bytes.len(), 32, "canary is 256 bits of BLAKE3 output");

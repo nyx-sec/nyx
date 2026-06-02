@@ -216,13 +216,6 @@ jobs:
   rust-stable-test-linux-with-docker:
     name: rust-stable-test / linux-with-docker
     runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
-    env:
-      DOCKER_TLS_CERTDIR: ""
-      DOCKER_HOST: tcp://docker:2375
     steps:
       - uses: actions/checkout@v6
 
@@ -253,13 +246,6 @@ jobs:
   escape-positive-control:
     name: escape-positive-control
     runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
-    env:
-      DOCKER_TLS_CERTDIR: ""
-      DOCKER_HOST: tcp://docker:2375
     steps:
       - uses: actions/checkout@v6
 
@@ -364,16 +350,18 @@ jobs:
           cache: true
           cache-key: benchmark-gate-release
 
+      - uses: taiki-e/install-action@nextest
+
       - name: Build benchmark + perf test binaries
-        run: cargo test --release --all-features --test benchmark_test --test perf_tests --no-run
+        run: cargo nextest run --release --all-features --test benchmark_test --test perf_tests --no-run
 
       - name: Accuracy regression gate (P/R/F1)
-        run: cargo test --release --all-features --test benchmark_test -- --ignored --nocapture benchmark_evaluation
+        run: cargo nextest run --release --all-features --test benchmark_test --run-ignored only --no-capture benchmark_evaluation
 
       - name: Performance regression gate
         env:
           NYX_CI_BENCH: "1"
-        run: cargo test --release --all-features --test perf_tests -- --nocapture
+        run: cargo nextest run --release --all-features --test perf_tests --no-capture
 
       - name: Upload benchmark results
         if: always()
@@ -403,6 +391,8 @@ jobs:
         with:
           toolchain: stable
           cache: true
+
+      - uses: taiki-e/install-action@nextest
 
       - name: Corpus unit tests (no_marker_collisions, all_payloads_have_fixture_paths)
         run: cargo nextest run --lib -p nyx-scanner dynamic::corpus

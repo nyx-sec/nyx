@@ -13,7 +13,7 @@
 #                        chroot-leg of the escape suite skips silently
 #                        (Phase 20 follow-up #4 in deferred.md).
 #
-#   linux-with-docker  — Ubuntu host with docker-in-docker.  Exercises
+#   linux-with-docker  — Ubuntu host with the runner Docker daemon.  Exercises
 #                        the docker backend (Phase 19) and the
 #                        differential-confirmation parity tests.
 #
@@ -79,13 +79,6 @@ jobs:
   linux-with-docker:
     name: dynamic / linux-with-docker
     runs-on: ubuntu-latest
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
-    env:
-      DOCKER_TLS_CERTDIR: ""
-      DOCKER_HOST: tcp://docker:2375
     steps:
       - uses: actions/checkout@v6
 

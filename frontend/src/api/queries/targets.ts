@@ -12,7 +12,8 @@ export function useTargets() {
 export function useAddTarget() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { path: string }) => apiPost<TargetView>('/targets', body),
+    mutationFn: (body: { path: string }) =>
+      apiPost<TargetView>('/targets', body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['targets'] });
     },

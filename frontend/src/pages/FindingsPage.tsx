@@ -781,7 +781,9 @@ export function FindingsPage() {
                     </td>
                     <td>
                       <VerdictBadge
-                        verdict={f.dynamic_verdict ?? f.evidence?.dynamic_verdict}
+                        verdict={
+                          f.dynamic_verdict ?? f.evidence?.dynamic_verdict
+                        }
                         compact
                       />
                     </td>

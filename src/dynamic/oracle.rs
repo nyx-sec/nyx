@@ -2021,7 +2021,7 @@ mod tests {
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
             "render must be lowercase hex: {r}",
         );
-        assert!(Canary::ENTROPY_BITS >= 128);
+        const { assert!(Canary::ENTROPY_BITS >= 128) };
         assert!(
             r.len() * 4 >= 128,
             "rendered canary clears the 128-bit floor"

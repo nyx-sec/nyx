@@ -307,8 +307,11 @@ function VerdictDiffSection({ data }: { data: CompareResponse }) {
   const entries = data.verdict_diff;
   if (!entries || entries.length === 0) {
     return (
-      <div style={{ color: 'var(--text-secondary)', padding: 'var(--space-4)' }}>
-        No verdict-level transitions. Both scans share no findings with stable hashes.
+      <div
+        style={{ color: 'var(--text-secondary)', padding: 'var(--space-4)' }}
+      >
+        No verdict-level transitions. Both scans share no findings with stable
+        hashes.
       </div>
     );
   }
@@ -333,11 +336,16 @@ function VerdictDiffSection({ data }: { data: CompareResponse }) {
               <>
                 <span
                   className={`compare-finding-row ${TRANSITION_ROW_CLS[t]}`}
-                  style={{ padding: '0 var(--space-2)', borderRadius: 'var(--radius-sm)' }}
+                  style={{
+                    padding: '0 var(--space-2)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}
                 >
                   {TRANSITION_LABELS[t]}
                 </span>
-                <span style={{ marginLeft: 'var(--space-2)' }}>({items.length})</span>
+                <span style={{ marginLeft: 'var(--space-2)' }}>
+                  ({items.length})
+                </span>
               </>
             }
           >
@@ -345,7 +353,10 @@ function VerdictDiffSection({ data }: { data: CompareResponse }) {
               <div
                 key={i}
                 className={`compare-finding-row ${TRANSITION_ROW_CLS[t]}`}
-                style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--text-xs)',
+                }}
               >
                 <span style={{ color: 'var(--text-tertiary)' }}>
                   {e.path}:{e.line}

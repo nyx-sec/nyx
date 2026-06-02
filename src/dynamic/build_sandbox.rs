@@ -100,16 +100,16 @@ pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 /// healthy pool is surfaced verbatim (no legacy re-run — it would fail the
 /// same way).
 fn build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
-    if is_pool_enabled("rust") {
-        if let Ok(pool) = RustPool::try_new() {
-            let pool_args = [binary_dest.to_string_lossy().into_owned()];
-            let res = pool.compile_batch(workdir, &pool_args);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("rust")
+        && let Ok(pool) = RustPool::try_new()
+    {
+        let pool_args = [binary_dest.to_string_lossy().into_owned()];
+        let res = pool.compile_batch(workdir, &pool_args);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_build_rust_binary(workdir, binary_dest)
@@ -496,15 +496,15 @@ pub fn prepare_ruby(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 /// Route Bundler through [`RubyPool`] (shared Bootsnap cache) when enabled,
 /// else the legacy `bundle check`/`install` path.
 fn bundle_install(workdir: &Path) -> Result<(), String> {
-    if is_pool_enabled("ruby") {
-        if let Ok(pool) = RubyPool::try_new() {
-            let res = pool.compile_batch(workdir, &[]);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("ruby")
+        && let Ok(pool) = RubyPool::try_new()
+    {
+        let res = pool.compile_batch(workdir, &[]);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_bundle_install(workdir)
@@ -672,15 +672,15 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 /// Route `npm install` through [`NodePool`] (shared npm download cache) when
 /// enabled, else the legacy direct-spawn path.
 fn npm_install(workdir: &Path) -> Result<(), String> {
-    if is_pool_enabled("node") {
-        if let Ok(pool) = NodePool::try_new() {
-            let res = pool.compile_batch(workdir, &[]);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("node")
+        && let Ok(pool) = NodePool::try_new()
+    {
+        let res = pool.compile_batch(workdir, &[]);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_npm_install(workdir)
@@ -804,16 +804,16 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
 /// `GOMODCACHE`, `-trimpath -buildvcs=false`) when enabled, else the legacy
 /// per-workdir-cache path.
 fn build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
-    if is_pool_enabled("go") {
-        if let Ok(pool) = GoPool::try_new() {
-            let pool_args = [binary_dest.to_string_lossy().into_owned()];
-            let res = pool.compile_batch(workdir, &pool_args);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("go")
+        && let Ok(pool) = GoPool::try_new()
+    {
+        let pool_args = [binary_dest.to_string_lossy().into_owned()];
+        let res = pool.compile_batch(workdir, &pool_args);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_build_go_binary(workdir, binary_dest)
@@ -1115,22 +1115,22 @@ fn try_compile_java_with_toolchain(
     // the direct-spawn legacy path so an operator with a broken JDK
     // install still gets a deterministic build error from `javac`
     // itself rather than from the pool wrapper.
-    if is_pool_enabled("java") {
-        if let Some(pool) = javac_pool_for(toolchain_id) {
-            let result = pool.compile_batch(workdir, &args);
-            if result.success {
-                return finalize_java_compile(workdir, cache_path, lib_on_cp);
-            }
-            if pool.is_healthy() {
-                // The compile itself failed (real source error) -- surface
-                // the worker's stderr verbatim.
-                return Err(result.stderr);
-            }
-            // Worker crashed: drop the cached pool so the next call
-            // re-spawns it, then fall through to the legacy direct-spawn
-            // path so this build still has a chance to succeed.
-            drop_javac_pool(toolchain_id);
+    if is_pool_enabled("java")
+        && let Some(pool) = javac_pool_for(toolchain_id)
+    {
+        let result = pool.compile_batch(workdir, &args);
+        if result.success {
+            return finalize_java_compile(workdir, cache_path, lib_on_cp);
         }
+        if pool.is_healthy() {
+            // The compile itself failed (real source error) -- surface
+            // the worker's stderr verbatim.
+            return Err(result.stderr);
+        }
+        // Worker crashed: drop the cached pool so the next call
+        // re-spawns it, then fall through to the legacy direct-spawn
+        // path so this build still has a chance to succeed.
+        drop_javac_pool(toolchain_id);
     }
 
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
@@ -1372,15 +1372,15 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
 /// Route Composer through [`PhpPool`] (shared download cache + opcache
 /// file-cache warm) when enabled, else the legacy direct-spawn path.
 fn composer_install(workdir: &Path) -> Result<(), String> {
-    if is_pool_enabled("php") {
-        if let Ok(pool) = PhpPool::try_new() {
-            let res = pool.compile_batch(workdir, &[]);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("php")
+        && let Ok(pool) = PhpPool::try_new()
+    {
+        let res = pool.compile_batch(workdir, &[]);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_composer_install(workdir)
@@ -1486,19 +1486,19 @@ pub fn prepare_c(
 /// static-link toggle is forwarded so the pool can reproduce the
 /// Strict-profile `-static` fallback.
 fn build_c_binary(workdir: &Path, binary_dest: &Path, static_link: bool) -> Result<(), String> {
-    if is_pool_enabled("c") {
-        if let Ok(pool) = CPool::try_new() {
-            let pool_args = [
-                binary_dest.to_string_lossy().into_owned(),
-                if static_link { "static" } else { "dynamic" }.to_owned(),
-            ];
-            let res = pool.compile_batch(workdir, &pool_args);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("c")
+        && let Ok(pool) = CPool::try_new()
+    {
+        let pool_args = [
+            binary_dest.to_string_lossy().into_owned(),
+            if static_link { "static" } else { "dynamic" }.to_owned(),
+        ];
+        let res = pool.compile_batch(workdir, &pool_args);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_build_c_binary(workdir, binary_dest, static_link)
@@ -1654,16 +1654,16 @@ pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
 /// Route the C++ harness build through [`CppPool`] (`ccache` + shared object
 /// cache) when enabled, else the legacy direct-spawn `c++` path.
 fn build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
-    if is_pool_enabled("cpp") {
-        if let Ok(pool) = CppPool::try_new() {
-            let pool_args = [binary_dest.to_string_lossy().into_owned()];
-            let res = pool.compile_batch(workdir, &pool_args);
-            if res.success {
-                return Ok(());
-            }
-            if pool.is_healthy() {
-                return Err(res.stderr);
-            }
+    if is_pool_enabled("cpp")
+        && let Ok(pool) = CppPool::try_new()
+    {
+        let pool_args = [binary_dest.to_string_lossy().into_owned()];
+        let res = pool.compile_batch(workdir, &pool_args);
+        if res.success {
+            return Ok(());
+        }
+        if pool.is_healthy() {
+            return Err(res.stderr);
         }
     }
     try_build_cpp_binary(workdir, binary_dest)

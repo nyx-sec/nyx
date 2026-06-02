@@ -53,14 +53,14 @@ impl BuildPool for RubyPool {
         let start = Instant::now();
 
         // `bundle check` short-circuits when the host already has every gem.
-        if let Ok(o) = self.bundle(workdir).arg("check").output() {
-            if o.status.success() {
-                return PoolCompileResult {
-                    success: true,
-                    stderr: String::new(),
-                    duration: start.elapsed(),
-                };
-            }
+        if let Ok(o) = self.bundle(workdir).arg("check").output()
+            && o.status.success()
+        {
+            return PoolCompileResult {
+                success: true,
+                stderr: String::new(),
+                duration: start.elapsed(),
+            };
         }
 
         // The install target is pinned to a writable vendor dir via

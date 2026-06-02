@@ -56,7 +56,8 @@ function nodeSubtitle(node: SurfaceNode): string {
 }
 
 function nodeLocation(node: SurfaceNode): string {
-  const loc = node.node === 'entry_point' ? node.handler_location : node.location;
+  const loc =
+    node.node === 'entry_point' ? node.handler_location : node.location;
   return `${loc.file}:${loc.line}`;
 }
 
@@ -158,9 +159,12 @@ function NeighborList({
                 {EDGE_KIND_LABELS[e.kind]}
               </span>
               <span>
-                {direction === 'in' ? '←' : '→'} <strong>{nodeTitle(other)}</strong>
+                {direction === 'in' ? '←' : '→'}{' '}
+                <strong>{nodeTitle(other)}</strong>
               </span>
-              <code className="surface-neighbor-edge-loc">{nodeLocation(other)}</code>
+              <code className="surface-neighbor-edge-loc">
+                {nodeLocation(other)}
+              </code>
             </li>
           );
         })}
@@ -250,7 +254,11 @@ export function SurfacePage() {
           <option value="external_service">External services</option>
           <option value="dangerous_local">Dangerous locals</option>
         </select>
-        <div className="surface-view-toggle" role="tablist" aria-label="Surface view">
+        <div
+          className="surface-view-toggle"
+          role="tablist"
+          aria-label="Surface view"
+        >
           <button
             type="button"
             role="tab"

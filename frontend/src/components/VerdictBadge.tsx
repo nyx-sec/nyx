@@ -25,7 +25,9 @@ function verdictTooltip(verdict: VerifyResult): string {
         ? `Not confirmed after ${verdict.attempts?.length ?? 0} payload attempt(s)`
         : 'Not confirmed';
     case 'Unsupported':
-      return reason ? `Unsupported: ${reason}` : 'Dynamic verification not supported';
+      return reason
+        ? `Unsupported: ${reason}`
+        : 'Dynamic verification not supported';
     case 'Inconclusive':
       return inconclusive_reason
         ? `Inconclusive: ${inconclusive_reason}${detail ? `: ${detail}` : ''}`

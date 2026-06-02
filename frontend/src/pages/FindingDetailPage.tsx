@@ -733,7 +733,9 @@ export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
             className="dynamic-toolchain-match"
             title={`Toolchain match: ${verdict.toolchain_match}`}
           >
-            {verdict.toolchain_match === 'exact' ? 'exact toolchain' : 'approximate toolchain'}
+            {verdict.toolchain_match === 'exact'
+              ? 'exact toolchain'
+              : 'approximate toolchain'}
           </span>
         )}
       </div>
@@ -763,7 +765,8 @@ export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
           )}
           {verdict.inconclusive_reason && (
             <div>
-              <strong>Inconclusive reason:</strong> {verdict.inconclusive_reason}
+              <strong>Inconclusive reason:</strong>{' '}
+              {verdict.inconclusive_reason}
             </div>
           )}
           {verdict.detail && (
@@ -777,7 +780,10 @@ export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
           <strong>Payload attempts:</strong>
           <ul className="dynamic-attempt-list">
             {attempts.map((a, i) => (
-              <li key={i} className={`attempt-row ${a.triggered ? 'triggered' : ''}`}>
+              <li
+                key={i}
+                className={`attempt-row ${a.triggered ? 'triggered' : ''}`}
+              >
                 <code>{a.payload_label}</code>
                 <span className="attempt-outcome">
                   {a.triggered
