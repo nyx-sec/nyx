@@ -89,6 +89,7 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::CODE_EXEC, Lang::Ruby, cmdi::ruby::PAYLOADS),
     (Cap::CODE_EXEC, Lang::TypeScript, cmdi::typescript::PAYLOADS),
     (Cap::FILE_IO, Lang::Rust, path_trav::rust::PAYLOADS),
+    (Cap::FILE_IO, Lang::Java, path_trav::java::PAYLOADS),
     (Cap::SSRF, Lang::Rust, ssrf::rust::PAYLOADS),
     (Cap::HTML_ESCAPE, Lang::Rust, xss::rust::PAYLOADS),
     (Cap::FMT_STRING, Lang::C, fmt_string::c::PAYLOADS),

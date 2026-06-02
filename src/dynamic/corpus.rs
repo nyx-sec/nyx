@@ -56,7 +56,9 @@ mod header_injection;
 mod json_parse;
 mod ldap;
 mod open_redirect;
-mod path_trav;
+// `pub(crate)` so the Java emitter can read the FILE_IO canary filename /
+// marker consts it must stage into the servlet harness workdir.
+pub(crate) mod path_trav;
 mod prototype_pollution;
 mod sqli;
 mod ssrf;
@@ -104,7 +106,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 14      | 2026-05-18 | Phase 10 / Track J.8: `PROTOTYPE_POLLUTION` cap lit for JS / TS; `ProbeKind::PrototypePollution` + `ProbePredicate::PrototypeCanaryTouched`; Node harness installs `Proxy`-style canary trap on `Object.prototype.__nyx_canary` |
 /// | 15      | 2026-05-18 | Phase 11 / Track J.9: `CRYPTO` (Java/Python/PHP/Go/Rust) + `JSON_PARSE` (JS/Python/Ruby) + `UNAUTHORIZED_ID` (7 langs) + `DATA_EXFIL` (7 langs); `ProbeKind::{WeakKey,IdorAccess,OutboundNetwork}` + `ProbePredicate::{WeakKeyEntropy,IdorBoundaryCrossed,OutboundHostNotIn}`; `UnsupportedReason::SoundOracleUnavailable` for caps with no sound oracle |
 /// | 16      | 2026-06-01 | Collision-resistant `cmdi` (`CODE_EXEC`) marker: payload `; echo NYX_PWN_$((113*7))_CMDI`, oracle `OutputContains("NYX_PWN_791_CMDI")`. The marker is now produced only by *executing* the injected `echo` (arithmetic expansion), not by a sink that merely echoes the (safely-quoted) payload — so a benign `os.system("echo " + shlex.quote(x))` control no longer false-confirms. Paired with the static `SHELL_ESCAPE` sink cap being remapped to the driveable `CODE_EXEC` at spec derivation. |
-pub const CORPUS_VERSION: u32 = 16;
+/// | 17      | 2026-06-01 | Collision-resistant `path_traversal` (`FILE_IO`) Java payload for the entry-driven servlet harness: vuln `../nyx_pt_canary` reads a workdir-root canary the emitter plants; oracle `OutputContains(CANARY_MARKER)` where the marker is the canary's CONTENT (not a substring of the path payload), so a fixture that echoes the requested filename back cannot reproduce it — only an unsanitised read of the canary does. |
+pub const CORPUS_VERSION: u32 = 17;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

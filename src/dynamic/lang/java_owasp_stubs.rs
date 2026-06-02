@@ -96,6 +96,10 @@ pub fn owasp_stub_files() -> Vec<(String, String)> {
             "org/springframework/web/util/HtmlUtils.java".to_owned(),
             html_utils_stub(),
         ),
+        (
+            "org/apache/commons/lang/StringEscapeUtils.java".to_owned(),
+            string_escape_utils_stub(),
+        ),
     ]
 }
 
@@ -110,25 +114,78 @@ pub fn entry_needs_owasp_stubs(source: &str) -> bool {
         || source.contains("org.springframework.dao.")
         || source.contains("org.springframework.jdbc.")
         || source.contains("org.springframework.web.util.")
+        || source.contains("org.apache.commons.lang.StringEscapeUtils")
 }
 
 fn utils_stub() -> String {
+    // FIDELITY (Track L.12): the real `Utils.encodeForHTML` /
+    // `htmlEscape` / `escapeHtml` delegate to a genuine HTML encoder
+    // (`ESAPI.encoder().encodeForHTML` / Spring `HtmlUtils.htmlEscape`).
+    // The verifier drives the real servlet with a live `<script>` payload,
+    // so the stub MUST escape faithfully: a benign fixture that routes the
+    // tainted value through one of these helpers neutralises the payload,
+    // and a no-op stub would echo the marker raw and FALSE-CONFIRM.  Only
+    // an unsanitised raw write (`getWriter().print(param)`) reaches the
+    // response with the live marker.  `printOSCommandResults` streams the
+    // child process's stdout/stderr to the response writer (and stdout) so
+    // a CODE_EXEC marker echoed by an injected `echo` reaches the
+    // OutputContains oracle.
     r#"package org.owasp.benchmark.helpers;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 public class Utils {
-    public static String testfileDir = "/tmp/testfiles/";
-    public static String encodeForHTML(String s) { return s == null ? "" : s; }
-    public static String escapeHtml(String s) { return s == null ? "" : s; }
-    public static String htmlEscape(String s) { return s == null ? "" : s; }
+    // Faithful to the real helper (`user.dir + /testfiles/`); resolves to the
+    // harness workdir's `testfiles/` because the Java harness runs with CWD =
+    // workdir.  The FILE_IO path-traversal payload `../nyx_pt_canary` escapes
+    // this one level to the workdir-root canary the emitter plants.
+    public static String testfileDir =
+        System.getProperty("user.dir") + java.io.File.separator + "testfiles" + java.io.File.separator;
+    static String nyxEscapeHtml(String s) {
+        if (s == null) return "";
+        StringBuilder o = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            switch (ch) {
+                case '&': o.append("&amp;"); break;
+                case '<': o.append("&lt;"); break;
+                case '>': o.append("&gt;"); break;
+                case '"': o.append("&quot;"); break;
+                case '\'': o.append("&#x27;"); break;
+                case '/': o.append("&#x2f;"); break;
+                default: o.append(ch);
+            }
+        }
+        return o.toString();
+    }
+    public static String encodeForHTML(Object param) {
+        return param == null ? "" : nyxEscapeHtml(String.valueOf(param));
+    }
+    public static String escapeHtml(String s) { return nyxEscapeHtml(s); }
+    public static String htmlEscape(String s) { return nyxEscapeHtml(s); }
     public static String getFileFromClasspath(String name, ClassLoader cl) { return name; }
     public static String getInsecureOSCommandString(ClassLoader cl) { return "/bin/sh"; }
     public static String getOSCommandString(String cmd) { return cmd == null ? "/bin/sh" : cmd; }
     public static void printOSCommandResults(Process p, Object response) {
-        try {
-            InputStream is = p.getInputStream();
-            if (is != null) { is.close(); }
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) { out.append(line).append('\n'); }
         } catch (IOException ignore) {}
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getErrorStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) { out.append(line).append('\n'); }
+        } catch (IOException ignore) {}
+        String text = out.toString();
+        System.out.print(text);
+        if (response != null) {
+            try {
+                Object w = response.getClass().getMethod("getWriter").invoke(response);
+                w.getClass().getMethod("write", String.class).invoke(w, text);
+            } catch (Exception ignore) {}
+        }
+        try { p.waitFor(); } catch (InterruptedException ignore) {}
     }
 }
 "#
@@ -194,15 +251,33 @@ public class LDAPManager {
 }
 
 fn separate_class_request_stub() -> String {
-    // Real SeparateClassRequest wraps a servlet request and delegates
-    // getTheParameter / getTheValue through to it; the stub keeps the
-    // public surface but discards the request reference.
+    // FIDELITY (Track L.12): the real `SeparateClassRequest` wraps the
+    // servlet request.  `getTheParameter` / `getTheCookie` are TAINTED
+    // sources (delegate to the request, which the Nyx stub firehoses with
+    // the payload); `getTheValue` is a SAFE source — the real helper
+    // returns the constant `"bar"` regardless of input, so benign fixtures
+    // that read through `getTheValue` must NOT receive the payload (else
+    // they false-confirm).  Delegating to the (firehosed) request keeps the
+    // tainted accessors live while the constant keeps the safe one safe.
     r#"package org.owasp.benchmark.helpers;
+import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 public class SeparateClassRequest {
-    public SeparateClassRequest(HttpServletRequest request) {}
-    public String getTheParameter(String name) { return null; }
-    public String getTheValue(String name) { return null; }
+    private HttpServletRequest request;
+    public SeparateClassRequest(HttpServletRequest request) { this.request = request; }
+    public String getTheParameter(String p) { return request == null ? null : request.getParameter(p); }
+    public String getTheCookie(String c) {
+        if (request == null) return "";
+        Cookie[] cookies = request.getCookies();
+        if (cookies != null) {
+            for (Cookie cookie : cookies) {
+                if (cookie.getName().equals(c)) { return cookie.getValue(); }
+            }
+        }
+        return "";
+    }
+    // Safe source: the real helper hard-codes this return.
+    public String getTheValue(String p) { return "bar"; }
 }
 "#
     .to_owned()
@@ -231,10 +306,33 @@ public interface ThingInterface {
 }
 
 fn esapi_stub() -> String {
+    // FIDELITY (Track L.12): `ESAPI.encoder().encodeForHTML` is a REAL
+    // HTML encoder in upstream ESAPI.  OWASP benign fixtures (and the
+    // incidental `getWriter().write(ESAPI.encoder().encodeForHTML(fileName))`
+    // echoes in path-traversal / crypto fixtures) rely on it neutralising
+    // metacharacters.  A no-op stub would let a firehosed `<script>` marker
+    // through and FALSE-CONFIRM xss on those files, so the stub escapes
+    // `& < > " ' /` exactly like the real encoder's HTML context.
     r#"package org.owasp.esapi;
 public class ESAPI {
     private static final Encoder ENCODER = new Encoder() {
-        @Override public String encodeForHTML(String s) { return s == null ? "" : s; }
+        @Override public String encodeForHTML(String s) {
+            if (s == null) return "";
+            StringBuilder o = new StringBuilder(s.length() + 16);
+            for (int i = 0; i < s.length(); i++) {
+                char ch = s.charAt(i);
+                switch (ch) {
+                    case '&': o.append("&amp;"); break;
+                    case '<': o.append("&lt;"); break;
+                    case '>': o.append("&gt;"); break;
+                    case '"': o.append("&quot;"); break;
+                    case '\'': o.append("&#x27;"); break;
+                    case '/': o.append("&#x2f;"); break;
+                    default: o.append(ch);
+                }
+            }
+            return o.toString();
+        }
         @Override public String encodeForBase64(byte[] b, boolean wrap) {
             return b == null ? "" : java.util.Base64.getEncoder().encodeToString(b);
         }
@@ -250,6 +348,35 @@ fn encoder_stub() -> String {
 public interface Encoder {
     String encodeForHTML(String s);
     String encodeForBase64(byte[] b, boolean wrap);
+}
+"#
+    .to_owned()
+}
+
+fn string_escape_utils_stub() -> String {
+    // FIDELITY (Track L.12): Apache Commons Lang `StringEscapeUtils.escapeHtml`
+    // is a real HTML encoder used as the XSS defence in benign OWASP fixtures
+    // (`org.apache.commons.lang.StringEscapeUtils.escapeHtml(param)`, inline
+    // FQN).  Without the stub javac reports the package missing → BuildFailed;
+    // with a faithful escape a benign escape path neutralises the marker.
+    r#"package org.apache.commons.lang;
+public class StringEscapeUtils {
+    public static String escapeHtml(String s) {
+        if (s == null) return null;
+        StringBuilder o = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            switch (ch) {
+                case '&': o.append("&amp;"); break;
+                case '<': o.append("&lt;"); break;
+                case '>': o.append("&gt;"); break;
+                case '"': o.append("&quot;"); break;
+                default: o.append(ch);
+            }
+        }
+        return o.toString();
+    }
+    public static String unescapeHtml(String s) { return s; }
 }
 "#
     .to_owned()
@@ -293,9 +420,29 @@ public interface SqlRowSet {
 }
 
 fn html_utils_stub() -> String {
+    // FIDELITY (Track L.12): Spring `HtmlUtils.htmlEscape` is a real HTML
+    // encoder; benign OWASP fixtures use it as the XSS defence.  Escape
+    // faithfully so a firehosed `<script>` marker cannot survive a benign
+    // escape path and false-confirm.
     r#"package org.springframework.web.util;
 public class HtmlUtils {
-    public static String htmlEscape(String s) { return s == null ? "" : s; }
+    public static String htmlEscape(String s) {
+        if (s == null) return "";
+        StringBuilder o = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            switch (ch) {
+                case '&': o.append("&amp;"); break;
+                case '<': o.append("&lt;"); break;
+                case '>': o.append("&gt;"); break;
+                case '"': o.append("&quot;"); break;
+                case '\'': o.append("&#39;"); break;
+                default: o.append(ch);
+            }
+        }
+        return o.toString();
+    }
+    public static String htmlEscape(String s, String enc) { return htmlEscape(s); }
     public static String htmlUnescape(String s) { return s == null ? "" : s; }
 }
 "#
@@ -354,6 +501,7 @@ mod tests {
             "org/springframework/jdbc/core/RowMapper.java",
             "org/springframework/jdbc/support/rowset/SqlRowSet.java",
             "org/springframework/web/util/HtmlUtils.java",
+            "org/apache/commons/lang/StringEscapeUtils.java",
         ] {
             assert!(
                 paths.iter().any(|p| p == required),
@@ -451,8 +599,8 @@ mod tests {
         let files = owasp_stub_files();
         assert_eq!(
             files.len(),
-            13,
-            "expected 9 owasp + 4 springframework stubs"
+            14,
+            "expected 9 owasp + 4 springframework + 1 commons-lang stub"
         );
     }
 }

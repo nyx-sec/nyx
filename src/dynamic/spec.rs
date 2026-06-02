@@ -1700,7 +1700,7 @@ fn cap_for_rule_category(category: &str) -> Option<Cap> {
 /// `os.system("echo " + shlex.quote(x))` control no longer false-confirms).
 /// Other set bits are preserved so a multi-cap sink keeps its other
 /// (already-driveable) capabilities.
-fn drivable_expected_cap(cap: Cap) -> Cap {
+pub(crate) fn drivable_expected_cap(cap: Cap) -> Cap {
     if cap.contains(Cap::SHELL_ESCAPE) {
         (cap - Cap::SHELL_ESCAPE) | Cap::CODE_EXEC
     } else {

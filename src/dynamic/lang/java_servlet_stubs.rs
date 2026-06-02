@@ -165,23 +165,45 @@ import {pkg}.ServletInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 public class HttpServletRequest {{
     private final Map<String, String> params = new HashMap<>();
     private String method = "GET";
     private String body = "";
+    // ── Nyx taint-firehose seeding (Track L.12) ──────────────────────────────
+    // The dynamic verifier drives the real servlet `doPost`/`doGet` with a
+    // malicious request.  Real OWASP-shape servlets read the tainted slot
+    // through one of many accessors (`getParameter`, `getHeader`,
+    // `getHeaders`, `getCookies`, `getQueryString`, `getReader`,
+    // `getInputStream`) keyed on a name the harness does not know a priori.
+    // Rather than guess the slot, the stub returns the seeded payload from
+    // EVERY source accessor (the "firehose"): whichever accessor/name the
+    // servlet reads, it receives the payload.  This is sound — the servlet's
+    // OWN sanitiser / branch logic still runs on the firehosed value, so a
+    // benign fixture that neutralises the input (constant-overwrite, real
+    // escaper, validator) still produces no marker; only an unsanitised flow
+    // reaches the sink with the live payload.  Cookie slots are name-matched
+    // (`cookie.getName().equals("X")`), so the harness seeds the candidate
+    // names it extracted from the servlet source into `nyxCookieNames`.
+    private String nyxTaint = null;
+    private String[] nyxCookieNames = new String[0];
     public HttpServletRequest() {{}}
     public void setParameter(String name, String value) {{ params.put(name, value); }}
     public void setMethod(String m) {{ this.method = m; }}
-    public void setBody(String b) {{ this.body = b == null ? "" : b; }}
+    public void setBody(String b) {{ this.body = b == null ? "" : b; if (b != null && nyxTaint == null) nyxTaint = b; }}
+    public void nyxSeedTaint(String v) {{ this.nyxTaint = v; if (v != null) this.body = v; }}
+    public void nyxSeedCookieNames(String[] names) {{ if (names != null) this.nyxCookieNames = names; }}
     public String getBody() {{ return body; }}
-    public String getParameter(String name) {{ return params.get(name); }}
+    public String getParameter(String name) {{ String v = params.get(name); return v != null ? v : nyxTaint; }}
     public String[] getParameterValues(String name) {{
         String v = params.get(name);
+        if (v == null) v = nyxTaint;
         return v == null ? null : new String[] {{ v }};
     }}
     public Map<String, String[]> getParameterMap() {{
@@ -192,18 +214,37 @@ public class HttpServletRequest {{
         return m;
     }}
     public Enumeration<String> getParameterNames() {{ return Collections.enumeration(params.keySet()); }}
-    public String getHeader(String name) {{ return null; }}
-    public Enumeration<String> getHeaders(String name) {{ return Collections.emptyEnumeration(); }}
+    public String getHeader(String name) {{ return nyxTaint; }}
+    public Enumeration<String> getHeaders(String name) {{
+        return nyxTaint == null
+            ? Collections.<String>emptyEnumeration()
+            : Collections.enumeration(Collections.singletonList(nyxTaint));
+    }}
     public Enumeration<String> getHeaderNames() {{ return Collections.emptyEnumeration(); }}
     public int getIntHeader(String name) {{ return -1; }}
     public long getDateHeader(String name) {{ return -1L; }}
-    public Cookie[] getCookies() {{ return null; }}
+    public Cookie[] getCookies() {{
+        if (nyxTaint == null) return null;
+        List<Cookie> cs = new ArrayList<>();
+        for (String n : nyxCookieNames) {{ if (n != null) cs.add(new Cookie(n, nyxTaint)); }}
+        if (cs.isEmpty()) cs.add(new Cookie("vector", nyxTaint));
+        return cs.toArray(new Cookie[0]);
+    }}
     public HttpSession getSession() {{ return new HttpSession(); }}
     public HttpSession getSession(boolean create) {{ return new HttpSession(); }}
-    public ServletInputStream getInputStream() throws IOException {{ return null; }}
-    public BufferedReader getReader() throws IOException {{ return new BufferedReader(new StringReader(body)); }}
+    public ServletInputStream getInputStream() throws IOException {{
+        final byte[] data = (nyxTaint != null ? nyxTaint : body)
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return new ServletInputStream() {{
+            private int pos = 0;
+            @Override public int read() throws IOException {{ return pos < data.length ? (data[pos++] & 0xff) : -1; }}
+        }};
+    }}
+    public BufferedReader getReader() throws IOException {{
+        return new BufferedReader(new StringReader(nyxTaint != null ? nyxTaint : body));
+    }}
     public String getMethod() {{ return method; }}
-    public String getQueryString() {{ return null; }}
+    public String getQueryString() {{ return nyxTaint; }}
     public StringBuffer getRequestURL() {{ return new StringBuffer(); }}
     public String getRequestURI() {{ return ""; }}
     public String getRemoteAddr() {{ return "127.0.0.1"; }}

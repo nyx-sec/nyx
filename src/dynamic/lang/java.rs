@@ -724,6 +724,23 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files.extend(crate::dynamic::lang::java_owasp_stubs::owasp_stub_files());
     }
 
+    // FILE_IO (path-traversal) entry-driven confirmation: plant a canary at the
+    // workdir root whose CONTENT is the collision-resistant marker, plus an
+    // empty `testfiles/` directory so the `../nyx_pt_canary` payload resolves
+    // (`<workdir>/testfiles/../nyx_pt_canary` → `<workdir>/nyx_pt_canary`).  The
+    // Utils stub points `testfileDir` at `<workdir>/testfiles/` (via
+    // `System.getProperty("user.dir")`), and the harness CWD is the workdir.  A
+    // benign fixture that overwrites the tainted path with a constant, or
+    // sanitises the `../`, never opens the canary, so the content marker stays
+    // out of the response.
+    if spec.expected_cap == crate::labels::Cap::FILE_IO {
+        extra_files.push(("testfiles/.nyxkeep".to_owned(), String::new()));
+        extra_files.push((
+            crate::dynamic::corpus::path_trav::java::CANARY_FILENAME.to_owned(),
+            crate::dynamic::corpus::path_trav::java::CANARY_MARKER.to_owned(),
+        ));
+    }
+
     Ok(HarnessSource {
         source,
         filename: "NyxHarness.java".to_owned(),
@@ -3220,6 +3237,85 @@ fn pre_call_setup(spec: &HarnessSpec) -> String {
     }
 }
 
+/// Extract the request-slot names a servlet keys its source read on so the
+/// firehose request stub can seed cookies under the right name.  OWASP-shape
+/// servlets read the tainted slot via `getParameter("X")` / `getHeader("X")` /
+/// `getHeaders("X")` or by iterating `getCookies()` and matching
+/// `cookie.getName().equals("X")` (often via `SeparateClassRequest`).  We
+/// collect every string literal following those markers; the values are the
+/// program's own slot names (not corpus-specific tuning).  Deduplicated,
+/// capped, and only simple `"..."` literals (no escapes) are taken.
+fn servlet_slot_names(source: &str) -> Vec<String> {
+    const MARKERS: &[&str] = &[
+        ".equals(\"",
+        "getParameter(\"",
+        "getParameterValues(\"",
+        "getHeader(\"",
+        "getHeaders(\"",
+        "getTheParameter(\"",
+        "getTheCookie(\"",
+        "getTheValue(\"",
+    ];
+    let mut names: Vec<String> = Vec::new();
+    for marker in MARKERS {
+        let mut rest = source;
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            if let Some(end) = after.find('"') {
+                let lit = &after[..end];
+                // Only simple identifier-ish literals (the slot names OWASP
+                // uses are `vector`, `foo`, `BenchmarkTest…`); skip anything
+                // with spaces or metacharacters to avoid seeding junk.
+                if !lit.is_empty()
+                    && lit.len() <= 64
+                    && lit
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+                    && !names.iter().any(|n| n == lit)
+                {
+                    names.push(lit.to_owned());
+                }
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+            if names.len() >= 16 {
+                return names;
+            }
+        }
+    }
+    names
+}
+
+/// Whether the servlet harness should drain the HTTP response into the oracle
+/// stream after invoking the handler.
+///
+/// Suppressed for `HTML_ESCAPE` (reflected XSS): its only oracle is "the
+/// `<script>…` marker appears in the response", but that marker IS the payload,
+/// so ANY reflection — including incidental echoes a non-XSS fixture performs
+/// (`getWriter().write("…'" + new File(param) + "'…")` in a path-traversal
+/// testcase) — reproduces it.  That is exactly the substring-on-payload
+/// collision the corpus design forbids (cf. the collision-resistant CODE_EXEC
+/// computed marker), so reflected XSS has no sound runtime oracle here and the
+/// response must not feed it; the finding stays NotConfirmed rather than
+/// risk a confirm whose cap cannot be told apart from the file's labelled one.
+/// CODE_EXEC / FILE_IO / SQL_QUERY markers are collision-resistant (executed
+/// command output, planted-canary content, DB-side effect), so their response
+/// drain stays on.
+fn servlet_drain_response(spec: &HarnessSpec) -> bool {
+    spec.expected_cap != crate::labels::Cap::HTML_ESCAPE
+}
+
+/// Render a Java `new String[]{...}` literal from extracted slot names.
+fn slot_names_java_array(names: &[String]) -> String {
+    let inner = names
+        .iter()
+        .map(|n| format!("{n:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("new String[]{{{inner}}}")
+}
+
 /// Emit the per-shape entry-invocation block.  Shapes that need
 /// reflection plumbing rely on helpers from [`shape_helpers`].
 fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> String {
@@ -3230,11 +3326,19 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
             "            String[] mainArgs = new String[] {{ payload }};\n            {entry_class}.main(mainArgs);"
         ),
         JavaShape::ServletDoGet => {
-            format!("            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\");")
+            let slots = slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
+            let drain = servlet_drain_response(spec);
+            format!(
+                "            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\", {slots}, {drain});"
+            )
         }
-        JavaShape::ServletDoPost => format!(
-            "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\");"
-        ),
+        JavaShape::ServletDoPost => {
+            let slots = slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
+            let drain = servlet_drain_response(spec);
+            format!(
+                "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\", {slots}, {drain});"
+            )
+        }
         JavaShape::SpringController => {
             format!(
                 "            System.out.println(\"NYX_SPRING_TEST=1\");\n            invokeSpringController({entry_class}.class, \"{method}\", payload);"
@@ -3278,7 +3382,7 @@ fn shape_uses_reflection(shape: JavaShape) -> bool {
 /// stub-free path used by many fixtures), the helper falls back to
 /// `invokeReflective`.
 const SERVLET_HELPER: &str = r#"
-    static void invokeServlet(Class<?> cls, String methodName, String payload, String httpMethod) throws Exception {
+    static void invokeServlet(Class<?> cls, String methodName, String payload, String httpMethod, String[] slotNames, boolean drainResponse) throws Exception {
         Method match = null;
         for (Method m : cls.getDeclaredMethods()) {
             if (!m.getName().equals(methodName)) continue;
@@ -3295,19 +3399,79 @@ const SERVLET_HELPER: &str = r#"
         }
         Class<?>[] params = match.getParameterTypes();
         Object[] args = new Object[params.length];
+        Object respStub = null;
         for (int i = 0; i < params.length; i++) {
             Class<?> p = params[i];
             if (p.equals(String.class)) {
                 args[i] = payload;
             } else if (p.getName().endsWith("HttpServletRequest")) {
-                args[i] = buildRequestStub(p, payload, httpMethod);
+                args[i] = buildRequestStub(p, payload, httpMethod, slotNames);
             } else if (p.getName().endsWith("HttpServletResponse")) {
-                args[i] = buildResponseStub(p);
+                respStub = buildResponseStub(p);
+                args[i] = respStub;
             } else {
                 args[i] = null;
             }
         }
-        match.invoke(instance, args);
+        // Entry-driven verification: run the REAL servlet handler with the
+        // malicious request, then drain whatever it wrote to the RESPONSE so
+        // the OutputContains oracle can observe a sink-side echo.
+        //
+        // Soundness: the fixture's own `System.out`/`System.err` (debug prints,
+        // exception traces, `printStackTrace`) frequently echo the raw request
+        // value — e.g. OWASP's path-traversal catch does
+        // `System.out.println("Couldn't open ... '" + fileName + "'")` with the
+        // unescaped payload in `fileName`.  For caps whose marker is a literal
+        // substring of the payload (XSS `<script>…`), such an incidental echo
+        // would FALSE-CONFIRM.  So we silence the fixture's stdout/stderr during
+        // the invoke (capture into a discarded buffer) and emit ONLY the drained
+        // HTTP response + the `__NYX_SINK_HIT__` sentinel to the real stdout.
+        // The response is the genuine sink output: a benign fixture that escapes
+        // (`ESAPI.encoder().encodeForHTML`) writes `&lt;script&gt;` there, an
+        // unsanitised one writes the raw marker.  CODE_EXEC/path-traversal
+        // markers still reach the oracle because the fixture writes the child
+        // process output / file content to the response (`printOSCommandResults`
+        // / `getWriter().write(...)`), not (only) to stdout.
+        java.io.PrintStream realOut = System.out;
+        java.io.PrintStream realErr = System.err;
+        java.io.PrintStream sink = new java.io.PrintStream(new java.io.ByteArrayOutputStream());
+        System.setOut(sink);
+        System.setErr(sink);
+        try {
+            match.invoke(instance, args);
+        } catch (Throwable invokeEx) {
+            // Swallow: the verdict is decided by the collision-resistant oracle
+            // on the drained response (or executed-command / canary marker), NOT
+            // by the exception.  Letting it reach the harness's outer catch would
+            // print `cause.getMessage()` to stderr — and OWASP fixtures routinely
+            // build exception messages from the raw request value
+            // (`FileNotFoundException: <workdir>/testfiles/<script>…`), which the
+            // OutputContains oracle scans alongside stdout.  For a substring
+            // marker (XSS, where marker == payload) that echo is an unsound
+            // false-confirm vector, so the servlet's own exceptions must not
+            // escape this frame.
+        } finally {
+            System.setOut(realOut);
+            System.setErr(realErr);
+            if (drainResponse) {
+                nyxDrainServletResponse(respStub);
+            }
+            realOut.println("__NYX_SINK_HIT__");
+            realOut.flush();
+        }
+    }
+
+    static void nyxDrainServletResponse(Object respStub) {
+        if (respStub == null) return;
+        try {
+            Method getBody = respStub.getClass().getMethod("getBody");
+            Object body = getBody.invoke(respStub);
+            if (body != null) System.out.println(body.toString());
+        } catch (Throwable ignore) {}
+        try {
+            Object redir = respStub.getClass().getMethod("getRedirectedUrl").invoke(respStub);
+            if (redir != null) System.out.println("__NYX_REDIRECT__:" + redir);
+        } catch (Throwable ignore) {}
     }
 
     static Object newDefaultInstance(Class<?> cls) throws Exception {
@@ -3316,26 +3480,32 @@ const SERVLET_HELPER: &str = r#"
         return ctor.newInstance();
     }
 
-    static Object buildRequestStub(Class<?> reqType, String payload, String method) throws Exception {
-        // Best-effort: invoke a no-arg constructor and call any
-        // `setParameter`/`setMethod` setters the stub exposes.  When
-        // the type cannot be instantiated, fall back to null and let
-        // the fixture handle the missing parameter.
+    static Object buildRequestStub(Class<?> reqType, String payload, String method, String[] slotNames) throws Exception {
+        // Instantiate the (Nyx-stub) request and seed the payload into every
+        // source accessor via `nyxSeedTaint` (the firehose) so whichever
+        // accessor/name the servlet reads receives the payload.  Cookie reads
+        // are name-matched, so the harness also hands the stub the slot names
+        // it extracted from the servlet source.  Legacy setters are kept for
+        // back-compat with non-firehose stub variants.
         try {
             Constructor<?> ctor = reqType.getDeclaredConstructor();
             ctor.setAccessible(true);
             Object stub = ctor.newInstance();
             try {
-                Method setParam = reqType.getMethod("setParameter", String.class, String.class);
-                setParam.invoke(stub, "payload", payload);
+                reqType.getMethod("nyxSeedTaint", String.class).invoke(stub, payload);
             } catch (NoSuchMethodException ignore) {}
             try {
-                Method setMethod = reqType.getMethod("setMethod", String.class);
-                setMethod.invoke(stub, method);
+                reqType.getMethod("nyxSeedCookieNames", String[].class)
+                    .invoke(stub, (Object) (slotNames == null ? new String[0] : slotNames));
             } catch (NoSuchMethodException ignore) {}
             try {
-                Method setBody = reqType.getMethod("setBody", String.class);
-                setBody.invoke(stub, payload);
+                reqType.getMethod("setParameter", String.class, String.class).invoke(stub, "payload", payload);
+            } catch (NoSuchMethodException ignore) {}
+            try {
+                reqType.getMethod("setMethod", String.class).invoke(stub, method);
+            } catch (NoSuchMethodException ignore) {}
+            try {
+                reqType.getMethod("setBody", String.class).invoke(stub, payload);
             } catch (NoSuchMethodException ignore) {}
             return stub;
         } catch (NoSuchMethodException e) {

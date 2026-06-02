@@ -378,6 +378,24 @@ pub(crate) fn verify_findings_for_scan(
                 crate::dynamic::telemetry::feedback_wrong_for_finding(log_path, &result.finding_id);
         }
         if let Some(ref mut ev) = diag.evidence {
+            // Cap-taxonomy alignment (Track L.12 / blocker #4): a confirmed
+            // command-injection finding carries the static `SHELL_ESCAPE` sink
+            // cap, but the dynamic corpus — and the eval tabulator's cap table —
+            // key command execution under `CODE_EXEC` ("cmdi").  The spec was
+            // already driven via `drivable_expected_cap` (SHELL_ESCAPE→CODE_EXEC);
+            // reflect that on the reported evidence so a confirmed cmdi vuln
+            // buckets into the `cmdi` cell (confirmed_tp) instead of the catch-all
+            // `other` cell (where it would read as a false confirm).  Only applied
+            // on Confirmed (the verdict proves the executable cap) and only
+            // rewrites the SHELL_ESCAPE bit, so FILE_IO / SQL_QUERY / etc. are
+            // untouched.  Runs after the stable-hash is computed, so dedup keys
+            // are unaffected.
+            if matches!(result.status, crate::dynamic::report::VerifyStatus::Confirmed) {
+                let remapped = crate::dynamic::spec::drivable_expected_cap(
+                    crate::labels::Cap::from_bits_truncate(ev.sink_caps),
+                );
+                ev.sink_caps = remapped.bits();
+            }
             ev.dynamic_verdict = Some(result);
         }
     }

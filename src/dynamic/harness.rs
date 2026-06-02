@@ -107,6 +107,16 @@ fn stage_harness(
     copy_java_sibling_sources(spec, &workdir);
     copy_php_project_manifests(spec, &workdir);
 
+    // Debug hook: `NYX_DUMP_HARNESS=<dir>` mirrors each staged workdir under
+    // `<dir>/<spec_hash>` so a harness can be inspected / compiled by hand.
+    if let Ok(dump) = std::env::var("NYX_DUMP_HARNESS")
+        && !dump.is_empty()
+    {
+        let dest = Path::new(&dump).join(safe_workdir_component(&spec.spec_hash));
+        let _ = fs::create_dir_all(&dest);
+        let _ = copy_workdir(&workdir, &dest);
+    }
+
     Ok(workdir)
 }
 
