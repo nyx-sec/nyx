@@ -390,7 +390,10 @@ pub(crate) fn verify_findings_for_scan(
             // rewrites the SHELL_ESCAPE bit, so FILE_IO / SQL_QUERY / etc. are
             // untouched.  Runs after the stable-hash is computed, so dedup keys
             // are unaffected.
-            if matches!(result.status, crate::dynamic::report::VerifyStatus::Confirmed) {
+            if matches!(
+                result.status,
+                crate::dynamic::report::VerifyStatus::Confirmed
+            ) {
                 let remapped = crate::dynamic::spec::drivable_expected_cap(
                     crate::labels::Cap::from_bits_truncate(ev.sink_caps),
                 );

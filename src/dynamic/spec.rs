@@ -616,9 +616,7 @@ fn derive_from_flow_steps(
         Some(e) => (e.file, e.function),
         None => {
             let name = lang_from_path(&sink_file)
-                .and_then(|l| {
-                    resolve_enclosing_function_via_ast(&sink_file, sink_line as usize, l)
-                })
+                .and_then(|l| resolve_enclosing_function_via_ast(&sink_file, sink_line as usize, l))
                 .unwrap_or_else(|| "<unknown>".to_owned());
             (sink_file.clone(), name)
         }
@@ -2118,10 +2116,26 @@ mod tests {
         // enclosing `run` function the sink sits in so the harness can drive
         // it and the author's guard participates in the verdict.
         let cases = [
-            ("tests/dynamic_fixtures/deserialize/java/Benign.java", 36, Lang::Java),
-            ("tests/dynamic_fixtures/deserialize/java/Vuln.java", 14, Lang::Java),
-            ("tests/dynamic_fixtures/deserialize/ruby/benign.rb", 14, Lang::Ruby),
-            ("tests/dynamic_fixtures/deserialize/ruby/vuln.rb", 7, Lang::Ruby),
+            (
+                "tests/dynamic_fixtures/deserialize/java/Benign.java",
+                36,
+                Lang::Java,
+            ),
+            (
+                "tests/dynamic_fixtures/deserialize/java/Vuln.java",
+                14,
+                Lang::Java,
+            ),
+            (
+                "tests/dynamic_fixtures/deserialize/ruby/benign.rb",
+                14,
+                Lang::Ruby,
+            ),
+            (
+                "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
+                7,
+                Lang::Ruby,
+            ),
         ];
         for (path, line, lang) in cases {
             assert_eq!(

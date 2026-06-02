@@ -3326,14 +3326,16 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
             "            String[] mainArgs = new String[] {{ payload }};\n            {entry_class}.main(mainArgs);"
         ),
         JavaShape::ServletDoGet => {
-            let slots = slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
+            let slots =
+                slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
             let drain = servlet_drain_response(spec);
             format!(
                 "            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\", {slots}, {drain});"
             )
         }
         JavaShape::ServletDoPost => {
-            let slots = slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
+            let slots =
+                slot_names_java_array(&servlet_slot_names(&read_entry_source(&spec.entry_file)));
             let drain = servlet_drain_response(spec);
             format!(
                 "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\", {slots}, {drain});"

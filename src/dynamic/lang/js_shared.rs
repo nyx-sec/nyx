@@ -2790,7 +2790,11 @@ console.log(JSON.stringify({
 "#;
 
     let (body, entry_subpath) = if spec.entry_is_derivable() {
-        let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+        let entry_subpath = if is_typescript {
+            "entry.ts"
+        } else {
+            "entry.js"
+        };
         let entry_name = &spec.entry_name;
         let call_args = pp_entry_call_args(spec);
         // TypeScript fixtures use ES-module imports + type annotations the
@@ -2800,7 +2804,11 @@ console.log(JSON.stringify({
         // type-stripping + ESM→CJS shim so `esModuleInterop`-style fixtures
         // run as the author intended.  JS fixtures are CommonJS — require
         // them directly.
-        let loader_defs = if is_typescript { TS_ENTRY_LOADER_JS } else { "" };
+        let loader_defs = if is_typescript {
+            TS_ENTRY_LOADER_JS
+        } else {
+            ""
+        };
         let entry_load_expr = if is_typescript {
             format!("nyxLoadTsEntry('./{entry_subpath}')")
         } else {

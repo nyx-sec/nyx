@@ -44,9 +44,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 17,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/benchmark/corpus/java/path_traversal/PathTraversalServlet.java",
-        ],
+        fixture_paths: &["tests/benchmark/corpus/java/path_traversal/PathTraversalServlet.java"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: Some(PayloadRef {
@@ -64,9 +62,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 17,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/benchmark/corpus/java/path_traversal/PathTraversalServlet.java",
-        ],
+        fixture_paths: &["tests/benchmark/corpus/java/path_traversal/PathTraversalServlet.java"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

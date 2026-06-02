@@ -68,7 +68,9 @@ fn canary_token(p: &ProbePredicate) -> Option<&str> {
 /// Visit every `ProbePredicate` the corpus carries — both the active
 /// `Oracle::SinkProbe { predicates }` slice and the parallel
 /// `CuratedPayload::probe_predicates` slice — for every `(cap, lang)` entry.
-fn for_each_corpus_predicate(mut visit: impl FnMut(&str /*label*/, &[u8] /*bytes*/, &ProbePredicate)) {
+fn for_each_corpus_predicate(
+    mut visit: impl FnMut(&str /*label*/, &[u8] /*bytes*/, &ProbePredicate),
+) {
     for &(_cap, _lang, slice) in CORPUS.entries {
         for payload in slice {
             if let Oracle::SinkProbe { predicates } = &payload.oracle {
@@ -181,7 +183,11 @@ fn canary_is_collision_free_across_spec_hash_sweep() {
             "canary collision at spec_hash {spec_hash}",
         );
     }
-    assert_eq!(seen.len() as u32, n, "every spec_hash produced a unique canary");
+    assert_eq!(
+        seen.len() as u32,
+        n,
+        "every spec_hash produced a unique canary"
+    );
 }
 
 /// The byte output of `generate` exercises the full space: across many

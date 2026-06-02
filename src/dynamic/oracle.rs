@@ -2022,7 +2022,10 @@ mod tests {
             "render must be lowercase hex: {r}",
         );
         assert!(Canary::ENTROPY_BITS >= 128);
-        assert!(r.len() * 4 >= 128, "rendered canary clears the 128-bit floor");
+        assert!(
+            r.len() * 4 >= 128,
+            "rendered canary clears the 128-bit floor"
+        );
     }
 
     #[test]

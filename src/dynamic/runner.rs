@@ -817,8 +817,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         let has_proven_oob = candidates
             .iter()
             .any(|(_, r)| r.verdict == DifferentialVerdict::ConfirmedProvenOob);
-        let confirmed_class =
-            has_proven_oob || matches!(aggregate, DifferentialVerdict::Confirmed);
+        let confirmed_class = has_proven_oob || matches!(aggregate, DifferentialVerdict::Confirmed);
         if confirmed_class {
             // Representative outcome: prefer the strongest (ProvenOob), else
             // the first candidate carrying a triggering verdict.  Iteration
