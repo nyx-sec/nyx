@@ -214,10 +214,7 @@ impl TargetDirLock {
                 Err(_) => {
                     // Cannot create the lockfile (perms / race on dir) — proceed
                     // unlocked rather than fail the build outright.
-                    return Self {
-                        path,
-                        owned: false,
-                    };
+                    return Self { path, owned: false };
                 }
             }
         }
