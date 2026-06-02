@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use std::collections::HashMap;
 
 use super::ir::*;

@@ -1,5 +1,10 @@
+//! AST → CFG → SSA lowering (Cytron et al.).
+//!
+//! Builds basic blocks, computes dominators and dominance frontiers via
+//! petgraph, inserts phi nodes, and renames variables over the dominator-tree
+//! preorder to produce an [`SsaBody`](super::ir::SsaBody).
+
 #![allow(
-    clippy::collapsible_if,
     clippy::if_same_then_else,
     clippy::needless_range_loop,
     clippy::only_used_in_recursion,

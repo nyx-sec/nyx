@@ -658,28 +658,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
-    fn with_history<'a>(
-        summary: &'a FindingSummary,
-        findings: &'a [Diag],
-        triage: f64,
-        files: u64,
-    ) -> HealthInputs<'a> {
-        HealthInputs {
-            has_history: true,
-            ..first_scan(summary, findings, triage, files)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn sev_score(h: &HealthScore) -> u8 {
-        h.components
-            .iter()
-            .find(|c| c.label == "Severity pressure")
-            .unwrap()
-            .score
-    }
-
     // ── Foundational behaviour ───────────────────────────────────────
 
     #[test]

@@ -1,3 +1,9 @@
+//! Shared AST-extraction helpers for the auth-analysis framework adapters.
+//!
+//! Cross-framework primitives — analysis-unit collection, call-site and
+//! `ValueRef` extraction, and tree-sitter node/string/span helpers — used by the
+//! per-framework extractors in this directory (`express`, `axum`, `django`, …).
+
 use crate::auth_analysis::config::{AuthAnalysisRules, canonical_name, matches_name, strip_quotes};
 use crate::auth_analysis::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, CallSite,

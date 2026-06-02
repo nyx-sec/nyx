@@ -1,5 +1,4 @@
 //! Symbolic value expression trees.
-#![allow(clippy::collapsible_if)]
 
 use std::fmt;
 

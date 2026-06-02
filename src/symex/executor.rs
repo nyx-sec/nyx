@@ -14,7 +14,7 @@
 //! termination. Verdict aggregation is sound: `Infeasible` is only returned
 //! when the entire relevant search space was explored without budget exhaustion.
 
-#![allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_map_or)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

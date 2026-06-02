@@ -29,6 +29,8 @@
 //! record into it, execve(2) drops the write end, and the parent's
 //! drain thread sees EOF and records the outcome.
 
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::dynamic::sandbox::seccomp;
 use crate::dynamic::sandbox::seccomp::bpf::SockFilter;
 use crate::dynamic::sandbox::{AblationMask, ProcessHardeningProfile, SandboxOptions};
@@ -144,11 +146,14 @@ struct StatusPipe {
 
 impl StatusPipe {
     fn new() -> std::io::Result<Self> {
+        // SAFETY: declares the libc `pipe2(2)` ABI; the signature matches <unistd.h>.
         unsafe extern "C" {
             fn pipe2(pipefd: *mut i32, flags: i32) -> i32;
         }
         const O_CLOEXEC: i32 = 0o2_000_000;
         let mut fds = [-1_i32; 2];
+        // SAFETY: `fds` is a valid 2-element array the kernel writes into; `pipe2`
+        // reads no caller memory beyond that pointer. Return value checked below.
         let ret = unsafe { pipe2(fds.as_mut_ptr(), O_CLOEXEC) };
         if ret != 0 {
             return Err(std::io::Error::last_os_error());
@@ -161,15 +166,20 @@ impl StatusPipe {
 }
 
 fn close_fd(fd: RawFd) {
+    // SAFETY: declares the libc `close(2)` ABI; signature matches <unistd.h>.
     unsafe extern "C" {
         fn close(fd: i32) -> i32;
     }
+    // SAFETY: `fd` is an owned raw fd closed exactly once; the return value is
+    // intentionally ignored (best-effort close).
     unsafe { close(fd) };
 }
 
 /// Drain `read_fd` into a `HardeningOutcome`.  Wire format is the
 /// 15-byte fixed-width record produced by [`encode_outcome`].
 fn drain_outcome(read_fd: RawFd) -> Option<HardeningOutcome> {
+    // SAFETY: `read_fd` is an owned raw fd (the pipe read end) used nowhere else;
+    // `File` takes sole ownership and closes it on drop.
     let mut file = unsafe { std::fs::File::from_raw_fd(read_fd) };
     let mut buf = Vec::with_capacity(64);
     if file.read_to_end(&mut buf).is_err() {
@@ -276,6 +286,8 @@ struct Rlimit {
     max: u64,
 }
 
+// SAFETY: declares the libc syscall-wrapper ABI (setrlimit/prctl/unshare/chroot/
+// chdir/mount/write/__errno_location); signatures match the glibc/musl headers.
 unsafe extern "C" {
     fn setrlimit(resource: i32, rlim: *const Rlimit) -> i32;
     fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
@@ -294,6 +306,8 @@ unsafe extern "C" {
 }
 
 fn last_errno() -> i32 {
+    // SAFETY: `__errno_location` returns a valid pointer to the calling thread's
+    // errno; dereferencing it right after a failed syscall is the standard idiom.
     unsafe { *__errno_location() }
 }
 
@@ -302,6 +316,8 @@ fn apply_rlimit(resource: i32, bytes: u64) -> PrimitiveStatus {
         cur: bytes,
         max: bytes,
     };
+    // SAFETY: `&rl` points to a valid `Rlimit` for the duration of the call;
+    // `setrlimit` only reads it and returns a status checked below.
     let ret = unsafe { setrlimit(resource, &rl) };
     if ret == 0 {
         PrimitiveStatus::Applied
@@ -311,6 +327,8 @@ fn apply_rlimit(resource: i32, bytes: u64) -> PrimitiveStatus {
 }
 
 fn apply_no_new_privs() -> PrimitiveStatus {
+    // SAFETY: `prctl(PR_SET_NO_NEW_PRIVS, ..)` takes only scalar args and touches
+    // no caller memory; the return value is checked below.
     let ret = unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if ret == 0 {
         PrimitiveStatus::Applied
@@ -326,6 +344,8 @@ fn apply_unshare_with_flags(flags: i32) -> PrimitiveStatus {
     // ablation drops individual flags via `AblationMask::no_userns` /
     // `no_pidns` so the escape-fixture matrix can prove the namespace
     // primitive carries its weight.
+    // SAFETY: `unshare` takes a scalar flag set and touches no caller memory;
+    // the return value is checked below.
     let ret = unsafe { unshare(flags) };
     if ret == 0 {
         PrimitiveStatus::Applied
@@ -354,11 +374,14 @@ fn apply_chroot(workdir: &[u8]) -> PrimitiveStatus {
     // `workdir` is NUL-terminated by `canonicalize_workdir` so we can
     // hand the bytes straight to `chroot(2)` without allocating in
     // pre_exec.
+    // SAFETY: `workdir` is NUL-terminated by `canonicalize_workdir`, so the
+    // pointer references a valid C string for the duration of the call.
     let ret = unsafe { chroot(workdir.as_ptr() as *const i8) };
     if ret != 0 {
         return PrimitiveStatus::Failed(last_errno());
     }
     let root = b"/\0";
+    // SAFETY: `root` is a NUL-terminated byte literal, a valid C string.
     let ret = unsafe { chdir(root.as_ptr() as *const i8) };
     if ret != 0 {
         return PrimitiveStatus::Failed(last_errno());
@@ -391,6 +414,9 @@ struct BindMount {
 fn apply_bind_mounts(mounts: &[BindMount]) {
     let none = b"none\0";
     for m in mounts {
+        // SAFETY: `source_nul`/`dest_nul` are NUL-terminated by
+        // `canonicalize_bind_mount` and `none` is a NUL-terminated literal, so
+        // every pointer references a valid C string for the duration of the call.
         let r = unsafe {
             mount(
                 m.source_nul.as_ptr() as *const i8,
@@ -403,6 +429,8 @@ fn apply_bind_mounts(mounts: &[BindMount]) {
         if r != 0 {
             continue;
         }
+        // SAFETY: `dest_nul` is NUL-terminated; the remaining pointers are null,
+        // which `mount(2)` accepts for a remount. Best-effort: result ignored.
         unsafe {
             mount(
                 std::ptr::null(),
@@ -541,7 +569,7 @@ pub fn install_pre_exec(
     let read_fd = pipe.as_ref().map(|p| p.read_fd);
     let plan_for_child = plan.clone();
 
-    // Safety: pre_exec runs after fork(2) and before execve(2).  We must
+    // SAFETY: pre_exec runs after fork(2) and before execve(2).  We must
     // not allocate, take any locks, or call into the Rust runtime.  The
     // captured `plan_for_child` is moved in; reading its already-allocated
     // fields is safe because no allocator call is needed.

@@ -141,14 +141,23 @@ impl BrokerStub {
             .append(true)
             .create(true)
             .open(&self.log_path)?;
-        writeln!(
-            f,
-            "{}\t{}\t{}",
+        // Build the whole record (including the trailing newline) up front and
+        // emit it in a single `write_all`. A `writeln!` issues one syscall per
+        // format fragment, so a concurrent `drain_events` reader could observe a
+        // torn line (e.g. just `deliver` with no tab) and misclassify it. For a
+        // record small enough to land in one `write()` (the common case) the
+        // append-mode `write_all` is delivered atomically; very large records
+        // can still span multiple `write()`s, so the drain's newline-framing
+        // guard remains the backstop. Both the tab-and-newline-stripped
+        // destination and the newline-stripped payload guarantee the record
+        // occupies exactly one physical line regardless.
+        let line = format!(
+            "{}\t{}\t{}\n",
             action.replace('\t', " "),
-            destination.replace('\t', " "),
-            payload
-        )?;
-        Ok(())
+            destination.replace(['\t', '\n'], " "),
+            payload.replace('\n', " ")
+        );
+        f.write_all(line.as_bytes())
     }
 }
 
@@ -202,17 +211,38 @@ impl StubProvider for BrokerStub {
         }
 
         let mut events = Vec::new();
-        let mut bytes_read = 0_u64;
-        let mut buf = String::new();
+        let mut consumed = 0_u64;
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
-            let n = match reader.read_line(&mut buf) {
+            // Read raw bytes up to and including the next '\n'. Byte-oriented
+            // (rather than `read_line` into a `String`) so a non-UTF-8 payload
+            // written by an in-sandbox harness — e.g. Go's `string(msg.Data)`
+            // over the shared `NYX_*_LOG` — degrades to a lossy decode instead
+            // of erroring out. With `read_line` such a byte would return `Err`,
+            // and the `Err => break` arm would park the cursor on that line
+            // forever, permanently stalling the stream and dropping every
+            // record after it.
+            let n = match reader.read_until(b'\n', &mut buf) {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(_) => break,
             };
-            bytes_read += n as u64;
-            let line = buf.trim_end_matches(['\r', '\n']);
+            // A chunk that does not end in '\n' is the tail of an in-flight
+            // append: a writer thread is mid-record. Leave it unconsumed (do
+            // not advance the cursor past it) so the next drain re-reads it
+            // once it is complete. Without this guard the partial line would be
+            // skipped forever and, worse, `parse_broker_log_line` would
+            // misclassify a tab-less fragment like `deliver` as a `publish`.
+            if buf.last() != Some(&b'\n') {
+                break;
+            }
+            consumed += n as u64;
+            // Strip exactly the single '\n' line terminator. The log is
+            // newline-framed (never CRLF), so a trailing '\r' is payload data
+            // and must be preserved rather than greedily trimmed.
+            let decoded = String::from_utf8_lossy(&buf[..buf.len() - 1]);
+            let line = decoded.as_ref();
             if line.is_empty() {
                 continue;
             }
@@ -229,7 +259,7 @@ impl StubProvider for BrokerStub {
             };
             events.push(event);
         }
-        *cursor += bytes_read;
+        *cursor += consumed;
         events
     }
 }
@@ -3378,13 +3408,19 @@ fn append_broker_event(
         .append(true)
         .create(true)
         .open(log_path)?;
-    writeln!(
-        f,
-        "{}\t{}\t{}",
+    // Single `write_all` append: see `record_event` for why a `writeln!` is
+    // unsafe against concurrent drains, and for the atomicity caveat on very
+    // large records. The broker server threads append from multiple handlers,
+    // so a torn record is otherwise observable mid-flight. The destination
+    // (path/topic-derived, e.g. a percent-decoded `%0A`) is stripped of tabs
+    // and newlines and the payload of newlines so the record stays one line.
+    let line = format!(
+        "{}\t{}\t{}\n",
         action.replace('\t', " "),
-        destination.replace('\t', " "),
-        payload
-    )
+        destination.replace(['\t', '\n'], " "),
+        payload.replace('\n', " ")
+    );
+    f.write_all(line.as_bytes())
 }
 
 #[cfg(test)]
@@ -4154,7 +4190,10 @@ mod tests {
             "{delivery:?}"
         );
 
-        let events = stub.drain_events();
+        // The MSG frame reaches the wire before the server appends the matching
+        // `deliver` record (see `nats_deliver`), so draining the moment the
+        // payload arrives can race the log write. Poll until both records land.
+        let events = drain_events_until(&stub, 2, Duration::from_secs(5));
         let actions: Vec<&str> = events
             .iter()
             .map(|ev| ev.detail.get("action").unwrap().as_str())

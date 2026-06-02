@@ -152,6 +152,8 @@ fn bind_mount_ro(src: &Path, dst: &Path) -> io::Result<()> {
     let cdst = CString::new(dst.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
+    // SAFETY: `csrc`/`cdst` are `CString`s that outlive the call, so the pointers
+    // reference valid NUL-terminated C strings. Return value checked below.
     let bind = unsafe {
         mount(
             csrc.as_ptr(),
@@ -165,6 +167,8 @@ fn bind_mount_ro(src: &Path, dst: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // Best-effort read-only remount; leave the rw bind if it fails.
+    // SAFETY: `cdst` outlives the call; the other pointers are null, accepted by
+    // `mount(2)` for a remount.
     unsafe {
         mount(
             std::ptr::null(),

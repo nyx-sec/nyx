@@ -3,7 +3,6 @@
 //! Detects back edges, computes natural loop bodies, identifies induction
 //! variables, and determines loop exit successors. All analysis is computed
 //! once per `explore_finding()` invocation and shared across all paths.
-#![allow(clippy::collapsible_if)]
 
 use std::collections::{HashMap, HashSet};
 

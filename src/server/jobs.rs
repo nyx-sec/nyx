@@ -98,7 +98,7 @@ impl JobManager {
         db_pool: Option<Arc<Pool<SqliteConnectionManager>>>,
         database_dir: PathBuf,
     ) -> Result<String, &'static str> {
-        let mut active = self.active_job_id.lock().unwrap();
+        let mut active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
         if active.is_some() {
             return Err("A scan is already running");
         }
@@ -129,8 +129,8 @@ impl JobManager {
         };
 
         {
-            let mut jobs = self.jobs.lock().unwrap();
-            let mut order = self.job_order.lock().unwrap();
+            let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+            let mut order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
 
             // Evict oldest if at capacity.
             while order.len() >= self.max_jobs {
@@ -323,7 +323,7 @@ impl JobManager {
 
             // Brief lock: just update in-memory job state.
             {
-                let mut jobs = manager.jobs.lock().unwrap();
+                let mut jobs = manager.jobs.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(job) = jobs.get_mut(&jid) {
                     job.finished_at = Some(finished_at);
                     job.duration_secs = Some(elapsed);
@@ -338,7 +338,10 @@ impl JobManager {
 
             // Clear active flag.
             {
-                let mut active = manager.active_job_id.lock().unwrap();
+                let mut active = manager
+                    .active_job_id
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 if active.as_deref() == Some(&jid) {
                     *active = None;
                 }
@@ -396,13 +399,17 @@ impl JobManager {
 
     /// Get a specific job.
     pub fn get_job(&self, id: &str) -> Option<ScanJob> {
-        self.jobs.lock().unwrap().get(id).cloned()
+        self.jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
     }
 
     /// List all jobs, most recent first.
     pub fn list_jobs(&self) -> Vec<ScanJob> {
-        let jobs = self.jobs.lock().unwrap();
-        let order = self.job_order.lock().unwrap();
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order
             .iter()
             .rev()
@@ -412,16 +419,20 @@ impl JobManager {
 
     /// Get the currently active (running) job.
     pub fn active_job(&self) -> Option<ScanJob> {
-        let active = self.active_job_id.lock().unwrap();
-        active
-            .as_ref()
-            .and_then(|id| self.jobs.lock().unwrap().get(id).cloned())
+        let active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
+        active.as_ref().and_then(|id| {
+            self.jobs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(id)
+                .cloned()
+        })
     }
 
     /// Get the latest completed job.
     pub fn get_latest_completed(&self) -> Option<ScanJob> {
-        let jobs = self.jobs.lock().unwrap();
-        let order = self.job_order.lock().unwrap();
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order
             .iter()
             .rev()
@@ -432,17 +443,17 @@ impl JobManager {
 
     /// Remove a job from in-memory state. Rejects if the scan is currently running.
     pub fn remove_job(&self, id: &str) -> Result<(), &'static str> {
-        let active = self.active_job_id.lock().unwrap();
+        let active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
         if active.as_deref() == Some(id) {
             return Err("Cannot delete a running scan");
         }
         drop(active);
 
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
         if jobs.remove(id).is_none() {
             return Err("Scan not found");
         }
-        let mut order = self.job_order.lock().unwrap();
+        let mut order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order.retain(|x| x != id);
         Ok(())
     }

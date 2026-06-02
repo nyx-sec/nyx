@@ -202,6 +202,13 @@ pub struct ScannerConfig {
     /// Excluded files
     pub excluded_files: Vec<String>,
 
+    /// Restrict the scan to these paths (relative to the scan root or absolute)
+    /// as a whitelist. When non-empty, only files matching one of these paths
+    /// are scanned; empty (default) scans everything not otherwise excluded.
+    /// Populated programmatically (e.g. the server `include_paths` request
+    /// field), not typically set in config files.
+    pub included_paths: Vec<String>,
+
     /// RESERVED: not yet wired to walker. Whether to respect the global ignore file.
     pub read_global_ignore: bool,
 
@@ -335,6 +342,7 @@ impl Default for ScannerConfig {
             .map(str::to_owned)
             .collect(),
             excluded_files: vec![].into_iter().map(str::to_owned).collect(),
+            included_paths: Vec::new(),
             read_global_ignore: false,
             read_vcsignore: true,
             require_git_to_read_vcsignore: true,

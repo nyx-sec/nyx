@@ -3,7 +3,6 @@
 //! Tracks inclusive `[lo, hi]` integer bounds. `None` = unbounded (−∞ or +∞).
 //! Both `None` = Top (any integer). Provides arithmetic transfer functions
 //! (add, sub, mul, div, mod) with overflow-safe semantics.
-#![allow(clippy::collapsible_if)]
 
 use crate::state::lattice::{AbstractDomain, Lattice};
 use serde::{Deserialize, Serialize};

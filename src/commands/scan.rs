@@ -1,4 +1,12 @@
-#![allow(clippy::collapsible_if, clippy::type_complexity)]
+//! Scan-pipeline orchestration: the two-pass + topo-batch driver behind
+//! `nyx scan`.
+//!
+//! Coordinates summary extraction (pass 1), SCC-ordered taint analysis with a
+//! bounded fixpoint (pass 2, `run_topo_batches`), the indexed parallel scan path
+//! (`scan_with_index_parallel_observer`), suppression application, and per-file
+//! panic isolation (`recover_or_propagate`).
+
+#![allow(clippy::type_complexity)]
 
 pub(crate) use crate::ast::{
     analyse_file_fused, extract_all_summaries_from_bytes, run_rules_on_bytes, run_rules_on_file,

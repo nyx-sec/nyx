@@ -28,6 +28,8 @@
 //!   can't be filtered without a number, and any kernel that recognises
 //!   the name has the number too.  Tests assert the policy round-trips.
 
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 pub mod bpf;
 pub mod syscalls;
 
@@ -42,6 +44,8 @@ const PR_SET_NO_NEW_PRIVS: i32 = 38;
 const PR_SET_SECCOMP: i32 = 22;
 const SECCOMP_MODE_FILTER: u64 = 2;
 
+// SAFETY: declares the libc `prctl(2)` / `__errno_location` ABI; signatures
+// match the glibc/musl headers.
 unsafe extern "C" {
     fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
     fn __errno_location() -> *mut i32;
@@ -142,12 +146,16 @@ pub fn install_compiled_filter(program: &[SockFilter]) -> std::io::Result<()> {
     // seccomp filter install.  The Phase 17 hardening sequence already
     // calls it earlier, but installing here too is idempotent and
     // protects direct callers.
+    // SAFETY: `prctl(PR_SET_NO_NEW_PRIVS, ..)` takes only scalar args and touches
+    // no caller memory; idempotent, result intentionally ignored.
     let _ = unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
 
     let prog = SockFprog {
         len: program.len() as u16,
         filter: program.as_ptr(),
     };
+    // SAFETY: `prog` and the `program` slice it points to outlive the call; the
+    // pointer passed as u64 references a valid `SockFprog`. Return value checked below.
     let ret = unsafe {
         prctl(
             PR_SET_SECCOMP,
@@ -160,6 +168,8 @@ pub fn install_compiled_filter(program: &[SockFilter]) -> std::io::Result<()> {
     if ret == 0 {
         Ok(())
     } else {
+        // SAFETY: `__errno_location` returns a valid per-thread errno pointer,
+        // dereferenced immediately after the failed prctl call.
         Err(std::io::Error::from_raw_os_error(unsafe {
             *__errno_location()
         }))

@@ -20,7 +20,7 @@
 //!   - Unknown/unproven indices fall back to Elements (conservative)
 //! - Analysis runs as a pre-pass in optimize_ssa(), like type_facts
 
-#![allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_map_or)]
 
 use crate::cfg::Cfg;
 use crate::labels::{Cap, bare_method_name};
@@ -119,14 +119,45 @@ pub const MAX_TRACKED_INDICES: usize = 8;
 /// provably a non-negative integer constant (via the function's own const
 /// propagation pass).
 ///
-/// Ordering: `Elements < Index(0) < Index(1) < …` so that sorted merge-join
-/// in `HeapState` groups all slots for the same `HeapObjectId` together.
+/// Ordering: `Elements < Index(0) < Index(1) < … < Key(h0) < Key(h1) < …` so
+/// that sorted merge-join in `HeapState` groups all slots for the same
+/// `HeapObjectId` together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum HeapSlot {
     /// Coarse union of all elements (push/pop, dynamic index, overflow).
     Elements,
     /// Constant-index slot, proven by the current function's const propagation.
     Index(u64),
+    /// Constant **string-key** slot, proven by const propagation (`map.put("k",
+    /// v)` / `map.get("k")` with a literal `"k"`).  The `u64` is a stable hash
+    /// of the key string ([`hash_const_key`]).  Distinct from `Index(n)` so an
+    /// integer index and a string key that happen to share a numeric value
+    /// never alias.  A hash collision between two distinct string keys merely
+    /// reverts to the pre-existing coarse merge for those two keys (sound, no
+    /// new false negative).
+    Key(u64),
+}
+
+/// Stable FNV-1a hash of a constant string key.  Deterministic across runs
+/// (no `RandomState`), so a `put("k", …)` and a later `get("k")` resolve to
+/// the same [`HeapSlot::Key`] within and across analysis passes.
+pub fn hash_const_key(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+impl HeapSlot {
+    /// Whether this is a precise per-key/per-index slot (as opposed to the
+    /// coarse `Elements` slot).  Keyed slots share the `MAX_TRACKED_INDICES`
+    /// budget and the overflow-collapse-to-`Elements` policy.
+    #[inline]
+    fn is_keyed(self) -> bool {
+        matches!(self, HeapSlot::Index(_) | HeapSlot::Key(_))
+    }
 }
 
 // ── HeapObjectId ─────────────────────────────────────────────────────────
@@ -332,19 +363,26 @@ impl HeapState {
             return;
         }
 
-        // Check index overflow before inserting a new Index slot.
-        if let HeapSlot::Index(_) = slot {
+        // Keyed-slot overflow: when a container already tracks the maximum
+        // number of distinct keyed (`Index`/`Key`) slots, a *new* key is
+        // folded into the coarse `Elements` slot instead of creating another
+        // keyed cell.  Existing keyed cells are **kept** — they are never
+        // removed.  This keeps the lattice monotone: the old collapse-to-
+        // Elements behaviour *removed* keyed cells, so a `join` that
+        // re-introduced distinct keys followed by a `store` that re-collapsed
+        // them made the per-block state oscillate forever and the taint
+        // worklist never converged (it bailed at the 100k-iteration safety
+        // cap, silently dropping that function's findings).  Keyed slots only
+        // ever arise from bounded sources (integer indices `0..MAX_TRACKED_
+        // INDICES` and the finite set of constant string keys in the source;
+        // dynamic keys already resolve to `Elements`), so refusing to grow
+        // past the cap bounds the state without any removal.
+        if slot.is_keyed() {
             let key = (id, slot);
             let already_present = self.entries.binary_search_by_key(&key, |(k, _)| *k).is_ok();
-            if !already_present {
-                let index_count = self.count_indices_for(id);
-                if index_count >= MAX_TRACKED_INDICES {
-                    // Collapse: merge all Index(*) entries into Elements,
-                    // then store the new taint into Elements too.
-                    self.collapse_indices_to_elements(id);
-                    self.store_raw(id, HeapSlot::Elements, caps, origins);
-                    return;
-                }
+            if !already_present && self.count_indices_for(id) >= MAX_TRACKED_INDICES {
+                self.store_raw(id, HeapSlot::Elements, caps, origins);
+                return;
             }
         }
 
@@ -385,14 +423,20 @@ impl HeapState {
     /// Load taint from a specific (object, slot) pair.
     ///
     /// - `Index(n)`: returns union of `(id, Index(n))` ∪ `(id, Elements)`.
-    /// - `Elements`: returns union of `(id, Elements)` ∪ all `(id, Index(*))`.
+    /// - `Key(h)`: returns union of `(id, Key(h))` ∪ `(id, Elements)` — a
+    ///   constant-key read sees only its own key's taint plus any taint
+    ///   written under a dynamic/unknown key (which lands in `Elements`); it
+    ///   does NOT see other constant keys' cells.
+    /// - `Elements`: returns union of `(id, Elements)` ∪ all keyed slots
+    ///   (`Index(*)` and `Key(*)`) — a dynamic/unknown-key read conservatively
+    ///   sees every recorded keyed write.
     pub fn load(&self, id: HeapObjectId, slot: HeapSlot) -> Option<HeapTaint> {
         match slot {
-            HeapSlot::Index(n) => {
-                // Union specific index with Elements.
-                let idx_taint = self.load_raw(id, HeapSlot::Index(n));
+            HeapSlot::Index(_) | HeapSlot::Key(_) => {
+                // Union the specific keyed slot with Elements.
+                let slot_taint = self.load_raw(id, slot);
                 let elem_taint = self.load_raw(id, HeapSlot::Elements);
-                match (idx_taint, elem_taint) {
+                match (slot_taint, elem_taint) {
                     (Some(a), Some(b)) => Some(a.union(b)),
                     (Some(a), None) => Some(a.clone()),
                     (None, Some(b)) => Some(b.clone()),
@@ -496,34 +540,12 @@ impl HeapState {
         true
     }
 
-    /// Count distinct `Index(*)` slots for a given object.
+    /// Count distinct keyed (`Index(*)` / `Key(*)`) slots for a given object.
     fn count_indices_for(&self, id: HeapObjectId) -> usize {
         self.entries
             .iter()
-            .filter(|((eid, slot), _)| *eid == id && matches!(slot, HeapSlot::Index(_)))
+            .filter(|((eid, slot), _)| *eid == id && slot.is_keyed())
             .count()
-    }
-
-    /// Collapse all `Index(*)` entries for `id` into `Elements`.
-    fn collapse_indices_to_elements(&mut self, id: HeapObjectId) {
-        // Collect taint from all Index entries for this object.
-        let mut merged_caps = Cap::empty();
-        let mut merged_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
-        self.entries.retain(|((eid, slot), taint)| {
-            if *eid == id && matches!(slot, HeapSlot::Index(_)) {
-                merged_caps |= taint.caps;
-                for orig in &taint.origins {
-                    crate::taint::ssa_transfer::push_origin_bounded(&mut merged_origins, *orig);
-                }
-                false // remove this entry
-            } else {
-                true // keep
-            }
-        });
-        // Merge into Elements.
-        if !merged_caps.is_empty() {
-            self.store_raw(id, HeapSlot::Elements, merged_caps, &merged_origins);
-        }
     }
 }
 
@@ -1242,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn heap_max_tracked_indices_collapse() {
+    fn heap_max_tracked_indices_overflow_to_elements() {
         let mut h = HeapState::empty();
         let id = HeapObjectId(SsaValue(0));
 
@@ -1255,20 +1277,123 @@ mod tests {
                 &[origin(i as u32)],
             );
         }
+        assert_eq!(h.count_indices_for(id), MAX_TRACKED_INDICES);
 
-        // One more should trigger collapse into Elements
+        // One more (a NEW key past the cap) folds into Elements, but the
+        // existing keyed cells are KEPT — the lattice must be monotone (no
+        // removal), or the taint worklist oscillates and never converges.
         h.store(
             id,
             HeapSlot::Index(MAX_TRACKED_INDICES as u64),
             Cap::SQL_QUERY,
             &[origin(99)],
         );
+        // Existing keyed cells preserved (not collapsed away).
+        assert_eq!(h.count_indices_for(id), MAX_TRACKED_INDICES);
 
-        // All Index entries should be collapsed into Elements.
-        // There should be no Index entries left.
-        assert_eq!(h.count_indices_for(id), 0);
+        // The overflowed key's taint is now reachable via Elements.
+        let t = h.load(id, HeapSlot::Elements).unwrap();
+        assert!(t.caps.contains(Cap::HTML_ESCAPE)); // ∪ over kept Index slots
+        assert!(t.caps.contains(Cap::SQL_QUERY)); // the overflowed key
+        // An existing key still reads its own cell (∪ Elements).
+        let t0 = h.load(id, HeapSlot::Index(0)).unwrap();
+        assert!(t0.caps.contains(Cap::HTML_ESCAPE));
+    }
 
-        // Elements load should see all taint
+    // ── HeapSlot::Key (string-key) tests ────────────────────────────
+
+    #[test]
+    fn hash_const_key_is_deterministic_and_distinct() {
+        // Same key → same hash (so put("k") and get("k") resolve identically).
+        assert_eq!(hash_const_key("keyB-85059"), hash_const_key("keyB-85059"));
+        // Distinct keys → distinct hashes (the common case).
+        assert_ne!(hash_const_key("keyA-85059"), hash_const_key("keyB-85059"));
+    }
+
+    #[test]
+    fn heap_key_store_load_isolation() {
+        // Store under "keyB", load under "keyA" → no taint (the BenchmarkTest00171
+        // shape: map.put("keyB", param); map.get("keyA")).
+        let mut h = HeapState::empty();
+        let id = HeapObjectId(SsaValue(0));
+        let kb = HeapSlot::Key(hash_const_key("keyB-85059"));
+        let ka = HeapSlot::Key(hash_const_key("keyA-85059"));
+        h.store(id, kb, Cap::SHELL_ESCAPE, &[origin(0)]);
+
+        // Same key sees the taint.
+        let t = h.load(id, kb).unwrap();
+        assert_eq!(t.caps, Cap::SHELL_ESCAPE);
+        // A different constant key does NOT (no Elements, no other Key cell).
+        assert!(h.load(id, ka).is_none());
+    }
+
+    #[test]
+    fn heap_key_load_unions_with_elements() {
+        // A dynamic/unknown-key write lands in Elements; a constant-key read
+        // still conservatively sees it.
+        let mut h = HeapState::empty();
+        let id = HeapObjectId(SsaValue(0));
+        h.store(id, HeapSlot::Elements, Cap::SQL_QUERY, &[origin(0)]);
+        let t = h.load(id, HeapSlot::Key(hash_const_key("k"))).unwrap();
+        assert_eq!(t.caps, Cap::SQL_QUERY);
+    }
+
+    #[test]
+    fn heap_elements_load_unions_all_keys() {
+        // A dynamic/unknown-key read (Elements slot) sees every constant-key write.
+        let mut h = HeapState::empty();
+        let id = HeapObjectId(SsaValue(0));
+        h.store(
+            id,
+            HeapSlot::Key(hash_const_key("a")),
+            Cap::HTML_ESCAPE,
+            &[origin(0)],
+        );
+        h.store(
+            id,
+            HeapSlot::Key(hash_const_key("b")),
+            Cap::SQL_QUERY,
+            &[origin(1)],
+        );
+        let t = h.load(id, HeapSlot::Elements).unwrap();
+        assert_eq!(t.caps, Cap::HTML_ESCAPE | Cap::SQL_QUERY);
+    }
+
+    #[test]
+    fn heap_key_and_index_are_disjoint() {
+        // A string-key slot and an integer-index slot never alias, even if the
+        // index value coincides with a key hash bucket.
+        let mut h = HeapState::empty();
+        let id = HeapObjectId(SsaValue(0));
+        h.store(id, HeapSlot::Index(0), Cap::FILE_IO, &[origin(0)]);
+        // A keyed read sees only its own cell (+ Elements, which is empty here),
+        // never the Index(0) cell.
+        assert!(h.load(id, HeapSlot::Key(hash_const_key("0"))).is_none());
+    }
+
+    #[test]
+    fn heap_max_tracked_keys_overflow_to_elements() {
+        // A NEW string key past the cap folds into Elements (over-approx,
+        // sound) while existing keyed cells are kept (monotone — no removal).
+        let mut h = HeapState::empty();
+        let id = HeapObjectId(SsaValue(0));
+        for i in 0..MAX_TRACKED_INDICES {
+            h.store(
+                id,
+                HeapSlot::Key(hash_const_key(&format!("key{i}"))),
+                Cap::HTML_ESCAPE,
+                &[origin(i as u32)],
+            );
+        }
+        assert_eq!(h.count_indices_for(id), MAX_TRACKED_INDICES);
+        h.store(
+            id,
+            HeapSlot::Key(hash_const_key("overflow")),
+            Cap::SQL_QUERY,
+            &[origin(99)],
+        );
+        // Existing keyed cells preserved.
+        assert_eq!(h.count_indices_for(id), MAX_TRACKED_INDICES);
         let t = h.load(id, HeapSlot::Elements).unwrap();
         assert!(t.caps.contains(Cap::HTML_ESCAPE));
         assert!(t.caps.contains(Cap::SQL_QUERY));

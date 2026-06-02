@@ -73,7 +73,7 @@
 //! - [`path_state`]: predicate classification for branch-sensitive propagation
 //! - [`backwards`]: demand-driven backwards walk from sinks (off by default)
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments)]
 
 pub mod backwards;
 pub mod domain;

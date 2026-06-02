@@ -4,7 +4,6 @@
 //! sanitizer/guard info, state-machine transitions) in a structured form
 //! that can be serialized to JSON and consumed by ranking, filtering,
 //! and downstream tooling.
-#![allow(clippy::collapsible_if)]
 
 use crate::commands::scan::Diag;
 use crate::labels::Cap;

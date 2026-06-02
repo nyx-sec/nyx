@@ -11,7 +11,7 @@
 //! ([`AUTH_ANNOTATIONS`]).
 
 use crate::entry_points::HttpMethod;
-use crate::surface::lang::common::{leaf_matches, loc_for, rel_file, unquote};
+use crate::surface::lang::common::{leaf_matches, loc_for, rel_file};
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
@@ -216,12 +216,6 @@ fn method_name(method: Node, bytes: &[u8]) -> Option<String> {
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(bytes).ok())
         .map(str::to_string)
-}
-
-#[allow(dead_code)]
-fn read_string_literal(node: Node, bytes: &[u8]) -> Option<String> {
-    let raw = node.utf8_text(bytes).ok()?;
-    Some(unquote(raw))
 }
 
 #[cfg(test)]

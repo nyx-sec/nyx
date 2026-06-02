@@ -75,6 +75,17 @@ fn build_overrides(root: &Path, cfg: &Config) -> ignore::overrides::Override {
             tracing::warn!("invalid exclude‐file pattern ‘{file}’: {e}");
         }
     }
+    // Whitelist: when any include path is present, the override engine scans
+    // only files matching an include glob (intersected with the excludes above).
+    for inc in &cfg.scanner.included_paths {
+        let inc = inc.trim_end_matches('/');
+        if let Err(e) = ob.add(inc) {
+            tracing::warn!("invalid include‐path pattern ‘{inc}’: {e}");
+        }
+        if let Err(e) = ob.add(&format!("{inc}/**")) {
+            tracing::warn!("invalid include‐path pattern ‘{inc}/**’: {e}");
+        }
+    }
 
     ob.build().unwrap_or_else(|e| {
         tracing::error!("failed to build ignore overrides: {e}");

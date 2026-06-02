@@ -28,7 +28,6 @@
 //! `ConcreteStr` by the symbolic engine, it flows through as a
 //! `ConstValue::Str` operand and is handled.
 #![allow(
-    clippy::collapsible_if,
     clippy::needless_borrows_for_generic_args,
     clippy::new_without_default,
     dead_code

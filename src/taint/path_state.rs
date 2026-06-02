@@ -1,4 +1,8 @@
-#![allow(clippy::collapsible_if)]
+//! Predicate tracking for path-sensitive taint.
+//!
+//! Classifies if-conditions (`PredicateKind` / `classify_condition`) and narrows
+//! validation to specific targets, so branch outcomes can validate or contradict
+//! tainted values during the SSA taint solve.
 
 // ─── PredicateKind ───────────────────────────────────────────────────────────
 

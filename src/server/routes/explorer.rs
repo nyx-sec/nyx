@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use crate::database::index::Indexer;
 use crate::server::app::AppState;
 use crate::server::models::lang_for_finding_path;

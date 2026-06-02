@@ -6,11 +6,7 @@
 //! Cross-file symbolic summary modeling: when a callee has an
 //! `SsaFuncSummary` available via `GlobalSummaries`, the Call instruction's
 //! return value is modeled symbolically instead of being treated as opaque.
-#![allow(
-    clippy::collapsible_if,
-    clippy::if_same_then_else,
-    clippy::too_many_arguments
-)]
+#![allow(clippy::if_same_then_else, clippy::too_many_arguments)]
 
 use crate::cfg::Cfg;
 use crate::ssa::const_prop::ConstLattice;

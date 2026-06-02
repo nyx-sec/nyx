@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_map_or)]
 
 use super::domain::{AuthLevel, ProductState, ResourceLifecycle};
 use super::engine::DataflowResult;

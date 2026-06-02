@@ -1,3 +1,9 @@
+//! Literal and constant-expression extraction from tree-sitter AST nodes.
+//!
+//! Parses integer and string literals, folds constant binary ops, and derives
+//! template/string prefixes and quote stripping for CFG construction and
+//! const propagation.
+
 use super::conditions::unwrap_parens;
 use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
 use super::{

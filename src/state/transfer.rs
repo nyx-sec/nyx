@@ -1,4 +1,8 @@
-#![allow(clippy::collapsible_if)]
+//! `DefaultTransfer`: resource-lifecycle and auth-state transfer function for
+//! the generic monotone dataflow engine (separate from taint).
+//!
+//! Tracks `ResourceLifecycle`, `AuthLevel`, and chain-proxy/product state to
+//! detect leaks, use-after-close, double-close, and auth-state issues.
 
 use super::domain::{AuthLevel, ChainProxyState, ProductState, ResourceLifecycle};
 use super::engine::Transfer;

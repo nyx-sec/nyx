@@ -724,7 +724,7 @@ fn register_exit_cleanup() {
     unsafe extern "C" {
         fn atexit(f: extern "C" fn()) -> i32;
     }
-    // Safety: atexit(3) is async-signal-safe for registration; the handler
+    // SAFETY: atexit(3) is async-signal-safe for registration; the handler
     // itself runs on the main thread during normal shutdown, after all Rust
     // destructors, so std::process::Command is safe to call from it.
     unsafe { atexit(stop_all_containers) };
@@ -1870,6 +1870,7 @@ fn libc_kill(pid: i32, sig: i32) -> i32 {
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
+    // SAFETY: `kill(2)` takes only scalar args and touches no caller memory.
     unsafe { kill(pid, sig) }
 }
 

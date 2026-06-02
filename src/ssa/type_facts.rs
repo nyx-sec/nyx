@@ -1,5 +1,11 @@
 #![allow(clippy::if_same_then_else)]
 
+//! Lightweight type inference for SSA values.
+//!
+//! Derives [`TypeKind`] facts (ints, URLs, HTTP clients/responses, DB
+//! connections, file handles) from constructors, factories, and literals, used
+//! to suppress type-safe sinks and to resolve receiver-qualified callees.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 

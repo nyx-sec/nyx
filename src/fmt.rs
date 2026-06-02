@@ -2,7 +2,6 @@
 //!
 //! Produces professional, security-tool-grade aligned output with a clear
 //! severity hierarchy, normalised taint flow rendering, and stable wrapping.
-#![allow(clippy::collapsible_if)]
 
 use crate::chain::finding::ChainFinding;
 use crate::commands::scan::{Diag, SuppressionStats};

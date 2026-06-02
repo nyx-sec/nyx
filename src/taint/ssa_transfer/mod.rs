@@ -1,5 +1,13 @@
+//! Block-level SSA taint worklist — the sole taint engine for all 10 languages.
+//!
+//! Drives a forward dataflow fixpoint over [`crate::ssa::SsaBody`] blocks
+//! (`run_ssa_taint` / `run_ssa_taint_full`), propagating `SsaTaintState` through
+//! `transfer_inst` with branch-aware narrowing, k=1 context-sensitive inlining
+//! (`inline`), gated-sink detection (`events`), and interprocedural summary
+//! extraction (`summary_extract`). Submodules: `events`, `inline`, `state`,
+//! `summary_extract`.
+
 #![allow(
-    clippy::collapsible_if,
     clippy::if_same_then_else,
     clippy::manual_flatten,
     clippy::needless_range_loop,
@@ -8317,34 +8325,118 @@ fn try_curl_url_propagation(
 ///   sets `const_values: Some(&callee_body.opt.const_values)` on the child
 ///   transfer, so callee-local constants are resolved.
 /// - Unknown / non-integer / out-of-bounds: falls back to `HeapSlot::Elements`.
-fn resolve_container_index(index_val: SsaValue, transfer: &SsaTaintTransfer) -> HeapSlot {
-    use crate::ssa::heap::MAX_TRACKED_INDICES;
-
-    if let Some(cv) = transfer.const_values {
-        if let Some(crate::ssa::const_prop::ConstLattice::Int(n)) = cv.get(&index_val) {
-            if *n >= 0 && (*n as u64) < MAX_TRACKED_INDICES as u64 {
-                return HeapSlot::Index(*n as u64);
-            }
+/// Map a proven constant index/key to its precise `HeapSlot`, or `None`
+/// (caller falls back to `HeapSlot::Elements`).
+///
+/// * Non-negative integer within `MAX_TRACKED_INDICES` → `Index(n)`.
+/// * Any other string constant → `Key(hash)` — a keyed read sees only its own
+///   key's cell (plus dynamic-key taint in `Elements`); a read of a *different*
+///   constant key cannot inherit it.  Unknown/dynamic keys keep the coarse
+///   `Elements` merge, so no precision is lost and no false negative arises.
+///
+/// Both the SSA-value path (`resolve_container_index`) and the
+/// literal-argument path (`resolve_op_slot`) funnel through here so a
+/// `put("k", …)` written with a literal and a `get(kVar)` whose `kVar`
+/// const-props to `"k"` resolve to the *same* slot.
+fn slot_from_const(c: &crate::ssa::const_prop::ConstLattice) -> Option<HeapSlot> {
+    use crate::ssa::const_prop::ConstLattice;
+    use crate::ssa::heap::{MAX_TRACKED_INDICES, hash_const_key};
+    match c {
+        ConstLattice::Int(n) if *n >= 0 && (*n as u64) < MAX_TRACKED_INDICES as u64 => {
+            Some(HeapSlot::Index(*n as u64))
         }
+        ConstLattice::Str(s) => Some(HeapSlot::Key(hash_const_key(s))),
+        _ => None,
     }
-    HeapSlot::Elements
+}
+
+/// Look up the SSA op that defines value `v`, searching `v`'s defining block.
+pub(super) fn op_for_value(ssa: &SsaBody, v: SsaValue) -> Option<&SsaOp> {
+    let vd = ssa.value_defs.get(v.0 as usize)?;
+    let blk = ssa.blocks.iter().find(|b| b.id == vd.block)?;
+    blk.phis
+        .iter()
+        .chain(blk.body.iter())
+        .find(|i| i.value == v)
+        .map(|i| &i.op)
+}
+
+/// Resolve a container index/key SSA value to a `HeapSlot` by tracing its
+/// definition to an underlying constant.  Handles the case where a literal
+/// key (`map.get("k")`) surfaces as a *copy* of a `Const` (e.g.
+/// `v = Assign([const])` from a cast/temporary) that the optimised
+/// `const_values` map records as `Varying` rather than the literal.  Bounded
+/// depth; follows single-use `Assign` copies only (no phi merge, to stay
+/// precise — a key joined across paths is genuinely dynamic).
+fn slot_from_ssa_value(v: SsaValue, ssa: &SsaBody, depth: u32) -> Option<HeapSlot> {
+    if depth > 8 {
+        return None;
+    }
+    match op_for_value(ssa, v)? {
+        SsaOp::Const(Some(text)) => {
+            slot_from_const(&crate::ssa::const_prop::ConstLattice::parse(text))
+        }
+        SsaOp::Assign(uses) if uses.len() == 1 => slot_from_ssa_value(uses[0], ssa, depth + 1),
+        _ => None,
+    }
+}
+
+fn resolve_container_index(index_val: SsaValue, transfer: &SsaTaintTransfer) -> HeapSlot {
+    transfer
+        .const_values
+        .and_then(|cv| cv.get(&index_val))
+        .and_then(slot_from_const)
+        .unwrap_or(HeapSlot::Elements)
 }
 
 /// Resolve the `HeapSlot` for a container operation given its `index_arg`.
 ///
 /// When `index_arg` is `Some(idx_pos)`, applies `arg_offset` and resolves
-/// the SSA value from `args`.  Otherwise returns `HeapSlot::Elements`.
+/// the index/key.  Two channels, checked in order:
+///   1. the SSA value at that argument position (a *variable* index/key that
+///      const-props to an int/string);
+///   2. the parallel `arg_string_literals` slot (a *literal* index/key, e.g.
+///      `map.get("keyB")`, which carries no SSA value because it is not a
+///      variable — the dominant OWASP shape).
+/// Otherwise returns `HeapSlot::Elements`.
 fn resolve_op_slot(
     index_arg: Option<usize>,
     arg_offset: usize,
     args: &[SmallVec<[SsaValue; 2]>],
+    arg_string_literals: &[Option<String>],
+    ssa: &SsaBody,
     transfer: &SsaTaintTransfer,
 ) -> HeapSlot {
     if let Some(idx_pos) = index_arg {
         let effective = idx_pos + arg_offset;
-        if let Some(arg_vals) = args.get(effective) {
-            if let Some(&v) = arg_vals.first() {
-                return resolve_container_index(v, transfer);
+        // 1. Variable index/key channel: an SSA value that const-props to an
+        //    int/string.  Only claim resolution when it yields a *precise*
+        //    slot — a literal key/index often surfaces here as an SSA value
+        //    that const-prop could not pin down (so `resolve_container_index`
+        //    returns `Elements`); in that case fall through to the next
+        //    channel rather than collapsing to the coarse merge.
+        if let Some(&v) = args.get(effective).and_then(|g| g.first()) {
+            let slot = resolve_container_index(v, transfer);
+            if slot != HeapSlot::Elements {
+                return slot;
+            }
+            // 1b. SSA-trace channel: the value is a literal that surfaced as a
+            //     copy of a `Const` (e.g. `(String) map.get("k")` lowers the
+            //     key to `v = Assign([const])`, which optimised `const_values`
+            //     records as `Varying`).  Follow the def to the underlying
+            //     constant so the keyed slot is recovered.
+            if let Some(slot) = slot_from_ssa_value(v, ssa, 0) {
+                return slot;
+            }
+        }
+        // 2. Literal index/key channel: the constant (string/int) literal
+        //    captured at CFG build, parsed through the same `slot_from_const`
+        //    mapping the variable path uses.  This is the dominant OWASP
+        //    shape (`map.get("keyB")`), where the key is a bare literal.
+        if let Some(Some(lit)) = arg_string_literals.get(effective) {
+            let parsed = crate::ssa::const_prop::ConstLattice::parse(lit);
+            if let Some(slot) = slot_from_const(&parsed) {
+                return slot;
             }
         }
     }
@@ -8363,7 +8455,7 @@ fn resolve_op_slot(
 /// default propagation.
 fn try_container_propagation(
     inst: &SsaInst,
-    _info: &NodeInfo,
+    info: &NodeInfo,
     args: &[SmallVec<[SsaValue; 2]>],
     receiver: &Option<SsaValue>,
     state: &mut SsaTaintState,
@@ -8430,7 +8522,14 @@ fn try_container_propagation(
             };
 
             // Resolve index argument to HeapSlot (Index(n) or Elements).
-            let slot = resolve_op_slot(index_arg, arg_offset, args, transfer);
+            let slot = resolve_op_slot(
+                index_arg,
+                arg_offset,
+                args,
+                &info.call.arg_string_literals,
+                ssa,
+                transfer,
+            );
 
             // Collect taint from value argument(s)
             let mut val_caps = Cap::empty();
@@ -8511,7 +8610,14 @@ fn try_container_propagation(
             } else {
                 0
             };
-            let slot = resolve_op_slot(index_arg, arg_offset, args, transfer);
+            let slot = resolve_op_slot(
+                index_arg,
+                arg_offset,
+                args,
+                &info.call.arg_string_literals,
+                ssa,
+                transfer,
+            );
 
             // When points-to info available, load from heap objects
             if let Some(pts) = lookup_pts(transfer, container_val) {

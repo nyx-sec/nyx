@@ -6,7 +6,7 @@
 //! distinguish different objects.
 //!
 //! Design:
-#![allow(clippy::collapsible_if, clippy::new_without_default)]
+#![allow(clippy::new_without_default)]
 //! - `FieldSlot::Named` for object properties (per-field precision).
 //! - `FieldSlot::Elements` for container contents (flow-insensitive union ,
 //!   deliberately lower precision than named fields).

@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if, clippy::redundant_closure)]
+#![allow(clippy::redundant_closure)]
 
 use crate::commands::scan::Diag;
 use crate::database::index::{Indexer, ScanRecord};
@@ -50,11 +50,13 @@ struct StartScanRequest {
     verify_backend: Option<String>,
     /// Process-backend hardening profile: "standard" | "strict".
     harden_profile: Option<String>,
-    #[allow(dead_code)]
+    /// Restrict the scan to these language slugs (e.g. `["java", "python"]`).
+    /// An unknown slug returns 400.
     languages: Option<Vec<String>>,
-    #[allow(dead_code)]
+    /// Whitelist: scan only files under these paths (relative to the scan root
+    /// or absolute).
     include_paths: Option<Vec<String>>,
-    #[allow(dead_code)]
+    /// Exclude these directories/files from the scan.
     exclude_paths: Option<Vec<String>>,
 }
 
@@ -126,6 +128,34 @@ fn apply_harden_profile(
     }
 }
 
+/// Restrict the scan to the requested language slugs by excluding the file
+/// extensions of every *other* supported language. Returns 400 on an unknown
+/// slug. No-op when `languages` is empty.
+fn apply_language_filter(
+    config: &mut crate::utils::config::Config,
+    languages: &[String],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if languages.is_empty() {
+        return Ok(());
+    }
+    let mut selected: HashSet<&'static str> = HashSet::new();
+    for lang in languages {
+        let exts = crate::ast::extensions_for_lang(lang);
+        if exts.is_empty() {
+            return Err(bad_request(&format!("unknown language: {lang}")));
+        }
+        selected.extend(exts.iter().copied());
+    }
+    for (_slug, exts) in crate::ast::SUPPORTED_LANGUAGE_EXTENSIONS {
+        for ext in *exts {
+            if !selected.contains(ext) {
+                config.scanner.excluded_extensions.push((*ext).to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn start_scan(
     State(state): State<AppState>,
     body: Option<Json<StartScanRequest>>,
@@ -170,6 +200,23 @@ async fn start_scan(
     }
     if let Some(ref profile) = req.harden_profile {
         apply_harden_profile(&mut config, profile)?;
+    }
+
+    if let Some(ref include) = req.include_paths {
+        config
+            .scanner
+            .included_paths
+            .extend(include.iter().cloned());
+    }
+    if let Some(ref exclude) = req.exclude_paths {
+        for p in exclude {
+            // A path may name a directory subtree or a single file; cover both.
+            config.scanner.excluded_directories.push(p.clone());
+            config.scanner.excluded_files.push(p.clone());
+        }
+    }
+    if let Some(ref langs) = req.languages {
+        apply_language_filter(&mut config, langs)?;
     }
 
     #[cfg(not(feature = "dynamic"))]

@@ -1,4 +1,7 @@
-#![allow(clippy::collapsible_if)]
+//! Unguarded-sink detection via CFG dominator analysis.
+//!
+//! Flags dangerous sinks that are not dominated by an appropriate guard
+//! (validation or auth check) on every path from an entry point.
 
 use super::dominators::{self, dominates};
 use super::rules;

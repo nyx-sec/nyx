@@ -1,3 +1,8 @@
+//! Configuration for the Rust auth-analysis pass.
+//!
+//! Holds [`AuthAnalysisRules`] (admin path/guard patterns, sink classes, and
+//! name canonicalization) that drive `rs.auth.missing_ownership_check`.
+
 use crate::auth_analysis::model::SinkClass;
 use crate::labels::bare_method_name;
 use crate::utils::config::Config;

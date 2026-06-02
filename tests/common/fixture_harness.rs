@@ -631,6 +631,34 @@ pub fn run_shape_fixture_lang(
             wrong: None,
             hardening_outcome: None,
         },
+        // A sandbox backend the harness requires is not usable on this host
+        // (e.g. compiled C/C++/Go/Rust fixtures need Docker on a machine
+        // without a working process backend, and the daemon is down or
+        // half-up). Project this to `Inconclusive(SandboxError)` rather than
+        // `Unsupported`: `assert_not_confirmed` tolerates `Inconclusive`, so
+        // the direct (non-skip) caller `run_shape_fixture` (used by the Python
+        // suite, which returns a `VerifyResult` and cannot skip) keeps the
+        // same benign verdict it had before this arm existed. The dedicated
+        // `SandboxError` reason is what lets `run_shape_fixture_lang_or_skip`
+        // recognise this specific case and turn it into a clean skip, so a
+        // missing/broken backend never fails a confirm-gate on a host that
+        // simply cannot execute the harness.
+        Err(RunError::Sandbox(
+            nyx_scanner::dynamic::sandbox::SandboxError::BackendUnavailable(_),
+        )) => VerifyResult {
+            finding_id: spec.finding_id.clone(),
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: Some(InconclusiveReason::SandboxError),
+            detail: Some("sandbox backend unavailable".to_owned()),
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+            replay_stable: None,
+            wrong: None,
+            hardening_outcome: None,
+        },
         Err(e) => VerifyResult {
             finding_id: spec.finding_id.clone(),
             status: VerifyStatus::Inconclusive,
@@ -677,7 +705,7 @@ pub fn run_shape_fixture_lang_or_skip(
         eprintln!("SKIP {lang_dir}/{shape_dir}/{file}: {reason}");
         return None;
     }
-    Some(run_shape_fixture_lang(
+    let result = run_shape_fixture_lang(
         lang,
         lang_dir,
         shape_dir,
@@ -687,7 +715,23 @@ pub fn run_shape_fixture_lang_or_skip(
         sink_line,
         entry_kind,
         payload_slot,
-    ))
+    );
+    // The required sandbox backend is unavailable on this host (probed only at
+    // run time, after the static `check_prerequisites` gate). Treat it as a
+    // structured skip so a missing/broken Docker daemon does not flip an
+    // environment-fragile confirm gate to a hard failure. Only the dedicated
+    // `BackendUnavailable -> Inconclusive(SandboxError)` projection above sets
+    // this reason, so genuine `Inconclusive` verdicts (oracle collisions,
+    // unrelated crashes) and other sandbox errors still flow through to the
+    // assertion. Hosts with a working backend run the fixture to completion,
+    // so coverage is unchanged wherever execution is actually possible.
+    if matches!(result.status, VerifyStatus::Inconclusive)
+        && result.inconclusive_reason == Some(InconclusiveReason::SandboxError)
+    {
+        eprintln!("SKIP {lang_dir}/{shape_dir}/{file}: sandbox backend unavailable");
+        return None;
+    }
+    Some(result)
 }
 
 /// Phase 29 (Track I) — `run_harness_snapshot_lang` with structured

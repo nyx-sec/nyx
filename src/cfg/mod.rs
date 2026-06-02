@@ -12,11 +12,7 @@
 //! `export_summaries` converts in-graph [`LocalFuncSummary`] values to
 //! the serializable [`crate::summary::FuncSummary`] form.
 
-#![allow(
-    clippy::collapsible_if,
-    clippy::let_and_return,
-    clippy::unnecessary_map_or
-)]
+#![allow(clippy::let_and_return, clippy::unnecessary_map_or)]
 
 use petgraph::algo::dominators::{Dominators, simple_fast};
 use petgraph::prelude::*;
@@ -1481,7 +1477,12 @@ fn binary_op_token(node: Node) -> Option<BinOp> {
 /// boolean `&&`/`||`, unary `!`) returns `None`, which disables folding for
 /// that branch (never a wrong fold).  Depth-bounded to guard against
 /// pathological nesting.
-fn build_cond_arith(node: Node, lang: &str, code: &[u8], depth: u32) -> Option<CondArith> {
+pub(super) fn build_cond_arith(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    depth: u32,
+) -> Option<CondArith> {
     if depth > 64 {
         return None;
     }
@@ -6283,10 +6284,14 @@ pub(super) fn build_sub<'a>(
                 );
             }
 
-            // JS/TS ternary-RHS split: `var x = c ? a : b;` and
+            // JS/TS/Java ternary-RHS split: `var x = c ? a : b;` and
             // `obj.prop = c ? a : b;` lower to a real diamond CFG so the
             // condition is control-flow (not a data-flow `uses` entry).
-            if matches!(lang, "javascript" | "typescript" | "tsx")
+            // Java uses the same `ternary_expression` AST kind; routing it
+            // through the diamond lets `fold_constant_branches` prune dead
+            // constant-condition arms (`cond ? "const" : param`) the same way
+            // it does for the if-form.
+            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
                 && let Some((lhs_ast, ternary_ast)) = find_ternary_rhs_wrapper(ast)
             {
                 let (lhs_text, lhs_labels) =
@@ -6541,8 +6546,8 @@ pub(super) fn build_sub<'a>(
 
         // Assignment that may contain a call (Python `x = os.getenv(...)`, Ruby `x = gets()`)
         Kind::Assignment => {
-            // JS/TS ternary-RHS split, same rationale as the CallWrapper branch.
-            if matches!(lang, "javascript" | "typescript" | "tsx")
+            // JS/TS/Java ternary-RHS split, same rationale as the CallWrapper branch.
+            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
                 && let (Some(left), Some(right)) = (
                     ast.child_by_field_name("left"),
                     ast.child_by_field_name("right"),

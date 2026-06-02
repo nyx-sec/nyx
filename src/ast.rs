@@ -781,6 +781,35 @@ fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
     }
 }
 
+/// All language slugs the scanner can parse, paired with the file extensions
+/// that map to them. Single source of truth shared with [`lang_for_path`]; the
+/// `supported_extensions_resolve_to_their_slug` test asserts they stay in sync.
+pub(crate) const SUPPORTED_LANGUAGE_EXTENSIONS: &[(&str, &[&str])] = &[
+    ("rust", &["rs"]),
+    ("c", &["c"]),
+    (
+        "cpp",
+        &["cpp", "cc", "cxx", "c++", "hpp", "hxx", "hh", "h++"],
+    ),
+    ("java", &["java"]),
+    ("go", &["go"]),
+    ("php", &["php"]),
+    ("python", &["py"]),
+    ("typescript", &["ts", "tsx"]),
+    ("javascript", &["js", "jsx"]),
+    ("ruby", &["rb"]),
+];
+
+/// File extensions associated with a language slug (case-insensitive). Returns
+/// an empty slice if `slug` is not a supported language.
+pub fn extensions_for_lang(slug: &str) -> &'static [&'static str] {
+    SUPPORTED_LANGUAGE_EXTENSIONS
+        .iter()
+        .find(|(s, _)| s.eq_ignore_ascii_case(slug))
+        .map(|(_, exts)| *exts)
+        .unwrap_or(&[])
+}
+
 /// Fast binary-file guard: skip if >1% NUL bytes.
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().filter(|b| **b == 0).count() * 100 / bytes.len().max(1) > 1
