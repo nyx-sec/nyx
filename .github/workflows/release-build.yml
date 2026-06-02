@@ -110,7 +110,12 @@ jobs:
           BIN_PATH=target/$TARGET/release/$BIN$EXT
           mkdir -p dist
           ARCHIVE=$BIN-$TARGET.zip
-          zip -9 "dist/$ARCHIVE" "$BIN_PATH" THIRDPARTY-LICENSES.html LICENSE* COPYING*
+          files=("$BIN_PATH" THIRDPARTY-LICENSES.html)
+          shopt -s nullglob
+          license_files=(LICENSE* COPYING*)
+          shopt -u nullglob
+          files+=("${license_files[@]}")
+          zip -9 "dist/$ARCHIVE" "${files[@]}"
           echo "ASSET=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
@@ -123,9 +128,11 @@ jobs:
           $BinPath  = "target/$Target/release/$Bin$Ext"
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           $Archive  = "$Bin-$Target.zip"
+          $LicenseFiles = @(Get-ChildItem -Path 'LICENSE*', 'COPYING*' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          $Files = @($BinPath, 'THIRDPARTY-LICENSES.html') + $LicenseFiles
 
           Compress-Archive `
-              -Path $BinPath, 'THIRDPARTY-LICENSES.html', 'LICENSE*', 'COPYING*' `
+              -Path $Files `
               -DestinationPath "dist/$Archive" `
               -CompressionLevel Optimal
 
