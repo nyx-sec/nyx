@@ -1,13 +1,13 @@
-# Replay every tree-committed dynamic repro bundle on a stripped Ubuntu
-# image so we catch regressions where a bundle silently depends on a
-# language toolchain the operator does not have.
+# Replay every tree-committed dynamic repro bundle with host language
+# toolchains blocked so we catch regressions where a bundle silently
+# depends on an interpreter the operator does not have.
 #
-# The setup step removes python3, nodejs, ruby, php, and openjdk so the
-# only thing the bundle can use is the docker daemon.  reproduce.sh in
-# --docker mode pulls the pinned base image (via docker_pull.sh) and
-# runs the harness inside the container; if the bundle accidentally
-# relied on a host interpreter the run would fall over before the
-# sentinel check.
+# The setup step prepends deny-list wrappers for python3, node, ruby,
+# php, and Java so the only toolchain the bundle can use is the docker
+# daemon.  reproduce.sh in --docker mode pulls the pinned base image
+# (via docker_pull.sh) and runs the harness inside the container; if the
+# bundle accidentally relied on a host interpreter the run falls over
+# before the sentinel check.
 #
 # Adding a new fixture: extend the `matrix.fixture` list with the new
 # `tests/repro_fixtures/<toolchain_id>/<spec_hash>` path.  The bundle
@@ -41,21 +41,53 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Strip language toolchains
+      - name: Block host language toolchains
         run: |
           set -euo pipefail
-          # apt purge each package individually so a missing one does
-          # not abort the strip step.  ubuntu-latest already ships
-          # without ruby/php; the calls are harmless no-ops there.
-          for pkg in python3 python3-minimal nodejs ruby php openjdk-8-jre openjdk-11-jre openjdk-17-jre openjdk-21-jre; do
-            sudo apt-get -y purge "$pkg" || true
+
+          # Do not mutate the hosted runner image.  ubuntu-latest carries
+          # preinstalled and cached language runtimes, and apt package
+          # relationships can shift underneath us as the image is updated.
+          # A PATH-level deny layer gives this job the bare-host semantics it
+          # needs without depending on apt being able to uninstall core bits.
+          deny_dir="${RUNNER_TEMP}/nyx-deny-toolchains"
+          mkdir -p "$deny_dir"
+          for exe in \
+            python python3 python3.10 python3.11 python3.12 python3.13 python3.14 \
+            node npm npx corepack \
+            ruby gem bundle \
+            php \
+            java javac jar
+          do
+            {
+              printf '%s\n' '#!/bin/sh'
+              printf '%s\n' 'echo "error: host language toolchain is disabled in repro-bare; use the Docker replay path" >&2'
+              printf '%s\n' 'exit 127'
+            } > "${deny_dir}/${exe}"
+            chmod +x "${deny_dir}/${exe}"
           done
-          sudo apt-get -y autoremove
-          # Confirm the strip worked — surface the failure here rather
-          # than inside reproduce.sh where it would look like a bundle
-          # bug.
-          if command -v python3 >/dev/null 2>&1; then
-            echo "error: python3 still on PATH after strip" >&2
+
+          export PATH="${deny_dir}:${PATH}"
+          echo "${deny_dir}" >> "${GITHUB_PATH}"
+          hash -r 2>/dev/null || true
+
+          # Confirm the deny layer is active — surface the failure here
+          # rather than inside reproduce.sh where it would look like a
+          # bundle bug.
+          for exe in python3 node ruby php java; do
+            resolved="$(command -v "${exe}" || true)"
+            if [ "${resolved}" != "${deny_dir}/${exe}" ]; then
+              echo "error: ${exe} deny wrapper is not first on PATH (got ${resolved:-not found})" >&2
+              exit 1
+            fi
+            if "${exe}" --version >/dev/null 2>&1; then
+              echo "error: ${exe} still runs after host-toolchain block" >&2
+              exit 1
+            fi
+          done
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "error: docker is no longer reachable after host-toolchain block" >&2
             exit 1
           fi
 
