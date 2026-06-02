@@ -35,9 +35,7 @@ const MAX_FIELDS_PER_OBJECT: usize = 8;
 /// `Elements` (taint unioned, value set to `Unknown`).
 pub const MAX_TRACKED_INDICES: usize = 16;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Heap key: allocation-site identity + field slot.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -365,9 +363,7 @@ impl SymbolicHeap {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolve a container operation index argument to a [`FieldSlot`].
 ///
@@ -440,9 +436,7 @@ pub fn resolve_singleton_object(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

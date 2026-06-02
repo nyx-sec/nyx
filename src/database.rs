@@ -2166,9 +2166,7 @@ pub mod index {
                 .collect::<Result<_, _>>()?)
         }
 
-        // -------------------------------------------------------------------------
         // Scan persistence
-        // -------------------------------------------------------------------------
 
         /// Insert a new scan record.
         pub fn insert_scan(&self, record: &ScanRecord) -> NyxResult<()> {
@@ -2434,9 +2432,7 @@ pub mod index {
             Ok(rows)
         }
 
-        // -------------------------------------------------------------------------
         // Triage state management
-        // -------------------------------------------------------------------------
 
         /// Get the triage state for a single finding fingerprint.
         /// Returns (state, note, updated_at) or None if no triage state exists.
@@ -2816,9 +2812,7 @@ pub mod index {
             Ok(count > 0)
         }
 
-        // -------------------------------------------------------------------------
         // Maintenance utilities
-        // -------------------------------------------------------------------------
         pub fn clear(&self) -> NyxResult<()> {
             self.c().execute_batch(
                 r#"
@@ -2843,9 +2837,7 @@ pub mod index {
             Ok(())
         }
 
-        // -------------------------------------------------------------------------
         // Helpers
-        // -------------------------------------------------------------------------
         #[cfg(test)]
         fn digest_file(path: &Path) -> NyxResult<Vec<u8>> {
             let mut hasher = blake3::Hasher::new();

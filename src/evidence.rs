@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Confidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Confidence level for a diagnostic finding.
 ///
@@ -54,9 +52,7 @@ impl FromStr for Confidence {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Flow Steps
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// The kind of operation at a flow step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,9 +112,7 @@ pub struct FlowStep {
     pub is_cross_file: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Symbolic verdict
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Symbolic verification verdict for a taint path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,9 +150,7 @@ pub struct SymbolicVerdict {
     pub cutoff_notes: Vec<String>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Dynamic verification verdict types (always present; not feature-gated)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Why dynamic verification cannot be attempted for a finding.
 ///
@@ -960,9 +952,7 @@ pub struct VerifyResult {
     pub hardening_outcome: Option<HardeningSummary>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Evidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Structured evidence for a diagnostic finding.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1108,9 +1098,7 @@ pub struct StateEvidence {
     pub to_state: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  compute_confidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Derive a confidence level for `diag` based on its rule ID, severity,
 /// evidence, and analysis kind.
@@ -1422,9 +1410,7 @@ fn cap_specificity_score(notes: &[String]) -> i32 {
     0
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Explanation & Confidence Limiters
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Generate a human-readable explanation of a taint finding from its evidence.
 pub fn generate_explanation(diag: &Diag) -> Option<String> {
@@ -1592,9 +1578,7 @@ pub fn compute_confidence_limiters(diag: &Diag) -> Vec<String> {
     limiters
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

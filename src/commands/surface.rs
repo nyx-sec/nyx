@@ -207,9 +207,7 @@ fn collect_files(root: &Path, config: &Config) -> NyxResult<Vec<PathBuf>> {
     Ok(out)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Text rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Produce a human-readable tree.  Files appear as top-level headers;
 /// each entry-point sits under its host file with its reach summary
@@ -434,9 +432,7 @@ fn es_kind_str(k: ExternalServiceKind) -> &'static str {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // DOT / SVG rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub fn render_dot(map: &SurfaceMap) -> String {
     let mut out = String::new();

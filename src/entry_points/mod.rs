@@ -191,9 +191,7 @@ pub fn detect_entries_in_file(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // JS / TS — Next.js (Phase 10) + Express (Phase 16)
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_js_ts(root: Node<'_>, bytes: &[u8], path: &Path) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -727,9 +725,7 @@ fn express_receiver_text_matches(object: Node, bytes: &[u8]) -> bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Python — Django / FastAPI / Flask
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_python(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -895,9 +891,7 @@ fn enclosing_python_class<'a>(node: Node<'a>) -> Option<Node<'a>> {
     None
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Java — Spring + JAX-RS
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_java(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -1016,9 +1010,7 @@ fn http_method_from_request_method_text(node: Node, bytes: &[u8]) -> Option<Http
     None
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Ruby — Rails + Sinatra
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_ruby(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -1108,9 +1100,7 @@ where
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Rust — axum / actix-web / rocket
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_rust(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -1252,9 +1242,7 @@ fn rust_signature_has_axum_extractor(func: Node, bytes: &[u8]) -> bool {
     needles.iter().any(|n| text.contains(n))
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Go — net/http + gin / echo / chi
-// ─────────────────────────────────────────────────────────────────────
 
 fn detect_go(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
@@ -1305,9 +1293,7 @@ fn go_function_entry_kind(func: Node, bytes: &[u8]) -> Option<EntryKind> {
     None
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Tests
-// ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

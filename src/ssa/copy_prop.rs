@@ -315,11 +315,9 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // Skip-conditions: copy-prop must NOT erase semantic info attached
     // to a copy's CFG node. These guard the three early-exits in
     // `copy_propagate`: labels, numeric-length, and string_prefix.
-    // ─────────────────────────────────────────────────────────────────
 
     /// Build a single-block SSA body containing
     ///   v0 = Const, v1 = Assign(v0)

@@ -19,9 +19,7 @@ use std::{
     thread,
 };
 
-// ---------------------------------------------------------------------------
 // Internal constants / helpers
-// ---------------------------------------------------------------------------
 
 type Paths = Vec<PathBuf>;
 
@@ -84,7 +82,6 @@ fn build_overrides(root: &Path, cfg: &Config) -> ignore::overrides::Override {
     })
 }
 
-// ---------------------------------------------------------------------------
 /// Walk `root` and send *batches* of paths through the returned channel.
 pub fn spawn_file_walker(root: &Path, cfg: &Config) -> (Receiver<Paths>, JoinHandle<()>) {
     let _span = tracing::info_span!("spawn_file_walker", root = %root.display()).entered();

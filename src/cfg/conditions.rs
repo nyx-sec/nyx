@@ -10,9 +10,7 @@ use petgraph::graph::NodeIndex;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-// -------------------------------------------------------------------------
 //    Short-circuit boolean operator helpers
-// -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum BoolOp {

@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 /// Default maximum line width when terminal size is unknown.
 const DEFAULT_WIDTH: usize = 100;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Public API
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Render all diagnostics as grouped, formatted console output with a summary.
 ///
@@ -190,9 +188,7 @@ pub fn shorten_callee(s: &str) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Welcome screen
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Render the branded welcome screen shown when `nyx` is invoked with no arguments.
 pub fn render_welcome() -> String {
@@ -258,9 +254,7 @@ const LOGO: &[&str] = &[
     r"╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝",
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Internal rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Indentation for body/evidence lines (spaces).
 const BODY_INDENT: usize = 6;
@@ -670,9 +664,7 @@ fn severity_tag(sev: Severity) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Text utilities
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Collapse spacing artefacts in method chains.
 ///
@@ -775,9 +767,7 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

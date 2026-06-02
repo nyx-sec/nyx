@@ -388,9 +388,7 @@ fn js_catch_no_param_no_synthetic() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────
 //  Ruby begin/rescue/ensure tests
-// ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn ruby_begin_rescue_has_exception_edges() {
@@ -540,9 +538,7 @@ fn ruby_multiple_rescue_clauses() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────
 //  Short-circuit evaluation tests
-// ─────────────────────────────────────────────────────────────────
 
 /// Helper: collect all If nodes from the CFG.
 fn if_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
@@ -2008,10 +2004,8 @@ fn local_summary_callees_have_distinct_ordinals() {
     assert_ne!(ord0, ord1, "ordinals must differ across sites");
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Anonymous function body naming via syntactic context
 //  (derive_anon_fn_name_from_context coverage)
-// ─────────────────────────────────────────────────────────────────────
 
 fn js_body_names(src: &[u8]) -> Vec<String> {
     let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
@@ -2531,9 +2525,7 @@ fn pointer_disabled_skips_subscript_synthesis() {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────
 //   Gap-filling: switch / for / do-while / nested loops / re-throw
-// ─────────────────────────────────────────────────────────────────
 
 /// JS `switch` should produce one synthetic dispatch `If` node per
 /// case (default excluded when at the tail), plus True edges into
@@ -2908,12 +2900,10 @@ fn js_empty_function_body_well_formed() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Loop CFG structure: every loop variant must produce a Loop header
 //  with at least one Back edge that targets that header. Without these
 //  invariants the SSA loop-induction-variable phi placement is wrong
 //  and the abstract-interp widening points are missed.
-// ─────────────────────────────────────────────────────────────────────
 
 fn loop_headers(cfg: &Cfg) -> Vec<NodeIndex> {
     cfg.node_indices()
@@ -3998,9 +3988,7 @@ function outer(obj, x, y) {
     assert_eq!(mline, 4, "obj.method(x) on line 4");
 }
 
-// ─────────────────────────────────────────────────────────────────
 //  Constant-branch fold: CondArith capture + evaluation
-// ─────────────────────────────────────────────────────────────────
 
 /// `CondArith::eval`/`eval_bool` must fold the two OWASP-Benchmark
 /// arithmetic guard shapes to a definite boolean, using integer

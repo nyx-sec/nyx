@@ -2227,9 +2227,7 @@ fn rename_variables(
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Debug invariant checkers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Verify BFS block ordering: every non-entry, non-orphan block must have at
 /// least one predecessor with a smaller block ID.
@@ -3532,9 +3530,7 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // FieldProj chain lowering tests
-    // ─────────────────────────────────────────────────────────────────
     //
     // These tests pin the contract that `try_lower_field_proj_chain`
     // emits a `FieldProj` chain for chained-receiver method calls
@@ -4370,11 +4366,9 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // SSA edge cases: loop induction, multi-variable phis, multiple
     // returns, switch-cases, and shadowing. These plug holes in the
     // dominator-frontier / variable-renaming coverage.
-    // ─────────────────────────────────────────────────────────────────
 
     /// Loop induction variable: `x = x + 1` inside a loop is the
     /// canonical SSA challenge, the body uses `x` then redefines it,

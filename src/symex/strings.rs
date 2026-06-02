@@ -13,9 +13,7 @@ use crate::symbol::Lang;
 
 use super::value::SymbolicValue;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Recognized string operation semantic.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,9 +54,7 @@ pub struct SanitizerInfo {
     pub is_global: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Encoding/decoding transform types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Category of encoding/decoding transform for symbolic modeling.
 ///
@@ -141,9 +137,7 @@ pub struct TransformMethodInfo {
     pub operand_source: StringOperandSource,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  String method classification
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Classify a callee as a recognized string method.
 ///
@@ -481,9 +475,7 @@ fn classify_c(method: &str) -> Option<StringMethodInfo> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Encoding/decoding transform classification
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Classify a callee as a recognized encoding/decoding transform.
 ///
@@ -757,9 +749,7 @@ fn classify_transform_ruby(callee: &str) -> Option<TransformMethodInfo> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Concrete encoding/decoding for witness rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Apply encoding for witness rendering.
 ///
@@ -939,9 +929,7 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Arg extraction helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract concrete pattern and replacement strings from args at given offset.
 ///
@@ -960,9 +948,7 @@ fn has_concrete_index(args: &[SymbolicValue], offset: usize) -> bool {
         .unwrap_or(false)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Concrete evaluation
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Evaluate a string operation on a concrete receiver string.
 ///
@@ -986,9 +972,7 @@ pub fn evaluate_string_op_concrete(method: &StringMethod, receiver: &str) -> Opt
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Sanitizer detection
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Detect whether a Replace operation acts as a security sanitizer.
 ///
@@ -1129,9 +1113,7 @@ fn is_global_replace(callee: &str, lang: Lang) -> bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -422,9 +422,7 @@ pub fn transfer_inst(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Heap helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Record a field store in the symbolic heap when the instruction defines
 /// a dotted path (e.g., `user.name`).
@@ -685,9 +683,7 @@ pub fn transfer_block(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  String method dispatch
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Attempt to model a callee as a recognized string operation.
 ///
@@ -809,9 +805,7 @@ fn try_transform_method(
     Some(SymbolicCallResult { value, tainted })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cross-file symbolic summary resolution
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Model a callee's return value from its SSA summary.
 ///
@@ -969,9 +963,7 @@ fn resolve_callee_symbolically(
     model_from_summary(summary, arg_syms, all_operands, state, result_value)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

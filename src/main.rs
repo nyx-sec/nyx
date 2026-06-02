@@ -11,13 +11,8 @@ use std::time::Instant;
 use tracing_subscriber::fmt::time;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry, fmt as tracing_fmt};
-// use tracing_appender::rolling::{RollingFileAppender, Rotation};
-// use tracing_appender::non_blocking;
 
 fn init_tracing(quiet: bool) {
-    // let file_appender = RollingFileAppender::new(Rotation::HOURLY, "logs", "nyx-scanner.log");
-    // let (file_writer, guard) = non_blocking(file_appender);
-
     let filter = if quiet {
         EnvFilter::new("off")
     } else {
@@ -29,11 +24,6 @@ fn init_tracing(quiet: bool) {
         .with_writer(std::io::stderr)
         .with_thread_ids(true)
         .with_timer(time::UtcTime::rfc_3339());
-
-    // let file_layer = fmt::layer()
-    //     .with_writer(file_writer)
-    //     .without_time()
-    //     .json();
 
     Registry::default().with(filter).with(fmt_layer).init();
 }

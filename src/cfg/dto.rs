@@ -90,9 +90,7 @@ fn collect_ts_type_alias_local_collections(root: Node<'_>, code: &[u8], out: &mu
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Java
-// ─────────────────────────────────────────────────────────────────────
 
 /// Walk the AST for `class_declaration` nodes whose body contains
 /// `field_declaration`s with classifiable types.  Only class-level
@@ -144,9 +142,7 @@ fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // TypeScript / JavaScript
-// ─────────────────────────────────────────────────────────────────────
 
 /// Walk for `interface_declaration` and `class_declaration` nodes.
 /// Interfaces with `property_signature` children and classes with
@@ -224,9 +220,7 @@ fn extract_ts_property<'a>(node: Node<'a>, code: &'a [u8]) -> Option<(String, Ty
     Some((field_name, kind))
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Rust
-// ─────────────────────────────────────────────────────────────────────
 
 /// Walk for `struct_item` nodes whose body lists named fields.
 fn collect_rust(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>) {
@@ -276,9 +270,7 @@ fn collect_rust(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Python (Pydantic)
-// ─────────────────────────────────────────────────────────────────────
 
 /// Walk for `class_definition` nodes whose superclass list contains
 /// `BaseModel` / `pydantic.BaseModel`.  Each `expression_statement` in
@@ -360,9 +352,7 @@ fn python_inherits_basemodel<'a>(class_node: Node<'a>, code: &'a [u8]) -> bool {
     false
 }
 
-// ─────────────────────────────────────────────────────────────────────
 // Walk helper
-// ─────────────────────────────────────────────────────────────────────
 
 fn walk<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
     f(node);

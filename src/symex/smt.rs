@@ -46,9 +46,7 @@ use crate::ssa::type_facts::TypeKind;
 
 use super::state::{PathConstraint, SymbolicState};
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Maximum SMT queries per finding (across all paths).
 const MAX_SMT_QUERIES_PER_FINDING: u32 = 10;
@@ -60,9 +58,7 @@ const SMT_QUERY_TIMEOUT_MS: u32 = 500;
 /// String theory (especially lexicographic ordering) is more expensive.
 const SMT_STRING_QUERY_TIMEOUT_MS: u32 = 500;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of an SMT satisfiability check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,9 +122,7 @@ fn warm_z3() {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  SmtContext
-// ─────────────────────────────────────────────────────────────────────────────
 
 impl SmtContext {
     /// Create a new SMT context for one finding's exploration.
@@ -208,9 +202,7 @@ impl SmtContext {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Sort inference
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Try to determine that an SSA value is an integer from PathEnv facts.
 fn is_known_int(v: SsaValue, env: &PathEnv) -> bool {
@@ -303,9 +295,7 @@ fn force_str_var(var_map: &mut VarMap, v: SsaValue) -> Option<Z3Str> {
     Some(z3_var)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  PathEnv seeding
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Seed Z3 solver with known facts from PathEnv.
 ///
@@ -411,9 +401,7 @@ fn seed_from_path_env(solver: &Solver, var_map: &mut VarMap, env: &PathEnv) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Constraint translation
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Translate a single path constraint into a Z3 assertion.
 ///
@@ -583,9 +571,7 @@ fn build_comparison_str(lhs: &Z3Str, op: CompOp, rhs: &Z3Str) -> z3::ast::Bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Escalation predicate
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Determine whether accumulated path constraints warrant SMT escalation.
 ///
@@ -613,9 +599,7 @@ fn can_translate_operand(op: &Operand) -> bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

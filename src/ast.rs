@@ -1043,9 +1043,7 @@ fn downgrade_severity(s: Severity) -> Severity {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  ParsedSource + ParsedFile: shared parse/CFG pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Level 1: parsed tree + lang info. No CFG construction.
 struct ParsedSource<'a> {
@@ -2161,9 +2159,7 @@ impl<'a> ParsedFile<'a> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Pass 1: Extract function summaries (no taint analysis)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract function summaries from pre-read bytes.
 ///
@@ -2453,9 +2449,7 @@ pub fn extract_all_summaries_from_bytes(
     ))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Constant-argument suppression helper
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns `true` when the captured call node has only literal arguments
 /// (string, number, boolean, null/nil/none), or identifier arguments that
@@ -5355,9 +5349,7 @@ fn has_interpolation(node: tree_sitter::Node) -> bool {
     false
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Layer B: AST pattern suppression when taint confirms safety
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Map the second segment of a pattern ID (e.g. "cmdi" from "py.cmdi.os_system")
 /// to the `Cap` that taint analysis models. Returns `None` for categories taint
@@ -5738,9 +5730,7 @@ impl TaintSuppressionCtx {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Pass 2 / single‑file: Full rule execution (AST queries + taint)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Run all enabled analyses on pre-read bytes and return diagnostics.
 ///
@@ -5816,9 +5806,7 @@ pub fn run_rules_on_file(
     run_rules_on_bytes(&bytes, path, cfg, global_summaries, scan_root)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Fused single-pass: extract summaries + run full analysis in one parse/CFG
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of a fused analysis pass: both function summaries and diagnostics.
 pub struct FusedResult {
@@ -6090,9 +6078,7 @@ pub fn analyse_file_fused(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Text-based pattern scanning (non-tree-sitter files)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Run text-based pattern scanners on files whose extension is not supported
 /// by tree-sitter.  Currently handles `.ejs` templates.

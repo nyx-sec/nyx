@@ -924,9 +924,7 @@ pub fn handle(
     Ok(())
 }
 
-// --------------------------------------------------------------------------------------------
 // Shared post-processing helpers
-// --------------------------------------------------------------------------------------------
 
 /// Assign confidence, rank, and truncate diagnostics.
 pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
@@ -1978,9 +1976,7 @@ fn run_topo_batches(
     result
 }
 
-// --------------------------------------------------------------------------------------------
 // Two-pass scanning (no index)
-// --------------------------------------------------------------------------------------------
 
 /// Walk the filesystem and perform a two-pass scan:
 ///
@@ -2487,9 +2483,7 @@ pub(crate) fn scan_filesystem_with_observer(
     Ok((diags, surface_map))
 }
 
-// --------------------------------------------------------------------------------------------
 // Two-pass scanning (with index)
-// --------------------------------------------------------------------------------------------
 
 /// Indexed two-pass scan:
 ///
@@ -3352,9 +3346,7 @@ pub fn scan_with_index_parallel_observer(
     Ok(diags)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Low-noise prioritization pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Rules eligible for rollup grouping (high-frequency, low-signal patterns).
 const ROLLUP_RULES: &[&str] = &[
@@ -3610,9 +3602,7 @@ fn apply_low_budgets(
     stats.low_budget_dropped = before - diags.len();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Inline suppression application
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Apply inline `nyx:ignore` / `nyx:ignore-next-line` suppressions to `diags`.
 ///
@@ -3646,9 +3636,7 @@ fn apply_suppressions(diags: &mut [Diag]) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  dynamic verification summary tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod dynamic_summary_tests {
@@ -3698,9 +3686,7 @@ mod dynamic_summary_tests {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  deduplicate_taint_flows tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod dedup_taint_flow_tests {
@@ -4268,9 +4254,7 @@ fn severity_filter_applied_at_output_stage() {
     assert_eq!(filtered[0].path, "src/main.rs");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Prioritization pipeline tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod prioritize_tests {

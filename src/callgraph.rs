@@ -20,9 +20,7 @@ use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Metadata attached to each call-graph edge.
 #[derive(Debug, Clone)]
@@ -76,9 +74,7 @@ pub struct CallGraphAnalysis {
     pub topo_scc_callee_first: Vec<usize>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Callee-name normalization
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract the last segment of a qualified callee name for resolution.
 ///
@@ -164,9 +160,7 @@ pub(crate) fn callee_container_hint(raw: &str) -> &str {
     ""
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Class / container → method index
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Per-language `(container, method_name)` → candidate [`FuncKey`] index.
 ///
@@ -374,9 +368,7 @@ impl TypeHierarchyIndex {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Call-graph construction
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Build the whole-program call graph from merged summaries.
 ///
@@ -742,9 +734,7 @@ fn resolve_via_interop(
     None
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  SCC / topological analysis
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute SCC decomposition and topological ordering of the call graph.
 ///
@@ -772,9 +762,7 @@ pub fn analyse(cg: &CallGraph) -> CallGraphAnalysis {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  File-level batch ordering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// A batch of files at a single topological position, annotated with whether
 /// any contributing SCC contains mutual recursion (len > 1) and whether any
@@ -1139,9 +1127,7 @@ pub(super) fn scc_file_batches<'a>(
     (batches, orphans)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

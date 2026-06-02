@@ -45,9 +45,7 @@ use super::state::{PathConstraint, SymbolicState};
 use super::transfer::{self, SymexHeapCtx, SymexSummaryCtx};
 use super::value::{SymbolicValue, mk_phi};
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Default max call depth (caller → callee → callee's callee → ...).
 pub(crate) const DEFAULT_MAX_DEPTH: usize = 3;
@@ -91,9 +89,7 @@ pub(crate) const DEFAULT_MAX_SCC_REENTRY: usize = 3;
 /// Max cache entries before eviction (simple clear).
 const MAX_CACHE_ENTRIES: usize = 64;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Feature gate
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Check if interprocedural symbolic execution is enabled.
 ///
@@ -106,9 +102,7 @@ pub fn interproc_enabled() -> bool {
         .interprocedural
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cutoff reasons
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Structured record of why interprocedural execution was cut short.
 ///
@@ -234,9 +228,7 @@ impl fmt::Display for CutoffReason {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Context
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Shared context for interprocedural symbolic execution.
 ///
@@ -354,9 +346,7 @@ pub struct InterprocStats {
     pub forks: usize,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Result types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of executing a callee to completion.
 #[derive(Clone, Debug)]
@@ -441,9 +431,7 @@ pub struct InterprocEvents {
     pub cutoff_reasons: Vec<CutoffReason>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Merge policy
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Policy for merging multiple callee exit states into a single caller state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -467,9 +455,7 @@ pub fn select_merge_policy(exit_count: usize, has_cutoffs: bool) -> MergePolicy 
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cache
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Cache key abstraction of argument symbolic values.
 ///
@@ -520,9 +506,7 @@ impl ArgAbstraction {
 /// Cache type: maps (callee_name, arg_abstraction, heap_fingerprint) → CallOutcome.
 pub type InterprocCache = HashMap<(String, ArgAbstraction, u64), CallOutcome>;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  RAII re-entry guard
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// RAII guard that increments a function's re-entry count on creation and
 /// decrements it on drop.  Ensures the count is correct on all exit paths.
@@ -550,9 +534,7 @@ impl<'a> Drop for ReentryGuard<'a> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Core execution
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Execute a callee's SSA body interprocedurally.
 ///
@@ -1151,9 +1133,7 @@ fn handle_nested_calls(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Exit state merging
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Merge multiple callee exit states into a single state for the caller.
 ///
@@ -1256,9 +1236,7 @@ fn merge_most_tainted(states: &[CalleeExitState]) -> CalleeExitState {
         })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Heap delta
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute the set of heap fields that changed between initial and final state.
 fn compute_heap_delta(initial: &SymbolicHeap, final_heap: &SymbolicHeap) -> Vec<HeapMutation> {
@@ -1293,9 +1271,7 @@ fn sym_value_structurally_eq(a: &SymbolicValue, b: &SymbolicValue) -> bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

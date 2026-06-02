@@ -4,9 +4,7 @@ use crate::labels::{DataLabel, Kind, classify, lookup};
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-// -------------------------------------------------------------------------
 //                      Utility helpers
-// -------------------------------------------------------------------------
 
 /// Return the text of a node.
 #[inline]

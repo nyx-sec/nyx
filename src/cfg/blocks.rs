@@ -121,9 +121,7 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
     }
 }
 
-// -------------------------------------------------------------------------
 //    Exception-source detection for try/catch wiring
-// -------------------------------------------------------------------------
 
 /// Returns true if this CFG node can implicitly raise an exception (calls).
 /// Explicit throws are collected separately via `throw_targets`.
@@ -190,9 +188,7 @@ pub(super) fn extract_catch_param_name<'a>(
     }
 }
 
-// -------------------------------------------------------------------------
 //    Ruby begin/rescue/ensure handler
-// -------------------------------------------------------------------------
 
 /// Builds CFG for Ruby's `begin`/`rescue`/`ensure` blocks (and `body_statement`
 /// with inline rescue).  Ruby's `begin` has no `body` field, the try-body
@@ -442,9 +438,7 @@ pub(super) fn build_begin_rescue<'a>(
     }
 }
 
-// -------------------------------------------------------------------------
 //    switch handler, multi-way dispatch with fallthrough
-// -------------------------------------------------------------------------
 
 /// True for AST kinds that wrap a single switch case body.
 pub(super) fn is_switch_case_kind(kind: &str) -> bool {
@@ -780,9 +774,7 @@ pub(super) fn build_switch<'a>(
     exits
 }
 
-// -------------------------------------------------------------------------
 //    try/catch/finally handler
-// -------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_try<'a>(

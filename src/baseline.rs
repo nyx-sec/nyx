@@ -15,9 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Baseline entry (stripped — no source code)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// A stripped baseline entry: only what is needed for cross-commit diffing.
 /// Contains no source code snippets.
@@ -33,9 +31,7 @@ pub struct BaselineEntry {
     pub rule_id: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Transition enum
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// How a finding's verdict changed between the baseline scan and the current
 /// scan.
@@ -59,9 +55,7 @@ pub enum Transition {
     FlippedNotConfirmed,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  VerdictDiffEntry
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Per-finding verdict diff produced by comparing a baseline to a current scan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,9 +81,7 @@ pub struct VerdictDiff {
     pub entries: Vec<VerdictDiffEntry>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Load / write helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Load baseline entries from a file.
 ///
@@ -164,9 +156,7 @@ pub fn write_baseline(path: &Path, diags: &[Diag]) -> crate::errors::NyxResult<(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Diff computation
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn classify_transition(
     baseline: Option<VerifyStatus>,
@@ -272,9 +262,7 @@ pub fn compute_verdict_diff(baseline: &[BaselineEntry], current: &[Diag]) -> Ver
     VerdictDiff { entries }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  CI gates
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Gate: exit code 2 if any new `Confirmed` finding appears.
 ///
@@ -320,9 +308,7 @@ pub fn check_gate(diff: &VerdictDiff, gate: &str) -> bool {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Console / JSON rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn status_str(s: Option<VerifyStatus>) -> &'static str {
     match s {
@@ -393,9 +379,7 @@ pub fn format_diff_console(diff: &VerdictDiff) -> String {
     lines.join("\n") + "\n"
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -556,9 +556,7 @@ fn cross_file_sanitizer_resolved_via_global_summaries() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Shared test helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse Rust source bytes → FileCfg
 fn parse_rust(src: &[u8]) -> FileCfg {
@@ -777,9 +775,7 @@ fn cross_file_sink_cap_only_site_leaves_primary_location_none() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Multi-file integration tests (real parsing, full pass-1 → pass-2 pipeline)
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn multi_file_source_to_sink_detected() {
@@ -1070,9 +1066,7 @@ fn multi_file_chain_source_sanitize_sink_across_files() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Edge-case unit tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn sanitizer_strips_only_matching_bits() {
@@ -1435,9 +1429,7 @@ fn multiple_cross_file_sources_one_sanitised() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Multi-language helpers and tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse source bytes for any supported language → FileCfg
 fn parse_lang(src: &[u8], slug: &str, ts_lang: tree_sitter::Language) -> FileCfg {
@@ -1956,9 +1948,7 @@ fn ruby_source_to_sink() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cross-language multi-file tests
-// ─────────────────────────────────────────────────────────────────────────────
 //
 // Cross-language resolution now requires explicit InteropEdge declarations.
 // Without an edge, functions from different languages are never resolved ,
@@ -6158,9 +6148,7 @@ fn link_alternative_paths_three_way_group() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Typed call-graph devirtualisation (typed_call_receivers)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// when a method call's receiver was constructed from a known
 /// constructor (`File::open` → `FileHandle`), the SSA-extraction

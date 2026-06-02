@@ -955,9 +955,7 @@ pub struct LocalFuncSummary {
 pub type Cfg = Graph<NodeInfo, EdgeKind>;
 pub type FuncSummaries = HashMap<FuncKey, LocalFuncSummary>;
 
-// -------------------------------------------------------------------------
 // Per-body CFG types
-// -------------------------------------------------------------------------
 
 /// Opaque identifier for an executable body within a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -5075,10 +5073,8 @@ fn apply_arg_source_bindings(
     }
 }
 
-// -------------------------------------------------------------------------
 //    The recursive *work‑horse* that converts an AST node into a CFG slice.
 //    Returns the set of *exit* nodes that need to be wired further.
-// -------------------------------------------------------------------------
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_sub<'a>(
     ast: Node<'a>,
@@ -5099,9 +5095,7 @@ pub(super) fn build_sub<'a>(
     current_body_id: BodyId,
 ) -> Vec<NodeIndex> {
     match lookup(lang, ast.kind()) {
-        // ─────────────────────────────────────────────────────────────────
         //  IF‑/ELSE: two branches that re‑merge afterwards
-        // ─────────────────────────────────────────────────────────────────
         Kind::If => {
             // Some grammars (Go `if init; cond {}`, sibling C-style forms)
             // attach an init / "initializer" subtree that runs before the
@@ -5383,9 +5377,7 @@ pub(super) fn build_sub<'a>(
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────
         //  WHILE / FOR: classic loop with a back edge.
-        // ─────────────────────────────────────────────────────────────────
         Kind::While | Kind::For => {
             let header = push_node(
                 g,
@@ -5527,9 +5519,7 @@ pub(super) fn build_sub<'a>(
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────
         //  Control-flow sinks (return / break / continue).
-        // ─────────────────────────────────────────────────────────────────
         Kind::Return => {
             if has_call_descendant(ast, lang) {
                 // Return-call bug fix: emit a Call node BEFORE the Return so
@@ -5825,9 +5815,7 @@ pub(super) fn build_sub<'a>(
             current_body_id,
         ),
 
-        // ─────────────────────────────────────────────────────────────────
         //  BLOCK: statements execute sequentially
-        // ─────────────────────────────────────────────────────────────────
         Kind::SourceFile | Kind::Block => {
             // Ruby body_statement with rescue/ensure = implicit begin/rescue
             if lang == "ruby" && ast.kind() == "body_statement" {
@@ -6655,9 +6643,7 @@ pub(super) fn build_sub<'a>(
             analysis_rules,
         ),
 
-        // ─────────────────────────────────────────────────────────────────
         //  Every other node = simple sequential statement
-        // ─────────────────────────────────────────────────────────────────
         _ => {
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
             // (Phase 06): handles arrow-bodied components like
@@ -7144,22 +7130,6 @@ pub(crate) fn export_summaries(
         })
         .collect()
 }
-
-// pub(crate) fn dump_cfg(g: &Cfg) {
-//     debug!(target: "taint", "CFG DUMP: nodes = {}, edges = {}", g.node_count(), g.edge_count());
-//     for idx in g.node_indices() {
-//         debug!(target: "taint", "  node {:>3}: {:?}", idx.index(), g[idx]);
-//     }
-//     for e in g.edge_references() {
-//         debug!(
-//             target: "taint",
-//             "  edge {:>3} → {:<3} ({:?})",
-//             e.source().index(),
-//             e.target().index(),
-//             e.weight()
-//         );
-//     }
-// }
 
 #[cfg(test)]
 mod cfg_tests;

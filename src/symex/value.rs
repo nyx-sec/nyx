@@ -189,9 +189,7 @@ impl SymbolicValue {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Smart constructors, all tree-building goes through these
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Build a binary arithmetic expression with concrete folding and depth bounding.
 ///
@@ -316,9 +314,7 @@ pub fn mk_phi(operands: Vec<(BlockId, SymbolicValue)>) -> SymbolicValue {
     SymbolicValue::Phi(operands)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  String operation smart constructors
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Build a `Trim` expression with concrete folding and depth bounding.
 pub fn mk_trim(s: SymbolicValue) -> SymbolicValue {
@@ -458,9 +454,7 @@ pub fn mk_decode(kind: super::strings::TransformKind, s: SymbolicValue) -> Symbo
     SymbolicValue::Decode(kind, Box::new(s))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Display, human-readable witness strings
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Maximum length for the Display output before truncation.
 const MAX_DISPLAY_LEN: usize = 256;
@@ -538,9 +532,7 @@ fn display_inner(val: &SymbolicValue) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

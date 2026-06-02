@@ -479,11 +479,9 @@ mod tests {
         let n1 = NodeIndex::new(1);
         let n2 = NodeIndex::new(2);
 
-        // Push n0
         assert!(in_wl.insert(n0));
         wl.push_back(n0);
 
-        // Push n1
         assert!(in_wl.insert(n1));
         wl.push_back(n1);
 
@@ -492,7 +490,6 @@ mod tests {
         // wl still has only 2 entries
         assert_eq!(wl.len(), 2);
 
-        // Pop n0
         let popped = wl.pop_front().unwrap();
         in_wl.remove(&popped);
         assert_eq!(popped, n0);
@@ -503,7 +500,6 @@ mod tests {
         assert!(in_wl.insert(n0));
         wl.push_back(n0);
 
-        // Push n2
         assert!(in_wl.insert(n2));
         wl.push_back(n2);
 

@@ -1558,9 +1558,7 @@ mod tests {
         ));
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // chain-receiver decomposition + chain_proxies tracking
-    // ─────────────────────────────────────────────────────────────────
     //
     // These tests pin the contract that:
     //   1. `try_chain_decompose` parses dotted callees into receiver +
@@ -1981,12 +1979,10 @@ mod tests {
         assert!(lc.contains(ResourceLifecycle::CLOSED));
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // Pointer-analysis: PtrProxyHint::FieldOnly routes
     // single-dot proxy-acquire to chain_proxies, suppressing the
     // SymbolId path that would otherwise mark the field-aliased local
     // as a leakable resource.
-    // ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn field_only_hint_routes_single_dot_acquire_to_chain_proxies() {
