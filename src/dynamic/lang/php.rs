@@ -1523,6 +1523,12 @@ function _nyx_header_probe(string $name, string $value): void {{
     $value = $payload;
     _nyx_header_probe($name, $value);
     echo "__NYX_SINK_HIT__\n";
+    // The real entry could not be driven (no named entry fn captured a
+    // header); this records the raw payload at a synthetic sink WITHOUT
+    // running the fixture's own guards, so the verdict must not terminally
+    // Confirm. The runner downgrades synthetic-marked sink hits to
+    // PartiallyConfirmed.
+    echo "__NYX_SYNTHETIC_FALLBACK__\n";
     echo json_encode(['name' => $name, 'value' => $value]) . "\n";
 }}
 
@@ -1949,6 +1955,14 @@ function _nyx_follow_location(string $location): void {{
     _nyx_redirect_probe($location, $requestHost);
     _nyx_follow_location($location);
     echo "__NYX_SINK_HIT__\n";
+    // Synthetic sink: the real redirect surface (with its host allowlist /
+    // path guard) never ran, so this raw-payload assignment proves nothing
+    // about the guarded code. Emit the synthetic marker so the runner
+    // downgrades the verdict to PartiallyConfirmed instead of terminally
+    // Confirming guard-bypassed code (the DVWA open_redirect over-confirm
+    // class). The OOB callback may still be recorded (infra signal), but the
+    // runner ignores it for synthetic-marked runs.
+    echo "__NYX_SYNTHETIC_FALLBACK__\n";
     echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
 }}
 

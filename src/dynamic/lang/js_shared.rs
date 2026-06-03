@@ -2323,9 +2323,9 @@ function nyxWireFrameProbe(rawBytes) {{
     };
 
     let invoke_via_fixture = if uses_node_writer {
-        "const captured = nyxHeaderViaFixture(payload);\nif (Array.isArray(captured) && captured.length > 0) {\n  for (const [hname, hvalue] of captured) {\n    nyxHeaderProbe(hname, hvalue);\n  }\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ headers: captured.map(([n, v]) => [n, v]) }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const name = 'Set-Cookie';\n  const value = payload;\n  nyxHeaderProbe(name, value);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ name: name, value: value }));\n}\n"
+        "const captured = nyxHeaderViaFixture(payload);\nif (Array.isArray(captured) && captured.length > 0) {\n  for (const [hname, hvalue] of captured) {\n    nyxHeaderProbe(hname, hvalue);\n  }\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ headers: captured.map(([n, v]) => [n, v]) }));\n} else {\n  // Synthetic fallback — fixture import / call failed. The real header\n  // surface (and its guards) never ran, so the verdict must not Confirm;\n  // the synthetic marker routes the runner to PartiallyConfirmed.\n  const name = 'Set-Cookie';\n  const value = payload;\n  nyxHeaderProbe(name, value);\n  console.log('__NYX_SINK_HIT__');\n  console.log('__NYX_SYNTHETIC_FALLBACK__');\n  console.log(JSON.stringify({ name: name, value: value }));\n}\n"
     } else {
-        "const name = 'Set-Cookie';\nconst value = payload;\nnyxHeaderProbe(name, value);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ name: name, value: value }));\n"
+        "const name = 'Set-Cookie';\nconst value = payload;\nnyxHeaderProbe(name, value);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log('__NYX_SYNTHETIC_FALLBACK__');\nconsole.log(JSON.stringify({ name: name, value: value }));\n"
     };
 
     // Phase 08 tier-(b): when the fixture imports `net.createServer`, run
@@ -2384,11 +2384,14 @@ function nyxHeaderProbe(name, value) {{
     console.log(JSON.stringify({{ wire_frame_len: rawBytes.length }}));
     return;
   }}
-  // Synthetic fallback — wire-frame branch did not produce bytes.
+  // Synthetic fallback — wire-frame branch did not produce bytes. The real
+  // socket-write path never ran, so this records the raw payload at a
+  // synthetic sink; the marker routes the runner to PartiallyConfirmed.
   const name = 'Set-Cookie';
   const value = payload;
   nyxHeaderProbe(name, value);
   console.log('__NYX_SINK_HIT__');
+  console.log('__NYX_SYNTHETIC_FALLBACK__');
   console.log(JSON.stringify({{ name: name, value: value }}));
 }})();
 "#

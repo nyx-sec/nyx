@@ -235,10 +235,17 @@ fn build_taint_diag(
                 .map(sanitize_desc)
         })
         .unwrap_or_else(|| "(unknown)".into());
+    // Sink-callee attribution: when the sink node is an *argument* of a call
+    // (e.g. PHP `header("location: " . $_GET['x'])` — the `$_GET[...]` subscript
+    // carries `callee = "$_GET"` but `outer_callee = "header"`), the enclosing
+    // call is the real sink and should be displayed, not the source token.
+    // `outer_callee` is only populated for nested/argument positions, so for a
+    // plain call node it is None and we fall back to the node's own callee.
     let call_site_callee = cfg_graph[finding.sink]
         .call
-        .callee
+        .outer_callee
         .as_deref()
+        .or(cfg_graph[finding.sink].call.callee.as_deref())
         .map(sanitize_desc)
         .unwrap_or_else(|| "(unknown)".into());
     let kind_label = source_kind_label(finding.source_kind);
@@ -1979,6 +1986,27 @@ impl<'a> ParsedFile<'a> {
                     cfg_analysis::Confidence::Medium => crate::evidence::Confidence::Medium,
                     cfg_analysis::Confidence::Low => crate::evidence::Confidence::Low,
                 });
+                // Carry the sink node's resolved Sink caps onto the structural
+                // finding's evidence so downstream cap-classification (and the
+                // eval `cap_of`) buckets `cfg-unguarded-sink` under its real cap
+                // (sqli/cmdi/ssrf/…) instead of the catch-all `other`. Without
+                // this every taint-less structural sink finding fell through to
+                // `other`, hiding real recall (e.g. dvpwa `cur.execute` SQLi)
+                // and inflating the `other` bucket. Non-sink structural findings
+                // (resource-leak, auth-gap) carry no Sink label, so this is 0.
+                let cf_sink_caps: u32 = cf
+                    .evidence
+                    .first()
+                    .map(|&n| {
+                        cfg_ctx.cfg[n].taint.labels.iter().fold(0u32, |acc, l| {
+                            if let crate::labels::DataLabel::Sink(c) = l {
+                                acc | c.bits()
+                            } else {
+                                acc
+                            }
+                        })
+                    })
+                    .unwrap_or(0);
                 out.push(Diag {
                     path: self.source.path.to_string_lossy().into_owned(),
                     line: point.row + 1,
@@ -2000,6 +2028,7 @@ impl<'a> ParsedFile<'a> {
                             kind: "sink".into(),
                             snippet: None,
                         }),
+                        sink_caps: cf_sink_caps,
                         guards: vec![],
                         sanitizers: vec![],
                         state: None,

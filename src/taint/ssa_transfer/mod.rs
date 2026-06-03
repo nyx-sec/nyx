@@ -3653,6 +3653,59 @@ fn apply_container_elem_read_w4(
     }
 }
 
+/// Validated-reconstruction support (read side): when reading an
+/// element of a container whose BASE symbol was validated by a
+/// branch guard on this path (e.g. the true branch of
+/// `if (is_numeric($octet[0]) && is_numeric($octet[1]) && …)` marks
+/// the `octet` symbol validated), propagate that validation to the
+/// element-read result so a value later rebuilt from the elements
+/// (`$target = $octet[0] . '.' . $octet[1]`) is recognised as
+/// validated by the Assign-arm reconstruction propagation.
+///
+/// This is the symbol-level counterpart to `apply_container_elem_read_w4`,
+/// which lifts validation off `(loc, ELEM)` field cells; the branch
+/// guard marks the symbol, not the cells, so the cell path alone misses
+/// the "validate each element then rebuild" idiom.  Consistent with the
+/// engine's existing policy of validating the whole base symbol on a
+/// single element type-check — it extends the reach of that decision to
+/// element reads, it does not introduce a new validation criterion.
+fn apply_container_read_receiver_validation(
+    inst: &SsaInst,
+    ssa: &SsaBody,
+    transfer: &SsaTaintTransfer,
+    state: &mut SsaTaintState,
+) {
+    let SsaOp::Call {
+        callee, receiver, ..
+    } = &inst.op
+    else {
+        return;
+    };
+    if !crate::pointer::is_container_read_callee_pub(callee) {
+        return;
+    }
+    let Some(rcv) = *receiver else {
+        return;
+    };
+    let (rcv_must, rcv_may) = ssa_value_validated_bits(rcv, ssa, transfer.interner, state);
+    if !rcv_must && !rcv_may {
+        return;
+    }
+    if let Some(name) = ssa
+        .value_defs
+        .get(inst.value.0 as usize)
+        .and_then(|vd| vd.var_name.as_deref())
+        && let Some(sym) = transfer.interner.get(name)
+    {
+        if rcv_must {
+            state.validated_must.insert(sym);
+        }
+        if rcv_may {
+            state.validated_may.insert(sym);
+        }
+    }
+}
+
 /// W4: look up the symbol-keyed `validated_must` / `validated_may`
 /// flags for an SSA value via its `var_name`.  Returns `(false,
 /// false)` when the value has no name, when the name isn't interned,
@@ -5692,6 +5745,45 @@ pub(super) fn transfer_inst(
                         uses_summary: inherited_summary,
                     },
                 );
+
+                // Validated-reconstruction propagation: when a tainted value is
+                // rebuilt from operands that are themselves all validated (e.g.
+                // `$target = $octet[0] . '.' . $octet[1] . '.' . $octet[2]`
+                // where each `$octet[i]` inherited an `is_numeric` branch-guard
+                // validation), the result is validated too.  We AND `must` /
+                // OR `may` over the TAINTED operands only — string literals and
+                // other untainted operands carry no taint into the sink, so
+                // they neither contribute to nor block validation.  This is the
+                // scalar counterpart to the field-cell `must_all`/`may_any`
+                // lift below and closes the "validate-each-part then rebuild"
+                // idiom (DVWA exec/source/impossible.php).
+                let mut tainted_must_all = true;
+                let mut tainted_may_any = false;
+                let mut saw_tainted = false;
+                for &u in uses {
+                    if state.get(u).is_some() {
+                        saw_tainted = true;
+                        let (am, av) =
+                            ssa_value_validated_bits(u, ssa, transfer.interner, state);
+                        tainted_must_all &= am;
+                        tainted_may_any |= av;
+                    }
+                }
+                if saw_tainted
+                    && (tainted_must_all || tainted_may_any)
+                    && let Some(name) = ssa
+                        .value_defs
+                        .get(inst.value.0 as usize)
+                        .and_then(|vd| vd.var_name.as_deref())
+                    && let Some(sym) = transfer.interner.get(name)
+                {
+                    if tainted_must_all {
+                        state.validated_must.insert(sym);
+                    }
+                    if tainted_may_any {
+                        state.validated_may.insert(sym);
+                    }
+                }
             }
 
             // Synthetic base-update Assign emitted by SSA lowering for
@@ -6061,6 +6153,7 @@ pub(super) fn transfer_inst(
     // before container-handled early-returns inside the Call arm.
     if matches!(&inst.op, SsaOp::Call { .. }) {
         apply_container_elem_read_w4(inst, ssa, transfer, state);
+        apply_container_read_receiver_validation(inst, ssa, transfer, state);
     }
 
     // Constraint propagation through instructions

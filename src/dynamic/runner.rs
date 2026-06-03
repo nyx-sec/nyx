@@ -501,6 +501,16 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         sink_hit: bool,
         oob_nonce_slot: bool,
         oob_callback_seen: bool,
+        /// The harness reached only its SYNTHETIC fallback sink — the real
+        /// guarded entry could not be driven (e.g. a top-level `$_GET` PHP
+        /// script with no named entry fn, or a JS fixture whose response
+        /// import failed), so the fixture's own guards never executed. Such a
+        /// run must not terminally Confirm (that would claim exploitation of
+        /// code whose guard was bypassed — the DVWA impossible.php /
+        /// juiceshop prototype_pollution over-confirm class); it is routed to
+        /// partial confirmation instead. Set when the harness emitted the
+        /// `__NYX_SYNTHETIC_FALLBACK__` marker (PHP / JS synthetic branches).
+        synthetic_fallback: bool,
         vuln_probes: Vec<SinkProbe>,
     }
     let mut vuln_runs: Vec<VulnRun> = Vec::with_capacity(vuln_payloads.len());
@@ -603,11 +613,20 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             Some(&run_canary),
         );
         let sink_hit = outcome.sink_hit;
+        const SYNTHETIC_FALLBACK_SENTINEL: &[u8] = b"__NYX_SYNTHETIC_FALLBACK__";
+        let synthetic_fallback = outcome
+            .stdout
+            .windows(SYNTHETIC_FALLBACK_SENTINEL.len())
+            .any(|w| w == SYNTHETIC_FALLBACK_SENTINEL)
+            || outcome
+                .stderr
+                .windows(SYNTHETIC_FALLBACK_SENTINEL.len())
+                .any(|w| w == SYNTHETIC_FALLBACK_SENTINEL);
         trace_record(
             trace_handle.as_ref(),
             TraceStage::OracleObserved,
             Some(format!(
-                "attempt={attempt_index} fired={vuln_fired} sink_hit={sink_hit}"
+                "attempt={attempt_index} fired={vuln_fired} sink_hit={sink_hit} synthetic={synthetic_fallback}"
             )),
         );
 
@@ -654,6 +673,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             sink_hit,
             oob_nonce_slot: payload.oob_nonce_slot,
             oob_callback_seen,
+            synthetic_fallback,
             vuln_probes,
         });
     }
@@ -678,6 +698,20 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     let mut partial_signal = false;
 
     for vr in &vuln_runs {
+        // Synthetic-fallback runs reached only the harness's synthetic sink —
+        // the fixture's real guarded entry never executed — so the attacker
+        // payload "reaching the sink" proves nothing about the guarded code.
+        // Reaching the synthetic sink is at most a partial confirmation
+        // (sink-reachable, exploit unproven). Routing it here (instead of the
+        // confirm / OOB-self-confirm paths below) yields PartiallyConfirmed
+        // rather than a false Confirmed, closing the guard-bypass over-confirm
+        // class (DVWA header_injection/open_redirect on top-level $_GET
+        // scripts; juiceshop prototype_pollution) without claiming the finding
+        // is benign.
+        if vr.synthetic_fallback && vr.sink_hit {
+            partial_signal = true;
+            continue;
+        }
         let is_confirm_candidate = vr.vuln_fired && vr.sink_hit;
         let is_partial_candidate = vr.sink_hit && !vr.vuln_fired;
         if !is_confirm_candidate && !is_partial_candidate {

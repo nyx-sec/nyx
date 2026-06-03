@@ -584,7 +584,17 @@ mod e2e_phase_09 {
         let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
             return;
         };
-        assert_confirmed(Lang::Php, &outcome);
+        // The fixture's real entry imports Symfony `RedirectResponse`, which is
+        // absent from the harness build env, so the eval/invoke fails and the
+        // harness reaches only its synthetic sink. After the synthetic-fallback
+        // over-confirm fix that yields PartiallyConfirmed (sink-reachable,
+        // exploit unproven) rather than a Confirmed claiming exploitation of
+        // guarded code that never executed. With Symfony present (CI image) the
+        // real drive still Confirms. Both are valid positive detections.
+        assert!(
+            outcome.triggered_by.is_some() || outcome.sink_reached_no_oracle,
+            "PHP OPEN_REDIRECT vuln must Confirm or PartiallyConfirm; got {outcome:?}",
+        );
     }
 
     #[test]
@@ -748,7 +758,29 @@ mod e2e_phase_09 {
         let Some(outcome) = run_oob(Lang::Php, "vuln.php", "run") else {
             return;
         };
-        assert_oob_recorded(&outcome, "open-redirect-php-oob-nonce");
+        // The OOB nonce URL is still followed and recorded (infra signal), but
+        // because the fixture's real entry (Symfony `RedirectResponse`) can't be
+        // driven in this env, the harness reaches only its synthetic sink. After
+        // the over-confirm fix a synthetic sink hit no longer self-confirms via
+        // the OOB nonce (that would confirm code whose guard never ran) — it
+        // PartiallyConfirms instead. With Symfony present the real drive promotes
+        // to ConfirmedProvenOob.
+        let oob_attempt = outcome
+            .attempts
+            .iter()
+            .find(|a| a.payload_label == "open-redirect-php-oob-nonce")
+            .unwrap_or_else(|| panic!("OOB payload must run; outcome={outcome:?}"));
+        assert!(
+            oob_attempt.outcome.oob_callback_seen,
+            "harness must follow captured Location URL so OOB listener records the nonce; got {oob_attempt:?}",
+        );
+        match outcome.differential.as_ref() {
+            Some(diff) => assert_eq!(diff.verdict, DifferentialVerdict::ConfirmedProvenOob),
+            None => assert!(
+                outcome.sink_reached_no_oracle,
+                "synthetic-fallback OOB run must PartiallyConfirm (not self-confirm); got {outcome:?}",
+            ),
+        }
     }
 
     #[test]
