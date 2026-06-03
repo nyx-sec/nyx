@@ -56,8 +56,8 @@ pub enum CopyStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Prerequisite {
-    /// A binary must resolve on `PATH` and respond to `--version` with
-    /// exit code 0 (e.g. `python3`, `node`, `go`, `cargo`).
+    /// A binary must resolve on `PATH` and respond to its version probe with
+    /// exit code 0 (usually `--version`; Go uses `go version`).
     CommandAvailable(&'static str),
     /// A specific env var must be set (used to gate feature-flagged
     /// suites — e.g. `NYX_ENABLE_FLAKY_FIXTURES=1`).
@@ -78,7 +78,7 @@ pub enum Prerequisite {
     /// framework-bound shape suites so hosts without preinstalled gems can
     /// skip instead of depending on network access during tests.
     RubyRequireAvailable(&'static str),
-    /// A binary must resolve on `PATH` and respond to `--version` with
+    /// A binary must resolve on `PATH` and respond to its version probe with
     /// exit code 0, but the binary name can be overridden via an env
     /// var.  Used by the C / C++ fixture suites where `cc` / `c++` can
     /// be swapped in for `clang` / `gcc` via `NYX_CC_BIN` / `NYX_CXX_BIN`.
@@ -128,7 +128,7 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
         match req {
             Prerequisite::CommandAvailable(cmd) => {
                 let ok = std::process::Command::new(cmd)
-                    .arg("--version")
+                    .arg(version_probe_arg(cmd))
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -149,7 +149,7 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                     _ => default,
                 };
                 let ok = std::process::Command::new(bin)
-                    .arg("--version")
+                    .arg(version_probe_arg(bin))
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -242,6 +242,18 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
         }
     }
     Ok(())
+}
+
+fn version_probe_arg(bin: &str) -> &'static str {
+    if Path::new(bin)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "go")
+    {
+        "version"
+    } else {
+        "--version"
+    }
 }
 
 /// Per-fixture specification.

@@ -13,6 +13,7 @@ mod common;
 
 #[cfg(feature = "dynamic")]
 mod go_fixture_tests {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
@@ -22,10 +23,7 @@ mod go_fixture_tests {
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
     fn go_available() -> bool {
         std::process::Command::new("go")
@@ -66,7 +64,7 @@ mod go_fixture_tests {
         }
 
         let path = fixture_path(fixture);
-        let tmp = TempDir::new_in("/private/tmp").unwrap();
+        let tmp = TempDir::new().unwrap();
 
         unsafe {
             std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());

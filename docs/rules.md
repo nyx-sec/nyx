@@ -135,7 +135,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `java.sqli.execute_concat` | Medium | B | Medium |
 | `java.crypto.insecure_random` | Low | A | Medium |
 
-### JavaScript: 22 patterns
+### JavaScript: 23 patterns
 
 | Rule ID | Severity | Tier | Confidence |
 |---|---|---|---|
@@ -157,6 +157,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `js.xss.outer_html` | Medium | A | High |
 | `js.config.insecure_session_samesite` | Low | A | High |
 | `js.config.insecure_session_secure` | Low | A | Medium |
+| `js.crypto.hardcoded_key` | Low | A | Medium |
 | `js.crypto.math_random` | Low | A | Medium |
 | `js.crypto.weak_hash` | Low | A | Medium |
 | `js.secrets.hardcoded_secret` | Low | A | Medium |
@@ -234,7 +235,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `rs.quality.todo` | Low | A | High |
 | `rs.quality.unwrap` | Low | A | High |
 
-### TypeScript: 22 patterns
+### TypeScript: 23 patterns
 
 | Rule ID | Severity | Tier | Confidence |
 |---|---|---|---|
@@ -254,6 +255,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `ts.xss.outer_html` | Medium | A | High |
 | `ts.config.insecure_session_samesite` | Low | A | High |
 | `ts.config.insecure_session_secure` | Low | A | Medium |
+| `ts.crypto.hardcoded_key` | Low | A | Medium |
 | `ts.crypto.math_random` | Low | A | Medium |
 | `ts.crypto.weak_hash` | Low | A | Medium |
 | `ts.quality.any_annotation` | Low | A | Medium |

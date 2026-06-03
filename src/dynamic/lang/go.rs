@@ -1156,7 +1156,7 @@ func nyxFollowLocation(location string) {{
 fn generate_main_go(spec: &HarnessSpec, shape: GoShape) -> String {
     let entry_fn = capitalize_first(&spec.entry_name);
     let pre_call = pre_call_setup(spec);
-    let imports = imports_for_shape(shape);
+    let imports = imports_for_shape(shape, spec);
     let invocation = invoke_for_shape(spec, shape, &entry_fn);
     let shim = probe_shim();
 
@@ -1200,17 +1200,36 @@ func nyxPayload() string {{
 /// against per-shape additions in [`imports_for_shape`].
 const SHIM_IMPORTS: &[&str] = &["encoding/json", "os/signal", "strings", "syscall", "time"];
 
-fn imports_for_shape(shape: GoShape) -> String {
+fn imports_for_shape(shape: GoShape, spec: &HarnessSpec) -> String {
     let stdlib_base: &[&str] = &["encoding/base64", "os"];
-    let shape_extras: &[&str] = match shape {
-        GoShape::Generic | GoShape::FlagParseCli | GoShape::FuzzVariadic => &[],
-        GoShape::HttpHandlerFunc => &["net/http", "net/http/httptest"],
-        GoShape::GinHandler => &["net/http", "net/http/httptest"],
+    let use_body = matches!(&spec.payload_slot, PayloadSlot::HttpBody);
+    let mut shape_extras: Vec<&str> = match shape {
+        GoShape::Generic | GoShape::FlagParseCli | GoShape::FuzzVariadic => vec![],
+        GoShape::HttpHandlerFunc | GoShape::GinHandler => vec!["net/http", "net/http/httptest"],
         GoShape::GinRoute | GoShape::EchoRoute | GoShape::ChiRoute => {
-            &["fmt", "net/http", "net/http/httptest", "net/url"]
+            vec!["fmt", "net/http", "net/http/httptest"]
         }
-        GoShape::FiberRoute => &["fmt", "net/http", "net/url"],
+        GoShape::FiberRoute => {
+            if use_body {
+                vec!["fmt", "net/http", "net/http/httptest"]
+            } else {
+                vec!["fmt", "net/http"]
+            }
+        }
     };
+    if !use_body
+        && matches!(
+            shape,
+            GoShape::HttpHandlerFunc
+                | GoShape::GinHandler
+                | GoShape::GinRoute
+                | GoShape::EchoRoute
+                | GoShape::FiberRoute
+                | GoShape::ChiRoute
+        )
+    {
+        shape_extras.push("net/url");
+    }
     let local_pkgs: &[&str] = match shape {
         GoShape::GinHandler => &["nyx-harness/entry", "nyx-harness/entry/gin"],
         GoShape::GinRoute => &["github.com/gin-gonic/gin", "nyx-harness/entry"],
@@ -1283,8 +1302,8 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> Strin
                 String::new()
             } else {
                 format!(
-                    "\treq := httptest.NewRequest(\"GET\", \"/?{q}=\"+payload, strings.NewReader(\"\"))\n",
-                    q = query_param
+                    "\treq := httptest.NewRequest(\"GET\", \"/?\"+url.QueryEscape({q})+\"=\"+url.QueryEscape(payload), strings.NewReader(\"\"))\n",
+                    q = go_string_literal(&query_param)
                 )
             };
             format!(
@@ -1294,8 +1313,12 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> Strin
         GoShape::GinHandler => {
             let setup = if use_body {
                 "\treq := httptest.NewRequest(\"POST\", \"/\", strings.NewReader(payload))\n"
+                    .to_owned()
             } else {
-                "\treq := httptest.NewRequest(\"GET\", \"/?payload=\"+payload, strings.NewReader(\"\"))\n"
+                format!(
+                    "\treq := httptest.NewRequest(\"GET\", \"/?\"+url.QueryEscape({q})+\"=\"+url.QueryEscape(payload), strings.NewReader(\"\"))\n",
+                    q = go_string_literal(&query_param)
+                )
             };
             format!(
                 "{setup}\trw := httptest.NewRecorder()\n\tctx := gin.NewContext(rw, req)\n\tentry.{entry_fn}(ctx)\n\t_ = http.StatusOK\n",
