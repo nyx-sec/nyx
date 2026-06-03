@@ -5763,8 +5763,7 @@ pub(super) fn transfer_inst(
                 for &u in uses {
                     if state.get(u).is_some() {
                         saw_tainted = true;
-                        let (am, av) =
-                            ssa_value_validated_bits(u, ssa, transfer.interner, state);
+                        let (am, av) = ssa_value_validated_bits(u, ssa, transfer.interner, state);
                         tainted_must_all &= am;
                         tainted_may_any |= av;
                     }

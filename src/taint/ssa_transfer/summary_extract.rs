@@ -65,9 +65,9 @@ fn rv_traces_to_constant(
         }
         Some(SsaOp::Phi(operands)) => {
             !operands.is_empty()
-                && operands
-                    .iter()
-                    .all(|(_, u)| rv_traces_to_constant(ssa, *u, all_param_values, depth + 1, budget))
+                && operands.iter().all(|(_, u)| {
+                    rv_traces_to_constant(ssa, *u, all_param_values, depth + 1, budget)
+                })
         }
         _ => false,
     }
