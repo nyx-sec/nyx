@@ -1,8 +1,8 @@
 // Quarkus reactive route, vulnerable. The harness keeps the real
 // Jakarta REST annotations on the classpath and replays the route
-// through those annotations.
+// through those annotations. Quarkus REST routes are authored with the
+// `jakarta.ws.rs` annotations below, so no live Quarkus runtime is needed.
 
-import io.quarkus.runtime.Quarkus;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 

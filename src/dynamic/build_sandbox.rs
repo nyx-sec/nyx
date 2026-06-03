@@ -328,7 +328,7 @@ fn try_build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Resul
     let mut cmd = Command::new(&python);
     apply_basic_build_env(&mut cmd);
     let status = cmd
-        .args(["-m", "venv", "--clear"])
+        .args(["-m", "venv", "--clear", "--system-site-packages"])
         .arg(venv_path)
         .status()
         .map_err(|e| format!("venv create: {e}"))?;
@@ -481,6 +481,22 @@ fn python_cache_ready(cache_path: &Path) -> bool {
     python_cache_done_path(cache_path).exists()
         && cache_path.join("pyvenv.cfg").exists()
         && cache_path.join("bin").join("python").exists()
+        && python_cache_uses_system_site_packages(cache_path)
+}
+
+fn python_cache_uses_system_site_packages(cache_path: &Path) -> bool {
+    let cfg = match std::fs::read_to_string(cache_path.join("pyvenv.cfg")) {
+        Ok(cfg) => cfg,
+        Err(_) => return false,
+    };
+    cfg.lines().any(|line| {
+        line.split_once('=')
+            .map(|(key, value)| {
+                key.trim() == "include-system-site-packages"
+                    && value.trim().eq_ignore_ascii_case("true")
+            })
+            .unwrap_or(false)
+    })
 }
 
 struct CacheBuildLock {
@@ -1102,7 +1118,7 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     // not bleed compiled artefacts across release-version changes: a
     // workdir compiled against `--release 17` is a different cache slot
     // from the same sources targeted at `--release 21`.
-    let target_release = java_target_release(&spec.toolchain_id);
+    let target_release = clamp_release_to_host(java_target_release(&spec.toolchain_id));
     let source_hash = compute_java_source_hash(workdir, target_release);
     let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id).ok();
     let _cache_guard = cache_path
@@ -1219,6 +1235,76 @@ fn java_target_release(toolchain_id: &str) -> Option<u32> {
         Some(parsed)
     } else {
         None
+    }
+}
+
+/// Clamp a requested `--release` target to what the host `javac` can emit.
+///
+/// `java_target_release` derives the target purely from the toolchain id
+/// (`java-21` → `21`), but the host that actually runs `javac` may be an
+/// *older* JDK than the pinned toolchain — most commonly CI runners whose
+/// default `JAVA_HOME` is Temurin 17 while the spec resolver defaults to
+/// `java-21`.  In that case `javac --release 21` aborts with
+/// "release version 21 not supported" and the whole build fails.
+///
+/// `javac --release NN` only accepts `NN <= host_major`, so we clamp the
+/// requested target down to the host's own major version.  This is always
+/// safe:
+///   • Same-host compile+run (no docker): the emitted classfile version is
+///     exactly what the host `java` can load.
+///   • Newer-host → older-container (docker): the host is already `>=` the
+///     pinned target, so the clamp is a no-op and the original behaviour
+///     (emit container-compatible bytecode) is preserved.
+///
+/// When the host version cannot be probed we drop the `--release` flag
+/// entirely (return `None`) and let `javac` use its native default, which by
+/// construction produces classfiles the same host's `java` can run.
+fn clamp_release_to_host(requested: Option<u32>) -> Option<u32> {
+    let req = requested?;
+    host_javac_max_release().map(|host_max| req.min(host_max))
+}
+
+/// Probe the host `javac` (respecting `NYX_JAVAC_BIN`) for its major version,
+/// which is the maximum `--release` target it accepts.  Cached for the
+/// process lifetime — the host JDK does not change mid-run.
+fn host_javac_max_release() -> Option<u32> {
+    static CACHE: OnceLock<Option<u32>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
+        let output = Command::new(&javac).arg("-version").output().ok()?;
+        // `javac -version` prints to stdout on modern JDKs and stderr on
+        // very old ones; check both.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        parse_javac_major(&stdout).or_else(|| parse_javac_major(&stderr))
+    })
+}
+
+/// Parse the major Java version from `javac -version` output.
+///
+/// Handles both the modern (`javac 17.0.9` → 17, `javac 21` → 21) and the
+/// legacy `1.N` (`javac 1.8.0_392` → 8) version schemes.
+fn parse_javac_major(text: &str) -> Option<u32> {
+    let ver = text.split_whitespace().nth(1)?;
+    let mut parts = ver.split('.');
+    let first: u32 = parts
+        .next()?
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    if first == 1 {
+        // Legacy `1.N` scheme: the real major version is the second component.
+        parts
+            .next()?
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .ok()
+    } else {
+        Some(first)
     }
 }
 
@@ -2349,6 +2435,31 @@ mod tests {
         assert_eq!(java_target_release("python-3.11"), None);
         assert_eq!(java_target_release("node-20"), None);
         assert_eq!(java_target_release(""), None);
+    }
+
+    #[test]
+    fn parse_javac_major_handles_version_schemes() {
+        assert_eq!(parse_javac_major("javac 17.0.9"), Some(17));
+        assert_eq!(parse_javac_major("javac 21"), Some(21));
+        assert_eq!(parse_javac_major("javac 25.0.1"), Some(25));
+        assert_eq!(parse_javac_major("javac 1.8.0_392"), Some(8));
+        assert_eq!(parse_javac_major("javac 11.0.21+9"), Some(11));
+        assert_eq!(parse_javac_major("garbage"), None);
+        assert_eq!(parse_javac_major(""), None);
+    }
+
+    #[test]
+    fn clamp_release_caps_request_at_host_max() {
+        // When the host probe reports a version, we never request more than
+        // it can emit, and never raise a lower request.  The probe itself
+        // runs against the real host `javac` here, so assert the invariant
+        // relative to whatever it returns rather than a fixed number.
+        if let Some(host) = host_javac_max_release() {
+            assert_eq!(clamp_release_to_host(Some(host + 4)), Some(host));
+            let low = host.min(11);
+            assert_eq!(clamp_release_to_host(Some(low)), Some(low));
+            assert_eq!(clamp_release_to_host(None), None);
+        }
     }
 
     #[test]

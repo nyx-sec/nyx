@@ -47,7 +47,7 @@ impl BuildPool for PythonPool {
 
         // 1. Create the venv.
         let create = base_command(python)
-            .args(["-m", "venv", "--clear"])
+            .args(["-m", "venv", "--clear", "--system-site-packages"])
             .arg(venv_path)
             .status();
         match create {

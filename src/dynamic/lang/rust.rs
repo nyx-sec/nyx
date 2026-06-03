@@ -2694,8 +2694,8 @@ fn is_ident_char(ch: char) -> bool {
 /// Generate `Cargo.toml` for the harness crate.
 ///
 /// Dependencies are driven by `expected_cap`:
-/// - `SQL_QUERY` → `rusqlite` with the `bundled` feature (embeds SQLite).
-/// - Other caps use only std (no extra deps).
+/// - `SQL_QUERY` uses the generated std-only `rusqlite` compatibility shim.
+/// - Other caps use only std unless their harness shape requires framework deps.
 ///
 /// The Phase 16 probe shim is std-only: its Unix crash guard declares the
 /// handful of POSIX symbols it needs directly, so ordinary Rust fixtures do
@@ -2762,9 +2762,6 @@ fn generate_cargo_toml_for_spec(cap: Cap, shape: RustShape, spec: &HarnessSpec) 
 pub fn generate_cargo_toml_with_extras(cap: Cap, needs_percent_encoding: bool) -> String {
     let mut deps = String::new();
 
-    if cap.contains(Cap::SQL_QUERY) {
-        deps.push_str("rusqlite = { version = \"0.39\", features = [\"bundled\"] }\n");
-    }
     if needs_percent_encoding {
         deps.push_str("percent-encoding = \"2\"\n");
     }
@@ -2799,10 +2796,12 @@ fn generate_main_rs(spec: &HarnessSpec, shape: RustShape) -> String {
     let entry_fn = &spec.entry_name;
     let (pre_call, call_expr) = build_call(spec, entry_fn, shape);
     let shim = probe_shim();
+    let sql_compat = rust_sql_query_compat_module(spec.expected_cap);
     let entry_label = spec.entry_name.replace('\\', "\\\\").replace('"', "\\\"");
 
     format!(
         r#"//! Nyx dynamic harness — auto-generated, do not edit (Phase 16 — RustShape::{shape:?}).
+{sql_compat}
 mod entry;
 {shim}
 fn main() {{
@@ -2903,9 +2902,147 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
 }}
 "#,
         shape = shape,
+        sql_compat = sql_compat,
         pre_call = pre_call,
         call_expr = call_expr,
     )
+}
+
+fn rust_sql_query_compat_module(cap: Cap) -> &'static str {
+    if !cap.contains(Cap::SQL_QUERY) {
+        return "";
+    }
+    r#"
+extern crate self as rusqlite;
+
+#[macro_export]
+macro_rules! params {
+    ($($arg:expr),* $(,)?) => {{
+        let mut values = Vec::<String>::new();
+        $(
+            values.push($arg.to_string());
+        )*
+        values
+    }};
+}
+
+#[derive(Debug, Clone)]
+pub struct Error {
+    message: String,
+}
+
+impl Error {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+pub trait Params {}
+
+impl Params for [(); 0] {}
+impl Params for Vec<String> {}
+impl Params for &[String] {}
+impl Params for &[&str] {}
+
+pub struct Connection;
+
+#[allow(dead_code)]
+impl Connection {
+    pub fn open_in_memory() -> Result<Self> {
+        Ok(Self)
+    }
+
+    pub fn open<P: AsRef<std::path::Path>>(_path: P) -> Result<Self> {
+        Ok(Self)
+    }
+
+    pub fn execute_batch(&self, sql: &str) -> Result<()> {
+        __nyx_rusqlite_record("execute_batch", sql);
+        Ok(())
+    }
+
+    pub fn execute<P: Params>(&self, sql: &str, _params: P) -> Result<usize> {
+        __nyx_rusqlite_record("execute", sql);
+        Ok(1)
+    }
+
+    pub fn prepare(&self, sql: &str) -> Result<Statement> {
+        __nyx_rusqlite_record("prepare", sql);
+        Ok(Statement {
+            query: sql.to_owned(),
+        })
+    }
+}
+
+pub struct Statement {
+    query: String,
+}
+
+#[allow(dead_code)]
+impl Statement {
+    pub fn query_map<P, F, T>(&mut self, _params: P, mut map: F) -> Result<Rows<T>>
+    where
+        P: Params,
+        F: FnMut(&Row) -> Result<T>,
+    {
+        __nyx_rusqlite_record("query_map", &self.query);
+        let mut rows = Vec::new();
+        if self.query.contains("NYX_SQL_CONFIRMED") {
+            rows.push(map(&Row {
+                value: "NYX_SQL_CONFIRMED".to_owned(),
+            }));
+        }
+        Ok(Rows {
+            inner: rows.into_iter(),
+        })
+    }
+}
+
+pub struct Row {
+    value: String,
+}
+
+impl Row {
+    pub fn get<I, T>(&self, _idx: I) -> Result<T>
+    where
+        T: From<String>,
+    {
+        Ok(T::from(self.value.clone()))
+    }
+}
+
+pub struct Rows<T> {
+    inner: std::vec::IntoIter<Result<T>>,
+}
+
+impl<T> Iterator for Rows<T> {
+    type Item = Result<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+fn __nyx_rusqlite_record(method: &str, query: &str) {
+    crate::__nyx_stub_sql_record(
+        query,
+        &[("driver", "nyx-rusqlite-shim"), ("method", method)],
+    );
+}
+
+"#
 }
 
 /// Build `(pre_call_setup, call_expression)` strings for the chosen payload
@@ -3127,12 +3264,12 @@ mod tests {
         assert!(cargo.is_some(), "Cargo.toml must be in extra_files");
         let cargo_content = &cargo.unwrap().1;
         assert!(
-            cargo_content.contains("rusqlite"),
-            "SQL_QUERY cap needs rusqlite dep"
+            !cargo_content.contains("rusqlite"),
+            "SQL_QUERY cap must use the generated compatibility shim, not an external rusqlite dep"
         );
         assert!(
-            cargo_content.contains("bundled"),
-            "rusqlite must use bundled feature"
+            harness.source.contains("extern crate self as rusqlite;"),
+            "SQL_QUERY harness must expose a local rusqlite-compatible crate alias"
         );
     }
 
