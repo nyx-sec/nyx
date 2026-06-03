@@ -28,6 +28,8 @@ use crate::symbol::Lang;
 use blake3::Hasher;
 use directories::ProjectDirs;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -50,6 +52,7 @@ use std::time::{Duration, Instant};
 pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_rust_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "rust", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     // Cache hit: binary already compiled and stored.
     let binary = cache_path.join("nyx_harness");
@@ -250,9 +253,12 @@ impl From<std::io::Error> for BuildError {
 pub fn prepare_python(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "python", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
-    // Check cache hit: venv exists and pyvenv.cfg is present.
-    if cache_path.join("pyvenv.cfg").exists() {
+    // Check cache hit under the inter-process cache lock. `pyvenv.cfg` can
+    // appear before `ensurepip` finishes, so only the Nyx completion marker
+    // means other nextest workers may consume this venv.
+    if python_cache_ready(&cache_path) {
         return Ok(BuildResult {
             venv_path: cache_path,
             cache_hit: true,
@@ -271,8 +277,11 @@ pub fn prepare_python(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult,
         }
 
         let start = Instant::now();
+        let _ = std::fs::remove_dir_all(&cache_path);
+        std::fs::create_dir_all(&cache_path)?;
         match build_venv(&cache_path, workdir, spec) {
             Ok(()) => {
+                std::fs::write(python_cache_done_path(&cache_path), b"done")?;
                 return Ok(BuildResult {
                     venv_path: cache_path,
                     cache_hit: false,
@@ -430,6 +439,87 @@ fn create_build_cache_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+const PYTHON_CACHE_DONE: &str = ".python_cache_done";
+
+fn python_cache_done_path(cache_path: &Path) -> PathBuf {
+    cache_path.join(PYTHON_CACHE_DONE)
+}
+
+fn python_cache_ready(cache_path: &Path) -> bool {
+    python_cache_done_path(cache_path).exists()
+        && cache_path.join("pyvenv.cfg").exists()
+        && cache_path.join("bin").join("python").exists()
+}
+
+struct CacheBuildLock {
+    _file: File,
+}
+
+fn acquire_cache_build_lock(cache_path: &Path) -> io::Result<CacheBuildLock> {
+    let parent = cache_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("cache path has no parent: {}", cache_path.display()),
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let name = cache_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("cache path has no file name: {}", cache_path.display()),
+            )
+        })?;
+    let lock_path = parent.join(format!(".{name}.lock"));
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file_exclusive(&file)?;
+    file.set_len(0)?;
+    writeln!(
+        file,
+        "pid={} cache={}",
+        std::process::id(),
+        cache_path.display()
+    )?;
+    Ok(CacheBuildLock { _file: file })
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+
+    const LOCK_EX: i32 = 2;
+    loop {
+        // SAFETY: `file.as_raw_fd()` is a live file descriptor owned by `file`.
+        // `flock(2)` only reads the scalar fd/operation arguments and the
+        // return value is checked.
+        let ret = unsafe { flock(file.as_raw_fd(), LOCK_EX) };
+        if ret == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err);
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive(_file: &File) -> io::Result<()> {
+    Ok(())
+}
+
 // ── Ruby build sandbox ───────────────────────────────────────────────────────
 
 /// Prepare Ruby dependencies for `spec` in `workdir`.
@@ -448,6 +538,10 @@ pub fn prepare_ruby(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 
     let lockfile_hash = compute_ruby_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "ruby", &spec.toolchain_id).ok();
+    let _cache_guard = cache_path
+        .as_deref()
+        .map(acquire_cache_build_lock)
+        .transpose()?;
 
     if let Some(cache_path) = &cache_path
         && cache_path.join(".ruby_cache_done").exists()
@@ -617,6 +711,7 @@ fn compute_ruby_lockfile_hash(workdir: &Path) -> String {
 pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_node_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "node", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     // Cache hit: node_modules already installed. Restore to fresh workdir if
     // a different finding shares the same cache key but got a new workdir.
@@ -766,6 +861,7 @@ fn compute_node_lockfile_hash(workdir: &Path) -> String {
 pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_go_source_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "go", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     let binary = cache_path.join("nyx_harness");
     if binary.exists() {
@@ -969,6 +1065,10 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     let target_release = java_target_release(&spec.toolchain_id);
     let source_hash = compute_java_source_hash(workdir, target_release);
     let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id).ok();
+    let _cache_guard = cache_path
+        .as_deref()
+        .map(acquire_cache_build_lock)
+        .transpose()?;
 
     if let Some(cache_path) = &cache_path {
         let cached_classes = collect_class_files(cache_path);
@@ -1349,6 +1449,7 @@ fn compute_java_source_hash(workdir: &Path, target_release: Option<u32>) -> Stri
 pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_php_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "php", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     if cache_path.join(".php_cache_done").exists() {
         let cached_vendor = cache_path.join("vendor");
@@ -1476,6 +1577,7 @@ pub fn prepare_c(
     let static_link = static_link_for_profile(profile);
     let source_hash = compute_c_source_hash(workdir, static_link);
     let cache_path = build_cache_path(&source_hash, "c", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     let binary = cache_path.join("nyx_harness");
     if binary.exists() {
@@ -1646,6 +1748,7 @@ fn compute_c_source_hash(workdir: &Path, static_link: bool) -> String {
 pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let source_hash = compute_cpp_source_hash(workdir);
     let cache_path = build_cache_path(&source_hash, "cpp", &spec.toolchain_id)?;
+    let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
     let binary = cache_path.join("nyx_harness");
     if binary.exists() {
@@ -2117,6 +2220,19 @@ mod tests {
         std::fs::write(dir.path().join("requirements.txt"), "requests==2.28.0\n").unwrap();
         let h2 = compute_lockfile_hash(dir.path());
         assert_ne!(h1, h2, "hash must change when requirements.txt changes");
+    }
+
+    #[test]
+    fn python_cache_ready_requires_completion_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache = dir.path().join("venv");
+        std::fs::create_dir_all(cache.join("bin")).unwrap();
+        std::fs::write(cache.join("pyvenv.cfg"), "").unwrap();
+        std::fs::write(cache.join("bin").join("python"), "").unwrap();
+
+        assert!(!python_cache_ready(&cache));
+        std::fs::write(python_cache_done_path(&cache), b"done").unwrap();
+        assert!(python_cache_ready(&cache));
     }
 
     #[test]

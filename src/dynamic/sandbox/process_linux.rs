@@ -1,7 +1,7 @@
 //! Phase 17 (Track E.1) — Linux process backend hardening.
 //!
-//! Owns the `pre_exec` sequence applied to every harness child started by
-//! [`super::run_process`] on Linux:
+//! Owns the Linux `pre_exec` sequence applied to every process-backend
+//! harness child:
 //!
 //! 1. `prctl(PR_SET_NO_NEW_PRIVS)` — block setuid / file-cap escalation.
 //! 2. `setrlimit(RLIMIT_CPU)` — cap CPU time so a runaway payload exits.

@@ -9,7 +9,8 @@
 //!
 //! - **`docker`**: default when docker is available. Runs the harness inside
 //!   a container with `--cap-drop=ALL`, `--security-opt
-//!   no-new-privileges:true`, and `--network none`. Containers are reused
+//!   no-new-privileges:true`, a read-only image root, and `--network none`.
+//!   The harness workdir is the only writable runtime mount. Containers are reused
 //!   within a single spec_hash via `docker exec` to amortise image
 //!   cold-start cost.
 //! - **`process`**: fallback for hosts without docker; gated behind
@@ -838,6 +839,9 @@ fn harness_needs_host_deps(harness: &BuiltHarness) -> bool {
         "package.json",
         "Gemfile",
         "composer.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
     ];
     MANIFESTS
         .iter()
@@ -1037,6 +1041,39 @@ fn start_container(
     // against the same toolchain is free.
     docker::ensure_image_pulled(image);
 
+    prepare_container_tmp(workdir)?;
+    let run_args = build_container_run_args(name, workdir, image, policy, fs_stub_roots);
+
+    let status = std::process::Command::new(docker_bin())
+        .args(&run_args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(SandboxError::Spawn)?;
+
+    if !status.success() {
+        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    }
+
+    // Apply OOB egress filter on Linux when the OOB listener is active.
+    // This restricts the bridge-networked container to only reach the
+    // host on the OOB port; all other egress is dropped (§17.2).
+    #[cfg(target_os = "linux")]
+    if let NetworkPolicy::OobOutbound { listener } = policy {
+        apply_oob_egress_filter(name, listener.port());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = policy; // policy already consumed structurally above
+    Ok(())
+}
+
+fn build_container_run_args(
+    name: &str,
+    workdir: &Path,
+    image: &str,
+    policy: &NetworkPolicy,
+    fs_stub_roots: &[PathBuf],
+) -> Vec<String> {
     let workdir_mount = format!(
         "{}:{}:rw",
         workdir.to_string_lossy(),
@@ -1052,8 +1089,9 @@ fn start_container(
         "--cap-drop=ALL".into(),
         "--security-opt".into(),
         "no-new-privileges:true".into(),
-        "--tmpfs".into(),
-        "/tmp:size=128m,exec".into(),
+        "--read-only".into(),
+        "--workdir".into(),
+        docker::WORK_MOUNT_PATH.into(),
         // Bind-mount the host workdir at the fixed `/work` path
         // read-write so harness code can reference `/work/...` without
         // threading the host tempdir through every layer.  The mount
@@ -1089,28 +1127,7 @@ fn start_container(
         }
     }
     run_args.extend([image.into(), "sleep".into(), "300".into()]);
-
-    let status = std::process::Command::new(docker_bin())
-        .args(&run_args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(SandboxError::Spawn)?;
-
-    if !status.success() {
-        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
-    }
-
-    // Apply OOB egress filter on Linux when the OOB listener is active.
-    // This restricts the bridge-networked container to only reach the
-    // host on the OOB port; all other egress is dropped (§17.2).
-    #[cfg(target_os = "linux")]
-    if let NetworkPolicy::OobOutbound { listener } = policy {
-        apply_oob_egress_filter(name, listener.port());
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = policy; // policy already consumed structurally above
-    Ok(())
+    run_args
 }
 
 /// Build the inner-container command args for `docker exec`.
@@ -1133,6 +1150,8 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
 
     if base == "java" {
         args.push("java".to_owned());
+        args.push(format!("-Djava.io.tmpdir={}", docker::WORK_TMP_PATH));
+        args.push("-XX:+PerfDisableSharedMem".to_owned());
         let mut i = 1;
         while i < command.len() {
             if command[i] == "-cp" || command[i] == "-classpath" {
@@ -1176,6 +1195,24 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
     args
 }
 
+fn prepare_container_tmp(workdir: &Path) -> Result<(), SandboxError> {
+    let tmp = workdir.join(".nyx-tmp");
+    std::fs::create_dir_all(&tmp).map_err(SandboxError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Docker exec runs harnesses as an unprivileged uid. The bind-mounted
+        // workdir is the only writable filesystem surface, so make it
+        // traversable/writable by that uid while keeping the image root
+        // read-only.
+        std::fs::set_permissions(workdir, std::fs::Permissions::from_mode(0o777))
+            .map_err(SandboxError::Io)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o777))
+            .map_err(SandboxError::Io)?;
+    }
+    Ok(())
+}
+
 /// Execute the harness inside an already-running container.
 fn exec_in_container(
     container_name: &str,
@@ -1202,6 +1239,12 @@ fn exec_in_container(
         "65534:65534".into(),
         "-e".into(),
         format!("NYX_PAYLOAD_B64={payload_b64}"),
+        "-e".into(),
+        format!("TMPDIR={}", docker::WORK_TMP_PATH),
+        "-e".into(),
+        format!("TMP={}", docker::WORK_TMP_PATH),
+        "-e".into(),
+        format!("TEMP={}", docker::WORK_TMP_PATH),
     ];
     // Mirror the process backend's `NYX_PAYLOAD` raw env var when the
     // payload bytes are valid UTF-8 (most curated payloads are ASCII).
@@ -1381,7 +1424,7 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
 /// harness path.
 ///
 /// Only reachable on Linux (see [`harness_is_native_binary`]). On other platforms
-/// the dispatch in [`run`] routes compiled harnesses to [`run_process`].
+/// the dispatch in [`run`] routes compiled harnesses to the process backend.
 fn run_native_binary_docker(
     harness: &BuiltHarness,
     payload_bytes: &[u8],
@@ -1479,6 +1522,12 @@ fn exec_native_binary_in_container(
         "65534:65534".into(),
         "-e".into(),
         format!("NYX_PAYLOAD_B64={payload_b64}"),
+        "-e".into(),
+        format!("TMPDIR={}", docker::WORK_TMP_PATH),
+        "-e".into(),
+        format!("TMP={}", docker::WORK_TMP_PATH),
+        "-e".into(),
+        format!("TEMP={}", docker::WORK_TMP_PATH),
     ];
     for (k, v) in &harness.env {
         cmd_args.push("-e".into());
@@ -2098,8 +2147,38 @@ mod tests {
         ];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["java", "-cp", "/work:/work/lib/*", "NyxHarness"]
+            vec![
+                "java",
+                "-Djava.io.tmpdir=/work/.nyx-tmp",
+                "-XX:+PerfDisableSharedMem",
+                "-cp",
+                "/work:/work/lib/*",
+                "NyxHarness",
+            ]
         );
+    }
+
+    #[test]
+    fn docker_run_args_keep_root_read_only_and_tmp_unmounted() {
+        let args = build_container_run_args(
+            "nyx-test",
+            std::path::Path::new("/tmp/nyx-harness/abc123"),
+            "python:3-slim",
+            &NetworkPolicy::None,
+            &[],
+        );
+
+        assert!(args.iter().any(|arg| arg == "--read-only"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--workdir" && pair[1] == docker::WORK_MOUNT_PATH)
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-v" && pair[1] == "/tmp/nyx-harness/abc123:/work:rw")
+        );
+        assert!(!args.iter().any(|arg| arg == "--tmpfs"));
+        assert!(!args.iter().any(|arg| arg.starts_with("/tmp:")));
     }
 
     #[test]
@@ -2146,6 +2225,25 @@ mod tests {
         assert!(!reg.contains_key(&name));
         reg.insert(name.clone(), name.clone());
         assert!(reg.contains_key(&name));
+    }
+
+    #[test]
+    fn harness_needs_host_deps_detects_java_manifests() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(dir.path().join("pom.xml"), "<project />\n").expect("write pom");
+        let harness = BuiltHarness {
+            workdir: dir.path().to_path_buf(),
+            command: vec![
+                "java".to_owned(),
+                "-cp".to_owned(),
+                ".:lib/*".to_owned(),
+                "NyxHarness".to_owned(),
+            ],
+            env: vec![],
+            source: String::new(),
+            entry_source: String::new(),
+        };
+        assert!(harness_needs_host_deps(&harness));
     }
 
     #[test]

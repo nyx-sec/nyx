@@ -90,7 +90,7 @@ fn mk_spec() -> HarnessSpec {
 
 fn write_project(workdir: &Path) {
     // Empty requirements: venv creation succeeds offline; the cached
-    // `pyvenv.cfg` turns every later call into a cache hit.
+    // `.python_cache_done` marker turns every later call into a cache hit.
     std::fs::write(workdir.join("requirements.txt"), "").unwrap();
 }
 

@@ -220,6 +220,31 @@ impl std::fmt::Display for FindingCategory {
     }
 }
 
+impl FindingCategory {
+    /// Category for a structural / state-machine finding identified by its
+    /// rule id.
+    ///
+    /// Resource-management and error-handling defects (`state-resource-leak`,
+    /// `cfg-resource-leak`, `cfg-error-fallthrough`) are *reliability* bugs,
+    /// not security vulnerabilities: a leaked file handle or an unhandled
+    /// error path is a correctness/robustness issue, not an exploitable flow.
+    /// Emitting them as `Security` floods security reports (and security
+    /// benchmarks) with non-security noise.  Everything else routed through
+    /// the structural/state pipeline — taint sinks (`cfg-unguarded-sink`),
+    /// authorization gaps (`cfg-auth-gap`, `state-unauthed-access`) and
+    /// memory-safety state errors (`state-use-after-close`,
+    /// `state-double-close`) — stays `Security`.
+    pub fn for_structural_rule(rule_id: &str) -> FindingCategory {
+        match rule_id {
+            "state-resource-leak"
+            | "state-resource-leak-possible"
+            | "cfg-resource-leak"
+            | "cfg-error-fallthrough" => FindingCategory::Reliability,
+            _ => FindingCategory::Security,
+        }
+    }
+}
+
 /// Vulnerability class that a pattern detects.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PatternCategory {

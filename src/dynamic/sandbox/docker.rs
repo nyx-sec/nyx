@@ -39,6 +39,11 @@ use super::{HostPort, NetworkPolicy};
 /// through every layer.
 pub const WORK_MOUNT_PATH: &str = "/work";
 
+/// Writable temp directory inside the workdir mount. Runtime containers keep
+/// the image root read-only, so language runtimes that honour TMPDIR should
+/// spill under the declared harness workdir instead of `/tmp`.
+pub const WORK_TMP_PATH: &str = "/work/.nyx-tmp";
+
 /// Container-side mount point root for `StubHarness` filesystem stubs.
 /// Each stub is mounted at `STUB_MOUNT_ROOT/<n>` where `<n>` is its index in
 /// the harness's stub list.

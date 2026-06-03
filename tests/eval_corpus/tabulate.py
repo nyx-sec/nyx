@@ -454,6 +454,17 @@ def main() -> int:
 
     scan_data = load_json(args.scan)
     findings = scan_data if isinstance(scan_data, list) else scan_data.get("findings", [])
+    # Score only Security-category findings against the security ground truth.
+    # Reliability defects (resource leaks, error-handling fallthrough) and
+    # Quality findings are real bugs but not the injection / crypto / auth
+    # vulns the corpus ground truth enumerates, so counting them as security
+    # false-positives is a category error that wrecks precision with pure
+    # noise.  Findings with no explicit category (legacy fixtures) default to
+    # Security and are kept.
+    findings = [
+        f for f in findings
+        if f.get("category", "Security") not in ("Reliability", "Quality")
+    ]
     if lang_filter:
         findings = [f for f in findings if lang_of(f) in lang_filter]
 

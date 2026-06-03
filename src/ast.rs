@@ -2008,13 +2008,14 @@ impl<'a> ParsedFile<'a> {
                         })
                     })
                     .unwrap_or(0);
+                let cf_category = FindingCategory::for_structural_rule(&cf.rule_id);
                 out.push(Diag {
                     path: self.source.path.to_string_lossy().into_owned(),
                     line: point.row + 1,
                     col: point.column + 1,
                     severity: cf.severity,
                     id: cf.rule_id,
-                    category: FindingCategory::Security,
+                    category: cf_category,
                     path_validated: false,
                     guard_kind: None,
                     message: Some(cf.message),
@@ -2091,7 +2092,7 @@ impl<'a> ParsedFile<'a> {
                         col: point.column + 1,
                         severity: sf.severity,
                         id: sf.rule_id.clone(),
-                        category: FindingCategory::Security,
+                        category: FindingCategory::for_structural_rule(&sf.rule_id),
                         path_validated: false,
                         guard_kind: None,
                         message: Some(sf.message.clone()),
@@ -2364,7 +2365,10 @@ pub fn perf_stage_breakdown_fused(
         TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &taint_diags);
     let _filtered: Vec<_> = ast_findings
         .into_iter()
-        .filter(|d| !suppression.should_suppress(&d.id, d.line))
+        .filter(|d| {
+            !suppression.should_suppress(&d.id, d.line)
+                && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+        })
         .collect();
     let t_suppr = s_suppr.elapsed().as_micros();
 
@@ -5480,6 +5484,14 @@ struct TaintSuppressionCtx {
     /// 11 inline analysis but the sink's enclosing scope has no
     /// labelled Sanitizer of its own.
     interproc_sanitizer_callers: HashSet<Option<String>>,
+    /// Union of resolved sink-cap bits across every taint / structural
+    /// flow finding (`taint-*`, `cfg-unguarded-sink`) at each line.  Used
+    /// by [`Self::is_redundant_ast_pattern`] to drop an AST-pattern finding
+    /// that merely restates a flow the taint engine already reported at the
+    /// same line with the same cap — the flow finding carries strictly more
+    /// evidence (source, path, sanitizer state), so keeping the bare pattern
+    /// alongside it is pure duplicate noise.
+    taint_finding_caps_by_line: HashMap<usize, u32>,
 }
 
 impl TaintSuppressionCtx {
@@ -5678,6 +5690,20 @@ impl TaintSuppressionCtx {
             .map(|d| d.line)
             .collect();
 
+        // Cap bits per line for every flow-backed finding (taint-* and the
+        // structural unguarded-sink finding), so a redundant AST pattern at
+        // the same line+cap can be dropped in favour of the richer flow.
+        let mut taint_finding_caps_by_line: HashMap<usize, u32> = HashMap::new();
+        for d in taint_diags {
+            if d.id.starts_with("taint-") || d.id == "cfg-unguarded-sink" {
+                if let Some(caps) = d.evidence.as_ref().map(|e| e.sink_caps) {
+                    if caps != 0 {
+                        *taint_finding_caps_by_line.entry(d.line).or_default() |= caps;
+                    }
+                }
+            }
+        }
+
         // Per-function partition of taint findings.  Maps each finding's
         // line to the enclosing function scope by reusing
         // `sink_func_at_line` (the same span/function mapping the Sink-side
@@ -5701,7 +5727,28 @@ impl TaintSuppressionCtx {
             engine_validated_funcs,
             source_killed_funcs,
             interproc_sanitizer_callers,
+            taint_finding_caps_by_line,
         }
+    }
+
+    /// Returns `true` when an AST pattern finding is a redundant restatement
+    /// of a flow the taint engine already reported at the same line.
+    ///
+    /// The taint / structural flow finding carries source + path evidence the
+    /// bare pattern lacks, so when both fire at the same line for the same
+    /// cap the pattern is pure duplicate noise.  This is the
+    /// taint-found-it-UNSAFE counterpart to [`Self::should_suppress`]'s
+    /// taint-found-it-SAFE logic: there, no flow finding means the pattern
+    /// may carry unique signal; here, a same-cap flow finding means it does
+    /// not.  Cap-matched (not line-only) so a pattern whose cap differs from
+    /// the co-located flow's cap — a genuinely distinct sink — is preserved.
+    fn is_redundant_ast_pattern(&self, pattern_id: &str, line: usize) -> bool {
+        let Some(cap) = pattern_category_cap(pattern_id) else {
+            return false;
+        };
+        self.taint_finding_caps_by_line
+            .get(&line)
+            .is_some_and(|caps| caps & cap.bits() != 0)
     }
 
     /// Returns `true` if this AST pattern finding should be suppressed.
@@ -5832,11 +5879,10 @@ pub fn run_rules_on_bytes(
             let suppression =
                 TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
             let ast_findings = parsed.source.run_ast_queries(cfg);
-            out.extend(
-                ast_findings
-                    .into_iter()
-                    .filter(|d| !suppression.should_suppress(&d.id, d.line)),
-            );
+            out.extend(ast_findings.into_iter().filter(|d| {
+                !suppression.should_suppress(&d.id, d.line)
+                    && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+            }));
         }
         if cfg.scanner.mode == AnalysisMode::Full {
             out.extend(parsed.run_auth_analyses(cfg, global_summaries, scan_root));
@@ -6030,11 +6076,10 @@ pub fn analyse_file_fused(
         if needs_cfg && cfg.scanner.mode == AnalysisMode::Full {
             let suppression =
                 TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
-            out.extend(
-                ast_findings
-                    .into_iter()
-                    .filter(|d| !suppression.should_suppress(&d.id, d.line)),
-            );
+            out.extend(ast_findings.into_iter().filter(|d| {
+                !suppression.should_suppress(&d.id, d.line)
+                    && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+            }));
         } else {
             out.extend(ast_findings);
         }
