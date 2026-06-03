@@ -68,6 +68,7 @@ pub const CORPUS_VERSION: &str = "17";
 /// is caught at `cargo build` rather than at test time.
 const _: () = assert_corpus_version_str_matches_u32();
 
+#[allow(dead_code)] // Called from a const assertion; MSRV lints may miss const-eval uses.
 const fn assert_corpus_version_str_matches_u32() {
     let int_val = crate::dynamic::corpus::CORPUS_VERSION;
     let bytes = CORPUS_VERSION.as_bytes();

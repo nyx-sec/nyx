@@ -163,6 +163,7 @@ const _: () = assert!(
 
 /// Union of every cap bit referenced by an [`IMPACT_LATTICE`] rule, as
 /// `source_cap` or `adjacent_cap`.  Computed at compile time.
+#[allow(dead_code)] // Called from a const assertion; MSRV lints may miss const-eval uses.
 const fn rule_coverage_bits() -> u32 {
     let mut acc: u32 = 0;
     let mut i = 0;

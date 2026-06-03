@@ -24,6 +24,7 @@ use super::registry::{CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL};
 use crate::labels::Cap;
 
 /// Byte-level equality for `&'static str` usable in const eval.
+#[allow(dead_code)] // Called from const-eval audit helpers on MSRV/CI compilers.
 const fn str_eq(a: &str, b: &str) -> bool {
     let ab = a.as_bytes();
     let bb = b.as_bytes();
@@ -43,6 +44,7 @@ const fn str_eq(a: &str, b: &str) -> bool {
 /// Walk every `(cap, lang)` slice; for each non-benign payload check that
 /// either its `benign_control.label` resolves inside the same slice or it
 /// carries a non-empty `no_benign_control_rationale`.
+#[allow(dead_code)] // Called from a const assertion; MSRV lints may miss const-eval uses.
 const fn audit_benign_controls() -> bool {
     let entries = CORPUS.entries;
     let mut e = 0;
