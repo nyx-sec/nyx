@@ -133,6 +133,22 @@ pub const PATTERNS: &[Pattern] = &[
         category: PatternCategory::Secrets,
         confidence: Confidence::Medium,
     },
+    // ── Tier A: Hardcoded cryptographic key/secret config ──────────────
+    // Crypto-key-shaped keys the anchored `hardcoded_secret` regex misses;
+    // emits a `crypto`-bucketing rule id.  See javascript.rs for rationale.
+    Pattern {
+        id: "ts.crypto.hardcoded_key",
+        description: "Hardcoded cryptographic key/secret in source config",
+        query: r#"(pair
+                     key: (property_identifier) @key
+                       (#match? @key "(?i)^([a-z0-9]+secret|(crypto|cookie|session|signing|encryption|encrypt|private|master|jwt|hmac|secret)key|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|encryption[_-]?key|signing[_-]?key)$")
+                     value: (string) @val (#match? @val "[^\"']{3,}"))
+                   @vuln"#,
+        severity: Severity::Low,
+        tier: PatternTier::A,
+        category: PatternCategory::Crypto,
+        confidence: Confidence::Medium,
+    },
     // ── Tier A: TypeScript-specific type-safety escapes ────────────────
     Pattern {
         id: "ts.quality.any_annotation",

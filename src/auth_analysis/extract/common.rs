@@ -3948,6 +3948,27 @@ fn collect_param_names(
                 }
             }
         }
+        // TypeScript `required_parameter` / `optional_parameter`. Descend only
+        // into the binding `pattern`, never the `type` annotation: the default
+        // arm harvests id-like names from object-type fields (`user: { id }`)
+        // and lifts typed-bounded scalar ids (`UserId: number`) into
+        // `unit.params`, over-firing the user-input gate on non-route helpers.
+        // Mirrors the Rust `parameter` arm plus the Go/Python id-like filter.
+        "required_parameter" | "optional_parameter" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                if pattern.kind() == "identifier" && node.child_by_field_name("type").is_some() {
+                    let name = text(pattern, bytes);
+                    if !name.is_empty()
+                        && !out.contains(&name)
+                        && (include_id_like_typed || !is_python_id_like_typed_param(&name))
+                    {
+                        out.push(name);
+                    }
+                } else {
+                    collect_param_names(pattern, bytes, include_id_like_typed, out);
+                }
+            }
+        }
         _ => {
             for idx in 0..node.named_child_count() {
                 let Some(child) = node.named_child(idx as u32) else {

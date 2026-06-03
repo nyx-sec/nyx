@@ -5981,7 +5981,28 @@ pub(super) fn transfer_inst(
                         .split_once('.')
                         .map(|(root, _)| crate::labels::is_js_ts_handler_param_name(root))
                         .unwrap_or(false);
-                    if crate::labels::is_js_ts_handler_param_name(var_name) || root_is_handler {
+                    // Destructured Express request param (`({ query }, res) =>
+                    // …`): `query` lowers as a bare `Param`, so the textual
+                    // `req.query` source label never matches. Seed it only when
+                    // a sibling response param is present (the route-handler
+                    // signal), so a plain `paginate(query)` stays un-seeded.
+                    let is_destructured_request_field =
+                        crate::labels::is_express_request_field_name(var_name) && {
+                            let eb = &ssa.blocks[ssa.entry.0 as usize];
+                            eb.phis.iter().chain(eb.body.iter()).any(|i| {
+                                matches!(i.op, SsaOp::Param { .. })
+                                    && ssa
+                                        .value_defs
+                                        .get(i.value.0 as usize)
+                                        .and_then(|vd| vd.var_name.as_deref())
+                                        .map(crate::labels::is_handler_response_param_name)
+                                        .unwrap_or(false)
+                            })
+                        };
+                    if crate::labels::is_js_ts_handler_param_name(var_name)
+                        || root_is_handler
+                        || is_destructured_request_field
+                    {
                         let origin = TaintOrigin {
                             node: inst.cfg_node,
                             source_kind: SourceKind::UserInput,

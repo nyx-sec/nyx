@@ -1003,6 +1003,7 @@ fn is_test_suppressible_pattern(id: &str) -> bool {
     // deterministic test data, insecure RNG used for fixture seeding.
     id.ends_with(".secrets.hardcoded_secret")
         || id.ends_with(".secrets.hardcoded_key")
+        || id.ends_with(".crypto.hardcoded_key")
         || id.ends_with(".crypto.math_random")
         || id.ends_with(".crypto.insecure_random")
         || id.ends_with(".crypto.weak_digest")
@@ -5484,14 +5485,14 @@ struct TaintSuppressionCtx {
     /// 11 inline analysis but the sink's enclosing scope has no
     /// labelled Sanitizer of its own.
     interproc_sanitizer_callers: HashSet<Option<String>>,
-    /// Union of resolved sink-cap bits across every taint / structural
-    /// flow finding (`taint-*`, `cfg-unguarded-sink`) at each line.  Used
-    /// by [`Self::is_redundant_ast_pattern`] to drop an AST-pattern finding
-    /// that merely restates a flow the taint engine already reported at the
-    /// same line with the same cap — the flow finding carries strictly more
-    /// evidence (source, path, sanitizer state), so keeping the bare pattern
-    /// alongside it is pure duplicate noise.
-    taint_finding_caps_by_line: HashMap<usize, u32>,
+    /// Union of resolved sink-cap bits for cap-specific taint findings at
+    /// each line.  Used by [`Self::is_redundant_ast_pattern`] to drop an
+    /// AST-pattern finding only when the flow engine already emitted a
+    /// specific rule id for the same vulnerability class.  Legacy generic
+    /// findings (`taint-unsanitised-flow`, `cfg-unguarded-sink`) are not
+    /// canonical enough to subsume language-specific AST rule IDs such as
+    /// `py.cmdi.subprocess_shell` or `c.cmdi.system`.
+    specific_taint_finding_caps_by_line: HashMap<usize, u32>,
 }
 
 impl TaintSuppressionCtx {
@@ -5690,15 +5691,21 @@ impl TaintSuppressionCtx {
             .map(|d| d.line)
             .collect();
 
-        // Cap bits per line for every flow-backed finding (taint-* and the
-        // structural unguarded-sink finding), so a redundant AST pattern at
-        // the same line+cap can be dropped in favour of the richer flow.
-        let mut taint_finding_caps_by_line: HashMap<usize, u32> = HashMap::new();
+        // Cap bits per line for cap-specific flow-backed findings only, so a
+        // redundant AST pattern at the same line+cap can be dropped in favour
+        // of the richer flow.  Do not count legacy generic findings here:
+        // `taint-unsanitised-flow` and `cfg-unguarded-sink` carry evidence,
+        // but their rule ids are deliberately catch-alls, while AST `cmdi`,
+        // `sqli`, etc. IDs are the canonical namespace many tests, SARIF
+        // consumers, and dynamic-verification spec derivation rely on.
+        let mut specific_taint_finding_caps_by_line: HashMap<usize, u32> = HashMap::new();
         for d in taint_diags {
-            if d.id.starts_with("taint-") || d.id == "cfg-unguarded-sink" {
+            if d.id.starts_with("taint-") && !d.id.starts_with("taint-unsanitised-flow") {
                 if let Some(caps) = d.evidence.as_ref().map(|e| e.sink_caps) {
                     if caps != 0 {
-                        *taint_finding_caps_by_line.entry(d.line).or_default() |= caps;
+                        *specific_taint_finding_caps_by_line
+                            .entry(d.line)
+                            .or_default() |= caps;
                     }
                 }
             }
@@ -5727,7 +5734,7 @@ impl TaintSuppressionCtx {
             engine_validated_funcs,
             source_killed_funcs,
             interproc_sanitizer_callers,
-            taint_finding_caps_by_line,
+            specific_taint_finding_caps_by_line,
         }
     }
 
@@ -5746,7 +5753,7 @@ impl TaintSuppressionCtx {
         let Some(cap) = pattern_category_cap(pattern_id) else {
             return false;
         };
-        self.taint_finding_caps_by_line
+        self.specific_taint_finding_caps_by_line
             .get(&line)
             .is_some_and(|caps| caps & cap.bits() != 0)
     }
