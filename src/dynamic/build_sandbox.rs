@@ -413,7 +413,7 @@ fn build_cache_path(
     let path = base.join(&name);
     match prepare_build_cache_dir(&path) {
         Ok(()) => Ok(path),
-        Err(e) if override_base.is_none() => {
+        Err(_) if override_base.is_none() => {
             let fallback = std::env::temp_dir()
                 .join("nyx")
                 .join("dynamic")
