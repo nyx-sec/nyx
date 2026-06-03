@@ -179,7 +179,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `php.crypto.rand` | Low | A | Medium |
 | `php.crypto.sha1` | Low | A | Medium |
 
-### Python: 15 patterns
+### Python: 17 patterns
 
 | Rule ID | Severity | Tier | Confidence |
 |---|---|---|---|
@@ -197,7 +197,9 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `py.xss.jinja_from_string` | Medium | A | High |
 | `py.xss.make_response_format` | Medium | B | Medium |
 | `py.crypto.md5` | Low | A | Medium |
+| `py.crypto.md5_bare` | Low | A | Low |
 | `py.crypto.sha1` | Low | A | Medium |
+| `py.crypto.sha1_bare` | Low | A | Low |
 
 ### Ruby: 11 patterns
 

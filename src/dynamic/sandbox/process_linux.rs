@@ -589,8 +589,10 @@ pub fn install_pre_exec(
 }
 
 fn run_pre_exec_in_child(plan: &PreExecPlan) -> HardeningOutcome {
-    let mut outcome = HardeningOutcome::default();
-    outcome.profile = plan.profile;
+    let mut outcome = HardeningOutcome {
+        profile: plan.profile,
+        ..Default::default()
+    };
     let ablation = plan.ablation.unwrap_or_default();
 
     // ── Always-on: PR_SET_NO_NEW_PRIVS + RLIMIT_AS ───────────────────────

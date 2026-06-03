@@ -1031,6 +1031,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
 pub fn summarize_hardening(
     outcome: &crate::dynamic::sandbox::SandboxOutcome,
 ) -> Option<HardeningSummary> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::dynamic::sandbox::HardeningRecord;
     let record = outcome.hardening_outcome.as_ref()?;
     match record {

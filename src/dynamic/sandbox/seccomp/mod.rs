@@ -52,7 +52,7 @@ unsafe extern "C" {
 }
 
 /// Compose the cap-aware syscall allowlist: the `BASE` set unconditionally
-/// + every `CAP[i]` whose bit is set in `caps`.  Names are deduped via a
+/// plus every `CAP[i]` whose bit is set in `caps`.  Names are deduped via a
 /// `BTreeSet` and resolved to numbers via [`syscall_number`].  Unknown
 /// names (not in the per-arch table) are silently dropped.
 pub fn allowed_syscall_numbers(caps: u32) -> Vec<u32> {

@@ -67,8 +67,16 @@ impl BuildPool for RustPool {
             }
         };
 
-        let lock_hash = hash_files(workdir, &["Cargo.lock", "Cargo.toml"]);
-        let target_dir = match pool_cache_dir("rust", &lock_hash) {
+        // Key the shared target dir on the manifest *and* every `src/` file,
+        // not the manifest alone.  Two fixtures built for the same cap share a
+        // `Cargo.toml` (identical lock hash) but differ only in their source;
+        // a manifest-only key routed both into the same `release/nyx_harness`
+        // slot, letting cargo skip the second fixture's relink so the copy
+        // below shipped the *first* fixture's binary — cross-fixture verdict
+        // corruption (a vuln / benign pair confirming identically).  Folding
+        // the source hash in gives each distinct harness its own target dir.
+        let build_hash = hash_build_inputs(workdir);
+        let target_dir = match pool_cache_dir("rust", &build_hash) {
             Some(d) => d,
             None => {
                 return PoolCompileResult {
@@ -245,6 +253,51 @@ fn hash_files(workdir: &Path, files: &[&str]) -> String {
     )
 }
 
+/// Hash of every input that determines the compiled `nyx_harness` binary: the
+/// Cargo manifest/lock *plus* every `.rs` file under `src/`.  Used to key the
+/// shared `CARGO_TARGET_DIR` so source-distinct harnesses never share a
+/// `release/nyx_harness` slot (see the call site in [`RustPool::compile_batch`]
+/// for why manifest-only keying corrupted cross-fixture verdicts).  Mirrors
+/// [`crate::dynamic::build_sandbox::compute_rust_lockfile_hash`].
+fn hash_build_inputs(workdir: &Path) -> String {
+    let manifest = hash_files(workdir, &["Cargo.lock", "Cargo.toml"]);
+    let src_dir = workdir.join("src");
+    let mut rs_files: Vec<PathBuf> = Vec::new();
+    collect_rs_files(&src_dir, &src_dir, &mut rs_files);
+    rs_files.sort();
+    let mut h = Hasher::new();
+    for rel in &rs_files {
+        if let Ok(content) = std::fs::read(src_dir.join(rel)) {
+            h.update(rel.to_string_lossy().as_bytes());
+            h.update(b"\0");
+            h.update(&content);
+        }
+    }
+    let out = h.finalize();
+    format!(
+        "{manifest}-{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
+}
+
+/// Recursively collect `.rs` file paths (relative to `root`) under `dir`.
+fn collect_rs_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_path_buf());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +311,47 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.lock"), b"[[package]]\n").unwrap();
         let h3 = hash_files(dir.path(), &["Cargo.lock"]);
         assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn build_hash_differs_for_same_manifest_distinct_source() {
+        // A vuln / benign pair built for the same cap ships an identical
+        // Cargo.toml but a different `src/entry.rs`.  The shared target-dir key
+        // must differ between them, else cargo skips the second relink and the
+        // pool copies out the first fixture's binary (cross-fixture verdict
+        // corruption — the cmdi / data-exfil Rust regression).
+        let manifest = b"[package]\nname=\"nyx_harness\"\nversion=\"0.0.0\"\n";
+
+        let vuln = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(vuln.path().join("src")).unwrap();
+        std::fs::write(vuln.path().join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(vuln.path().join("src/main.rs"), b"fn main(){}\n").unwrap();
+        std::fs::write(
+            vuln.path().join("src/entry.rs"),
+            b"pub fn run(){ /*vuln*/ }\n",
+        )
+        .unwrap();
+
+        let benign = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(benign.path().join("src")).unwrap();
+        std::fs::write(benign.path().join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(benign.path().join("src/main.rs"), b"fn main(){}\n").unwrap();
+        std::fs::write(
+            benign.path().join("src/entry.rs"),
+            b"pub fn run(){ /*benign*/ }\n",
+        )
+        .unwrap();
+
+        // Identical manifests collide under the old manifest-only key …
+        assert_eq!(
+            hash_files(vuln.path(), &["Cargo.lock", "Cargo.toml"]),
+            hash_files(benign.path(), &["Cargo.lock", "Cargo.toml"]),
+        );
+        // … but the source-aware key separates them.
+        assert_ne!(
+            hash_build_inputs(vuln.path()),
+            hash_build_inputs(benign.path())
+        );
     }
 
     #[test]

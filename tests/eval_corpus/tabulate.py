@@ -24,6 +24,7 @@ Exit codes:
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -34,6 +35,27 @@ except ModuleNotFoundError:  # pragma: no cover — older interpreters only
     import tomli as tomllib  # type: ignore[no-redef]
 
 LINE_TOLERANCE = 5
+
+# Caps with no sound runtime oracle (config / usage smells) and the catch-all
+# `other` bucket route to Unsupported by design, so their Unsupported-rate is
+# report-only, never gated.  Mirrors report.py / the budget.toml intent.
+NO_SOUND_ORACLE_CAPS = {"auth", "crypto", "xss", "trustbound", "other"}
+
+
+def _soft_unsupported() -> bool:
+    """True when the per-cell Unsupported-rate budget is report-only.
+
+    CI sets `NYX_EVAL_SOFT_UNSUPPORTED` because dynamic confirmation is
+    environment-constrained there (the budget is calibrated on a dev box where
+    confirmation runs fully); the precision / confirmed-rate ratchets stay
+    hard.  Unset (local dev) keeps the Unsupported budget hard.
+    """
+    return os.environ.get("NYX_EVAL_SOFT_UNSUPPORTED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 # Bitflag positions for Cap (src/labels/mod.rs). Sink bits map to a cap label.
 _CAP_BIT_TABLE = [
@@ -214,6 +236,7 @@ def enforce_budget(cells: list, budget: dict) -> list:
     """
 
     failures = []
+    soft_unsupported = _soft_unsupported()
     for c in cells:
         b = budget_for_cell(budget, c["cap"], c["lang"])
         if not b:
@@ -226,10 +249,16 @@ def enforce_budget(cells: list, budget: dict) -> list:
 
         if isinstance(max_unsup, (int, float)) and c.get("total", 0) > 0:
             if c["unsupported_rate"] > max_unsup:
-                failures.append(
-                    f"  FAIL  {cap}/{lang}: Unsupported {c['unsupported_rate']*100:.1f}%"
+                # No-sound-oracle caps (and `other`) are report-only by design;
+                # the rest are report-only when dynamic confirmation is known to
+                # be environment-constrained (NYX_EVAL_SOFT_UNSUPPORTED, set by
+                # CI).  Hard otherwise so local dev still ratchets coverage.
+                line = (
+                    f"  {cap}/{lang}: Unsupported {c['unsupported_rate']*100:.1f}%"
                     f" > budget {max_unsup*100:.1f}%"
                 )
+                if not (cap in NO_SOUND_ORACLE_CAPS or soft_unsupported):
+                    failures.append(f"  FAIL{line}")
         if isinstance(min_confirmed, (int, float)) and c.get("total", 0) > 0:
             rate = c.get("confirmed", 0) / c["total"]
             if rate < min_confirmed:

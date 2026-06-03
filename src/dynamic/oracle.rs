@@ -1369,6 +1369,7 @@ fn run_nonce() -> [u8; 32] {
 
 /// Fill `buf` from the OS CSPRNG.  Returns `false` (caller falls back to the
 /// time + pid mixing) when no source is available on the platform.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn read_os_entropy(buf: &mut [u8]) -> bool {
     #[cfg(unix)]
     {

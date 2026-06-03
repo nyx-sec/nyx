@@ -53,6 +53,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
+# Demote the per-cell Unsupported-rate budget (Gates 6/7/8 -> report.py) to
+# report-only in CI.  Dynamic confirmation is environment-constrained on the
+# unprivileged CI runners (no oracle infrastructure for several caps), so the
+# Unsupported budget — calibrated on a dev box where confirmation runs fully —
+# would fail vacuously there; the precision (false-Confirmed) and confirmed-rate
+# ratchets stay HARD.  Local runs leave it unset, so coverage stays gated.  Set
+# here rather than in eval.yml so the standalone tabulate regression-test step
+# (which asserts the hard behaviour) never inherits it.
+if [[ -n "${CI:-}" ]]; then
+    export NYX_EVAL_SOFT_UNSUPPORTED=1
+fi
+
 GATES="1,2,3,4,5,6,7,8"
 SETS=""
 

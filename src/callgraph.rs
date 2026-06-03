@@ -822,7 +822,7 @@ pub fn callers_of(cg: &CallGraph, callee: &FuncKey) -> Vec<FuncKey> {
 /// Used by the chain composer to widen file-scoped reach: a sink inside
 /// `internal_helper.py` whose enclosing function is reached only through
 /// `routes.py` is *reachable* in the chain sense, but the file-local
-/// match in [`crate::chain::edges::locate_reach`] / [`crate::chain::search::compose_chain`]
+/// match in `chain::edges::locate_reach` / `chain::search::compose_chain`
 /// misses it.  This helper produces the closure once so callers can
 /// resolve reach in O(1) afterwards.
 ///
@@ -864,7 +864,7 @@ pub fn callers_transitive(cg: &CallGraph, callee: &FuncKey) -> std::collections:
 /// namespace that contains at least one transitive caller.  Built once
 /// per scan so the chain composer can widen a finding's
 /// `Reach::Reachable` decision beyond the file-local heuristic in
-/// [`crate::chain::edges::locate_reach`] without re-running BFS per
+/// `chain::edges::locate_reach` without re-running BFS per
 /// finding.
 ///
 /// Map shape: `callee_namespace → { caller_namespace, … }`.  A file
@@ -877,7 +877,7 @@ pub fn callers_transitive(cg: &CallGraph, callee: &FuncKey) -> std::collections:
 /// (typical in production scans), [`FileReachMap::reaches`] applies
 /// [`crate::symbol::normalize_namespace`] to its arguments before
 /// lookup so absolute host paths (the convention on
-/// [`crate::commands::scan::Diag::path`]) and project-relative paths
+/// [`crate::commands::scan::Diag`]'s `path`) and project-relative paths
 /// (the convention on call-graph [`FuncKey::namespace`] and
 /// [`crate::surface::SourceLocation::file`]) both resolve to the
 /// stored keys.
