@@ -8417,6 +8417,7 @@ fn try_curl_url_propagation(
 ///   sets `const_values: Some(&callee_body.opt.const_values)` on the child
 ///   transfer, so callee-local constants are resolved.
 /// - Unknown / non-integer / out-of-bounds: falls back to `HeapSlot::Elements`.
+///
 /// Map a proven constant index/key to its precise `HeapSlot`, or `None`
 /// (caller falls back to `HeapSlot::Elements`).
 ///
@@ -8490,6 +8491,7 @@ fn resolve_container_index(index_val: SsaValue, transfer: &SsaTaintTransfer) -> 
 ///   2. the parallel `arg_string_literals` slot (a *literal* index/key, e.g.
 ///      `map.get("keyB")`, which carries no SSA value because it is not a
 ///      variable — the dominant OWASP shape).
+///
 /// Otherwise returns `HeapSlot::Elements`.
 fn resolve_op_slot(
     index_arg: Option<usize>,

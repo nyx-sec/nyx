@@ -2548,9 +2548,9 @@ pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     };
 
     let invoke_via_fixture = if uses_node_writer {
-        "const captured = nyxRedirectViaFixture(payload);\nif (Array.isArray(captured)) {\n  const [location, requestHost] = captured;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n} else {\n  // Synthetic fallback — fixture import / call failed.\n  const requestHost = 'example.com';\n  const location = payload;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n}\n"
+        "const captured = nyxRedirectViaFixture(payload);\nif (Array.isArray(captured)) {\n  const [location, requestHost] = captured;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n} else {\n  // Synthetic fallback — fixture import / call failed. The real redirect\n  // surface (host allowlist / path guard) never ran, so the synthetic marker\n  // routes the runner to PartiallyConfirmed instead of an OOB self-confirm.\n  const requestHost = 'example.com';\n  const location = payload;\n  nyxRedirectProbe(location, requestHost);\n  nyxFollowLocation(location);\n  console.log('__NYX_SINK_HIT__');\n  console.log('__NYX_SYNTHETIC_FALLBACK__');\n  console.log(JSON.stringify({ location: location, request_host: requestHost }));\n}\n"
     } else {
-        "const requestHost = 'example.com';\nconst location = payload;\nnyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log(JSON.stringify({ location: location, request_host: requestHost }));\n"
+        "const requestHost = 'example.com';\nconst location = payload;\nnyxRedirectProbe(location, requestHost);\nnyxFollowLocation(location);\nconsole.log('__NYX_SINK_HIT__');\nconsole.log('__NYX_SYNTHETIC_FALLBACK__');\nconsole.log(JSON.stringify({ location: location, request_host: requestHost }));\n"
     };
 
     let body = format!(
@@ -2784,6 +2784,11 @@ const payload = process.env.NYX_PAYLOAD || '';
     // lodash.merge can throw on weird inputs; the canary observation
     // already wrote any probe before the throw.
   }
+  // This block drove the sink DIRECTLY, bypassing any caller-side mitigation
+  // (the fixture's own entry could not be driven). A canary observation here
+  // therefore does not prove the guarded code is exploitable, so the runner
+  // must downgrade to PartiallyConfirmed rather than Confirm.
+  console.log('__NYX_SYNTHETIC_FALLBACK__');
 "#;
 
     let tail = r#"console.log('__NYX_SINK_HIT__');

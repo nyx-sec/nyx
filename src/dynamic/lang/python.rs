@@ -3456,6 +3456,9 @@ def _nyx_header_probe(name, value):
     value = payload
     _nyx_header_probe(name, value)
     print("__NYX_SINK_HIT__", flush=True)
+    # Synthetic sink: the real header surface (and its guards) never ran, so
+    # the runner downgrades this to PartiallyConfirmed rather than Confirm.
+    print("__NYX_SYNTHETIC_FALLBACK__", flush=True)
     sys.stdout.write(json.dumps({{"name": name, "value": value}}) + "\n")
     sys.stdout.flush()
 
@@ -3607,6 +3610,10 @@ def _nyx_follow_location(location):
     _nyx_redirect_probe(location, request_host)
     _nyx_follow_location(location)
     print("__NYX_SINK_HIT__", flush=True)
+    # Synthetic sink: the real redirect surface (host allowlist / path guard)
+    # never ran, so the runner downgrades to PartiallyConfirmed rather than an
+    # OOB self-confirm.
+    print("__NYX_SYNTHETIC_FALLBACK__", flush=True)
     sys.stdout.write(json.dumps({{"location": location, "request_host": request_host}}) + "\n")
     sys.stdout.flush()
 
