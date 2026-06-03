@@ -43,7 +43,7 @@ mod hardening_tests {
     static PROBE_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
 
     fn probe_path() -> Option<&'static Path> {
-        PROBE_BINARY.get_or_init(|| build_probe_once()).as_deref()
+        PROBE_BINARY.get_or_init(build_probe_once).as_deref()
     }
 
     fn build_probe_once() -> Option<PathBuf> {

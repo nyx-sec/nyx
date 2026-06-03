@@ -121,7 +121,7 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `go.crypto.md5` | Low | A | Medium |
 | `go.crypto.sha1` | Low | A | Medium |
 
-### Java: 10 patterns
+### Java: 9 patterns
 
 | Rule ID | Severity | Tier | Confidence |
 |---|---|---|---|
@@ -129,12 +129,11 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 | `java.code_exec.text4shell_interpolator` | High | A | High |
 | `java.deser.readobject` | High | A | High |
 | `java.deser.snakeyaml_unsafe_constructor` | High | A | High |
+| `java.crypto.weak_algorithm` | Medium | A | Medium |
 | `java.reflection.class_forname` | Medium | A | High |
 | `java.reflection.method_invoke` | Medium | A | High |
 | `java.sqli.execute_concat` | Medium | B | Medium |
-| `java.xss.getwriter_print` | Medium | A | High |
 | `java.crypto.insecure_random` | Low | A | Medium |
-| `java.crypto.weak_digest` | Low | A | Medium |
 
 ### JavaScript: 22 patterns
 
