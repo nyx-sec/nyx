@@ -2362,7 +2362,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let cache = dir.path().join("venv");
         std::fs::create_dir_all(cache.join("bin")).unwrap();
-        std::fs::write(cache.join("pyvenv.cfg"), "").unwrap();
+        std::fs::write(
+            cache.join("pyvenv.cfg"),
+            "include-system-site-packages = true\n",
+        )
+        .unwrap();
         std::fs::write(cache.join("bin").join("python"), "").unwrap();
 
         assert!(!python_cache_ready(&cache));
