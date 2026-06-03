@@ -30,12 +30,12 @@
 //! Adding a new language for a cap means: drop a new file under
 //! `corpus/<cap>/<lang>.rs`, register `pub mod <lang>;` in the cap's
 //! `mod.rs`, and wire `(Cap::<CAP>, Lang::<Lang>, <cap>::<lang>::PAYLOADS)`
-//! into [`registry::ENTRIES`].  No other file needs to change.
+//! into `registry::ENTRIES`.  No other file needs to change.
 //!
 //! # Corpus governance (§16.1)
 //!
-//! Every payload carries [`PayloadProvenance`], a [`since_corpus_version`],
-//! and at least one [`fixture_paths`] entry.  The [`CORPUS_VERSION`] const
+//! Every payload carries [`PayloadProvenance`], a [`CuratedPayload::since_corpus_version`],
+//! and at least one [`CuratedPayload::fixture_paths`] entry.  The [`CORPUS_VERSION`] const
 //! tracks the history of incompatible corpus changes; bumping it
 //! invalidates all `dynamic_verdict_cache` entries whose spec touched the
 //! changed cap.
@@ -171,9 +171,9 @@ pub struct CuratedPayload {
     /// [`crate::dynamic::probe::SinkProbe`] records drained from the run's
     /// probe channel (Phase 06 — Track C.1).  Always populated; empty when
     /// the payload still relies on the legacy
-    /// [`Oracle::OutputContains`](crate::dynamic::oracle::Oracle::OutputContains)
+    /// [`Oracle::OutputContains`]
     /// path and has not been migrated to
-    /// [`Oracle::SinkProbe`](crate::dynamic::oracle::Oracle::SinkProbe) yet.
+    /// [`Oracle::SinkProbe`] yet.
     pub probe_predicates: &'static [ProbePredicate],
     /// Paired benign-control payload inside the same cap's slice.
     ///

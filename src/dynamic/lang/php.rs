@@ -2,7 +2,7 @@
 //!
 //! Phase 15 (Track B PHP vertical) replaces the single legacy `emit`
 //! body with dispatch over [`PhpShape`] — the cross product of
-//! [`EntryKind`] and a lightweight per-file shape detector that
+//! [`EntryKind`](crate::dynamic::spec::EntryKind) and a lightweight per-file shape detector that
 //! inspects the entry file for Slim/Laravel/Symfony route closures,
 //! `$argv`-driven CLI scripts, and top-level script bodies.
 //!
@@ -856,7 +856,7 @@ echo json_encode(["entity_expanded" => $expanded]) . "\n";
 /// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter,
 /// and — when `NYX_LDAP_ENDPOINT` is set — routes the search through
 /// the in-sandbox LDAP stub over the real LDAPv3 BER wire (the stub's
-/// accept loop at [`crate::dynamic::stubs::ldap_server::accept_loop`]
+/// accept loop at `crate::dynamic::stubs::ldap_server::accept_loop`
 /// auto-detects the `0x30 SEQUENCE` lead byte and routes through the
 /// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
 /// to an in-process RFC 4515 subset matcher against three canonical

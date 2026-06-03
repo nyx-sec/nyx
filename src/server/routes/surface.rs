@@ -1,4 +1,4 @@
-//! `GET /api/surface` — serve the project's [`SurfaceMap`].
+//! `GET /api/surface` — serve the project's [`SurfaceMap`](crate::surface::SurfaceMap).
 //!
 //! Loads the map persisted by the most recent indexed scan from
 //! SQLite, falling back to building a fresh entry-point-only map from

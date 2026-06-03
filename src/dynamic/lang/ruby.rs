@@ -2,7 +2,7 @@
 //!
 //! Phase 15 (Track B Ruby vertical) replaces the previous `LangUnsupported`
 //! stub with dispatch over [`RubyShape`] — the cross product of
-//! [`EntryKind`] and a lightweight per-file shape detector that inspects
+//! [`EntryKind`](crate::dynamic::spec::EntryKind) and a lightweight per-file shape detector that inspects
 //! the entry file for Sinatra routes, Rails controller actions, Hanami
 //! actions, Rack middleware, and generic controller methods.
 //!

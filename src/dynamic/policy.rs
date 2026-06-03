@@ -330,7 +330,7 @@ impl DenyRule {
     /// Finding's path or evidence references a production endpoint
     /// (e.g. `api.prod.example.com`, `*.production.*`,
     /// `*-prod.amazonaws.com`).  Conservative: matched against the
-    /// short list in [`PROD_ENDPOINT_REGEXES`].
+    /// short list in `PROD_ENDPOINT_REGEXES`.
     pub const PRODUCTION_ENDPOINT: &'static str = "production-endpoint";
 }
 
@@ -382,8 +382,8 @@ const PROD_ENDPOINT_REGEXES: &[&str] = &[
 /// snippets, and the `SpanEvidence` snippets for source/sink/guard/
 /// sanitizer entries.  Each text is fed to three predicates in turn
 /// — [`DenyRule::CREDENTIALS`] (via [`crate::utils::redact::contains_secret`]),
-/// [`DenyRule::PRIVATE_KEY`] (via [`PRIVATE_KEY_LITERALS`]),
-/// [`DenyRule::PRODUCTION_ENDPOINT`] (via [`PROD_ENDPOINT_REGEXES`]).
+/// [`DenyRule::PRIVATE_KEY`] (via `PRIVATE_KEY_LITERALS`),
+/// [`DenyRule::PRODUCTION_ENDPOINT`] (via `PROD_ENDPOINT_REGEXES`).
 /// The first match wins and the verifier short-circuits to
 /// [`crate::evidence::InconclusiveReason::PolicyDeniedDynamic`].
 ///

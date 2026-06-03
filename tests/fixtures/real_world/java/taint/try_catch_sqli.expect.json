@@ -20,20 +20,12 @@
       "notes": "AST pattern detects executeQuery with string concatenation — SQL injection"
     },
     {
-      "rule_id": "java.xss.getwriter_print",
-      "severity": "MEDIUM",
-      "must_match": true,
-      "line_range": [12, 12],
-      "evidence_contains": [],
-      "notes": "response.getWriter().println() with user input — reflected XSS via error response"
-    },
-    {
       "rule_id": "taint-unsanitised-flow",
       "severity": "HIGH",
       "must_match": true,
       "line_range": [7, 12],
       "evidence_contains": [],
-      "notes": "request.getParameter flows to response.getWriter().println — user input reflected in error response"
+      "notes": "request.getParameter flows to response.getWriter().println at line 12 — user input reflected in error response. Replaces the retired java.xss.getwriter_print AST pattern: reflected XSS is now a taint sink (Sink(Cap::HTML_ESCAPE)), taint-confirmed rather than flagged on every writer call."
     }
   ]
 }

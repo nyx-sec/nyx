@@ -1,7 +1,7 @@
 //! Go harness emitter.
 //!
 //! Phase 15 (Track B Go vertical) replaces the single legacy `emit` body
-//! with dispatch over [`GoShape`] — the cross product of [`EntryKind`]
+//! with dispatch over [`GoShape`] — the cross product of [`EntryKind`](crate::dynamic::spec::EntryKind)
 //! and a lightweight per-file shape detector that inspects the entry
 //! file for `net/http` handler signatures, gin context handlers,
 //! `flag.Parse` CLIs, and `func(args ...) error` fuzz harnesses.
@@ -312,7 +312,7 @@ fn read_entry_source(entry_file: &str) -> String {
 
 /// Phase 09 — Track D.2: synthesise a `go.mod` listing every captured
 /// third-party import path.  Standard-library imports are skipped via
-/// [`is_go_stdlib`].
+/// `is_go_stdlib`.
 pub fn materialize_go(env: &Environment) -> RuntimeArtifacts {
     let mut artifacts = RuntimeArtifacts::new();
     let go_version = env

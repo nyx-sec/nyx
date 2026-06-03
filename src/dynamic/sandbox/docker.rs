@@ -2,8 +2,8 @@
 //!
 //! This module is the thin layer between the pinned-digest catalogue
 //! (`tools/image-builder/images.toml` → `src/dynamic/toolchain.rs::IMAGE_DIGESTS`)
-//! and the existing docker invocations in [`super::run_docker`] /
-//! [`super::run_native_binary_docker`].
+//! and the existing docker invocations in `super::run_docker` /
+//! `super::run_native_binary_docker`.
 //!
 //! Responsibilities:
 //!
@@ -16,7 +16,7 @@
 //!    - mounts each `StubHarness` filesystem root at a fixed `/nyx/stubs/<n>`
 //!      path so harness-side shims can find them without hard-coding host
 //!      tempdir layouts,
-//!    - honours the [`super::NetworkPolicy`] (none / OOB / stubs-only / open)
+//!    - honours the [`NetworkPolicy`](crate::dynamic::sandbox::NetworkPolicy) (none / OOB / stubs-only / open)
 //!      using the same flag set as the legacy `start_container`.
 //!
 //! All helpers are infallible w.r.t. docker availability — they return arg
@@ -157,7 +157,7 @@ pub fn stub_mount_args(stub_roots: &[std::path::PathBuf]) -> Vec<String> {
 
 /// Render the `--network` + `--add-host` flag slice for a [`NetworkPolicy`].
 ///
-/// Mirrors the legacy block in [`super::start_container`] so callers using
+/// Mirrors the legacy block in `super::start_container` so callers using
 /// the new docker.rs entry point produce byte-identical container layouts
 /// to the existing path — important for `tests/dynamic_parity.rs` to keep
 /// reading the same verdicts across backends.

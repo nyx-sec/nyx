@@ -1301,7 +1301,7 @@ impl Canary {
     /// Derive a 32-byte canary for the finding identified by `spec_hash`.
     ///
     /// `BLAKE3("nyx.dynamic.canary.v1" ‖ run_nonce ‖ spec_hash)`.  The
-    /// [`run_nonce`] is a process-global value seeded once from the OS
+    /// `run_nonce` is a process-global value seeded once from the OS
     /// CSPRNG (mixed with time + pid as a fallback), so two runs of the same
     /// spec draw different canaries and a stale probe record cannot satisfy a
     /// later run.  Keying on `spec_hash` gives every finding in a single run

@@ -20,7 +20,7 @@
 //! The bundle ships both `javax.servlet` and `jakarta.servlet` so source
 //! files predating the EE 9 rename and source files using the new
 //! namespace both link.  Each stub is generated from the same template via
-//! [`make_servlet_stubs`] so the two trees stay in sync.
+//! `make_servlet_stubs` so the two trees stay in sync.
 
 /// Stub bundle for the servlet-shape Java harnesses.
 ///

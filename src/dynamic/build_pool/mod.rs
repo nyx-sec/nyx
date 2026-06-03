@@ -87,7 +87,7 @@ const POOL_ENABLED_LANGS: &[&str] = &[
 ///
 /// Format is a comma-separated list of `lang=bit` entries: `java=1,node=0`.
 /// A missing language returns the default: `true` for every language that
-/// ships a pool (see [`POOL_ENABLED_LANGS`]), `false` otherwise.
+/// ships a pool (see `POOL_ENABLED_LANGS`), `false` otherwise.
 pub fn is_pool_enabled(lang: &str) -> bool {
     let default = POOL_ENABLED_LANGS.contains(&lang);
     let raw = match std::env::var("NYX_DYNAMIC_BUILD_POOL") {

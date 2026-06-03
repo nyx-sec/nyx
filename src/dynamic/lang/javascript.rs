@@ -3,16 +3,16 @@
 //! After Phase 13 (Track B JS + TS vertical) the per-shape dispatch lives in
 //! [`crate::dynamic::lang::js_shared`].  This module is the typed surface for
 //! `Lang::JavaScript`: registers the [`JavaScriptEmitter`] in the dispatch
-//! table, advertises the supported [`EntryKind`] set, and forwards
+//! table, advertises the supported [`EntryKind`](crate::dynamic::spec::EntryKind) set, and forwards
 //! `emit` / `materialize_runtime` calls to the shared module.
 //!
 //! Payload slot support (handled by `js_shared::emit`):
-//! - [`PayloadSlot::Param`] — n-th positional argument.
-//! - [`PayloadSlot::EnvVar`] — set env var before calling.
-//! - [`PayloadSlot::Stdin`] — pipe payload to `process.stdin`.
-//! - [`PayloadSlot::QueryParam`] — HTTP-shaped query param (Express / Koa / Next).
-//! - [`PayloadSlot::HttpBody`] — HTTP body (Express / Koa / Next).
-//! - [`PayloadSlot::Argv`] — coerced to positional `Param(0)` by build_call.
+//! - [`PayloadSlot::Param`](crate::dynamic::spec::PayloadSlot::Param) — n-th positional argument.
+//! - [`PayloadSlot::EnvVar`](crate::dynamic::spec::PayloadSlot::EnvVar) — set env var before calling.
+//! - [`PayloadSlot::Stdin`](crate::dynamic::spec::PayloadSlot::Stdin) — pipe payload to `process.stdin`.
+//! - [`PayloadSlot::QueryParam`](crate::dynamic::spec::PayloadSlot::QueryParam) — HTTP-shaped query param (Express / Koa / Next).
+//! - [`PayloadSlot::HttpBody`](crate::dynamic::spec::PayloadSlot::HttpBody) — HTTP body (Express / Koa / Next).
+//! - [`PayloadSlot::Argv`](crate::dynamic::spec::PayloadSlot::Argv) — coerced to positional `Param(0)` by build_call.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{

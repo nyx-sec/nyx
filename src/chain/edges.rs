@@ -3,9 +3,9 @@
 //! Each call to [`findings_to_edges`] emits exactly one [`ChainEdge`]
 //! per input finding.  The edge is *typed* by:
 //!
-//! - the primary [`Cap`] bit picked from [`Evidence::sink_caps`]
+//! - the primary [`Cap`] bit picked from [`Evidence::sink_caps`](crate::evidence::Evidence::sink_caps)
 //!   (the lowest-bit set, chosen deterministically), and
-//! - the *reach* — the surface [`EntryPoint`] in the same file as the
+//! - the *reach* — the surface [`EntryPoint`](crate::surface::EntryPoint) in the same file as the
 //!   finding, when one exists, otherwise [`Reach::Unreachable`].
 //!
 //! Phase 25's path search composes these edges with the SurfaceMap's
@@ -35,7 +35,7 @@ pub struct FindingRef {
     pub location: SourceLocation,
     /// Rule identifier (`Diag::id`).
     pub rule_id: String,
-    /// Resolved sink cap bits ([`Evidence::sink_caps`]).
+    /// Resolved sink cap bits ([`Evidence::sink_caps`](crate::evidence::Evidence::sink_caps)).
     pub cap_bits: u32,
 }
 

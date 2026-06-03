@@ -2,7 +2,7 @@
 //!
 //! Phase 14 (Track B Java vertical) replaces the single legacy `emit`
 //! body with dispatch over [`JavaShape`] — the cross product of
-//! [`EntryKind`] and a lightweight per-file shape detector that inspects
+//! [`EntryKind`](crate::dynamic::spec::EntryKind) and a lightweight per-file shape detector that inspects
 //! the entry file for servlet / Spring / Quarkus annotations, JUnit
 //! markers, and `static main(String[])` signatures.
 //!
@@ -200,10 +200,10 @@ impl JavaShape {
     /// pass an empty string and the function returns
     /// [`Self::StaticMethod`]).
     ///
-    /// Framework / annotation detection wins over the [`EntryKind`]
+    /// Framework / annotation detection wins over the [`EntryKind`](crate::dynamic::spec::EntryKind)
     /// axis: when the source clearly imports a servlet or Spring
     /// controller the shape is selected even if the spec derivation
-    /// pipeline tagged the entry kind as [`EntryKind::Function`].
+    /// pipeline tagged the entry kind as [`EntryKind::Function`](crate::dynamic::spec::EntryKind::Function).
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
         let entry = spec.entry_name.as_str();
         let kind = spec.entry_kind.tag();
@@ -1273,7 +1273,7 @@ public class NyxHarness {{
 /// template, and dispatches the resulting filter against the
 /// in-sandbox LDAP stub via `javax.naming.directory.InitialDirContext`
 /// over the real LDAPv3 BER wire (the stub's accept loop at
-/// [`crate::dynamic::stubs::ldap_server::accept_loop`] auto-detects
+/// `crate::dynamic::stubs::ldap_server::accept_loop` auto-detects
 /// the `0x30 SEQUENCE` lead byte and routes through the BER
 /// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
 /// to an in-process RFC 4515 subset matcher against three canonical
@@ -2417,7 +2417,7 @@ public class NyxHarness {{
 /// tree without pulling Jackson / Gson onto the classpath.  The
 /// fixture calls `NyxJsonProbe.parse(text)` in place of any library
 /// JSON parser.  When the parser's own
-/// [`NyxJsonProbe.NyxJsonDepthException`] fires (nesting above
+/// `NyxJsonProbe.NyxJsonDepthException` fires (nesting above
 /// `MAX_PARSE_DEPTH = 4096`) the harness emits a `JsonParse { depth:
 /// 0, excessive_depth: true }` probe before continuing — matches the
 /// PHP `JSON_ERROR_DEPTH` and Python `RecursionError` excess paths.

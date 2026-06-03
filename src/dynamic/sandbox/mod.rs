@@ -54,7 +54,7 @@ pub mod firecracker;
 
 /// Phase 17 (Track E.1) + Phase 18 (Track E.2) per-run hardening outcome.
 ///
-/// Returned by [`run_process`] on the [`SandboxOutcome`] so callers (tests +
+/// Returned by `run_process` on the [`SandboxOutcome`] so callers (tests +
 /// telemetry) can inspect the per-primitive status without consulting a
 /// process-global singleton.  The previous Phase 17/18 implementation kept
 /// the outcome in `process_linux::LAST_OUTCOME` / `process_macos::LAST_OUTCOME`
@@ -81,7 +81,7 @@ pub enum HardeningRecord {
 /// IMAGE_DIGESTS`] entries to docker image refs, render `docker run`
 /// flag slices that honour [`NetworkPolicy`], and mount the harness
 /// workdir at the fixed `/work` path.  The legacy entry points in this
-/// file ([`run_docker`] / [`run_native_binary_docker`]) call into
+/// file (`run_docker` / `run_native_binary_docker`) call into
 /// `docker::ensure_image_pulled` so every harness run uses the catalogue
 /// pin when one is available.
 pub mod docker;
@@ -233,7 +233,7 @@ pub struct SandboxOptions {
     /// Phase 17 (Track E.1): cap bits used to minimise the seccomp-bpf
     /// allowlist applied to the Linux process backend.  When `0`, the
     /// process backend installs only the cap-independent `base` allowlist
-    /// from [`seccomp::seccomp_policy.toml`]; when non-zero, every cap bit
+    /// from `seccomp::seccomp_policy.toml`; when non-zero, every cap bit
     /// set adds its allowlisted syscalls on top.  Other backends ignore
     /// this field.
     pub seccomp_caps: u32,
@@ -264,7 +264,7 @@ pub struct SandboxOptions {
     /// primitive toggles.
     #[doc(hidden)]
     pub ablation: Option<AblationMask>,
-    /// Phase 30 (Track C observability): optional [`VerifyTrace`] handle
+    /// Phase 30 (Track C observability): optional [`VerifyTrace`](crate::dynamic::trace::VerifyTrace) handle
     /// the runner appends pipeline stages to (`build_started`,
     /// `build_done`, `sandbox_started`, `oracle_wait`, `oracle_observed`).
     /// `None` keeps the runner silent — sandbox-level callers that do
@@ -284,7 +284,7 @@ pub struct SandboxOptions {
 ///   no-new-privs, all rlimits, namespace unshare, chroot to workdir,
 ///   default-deny seccomp filter scoped to [`SandboxOptions::seccomp_caps`].
 ///   Each primitive is best-effort; failures degrade to
-///   [`HardeningLevel::Partial`] without aborting the run.
+///   `HardeningLevel::Partial` without aborting the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessHardeningProfile {
     #[default]
@@ -420,7 +420,7 @@ impl HostPort {
 ///   selector.
 /// - [`NetworkPolicy::OobOutbound`] — the legacy "OOB only" path: the
 ///   harness can reach the per-scan OOB listener (and only it via the
-///   Linux iptables filter in [`apply_oob_egress_filter`]).  Docker:
+///   Linux iptables filter in `apply_oob_egress_filter`).  Docker:
 ///   `bridge` + host-gateway + iptables OOB-port filter.
 /// - [`NetworkPolicy::Open`] — unrestricted outbound.  Docker: `bridge`
 ///   with no egress filter.  Reserved for diagnostic / dev-only runs;

@@ -115,7 +115,7 @@ pub fn derive_secret(spec_hash: &str, env_var_name: &str) -> SecretValue {
 /// | Ruby   | `ENV["X"]`, `ENV.fetch("X")` |
 /// | C/C++  | `getenv("X")` |
 ///
-/// Static substring scan — bounded by [`IMPORT_SCAN_LIMIT`] like the import
+/// Static substring scan — bounded by `IMPORT_SCAN_LIMIT` like the import
 /// extractor.  No AST: an entry-file with `os.environ.get(some_var)` (a
 /// non-literal arg) is intentionally skipped; the secret bag is populated
 /// from literal references only so a typo cannot produce noisy injection.
@@ -367,7 +367,7 @@ pub struct CapturedDeps {
     /// add the package-manager deps required when the real import is present.
     pub framework_adapter: Option<String>,
     /// Three-valued lang-has-framework signal (see
-    /// [`FrameworkContext::lang_has_web_framework`]).
+    /// [`FrameworkContext::lang_has_web_framework`](crate::utils::project::FrameworkContext::lang_has_web_framework)).
     pub framework_signal: Option<bool>,
     /// Absolute paths of local config files reachable from the entry
     /// point's directory.  Each is copied verbatim into the workdir
@@ -380,7 +380,7 @@ pub struct CapturedDeps {
     /// Manifest files (lockfile + project manifest pair) recognised for
     /// [`Self::toolchain`]'s language.  Each entry is an absolute path
     /// inside `project_root`; the first existing entry from
-    /// [`MANIFEST_FILES_BY_LANG`] wins for [`Self::lockfile`].
+    /// `MANIFEST_FILES_BY_LANG` wins for [`Self::lockfile`].
     pub manifests: Vec<PathBuf>,
     /// First recognised manifest file (== `manifests[0]` when present).
     /// Used by the per-language emitter as the canonical lockfile when

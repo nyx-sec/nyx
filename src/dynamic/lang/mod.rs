@@ -132,7 +132,7 @@ pub trait LangEmitter {
     /// Build a harness source bundle for `spec`.
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason>;
 
-    /// The set of [`EntryKind`] variants this emitter understands,
+    /// The set of [`EntryKind`](crate::dynamic::spec::EntryKind) variants this emitter understands,
     /// projected to the [`EntryKindTag`] discriminant so the slice can
     /// live in `'static` storage even after Phase 18 extended
     /// `EntryKind` with data-bearing variants.

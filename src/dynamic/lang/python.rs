@@ -2,7 +2,7 @@
 //!
 //! Phase 12 (Track B Python vertical) replaces the single legacy
 //! `emit` body with dispatch over [`PythonShape`] — the cross product of
-//! [`EntryKind`] and a lightweight per-file shape detector that inspects
+//! [`EntryKind`](crate::dynamic::spec::EntryKind) and a lightweight per-file shape detector that inspects
 //! the entry file for framework decorators / CLI gates / async / pytest
 //! conventions.  Each shape returns its own [`HarnessSource`] but shares
 //! the Phase 06 probe shim ([`probe_shim`]) and payload prelude so the
@@ -14,7 +14,7 @@
 //! positionally with the payload).  The dispatch never returns an
 //! emitter-side error for an unknown shape — that responsibility belongs
 //! to `lang::emit`, which has already gated on
-//! [`EntryKind`] via [`PythonEmitter::entry_kinds_supported`].
+//! [`EntryKind`](crate::dynamic::spec::EntryKind) via [`PythonEmitter::entry_kinds_supported`].
 //!
 //! Payload slot support:
 //! - [`PayloadSlot::Param`] — n-th positional argument.
@@ -176,10 +176,10 @@ impl PythonShape {
     /// pass an empty string and the function returns [`Self::Generic`]).
     ///
     /// Framework detection (Flask / FastAPI / Django) wins over the
-    /// [`EntryKind`] axis: when the source clearly imports one of those
+    /// [`EntryKind`](crate::dynamic::spec::EntryKind) axis: when the source clearly imports one of those
     /// frameworks the route shape is selected even if the spec
     /// derivation pipeline tagged the entry kind as
-    /// [`EntryKind::Function`].  This makes the dispatcher robust
+    /// [`EntryKind::Function`](crate::dynamic::spec::EntryKind::Function).  This makes the dispatcher robust
     /// against the synthetic flow-step path used by tests and against
     /// the legacy substring-only entry-kind heuristic.
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
@@ -2616,7 +2616,7 @@ if __name__ == "__main__":
 /// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter,
 /// and — when `NYX_LDAP_ENDPOINT` is set — routes the search through
 /// the in-sandbox LDAP stub over the real LDAPv3 BER wire (the stub's
-/// accept loop at [`crate::dynamic::stubs::ldap_server::accept_loop`]
+/// accept loop at `crate::dynamic::stubs::ldap_server::accept_loop`
 /// auto-detects the `0x30 SEQUENCE` lead byte and routes through the
 /// reader/writer at [`crate::dynamic::stubs::ldap_ber`]).  Falls back
 /// to an in-process RFC 4515 subset matcher against three canonical

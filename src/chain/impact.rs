@@ -226,7 +226,7 @@ fn standalone_lookup(cap: Cap) -> Option<ImpactCategory> {
 /// first rule in [`IMPACT_LATTICE`] order (specific before fallback).
 ///
 /// The standalone-rule walks (second + third pass) are O(1) via
-/// [`STANDALONE_BY_BIT`].  The two-cap walk (first pass) stays linear
+/// `STANDALONE_BY_BIT`.  The two-cap walk (first pass) stays linear
 /// because the 2-cap subset is small (today: three rules); promote
 /// to a sorted-pair binary search if the lattice grows past ~16
 /// pair-rules.

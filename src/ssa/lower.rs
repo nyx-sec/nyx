@@ -2,7 +2,7 @@
 //!
 //! Builds basic blocks, computes dominators and dominance frontiers via
 //! petgraph, inserts phi nodes, and renames variables over the dominator-tree
-//! preorder to produce an [`SsaBody`](super::ir::SsaBody).
+//! preorder to produce an [`SsaBody`].
 
 #![allow(
     clippy::if_same_then_else,

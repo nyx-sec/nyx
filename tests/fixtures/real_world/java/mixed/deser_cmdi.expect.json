@@ -45,14 +45,14 @@
       "notes": "Runtime.getRuntime().exec(command) with deserialized input; AST pattern correctly matches"
     },
     {
-      "rule_id": "java.xss.getwriter_print",
+      "rule_id": "taint-unsanitised-flow",
       "severity": "MEDIUM",
       "must_not_match": true,
       "line_range": [
         11,
         11
       ],
-      "notes": "response.getWriter().println(\"Done\") — constant string, Layer B suppresses (regression guard)"
+      "notes": "response.getWriter().println(\"Done\") — constant string, must NOT raise reflected-XSS (Cap::HTML_ESCAPE). Regression guard retargeted from the retired java.xss.getwriter_print AST pattern to the taint sink that now owns reflected XSS."
     },
     {
       "rule_id": "taint-unsanitised-flow",

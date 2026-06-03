@@ -12,7 +12,7 @@
 //!    whenever a maintainer forgets to wire a paired benign entry.
 //!
 //! 2. **Cap coverage is exhaustive.**  The set of caps appearing in
-//!    [`CORPUS::entries`] OR [`CORPUS_UNSUPPORTED_LANG_NEUTRAL`] must
+//!    [`CORPUS`]'s [`entries`](super::CapCorpus::entries) OR [`CORPUS_UNSUPPORTED_LANG_NEUTRAL`] must
 //!    equal [`Cap::all`].  Adding a new `Cap` bit without classifying it
 //!    fails the build.
 //!

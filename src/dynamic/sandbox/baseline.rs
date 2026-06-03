@@ -3,18 +3,18 @@
 //! A harness needs the language toolchain's heavyweight dependency tree
 //! (`node_modules`, `vendor`, `target/`, …) but that tree is identical across
 //! every finding in a run — installing it per-finding is the bulk of the
-//! per-workdir setup cost. A [`Baseline`] holds one shared, warmed copy under
+//! per-workdir setup cost. A [`Baseline`](crate::dynamic::sandbox::baseline::Baseline) holds one shared, warmed copy under
 //! the build-pool cache dir; each per-finding workdir gets a cheap snapshot of
 //! it:
 //!
 //! - **macOS** — a `clonefile` CoW snapshot (via
-//!   [`crate::dynamic::harness::copy_workdir`]).
+//!   `crate::dynamic::harness::copy_workdir`).
 //! - **Linux** — a read-only `mount --bind`, falling back to a reflink copy
 //!   when bind mounts are unavailable (no `CAP_SYS_ADMIN` / not in a mount
 //!   namespace).
 //!
 //! The baseline root honours `NYX_BUILD_POOL_DIR` through
-//! [`crate::dynamic::build_pool::pool_cache_dir`], so tests can redirect it
+//! `crate::dynamic::build_pool::pool_cache_dir`, so tests can redirect it
 //! into a `TempDir` and it shares the same on-disk layout as the Phase 22/23
 //! build pools (`<cache>/dynamic/build-pool/<lang>/baseline`).
 

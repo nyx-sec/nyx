@@ -6,7 +6,7 @@
 //! boundary can fire under test without depending on a live external
 //! service. Each stub exposes:
 //!
-//! 1. [`StubProvider::start`] — spin the service up. The constructor of
+//! 1. `StubProvider::start` — spin the service up. The constructor of
 //!    each concrete stub plays this role (e.g. [`SqlStub::start`]); the
 //!    trait method just hands back the kind for type-erased
 //!    introspection.

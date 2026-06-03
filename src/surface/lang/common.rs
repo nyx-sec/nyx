@@ -1,6 +1,6 @@
 //! Shared helpers used by the per-(language, framework) probes.
 //!
-//! Each probe extracts an [`EntryPoint`] node from a parsed source file
+//! Each probe extracts an [`EntryPoint`](crate::surface::EntryPoint) node from a parsed source file
 //! by walking the framework's route declaration shape.  These helpers
 //! cover the bookkeeping common to every probe: building a stable
 //! [`SourceLocation`] from a tree-sitter node, decoding common string

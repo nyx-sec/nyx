@@ -9,7 +9,7 @@
 //!    (`__NYX_SINK_HIT__` sentinel on stdout).
 //! 5. Lets the sink either fire or not — the oracle observes from outside.
 //!
-//! One generator per [`Lang`]. Each emits source plus a build command.
+//! One generator per [`Lang`](crate::symbol::Lang). Each emits source plus a build command.
 //! Build artefacts are staged inside the sandbox working dir, never the
 //! user's tree.
 

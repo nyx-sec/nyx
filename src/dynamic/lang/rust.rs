@@ -2671,7 +2671,7 @@ fn is_ident_char(ch: char) -> bool {
 /// - Other caps use only std (no extra deps).
 ///
 /// `libc` is always pinned because the Phase 16 probe shim (spliced into
-/// `src/main.rs` by [`generate_main_rs`]) calls `libc::sigaction` from
+/// `src/main.rs` by `generate_main_rs`) calls `libc::sigaction` from
 /// `__nyx_install_crash_guard`.  The shim is unconditionally compiled so
 /// the dep must be unconditional too.
 pub fn generate_cargo_toml(cap: Cap) -> String {

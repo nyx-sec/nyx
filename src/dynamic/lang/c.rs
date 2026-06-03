@@ -1,7 +1,7 @@
 //! C harness emitter.
 //!
 //! Phase 16 (Track B Rust + C/C++ vertical) replaces the stub body with
-//! dispatch over [`CShape`] — the cross product of [`EntryKind`] and a
+//! dispatch over [`CShape`] — the cross product of [`EntryKind`](crate::dynamic::spec::EntryKind) and a
 //! lightweight per-file shape detector that inspects the entry file for
 //! `main(int argc, char *argv[])`, libFuzzer's `LLVMFuzzerTestOneInput`,
 //! and free functions with `(const char*, size_t)` signatures.

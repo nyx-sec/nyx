@@ -15,7 +15,7 @@
 //!
 //! Two parallel `Vec`s — `nodes` and `edges` — mirroring `SurfaceMap`'s
 //! shape.  Determinism is the caller's responsibility: edges are
-//! produced in the order the source [`Diag`] slice presents, and
+//! produced in the order the source [`Diag`](crate::commands::scan::Diag) slice presents, and
 //! `findings_to_edges` does not sort the input.  Phase 25 will fold
 //! these into a `petgraph::DiGraph` for path search.
 //!

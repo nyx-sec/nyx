@@ -23,7 +23,7 @@
 //! 3. The probe is cached behind a `OnceLock` so repeated calls into [`run`]
 //!    do not re-`stat` the binary every time.  Tests that swap
 //!    `NYX_FIRECRACKER_BIN` between scenarios bypass the cache via the
-//!    uncached [`is_firecracker_reachable`] helper.
+//!    uncached [`is_firecracker_reachable`](crate::dynamic::sandbox::firecracker::is_firecracker_reachable) helper.
 
 use std::sync::OnceLock;
 

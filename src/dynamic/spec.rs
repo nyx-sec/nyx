@@ -77,7 +77,7 @@ pub enum PayloadSlot {
     HttpBody,
     /// Environment variable.
     EnvVar(String),
-    /// CLI argv slot (0-based, excluding argv[0]).
+    /// CLI argv slot (0-based, excluding `argv[0]`).
     Argv(usize),
     /// stdin.
     Stdin,
@@ -144,7 +144,7 @@ pub struct HarnessSpec {
     /// this field is `None` for every spec; subsequent Track-L phases
     /// register adapters and back-fill the binding.
     ///
-    /// Excluded from [`compute_spec_hash`]: the binding is descriptive
+    /// Excluded from `compute_spec_hash`: the binding is descriptive
     /// metadata derived from the entry function and does not change
     /// the harness boundary topology that the spec hash protects.
     /// `#[serde(default, skip_serializing_if = "Option::is_none")]` so
@@ -157,10 +157,10 @@ pub struct HarnessSpec {
     /// decide whether to bootstrap a full Spring test context
     /// (`SpringApplication.run` + `MockMvc`) or the lighter
     /// reflective invocation path the legacy shapes use.  Populated
-    /// by [`attach_framework_binding`] when the `java-spring`
+    /// by `attach_framework_binding` when the `java-spring`
     /// adapter binds.
     ///
-    /// Excluded from [`compute_spec_hash`] for the same reason as
+    /// Excluded from `compute_spec_hash` for the same reason as
     /// `framework`: the toggle is descriptive metadata driven by the
     /// adapter binding, not a per-spec boundary topology axis.
     /// Pre-Phase-14 serialised specs deserialise to the default
@@ -663,7 +663,7 @@ fn first_annotated_entry(steps: &[crate::evidence::FlowStep]) -> Option<EntryRef
 /// `java.deser.readobject`, `rs.auth.missing_ownership_check.taint`) plus the
 /// finding's sink evidence. The diag's path and line locate the sink call
 /// site; the rule namespace's first segment selects the language, and the
-/// second segment maps to a [`Cap`] via [`cap_for_rule_category`].
+/// second segment maps to a [`Cap`] via `cap_for_rule_category`.
 ///
 /// A synthetic single-step `Source` flow is constructed at the diag location
 /// so downstream consumers that walk `evidence.flow_steps` keep working. The
@@ -901,7 +901,7 @@ pub fn derive_from_callgraph_entry_with(
 /// Strict reverse-edge-BFS-only variant of
 /// [`derive_from_callgraph_entry_full`].
 ///
-/// Returns `Some(spec)` only when [`find_entry_via_callgraph`] resolves
+/// Returns `Some(spec)` only when `find_entry_via_callgraph` resolves
 /// the sink's enclosing function to a framework-bound ancestor via the
 /// whole-program callgraph. Unlike
 /// [`derive_from_callgraph_entry_full`], the summary-entry-kind fallback

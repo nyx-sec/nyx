@@ -304,7 +304,16 @@ PY
         || { echo "  FAIL: wall-clock exceeds budget"; return 1; }
 
     echo "[]" > "${results_report}"
+    # --static buckets a command-injection finding that carries only the
+    # SHELL_ESCAPE sink cap (the static, unconfirmed cmdi class for every
+    # language) as `cmdi` instead of `other`.  Without a dynamic Confirm the
+    # SHELL_ESCAPE→CODE_EXEC remap never runs (Java servlet harnesses build-
+    # fail in CI), so the default lens leaves every cmdi finding in `other`
+    # and reads the cmdi cell as 0/0/N; the static lens is the correct
+    # bucketing for an unconfirmed scan and is appended at lowest priority so
+    # no higher-priority cap cell changes.
     python3 "${REPO_ROOT}/tests/eval_corpus/tabulate.py" \
+        --static \
         --label owasp \
         --scan "${scan_report}" \
         --ground-truth "${REPO_ROOT}/tests/eval_corpus/ground_truth/owasp_benchmark_v1.2.json" \
@@ -416,7 +425,13 @@ PY
         || { echo "    FAIL: ${label} wall-clock exceeds budget"; return 1; }
 
     echo "[]" > "${results_report}"
+    # --static: bucket SHELL_ESCAPE-only command-injection findings as `cmdi`
+    # (see the Gate 6 note) so the per-cap table reflects the engine's real
+    # static classification in CI where no dynamic Confirm runs the
+    # SHELL_ESCAPE→CODE_EXEC remap.  Appended at lowest priority; no other cap
+    # cell changes.
     local -a tabulate_args=(
+        --static
         --label "${label}"
         --scan "${scan_report}"
         --ground-truth "${gt}"

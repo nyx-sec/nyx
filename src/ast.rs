@@ -1006,6 +1006,7 @@ fn is_test_suppressible_pattern(id: &str) -> bool {
         || id.ends_with(".crypto.math_random")
         || id.ends_with(".crypto.insecure_random")
         || id.ends_with(".crypto.weak_digest")
+        || id.ends_with(".crypto.weak_algorithm")
         || id.ends_with(".crypto.md5")
         || id.ends_with(".crypto.sha1")
         || id.ends_with(".crypto.rand")

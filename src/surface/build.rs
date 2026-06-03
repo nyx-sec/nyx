@@ -3,15 +3,15 @@
 //! Phase 22 dispatch:
 //!
 //! 1. Per-file framework probes (one parser per language) emit
-//!    [`SurfaceNode::EntryPoint`] nodes for every recognised route /
+//!    [`SurfaceNode::EntryPoint`](crate::surface::SurfaceNode::EntryPoint) nodes for every recognised route /
 //!    handler.
 //! 2. [`super::datastore::detect_data_stores`] walks
-//!    [`GlobalSummaries`] and emits [`SurfaceNode::DataStore`] nodes
+//!    [`GlobalSummaries`] and emits [`SurfaceNode::DataStore`](crate::surface::SurfaceNode::DataStore) nodes
 //!    for every recognised driver call.
 //! 3. [`super::external::detect_external_services`] walks summaries +
-//!    SSRF caps and emits [`SurfaceNode::ExternalService`] nodes.
+//!    SSRF caps and emits [`SurfaceNode::ExternalService`](crate::surface::SurfaceNode::ExternalService) nodes.
 //! 4. [`super::dangerous::detect_dangerous_locals`] walks summaries
-//!    and emits [`SurfaceNode::DangerousLocal`] nodes for every
+//!    and emits [`SurfaceNode::DangerousLocal`](crate::surface::SurfaceNode::DangerousLocal) nodes for every
 //!    function whose `sink_caps` include CODE_EXEC / DESERIALIZE /
 //!    SSTI / FMT_STRING.
 //! 5. [`super::reachability::populate_reaches_edges`] runs a BFS over

@@ -50,7 +50,7 @@ use directories::ProjectDirs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Emitted by [`write`] on success.
+/// Emitted by [`write()`] on success.
 #[derive(Debug, Clone)]
 pub struct ReproArtifact {
     /// Absolute path to the repro bundle root.
@@ -288,7 +288,7 @@ fn repro_root(spec_hash: &str) -> Result<PathBuf, ReproError> {
 
 /// Resolve the bundle path for `spec_hash` without creating any directories.
 ///
-/// Returns the same path [`write`] uses (`~/.cache/nyx/dynamic/repro/{spec_hash}/`)
+/// Returns the same path [`write()`] uses (`~/.cache/nyx/dynamic/repro/{spec_hash}/`)
 /// so callers can locate an existing bundle for replay. Respects the
 /// `NYX_REPRO_BASE` test override.
 ///

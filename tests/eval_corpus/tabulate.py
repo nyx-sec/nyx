@@ -75,6 +75,15 @@ _CAP_BIT_TABLE = [
     (1 << 18, "xss"),              # SSTI (template_injection); also covers XSS sinks
     (1 << 19, "xxe"),
     (1 << 20, "prototype_pollution"),
+    # HTML_ESCAPE (1<<1) is the universal reflected-XSS *sink* cap across every
+    # language (`grep 'Sink(Cap::HTML_ESCAPE)' src/labels/` — PHP echo, JS
+    # innerHTML, Java servlet writers, etc.); the same bit is the html-escape
+    # *sanitizer* cap, so a finding only carries it as a sink when an un-encoded
+    # tainted value reached an HTML output.  Placed LAST so any higher-priority
+    # sink bit (SQL_QUERY, FILE_IO, ...) on the same finding wins; a finding
+    # carrying only HTML_ESCAPE is reflected XSS.  Without this, every
+    # taint-based reflected-XSS finding mis-buckets to "other".
+    (1 << 1, "xss"),
 ]
 
 # Static lens (see --static): SHELL_ESCAPE (1<<2) is the command-injection sink

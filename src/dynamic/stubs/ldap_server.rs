@@ -14,7 +14,7 @@
 //!
 //! The accept loop peeks the first byte on each connection.  When it
 //! sees the universal `SEQUENCE` tag (`0x30`) — the leading byte of
-//! every well-formed LDAPv3 [`LDAPMessage`] — it routes the
+//! every well-formed LDAPv3 `LDAPMessage` — it routes the
 //! conversation through [`super::ldap_ber`] so a harness using a stock
 //! LDAP client (`javax.naming.directory.InitialDirContext`,
 //! `python-ldap`, `ldap3`, …) can talk to the stub on the LDAPv3 wire

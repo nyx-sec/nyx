@@ -1,13 +1,13 @@
 //! Phase 18 (Track E.2) — macOS process backend hardening.
 //!
-//! macOS analogue of [`super::process_linux`].  Where the Linux backend
+//! macOS analogue of `super::process_linux`.  Where the Linux backend
 //! installs a `pre_exec` sequence (prctl + rlimits + unshare + chroot +
 //! seccomp-bpf), the macOS backend wraps the harness command with
 //! `sandbox-exec(1)` driven by a per-capability `.sb` policy file.
 //!
 //! Profile selection
 //! -----------------
-//! [`profile_for_caps`] maps the [`SandboxOptions::seccomp_caps`] bitset
+//! [`profile_for_caps`] maps the [`SandboxOptions::seccomp_caps`](super::SandboxOptions::seccomp_caps) bitset
 //! (set by the verifier from `spec.expected_cap`) to a profile name in
 //! `src/dynamic/sandbox_profiles/`:
 //!
@@ -254,13 +254,13 @@ pub fn profile_path(name: &str) -> Option<PathBuf> {
 // without needing macOS-host sandbox-exec access.
 
 /// Env var consulted by [`profile_path`] to enable the deny-default
-/// splice.  When set to `1` / `true`, [`deny_default_seed_for`] is
+/// splice.  When set to `1` / `true`, `deny_default_seed_for` is
 /// invoked for every materialised profile; missing seeds fall back to
 /// the baked `(allow default)` body so misconfiguration cannot brick
 /// the sandbox-exec backend.
 pub const SB_DENY_DEFAULT_ENV: &str = "NYX_SB_DENY_DEFAULT";
 
-/// Env var consulted by [`deny_default_seed_for`] to locate the seed
+/// Env var consulted by `deny_default_seed_for` to locate the seed
 /// directory.  Defaults to `tools/sb-trace/` relative to the workspace
 /// root when unset; tests override this to point at a tempdir-backed
 /// fixture set.

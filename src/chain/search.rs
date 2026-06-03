@@ -7,7 +7,7 @@
 //! ```
 //!
 //! The DFS starts at the implicit attacker node (virtually adjacent to
-//! every [`crate::surface::EntryPoint`]), traverses up to [`max_depth`]
+//! every [`crate::surface::EntryPoint`]), traverses up to [`max_depth`](ChainSearchConfig::max_depth)
 //! per-finding hops, and terminates at any
 //! [`crate::surface::DangerousLocal`] node.  Each emitted
 //! [`ChainFinding`] is the deterministic minimum-length path through a

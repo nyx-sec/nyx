@@ -26,9 +26,9 @@
 //! `SearchResultEntry` (0x64), `SearchResultDone` (0x65).
 //!
 //! Context-specific tags inside `Filter` (RFC 4511 §4.5.1):
-//! and [0], or [1], not [2], equalityMatch [3], substrings [4],
-//! greaterOrEqual [5], lessOrEqual [6], present [7], approxMatch [8].
-//! Plus simple-auth [0] inside `AuthenticationChoice`.
+//! and \[0\], or \[1\], not \[2\], equalityMatch \[3\], substrings \[4\],
+//! greaterOrEqual \[5\], lessOrEqual \[6\], present \[7\], approxMatch \[8\].
+//! Plus simple-auth \[0\] inside `AuthenticationChoice`.
 //!
 //! Length encoding: short-form (single byte 0x00-0x7F) and long-form
 //! (0x81-0x84 length-of-length, value up to 32 bits).  Indefinite

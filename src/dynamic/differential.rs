@@ -20,7 +20,7 @@
 //! specialisation of [`evaluate_sets`] and delegates to it.
 //!
 //! "Fires" means [`crate::dynamic::oracle::oracle_fired`] returned `true`
-//! against the run's [`SandboxOutcome`] + drained [`SinkProbe`] set —
+//! against the run's [`SandboxOutcome`](crate::dynamic::sandbox::SandboxOutcome) + drained [`SinkProbe`] set —
 //! invariant across `Oracle::OutputContains` and `Oracle::SinkProbe`.
 
 use crate::dynamic::probe::SinkProbe;

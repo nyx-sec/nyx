@@ -1783,7 +1783,7 @@ pub struct ChainStepBuildResult {
 /// so a `Vec<HarnessSpec>` can be driven through the build pipeline
 /// without per-language match arms scattered across each caller.  The
 /// production single-finding runner stays on the per-language match in
-/// [`crate::dynamic::runner::execute`] because it folds the build result
+/// [`crate::dynamic::runner::run_spec`] because it folds the build result
 /// into command-vector rewrites that vary per language and have no
 /// uniform shape — the chain reverifier does not need those rewrites
 /// because the sandbox-run sub-task ((c) of Phase 26 follow-up) will

@@ -327,7 +327,7 @@ const CLIENT_RULES: &[ClientRule] = &[
 ///
 /// When the bare callee name does not hit a rule, the type-fact engine's
 /// per-call `typed_call_receivers` map (read off the matching
-/// [`crate::summary::SsaFuncSummary`]) is consulted: a callee whose
+/// [`crate::summary::ssa_summary::SsaFuncSummary`]) is consulted: a callee whose
 /// receiver was resolved to `TypeKind::HttpClient` /
 /// `TypeKind::RequestBuilder` / `TypeKind::Url` is retried under the
 /// type-qualified name `"{container}.<method>"`, picking up the

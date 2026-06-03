@@ -12,7 +12,7 @@
 //! order of [`super::FrameworkAdapter::name`].  The lexical ordering
 //! gives a deterministic first-match result that survives merges /
 //! rebases without subtle re-ordering bugs.  A `framework` unit test
-//! ([`super::tests::registry_is_empty_for_every_lang_phase_01`])
+//! (`registry_is_empty_for_every_lang_phase_01`)
 //! captures the Phase-01 starting baseline so a phase that registers
 //! its first adapter is forced to update both the slice *and* the
 //! regression guard in the same change.

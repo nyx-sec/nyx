@@ -1,6 +1,6 @@
 //! Long-lived `javac` daemon (Phase 22 / Track O.0).
 //!
-//! The legacy [`crate::dynamic::build_sandbox::try_compile_java`] shell-execs a
+//! The legacy `try_compile_java_with_toolchain` in `build_sandbox` shell-execs a
 //! fresh `javac` per harness — every invocation pays the JVM cold-start tax
 //! (~700ms on the macOS reference machine, ~300ms on Linux CI).  At 50
 //! findings per OWASP-scale run that single line burns > 30s before any

@@ -36,7 +36,7 @@ use crate::symbol::Lang;
 /// Caps with no payloads of their own — source-only sources, sanitizers,
 /// and sinks we cannot yet model with a reliable oracle.  The
 /// [`super::audit`] module asserts that the union of caps covered by
-/// [`CORPUS::entries`] and this constant equals [`Cap::all`].
+/// [`CORPUS`]'s [`entries`](CapCorpus::entries) and this constant equals [`Cap::all`].
 ///
 /// Phase 11 (Track J.9) carved `CRYPTO`, `JSON_PARSE`,
 /// `UNAUTHORIZED_ID`, and `DATA_EXFIL` corpora; the remaining caps

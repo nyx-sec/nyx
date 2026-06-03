@@ -4,7 +4,7 @@
 //! whole-program [`CallGraph`].
 //!
 //! For each entry-point we first locate the matching call-graph
-//! [`FuncKey`] by `(namespace, function_name)` (the entry-point's
+//! [`FuncKey`](crate::symbol::FuncKey) by `(namespace, function_name)` (the entry-point's
 //! `handler_location.file` is the project-relative POSIX path used as
 //! `FuncKey::namespace`, and `handler_name` is the leaf function
 //! name).  From that node we run a BFS over forward call-graph edges

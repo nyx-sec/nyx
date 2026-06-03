@@ -78,7 +78,7 @@ impl OobListener {
     /// URL to embed in a payload for `nonce`.
     ///
     /// Format: `http://127.0.0.1:{port}/{nonce}`.  Use this URL for the
-    /// process sandbox.  For Docker sandboxes use [`nonce_url_for_host`].
+    /// process sandbox.  For Docker sandboxes use [`Self::nonce_url_for_host`].
     pub fn nonce_url(&self, nonce: &str) -> String {
         format!("http://127.0.0.1:{}/{}", self.port, nonce)
     }

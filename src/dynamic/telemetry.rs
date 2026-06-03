@@ -57,7 +57,7 @@ pub const NYX_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// so it can sit on a `Serialize`-derived struct alongside the other envelope
 /// fields without an allocation.  Mirrors
 /// [`crate::dynamic::corpus::CORPUS_VERSION`]; the compile-time assertion
-/// below + the [`corpus_version_const_matches_corpus_module`] runtime test
+/// below + the `corpus_version_const_matches_corpus_module` runtime test
 /// jointly guard drift.
 pub const CORPUS_VERSION: &str = "17";
 
