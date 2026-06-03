@@ -23,6 +23,7 @@ use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
 use crate::labels::Cap;
 use crate::symbol::Lang;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Record a trace event on the caller's [`VerifyTrace`] handle if one
@@ -54,6 +55,46 @@ fn oracle_short_name(oracle: &Oracle) -> &'static str {
 
 /// Max harness-build attempts before giving up.
 const MAX_BUILD_ATTEMPTS: u32 = 2;
+
+fn stage_native_harness_command(
+    harness: &mut harness::BuiltHarness,
+    build_root: &Path,
+    fallback: PathBuf,
+) {
+    let cached = build_root.join("nyx_harness");
+    let source = if cached.exists() {
+        cached
+    } else if fallback.exists() {
+        fallback
+    } else {
+        return;
+    };
+    let run_path = harness.workdir.join("nyx_harness");
+    if source != run_path {
+        if let Some(parent) = run_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::copy(&source, &run_path).is_ok() {
+            make_executable(&run_path);
+            harness.command = vec![run_path.to_string_lossy().into_owned()];
+            return;
+        }
+    }
+    harness.command = vec![source.to_string_lossy().into_owned()];
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(perms.mode() | 0o700);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
 
 #[derive(Debug)]
 pub struct RunOutcome {
@@ -260,21 +301,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // Compile the harness binary with `cargo build --release`.
             match build_sandbox::prepare_rust(spec, &harness.workdir) {
                 Ok(build_result) => {
-                    // Update command to the compiled binary path.
-                    let binary = build_result.venv_path.join("nyx_harness");
-                    if binary.exists() {
-                        harness.command = vec![binary.to_string_lossy().into_owned()];
-                    } else {
-                        // Fall back to binary inside the workdir.
-                        let fallback = harness
-                            .workdir
-                            .join("target")
-                            .join("release")
-                            .join("nyx_harness");
-                        if fallback.exists() {
-                            harness.command = vec![fallback.to_string_lossy().into_owned()];
-                        }
-                    }
+                    let fallback = harness
+                        .workdir
+                        .join("target")
+                        .join("release")
+                        .join("nyx_harness");
+                    stage_native_harness_command(&mut harness, &build_result.venv_path, fallback);
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
@@ -305,15 +337,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // Compile the harness binary with `go build -o nyx_harness .`.
             match build_sandbox::prepare_go(spec, &harness.workdir) {
                 Ok(build_result) => {
-                    let binary = build_result.venv_path.join("nyx_harness");
-                    if binary.exists() {
-                        harness.command = vec![binary.to_string_lossy().into_owned()];
-                    } else {
-                        let fallback = harness.workdir.join("nyx_harness");
-                        if fallback.exists() {
-                            harness.command = vec![fallback.to_string_lossy().into_owned()];
-                        }
-                    }
+                    let fallback = harness.workdir.join("nyx_harness");
+                    stage_native_harness_command(&mut harness, &build_result.venv_path, fallback);
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
@@ -403,15 +428,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // loader would otherwise miss `/lib*`.
             match build_sandbox::prepare_c(spec, &harness.workdir, opts.process_hardening) {
                 Ok(build_result) => {
-                    let binary = build_result.venv_path.join("nyx_harness");
-                    if binary.exists() {
-                        harness.command = vec![binary.to_string_lossy().into_owned()];
-                    } else {
-                        let fallback = harness.workdir.join("nyx_harness");
-                        if fallback.exists() {
-                            harness.command = vec![fallback.to_string_lossy().into_owned()];
-                        }
-                    }
+                    let fallback = harness.workdir.join("nyx_harness");
+                    stage_native_harness_command(&mut harness, &build_result.venv_path, fallback);
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
@@ -423,15 +441,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // Compile the harness binary with `c++ -o nyx_harness main.cpp`.
             match build_sandbox::prepare_cpp(spec, &harness.workdir) {
                 Ok(build_result) => {
-                    let binary = build_result.venv_path.join("nyx_harness");
-                    if binary.exists() {
-                        harness.command = vec![binary.to_string_lossy().into_owned()];
-                    } else {
-                        let fallback = harness.workdir.join("nyx_harness");
-                        if fallback.exists() {
-                            harness.command = vec![fallback.to_string_lossy().into_owned()];
-                        }
-                    }
+                    let fallback = harness.workdir.join("nyx_harness");
+                    stage_native_harness_command(&mut harness, &build_result.venv_path, fallback);
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });

@@ -122,12 +122,11 @@ fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), Strin
     let cargo = cargo_binary();
 
     // Run `cargo build --release` in the workdir.
-    let output = Command::new(&cargo)
+    let mut cmd = Command::new(&cargo);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(["build", "--release"])
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         // Inherit CARGO_HOME so the local registry cache is reused.
         .env(
             "CARGO_HOME",
@@ -326,12 +325,11 @@ fn try_build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Resul
     let python = python_binary(spec);
 
     // Create the venv.
-    let status = Command::new(&python)
+    let mut cmd = Command::new(&python);
+    apply_basic_build_env(&mut cmd);
+    let status = cmd
         .args(["-m", "venv", "--clear"])
         .arg(venv_path)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .status()
         .map_err(|e| format!("venv create: {e}"))?;
 
@@ -343,12 +341,11 @@ fn try_build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Resul
     let req_path = workdir.join("requirements.txt");
     if req_path.exists() {
         let pip = venv_path.join("bin").join("pip");
-        let output = Command::new(&pip)
+        let mut cmd = Command::new(&pip);
+        apply_basic_build_env(&mut cmd);
+        let output = cmd
             .args(["install", "--no-cache-dir", "-r"])
             .arg(&req_path)
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
             .output()
             .map_err(|e| format!("pip install: {e}"))?;
 
@@ -414,19 +411,28 @@ fn build_cache_path(
 
     let name = format!("{lockfile_hash}-{language}-{toolchain_id}");
     let path = base.join(&name);
-    match create_build_cache_dir(&path) {
+    match prepare_build_cache_dir(&path) {
         Ok(()) => Ok(path),
-        Err(e) if override_base.is_none() && e.kind() == std::io::ErrorKind::PermissionDenied => {
+        Err(e) if override_base.is_none() => {
             let fallback = std::env::temp_dir()
                 .join("nyx")
                 .join("dynamic")
                 .join("build-cache")
                 .join(&name);
-            create_build_cache_dir(&fallback)?;
+            prepare_build_cache_dir(&fallback)?;
             Ok(fallback)
         }
         Err(e) => Err(BuildError::Io(e)),
     }
+}
+
+fn prepare_build_cache_dir(path: &Path) -> std::io::Result<()> {
+    create_build_cache_dir(path)?;
+    write_probe(path)?;
+    if let Some(parent) = path.parent() {
+        write_probe(parent)?;
+    }
+    Ok(())
 }
 
 fn create_build_cache_dir(path: &Path) -> std::io::Result<()> {
@@ -437,6 +443,32 @@ fn create_build_cache_dir(path: &Path) -> std::io::Result<()> {
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     }
     Ok(())
+}
+
+fn write_probe(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".nyx-write-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"ok")?;
+    let _ = std::fs::remove_file(probe);
+    Ok(())
+}
+
+fn build_temp_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("nyx-build-tmp");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        return dir;
+    }
+    std::env::temp_dir()
+}
+
+fn apply_basic_build_env(cmd: &mut Command) {
+    let tmp = build_temp_dir();
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("TMPDIR", &tmp)
+        .env("TMP", &tmp)
+        .env("TEMP", &tmp);
 }
 
 const PYTHON_CACHE_DONE: &str = ".python_cache_done";
@@ -636,12 +668,11 @@ fn bundle_check(bundle: &str, workdir: &Path) -> Result<bool, String> {
     // 1.x's view of already-installed system gems and produces spurious
     // BuildFailed for a Gemfile the host can already satisfy.  See the parallel
     // comment in `RubyPool::compile_batch`.
-    let output = Command::new(bundle)
+    let mut cmd = Command::new(bundle);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .arg("check")
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("bundle check: {e}"))?;
     Ok(output.status.success())
@@ -654,10 +685,8 @@ fn bundle_check(bundle: &str, workdir: &Path) -> Result<bool, String> {
 /// Ruby harness build never invokes `sudo` and never touches the network.
 fn ruby_build_command(bundle: &str, workdir: &Path) -> Command {
     let mut cmd = Command::new(bundle);
-    cmd.current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default());
+    apply_basic_build_env(&mut cmd);
+    cmd.current_dir(workdir);
     for (k, v) in ruby_hermetic_env(workdir) {
         cmd.env(k, v);
     }
@@ -713,22 +742,36 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     let cache_path = build_cache_path(&lockfile_hash, "node", &spec.toolchain_id)?;
     let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
+    let has_package_json = workdir.join("package.json").exists();
+
     // Cache hit: node_modules already installed. Restore to fresh workdir if
     // a different finding shares the same cache key but got a new workdir.
     if cache_path.join(".node_cache_done").exists() {
         let cached_nm = cache_path.join("node_modules");
-        if cached_nm.exists() && !workdir.join("node_modules").exists() {
-            let _ = copy_dir_all(&cached_nm, &workdir.join("node_modules"));
+        if !has_package_json {
+            return Ok(BuildResult {
+                venv_path: cache_path,
+                cache_hit: true,
+                duration: std::time::Duration::ZERO,
+            });
         }
-        return Ok(BuildResult {
-            venv_path: cache_path,
-            cache_hit: true,
-            duration: std::time::Duration::ZERO,
-        });
+        if cached_nm.exists() {
+            if !workdir.join("node_modules").exists() {
+                let _ = copy_dir_all(&cached_nm, &workdir.join("node_modules"));
+            }
+            if workdir.join("node_modules").exists() {
+                return Ok(BuildResult {
+                    venv_path: cache_path,
+                    cache_hit: true,
+                    duration: std::time::Duration::ZERO,
+                });
+            }
+        }
+        let _ = std::fs::remove_file(cache_path.join(".node_cache_done"));
     }
 
     // No package.json = no deps to install.
-    if !workdir.join("package.json").exists() {
+    if !has_package_json {
         std::fs::write(cache_path.join(".node_cache_done"), b"no-package-json")?;
         return Ok(BuildResult {
             venv_path: cache_path,
@@ -794,12 +837,11 @@ fn npm_install(workdir: &Path) -> Result<(), String> {
 
 fn try_npm_install(workdir: &Path) -> Result<(), String> {
     let npm = std::env::var("NYX_NPM_BIN").unwrap_or_else(|_| "npm".to_owned());
-    let output = Command::new(&npm)
+    let mut cmd = Command::new(&npm);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(["install", "--no-save", "--no-audit", "--no-fund"])
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("npm install: {e}"))?;
 
@@ -939,12 +981,11 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
     let go_mod_cache = std::env::var("GOMODCACHE").unwrap_or_else(|_| format!("{go_path}/pkg/mod"));
 
     if workdir.join("go.mod").exists() {
-        let output = Command::new(&go_bin)
+        let mut cmd = Command::new(&go_bin);
+        apply_basic_build_env(&mut cmd);
+        let output = cmd
             .args(["mod", "tidy"])
             .current_dir(workdir)
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env("GOCACHE", &go_cache)
             .env("GOPATH", &go_path)
             .env("GOMODCACHE", &go_mod_cache)
@@ -960,7 +1001,9 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
         }
     }
 
-    let output = Command::new(&go_bin)
+    let mut cmd = Command::new(&go_bin);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args([
             "build",
             "-o",
@@ -968,9 +1011,6 @@ fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String>
             ".",
         ])
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("GOCACHE", go_cache)
         .env("GOPATH", go_path)
         .env("GOMODCACHE", go_mod_cache)
@@ -1274,12 +1314,11 @@ fn try_compile_java_with_toolchain(
     }
 
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
-    let output = Command::new(&javac)
+    let mut cmd = Command::new(&javac);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(&args)
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("javac: {e}"))?;
 
@@ -1332,12 +1371,11 @@ fn finalize_java_compile(workdir: &Path, cache_path: &Path, lib_on_cp: bool) -> 
 /// build path can surface it as `BuildFailed` upstream.
 fn fetch_maven_deps(workdir: &Path) -> Result<(), String> {
     let mvn = std::env::var("NYX_MAVEN_BIN").unwrap_or_else(|_| "mvn".to_owned());
-    let output = Command::new(&mvn)
+    let mut cmd = Command::new(&mvn);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(maven_copy_dependency_args())
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("mvn dependency:copy-dependencies: {e}"))?;
 
@@ -1451,19 +1489,33 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
     let cache_path = build_cache_path(&lockfile_hash, "php", &spec.toolchain_id)?;
     let _cache_guard = acquire_cache_build_lock(&cache_path)?;
 
+    let has_composer_json = workdir.join("composer.json").exists();
+
     if cache_path.join(".php_cache_done").exists() {
         let cached_vendor = cache_path.join("vendor");
-        if cached_vendor.exists() && !workdir.join("vendor").exists() {
-            let _ = copy_dir_all(&cached_vendor, &workdir.join("vendor"));
+        if !has_composer_json {
+            return Ok(BuildResult {
+                venv_path: cache_path,
+                cache_hit: true,
+                duration: std::time::Duration::ZERO,
+            });
         }
-        return Ok(BuildResult {
-            venv_path: cache_path,
-            cache_hit: true,
-            duration: std::time::Duration::ZERO,
-        });
+        if cached_vendor.join("autoload.php").exists() {
+            if !workdir.join("vendor").exists() {
+                let _ = copy_dir_all(&cached_vendor, &workdir.join("vendor"));
+            }
+            if workdir.join("vendor").join("autoload.php").exists() {
+                return Ok(BuildResult {
+                    venv_path: cache_path,
+                    cache_hit: true,
+                    duration: std::time::Duration::ZERO,
+                });
+            }
+        }
+        let _ = std::fs::remove_file(cache_path.join(".php_cache_done"));
     }
 
-    if !workdir.join("composer.json").exists() {
+    if !has_composer_json {
         std::fs::write(cache_path.join(".php_cache_done"), b"no-composer-json")?;
         return Ok(BuildResult {
             venv_path: cache_path,
@@ -1529,12 +1581,11 @@ fn composer_install(workdir: &Path) -> Result<(), String> {
 
 fn try_composer_install(workdir: &Path) -> Result<(), String> {
     let composer = std::env::var("NYX_COMPOSER_BIN").unwrap_or_else(|_| "composer".to_owned());
-    let output = Command::new(&composer)
+    let mut cmd = Command::new(&composer);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(["install", "--no-interaction", "--no-dev", "--prefer-dist"])
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .env("COMPOSER_ALLOW_SUPERUSER", "1")
         .output()
         .map_err(|e| format!("composer install: {e}"))?;
@@ -1706,12 +1757,11 @@ fn run_cc(
     let mut args: Vec<&str> = leading_flags.to_vec();
     args.extend(["-o", binary_str, "main.c"]);
 
-    let output = Command::new(cc_bin)
+    let mut cmd = Command::new(cc_bin);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args(&args)
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("cc: {e}"))?;
 
@@ -1817,7 +1867,9 @@ fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String
         // Prefer c++ which resolves to the system default compiler driver.
         "c++".to_owned()
     });
-    let output = Command::new(&cxx_bin)
+    let mut cmd = Command::new(&cxx_bin);
+    apply_basic_build_env(&mut cmd);
+    let output = cmd
         .args([
             "-O0",
             "-g",
@@ -1827,9 +1879,6 @@ fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String
             "main.cpp",
         ])
         .current_dir(workdir)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .output()
         .map_err(|e| format!("c++: {e}"))?;
 

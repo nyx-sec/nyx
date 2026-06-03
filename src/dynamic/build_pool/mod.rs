@@ -121,8 +121,9 @@ pub fn is_pool_enabled(lang: &str) -> bool {
 /// dir is available — callers treat that as "pool unavailable" and fall
 /// back to the legacy direct-spawn build path.
 pub(crate) fn pool_cache_dir(lang: &str, sub: &str) -> Option<PathBuf> {
-    let base = if let Ok(custom) = std::env::var("NYX_BUILD_POOL_DIR") {
-        PathBuf::from(custom)
+    let custom = std::env::var("NYX_BUILD_POOL_DIR").ok().map(PathBuf::from);
+    let base = if let Some(custom) = custom.clone() {
+        custom
     } else {
         directories::ProjectDirs::from("dev", "nyx", "nyx")?
             .cache_dir()
@@ -130,8 +131,27 @@ pub(crate) fn pool_cache_dir(lang: &str, sub: &str) -> Option<PathBuf> {
             .join("build-pool")
     };
     let dir = base.join(lang).join(sub);
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir)
+    if ensure_writable_dir(&dir).is_some() {
+        return Some(dir);
+    }
+    if custom.is_some() {
+        return None;
+    }
+    let fallback = std::env::temp_dir()
+        .join("nyx")
+        .join("dynamic")
+        .join("build-pool")
+        .join(lang)
+        .join(sub);
+    ensure_writable_dir(&fallback)
+}
+
+fn ensure_writable_dir(dir: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    let probe = dir.join(format!(".nyx-write-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"ok").ok()?;
+    let _ = std::fs::remove_file(probe);
+    Some(dir.to_path_buf())
 }
 
 /// Construct a `Command` for `bin` with a scrubbed environment, matching
@@ -140,10 +160,22 @@ pub(crate) fn pool_cache_dir(lang: &str, sub: &str) -> Option<PathBuf> {
 /// (`CARGO_TARGET_DIR`, `CCACHE_DIR`, `GOCACHE`, …) on top of this.
 pub(crate) fn base_command(bin: &str) -> Command {
     let mut cmd = Command::new(bin);
+    let tmp = build_temp_dir();
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default());
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("TMPDIR", &tmp)
+        .env("TMP", &tmp)
+        .env("TEMP", &tmp);
     cmd
+}
+
+fn build_temp_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("nyx-build-tmp");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        return dir;
+    }
+    std::env::temp_dir()
 }
 
 /// Hermetic Bundler / RubyGems environment pinned to a writable per-workdir

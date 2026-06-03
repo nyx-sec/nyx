@@ -15,6 +15,7 @@ mod common;
 mod go_fixture_tests {
     use crate::common::fixture_harness::FIXTURE_LOCK;
     use nyx_scanner::commands::scan::Diag;
+    use nyx_scanner::dynamic::sandbox::SandboxBackend;
     use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
@@ -80,7 +81,8 @@ mod go_fixture_tests {
         }
 
         let diag = make_diag(&path, func, cap, sink_line);
-        let opts = VerifyOptions::default();
+        let mut opts = VerifyOptions::default();
+        opts.sandbox.backend = SandboxBackend::Process;
         let result = verify_finding(&diag, &opts);
 
         unsafe {

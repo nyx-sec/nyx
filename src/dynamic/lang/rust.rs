@@ -79,11 +79,11 @@ impl LangEmitter for RustEmitter {
 ///
 /// Splices the Rust probe shim ([`probe_shim`]) in front of a minimal
 /// driver that reads `NYX_PREV_OUTPUT` and writes it on stdout.  The
-/// shim references `libc::*` from its `__nyx_install_crash_guard`
-/// definition, so a single-file `rustc step.rs` build cannot resolve
-/// the symbols.  Instead the step ships a companion `Cargo.toml`
-/// pinning `libc = "0.2"` via [`ChainStepHarness::extra_files`] and
-/// drives the build through `cargo run --quiet`.
+/// shim installs its crash guard through a tiny generated POSIX FFI
+/// wrapper, so std-only steps do not need to fetch crates before they
+/// can run. The companion `Cargo.toml` is still emitted because the
+/// chain driver uses `cargo run --quiet` for parity with normal Rust
+/// harnesses.
 ///
 /// When `terminal` is set, the driver also calls
 /// `__nyx_probe(callee, &[&prev])` and prints
@@ -113,8 +113,7 @@ fn chain_step(
                       [[bin]]\n\
                       name = \"step\"\n\
                       path = \"step.rs\"\n\n\
-                      [dependencies]\n\
-                      libc = \"0.2\"\n"
+                      [dependencies]\n"
         .to_owned();
     ChainStepHarness {
         source,
@@ -330,11 +329,39 @@ fn __nyx_probe(sink_callee: &str, args: &[&str]) {
     __nyx_emit(&line);
 }
 
-// Phase 08: install a sink-site signal handler via `libc::sigaction` so a
-// SIGSEGV / SIGABRT / etc. inside the sink call is captured as a Crash
-// probe before the kernel re-delivers it via SIG_DFL.  The shim is
-// no-op on non-Unix targets (the dynamic-verification supported set is
-// Unix-only) so consumers can splice it unconditionally.
+// Phase 08: install a sink-site signal handler via a tiny generated POSIX
+// `signal(3)` / `raise(3)` FFI wrapper so SIGSEGV / SIGABRT / etc. inside the
+// sink call is captured as a Crash probe before the kernel re-delivers it via
+// SIG_DFL.  The shim is no-op on non-Unix targets (the dynamic-verification
+// supported set is Unix-only) so consumers can splice it unconditionally.
+#[cfg(unix)]
+#[allow(dead_code)]
+mod __nyx_unix_signal {
+    pub const SIG_DFL: usize = 0;
+    pub const SIGSEGV: i32 = 11;
+    pub const SIGABRT: i32 = 6;
+    #[cfg(target_os = "macos")]
+    pub const SIGBUS: i32 = 10;
+    #[cfg(not(target_os = "macos"))]
+    pub const SIGBUS: i32 = 7;
+    pub const SIGFPE: i32 = 8;
+    pub const SIGILL: i32 = 4;
+
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+        fn raise(sig: i32) -> i32;
+    }
+
+    pub unsafe fn install(sig: i32, handler: extern "C" fn(i32)) {
+        let _ = unsafe { signal(sig, handler as usize) };
+    }
+
+    pub unsafe fn reset_and_raise(sig: i32) {
+        let _ = unsafe { signal(sig, SIG_DFL) };
+        let _ = unsafe { raise(sig) };
+    }
+}
+
 #[cfg(unix)]
 #[allow(dead_code)]
 fn __nyx_install_crash_guard(sink_callee: &'static str) {
@@ -349,11 +376,11 @@ fn __nyx_install_crash_guard(sink_callee: &'static str) {
         // accept the risk because the process is already dying and we
         // need the forensic record.
         let name = match sig {
-            libc::SIGSEGV => "SIGSEGV",
-            libc::SIGABRT => "SIGABRT",
-            libc::SIGBUS => "SIGBUS",
-            libc::SIGFPE => "SIGFPE",
-            libc::SIGILL => "SIGILL",
+            __nyx_unix_signal::SIGSEGV => "SIGSEGV",
+            __nyx_unix_signal::SIGABRT => "SIGABRT",
+            __nyx_unix_signal::SIGBUS => "SIGBUS",
+            __nyx_unix_signal::SIGFPE => "SIGFPE",
+            __nyx_unix_signal::SIGILL => "SIGILL",
             _ => "SIGABRT",
         };
         let p = SINK_CALLEE.load(Ordering::SeqCst);
@@ -385,18 +412,18 @@ fn __nyx_install_crash_guard(sink_callee: &'static str) {
         __nyx_emit(&line);
         // Restore default handler and re-raise so process actually dies.
         unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = libc::SIG_DFL;
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
-            libc::raise(sig);
+            __nyx_unix_signal::reset_and_raise(sig);
         }
     }
     unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = handler as usize;
-        libc::sigemptyset(&mut sa.sa_mask);
-        for sig in [libc::SIGSEGV, libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGILL] {
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        for sig in [
+            __nyx_unix_signal::SIGSEGV,
+            __nyx_unix_signal::SIGABRT,
+            __nyx_unix_signal::SIGBUS,
+            __nyx_unix_signal::SIGFPE,
+            __nyx_unix_signal::SIGILL,
+        ] {
+            __nyx_unix_signal::install(sig, handler);
         }
     }
 }
@@ -2670,10 +2697,9 @@ fn is_ident_char(ch: char) -> bool {
 /// - `SQL_QUERY` → `rusqlite` with the `bundled` feature (embeds SQLite).
 /// - Other caps use only std (no extra deps).
 ///
-/// `libc` is always pinned because the Phase 16 probe shim (spliced into
-/// `src/main.rs` by `generate_main_rs`) calls `libc::sigaction` from
-/// `__nyx_install_crash_guard`.  The shim is unconditionally compiled so
-/// the dep must be unconditional too.
+/// The Phase 16 probe shim is std-only: its Unix crash guard declares the
+/// handful of POSIX symbols it needs directly, so ordinary Rust fixtures do
+/// not need network access just to fetch `libc`.
 pub fn generate_cargo_toml(cap: Cap) -> String {
     generate_cargo_toml_with_extras(cap, false)
 }
@@ -2736,7 +2762,6 @@ fn generate_cargo_toml_for_spec(cap: Cap, shape: RustShape, spec: &HarnessSpec) 
 pub fn generate_cargo_toml_with_extras(cap: Cap, needs_percent_encoding: bool) -> String {
     let mut deps = String::new();
 
-    deps.push_str("libc = \"0.2\"\n");
     if cap.contains(Cap::SQL_QUERY) {
         deps.push_str("rusqlite = { version = \"0.39\", features = [\"bundled\"] }\n");
     }
@@ -3449,15 +3474,14 @@ mod tests {
     }
 
     #[test]
-    fn cargo_toml_always_pins_libc_for_probe_shim() {
-        // Phase 16 follow-up: the probe shim calls `libc::sigaction` so
-        // `libc` must be unconditionally pinned (independent of the
-        // expected_cap dep matrix).
+    fn cargo_toml_does_not_pin_libc_for_std_only_probe_shim() {
+        // The probe shim declares its tiny POSIX FFI inline, so std-only
+        // fixtures must not need crates.io just to build the harness.
         for cap in [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF] {
             let cargo = generate_cargo_toml(cap);
             assert!(
-                cargo.contains("libc = \"0.2\""),
-                "libc dep missing for cap={cap:?}",
+                !cargo.contains("libc = \"0.2\""),
+                "unexpected libc dep for cap={cap:?}"
             );
         }
     }
@@ -3476,9 +3500,9 @@ mod tests {
         // Phase 26 follow-up: Rust chain_step now splices the probe
         // shim ahead of the driver so a chain step that terminates at
         // a sink can drive the `__nyx_probe` channel directly.  The
-        // shim references `libc::*` so the step also ships a companion
+        // shim stays std-only, but the step still ships a companion
         // `Cargo.toml` via `extra_files` and drives the build through
-        // `cargo run --quiet` rather than single-file `rustc`.
+        // `cargo run --quiet` to match normal Rust harness execution.
         let step = chain_step(Some(b"prev-output"), None);
         assert!(
             step.source.contains("__nyx_probe shim (Phase 06"),
@@ -3980,15 +4004,14 @@ mod tests {
     #[test]
     fn cargo_toml_extras_pins_percent_encoding_when_requested() {
         let cargo = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, true);
-        assert!(cargo.contains("libc = \"0.2\""));
         assert!(cargo.contains("percent-encoding = \"2\""));
         let cargo_no_extras = generate_cargo_toml_with_extras(Cap::HEADER_INJECTION, false);
-        assert!(cargo_no_extras.contains("libc = \"0.2\""));
         assert!(!cargo_no_extras.contains("percent-encoding"));
+        assert!(!cargo_no_extras.contains("libc = \"0.2\""));
     }
 
     #[test]
-    fn chain_step_emits_cargo_toml_with_libc_dep() {
+    fn chain_step_emits_std_only_cargo_toml() {
         let step = chain_step(None, None);
         let cargo = step
             .extra_files
@@ -3997,8 +4020,8 @@ mod tests {
             .expect("Cargo.toml must be in extra_files for cargo run");
         let body = &cargo.1;
         assert!(
-            body.contains("libc = \"0.2\""),
-            "Cargo.toml must pin libc for the probe shim's sigaction path, got: {body}",
+            !body.contains("libc = \"0.2\""),
+            "chain-step Cargo.toml should stay std-only for the inline signal FFI, got: {body}",
         );
         assert!(
             body.contains("path = \"step.rs\""),
@@ -4107,8 +4130,8 @@ mod tests {
             cargo.1
         );
         assert!(
-            cargo.1.contains("libc = \"0.2\""),
-            "Rust CRYPTO harness Cargo.toml must keep libc dep for the probe shim's sigaction path",
+            !cargo.1.contains("libc = \"0.2\""),
+            "Rust CRYPTO harness should not need libc after the inline signal FFI change",
         );
     }
 
@@ -4242,8 +4265,8 @@ mod tests {
             cargo.1
         );
         assert!(
-            cargo.1.contains("libc = \"0.2\""),
-            "Rust JSON_PARSE harness Cargo.toml must keep libc dep for the probe shim's sigaction path",
+            !cargo.1.contains("libc = \"0.2\""),
+            "Rust JSON_PARSE harness should not need libc after the inline signal FFI change",
         );
     }
 
