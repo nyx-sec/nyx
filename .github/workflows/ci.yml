@@ -8,6 +8,7 @@ on:
     branches: ["master"]
   pull_request:
     branches: ["master"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -211,7 +212,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Rust tests (stable, no docker)
-        run: cargo nextest run --all-features
+        run: cargo nextest run --no-fail-fast --all-features
 
   rust-stable-test-linux-with-docker:
     name: rust-stable-test / linux-with-docker
@@ -241,7 +242,7 @@ jobs:
           docker run --rm php:8-cli php --version
 
       - name: Rust tests with docker (sandbox escape gate)
-        run: cargo nextest run --all-features --test dynamic_sandbox_escape --test dynamic_parity
+        run: cargo nextest run --no-fail-fast --all-features --test dynamic_sandbox_escape --test dynamic_parity
 
   escape-positive-control:
     name: escape-positive-control
@@ -261,7 +262,7 @@ jobs:
 
       - name: Escape positive control (gate wiring check)
         run: |
-          cargo nextest run --all-features --test dynamic_sandbox_escape \
+          cargo nextest run --no-fail-fast --all-features --test dynamic_sandbox_escape \
             -- --include-ignored positive_control_cap_sys_admin
 
   cross-platform-smoke:
@@ -285,7 +286,7 @@ jobs:
         run: cargo build --release --all-features
 
       - name: Smoke tests
-        run: cargo nextest run --all-features --test integration_tests --test pattern_tests --test cli_validation_tests
+        run: cargo nextest run --no-fail-fast --all-features --test integration_tests --test pattern_tests --test cli_validation_tests
 
   rust-beta-test:
     name: rust-beta-test
@@ -301,7 +302,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Rust tests (beta)
-        run: cargo nextest run --all-features
+        run: cargo nextest run --no-fail-fast --all-features
 
   cargo-package:
     name: cargo-package
@@ -356,12 +357,12 @@ jobs:
         run: cargo nextest run --release --all-features --test benchmark_test --test perf_tests --no-run
 
       - name: Accuracy regression gate (P/R/F1)
-        run: cargo nextest run --release --all-features --test benchmark_test --run-ignored only --no-capture benchmark_evaluation
+        run: cargo nextest run --no-fail-fast --release --all-features --test benchmark_test --run-ignored only --no-capture benchmark_evaluation
 
       - name: Performance regression gate
         env:
           NYX_CI_BENCH: "1"
-        run: cargo nextest run --release --all-features --test perf_tests --no-capture
+        run: cargo nextest run --no-fail-fast --release --all-features --test perf_tests --no-capture
 
       - name: Upload benchmark results
         if: always()
@@ -395,7 +396,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Corpus unit tests (no_marker_collisions, all_payloads_have_fixture_paths)
-        run: cargo nextest run --lib -p nyx-scanner dynamic::corpus
+        run: cargo nextest run --no-fail-fast --lib -p nyx-scanner dynamic::corpus
         env:
           RUST_LOG: error
 

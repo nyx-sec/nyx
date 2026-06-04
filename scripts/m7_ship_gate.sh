@@ -13,7 +13,7 @@
 #
 # Gate map (kept in sync with .pitboss/play/plan.md track M.7):
 #   Gate 1: Static-only scan is green on `tests/benchmark/corpus`.
-#   Gate 2: `cargo nextest run --features dynamic` is green.
+#   Gate 2: `cargo nextest run --no-fail-fast --features dynamic` is green.
 #   Gate 3: With-verify / static-only wall-clock ratio ≤ 1.5× on
 #           `benches/fixtures/`.  Phase 22 had relaxed this to ≤ 2×
 #           while only `javac` had a warm daemon; Phase 23 lands the
@@ -121,15 +121,15 @@ gate_1_static_corpus() {
 # ── Gate 2 ────────────────────────────────────────────────────────────────────
 
 gate_2_dynamic_tests() {
-    echo "── Gate 2: cargo nextest run --features dynamic ──"
-    cargo nextest run --features dynamic
+    echo "── Gate 2: cargo nextest run --no-fail-fast --features dynamic ──"
+    cargo nextest run --no-fail-fast --features dynamic
     # The real-toolchain build-pool perf benches (dynamic_*_build_pool +
     # dynamic_java_compile_pool) are #[ignore]d so the default inner-loop
     # suite stays hermetic + fast: no cargo/go/cc/c++/npm/pip/composer/
     # bundle/javac spawns.  Run them explicitly here so CI still exercises
     # the warm-pool compile path end to end.  They self-skip when a
     # toolchain is missing, so a toolchain-less CI row stays green.
-    cargo nextest run --features dynamic --run-ignored ignored-only \
+    cargo nextest run --no-fail-fast --features dynamic --run-ignored ignored-only \
         -E 'binary(~build_pool) | binary(~compile_pool)'
     echo "  PASS: dynamic test suite green"
 }
@@ -191,7 +191,7 @@ time_scan() {
 
 gate_4_sarif_schema() {
     echo "── Gate 4: SARIF schema validation ──"
-    cargo nextest run --features dynamic --test sarif_dynamic_verdict_tests
+    cargo nextest run --no-fail-fast --features dynamic --test sarif_dynamic_verdict_tests
     echo "  PASS"
 }
 
@@ -199,7 +199,7 @@ gate_4_sarif_schema() {
 
 gate_5_layering() {
     echo "── Gate 5: dynamic layering boundary ──"
-    cargo nextest run --features dynamic --test dynamic_layering
+    cargo nextest run --no-fail-fast --features dynamic --test dynamic_layering
     echo "  PASS"
 }
 

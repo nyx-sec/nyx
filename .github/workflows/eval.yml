@@ -44,6 +44,7 @@ on:
       - "tests/eval_corpus/**"
       - "scripts/m7_ship_gate.sh"
       - ".github/workflows/eval.yml"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

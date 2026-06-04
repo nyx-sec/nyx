@@ -33,6 +33,7 @@ on:
     branches: ["master"]
   pull_request:
     branches: ["master"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -74,7 +75,7 @@ jobs:
           php --version || true
 
       - name: Dynamic suite (process backend only)
-        run: cargo nextest run --features dynamic
+        run: cargo nextest run --no-fail-fast --features dynamic
 
   linux-with-docker:
     name: dynamic / linux-with-docker
@@ -109,7 +110,7 @@ jobs:
           docker run --rm php:8-cli php --version
 
       - name: Dynamic suite (process + docker backends)
-        run: cargo nextest run --features dynamic
+        run: cargo nextest run --no-fail-fast --features dynamic
 
   macos:
     name: dynamic / macos
@@ -142,4 +143,4 @@ jobs:
       # Phase 29 acceptance literal: "cargo nextest run --features
       # dynamic is green on macOS without docker (process-only row)."
       - name: Dynamic suite (macOS, process backend)
-        run: cargo nextest run --features dynamic
+        run: cargo nextest run --no-fail-fast --features dynamic

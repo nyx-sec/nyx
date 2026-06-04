@@ -52,6 +52,30 @@ use std::time::{Duration, Instant};
 const WORKER_SOURCE: &str = include_str!("java_worker/NyxJavacWorker.java");
 const WORKER_CLASS: &str = "NyxJavacWorker";
 const WORKER_FILENAME: &str = "NyxJavacWorker.java";
+/// Manifest written last (atomically) by `publish_class_set` after every
+/// class lands, so its presence is the "publish finished" signal a
+/// lock-free reader keys on.  Its *contents* are NOT trusted as the
+/// completeness oracle -- see `WORKER_CLASS_FILES`.
+const WORKER_MANIFEST: &str = ".worker-classes";
+
+/// The exact set of `.class` files the worker JVM must load at runtime:
+/// the top-level class plus its nested `$Request` / `$Parser` types.
+///
+/// Readiness keys on *this fixed set*, not on whatever the on-disk
+/// manifest happens to name.  A bootstrap cache left by an older binary
+/// can carry a manifest that lists only `NyxJavacWorker.class`; trusting
+/// that list let the gate pass with the nested classes absent, so the
+/// worker spawned, announced readiness, then died on the first request
+/// with `NoClassDefFoundError` surfaced as
+/// `nyx-javac-worker: parse error: NyxJavacWorker$Parser`.  Pinning the
+/// required set here makes any such partial cache fail the gate and
+/// trigger a clean recompile.  Kept in lock-step with the worker's real
+/// nested-class layout by `worker_class_files_match_javac_output`.
+const WORKER_CLASS_FILES: &[&str] = &[
+    "NyxJavacWorker.class",
+    "NyxJavacWorker$Request.class",
+    "NyxJavacWorker$Parser.class",
+];
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPILE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -249,12 +273,11 @@ fn bootstrap_dir_for(toolchain_id: &str) -> Result<PathBuf, String> {
 ///    recompiling.
 fn ensure_worker_compiled(dir: &Path) -> Result<(), String> {
     let src_path = dir.join(WORKER_FILENAME);
-    let class_path = dir.join(format!("{WORKER_CLASS}.class"));
 
-    // Fast path: a complete class already matches the current worker
+    // Fast path: a complete class set already matches the current worker
     // source.  Checked before taking the cross-process lock so steady
     // state stays lock-free.
-    if worker_class_ready(&src_path, &class_path) {
+    if worker_class_ready(dir) {
         return Ok(());
     }
 
@@ -262,8 +285,8 @@ fn ensure_worker_compiled(dir: &Path) -> Result<(), String> {
     let _lock = BootstrapLock::acquire(dir)?;
 
     // Re-check under the lock: another process may have published a good
-    // class while we were waiting on the lock.
-    if worker_class_ready(&src_path, &class_path) {
+    // class set while we were waiting on the lock.
+    if worker_class_ready(dir) {
         return Ok(());
     }
 
@@ -272,8 +295,8 @@ fn ensure_worker_compiled(dir: &Path) -> Result<(), String> {
     std::fs::write(&src_path, WORKER_SOURCE)
         .map_err(|e| format!("javac-pool: write worker source: {e}"))?;
 
-    // Compile into a private staging dir, then atomically rename the
-    // class into place.
+    // Compile into a private staging dir, then atomically publish the
+    // class files into place.
     let staging = dir.join(format!(".compile-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| format!("javac-pool: mkdir staging: {e}"))?;
@@ -306,22 +329,101 @@ fn ensure_worker_compiled(dir: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr),
         ));
     }
-    let staged_class = staging.join(format!("{WORKER_CLASS}.class"));
-    let publish = std::fs::rename(&staged_class, &class_path);
+    let publish = publish_class_set(&staging, dir);
     let _ = std::fs::remove_dir_all(&staging);
-    publish.map_err(|e| format!("javac-pool: publish class: {e}"))?;
+    publish
+}
+
+/// Move every `.class` file `javac` emitted from the private `staging`
+/// dir into the shared `dir`, then write the manifest last.
+///
+/// The worker source compiles to the top-level `NyxJavacWorker.class`
+/// plus the nested `NyxJavacWorker$Request` / `NyxJavacWorker$Parser`
+/// classes.  Every one of them must land in `dir` (the worker JVM's
+/// classpath), or the worker hits `NoClassDefFoundError` the first time
+/// it touches a nested class -- which surfaced downstream as a bogus
+/// `nyx-javac-worker: parse error: NyxJavacWorker$Parser`.
+///
+/// Renames are same-filesystem (staging is a child of `dir`) so each is
+/// atomic.  The manifest is written last via a temp-then-rename, so a
+/// concurrent peer on the lock-free fast path sees either no manifest
+/// (and serialises on the lock) or a complete one whose every named
+/// class is already in place.
+fn publish_class_set(staging: &Path, dir: &Path) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(staging).map_err(|e| format!("javac-pool: read staging dir: {e}"))?;
+    let mut names: Vec<String> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("javac-pool: read staging entry: {e}"))?
+            .path();
+        if path.extension().is_none_or(|x| x != "class") {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_owned(),
+            None => continue,
+        };
+        std::fs::rename(&path, dir.join(&name))
+            .map_err(|e| format!("javac-pool: publish {name}: {e}"))?;
+        names.push(name);
+    }
+    if names.is_empty() {
+        return Err("javac-pool: bootstrap compile produced no .class files".to_owned());
+    }
+    // Refuse to publish (and to write the readiness-signalling manifest) a
+    // set missing any class the worker loads at runtime.  Fail loud here
+    // rather than leave a half-set the worker would die on later.
+    for required in WORKER_CLASS_FILES {
+        if !names.iter().any(|n| n == required) {
+            return Err(format!(
+                "javac-pool: bootstrap compile missing required class {required}; got {names:?}",
+            ));
+        }
+    }
+
+    // Write the manifest atomically (temp + rename) so it appears in one
+    // step after every class is already published.
+    let manifest = dir.join(WORKER_MANIFEST);
+    let tmp = dir.join(format!("{WORKER_MANIFEST}.{}", std::process::id()));
+    std::fs::write(&tmp, names.join("\n"))
+        .map_err(|e| format!("javac-pool: write manifest: {e}"))?;
+    std::fs::rename(&tmp, &manifest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("javac-pool: publish manifest: {e}")
+    })?;
     Ok(())
 }
 
-/// True when `class_path` holds a non-empty compiled worker built from
-/// the current embedded `WORKER_SOURCE`.
-fn worker_class_ready(src_path: &Path, class_path: &Path) -> bool {
-    if std::fs::read_to_string(src_path).ok().as_deref() != Some(WORKER_SOURCE) {
+/// True when `dir` holds a complete, non-empty class set built from the
+/// current embedded `WORKER_SOURCE`: the source matches, the manifest is
+/// present, and every class the manifest names exists and is non-empty.
+fn worker_class_ready(dir: &Path) -> bool {
+    if std::fs::read_to_string(dir.join(WORKER_FILENAME))
+        .ok()
+        .as_deref()
+        != Some(WORKER_SOURCE)
+    {
         return false;
     }
-    std::fs::metadata(class_path)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
+    // The manifest is written last by `publish_class_set`, so its presence
+    // is the "publish finished" barrier: a reader that sees it knows no
+    // peer is mid-rename.  Absence forces the cross-process lock path.
+    if std::fs::metadata(dir.join(WORKER_MANIFEST)).is_err() {
+        return false;
+    }
+    // Completeness is judged against the fixed required set, never against
+    // the manifest's lines -- a stale or partial manifest must not be able
+    // to vouch for classes it simply fails to name.
+    for name in WORKER_CLASS_FILES {
+        let present = std::fs::metadata(dir.join(name))
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false);
+        if !present {
+            return false;
+        }
+    }
+    true
 }
 
 /// Cross-process advisory lock guarding the shared bootstrap dir's
@@ -630,29 +732,153 @@ mod tests {
 
     #[test]
     fn worker_class_ready_rejects_truncated_or_mismatched() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let src = dir.path().join(WORKER_FILENAME);
-        let class = dir.path().join(format!("{WORKER_CLASS}.class"));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let src = dir.join(WORKER_FILENAME);
+        let main_class = dir.join(format!("{WORKER_CLASS}.class"));
+        let parser = dir.join(format!("{WORKER_CLASS}$Parser.class"));
+        let request = dir.join(format!("{WORKER_CLASS}$Request.class"));
+        let manifest = dir.join(WORKER_MANIFEST);
+        let manifest_body =
+            format!("{WORKER_CLASS}.class\n{WORKER_CLASS}$Parser.class\n{WORKER_CLASS}$Request.class");
 
         // Nothing on disk yet.
-        assert!(!worker_class_ready(&src, &class));
+        assert!(!worker_class_ready(dir));
 
-        // Matching source but no class.
+        // Matching source but no class / manifest.
         std::fs::write(&src, WORKER_SOURCE).unwrap();
-        assert!(!worker_class_ready(&src, &class));
+        assert!(!worker_class_ready(dir));
 
-        // Matching source + a zero-byte class (the corruption shape a
-        // racing peer can leave behind) must not count as ready.
-        std::fs::write(&class, b"").unwrap();
-        assert!(!worker_class_ready(&src, &class));
+        // Top-level class + manifest present but the nested classes are
+        // missing -- the stale-cache shape an older binary left behind.
+        std::fs::write(&main_class, b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(&manifest, &manifest_body).unwrap();
+        assert!(!worker_class_ready(dir));
 
-        // A non-empty class with matching source is ready.
-        std::fs::write(&class, b"\xca\xfe\xba\xbe").unwrap();
-        assert!(worker_class_ready(&src, &class));
+        // A zero-byte nested class (the corruption shape a racing peer can
+        // leave behind) must not count as ready.
+        std::fs::write(&parser, b"").unwrap();
+        std::fs::write(&request, b"\xca\xfe\xba\xbe").unwrap();
+        assert!(!worker_class_ready(dir));
 
-        // Stale source invalidates an otherwise-present class.
+        // Every required class non-empty with matching source is ready.
+        std::fs::write(&parser, b"\xca\xfe\xba\xbe").unwrap();
+        assert!(worker_class_ready(dir));
+
+        // A missing manifest invalidates an otherwise-complete class set.
+        std::fs::remove_file(&manifest).unwrap();
+        assert!(!worker_class_ready(dir));
+        std::fs::write(&manifest, &manifest_body).unwrap();
+        assert!(worker_class_ready(dir));
+
+        // Stale source invalidates an otherwise-present class set.
         std::fs::write(&src, "// not the worker source").unwrap();
-        assert!(!worker_class_ready(&src, &class));
+        assert!(!worker_class_ready(dir));
+    }
+
+    #[test]
+    fn worker_class_ready_rejects_manifest_that_omits_nested_classes() {
+        // The exact stale-cache shape that produced
+        // `nyx-javac-worker: parse error: NyxJavacWorker$Parser` on Linux:
+        // a self-consistent manifest that simply does not name the nested
+        // classes, with only the top-level class on disk.  The old guard
+        // iterated the manifest's lines and so trusted this; readiness must
+        // now reject it because the fixed required set is incomplete.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join(WORKER_FILENAME), WORKER_SOURCE).unwrap();
+        std::fs::write(dir.join(format!("{WORKER_CLASS}.class")), b"\xca\xfe\xba\xbe").unwrap();
+        // Manifest names only the top-level class -- exactly what poisoned
+        // the persisted bootstrap cache.
+        std::fs::write(dir.join(WORKER_MANIFEST), format!("{WORKER_CLASS}.class")).unwrap();
+        assert!(
+            !worker_class_ready(dir),
+            "a manifest omitting the nested classes must not satisfy readiness",
+        );
+
+        // Drop in the nested classes the worker actually loads -> ready.
+        std::fs::write(dir.join(format!("{WORKER_CLASS}$Parser.class")), b"\xca\xfe\xba\xbe")
+            .unwrap();
+        std::fs::write(dir.join(format!("{WORKER_CLASS}$Request.class")), b"\xca\xfe\xba\xbe")
+            .unwrap();
+        assert!(worker_class_ready(dir));
+    }
+
+    #[test]
+    fn worker_class_files_match_javac_output() {
+        // Guards `WORKER_CLASS_FILES` against drift: compile the embedded
+        // worker source and assert the emitted `.class` set is exactly the
+        // pinned required set, so a future nested type added to the worker
+        // can't silently fall outside the readiness gate.
+        let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
+        let have_javac = std::process::Command::new(&javac)
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !have_javac {
+            return; // JRE-only / no JDK: nothing to compile against.
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join(WORKER_FILENAME);
+        std::fs::write(&src, WORKER_SOURCE).unwrap();
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let status = std::process::Command::new(&javac)
+            .arg("-encoding")
+            .arg("UTF-8")
+            .arg("-d")
+            .arg(&out)
+            .arg(&src)
+            .status()
+            .expect("spawn javac");
+        assert!(status.success(), "worker source must compile");
+
+        let mut emitted: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".class"))
+            .collect();
+        emitted.sort();
+        let mut expected: Vec<String> =
+            WORKER_CLASS_FILES.iter().map(|s| (*s).to_owned()).collect();
+        expected.sort();
+        assert_eq!(
+            emitted, expected,
+            "WORKER_CLASS_FILES must mirror the worker's javac output",
+        );
+    }
+
+    #[test]
+    fn publish_class_set_moves_every_class_and_writes_manifest() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let staging = dir.join(".compile-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        // Simulate javac output: top-level + nested classes plus a
+        // non-class artifact that must be ignored.
+        std::fs::write(staging.join("NyxJavacWorker.class"), b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(staging.join("NyxJavacWorker$Parser.class"), b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(staging.join("NyxJavacWorker$Request.class"), b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(staging.join("notes.txt"), b"ignore me").unwrap();
+
+        publish_class_set(&staging, dir).expect("publish");
+
+        for cls in [
+            "NyxJavacWorker.class",
+            "NyxJavacWorker$Parser.class",
+            "NyxJavacWorker$Request.class",
+        ] {
+            assert!(dir.join(cls).is_file(), "{cls} must be published");
+        }
+        // The non-class file stays in staging (not published).
+        assert!(!dir.join("notes.txt").exists());
+
+        let manifest = std::fs::read_to_string(dir.join(WORKER_MANIFEST)).unwrap();
+        let listed: Vec<&str> = manifest.lines().collect();
+        assert_eq!(listed.len(), 3, "manifest lists all 3 classes: {listed:?}");
+        assert!(listed.contains(&"NyxJavacWorker$Parser.class"));
     }
 
     #[test]
