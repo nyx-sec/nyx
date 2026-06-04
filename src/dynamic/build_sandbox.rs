@@ -1388,15 +1388,24 @@ fn try_compile_java_with_toolchain(
         if result.success {
             return finalize_java_compile(workdir, cache_path, lib_on_cp);
         }
-        if pool.is_healthy() {
-            // The compile itself failed (real source error) -- surface
-            // the worker's stderr verbatim.
-            return Err(result.stderr);
+        // The pooled compile failed.  This is either a genuine source
+        // error -- which the deterministic direct-spawn `javac` path below
+        // reproduces identically -- or a transient pool fault: a worker
+        // crash, a response timeout when the host is saturated, or a
+        // `NyxJavacWorker.class` corrupted by a concurrent process racing
+        // on the shared bootstrap dir.  The long-lived in-process compiler
+        // is a fast path, not the oracle for a `BuildFailed` verdict, so
+        // never surface a pooled failure verbatim -- always fall through
+        // and re-verify with direct-spawn `javac`.  A real error fails
+        // there too (and we surface its authoritative stderr); a transient
+        // pool fault is absorbed and the build still succeeds.  This is the
+        // load-bearing fix for flaky `Inconclusive(BuildFailed)` verdicts
+        // under heavy parallel test load.
+        if !pool.is_healthy() {
+            // Worker crashed: evict the cached pool so the next finding
+            // re-spawns a fresh worker instead of reusing a dead one.
+            drop_javac_pool(toolchain_id);
         }
-        // Worker crashed: drop the cached pool so the next call
-        // re-spawns it, then fall through to the legacy direct-spawn
-        // path so this build still has a chance to succeed.
-        drop_javac_pool(toolchain_id);
     }
 
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
