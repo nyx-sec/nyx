@@ -903,6 +903,39 @@ fn emit_message_handler(spec: &HarnessSpec, queue: &str, is_typescript: bool) ->
 // Nyx dynamic harness — message handler (Phase 20 / Track M.2).
 {probe}
 
+// Force synchronous stdout/stderr.  The optional real-broker probe below
+// drives the AWS SDK, whose HTTP path lazy-instantiates the undici
+// `llhttp` WebAssembly module; under the Linux process backend's
+// RLIMIT_AS cap that instantiation can throw `RangeError: ... Out of
+// memory: Cannot allocate Wasm memory`.  Synchronous writes put the
+// oracle markers the in-process loopback emits on the pipe the instant
+// they are written, so a later fatal crash in that probe can never
+// truncate them before `process.exit`.
+(function _nyxForceSyncStdio() {{
+    try {{
+        const _fs = require('fs');
+        const _wrap = function (stream, fd) {{
+            stream.write = function (chunk, enc, cb) {{
+                if (typeof enc === 'function') {{ cb = enc; enc = undefined; }}
+                try {{
+                    const buf = Buffer.isBuffer(chunk)
+                        ? chunk
+                        : Buffer.from(String(chunk), enc || 'utf8');
+                    _fs.writeSync(fd, buf);
+                }} catch (_e) {{}}
+                if (typeof cb === 'function') cb();
+                return true;
+            }};
+        }};
+        _wrap(process.stdout, 1);
+        _wrap(process.stderr, 2);
+    }} catch (_e) {{}}
+}})();
+
+// Set once any delivery path has dispatched the handler, so the loopback
+// fallback and the crash handlers never double-dispatch or re-confirm.
+let _nyxDispatched = false;
+
 {sqs_src}
 
 const payload = (process.env.NYX_PAYLOAD && process.env.NYX_PAYLOAD.length > 0)
@@ -998,6 +1031,7 @@ async function _nyxDispatchEnvelope(envelope) {{
         // gate requires this byte sequence on stdout / stderr.
         process.stdout.write('__NYX_SINK_HIT__\n');
         await Promise.resolve(_handler(envelope));
+        _nyxDispatched = true;
         return true;
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -1005,20 +1039,64 @@ async function _nyxDispatchEnvelope(envelope) {{
     }}
 }}
 
-(async () => {{
-    if (await _nyxTryRealSqs({queue:?}, payload)) return;
-    process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
-    _nyxRecordBrokerPublish('NYX_SQS_LOG', {queue:?}, payload);
-    _broker.publish({queue:?}, payload);
-    for (const envelope of _broker.receiveMessage({queue:?}, 1)) {{
-        _nyxRecordBrokerEvent('NYX_SQS_LOG', 'deliver', {queue:?}, envelope.Body || '');
-        const ok = await _nyxDispatchEnvelope(envelope);
-        if (ok && _broker.deleteMessage({queue:?}, envelope.ReceiptHandle || '')) {{
-            _nyxRecordBrokerEvent('NYX_SQS_LOG', 'ack', {queue:?}, envelope.ReceiptHandle || '');
-        }} else {{
-            _broker.replayInflight();
+// In-process SQS loopback — pure JS, no network or WebAssembly, so it
+// runs under any sandbox memory cap.  Dispatch is synchronous so it is
+// usable from the crash handlers below (where the event loop must not be
+// relied on).  Idempotent: a no-op once any path has dispatched.
+function _nyxLoopbackOnce() {{
+    if (_nyxDispatched) return;
+    try {{
+        process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
+        _nyxRecordBrokerPublish('NYX_SQS_LOG', {queue:?}, payload);
+        _broker.publish({queue:?}, payload);
+        for (const envelope of _broker.receiveMessage({queue:?}, 1)) {{
+            _nyxRecordBrokerEvent('NYX_SQS_LOG', 'deliver', {queue:?}, envelope.Body || '');
+            process.stdout.write('__NYX_SINK_HIT__\n');
+            try {{
+                _handler(envelope);
+                _nyxDispatched = true;
+            }} catch (e) {{
+                process.stderr.write('NYX_EXCEPTION: ' + (e && e.constructor ? e.constructor.name : 'Error') + ': ' + (e && e.message ? e.message : String(e)) + '\n');
+            }}
+            if (_broker.deleteMessage({queue:?}, envelope.ReceiptHandle || '')) {{
+                _nyxRecordBrokerEvent('NYX_SQS_LOG', 'ack', {queue:?}, envelope.ReceiptHandle || '');
+            }} else {{
+                _broker.replayInflight();
+            }}
         }}
+    }} catch (e) {{
+        process.stderr.write('NYX_LOOPBACK_ERROR: ' + (e && e.message ? e.message : String(e)) + '\n');
     }}
+}}
+
+// The optional real-broker probe drives the AWS SDK, whose undici WASM
+// path can throw a fatal `RangeError` under the sandbox RLIMIT_AS cap and
+// surface as an unhandled rejection / uncaught exception that would
+// otherwise abort the process before the loopback runs.  Neutralise it:
+// fall back to the in-process loopback (which fully confirms the sink),
+// then exit cleanly so the already-synchronous markers are delivered.
+process.on('uncaughtException', function (e) {{
+    process.stderr.write('NYX_UNCAUGHT: ' + (e && e.message ? e.message : String(e)) + '\n');
+    _nyxLoopbackOnce();
+    process.exit(0);
+}});
+process.on('unhandledRejection', function (e) {{
+    process.stderr.write('NYX_UNHANDLED: ' + (e && e.message ? e.message : String(e)) + '\n');
+    _nyxLoopbackOnce();
+    process.exit(0);
+}});
+
+(async () => {{
+    // Prefer the real broker for fidelity, but never let its failure
+    // (including a fatal undici-WASM OOM) prevent the in-process
+    // confirmation below.
+    let real = false;
+    try {{
+        real = await _nyxTryRealSqs({queue:?}, payload);
+    }} catch (e) {{
+        process.stderr.write('NYX_REAL_SQS_FALLBACK: ' + (e && e.message ? e.message : String(e)) + '\n');
+    }}
+    if (!real) _nyxLoopbackOnce();
 }})();
 "#,
         handler = handler,

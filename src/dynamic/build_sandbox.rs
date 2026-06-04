@@ -1308,6 +1308,21 @@ fn parse_javac_major(text: &str) -> Option<u32> {
     }
 }
 
+/// Classify a failed [`PoolCompileResult::stderr`] as a transient pool
+/// fault rather than a genuine source error.
+///
+/// Every non-compile failure path in [`JavacPool::compile_with_worker`]
+/// (worker unavailable, write/flush error, closed/timed-out/disconnected
+/// pipe, malformed response) prefixes its stderr with `javac-pool:`; a
+/// genuine `javac` diagnostic never does.  The caller fast-fails genuine
+/// errors verbatim and only re-verifies transient faults with a fresh
+/// direct-spawn `javac`, so this prefix is the sole, race-free signal
+/// (it rides on the per-compile result value, not shared pool state a
+/// concurrent verify lane can mutate).
+fn javac_pool_failure_is_transient(stderr: &str) -> bool {
+    stderr.starts_with("javac-pool:")
+}
+
 /// Compile every `.java` under `workdir`.
 ///
 /// `toolchain_id` is threaded down so the pool path (when enabled) can
@@ -1404,24 +1419,35 @@ fn try_compile_java_with_toolchain(
         if result.success {
             return finalize_java_compile(workdir, cache_path, lib_on_cp);
         }
-        // The pooled compile failed.  This is either a genuine source
-        // error -- which the deterministic direct-spawn `javac` path below
-        // reproduces identically -- or a transient pool fault: a worker
-        // crash, a response timeout when the host is saturated, or a
-        // `NyxJavacWorker.class` corrupted by a concurrent process racing
-        // on the shared bootstrap dir.  The long-lived in-process compiler
-        // is a fast path, not the oracle for a `BuildFailed` verdict, so
-        // never surface a pooled failure verbatim -- always fall through
-        // and re-verify with direct-spawn `javac`.  A real error fails
-        // there too (and we surface its authoritative stderr); a transient
-        // pool fault is absorbed and the build still succeeds.  This is the
-        // load-bearing fix for flaky `Inconclusive(BuildFailed)` verdicts
-        // under heavy parallel test load.
-        if !pool.is_healthy() {
-            // Worker crashed: evict the cached pool so the next finding
-            // re-spawns a fresh worker instead of reusing a dead one.
-            drop_javac_pool(toolchain_id);
+        // The pooled compile failed.  Classify the failure from *this
+        // compile's own result* -- never from shared pool state like
+        // `pool.is_healthy()`, which a concurrent verify lane sharing the
+        // Arc can re-heal between this failure and the check, misreading a
+        // transient fault as a genuine error (the race that made the old
+        // code re-verify *every* failure).
+        //
+        // A `javac-pool:` prefix is the Rust-side wrapper for a transient
+        // pool fault: worker unavailable, a write/flush/read error, a
+        // response timeout under host saturation, a closed pipe, or a
+        // malformed response (see `JavacPool::compile_with_worker`).  Such
+        // a failure is not authoritative, so evict the worker and re-verify
+        // with direct-spawn `javac` below -- a real error fails there too,
+        // a transient fault is absorbed and the build still succeeds.  This
+        // keeps the load-bearing fix for flaky `Inconclusive(BuildFailed)`
+        // verdicts under heavy parallel load.
+        //
+        // Anything else is the worker's own `javac` diagnostic for a
+        // genuine source error.  Direct-spawn reproduces it identically, so
+        // surface it verbatim instead of paying a redundant full `javac`
+        // process spawn -- the dominant verify wall-clock cost across a
+        // large failing-build corpus (e.g. the OWASP servlet harnesses that
+        // build-fail in CI), enough to blow the gate's wall-clock budget.
+        if !javac_pool_failure_is_transient(&result.stderr) {
+            return Err(result.stderr);
         }
+        // Transient pool fault: evict the cached pool so the next finding
+        // re-spawns a fresh worker instead of reusing a dead one.
+        drop_javac_pool(toolchain_id);
     }
 
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
@@ -2464,6 +2490,39 @@ mod tests {
         assert_eq!(java_target_release("python-3.11"), None);
         assert_eq!(java_target_release("node-20"), None);
         assert_eq!(java_target_release(""), None);
+    }
+
+    #[test]
+    fn javac_pool_failure_classifier_separates_transient_from_genuine() {
+        // Every transient-fault stderr `JavacPool::compile_with_worker`
+        // emits is `javac-pool:`-prefixed.
+        for transient in [
+            "javac-pool: worker unavailable",
+            "javac-pool: write failed: broken pipe",
+            "javac-pool: flush failed: broken pipe",
+            "javac-pool: worker closed stdout",
+            "javac-pool: read response timed out after 30s",
+            "javac-pool: read response reader disconnected",
+            "javac-pool: malformed response: GARBAGE",
+        ] {
+            assert!(
+                javac_pool_failure_is_transient(transient),
+                "must re-verify transient fault via direct-spawn: {transient:?}",
+            );
+        }
+        // A genuine `javac` diagnostic must fast-fail verbatim (no
+        // redundant direct-spawn), so it is NOT classified transient.
+        for genuine in [
+            "Broken.java:1: error: illegal start of expression\n",
+            "Vuln.java:7: error: package javax.servlet does not exist\n",
+            "1 error",
+            "",
+        ] {
+            assert!(
+                !javac_pool_failure_is_transient(genuine),
+                "genuine compile error must fast-fail, not re-spawn javac: {genuine:?}",
+            );
+        }
     }
 
     #[test]
