@@ -97,6 +97,16 @@ static void probe_chroot(void) {
 }
 
 int main(int argc, char **argv) {
+    // Stream stdout unbuffered.  Output to a pipe is fully buffered by
+    // default and flushed only at exit, so any signal that reaps the probe
+    // between its last printf and the libc exit-flush loses the *entire*
+    // buffer — the run comes back empty even though every line was written.
+    // Under the Strict profile on a locked-down CI host that late reap is a
+    // transient (best-effort /proc graft, restricted userns), which made the
+    // sentinel intermittently vanish.  Unbuffered, each line hits the pipe
+    // the instant it is printed and survives a post-completion reap.
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     grep_status("NoNewPrivs:", "\t?");
     grep_status("Seccomp:", "\t?");
     print_rlimit("rlimit_as", RLIMIT_AS);

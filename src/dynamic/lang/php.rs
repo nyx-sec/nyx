@@ -2232,8 +2232,22 @@ function __nyx_define_codeigniter_config(): void {
     if (!defined('APPPATH')) define('APPPATH', __DIR__ . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR);
     if (!defined('WRITEPATH')) define('WRITEPATH', __DIR__ . DIRECTORY_SEPARATOR . 'writable' . DIRECTORY_SEPARATOR);
     if (!defined('SYSTEMPATH')) define('SYSTEMPATH', __DIR__ . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'codeigniter4' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'system' . DIRECTORY_SEPARATOR);
+    // CI4's Autoloader constructor defaults its $composerPath parameter to the
+    // COMPOSER_PATH constant; the framework's own bootstrap defines it, but a
+    // hand-rolled harness that only requires vendor/autoload.php never does, so
+    // `new Autoloader()` (reached via Services::locator()/the FileLocator) dies
+    // with `Undefined constant COMPOSER_PATH` before any route is built.
+    if (!defined('COMPOSER_PATH')) define('COMPOSER_PATH', ROOTPATH . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php');
     if (!is_dir(APPPATH . 'Config')) @mkdir(APPPATH . 'Config', 0777, true);
     if (!is_dir(WRITEPATH)) @mkdir(WRITEPATH, 0777, true);
+    // Load CI4's global helper functions (esc(), service(), helper(), config()).
+    // RouteCollection::create() calls esc()/helper() and the helper layer calls
+    // service('locator'); composer autoload only wires up classes, not these
+    // procedural helpers, so without Common.php route registration fatals on
+    // `Call to undefined function esc()`.
+    if (!function_exists('service') && defined('SYSTEMPATH') && is_file(SYSTEMPATH . 'Common.php')) {
+        require_once SYSTEMPATH . 'Common.php';
+    }
     if (!class_exists('Config\\Modules')) {
         // CI4's Modules config extends \CodeIgniter\Modules\Modules — NOT
         // \CodeIgniter\Config\Modules.  Without a concrete Config\Modules the
@@ -2256,8 +2270,17 @@ function __nyx_define_codeigniter_config(): void {
     if (!class_exists('Config\\App') && class_exists('\\CodeIgniter\\Config\\BaseConfig')) {
         eval('namespace Config; class App extends \\CodeIgniter\\Config\\BaseConfig { public string $baseURL = "http://localhost/"; public array $supportedLocales = ["en"]; }');
     }
-    if (!class_exists('Config\\Services') && class_exists('\\CodeIgniter\\Config\\BaseService')) {
-        eval('namespace Config; class Services extends \\CodeIgniter\\Config\\BaseService {}');
+    // The global `service()` helper resolves names against `Config\Services`
+    // (the app-level subclass) and fatals with `Class "Config\Services" not
+    // found` when it is absent.  Extend the *core* Services (not BaseService)
+    // so request/locator/etc. resolve; fall back to BaseService only on an
+    // exotic build that lacks the core class.
+    if (!class_exists('Config\\Services')) {
+        if (class_exists('\\CodeIgniter\\Config\\Services')) {
+            eval('namespace Config; class Services extends \\CodeIgniter\\Config\\Services {}');
+        } elseif (class_exists('\\CodeIgniter\\Config\\BaseService')) {
+            eval('namespace Config; class Services extends \\CodeIgniter\\Config\\BaseService {}');
+        }
     }
 }
 
@@ -2278,16 +2301,70 @@ function __nyx_codeigniter_routes() {
     $modules = class_exists('Config\\Modules') ? new \Config\Modules() : null;
     $routing = class_exists('Config\\Routing') ? new \Config\Routing() : null;
     if ($routing !== null) {
-        $routing->defaultNamespace = 'App\\Controllers';
+        // Root namespace, NOT 'App\\Controllers'.  RouteCollection::create()
+        // prefixes defaultNamespace onto any handler that is not already
+        // fully-qualified; the fixtures register fully-qualified handlers
+        // (`App\\Controllers\\UserController::run`), so an 'App\\Controllers'
+        // default double-namespaces them into
+        // `App\\Controllers\\App\\Controllers\\UserController` and the
+        // controller can never be resolved.  A root default leaves
+        // fully-qualified handlers intact, and __nyx_ci_invoke_handler's
+        // `App\\Controllers\\` fallback still resolves bare handlers.
+        $routing->defaultNamespace = '\\';
         $routing->defaultController = 'Home';
         $routing->defaultMethod = 'index';
         $routing->translateURIDashes = false;
         $routing->autoRoute = false;
         $routing->routeFiles = [];
     }
-    $locator = class_exists('\\CodeIgniter\\Autoloader\\FileLocator') && $modules !== null
-        ? new \CodeIgniter\Autoloader\FileLocator($modules)
-        : null;
+    // Build a FileLocator.  Its constructor signature changed across the 4.x
+    // line: current releases take an `Autoloader`, older ones took the
+    // `Modules` config.  Reflect on the first parameter type and pass the
+    // matching object so the harness works against whatever `^4.4` resolves to.
+    $locator = null;
+    if (class_exists('\\CodeIgniter\\Autoloader\\FileLocator')) {
+        $ctor = (new \ReflectionClass('\\CodeIgniter\\Autoloader\\FileLocator'))->getConstructor();
+        $params = $ctor !== null ? $ctor->getParameters() : [];
+        $p0type = (count($params) > 0 && $params[0]->getType() !== null) ? (string) $params[0]->getType() : '';
+        if (stripos($p0type, 'Autoloader') !== false && class_exists('\\CodeIgniter\\Autoloader\\Autoloader')) {
+            $composerPath = defined('COMPOSER_PATH') ? COMPOSER_PATH : (ROOTPATH . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php');
+            try {
+                $autoloader = new \CodeIgniter\Autoloader\Autoloader($composerPath);
+            } catch (Throwable $_) {
+                $autoloader = new \CodeIgniter\Autoloader\Autoloader();
+            }
+            $locator = new \CodeIgniter\Autoloader\FileLocator($autoloader);
+        } elseif ($modules !== null) {
+            $locator = new \CodeIgniter\Autoloader\FileLocator($modules);
+        }
+    }
+    // RouteCollection::__construct calls `service('request')->getServer(...)`
+    // to seed its (private) httpHost field, which drags in the full HTTP /
+    // IncomingRequest / Config\App bootstrap.  The harness only needs the
+    // collection as a route container — it matches and dispatches manually —
+    // so subclass the collection with a constructor that replicates the field
+    // setup but skips the request dependency.  httpHost stays null, which is
+    // only read for hostname/subdomain-scoped routes (none here).
+    if (!class_exists('__NyxRouteCollection') && class_exists('\\CodeIgniter\\Router\\RouteCollection')) {
+        eval('
+        class __NyxRouteCollection extends \\CodeIgniter\\Router\\RouteCollection {
+            public function __construct($locator, $moduleConfig, $routing) {
+                $this->fileLocator = $locator;
+                $this->moduleConfig = $moduleConfig;
+                $this->defaultNamespace = rtrim($routing->defaultNamespace, "\\\\") . "\\\\";
+                $this->defaultController = $routing->defaultController;
+                $this->defaultMethod = $routing->defaultMethod;
+                $this->translateURIDashes = $routing->translateURIDashes;
+                $this->override404 = $routing->override404;
+                $this->autoRoute = $routing->autoRoute;
+                $this->routeFiles = $routing->routeFiles;
+                $this->prioritize = $routing->prioritize;
+            }
+        }');
+    }
+    if (class_exists('__NyxRouteCollection') && $routing !== null) {
+        return new \__NyxRouteCollection($locator, $modules, $routing);
+    }
     return new \CodeIgniter\Router\RouteCollection($locator, $modules, $routing);
 }
 
