@@ -279,6 +279,12 @@ fn ensure_worker_compiled(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&staging).map_err(|e| format!("javac-pool: mkdir staging: {e}"))?;
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
     let compiled = Command::new(&javac)
+        // Pin the source charset so the bootstrap compile is independent of
+        // the host locale (a `C`/`POSIX` CI runner defaults `javac` to
+        // `US-ASCII` and would reject any non-ASCII byte in the worker
+        // source).  Mirrors the harness-compile pin in `build_sandbox`.
+        .arg("-encoding")
+        .arg("UTF-8")
         .arg("-d")
         .arg(&staging)
         .arg(&src_path)

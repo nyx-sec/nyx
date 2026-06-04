@@ -1334,7 +1334,23 @@ fn try_compile_java_with_toolchain(
     }
 
     // Compile sources — class files are written to workdir by default.
-    let mut args = vec!["-d".to_owned(), workdir.to_string_lossy().into_owned()];
+    //
+    // `-encoding UTF-8` is mandatory, not cosmetic: the emitted harness
+    // (`NyxHarness.java`) and many corpus fixtures carry non-ASCII bytes
+    // in comments (em-dashes, box-drawing rules).  `javac` reads source
+    // in the platform default charset, which is `US-ASCII` on a CI host
+    // running the `C` / `POSIX` locale (the common Linux-runner default).
+    // Without the pin, every such source aborts with
+    // `unmappable character (0xE2) for encoding US-ASCII` and the build
+    // fails deterministically on Linux while passing on a UTF-8 macOS dev
+    // box.  Pinning the source charset makes the compile host-locale
+    // independent.
+    let mut args = vec![
+        "-encoding".to_owned(),
+        "UTF-8".to_owned(),
+        "-d".to_owned(),
+        workdir.to_string_lossy().into_owned(),
+    ];
     if let Some(rel) = target_release {
         args.push("--release".to_owned());
         args.push(rel.to_string());

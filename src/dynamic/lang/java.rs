@@ -130,7 +130,12 @@ fn chain_step(
         command: vec![
             "sh".to_owned(),
             "-c".to_owned(),
-            "javac Step.java && java Step".to_owned(),
+            // Pin the source charset so the step build does not depend on
+            // the container locale (a `C`/`POSIX` base image defaults
+            // `javac` to `US-ASCII` and rejects any non-ASCII byte in the
+            // generated source).  Mirrors the harness-compile pin in
+            // `build_sandbox`.
+            "javac -encoding UTF-8 Step.java && java Step".to_owned(),
         ],
         extra_env: prev_output
             .map(|bytes| {
