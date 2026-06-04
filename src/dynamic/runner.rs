@@ -370,6 +370,24 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     let cp = format!("{workdir_cp}:{}", lib_cp.to_string_lossy());
                     harness.command = vec![
                         "java".to_owned(),
+                        // Bound the JVM's virtual-address footprint so it fits
+                        // inside the sandbox RLIMIT_AS cap (the Linux process
+                        // backend floors it at 4 GiB).  A default-ergonomics
+                        // JVM on a high-RAM CI runner pre-reserves a heap sized
+                        // to ~25% of host RAM plus a 1 GiB compressed-class
+                        // space and a 240 MiB code cache, which lands right at
+                        // the 4 GiB ceiling — leaving no headroom for the
+                        // `fork`/`posix_spawn` a command-injection sink performs
+                        // via `ProcessBuilder.start()`, so the spawn aborts with
+                        // "Native memory allocation (malloc) failed to allocate
+                        // N bytes".  These caps hold the whole reservation under
+                        // ~700 MiB regardless of host RAM; a short-lived harness
+                        // never needs more, and a responsive heap stays well
+                        // clear of the cap so the spawn always succeeds.
+                        "-XX:+UseSerialGC".to_owned(),
+                        "-Xmx256m".to_owned(),
+                        "-XX:CompressedClassSpaceSize=128m".to_owned(),
+                        "-XX:ReservedCodeCacheSize=64m".to_owned(),
                         "-cp".to_owned(),
                         cp,
                         "NyxHarness".to_owned(),
