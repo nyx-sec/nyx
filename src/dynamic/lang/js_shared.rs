@@ -2729,15 +2729,41 @@ const TS_ENTRY_LOADER_JS: &str = r#"function nyxEsmToCjs(src) {
   return src + suffix;
 }
 
+// Best-effort TypeScript type erasure for Node runtimes that lack
+// `module.stripTypeScriptTypes` (added in Node 22.6; CI runs node-20).
+// Applied only as a fallback, only *after* the ESM->CJS rewrite (so an
+// `import * as x` line is already gone and cannot be mistaken for an
+// `as` cast), and behind the same try/catch as native loading: if a
+// regex over-strips into invalid JS, `_compile` throws and the caller
+// drops to the synthetic direct-sink path — never worse than today's
+// always-fails-on-node-20 behaviour.
+function nyxStripTsTypes(src) {
+  return src
+    // `interface X { ... }` declarations.
+    .replace(/^\s*(export\s+)?interface\s+[A-Za-z_$][\w$]*\s*(<[^>]*>)?\s*\{[\s\S]*?\n\}/gm, '')
+    // top-level `type X = ...;` aliases.
+    .replace(/^\s*(export\s+)?type\s+[A-Za-z_$][\w$]*\s*(<[^>]*>)?\s*=[^\n;]*;?\s*$/gm, '')
+    // `x as Type` / `x as const` casts.
+    .replace(/\bas\s+(const\b|[A-Za-z_$][\w$.\[\]<>| ]*)/g, '')
+    // typed variable declarations: `const x: T =` -> `const x =`.
+    .replace(/\b(const|let|var)\s+([A-Za-z_$][\w$]*)\s*:\s*[A-Za-z_$][\w$.\[\]<>| ]*(?=\s*=)/g, '$1 $2')
+    // function/arrow return types: `): T {` / `): T =>` -> `) {` / `) =>`.
+    .replace(/\)\s*:\s*[A-Za-z_$][\w$.\[\]<>| ]*(?=\s*(\{|=>))/g, ')')
+    // parameter type annotations: `(name: T` / `, name: T` before , or ).
+    .replace(/([(,]\s*[A-Za-z_$][\w$]*)\s*:\s*[A-Za-z_$][\w$.\[\]<>| ]*(?=\s*[,)])/g, '$1');
+}
+
 function nyxLoadTsEntry(file) {
   const fs = require('fs');
   const Module = require('module');
   const path = require('path');
   let src = fs.readFileSync(file, 'utf8');
+  let stripped = false;
   if (typeof Module.stripTypeScriptTypes === 'function') {
-    try { src = Module.stripTypeScriptTypes(src, { mode: 'transform' }); } catch (e) { /* fall through with raw source */ }
+    try { src = Module.stripTypeScriptTypes(src, { mode: 'transform' }); stripped = true; } catch (e) { /* fall through with raw source */ }
   }
   src = nyxEsmToCjs(src);
+  if (!stripped) { src = nyxStripTsTypes(src); }
   const m = new Module(file, module);
   m.filename = path.resolve(file);
   m.paths = Module._nodeModulePaths(path.dirname(m.filename));

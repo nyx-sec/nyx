@@ -1695,6 +1695,32 @@ fn run_process(
     let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) =
         (resolved_cmd_path.clone(), harness.command[1..].to_vec());
 
+    // Phase 17 follow-up: when the Strict profile will `chroot(workdir)` in
+    // pre_exec, the workdir becomes the filesystem root for the harness, so
+    // any command token that is an absolute path *under* the workdir
+    // (`<workdir>/nyx_harness`, the staged probe, an interpreter script)
+    // resolves against `<workdir>/<workdir>/…` post-chroot and dies with
+    // ENOENT at execve.  Reroot each such token to its chroot-relative
+    // form (`/nyx_harness`); tokens outside the workdir (the bind-mounted
+    // `/usr/bin` interpreter, literal flags) pass through untouched.
+    #[cfg(target_os = "linux")]
+    let (effective_cmd_path, effective_cmd_args) = if process_linux::chroot_will_apply(opts) {
+        let canon_workdir =
+            std::fs::canonicalize(&harness.workdir).unwrap_or_else(|_| harness.workdir.clone());
+        let path = process_linux::reroot_under_chroot(
+            &effective_cmd_path,
+            &canon_workdir,
+            &harness.workdir,
+        );
+        let args = effective_cmd_args
+            .iter()
+            .map(|a| process_linux::reroot_arg_under_chroot(a, &canon_workdir, &harness.workdir))
+            .collect();
+        (path, args)
+    } else {
+        (effective_cmd_path, effective_cmd_args)
+    };
+
     let mut cmd = Command::new(&effective_cmd_path);
     cmd.args(&effective_cmd_args);
     cmd.current_dir(&harness.workdir);

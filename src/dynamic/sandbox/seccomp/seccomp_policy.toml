@@ -86,6 +86,8 @@ allow = [
     "kill",
     "openat",
     "open",
+    "execve",
+    "execveat",
     "access",
     "faccessat",
     "faccessat2",

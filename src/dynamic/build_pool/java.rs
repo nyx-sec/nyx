@@ -739,8 +739,9 @@ mod tests {
         let parser = dir.join(format!("{WORKER_CLASS}$Parser.class"));
         let request = dir.join(format!("{WORKER_CLASS}$Request.class"));
         let manifest = dir.join(WORKER_MANIFEST);
-        let manifest_body =
-            format!("{WORKER_CLASS}.class\n{WORKER_CLASS}$Parser.class\n{WORKER_CLASS}$Request.class");
+        let manifest_body = format!(
+            "{WORKER_CLASS}.class\n{WORKER_CLASS}$Parser.class\n{WORKER_CLASS}$Request.class"
+        );
 
         // Nothing on disk yet.
         assert!(!worker_class_ready(dir));
@@ -787,7 +788,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::write(dir.join(WORKER_FILENAME), WORKER_SOURCE).unwrap();
-        std::fs::write(dir.join(format!("{WORKER_CLASS}.class")), b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(
+            dir.join(format!("{WORKER_CLASS}.class")),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
         // Manifest names only the top-level class -- exactly what poisoned
         // the persisted bootstrap cache.
         std::fs::write(dir.join(WORKER_MANIFEST), format!("{WORKER_CLASS}.class")).unwrap();
@@ -797,11 +802,55 @@ mod tests {
         );
 
         // Drop in the nested classes the worker actually loads -> ready.
-        std::fs::write(dir.join(format!("{WORKER_CLASS}$Parser.class")), b"\xca\xfe\xba\xbe")
-            .unwrap();
-        std::fs::write(dir.join(format!("{WORKER_CLASS}$Request.class")), b"\xca\xfe\xba\xbe")
-            .unwrap();
+        std::fs::write(
+            dir.join(format!("{WORKER_CLASS}$Parser.class")),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{WORKER_CLASS}$Request.class")),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
         assert!(worker_class_ready(dir));
+    }
+
+    #[test]
+    fn ensure_worker_compiled_heals_partial_cache() {
+        // End-to-end heal: seed the exact poisoned-cache shape that broke
+        // Linux (top-level class + a one-line manifest, nested classes
+        // absent) and confirm `ensure_worker_compiled` recompiles a full,
+        // loadable class set instead of trusting the stale manifest.
+        let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
+        let have_javac = std::process::Command::new(&javac)
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !have_javac {
+            return; // No JDK on this host: nothing to recompile with.
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join(WORKER_FILENAME), WORKER_SOURCE).unwrap();
+        std::fs::write(
+            dir.join(format!("{WORKER_CLASS}.class")),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
+        std::fs::write(dir.join(WORKER_MANIFEST), format!("{WORKER_CLASS}.class")).unwrap();
+        assert!(
+            !worker_class_ready(dir),
+            "poisoned cache must read not-ready"
+        );
+
+        ensure_worker_compiled(dir).expect("recompile heals the cache");
+
+        assert!(worker_class_ready(dir), "healed cache must read ready");
+        for cls in WORKER_CLASS_FILES {
+            let meta = std::fs::metadata(dir.join(cls)).expect("class published");
+            assert!(meta.len() > 0, "{cls} must be a real (non-empty) class");
+        }
     }
 
     #[test]
@@ -859,8 +908,16 @@ mod tests {
         // Simulate javac output: top-level + nested classes plus a
         // non-class artifact that must be ignored.
         std::fs::write(staging.join("NyxJavacWorker.class"), b"\xca\xfe\xba\xbe").unwrap();
-        std::fs::write(staging.join("NyxJavacWorker$Parser.class"), b"\xca\xfe\xba\xbe").unwrap();
-        std::fs::write(staging.join("NyxJavacWorker$Request.class"), b"\xca\xfe\xba\xbe").unwrap();
+        std::fs::write(
+            staging.join("NyxJavacWorker$Parser.class"),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.join("NyxJavacWorker$Request.class"),
+            b"\xca\xfe\xba\xbe",
+        )
+        .unwrap();
         std::fs::write(staging.join("notes.txt"), b"ignore me").unwrap();
 
         publish_class_set(&staging, dir).expect("publish");

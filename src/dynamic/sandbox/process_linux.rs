@@ -295,9 +295,9 @@ unsafe extern "C" {
     fn chroot(path: *const i8) -> i32;
     fn chdir(path: *const i8) -> i32;
     fn mount(
-        source: *const i8,
-        target: *const i8,
-        fstype: *const i8,
+        source: *const core::ffi::c_char,
+        target: *const core::ffi::c_char,
+        fstype: *const core::ffi::c_char,
         flags: u64,
         data: *const core::ffi::c_void,
     ) -> i32;
@@ -419,9 +419,9 @@ fn apply_bind_mounts(mounts: &[BindMount]) {
         // every pointer references a valid C string for the duration of the call.
         let r = unsafe {
             mount(
-                m.source_nul.as_ptr() as *const i8,
-                m.dest_nul.as_ptr() as *const i8,
-                none.as_ptr() as *const i8,
+                m.source_nul.as_ptr() as *const core::ffi::c_char,
+                m.dest_nul.as_ptr() as *const core::ffi::c_char,
+                none.as_ptr() as *const core::ffi::c_char,
                 MS_BIND,
                 std::ptr::null(),
             )
@@ -434,7 +434,7 @@ fn apply_bind_mounts(mounts: &[BindMount]) {
         unsafe {
             mount(
                 std::ptr::null(),
-                m.dest_nul.as_ptr() as *const i8,
+                m.dest_nul.as_ptr() as *const core::ffi::c_char,
                 std::ptr::null(),
                 MS_REMOUNT | MS_BIND | MS_RDONLY,
                 std::ptr::null(),
@@ -618,7 +618,18 @@ fn run_pre_exec_in_child(plan: &PreExecPlan) -> HardeningOutcome {
     // the new mount namespace catches them) and before chroot (so the
     // bind sources are still reachable at their absolute host paths).
     // No-op when `bind_mounts` is empty.
-    apply_bind_mounts(&plan.bind_mounts);
+    //
+    // Gate on a successful `unshare`: if the namespace unshare failed
+    // (e.g. an AppArmor-restricted unprivileged-userns host, as on
+    // Ubuntu 24.04 CI runners), we are still in the *host* mount
+    // namespace.  Bind-mounting there would mutate the host and — worse —
+    // the mounts outlive the child, so the harness tempdir can no longer
+    // be removed (`rmdir` → EBUSY) and the leak poisons every sibling
+    // test sharing the temp root.  Skipping the mounts degrades an
+    // interpreter harness to a self-contained cold-start failure instead.
+    if matches!(outcome.unshare, PrimitiveStatus::Applied) {
+        apply_bind_mounts(&plan.bind_mounts);
+    }
     outcome.chroot = if ablation.no_chroot {
         PrimitiveStatus::Skipped
     } else {
@@ -664,14 +675,27 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
     // chroot via ablation drops the bind-mounts too — leaving them on
     // would mount over the host directly inside the unshared mount
     // namespace, which is not what the ablation harness wants.
-    let bind_mounts = if opts.bind_mount_host_libs
-        && matches!(profile, ProcessHardeningProfileTag::Strict)
-        && !mask.no_chroot
-    {
-        compute_host_lib_bind_mounts(workdir)
-    } else {
-        Vec::new()
-    };
+    let mut bind_mounts = Vec::new();
+    if matches!(profile, ProcessHardeningProfileTag::Strict) && !mask.no_chroot {
+        // `/proc` is grafted in unconditionally under Strict+chroot:
+        // `chroot(workdir)` strips the host `/proc`, but a harness still
+        // needs `/proc/self` — the hardening probe reads `/proc/self/status`
+        // (NoNewPrivs / Seccomp lines), and real interpreters / runtimes
+        // (Go, the JVM, glibc) read `/proc/self/*` at start-up.  A read-only
+        // bind keeps `/proc/self` per-task-accurate while the chroot still
+        // blocks the *write* side of `/proc/<pid>/root`-style escapes (the
+        // escape suite's `proc_root_passwd` is contained by the blocked
+        // sentinel write, not by `/proc` being absent).  The mount is gated
+        // on `unshare` success in `run_pre_exec_in_child`, so a host where
+        // the namespace unshare failed never grafts it into the live host
+        // mount namespace.
+        if let Some(proc_mount) = compute_proc_bind_mount(workdir) {
+            bind_mounts.push(proc_mount);
+        }
+        if opts.bind_mount_host_libs {
+            bind_mounts.extend(compute_host_lib_bind_mounts(workdir));
+        }
+    }
 
     PreExecPlan {
         rlimit_cpu_seconds,
@@ -749,6 +773,31 @@ fn compute_host_lib_bind_mounts(workdir: &Path) -> Vec<BindMount> {
     out
 }
 
+/// Build the read-only bind-mount that grafts the host `/proc` into the
+/// harness workdir at `workdir/proc`, so `/proc/self/*` stays reachable
+/// after `chroot(workdir)`.  Returns `None` when the dest dir cannot be
+/// created (the mount would have no target).  A fresh `mount -t proc`
+/// would be cleaner but requires the caller to already be *inside* a PID
+/// namespace it owns — `unshare(CLONE_NEWPID)` only moves the child's
+/// descendants, not the harness itself — so a bind of the existing host
+/// procfs is the only option that works from pre_exec without a second
+/// fork.  `/proc/self` is rendered per-reading-task by the kernel, so the
+/// probe still observes its own NoNewPrivs / Seccomp state correctly.
+fn compute_proc_bind_mount(workdir: &Path) -> Option<BindMount> {
+    if !Path::new("/proc").exists() {
+        return None;
+    }
+    let dest = workdir.join("proc");
+    if std::fs::create_dir_all(&dest).is_err() {
+        return None;
+    }
+    let dest_canonical = std::fs::canonicalize(&dest).unwrap_or(dest);
+    Some(BindMount {
+        source_nul: nul_terminate(b"/proc"),
+        dest_nul: nul_terminate(dest_canonical.to_string_lossy().as_bytes()),
+    })
+}
+
 fn nul_terminate(bytes: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(bytes.len() + 1);
     v.extend_from_slice(bytes);
@@ -764,6 +813,75 @@ fn canonicalize_workdir(workdir: &Path) -> Vec<u8> {
         bytes.push(0);
     }
     bytes
+}
+
+// ── Chroot-relative command rewriting ────────────────────────────────────────
+
+/// True when [`install_pre_exec`]'s child will `chroot(2)` for these
+/// options: the Strict profile with the chroot primitive not ablated.
+///
+/// `run_process` consults this to decide whether the harness command's
+/// paths need rerooting (see [`reroot_under_chroot`]): after
+/// `chroot(workdir)` the workdir *becomes* the filesystem root, so any
+/// command token that is an absolute path under the workdir would
+/// otherwise resolve against `<workdir>/<workdir>/…` and fail with ENOENT
+/// at execve — before the harness prints a single line.
+pub fn chroot_will_apply(opts: &SandboxOptions) -> bool {
+    matches!(opts.process_hardening, ProcessHardeningProfile::Strict)
+        && opts.ablation.map_or(true, |m| !m.no_chroot)
+}
+
+/// Reroot an absolute path that lives under `workdir` to a *cwd-relative*
+/// form (`./<rel>`).
+///
+/// `run_process` sets `Command::current_dir(workdir)`, so the child's cwd
+/// is the workdir before pre_exec runs.  [`apply_chroot`] only calls
+/// `chdir("/")` *after a successful* `chroot(workdir)`; on a host where
+/// `chroot(2)` fails (unprivileged, no `CAP_SYS_CHROOT`, AppArmor-locked
+/// userns) it leaves the cwd at the workdir.  Either way the cwd points at
+/// the workdir's contents, so a cwd-relative `./nyx_harness` resolves to
+/// the staged binary whether the chroot landed or not — an *absolute*
+/// `/nyx_harness` would only work in the chroot-succeeded case and would
+/// ENOENT (harness fails to boot) on every locked-down host.  The leading
+/// `./` is required so `std`'s exec treats the token as a path rather than
+/// a `PATH` search.
+///
+/// Paths that do not live under the workdir (the bind-mounted
+/// `/usr/bin/python3` interpreter, system tools) are returned unchanged.
+/// Matching is attempted against the raw workdir first, then its canonical
+/// form, then the canonical form of `path` itself — so a symlinked workdir
+/// (or a symlinked path component) still rewrites correctly.
+pub fn reroot_under_chroot(path: &Path, canon_workdir: &Path, raw_workdir: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    for base in [raw_workdir, canon_workdir] {
+        if let Ok(rel) = path.strip_prefix(base) {
+            return Path::new(".").join(rel);
+        }
+    }
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        if let Ok(rel) = canon.strip_prefix(canon_workdir) {
+            return Path::new(".").join(rel);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Apply [`reroot_under_chroot`] to a single command-line argument when
+/// it is an absolute path under the workdir; non-path and outside-workdir
+/// arguments pass through verbatim.
+pub fn reroot_arg_under_chroot(arg: &str, canon_workdir: &Path, raw_workdir: &Path) -> String {
+    let p = Path::new(arg);
+    if !p.is_absolute() {
+        return arg.to_owned();
+    }
+    let rerooted = reroot_under_chroot(p, canon_workdir, raw_workdir);
+    if rerooted.as_path() == p {
+        arg.to_owned()
+    } else {
+        rerooted.to_string_lossy().into_owned()
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -873,16 +991,32 @@ mod tests {
     }
 
     #[test]
-    fn build_plan_without_bind_mount_flag_yields_empty_list() {
+    fn build_plan_strict_grafts_proc_without_lib_flag() {
+        // Even with `bind_mount_host_libs=false`, Strict+chroot grafts
+        // `/proc` (the harness needs `/proc/self` after chroot) but no
+        // host-lib mounts.  On a build host without `/proc` (macOS dev
+        // box) the graft is a no-op and the list stays empty.
+        let workdir = tempfile::TempDir::new().expect("tempdir");
         let opts = SandboxOptions {
             process_hardening: ProcessHardeningProfile::Strict,
             ..SandboxOptions::default()
         };
-        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
-        assert!(
-            plan.bind_mounts.is_empty(),
-            "bind_mounts should stay empty when bind_mount_host_libs=false",
-        );
+        let plan = build_plan(&opts, workdir.path());
+        if std::path::Path::new("/proc").exists() {
+            assert!(
+                plan.bind_mounts.iter().any(|m| m.source_nul == b"/proc\0"),
+                "Strict+chroot must graft /proc so the harness can read /proc/self",
+            );
+            assert!(
+                !plan
+                    .bind_mounts
+                    .iter()
+                    .any(|m| { m.source_nul == b"/lib\0" || m.source_nul == b"/usr/lib\0" }),
+                "no host-lib mounts should appear without bind_mount_host_libs",
+            );
+        } else {
+            assert!(plan.bind_mounts.is_empty());
+        }
     }
 
     #[test]
