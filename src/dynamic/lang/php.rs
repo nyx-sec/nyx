@@ -2234,8 +2234,21 @@ function __nyx_define_codeigniter_config(): void {
     if (!defined('SYSTEMPATH')) define('SYSTEMPATH', __DIR__ . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'codeigniter4' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'system' . DIRECTORY_SEPARATOR);
     if (!is_dir(APPPATH . 'Config')) @mkdir(APPPATH . 'Config', 0777, true);
     if (!is_dir(WRITEPATH)) @mkdir(WRITEPATH, 0777, true);
-    if (!class_exists('Config\\Modules') && class_exists('\\CodeIgniter\\Config\\Modules')) {
-        eval('namespace Config; class Modules extends \\CodeIgniter\\Config\\Modules {}');
+    if (!class_exists('Config\\Modules')) {
+        // CI4's Modules config extends \CodeIgniter\Modules\Modules — NOT
+        // \CodeIgniter\Config\Modules.  Without a concrete Config\Modules the
+        // route factory (config('Modules') inside Services::routes() and
+        // RouteCollection discovery) throws `Class "Config\Modules" not found`
+        // before the controller ever runs.  Override shouldDiscover() so route
+        // lookup never auto-scans Composer packages inside the sandbox; the
+        // route we register manually is returned regardless.
+        if (class_exists('\\CodeIgniter\\Modules\\Modules')) {
+            eval('namespace Config; class Modules extends \\CodeIgniter\\Modules\\Modules { public function shouldDiscover(string $alias): bool { return false; } }');
+        } elseif (class_exists('\\CodeIgniter\\Config\\Modules')) {
+            eval('namespace Config; class Modules extends \\CodeIgniter\\Config\\Modules { public function shouldDiscover(string $alias): bool { return false; } }');
+        } else {
+            eval('namespace Config; class Modules { public bool $enabled = false; public array $aliases = []; public function shouldDiscover(string $alias): bool { return false; } }');
+        }
     }
     if (!class_exists('Config\\Routing') && class_exists('\\CodeIgniter\\Config\\Routing')) {
         eval('namespace Config; class Routing extends \\CodeIgniter\\Config\\Routing {}');
