@@ -1160,6 +1160,15 @@ mod e2e_phase_20 {
             backend: nyx_scanner::dynamic::sandbox::SandboxBackend::Process,
             extra_env,
             stub_harness: Some(stub_harness),
+            // The kafka harness chains two bounded live-broker upgrade attempts
+            // (`_nyx_try_real_kafka` then `_nyx_try_kafka_http`), each capped at
+            // `_NYX_LIVE_BROKER_DEADLINE` (~2.5s).  Under heavy parallel CI load
+            // both can stall to their full deadline, consuming the default 5s
+            // sandbox budget before the deterministic in-process loopback
+            // fallback gets to run — an intermittent NotConfirmed.  Give the
+            // loopback headroom so the verdict is deterministic regardless of
+            // how long the live-broker probing takes.
+            timeout: std::time::Duration::from_secs(20),
             ..SandboxOptions::default()
         };
         match run_spec(&spec, &opts) {

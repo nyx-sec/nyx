@@ -279,6 +279,8 @@ const CLONE_NEWPID: i32 = 0x2000_0000;
 const MS_RDONLY: u64 = 0x0000_0001;
 const MS_REMOUNT: u64 = 0x0000_0020;
 const MS_BIND: u64 = 0x0000_1000;
+const MS_REC: u64 = 0x0000_4000;
+const MS_PRIVATE: u64 = 0x0004_0000;
 
 #[repr(C)]
 struct Rlimit {
@@ -413,6 +415,28 @@ struct BindMount {
 /// path.
 fn apply_bind_mounts(mounts: &[BindMount]) {
     let none = b"none\0";
+    // Make the new mount namespace's root private+recursive before any
+    // bind.  `unshare(CLONE_NEWNS)` copies the host mount table with its
+    // propagation type intact; on a host whose `/` is MS_SHARED a bind
+    // grafted here could propagate (or fail) in surprising ways.  The
+    // standard container idiom is to recursively privatise `/` first so
+    // the subsequent binds land cleanly and never escape the child.
+    // Best-effort: the call is gated on `unshare == Applied` by the sole
+    // caller, so it only ever runs inside the child's own namespace, and
+    // a failure (host already private) is harmless.
+    let root = b"/\0";
+    // SAFETY: `root`/`none` are NUL-terminated byte literals (valid C
+    // strings); `mount(2)` only reads them.  Return value intentionally
+    // ignored — this is a best-effort propagation tweak.
+    unsafe {
+        mount(
+            none.as_ptr() as *const core::ffi::c_char,
+            root.as_ptr() as *const core::ffi::c_char,
+            std::ptr::null(),
+            MS_REC | MS_PRIVATE,
+            std::ptr::null(),
+        );
+    }
     for m in mounts {
         // SAFETY: `source_nul`/`dest_nul` are NUL-terminated by
         // `canonicalize_bind_mount` and `none` is a NUL-terminated literal, so
@@ -828,14 +852,14 @@ fn canonicalize_workdir(workdir: &Path) -> Vec<u8> {
 /// at execve — before the harness prints a single line.
 pub fn chroot_will_apply(opts: &SandboxOptions) -> bool {
     matches!(opts.process_hardening, ProcessHardeningProfile::Strict)
-        && opts.ablation.map_or(true, |m| !m.no_chroot)
+        && opts.ablation.is_none_or(|m| !m.no_chroot)
 }
 
 /// Reroot an absolute path that lives under `workdir` to a *cwd-relative*
 /// form (`./<rel>`).
 ///
 /// `run_process` sets `Command::current_dir(workdir)`, so the child's cwd
-/// is the workdir before pre_exec runs.  [`apply_chroot`] only calls
+/// is the workdir before pre_exec runs.  `apply_chroot` only calls
 /// `chdir("/")` *after a successful* `chroot(workdir)`; on a host where
 /// `chroot(2)` fails (unprivileged, no `CAP_SYS_CHROOT`, AppArmor-locked
 /// userns) it leaves the cwd at the workdir.  Either way the cwd points at

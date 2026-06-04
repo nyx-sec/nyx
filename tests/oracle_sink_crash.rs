@@ -310,7 +310,7 @@ fn signal_set_const_construction_is_order_independent() {
 mod e2e_phase_08 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
     use nyx_scanner::dynamic::runner::{RunOutcome, run_spec};
-    use nyx_scanner::dynamic::sandbox::SandboxOptions;
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
         EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
@@ -377,7 +377,18 @@ mod e2e_phase_08 {
         }
         let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (spec, _tmp) = build_spec(file);
-        let opts = SandboxOptions::default();
+        // Pin the process backend.  These tests assert process-level crash
+        // semantics (signal death → exit_code == None) and host-side probe-
+        // channel delivery (NYX_PROBE_PATH), both of which only the process
+        // backend provides.  Auto would route the native C ELF to the docker
+        // backend whenever a docker daemon is reachable (true on ubuntu-latest),
+        // where signal death surfaces as exit code 134/139 and NYX_PROBE_PATH is
+        // never injected.  Standard hardening (the default) attempts no
+        // unshare/chroot/seccomp, so this runs on unprivileged CI runners.
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
         match run_spec(&spec, &opts) {
             Ok(outcome) => Some(outcome),
             Err(e) => panic!("run_spec({file}) errored: {e:?}"),

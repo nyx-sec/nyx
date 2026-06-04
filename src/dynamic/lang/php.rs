@@ -2306,6 +2306,44 @@ function __nyx_ci_invoke_handler($handler, array $args, string $payload) {
     return call_user_func_array([$controller, $method], $args ?: [$payload]);
 }
 
+// Collect every registered route regardless of how CodeIgniter keyed the
+// HTTP-verb bucket.  Route buckets are keyed lowercase (`get`, `post`),
+// but `RouteCollection::getRoutes()` did not lowercase its argument until
+// later 4.x releases — so `getRoutes('GET')` returns nothing on the
+// pinned `^4.4` framework while `getRoutes('get')` returns the route.
+// Merge the exact verb, its lowercase form, the catch-all `*` bucket, and
+// the no-arg (current verb) view so the replay is robust across the whole
+// 4.x line.
+function __nyx_ci_all_routes($routes, string $method): array {
+    if (!method_exists($routes, 'getRoutes')) {
+        return [];
+    }
+    $merged = [];
+    $verbs = [$method, strtolower($method), strtoupper($method), '*'];
+    foreach ($verbs as $verb) {
+        try {
+            $bucket = $routes->getRoutes($verb);
+        } catch (Throwable $_) {
+            $bucket = [];
+        }
+        if (is_array($bucket)) {
+            foreach ($bucket as $pattern => $handler) {
+                $merged[$pattern] = $handler;
+            }
+        }
+    }
+    try {
+        $current = $routes->getRoutes();
+        if (is_array($current)) {
+            foreach ($current as $pattern => $handler) {
+                $merged[$pattern] = $handler;
+            }
+        }
+    } catch (Throwable $_) {
+    }
+    return $merged;
+}
+
 function __nyx_dispatch_codeigniter(string $payload, string $method) {
     $routes = __nyx_codeigniter_routes();
     $registrar = __nyx_require_registrar();
@@ -2314,7 +2352,7 @@ function __nyx_dispatch_codeigniter(string $payload, string $method) {
         $routes->setHTTPVerb($method);
     }
     $path = ltrim(__nyx_request_path(__NYX_ROUTE_PATH, $payload), '/');
-    $map = method_exists($routes, 'getRoutes') ? $routes->getRoutes($method) : [];
+    $map = __nyx_ci_all_routes($routes, $method);
     foreach ($map as $pattern => $handler) {
         if (preg_match(__nyx_ci_pattern_regex((string) $pattern), $path, $matches)) {
             array_shift($matches);

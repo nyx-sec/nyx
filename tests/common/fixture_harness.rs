@@ -343,7 +343,19 @@ pub fn run_fixture_and_compare_to_golden(spec: &FixtureSpec<'_>) {
     let mut diag = make_diag(&diag_path, spec.func, spec.cap, spec.sink_line);
     diag.confidence = Some(spec.confidence);
 
-    let opts = VerifyOptions::default();
+    // The dynamic goldens are authored on macOS, where `harness_is_native_binary`
+    // returns false so the Auto backend routes a compiled fixture to the process
+    // backend.  On Linux the same Auto default routes the compiled ELF to the
+    // docker native-binary path — a backend-divergent oracle (no probe channel,
+    // OOB callback hardcoded false, `--network none --read-only`) — and in the
+    // no-docker CI job that path fails outright with BackendUnavailable(Docker).
+    // Pin native-binary fixture langs to the process backend so every host
+    // reproduces the golden-authoring path (mirrors tests/go_fixtures.rs).
+    // Interpreted langs (e.g. python) keep Auto.
+    let mut opts = VerifyOptions::default();
+    if matches!(spec.lang_dir, "rust" | "go" | "c" | "cpp") {
+        opts.sandbox.backend = nyx_scanner::dynamic::sandbox::SandboxBackend::Process;
+    }
     let result = verify_finding(&diag, &opts);
 
     unsafe {
