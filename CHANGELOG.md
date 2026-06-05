@@ -2,14 +2,6 @@
 
 All notable changes to Nyx are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). For where Nyx is going, see the [Roadmap](ROADMAP.md).
 
-## [Unreleased]
-
-- **`nyx repro` subcommand.** Replays dynamic repro bundles by finding id,
-  spec hash, or explicit bundle path, with `--docker`, `--print-path`, and
-  `--list` helpers. The CLI now matches the browser UI's reproduced command
-  and uses bundle manifests to bridge stable finding ids to spec-hash cache
-  directories.
-
 ## [0.8.0] - 2026-06-06
 
 The dynamic-verification release. An attack-surface map, a sandboxed dynamic verifier, a framework adapter registry that grounds both, the per-language build infrastructure that makes per-finding verification affordable at corpus scale, and the first real-corpus acceptance gates.
@@ -87,6 +79,11 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 - **`nyx verify-feedback <finding_id> --wrong <reason> | --right`** records a correction or confirmation for a finding's verdict in the local telemetry log.
 - **`nyx scan --explain-engine`** prints the effective engine configuration and exits without scanning.
 - **`nyx surface`** (described above) with `--format {text,json,dot,svg}` and `--build`.
+- **`nyx repro` subcommand.** Replays dynamic repro bundles by finding id,
+  spec hash, or explicit bundle path, with `--docker`, `--print-path`, and
+  `--list` helpers. The CLI now matches the browser UI's reproduced command
+  and uses bundle manifests to bridge stable finding ids to spec-hash cache
+  directories.
 
 ### Frontend
 
