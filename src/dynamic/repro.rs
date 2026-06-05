@@ -47,8 +47,10 @@ use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::VerifyResult;
 use crate::utils::redact;
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Emitted by [`write()`] on success.
 #[derive(Debug, Clone)]
@@ -57,6 +59,42 @@ pub struct ReproArtifact {
     pub root: PathBuf,
     /// Relative symlink from the project cache directory.
     pub symlink: Option<PathBuf>,
+}
+
+/// `manifest.json` at the root of a repro bundle.
+///
+/// The manifest is the stable lookup surface for tooling that starts from a
+/// finding id rather than a spec hash. New fields can be appended by the writer
+/// without breaking old readers; command-line replay only requires
+/// `finding_id` and `spec_hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproManifest {
+    pub spec_hash: String,
+    pub finding_id: String,
+    #[serde(default)]
+    pub corpus_version: Option<u64>,
+    #[serde(default)]
+    pub spec_format_version: Option<u64>,
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub entry_file: Option<String>,
+    #[serde(default)]
+    pub entry_name: Option<String>,
+    #[serde(default)]
+    pub sink_file: Option<String>,
+    #[serde(default)]
+    pub sink_line: Option<u32>,
+    #[serde(default)]
+    pub toolchain_id: Option<String>,
+}
+
+/// A repro bundle discovered on disk with its parsed manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedReproBundle {
+    pub root: PathBuf,
+    pub manifest: ReproManifest,
+    pub modified: Option<SystemTime>,
 }
 
 #[derive(Debug)]
@@ -263,19 +301,12 @@ pub fn write(
 }
 
 fn repro_root(spec_hash: &str) -> Result<PathBuf, ReproError> {
-    // Respect test override.
-    let base = if let Ok(p) = std::env::var("NYX_REPRO_BASE") {
-        PathBuf::from(p)
-    } else {
-        let dirs = ProjectDirs::from("", "", "nyx").ok_or_else(|| {
-            ReproError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "cannot determine cache dir",
-            ))
-        })?;
-        dirs.cache_dir().join("dynamic").join("repro")
-    };
-
+    let base = repro_base_dir().ok_or_else(|| {
+        ReproError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "cannot determine cache dir",
+        ))
+    })?;
     let root = base.join(spec_hash);
     fs::create_dir_all(&root)?;
     #[cfg(unix)]
@@ -294,13 +325,85 @@ fn repro_root(spec_hash: &str) -> Result<PathBuf, ReproError> {
 ///
 /// Returns `None` when the host has no resolvable cache dir.
 pub fn bundle_root_for(spec_hash: &str) -> Option<PathBuf> {
-    let base = if let Ok(p) = std::env::var("NYX_REPRO_BASE") {
-        PathBuf::from(p)
-    } else {
-        let dirs = ProjectDirs::from("", "", "nyx")?;
-        dirs.cache_dir().join("dynamic").join("repro")
+    Some(repro_base_dir()?.join(spec_hash))
+}
+
+/// Resolve the directory that contains all repro bundles without creating it.
+///
+/// On macOS this follows [`directories::ProjectDirs`] to
+/// `~/Library/Caches/nyx/dynamic/repro`; on Linux it follows the XDG cache
+/// directory. Tests and CI can override it with `NYX_REPRO_BASE`.
+pub fn repro_base_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NYX_REPRO_BASE") {
+        return Some(PathBuf::from(p));
+    }
+    let dirs = ProjectDirs::from("", "", "nyx")?;
+    Some(dirs.cache_dir().join("dynamic").join("repro"))
+}
+
+/// Read and parse a bundle manifest.
+pub fn read_manifest(bundle_root: &Path) -> Result<ReproManifest, ReproError> {
+    let bytes = fs::read(bundle_root.join("manifest.json"))?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Resolve a bundle by spec hash and parse its manifest when present.
+pub fn bundle_for_spec_hash(spec_hash: &str) -> Result<Option<LocatedReproBundle>, ReproError> {
+    let Some(root) = bundle_root_for(spec_hash) else {
+        return Ok(None);
     };
-    Some(base.join(spec_hash))
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    let manifest = read_manifest(&root)?;
+    Ok(Some(located_bundle(root, manifest)))
+}
+
+/// Find every cached repro bundle whose manifest carries `finding_id`.
+///
+/// Results are sorted newest-first by directory mtime, then by spec hash for a
+/// stable tie-breaker. Incomplete or malformed bundle directories are skipped
+/// so one broken cache entry does not prevent replaying a valid one.
+pub fn find_bundles_by_finding_id(finding_id: &str) -> Result<Vec<LocatedReproBundle>, ReproError> {
+    let Some(base) = repro_base_dir() else {
+        return Ok(Vec::new());
+    };
+    if !base.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(base)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let root = entry.path();
+        if !root.is_dir() || !root.join("manifest.json").is_file() {
+            continue;
+        }
+        let Ok(manifest) = read_manifest(&root) else {
+            continue;
+        };
+        if manifest.finding_id == finding_id {
+            matches.push(located_bundle(root, manifest));
+        }
+    }
+
+    matches.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.manifest.spec_hash.cmp(&b.manifest.spec_hash))
+    });
+    Ok(matches)
+}
+
+fn located_bundle(root: PathBuf, manifest: ReproManifest) -> LocatedReproBundle {
+    let modified = fs::metadata(&root).and_then(|m| m.modified()).ok();
+    LocatedReproBundle {
+        root,
+        manifest,
+        modified,
+    }
 }
 
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), ReproError> {
@@ -589,6 +692,14 @@ pub enum ReplayResult {
     },
 }
 
+/// Captured output from a repro replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayOutput {
+    pub result: ReplayResult,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 /// Tri-state map of [`ReplayResult`] onto the eval-corpus
 /// `VerifyResult::replay_stable` field shape.
 ///
@@ -617,11 +728,20 @@ pub fn replay_stability(result: &ReplayResult) -> Option<bool> {
 /// Callers who want "did this bundle replay green?" semantics get a typed
 /// result instead of parsing shell output.
 pub fn replay_bundle(bundle_root: &Path, extra_args: &[&str]) -> ReplayResult {
+    replay_bundle_capture(bundle_root, extra_args).result
+}
+
+/// Run `reproduce.sh` and retain stdout/stderr for human-facing callers.
+pub fn replay_bundle_capture(bundle_root: &Path, extra_args: &[&str]) -> ReplayOutput {
     use std::process::Command;
     let script = bundle_root.join("reproduce.sh");
     if !script.exists() {
-        return ReplayResult::ScriptInvocationFailed {
-            message: format!("reproduce.sh missing at {}", script.display()),
+        return ReplayOutput {
+            result: ReplayResult::ScriptInvocationFailed {
+                message: format!("reproduce.sh missing at {}", script.display()),
+            },
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         };
     }
     let mut cmd = Command::new("sh");
@@ -631,18 +751,26 @@ pub fn replay_bundle(bundle_root: &Path, extra_args: &[&str]) -> ReplayResult {
     }
     cmd.current_dir(bundle_root);
     match cmd.output() {
-        Ok(out) => match out.status.code() {
-            Some(0) => ReplayResult::Pass,
-            Some(1) => ReplayResult::Mismatch,
-            Some(2) => ReplayResult::DockerUnavailable,
-            Some(3) => ReplayResult::ToolchainMismatch,
-            Some(code) => ReplayResult::UnexpectedError { exit_code: code },
-            None => ReplayResult::ScriptInvocationFailed {
-                message: "reproduce.sh terminated without an exit code".to_owned(),
+        Ok(out) => ReplayOutput {
+            result: match out.status.code() {
+                Some(0) => ReplayResult::Pass,
+                Some(1) => ReplayResult::Mismatch,
+                Some(2) => ReplayResult::DockerUnavailable,
+                Some(3) => ReplayResult::ToolchainMismatch,
+                Some(code) => ReplayResult::UnexpectedError { exit_code: code },
+                None => ReplayResult::ScriptInvocationFailed {
+                    message: "reproduce.sh terminated without an exit code".to_owned(),
+                },
             },
+            stdout: out.stdout,
+            stderr: out.stderr,
         },
-        Err(e) => ReplayResult::ScriptInvocationFailed {
-            message: format!("failed to invoke reproduce.sh: {e}"),
+        Err(e) => ReplayOutput {
+            result: ReplayResult::ScriptInvocationFailed {
+                message: format!("failed to invoke reproduce.sh: {e}"),
+            },
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         },
     }
 }

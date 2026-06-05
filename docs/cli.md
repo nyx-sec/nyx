@@ -220,6 +220,43 @@ nyx scan . --max-low 50 --max-low-per-file 5
 
 ---
 
+## `nyx repro`
+
+Replay a dynamic repro bundle for a confirmed finding.
+
+```
+nyx repro (--finding <ID> | --spec-hash <HASH> | --bundle <DIR>) [OPTIONS]
+```
+
+Nyx writes repro bundles under the platform cache directory and keys them by
+`spec_hash`. The browser UI and scan output show `finding_id`, so
+`--finding` scans cached bundle manifests and replays the newest match.
+
+| Flag | Description |
+|------|-------------|
+| `--finding <ID>` | Find the newest cached bundle whose manifest carries this stable finding ID |
+| `--spec-hash <HASH>` | Replay an exact cache bundle by spec hash |
+| `--bundle <DIR>` | Replay an explicit bundle directory |
+| `--docker` | Run the bundle's Docker replay path (`./reproduce.sh --docker`) |
+| `--print-path` | Print the resolved bundle path and exit without replaying |
+| `--list` | With `--finding`, list all matching cached bundles newest first |
+
+Examples:
+
+```bash
+nyx repro --finding b9caa35df2213040
+nyx repro --finding b9caa35df2213040 --docker
+nyx repro --finding b9caa35df2213040 --print-path
+nyx repro --spec-hash 8bca7f8e0311d6c9
+nyx repro --bundle /path/to/repro/8bca7f8e0311d6c9
+```
+
+Exit codes mirror `reproduce.sh`: `0` pass, `1` replay mismatch, `2` Docker
+unavailable, `3` process-backend toolchain mismatch. Any other script exit is
+passed through.
+
+---
+
 ## `nyx index`
 
 Manage the SQLite file index.

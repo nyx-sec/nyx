@@ -710,7 +710,7 @@ export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
   const attempts = verdict.attempts ?? [];
   // The repro bundle is keyed by spec_hash (not finding_id) inside the Nyx
   // cache.  Rather than showing a path that may not match, surface the CLI
-  // command that locates and opens the bundle regardless of the hash.
+  // command that resolves and replays the newest matching bundle.
   const reproCmd = `nyx repro --finding ${verdict.finding_id}`;
 
   const copyCmd = () => {

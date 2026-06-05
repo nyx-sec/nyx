@@ -10,6 +10,8 @@ pub mod clean;
 pub mod config;
 pub mod index;
 pub mod list;
+#[cfg(feature = "dynamic")]
+pub mod repro;
 pub mod rules;
 pub mod scan;
 #[cfg(feature = "serve")]
@@ -405,6 +407,23 @@ pub fn handle_command(
         }
         #[cfg(not(feature = "dynamic"))]
         Commands::VerifyFeedback { .. } => {
+            return Err(crate::errors::NyxError::Msg(
+                "The `dynamic` feature is not enabled. Rebuild with `cargo build --features dynamic`.".into(),
+            ));
+        }
+        #[cfg(feature = "dynamic")]
+        Commands::Repro {
+            finding,
+            spec_hash,
+            bundle,
+            docker,
+            print_path,
+            list,
+        } => {
+            repro::handle(finding, spec_hash, bundle, docker, print_path, list)?;
+        }
+        #[cfg(not(feature = "dynamic"))]
+        Commands::Repro { .. } => {
             return Err(crate::errors::NyxError::Msg(
                 "The `dynamic` feature is not enabled. Rebuild with `cargo build --features dynamic`.".into(),
             ));

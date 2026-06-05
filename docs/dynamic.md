@@ -224,18 +224,34 @@ fails.
 
 ## Repro artifacts
 
-Confirmed findings write a hermetic bundle:
+Confirmed findings write a hermetic bundle under Nyx's platform cache
+directory:
 
 ```text
-~/.cache/nyx/dynamic/repro/<spec_hash>/
+<cache-dir>/nyx/dynamic/repro/<spec_hash>/
 ```
+
+On Linux this is usually `~/.cache/nyx/dynamic/repro/<spec_hash>/`; on macOS
+it is usually `~/Library/Caches/nyx/dynamic/repro/<spec_hash>/`.
 
 The bundle carries the harness spec, payload, expected output, trace, and a
 `reproduce.sh`. When the toolchain is pinned in `tools/image-builder/images.toml`
 it also writes a `docker_pull.sh`.
 
+The easiest replay path starts from the finding id shown in scan output or the
+browser UI:
+
 ```bash
-cd ~/.cache/nyx/dynamic/repro/<spec_hash>
+nyx repro --finding <finding_id>
+nyx repro --finding <finding_id> --docker
+```
+
+You can also replay an exact bundle by spec hash, or inspect the shell script
+directly:
+
+```bash
+nyx repro --spec-hash <spec_hash>
+cd <cache-dir>/nyx/dynamic/repro/<spec_hash>
 ./reproduce.sh
 ./reproduce.sh --docker
 ```
