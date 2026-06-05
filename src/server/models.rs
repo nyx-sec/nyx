@@ -233,7 +233,7 @@ pub fn collect_filter_values(findings: &[Diag]) -> FilterValues {
             languages.insert(lang);
         }
         rules.insert(d.id.clone());
-        statuses.insert(status_for_diag(d).to_string());
+        statuses.insert(status_for_diag(d));
         verification_statuses.insert(
             dynamic_status_for_diag(d)
                 .unwrap_or("Unverified")
@@ -279,13 +279,15 @@ pub fn lang_for_finding_path(path: &str) -> Option<String> {
 }
 
 /// Compute the status string for a diagnostic.
-fn status_for_diag(d: &Diag) -> &'static str {
-    if d.suppressed {
-        "suppressed"
+fn status_for_diag(d: &Diag) -> String {
+    if !crate::commands::scan::is_default_triage_state(&d.triage_state) {
+        d.triage_state.clone()
+    } else if d.suppressed {
+        "suppressed".to_string()
     } else if d.path_validated {
-        "validated"
+        "validated".to_string()
     } else {
-        "open"
+        "open".to_string()
     }
 }
 
@@ -332,9 +334,9 @@ pub fn finding_from_diag(index: usize, d: &Diag) -> FindingView {
         path_validated: d.path_validated,
         suppressed: d.suppressed,
         language: lang_for_finding_path(&d.path),
-        status: status_for_diag(d).to_string(),
-        triage_state: "open".to_string(),
-        triage_note: String::new(),
+        status: status_for_diag(d),
+        triage_state: d.triage_state.clone(),
+        triage_note: d.triage_note.clone(),
         code_context: None,
         evidence: None,
         dynamic_verdict: d
@@ -937,6 +939,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),

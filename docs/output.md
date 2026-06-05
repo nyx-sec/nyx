@@ -282,6 +282,25 @@ Without `--fail-on` or `--gate`, Nyx always exits `0` on a successful scan regar
 
 ---
 
+## Repository Triage
+
+`nyx scan` and `nyx serve` share `.nyx/triage.json` in the scan root. The file
+uses portable fingerprints so committed triage decisions survive different
+checkout paths in local runs and CI.
+
+When the file exists, CLI scans apply it automatically:
+
+- `open` and `investigating` findings remain active.
+- `false_positive`, `accepted_risk`, `suppressed`, and `fixed` findings are
+  excluded from output and `--fail-on` checks by default.
+- `--show-suppressed` includes terminal triage findings and emits
+  `triage_state` plus `triage_note` when present.
+
+`nyx serve` continues to read and write the same file when triage sync is
+enabled, so browser triage and CI gating use the same decisions.
+
+---
+
 ## Severity Levels
 
 | Level | Description | Typical rules |

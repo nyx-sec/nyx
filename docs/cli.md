@@ -82,6 +82,13 @@ nyx scan [PATH] [OPTIONS]
 | `--rollup-examples <N>` | `5` | Number of example locations in rollup findings |
 | `--show-instances <RULE>` | *(none)* | Expand all instances of a specific rule (bypass rollup) |
 
+`nyx scan` automatically reads `.nyx/triage.json` from the scan root when the
+file exists. Terminal triage states written by `nyx serve` (`false_positive`,
+`accepted_risk`, `suppressed`, and `fixed`) are hidden from CLI output and do
+not trigger `--fail-on` by default. Use `--show-suppressed` to include them in
+console, JSON, or SARIF output with their `triage_state` and optional
+`triage_note`.
+
 **Severity expression formats**:
 
 ```bash

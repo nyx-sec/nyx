@@ -61,17 +61,20 @@ pub fn render_console(
         ));
     }
 
-    let suppressed_count = diags.iter().filter(|d| d.suppressed).count();
-    let active_count = diags.len() - suppressed_count;
+    let inactive_count = diags
+        .iter()
+        .filter(|d| crate::commands::scan::is_inactive_for_cli(d))
+        .count();
+    let active_count = diags.len() - inactive_count;
 
-    if suppressed_count > 0 {
+    if inactive_count > 0 {
         out.push_str(&format!(
-            "{} '{}' generated {} {} ({} suppressed).\n\n",
+            "{} '{}' generated {} {} ({} suppressed/triaged).\n\n",
             style("warning").yellow().bold(),
             style(project_name).white().bold(),
             style(active_count).bold(),
             if active_count == 1 { "issue" } else { "issues" },
-            suppressed_count,
+            inactive_count,
         ));
     } else {
         out.push_str(&format!(
@@ -328,6 +331,8 @@ fn render_diag(d: &Diag, width: usize) -> String {
     let loc = format!("{}:{}", d.line, d.col);
     let sev = if d.suppressed {
         format!("{} {}", style("○").dim(), style("[SUPPRESSED]").dim(),)
+    } else if crate::commands::scan::is_terminal_triage_state(&d.triage_state) {
+        triage_state_tag(&d.triage_state)
     } else {
         severity_tag(d.severity)
     };
@@ -383,14 +388,25 @@ fn render_diag(d: &Diag, width: usize) -> String {
     } else {
         String::new()
     };
+    let triage_suffix = if !crate::commands::scan::is_default_triage_state(&d.triage_state)
+        && !crate::commands::scan::is_terminal_triage_state(&d.triage_state)
+    {
+        format!(
+            "  {}",
+            style(format!("[triage: {}]", d.triage_state.replace('_', " "))).cyan()
+        )
+    } else {
+        String::new()
+    };
     out.push_str(&format!(
-        "  {}  {} {}{}{}{}\n",
+        "  {}  {} {}{}{}{}{}\n",
         style(&loc).dim(),
         sev,
         style(&d.id).dim(),
         meta_suffix,
         engine_notes_suffix,
         alt_suffix,
+        triage_suffix,
     ));
 
     // ── Rollup body ─────────────────────────────────────────────────────
@@ -425,6 +441,21 @@ fn render_diag(d: &Diag, width: usize) -> String {
         let capitalized = capitalize_first(msg);
         let wrapped = wrap_text(&capitalized, width, BODY_INDENT);
         out.push_str(&format!("{indent_str}{wrapped}\n"));
+    }
+
+    if !crate::commands::scan::is_default_triage_state(&d.triage_state) {
+        let label = d.triage_state.replace('_', " ");
+        let note = if d.triage_note.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", d.triage_note)
+        };
+        let wrapped = wrap_text(&format!("{label}{note}"), width, BODY_INDENT + 8);
+        out.push_str(&format!(
+            "{indent_str}{} {}\n",
+            style("Triage:").dim(),
+            style(wrapped).dim(),
+        ));
     }
 
     // ── Evidence labels (Source, Sink, Path guard) ───────────────────────
@@ -660,6 +691,21 @@ fn severity_tag(sev: Severity) -> String {
             style("●").color256(67),
             style("LOW").color256(67),
         ),
+    }
+}
+
+fn triage_state_tag(state: &str) -> String {
+    let label = state.replace('_', " ").to_ascii_uppercase();
+    match state {
+        "false_positive" | "suppressed" | "fixed" => {
+            format!("{} {}", style("○").dim(), style(format!("[{label}]")).dim())
+        }
+        "accepted_risk" => format!(
+            "{} {}",
+            style("●").yellow(),
+            style(format!("[{label}]")).yellow(),
+        ),
+        _ => format!("{} {}", style("○").dim(), style(format!("[{label}]")).dim()),
     }
 }
 
@@ -941,6 +987,8 @@ mod tests {
                 rank_reason: None,
                 suppressed: false,
                 suppression: None,
+                triage_state: "open".to_string(),
+                triage_note: String::new(),
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
@@ -963,6 +1011,8 @@ mod tests {
                 rank_reason: None,
                 suppressed: false,
                 suppression: None,
+                triage_state: "open".to_string(),
+                triage_note: String::new(),
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
@@ -999,6 +1049,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1035,6 +1087,8 @@ mod tests {
                 rank_reason: None,
                 suppressed: false,
                 suppression: None,
+                triage_state: "open".to_string(),
+                triage_note: String::new(),
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
@@ -1057,6 +1111,8 @@ mod tests {
                 rank_reason: None,
                 suppressed: false,
                 suppression: None,
+                triage_state: "open".to_string(),
+                triage_note: String::new(),
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
@@ -1091,6 +1147,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1122,6 +1180,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1157,6 +1217,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1251,6 +1313,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1298,6 +1362,8 @@ mod tests {
                 rank_reason: None,
                 suppressed: false,
                 suppression: None,
+                triage_state: "open".to_string(),
+                triage_note: String::new(),
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
@@ -1331,6 +1397,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1368,6 +1436,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1401,6 +1471,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -1448,6 +1520,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),

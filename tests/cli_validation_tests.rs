@@ -14,8 +14,9 @@
 //! reproducible.
 
 use assert_cmd::Command;
+use nyx_scanner::commands::scan::Diag;
 use predicates::prelude::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// Build a scan command with a fresh config dir and a writable tempdir as
@@ -194,6 +195,91 @@ fn scan_json_stdout_is_machine_clean_when_tracing_warns() {
     assert!(
         value.get("findings").is_some(),
         "JSON scan payload missing findings"
+    );
+}
+
+#[test]
+fn scan_respects_committed_triage_file_for_cli_output_and_fail_on() {
+    let home = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    std::fs::write(
+        target.path().join("app.js"),
+        b"const q = req.query.x;\neval(q);\n",
+    )
+    .unwrap();
+    let canonical_target = target.path().canonicalize().unwrap();
+
+    let scan_args = [
+        "--format",
+        "json",
+        "--quiet",
+        "--index",
+        "off",
+        "--no-verify",
+        "--all",
+        "--include-quality",
+        "--parse-timeout-ms",
+        "0",
+    ];
+    let (mut first_cmd, _) = scan_cmd(home.path(), target.path());
+    first_cmd.args(scan_args);
+    let first = first_cmd.assert().success();
+    let first_json = assert_stdout_is_json_from_byte_zero(
+        &first.get_output().stdout,
+        "initial nyx scan --format json",
+    );
+    let findings = first_json["findings"]
+        .as_array()
+        .expect("scan JSON must include findings");
+    assert!(
+        !findings.is_empty(),
+        "fixture should emit at least one finding"
+    );
+
+    let decisions: Vec<Value> = findings
+        .iter()
+        .map(|finding| {
+            let diag: Diag = serde_json::from_value(finding.clone()).unwrap();
+            json!({
+                "fingerprint": nyx_scanner::server::models::compute_portable_fingerprint(
+                    &diag,
+                    &canonical_target,
+                ),
+                "state": "false_positive",
+                "note": "fixture triaged by committed file",
+                "rule_id": diag.id,
+                "path": diag.path.strip_prefix(canonical_target.to_string_lossy().as_ref())
+                    .unwrap_or(&diag.path)
+                    .trim_start_matches('/')
+            })
+        })
+        .collect();
+
+    let nyx_dir = target.path().join(".nyx");
+    std::fs::create_dir(&nyx_dir).unwrap();
+    std::fs::write(
+        nyx_dir.join("triage.json"),
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "decisions": decisions,
+            "suppression_rules": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let (mut second_cmd, _) = scan_cmd(home.path(), target.path());
+    second_cmd.args(scan_args).args(["--fail-on", "HIGH"]);
+    let second = second_cmd.assert().success();
+    let second_json = assert_stdout_is_json_from_byte_zero(
+        &second.get_output().stdout,
+        "triaged nyx scan --format json",
+    );
+
+    assert_eq!(
+        second_json["findings"].as_array().unwrap().len(),
+        0,
+        "terminal triage decisions from .nyx/triage.json should be hidden by default"
     );
 }
 

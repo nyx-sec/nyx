@@ -36,6 +36,8 @@ fn empty_diag() -> Diag {
         rank_reason: None,
         suppressed: false,
         suppression: None,
+        triage_state: "open".to_string(),
+        triage_note: String::new(),
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: vec![],
