@@ -9,6 +9,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::broadcast;
@@ -107,6 +108,10 @@ impl JobManager {
         let progress = Arc::new(ScanProgress::new());
         let metrics = Arc::new(ScanMetrics::new());
         let log_collector = Arc::new(ScanLogCollector::default());
+        #[cfg(feature = "dynamic")]
+        if config.scanner.verify {
+            progress.expect_dynamic_verification();
+        }
 
         let engine_version = env!("CARGO_PKG_VERSION").to_string();
 
@@ -184,11 +189,12 @@ impl JobManager {
         let progress_for_sse = Arc::clone(&progress);
         let event_tx_sse = event_tx.clone();
         let jid_sse = job_id.clone();
+        let progress_done = Arc::new(AtomicBool::new(false));
+        let progress_done_sse = Arc::clone(&progress_done);
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 let snap = progress_for_sse.snapshot();
-                let is_complete = snap.stage == "complete";
                 let _ = event_tx_sse.send(ServerEvent::ScanProgress {
                     job_id: jid_sse.clone(),
                     stage: snap.stage,
@@ -198,11 +204,14 @@ impl JobManager {
                     files_skipped: snap.files_skipped,
                     batches_total: snap.batches_total,
                     batches_completed: snap.batches_completed,
+                    dynamic_enabled: snap.dynamic_enabled,
+                    dynamic_total: snap.dynamic_total,
+                    dynamic_completed: snap.dynamic_completed,
                     current_file: snap.current_file,
                     elapsed_ms: snap.elapsed_ms,
                     timing: snap.timing,
                 });
-                if is_complete {
+                if progress_done_sse.load(Ordering::Relaxed) {
                     break;
                 }
             }
@@ -264,6 +273,7 @@ impl JobManager {
                             &config,
                             false,
                             true,
+                            Some(&progress),
                         );
                     }
                     Ok(diags)
@@ -271,6 +281,10 @@ impl JobManager {
             #[cfg(feature = "dynamic")]
             crate::dynamic::sandbox::cleanup_docker_containers();
             let elapsed = start.elapsed().as_secs_f64();
+            if result.is_ok() {
+                progress.finish_dynamic_verification();
+            }
+            progress_done.store(true, Ordering::Relaxed);
 
             // Collect snapshots and do expensive work (post-processing,
             // JSON serialization) BEFORE acquiring the jobs mutex.

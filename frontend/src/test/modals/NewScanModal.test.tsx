@@ -48,6 +48,7 @@ describe('NewScanModal', () => {
 
   it('calls mutateAsync without verify key when checkbox is untouched', async () => {
     render(<NewScanModal open={true} onClose={vi.fn()} />);
+    expect(screen.queryByText('Process Hardening')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start scan' }));
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledOnce());
     const payload = mockMutateAsync.mock.calls[0][0];
@@ -55,7 +56,6 @@ describe('NewScanModal', () => {
     expect(payload).toEqual({
       engine_profile: 'balanced',
       verify_backend: 'auto',
-      harden_profile: 'standard',
     });
   });
 
@@ -72,6 +72,7 @@ describe('NewScanModal', () => {
     render(<NewScanModal open={true} onClose={vi.fn()} />);
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[2], { target: { value: 'process' } });
+    expect(screen.getByText('Process Hardening')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start scan' }));
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledOnce());
     const payload = mockMutateAsync.mock.calls[0][0];
@@ -79,5 +80,15 @@ describe('NewScanModal', () => {
       verify_backend: 'process',
       harden_profile: 'standard',
     });
+  });
+
+  it('hides process hardening when leaving the process backend', () => {
+    render(<NewScanModal open={true} onClose={vi.fn()} />);
+    const selects = screen.getAllByRole('combobox');
+    fireEvent.change(selects[2], { target: { value: 'process' } });
+    expect(screen.getByText('Process Hardening')).toBeInTheDocument();
+
+    fireEvent.change(selects[2], { target: { value: 'docker' } });
+    expect(screen.queryByText('Process Hardening')).not.toBeInTheDocument();
   });
 });

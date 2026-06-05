@@ -354,10 +354,16 @@ pub(crate) fn verify_findings_for_scan(
     config: &Config,
     verbose: bool,
     use_index_db: bool,
+    progress: Option<&Arc<ScanProgress>>,
 ) -> Option<crate::dynamic::verify::VerifyOptions> {
     if !config.scanner.verify {
         return None;
     }
+
+    if let Some(p) = progress {
+        p.start_dynamic_verification(diags.len() as u64);
+    }
+    let verify_start = std::time::Instant::now();
 
     let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
     // Phase 30 (Track C observability): surface the per-finding
@@ -405,13 +411,26 @@ pub(crate) fn verify_findings_for_scan(
         if let Some(trace) = &lane_trace {
             trace.print_to_stderr();
         }
+        if let Some(p) = progress {
+            p.inc_dynamic_completed(out.len() as u64);
+        }
         out
     } else {
         diags
             .iter()
-            .map(|d| crate::dynamic::verify::verify_finding(d, &opts))
+            .map(|d| {
+                let result = crate::dynamic::verify::verify_finding(d, &opts);
+                if let Some(p) = progress {
+                    p.inc_dynamic_completed(1);
+                }
+                result
+            })
             .collect()
     };
+
+    if let Some(p) = progress {
+        p.record_dynamic_verify_ms(verify_start.elapsed().as_millis() as u64);
+    }
 
     for (diag, mut result) in diags.iter_mut().zip(results) {
         if result.status == crate::dynamic::report::VerifyStatus::Confirmed
@@ -808,6 +827,7 @@ pub fn handle(
         config,
         verbose,
         index_mode != IndexMode::Off,
+        None,
     );
 
     #[cfg(not(feature = "dynamic"))]

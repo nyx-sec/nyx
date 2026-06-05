@@ -55,6 +55,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
   const [noVerify, setNoVerify] = useState(false);
   const [verifyBackend, setVerifyBackend] = useState<VerifyBackend>('auto');
   const [hardenProfile, setHardenProfile] = useState<HardenProfile>('standard');
+  const showProcessHardening = !noVerify && verifyBackend === 'process';
 
   const handleStart = async () => {
     const root = scanRoot.trim();
@@ -66,7 +67,9 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
       body.verify = false;
     } else {
       body.verify_backend = verifyBackend;
-      body.harden_profile = hardenProfile;
+      if (verifyBackend === 'process') {
+        body.harden_profile = hardenProfile;
+      }
     }
     const payload = Object.keys(body).length ? body : undefined;
     try {
@@ -162,20 +165,21 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
             </select>
             <span className="form-hint">{BACKEND_HINTS[verifyBackend]}</span>
           </div>
-          <div className="form-group">
-            <label>Process Hardening</label>
-            <select
-              value={hardenProfile}
-              disabled={noVerify || verifyBackend !== 'process'}
-              onChange={(e) =>
-                setHardenProfile(e.target.value as HardenProfile)
-              }
-            >
-              <option value="standard">Standard</option>
-              <option value="strict">Strict</option>
-            </select>
-            <span className="form-hint">{HARDEN_HINTS[hardenProfile]}</span>
-          </div>
+          {showProcessHardening && (
+            <div className="form-group">
+              <label>Process Hardening</label>
+              <select
+                value={hardenProfile}
+                onChange={(e) =>
+                  setHardenProfile(e.target.value as HardenProfile)
+                }
+              >
+                <option value="standard">Standard</option>
+                <option value="strict">Strict</option>
+              </select>
+              <span className="form-hint">{HARDEN_HINTS[hardenProfile]}</span>
+            </div>
+          )}
           <div className="scan-modal-actions">
             <button className="btn btn-sm" onClick={onClose}>
               Cancel

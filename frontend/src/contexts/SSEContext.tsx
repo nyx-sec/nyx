@@ -19,6 +19,9 @@ export interface ScanProgress {
   files_skipped: number;
   batches_total: number;
   batches_completed: number;
+  dynamic_enabled?: boolean;
+  dynamic_total: number;
+  dynamic_completed: number;
   current_file: string;
   elapsed_ms: number;
   timing: TimingBreakdown;
