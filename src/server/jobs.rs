@@ -292,6 +292,19 @@ impl JobManager {
                     for d in &mut diags {
                         d.stable_hash = scan::compute_stable_hash(d);
                     }
+                    if config.server.triage_sync
+                        && let Some(ref pool) = db_pool
+                    {
+                        match crate::server::triage_sync::sync_from_file(pool, &diags, &scan_root) {
+                            Some(applied) if applied > 0 => log_collector.info(
+                                format!(
+                                    "Imported {applied} triage decisions from .nyx/triage.json"
+                                ),
+                                None,
+                            ),
+                            _ => {}
+                        }
+                    }
                     let dynamic_summary = scan::DynamicVerificationSummary::from_diags(&diags);
                     if !dynamic_summary.is_empty() {
                         log_collector.info(

@@ -226,6 +226,12 @@ pub fn build_sarif_with_chains(diags: &[Diag], chains: &[ChainFinding], scan_roo
             if let Some(conf) = d.confidence {
                 props.insert("confidence".into(), json!(conf.to_string()));
             }
+            if !crate::commands::scan::is_default_triage_state(&d.triage_state) {
+                props.insert("triage_state".into(), json!(d.triage_state));
+                if !d.triage_note.is_empty() {
+                    props.insert("triage_note".into(), json!(d.triage_note));
+                }
+            }
 
             if let Some(field) = d
                 .evidence
@@ -391,6 +397,8 @@ mod tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),

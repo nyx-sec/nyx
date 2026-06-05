@@ -173,6 +173,20 @@ pub struct Diag {
     /// Metadata about the suppression directive, if suppressed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suppression: Option<crate::suppress::SuppressionMeta>,
+    /// Triage state applied from `.nyx/triage.json`.
+    ///
+    /// `open` is the default and is omitted from serialized output. Terminal
+    /// states (`false_positive`, `accepted_risk`, `suppressed`, `fixed`) are
+    /// hidden from CLI output and `--fail-on` by default, mirroring the web
+    /// UI's triage attention queue.
+    #[serde(
+        default = "default_triage_state",
+        skip_serializing_if = "is_default_triage_state"
+    )]
+    pub triage_state: String,
+    /// Optional note carried with a triage decision.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub triage_note: String,
     /// Rollup data when multiple occurrences are grouped into one finding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollup: Option<RollupData>,
@@ -200,6 +214,25 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+pub fn default_triage_state() -> String {
+    "open".to_string()
+}
+
+pub fn is_default_triage_state(state: &str) -> bool {
+    state == "open"
+}
+
+pub fn is_terminal_triage_state(state: &str) -> bool {
+    matches!(
+        state,
+        "false_positive" | "accepted_risk" | "suppressed" | "fixed"
+    )
+}
+
+pub fn is_inactive_for_cli(diag: &Diag) -> bool {
+    diag.suppressed || is_terminal_triage_state(&diag.triage_state)
+}
+
 #[cfg(test)]
 impl Default for Diag {
     fn default() -> Self {
@@ -220,6 +253,8 @@ impl Default for Diag {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: default_triage_state(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: vec![],
@@ -726,7 +761,27 @@ pub fn handle(
     // ── Apply inline suppressions ───────────────────────────────────
     apply_suppressions(&mut diags);
     if !show_suppressed {
-        diags.retain(|d| !d.suppressed);
+        let triage_summary =
+            crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+                .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
+        if !suppress_status
+            && triage_summary.decisions_applied + triage_summary.suppression_rules_applied > 0
+        {
+            eprintln!(
+                "Applied {} triage decision{} from .nyx/triage.json.",
+                triage_summary.decisions_applied + triage_summary.suppression_rules_applied,
+                if triage_summary.decisions_applied + triage_summary.suppression_rules_applied == 1
+                {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+        }
+        diags.retain(|d| !is_inactive_for_cli(d));
+    } else {
+        crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+            .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
     }
 
     // ── Prioritization: category filter, rollup, LOW budgets ─────────
@@ -923,7 +978,7 @@ pub fn handle(
     if let Some(threshold) = fail_on {
         let breached = diags
             .iter()
-            .any(|d| !d.suppressed && d.severity <= threshold);
+            .any(|d| !is_inactive_for_cli(d) && d.severity <= threshold);
         if breached {
             std::process::exit(1);
         }
@@ -3530,6 +3585,8 @@ fn rollup_findings(
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: Some(RollupData {
                 count: total,
                 occurrences: examples,
@@ -3762,6 +3819,8 @@ mod dedup_taint_flow_tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -3930,6 +3989,8 @@ mod scc_tagging_tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -4222,6 +4283,8 @@ fn severity_filter_applied_at_output_stage() {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -4244,6 +4307,8 @@ fn severity_filter_applied_at_output_stage() {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -4293,6 +4358,8 @@ mod prioritize_tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
@@ -4724,6 +4791,8 @@ mod prioritize_tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: Some(RollupData {
                 count: 38,
                 occurrences: vec![Location { line: 10, col: 1 }, Location { line: 20, col: 5 }],
@@ -4814,6 +4883,8 @@ mod stable_hash_tests {
             rank_reason: None,
             suppressed: false,
             suppression: None,
+            triage_state: "open".to_string(),
+            triage_note: String::new(),
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: vec![],

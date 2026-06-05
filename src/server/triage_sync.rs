@@ -7,9 +7,9 @@
 //! project root, so they match across machines regardless of where the repo is
 //! checked out.
 
-use crate::commands::scan::Diag;
+use crate::commands::scan::{Diag, is_terminal_triage_state};
 use crate::database::index::Indexer;
-use crate::server::models::compute_portable_fingerprint;
+use crate::server::models::{compute_fingerprint, compute_portable_fingerprint};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,14 @@ pub struct TriageSuppressionRule {
 
 fn default_suppressed() -> String {
     "suppressed".to_string()
+}
+
+/// Summary of a triage file applied to a set of current findings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct TriageApplySummary {
+    pub decisions_applied: usize,
+    pub suppression_rules_applied: usize,
+    pub inactive_findings: usize,
 }
 
 /// Path to the triage sync file for a given scan root.
@@ -169,6 +177,98 @@ pub fn save_triage_file(scan_root: &Path, file: &TriageFile) -> Result<(), Strin
         .map_err(|e| format!("failed to serialize triage file: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write triage file: {e}"))?;
     Ok(())
+}
+
+fn validate_triage_state(state: &str) -> Result<(), String> {
+    if crate::server::models::is_valid_triage_state(state) {
+        Ok(())
+    } else {
+        Err(format!("invalid triage state in .nyx/triage.json: {state}"))
+    }
+}
+
+fn diag_relative_path(d: &Diag, scan_root: &Path) -> String {
+    d.path
+        .strip_prefix(scan_root.to_string_lossy().as_ref())
+        .unwrap_or(&d.path)
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn suppression_rule_matches(
+    rule: &TriageSuppressionRule,
+    d: &Diag,
+    scan_root: &Path,
+    portable_fp: &str,
+) -> bool {
+    let rel_path = diag_relative_path(d, scan_root);
+    match rule.by.as_str() {
+        // Prefer portable fingerprints for committed triage files, but accept
+        // local fingerprints for hand-written files and older exports.
+        "fingerprint" => rule.value == portable_fp || rule.value == compute_fingerprint(d),
+        "rule" => rule.value == d.id,
+        "file" => rule.value == d.path || rule.value == rel_path,
+        "rule_in_file" => {
+            rule.value == format!("{}:{}", d.id, d.path)
+                || rule.value == format!("{}:{rel_path}", d.id)
+        }
+        _ => false,
+    }
+}
+
+/// Apply a loaded triage file directly to diagnostics.
+///
+/// This is the CLI-facing equivalent of [`import_triage`]: it uses the same
+/// portable fingerprint format as the server sync file, but annotates the
+/// in-memory findings instead of first writing through SQLite.
+pub fn apply_triage_to_diags(
+    findings: &mut [Diag],
+    scan_root: &Path,
+    file: &TriageFile,
+) -> Result<TriageApplySummary, String> {
+    let mut decisions: HashMap<&str, &TriageDecision> = HashMap::new();
+    for decision in &file.decisions {
+        validate_triage_state(&decision.state)?;
+        decisions.insert(decision.fingerprint.as_str(), decision);
+    }
+    for rule in &file.suppression_rules {
+        validate_triage_state(&rule.state)?;
+    }
+
+    let mut summary = TriageApplySummary::default();
+    for d in findings {
+        let portable_fp = compute_portable_fingerprint(d, scan_root);
+        if let Some(decision) = decisions.get(portable_fp.as_str()) {
+            d.triage_state = decision.state.clone();
+            d.triage_note = decision.note.clone();
+            summary.decisions_applied += 1;
+        } else if let Some(rule) = file
+            .suppression_rules
+            .iter()
+            .find(|rule| suppression_rule_matches(rule, d, scan_root, &portable_fp))
+        {
+            d.triage_state = rule.state.clone();
+            d.triage_note = rule.note.clone();
+            summary.suppression_rules_applied += 1;
+        }
+
+        if is_terminal_triage_state(&d.triage_state) {
+            summary.inactive_findings += 1;
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Load `.nyx/triage.json`, if present, and apply it to diagnostics.
+pub fn apply_triage_file_to_diags(
+    findings: &mut [Diag],
+    scan_root: &Path,
+) -> Result<TriageApplySummary, String> {
+    let Some(file) = load_triage_file_checked(scan_root)? else {
+        return Ok(TriageApplySummary::default());
+    };
+    apply_triage_to_diags(findings, scan_root, &file)
 }
 
 fn read_bounded_text_file(path: &Path, max_bytes: u64) -> Result<String, String> {
@@ -271,6 +371,7 @@ pub fn import_triage(
 
     // Import decisions
     for decision in &file.decisions {
+        validate_triage_state(&decision.state)?;
         if let Some(local_fp) = portable_to_local.get(&decision.fingerprint) {
             let _ = idx.set_triage_state(local_fp, &decision.state, &decision.note, "import");
             applied += 1;
@@ -279,6 +380,7 @@ pub fn import_triage(
 
     // Import suppression rules
     for rule in &file.suppression_rules {
+        validate_triage_state(&rule.state)?;
         let _ = idx.add_suppression_rule(&rule.by, &rule.value, &rule.state, &rule.note);
     }
 
@@ -312,6 +414,16 @@ pub fn sync_to_file(
 mod tests {
     use super::*;
 
+    fn test_diag(root: &Path, path: &str, rule_id: &str) -> Diag {
+        Diag {
+            path: root.join(path).to_string_lossy().to_string(),
+            id: rule_id.to_string(),
+            line: 10,
+            col: 2,
+            ..Diag::default()
+        }
+    }
+
     #[test]
     fn oversized_triage_files_are_rejected() {
         let root = tempfile::tempdir().unwrap();
@@ -338,6 +450,81 @@ mod tests {
                 .join(".nyx")
                 .join("triage.json")
         );
+    }
+
+    #[test]
+    fn apply_triage_to_diags_matches_portable_fingerprints() {
+        let root = tempfile::tempdir().unwrap();
+        let mut findings = vec![test_diag(root.path(), "src/app.js", "js.security.eval")];
+        let fingerprint = compute_portable_fingerprint(&findings[0], root.path());
+        let file = TriageFile {
+            version: 1,
+            decisions: vec![TriageDecision {
+                fingerprint,
+                state: "false_positive".to_string(),
+                note: "framework sanitizer handles this".to_string(),
+                rule_id: "js.security.eval".to_string(),
+                path: "src/app.js".to_string(),
+            }],
+            suppression_rules: vec![],
+        };
+
+        let summary = apply_triage_to_diags(&mut findings, root.path(), &file).unwrap();
+
+        assert_eq!(summary.decisions_applied, 1);
+        assert_eq!(summary.inactive_findings, 1);
+        assert_eq!(findings[0].triage_state, "false_positive");
+        assert_eq!(findings[0].triage_note, "framework sanitizer handles this");
+        assert!(crate::commands::scan::is_inactive_for_cli(&findings[0]));
+    }
+
+    #[test]
+    fn apply_triage_to_diags_matches_suppression_rules_by_portable_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut findings = vec![
+            test_diag(root.path(), "src/app.js", "js.security.eval"),
+            test_diag(root.path(), "src/other.js", "js.security.eval"),
+        ];
+        let file = TriageFile {
+            version: 1,
+            decisions: vec![],
+            suppression_rules: vec![TriageSuppressionRule {
+                by: "rule_in_file".to_string(),
+                value: "js.security.eval:src/app.js".to_string(),
+                state: "suppressed".to_string(),
+                note: "test-only shim".to_string(),
+            }],
+        };
+
+        let summary = apply_triage_to_diags(&mut findings, root.path(), &file).unwrap();
+
+        assert_eq!(summary.suppression_rules_applied, 1);
+        assert_eq!(summary.inactive_findings, 1);
+        assert_eq!(findings[0].triage_state, "suppressed");
+        assert_eq!(findings[0].triage_note, "test-only shim");
+        assert_eq!(findings[1].triage_state, "open");
+    }
+
+    #[test]
+    fn apply_triage_to_diags_rejects_invalid_states() {
+        let root = tempfile::tempdir().unwrap();
+        let mut findings = vec![test_diag(root.path(), "src/app.js", "js.security.eval")];
+        let fingerprint = compute_portable_fingerprint(&findings[0], root.path());
+        let file = TriageFile {
+            version: 1,
+            decisions: vec![TriageDecision {
+                fingerprint,
+                state: "maybe_later".to_string(),
+                note: String::new(),
+                rule_id: String::new(),
+                path: String::new(),
+            }],
+            suppression_rules: vec![],
+        };
+
+        let err = apply_triage_to_diags(&mut findings, root.path(), &file).unwrap_err();
+
+        assert!(err.contains("invalid triage state"));
     }
 
     #[cfg(unix)]
