@@ -21,7 +21,7 @@ describe('VerdictBadge', () => {
     expect(screen.getByText('-')).toBeInTheDocument();
   });
 
-  it('renders Confirmed badge with flame and correct class', () => {
+  it('renders Confirmed badge with correct class', () => {
     render(
       <VerdictBadge
         verdict={makeVerdict('Confirmed', {
@@ -32,10 +32,10 @@ describe('VerdictBadge', () => {
     const badge = screen.getByTestId('verdict-badge-confirmed');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('badge-dyn-confirmed');
-    expect(badge.textContent).toContain('🔥');
+    expect(badge.textContent).toBe('Confirmed');
   });
 
-  it('renders PartiallyConfirmed badge with amber class and no flame', () => {
+  it('renders PartiallyConfirmed badge with amber class', () => {
     render(
       <VerdictBadge
         verdict={makeVerdict('PartiallyConfirmed', {
@@ -47,7 +47,6 @@ describe('VerdictBadge', () => {
     const badge = screen.getByTestId('verdict-badge-partiallyconfirmed');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('badge-dyn-partiallyconfirmed');
-    expect(badge.textContent).not.toContain('🔥');
     expect(badge.getAttribute('title')).toContain('sink reached');
   });
 
@@ -56,7 +55,6 @@ describe('VerdictBadge', () => {
     const badge = screen.getByTestId('verdict-badge-notconfirmed');
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('badge-dyn-notconfirmed');
-    expect(badge.textContent).not.toContain('🔥');
   });
 
   it('renders when attempts are omitted by the API', () => {
@@ -119,8 +117,7 @@ describe('VerdictBadge', () => {
   it('compact mode renders single character', () => {
     render(<VerdictBadge verdict={makeVerdict('Confirmed')} compact />);
     const badge = screen.getByTestId('verdict-badge-confirmed');
-    // Compact: first char of status + flame emoji
-    expect(badge.textContent?.replace('🔥 ', '')).toBe('C');
+    expect(badge.textContent).toBe('C');
   });
 
   it('renders all five VerifyStatus variants without crashing', () => {
