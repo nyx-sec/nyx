@@ -15,6 +15,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// Build a scan command with a fresh config dir and a writable tempdir as
@@ -162,6 +163,85 @@ fn scan_with_no_extra_flags_on_clean_target_succeeds() {
     cmd.arg("--format").arg("json");
 
     cmd.assert().success();
+}
+
+fn assert_stdout_is_json_from_byte_zero(output: &[u8], context: &str) -> Value {
+    assert_eq!(
+        output.first().copied(),
+        Some(b'{'),
+        "{context}: stdout must start with a JSON object, got prefix {:?}",
+        String::from_utf8_lossy(&output[..output.len().min(80)])
+    );
+    serde_json::from_slice(output).unwrap_or_else(|e| {
+        panic!(
+            "{context}: stdout did not parse as JSON: {e}\n--- stdout prefix ---\n{}",
+            String::from_utf8_lossy(&output[..output.len().min(400)])
+        )
+    })
+}
+
+#[test]
+fn scan_json_stdout_is_machine_clean_when_tracing_warns() {
+    let home = tempfile::tempdir().unwrap();
+    let target = prepare_scan_target();
+    let (mut cmd, _) = scan_cmd(home.path(), target.path());
+    cmd.env("RUST_LOG", "warn")
+        .args(["--format", "json", "--no-index", "--parse-timeout-ms", "0"]);
+
+    let assert = cmd.assert().success();
+    let value =
+        assert_stdout_is_json_from_byte_zero(&assert.get_output().stdout, "nyx scan --format json");
+    assert!(
+        value.get("findings").is_some(),
+        "JSON scan payload missing findings"
+    );
+}
+
+#[test]
+fn scan_sarif_stdout_is_machine_clean_when_tracing_warns() {
+    let home = tempfile::tempdir().unwrap();
+    let target = prepare_scan_target();
+    let (mut cmd, _) = scan_cmd(home.path(), target.path());
+    cmd.env("RUST_LOG", "warn").args([
+        "--format",
+        "sarif",
+        "--no-index",
+        "--parse-timeout-ms",
+        "0",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value = assert_stdout_is_json_from_byte_zero(
+        &assert.get_output().stdout,
+        "nyx scan --format sarif",
+    );
+    assert_eq!(value["version"], "2.1.0", "SARIF version missing");
+}
+
+#[test]
+fn scan_quiet_suppresses_tracing_warnings() {
+    let home = tempfile::tempdir().unwrap();
+    let target = prepare_scan_target();
+    let (mut cmd, _) = scan_cmd(home.path(), target.path());
+    cmd.env("RUST_LOG", "warn").args([
+        "--format",
+        "json",
+        "--quiet",
+        "--no-index",
+        "--parse-timeout-ms",
+        "0",
+    ]);
+
+    let assert = cmd.assert().success();
+    assert_stdout_is_json_from_byte_zero(
+        &assert.get_output().stdout,
+        "nyx scan --format json --quiet",
+    );
+    assert!(
+        assert.get_output().stderr.is_empty(),
+        "--quiet should suppress tracing/status stderr, got:\n{}",
+        String::from_utf8_lossy(&assert.get_output().stderr)
+    );
 }
 
 /// `--explain-engine` short-circuits the scan path and prints the resolved

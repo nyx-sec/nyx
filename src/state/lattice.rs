@@ -4,7 +4,6 @@
 /// - `join` is commutative, associative, and idempotent
 /// - `bot()` is the identity for `join`
 /// - `leq(a, b)` iff `join(a, b) == b`
-#[allow(dead_code)]
 pub trait Lattice: Clone + Eq + Sized {
     /// Bottom element (least information / unreachable).
     fn bot() -> Self;
@@ -28,7 +27,6 @@ pub trait Lattice: Clone + Eq + Sized {
 /// - `meet(a, b) ⊑ a` and `meet(a, b) ⊑ b`
 /// - `widen(a, b) ⊒ join(a, b)` (widening is at least as imprecise as join)
 /// - Ascending chains under `widen` stabilize in finite steps
-#[allow(dead_code)]
 pub trait AbstractDomain: Lattice {
     /// Top element (no information / maximally imprecise).
     fn top() -> Self;

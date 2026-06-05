@@ -8,6 +8,7 @@ import type {
   CompareResponse,
   ComparedFinding,
   ChangedFinding,
+  VerdictTransition,
 } from '../api/types';
 
 function truncPath(p?: string, max = 50): string {
@@ -273,7 +274,115 @@ function CompareByGroup({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-type CompareTab = 'status' | 'rule' | 'file';
+// ── Verdict Diff Tab ─────────────────────────────────────────────────────────
+
+const TRANSITION_ORDER: VerdictTransition[] = [
+  'FlippedConfirmed',
+  'Regressed',
+  'New',
+  'FlippedNotConfirmed',
+  'Resolved',
+  'Unchanged',
+];
+
+const TRANSITION_LABELS: Record<VerdictTransition, string> = {
+  FlippedConfirmed: 'Flipped Confirmed',
+  Regressed: 'Regressed',
+  New: 'New',
+  FlippedNotConfirmed: 'Flipped Not Confirmed',
+  Resolved: 'Resolved',
+  Unchanged: 'Unchanged',
+};
+
+const TRANSITION_ROW_CLS: Record<VerdictTransition, string> = {
+  FlippedConfirmed: 'compare-finding-row--new',
+  Regressed: 'compare-finding-row--new',
+  New: 'compare-finding-row--new',
+  FlippedNotConfirmed: 'compare-finding-row--changed',
+  Resolved: 'compare-finding-row--fixed',
+  Unchanged: 'compare-finding-row--unchanged',
+};
+
+function VerdictDiffSection({ data }: { data: CompareResponse }) {
+  const entries = data.verdict_diff;
+  if (!entries || entries.length === 0) {
+    return (
+      <div
+        style={{ color: 'var(--text-secondary)', padding: 'var(--space-4)' }}
+      >
+        No verdict-level transitions. Both scans share no findings with stable
+        hashes.
+      </div>
+    );
+  }
+
+  const grouped: Partial<Record<VerdictTransition, typeof entries>> = {};
+  for (const e of entries) {
+    if (!grouped[e.transition]) grouped[e.transition] = [];
+    grouped[e.transition]!.push(e);
+  }
+
+  return (
+    <>
+      {TRANSITION_ORDER.map((t) => {
+        const items = grouped[t];
+        if (!items || items.length === 0) return null;
+        return (
+          <CollapsibleSection
+            key={t}
+            sectionKey={t}
+            defaultCollapsed={t === 'Unchanged'}
+            headerContent={
+              <>
+                <span
+                  className={`compare-finding-row ${TRANSITION_ROW_CLS[t]}`}
+                  style={{
+                    padding: '0 var(--space-2)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}
+                >
+                  {TRANSITION_LABELS[t]}
+                </span>
+                <span style={{ marginLeft: 'var(--space-2)' }}>
+                  ({items.length})
+                </span>
+              </>
+            }
+          >
+            {items.map((e, i) => (
+              <div
+                key={i}
+                className={`compare-finding-row ${TRANSITION_ROW_CLS[t]}`}
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--text-xs)',
+                }}
+              >
+                <span style={{ color: 'var(--text-tertiary)' }}>
+                  {e.path}:{e.line}
+                </span>
+                <span>{e.rule_id}</span>
+                {e.baseline_status && (
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {e.baseline_status}
+                  </span>
+                )}
+                {e.current_status && (
+                  <>
+                    <span className="delta-arrow">&rarr;</span>
+                    <span>{e.current_status}</span>
+                  </>
+                )}
+              </div>
+            ))}
+          </CollapsibleSection>
+        );
+      })}
+    </>
+  );
+}
+
+type CompareTab = 'status' | 'rule' | 'file' | 'verdict';
 
 export function ScanComparePage() {
   usePageTitle('Compare scans');
@@ -403,6 +512,12 @@ export function ScanComparePage() {
         >
           By File
         </button>
+        <button
+          className={`scan-detail-tab ${activeTab === 'verdict' ? 'active' : ''}`}
+          onClick={() => setActiveTab('verdict')}
+        >
+          Verdict Diff
+        </button>
       </div>
 
       <div id="compare-tab-content">
@@ -413,6 +528,7 @@ export function ScanComparePage() {
         {activeTab === 'file' && (
           <CompareByGroup data={data} groupField="path" />
         )}
+        {activeTab === 'verdict' && <VerdictDiffSection data={data} />}
       </div>
     </>
   );

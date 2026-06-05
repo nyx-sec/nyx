@@ -1,8 +1,8 @@
 use super::helpers::first_member_label;
 use super::{
     AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
-    collect_idents, connect_all, detect_eq_with_const, detect_negation, has_call_descendant,
-    member_expr_text, push_node, text_of, try_lower_jsx_dangerous_html,
+    build_cond_arith, collect_idents, connect_all, detect_eq_with_const, detect_negation,
+    has_call_descendant, member_expr_text, push_node, text_of, try_lower_jsx_dangerous_html,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify};
 use crate::utils::snippet::truncate_at_char_boundary;
@@ -10,9 +10,7 @@ use petgraph::graph::NodeIndex;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
-// -------------------------------------------------------------------------
 //    Short-circuit boolean operator helpers
-// -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum BoolOp {
@@ -225,6 +223,13 @@ pub(super) fn build_ternary_diamond<'a>(
     //    taint engine's equality-narrowing fires for `x === 'literal' ? …`.
     let cond_if = push_condition_node(g, cond_ast, lang, code, enclosing_func);
     g[cond_if].is_eq_with_const = detect_eq_with_const(cond_ast, lang);
+    // Capture the pure int-arith + comparison tree so `fold_constant_branches`
+    // can prune a dead constant-condition arm of the ternary (e.g. Java
+    // `(7*18)+num > 200 ? "const" : param` with `num` a known int constant),
+    // exactly as it does for the if-form.  `build_cond_arith` is conservative
+    // (returns None for any call/field/string/`&&`/`||`/`!` shape) so this is
+    // sound for every language the diamond fires on.
+    g[cond_if].cond_arith = build_cond_arith(cond_ast, lang, code, 0);
     connect_all(g, preds, cond_if, pred_edge);
 
     // 2. Branches. Each branch produces its own exit frontier (≥ 1 node) ,

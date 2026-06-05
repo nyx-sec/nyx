@@ -36,6 +36,12 @@ impl Commands {
             && (fmt == OutputFormat::Json || fmt == OutputFormat::Sarif)
     }
 
+    /// Whether the user explicitly asked this invocation to suppress
+    /// human-readable output.
+    pub fn quiet_requested(&self) -> bool {
+        matches!(self, Commands::Scan { quiet: true, .. })
+    }
+
     /// Whether this is a long-running server command (skip timing output).
     pub fn is_serve(&self) -> bool {
         matches!(self, Commands::Serve { .. })
@@ -50,6 +56,7 @@ impl Commands {
             Commands::Scan { explain_engine, .. } => *explain_engine,
             Commands::List { .. } => true,
             Commands::Rules { .. } => true,
+            Commands::Surface { .. } => true,
             Commands::Config { action } => {
                 matches!(action, ConfigAction::Show { .. } | ConfigAction::Path)
             }
@@ -103,6 +110,32 @@ pub enum ScanMode {
     Cfg,
     /// Alias for cfg (CFG + taint analysis)
     Taint,
+}
+
+/// Output format for `nyx surface`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum, Default)]
+pub enum SurfaceFormat {
+    /// Indented tree, one entry-point per line, with reach summary.
+    #[default]
+    Text,
+    /// Canonical SurfaceMap JSON, byte-identical to the SQLite payload.
+    Json,
+    /// Graphviz DOT source; pipe through `dot -Tsvg` to render.
+    Dot,
+    /// SVG produced by spawning the local `dot` binary on the DOT
+    /// rendering.  Fails when graphviz is not installed.
+    Svg,
+}
+
+impl std::fmt::Display for SurfaceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SurfaceFormat::Text => write!(f, "text"),
+            SurfaceFormat::Json => write!(f, "json"),
+            SurfaceFormat::Dot => write!(f, "dot"),
+            SurfaceFormat::Svg => write!(f, "svg"),
+        }
+    }
 }
 
 /// Engine-depth profile that sets the full stack of analysis toggles
@@ -184,6 +217,7 @@ impl std::fmt::Display for EngineProfile {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Scan project for vulnerabilities
     Scan {
@@ -244,6 +278,17 @@ pub enum Commands {
         /// Suppress all human-readable status output
         #[arg(long, help_heading = "Output")]
         quiet: bool,
+
+        /// Print the dynamic-verifier trace to stderr at end-of-verify.
+        ///
+        /// When dynamic verification is enabled, the verifier records a
+        /// per-finding [`crate::dynamic::trace::VerifyTrace`].  Setting this
+        /// flag flushes every recorded `TraceEvent` to stderr after each
+        /// verdict, matching the stream that already lands in the repro
+        /// bundle at `expected/trace.jsonl`.  Off by default so non-interactive
+        /// scans stay quiet.
+        #[arg(long, help_heading = "Output")]
+        verbose: bool,
 
         /// Exit with code 1 if any finding meets or exceeds this severity
         ///
@@ -320,7 +365,6 @@ pub enum Commands {
         #[arg(long, help_heading = "Output")]
         require_converged: bool,
 
-        // ── Analysis engine toggles (override [analysis.engine] config) ───
         /// Enable path-constraint solving (default: on)
         #[arg(
             long,
@@ -409,7 +453,6 @@ pub enum Commands {
         #[arg(long, help_heading = "Limits")]
         max_pointsto: Option<u32>,
 
-        // ── Deprecated aliases (hidden) ─────────────────────────────────
         /// Deprecated: use --index off
         #[arg(long, hide = true)]
         no_index: bool,
@@ -429,6 +472,121 @@ pub enum Commands {
         /// Deprecated: use --mode cfg
         #[arg(long, hide = true)]
         cfg_only: bool,
+
+        /// Build a harness and dynamically verify each finding in a sandbox.
+        ///
+        /// Dynamic verification is on by default. This flag is a no-op when
+        /// verification is already enabled via config. Use `--no-verify` to
+        /// disable it for a single run. Default builds include dynamic support;
+        /// custom `--no-default-features` builds need `--features dynamic`.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", conflicts_with = "no_verify")]
+        verify: bool,
+
+        /// Skip dynamic verification for this run.
+        ///
+        /// Overrides `verify = true` from config. Useful when you want a
+        /// fast static-only scan without permanently changing `nyx.toml`.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", conflicts_with = "verify")]
+        no_verify: bool,
+
+        /// Also verify `Confidence < Medium` findings dynamically.
+        ///
+        /// By default only `Confidence >= Medium` findings are verified. Pass
+        /// this flag to run verification on all findings regardless of
+        /// confidence. Intended for payload tuning and backfill runs.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic")]
+        verify_all_confidence: bool,
+
+        /// Force the process sandbox backend (less isolation, dev use only).
+        ///
+        /// By default the docker backend is used when available. This flag
+        /// restricts the backend to the in-process runner. Cannot be combined
+        /// with `--backend docker`.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic")]
+        unsafe_sandbox: bool,
+
+        /// Sandbox backend to use for dynamic verification.
+        ///
+        /// `auto` (default): docker when available, else process.
+        /// `docker`: require docker; fail if unavailable.
+        /// `process`: in-process runner (same as `--unsafe-sandbox`).
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", value_name = "BACKEND")]
+        backend: Option<String>,
+
+        /// Process-backend hardening profile applied to every verified finding.
+        ///
+        /// `standard` (default): baseline only. Linux runs no-new-privs +
+        /// memory rlimit; macOS skips the sandbox-exec wrap.
+        /// `strict`: full lockdown. Linux layers namespaces, chroot to
+        /// workdir, and a default-deny seccomp filter; macOS wraps the
+        /// harness with `sandbox-exec -f <cap>.sb`. Opt-in because
+        /// interpreted Linux harnesses may SIGSYS until the per-language
+        /// seccomp allowlists are expanded.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(
+            long,
+            help_heading = "Dynamic",
+            value_name = "PROFILE",
+            value_parser = ["standard", "strict"],
+        )]
+        harden: Option<String>,
+
+        /// Read a previous scan's JSON output (or a stripped .nyx/baseline.json)
+        /// and diff it against the current scan on stable_hash.
+        ///
+        /// Emits a verdict diff showing New / Resolved / FlippedConfirmed /
+        /// FlippedNotConfirmed transitions. Combine with --gate to enforce CI
+        /// policies.
+        #[arg(long, value_name = "FILE", help_heading = "Baseline")]
+        baseline: Option<String>,
+
+        /// Write a stripped baseline JSON to FILE after scanning.
+        ///
+        /// The file contains only stable_hash, dynamic_verdict, severity, path,
+        /// and rule_id (no source code). A CI job can persist this file to
+        /// compare future scans against without leaking source.
+        #[arg(long, value_name = "FILE", help_heading = "Baseline")]
+        baseline_write: Option<String>,
+
+        /// CI gate to enforce when --baseline is active.
+        ///
+        /// `no-new-confirmed`: exit 2 if any new Confirmed finding appears.
+        /// `resolve-all-confirmed`: exit 2 if any baseline-Confirmed finding
+        /// is not fully resolved (absent or NotConfirmed in the current scan).
+        #[arg(
+            long,
+            value_name = "GATE",
+            value_parser = ["no-new-confirmed", "resolve-all-confirmed"],
+            help_heading = "Baseline"
+        )]
+        gate: Option<String>,
+    },
+
+    /// Submit feedback on a dynamic verification verdict.
+    ///
+    /// Records a correction or confirmation for a finding's verdict in the
+    /// local telemetry log. Requires `--features dynamic`.
+    #[cfg_attr(not(feature = "dynamic"), command(hide = true))]
+    VerifyFeedback {
+        /// Stable finding ID (16-char hex, shown in `nyx scan --verify` output).
+        finding_id: String,
+
+        /// Mark this verdict as wrong and record a reason.
+        #[arg(long, conflicts_with = "right")]
+        wrong: Option<String>,
+
+        /// Confirm this verdict is correct.
+        #[arg(long, conflicts_with = "wrong")]
+        right: bool,
+
+        /// Upload feedback to Nyx telemetry (not yet implemented; reserved).
+        #[arg(long)]
+        upload: bool,
     },
 
     /// Manage project indexes
@@ -464,6 +622,37 @@ pub enum Commands {
     Rules {
         #[command(subcommand)]
         action: RulesAction,
+    },
+
+    /// Print the project's attack-surface map.
+    ///
+    /// Loads the SurfaceMap persisted by the most recent indexed scan
+    /// when available, otherwise builds an entry-point-only map by
+    /// running the per-language framework probes against the on-disk
+    /// source.  Pass `--build` to force a full inline build (pass-1
+    /// summary extraction + call-graph construction) when no indexed
+    /// scan exists; that populates DataStore / ExternalService /
+    /// DangerousLocal nodes the entry-points-only fallback omits.
+    /// Use `--format dot` and pipe through `dot -Tsvg` to produce a
+    /// renderable graph; `--format svg` does the same in one step when
+    /// graphviz is installed locally.
+    Surface {
+        /// Path to inspect (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: String,
+
+        /// Output format: text (default), json, dot, svg
+        #[arg(long, value_enum, default_value_t = SurfaceFormat::Text)]
+        format: SurfaceFormat,
+
+        /// Build the full SurfaceMap from source even when no indexed
+        /// scan exists.  Runs pass-1 summary extraction + call-graph
+        /// build inline (same cost as `nyx index build`), then renders
+        /// data-store / external-service / dangerous-local nodes plus
+        /// reach edges.  Without this flag, an unscanned project
+        /// produces an entry-points-only map.
+        #[arg(long)]
+        build: bool,
     },
 
     /// Start the local web UI for browsing scan results
@@ -515,7 +704,11 @@ pub enum ConfigAction {
         #[arg(long)]
         kind: String,
 
-        /// Capability: env_var, html_escape, shell_escape, url_encode, json_parse, file_io, or all
+        /// Capability slug. One of: env_var, html_escape, shell_escape,
+        /// url_encode, json_parse, file_io, fmt_string, sql_query, deserialize,
+        /// ssrf, code_exec, crypto, unauthorized_id, data_exfil, ldap_injection,
+        /// xpath_injection, header_injection, open_redirect, ssti, xxe,
+        /// prototype_pollution, or all. See docs/cli.md.
         #[arg(long)]
         cap: String,
     },

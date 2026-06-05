@@ -59,7 +59,7 @@ Higher confidence:
 Lower confidence:
 - Path-validated taint (`path_validated: true`).
 - Source is a database read or internal file (pre-validated at insertion is common).
-- Engine note `ForwardBailed` / `PathWidened`. Use `--require-converged` to drop these in strict gates.
+- Any non-informational engine note (`SsaLoweringBailed`, `ParseTimeout`, `PredicateStateWidened`, `PathEnvCapped`, `WorklistCapped`, etc.). Use `--require-converged` to drop over-report and bail notes in strict gates.
 
 ## Tuning
 

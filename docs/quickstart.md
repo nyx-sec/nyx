@@ -6,7 +6,7 @@ After `cargo install nyx-scanner` (or dropping a release binary on your PATH), p
 nyx scan ./my-project
 ```
 
-First run builds a SQLite index under `.nyx/`; later runs skip files whose content hash hasn't changed.
+First run builds a SQLite index under `.nyx/`; later runs skip files whose content hash hasn't changed. Default builds also verify Medium and High confidence findings in a sandbox. Use `--no-verify` when you want a static-only local loop.
 
 ## What a finding looks like
 
@@ -21,6 +21,7 @@ The same scan in console form:
 
       Source: request.args.get (5:11)
       Sink:   os.system
+      [DYN: confirmed via cmdi-echo-marker-python]
 
   6:5  ✖ [HIGH] py.cmdi.os_system  (Score: 64, Confidence: High)
       os.system() runs a shell command
@@ -31,12 +32,15 @@ The same scan in console form:
 
       Source: req.query.content (3:18)
       Sink:   document.write
+      [DYN: confirmed via xss-script-marker]
 
   5:5  ⚠ [MEDIUM] js.xss.document_write  (Score: 34, Confidence: High)
       document.write() is an XSS sink
 
+Dynamic verification: 4 verdicts (2 confirmed, 0 partially confirmed, 1 not confirmed, 0 inconclusive, 1 unsupported)
+
 warning 'demo' generated 10 issues.
-Finished in 0.054s.
+Finished in 1.842s.
 ```
 
 Each finding is one line of header plus evidence. Fields that matter:
@@ -48,6 +52,7 @@ Each finding is one line of header plus evidence. Fields that matter:
 | Score | Attack-surface ranking (severity + analysis kind + source kind + evidence). Higher is more exploitable |
 | Confidence | `High`, `Medium`, `Low`. Drops for AST-only matches, capped widened flows, and lowered-to-Low backwards-infeasible findings |
 | Source / Sink | Where tainted data entered and where the dangerous call happened |
+| `[DYN: ...]` | Dynamic verifier result, when Nyx built and ran a harness for the finding |
 
 Two rules firing on the same line (the taint finding plus the AST pattern) is normal. The pattern matches the structural presence of `document.write`; the taint rule adds the evidence that `req.query.content` actually reached it. Both carry distinct rule IDs so suppressions can target one without the other.
 
@@ -85,13 +90,16 @@ nyx scan . --require-converged
 
 `--require-converged` keeps `under-report` findings (the emitted flow is still real) but drops over-reports and widenings. Intended for strict gates where a noisy finding is worse than nothing.
 
-## Skip dataflow for a fast first pass
+## Skip work for a fast first pass
 
 ```bash
 nyx scan . --mode ast
+nyx scan . --no-verify
 ```
 
 AST-only mode runs tree-sitter patterns without building a CFG or running taint. It's fast and still catches banned-API uses, weak crypto, and obvious XSS sinks, but it can't tell `eval("1+1")` apart from `eval(userInput)`. Use it as a pre-commit filter, not as a CI gate replacement.
+
+`--no-verify` keeps the static engine on but skips sandboxed execution. Use it when you are iterating locally and only need the analyzer result.
 
 ## Next
 

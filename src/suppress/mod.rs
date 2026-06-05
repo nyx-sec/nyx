@@ -9,9 +9,7 @@
 
 use std::collections::HashMap;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Public types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Whether the directive suppresses on its own line or the next line.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -30,9 +28,7 @@ pub struct SuppressionMeta {
     pub directive_line: usize,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Internal types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// A single rule matcher, either exact or wildcard-suffix (`foo.*`).
 #[derive(Debug)]
@@ -99,9 +95,7 @@ impl SuppressionIndex {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Canonical rule ID
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Strip parenthetical suffix from a rule ID:
 /// `"taint-unsanitised-flow (source 5:1)"` → `"taint-unsanitised-flow"`.
@@ -114,9 +108,7 @@ pub fn canonical_rule_id(id: &str) -> &str {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Comment style per language
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
 enum CommentStyle {
@@ -152,9 +144,7 @@ fn comment_style_for_path(path: &std::path::Path) -> Option<CommentStyle> {
     comment_style_for_ext(norm)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Parser
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse inline suppression directives from `source`, using comment syntax
 /// appropriate for the given file path.
@@ -479,9 +469,7 @@ fn parse_rule_ids(text: &str) -> Vec<RuleMatcher> {
         .collect()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

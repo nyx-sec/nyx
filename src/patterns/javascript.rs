@@ -162,6 +162,24 @@ pub const PATTERNS: &[Pattern] = &[
         category: PatternCategory::Secrets,
         confidence: Confidence::Medium,
     },
+    // ── Tier A: Hardcoded cryptographic key/secret config ──────────────
+    // Crypto-key-shaped keys (`cookieSecret`, `cryptoKey`, `signingKey`, …) the
+    // anchored `hardcoded_secret` regex misses. Emits a `crypto`-bucketing id
+    // (a `*.secrets.*` id buckets as `other`). Benign `publicKey`/`primaryKey`/
+    // `keyName`/bare `key` are rejected by the prefix requirement.
+    Pattern {
+        id: "js.crypto.hardcoded_key",
+        description: "Hardcoded cryptographic key/secret in source config",
+        query: r#"(pair
+                     key: (property_identifier) @key
+                       (#match? @key "(?i)^([a-z0-9]+secret|(crypto|cookie|session|signing|encryption|encrypt|private|master|jwt|hmac|secret)key|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|encryption[_-]?key|signing[_-]?key)$")
+                     value: (string) @val (#match? @val "[^\"']{3,}"))
+                   @vuln"#,
+        severity: Severity::Low,
+        tier: PatternTier::A,
+        category: PatternCategory::Crypto,
+        confidence: Confidence::Medium,
+    },
     // ── Tier A: Open redirect ──────────────────────────────────────────
     Pattern {
         id: "js.xss.location_assign",

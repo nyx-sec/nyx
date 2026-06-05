@@ -241,6 +241,18 @@ export function ScannerQualityPanel({
       : quality.files_scanned > 0
         ? `${quality.files_scanned.toLocaleString()} freshly indexed`
         : undefined;
+  const dynamic = quality.dynamic_verification ?? {
+    total: 0,
+    confirmed: 0,
+    partially_confirmed: 0,
+    not_confirmed: 0,
+    inconclusive: 0,
+    unsupported: 0,
+  };
+  const dynamicDetail =
+    dynamic.total > 0
+      ? `${dynamic.total.toLocaleString()} verdicts · ${dynamic.partially_confirmed.toLocaleString()} partially confirmed · ${dynamic.not_confirmed.toLocaleString()} not confirmed · ${dynamic.inconclusive.toLocaleString()} inconclusive · ${dynamic.unsupported.toLocaleString()} unsupported`
+      : 'no dynamic verdicts in latest scan';
 
   const rows: Array<{
     label: string;
@@ -286,6 +298,15 @@ export function ScannerQualityPanel({
         symexTotal > 0
           ? `${symexAttempted} of ${symexTotal} taint findings`
           : 'no taint findings',
+    },
+    {
+      label: 'Dynamic verification',
+      hint: 'Findings re-run in generated harnesses against the dynamic payload corpus.',
+      value:
+        dynamic.total > 0
+          ? `${dynamic.confirmed.toLocaleString()} confirmed`
+          : 'not run',
+      detail: dynamicDetail,
     },
   ];
 

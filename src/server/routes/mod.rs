@@ -8,6 +8,8 @@ pub mod health;
 pub mod overview;
 pub mod rules;
 pub mod scans;
+pub mod surface;
+pub mod targets;
 pub mod triage;
 
 use crate::server::app::AppState;
@@ -26,5 +28,7 @@ pub fn api_routes() -> Router<AppState> {
         .merge(triage::routes())
         .merge(overview::routes())
         .merge(explorer::routes())
+        .merge(surface::routes())
+        .merge(targets::routes())
         .merge(debug::routes())
 }

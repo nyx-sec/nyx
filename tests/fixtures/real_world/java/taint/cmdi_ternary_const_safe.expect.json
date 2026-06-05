@@ -1,0 +1,19 @@
+{
+  "description": "Constant-condition ternary (OWASP Benchmark cmdi non-vulnerable shape). `(7*18) + num > 200` with num=106 is 232 > 200 — always true — so `bar` is the constant string and the `: param` arm is statically dead. Extending the ternary-RHS diamond split to Java (src/cfg/mod.rs) routes `bar = cond ? const : param` through a real branch+phi CFG; build_ternary_diamond stamps the CondArith tree so fold_constant_branches prunes the dead tainted arm and neutralises its block, exactly as the if-form does. Result: `r.exec(cmd + bar)` carries no taint. Asserts NO taint finding fires.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "runtime",
+    "ternary",
+    "const-fold",
+    "precision"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": []
+}

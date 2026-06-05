@@ -1,5 +1,10 @@
+//! AST → CFG → SSA lowering (Cytron et al.).
+//!
+//! Builds basic blocks, computes dominators and dominance frontiers via
+//! petgraph, inserts phi nodes, and renames variables over the dominator-tree
+//! preorder to produce an [`SsaBody`].
+
 #![allow(
-    clippy::collapsible_if,
     clippy::if_same_then_else,
     clippy::needless_range_loop,
     clippy::only_used_in_recursion,
@@ -355,44 +360,25 @@ fn check_catch_block_reachability_gated(body: &SsaBody) {
     if let Err(err) = result {
         #[cfg(debug_assertions)]
         {
-            if !catch_invariant_do_not_panic() {
-                panic!(
-                    "SSA catch-block reachability invariant violated:\n{}",
-                    err.joined()
-                );
-            }
+            panic!(
+                "SSA catch-block reachability invariant violated:\n{}",
+                err.joined()
+            );
         }
-        tracing::warn!(
-            violations = %err.joined(),
-            "SSA catch-block reachability invariant violated; proceeding with \
-             conservative orphan fallback"
-        );
-        crate::taint::ssa_transfer::record_engine_note(
-            crate::engine_notes::EngineNote::SsaLoweringBailed {
-                reason: format!("catch_block_orphan: {}", err.joined()),
-            },
-        );
+        #[cfg(not(debug_assertions))]
+        {
+            tracing::warn!(
+                violations = %err.joined(),
+                "SSA catch-block reachability invariant violated; proceeding with \
+                 conservative orphan fallback"
+            );
+            crate::taint::ssa_transfer::record_engine_note(
+                crate::engine_notes::EngineNote::SsaLoweringBailed {
+                    reason: format!("catch_block_orphan: {}", err.joined()),
+                },
+            );
+        }
     }
-}
-
-// Test-only escape hatch: when set, `check_catch_block_reachability_gated`
-// takes the release-build path (warn + engine note, no panic) even under
-// `debug_assertions`. Used by the invariant test that constructs a
-// synthetic orphan catch body.
-#[cfg(debug_assertions)]
-thread_local! {
-    static CATCH_INVARIANT_DO_NOT_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(debug_assertions)]
-#[allow(dead_code)]
-pub(crate) fn set_catch_invariant_do_not_panic(on: bool) {
-    CATCH_INVARIANT_DO_NOT_PANIC.with(|c| c.set(on));
-}
-
-#[cfg(debug_assertions)]
-fn catch_invariant_do_not_panic() -> bool {
-    CATCH_INVARIANT_DO_NOT_PANIC.with(|c| c.get())
 }
 
 /// Collect reachable nodes (BFS from entry), filtering by scope and stripping exception edges.
@@ -2246,9 +2232,7 @@ fn rename_variables(
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Debug invariant checkers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Verify BFS block ordering: every non-entry, non-orphan block must have at
 /// least one predecessor with a smaller block ID.
@@ -3551,9 +3535,7 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // FieldProj chain lowering tests
-    // ─────────────────────────────────────────────────────────────────
     //
     // These tests pin the contract that `try_lower_field_proj_chain`
     // emits a `FieldProj` chain for chained-receiver method calls
@@ -4389,11 +4371,9 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────
     // SSA edge cases: loop induction, multi-variable phis, multiple
     // returns, switch-cases, and shadowing. These plug holes in the
     // dominator-frontier / variable-renaming coverage.
-    // ─────────────────────────────────────────────────────────────────
 
     /// Loop induction variable: `x = x + 1` inside a loop is the
     /// canonical SSA challenge, the body uses `x` then redefines it,

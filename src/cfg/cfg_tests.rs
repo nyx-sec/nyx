@@ -388,9 +388,7 @@ fn js_catch_no_param_no_synthetic() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────
 //  Ruby begin/rescue/ensure tests
-// ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn ruby_begin_rescue_has_exception_edges() {
@@ -540,9 +538,7 @@ fn ruby_multiple_rescue_clauses() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────
 //  Short-circuit evaluation tests
-// ─────────────────────────────────────────────────────────────────
 
 /// Helper: collect all If nodes from the CFG.
 fn if_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
@@ -2008,10 +2004,8 @@ fn local_summary_callees_have_distinct_ordinals() {
     assert_ne!(ord0, ord1, "ordinals must differ across sites");
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Anonymous function body naming via syntactic context
 //  (derive_anon_fn_name_from_context coverage)
-// ─────────────────────────────────────────────────────────────────────
 
 fn js_body_names(src: &[u8]) -> Vec<String> {
     let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
@@ -2531,9 +2525,7 @@ fn pointer_disabled_skips_subscript_synthesis() {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────
 //   Gap-filling: switch / for / do-while / nested loops / re-throw
-// ─────────────────────────────────────────────────────────────────
 
 /// JS `switch` should produce one synthetic dispatch `If` node per
 /// case (default excluded when at the tail), plus True edges into
@@ -2908,12 +2900,10 @@ fn js_empty_function_body_well_formed() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Loop CFG structure: every loop variant must produce a Loop header
 //  with at least one Back edge that targets that header. Without these
 //  invariants the SSA loop-induction-variable phi placement is wrong
 //  and the abstract-interp widening points are missed.
-// ─────────────────────────────────────────────────────────────────────
 
 fn loop_headers(cfg: &Cfg) -> Vec<NodeIndex> {
     cfg.node_indices()
@@ -3957,4 +3947,135 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
 
     // Non-array-shape node returns empty (defensive guard).
     assert!(run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty());
+}
+
+/// `CalleeSite.span` should carry the 1-based (line, col) of each call's
+/// node span so downstream consumers (surface map, datastore/external
+/// detectors) can render real coordinates instead of `line: 0`.
+#[test]
+fn callee_site_span_carries_line_and_column() {
+    // Three calls on three different lines.  The leading newline puts
+    // line 1 at the blank line; `helper(x, y);` is on line 3, etc.
+    let src = b"
+function outer(obj, x, y) {
+    helper(x, y);
+    obj.method(x);
+}
+";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let (_key, outer) = file_cfg
+        .summaries
+        .iter()
+        .find(|(k, _)| k.name == "outer")
+        .expect("outer summary should exist");
+
+    let helper_site = outer
+        .callees
+        .iter()
+        .find(|c| c.name == "helper")
+        .expect("helper call should be recorded");
+    let (line, col) = helper_site.span.expect("span populated at CFG-build time");
+    assert_eq!(line, 3, "helper(...) sits on the 3rd source line");
+    assert!(col >= 5, "indented 4 spaces — column is 1-based and > 4");
+
+    let method_site = outer
+        .callees
+        .iter()
+        .find(|c| c.name.ends_with("method"))
+        .expect("method call should be recorded");
+    let (mline, _) = method_site.span.expect("method span populated");
+    assert_eq!(mline, 4, "obj.method(x) on line 4");
+}
+
+//  Constant-branch fold: CondArith capture + evaluation
+
+/// `CondArith::eval`/`eval_bool` must fold the two OWASP-Benchmark
+/// arithmetic guard shapes to a definite boolean, using integer
+/// (truncating) division, and must return `None` — never a wrong fold —
+/// for any undefined operation or unresolved variable.
+#[test]
+fn cond_arith_eval_is_sound() {
+    use crate::cfg::{BinOp, CondArith, CondVal};
+    let lit = |n| Box::new(CondArith::Lit(n));
+    let var = |s: &str| Box::new(CondArith::Var(s.to_string()));
+    let bin = |op, l, r| Box::new(CondArith::Bin(op, l, r));
+
+    // num = 86 resolver.
+    let r86 = |name: &str| if name == "num" { Some(86) } else { None };
+    // (7*42) - num > 200  →  208 > 200  →  true.
+    let shape1 = CondArith::Bin(
+        BinOp::Gt,
+        bin(BinOp::Sub, bin(BinOp::Mul, lit(7), lit(42)), var("num")),
+        lit(200),
+    );
+    assert_eq!(shape1.eval_bool(&r86), Some(true));
+
+    // (500/42) + num > 200  →  11 + 196 = 207 > 200  →  true (integer div).
+    let r196 = |name: &str| if name == "num" { Some(196) } else { None };
+    let shape2 = CondArith::Bin(
+        BinOp::Gt,
+        bin(BinOp::Add, bin(BinOp::Div, lit(500), lit(42)), var("num")),
+        lit(200),
+    );
+    assert_eq!(shape2.eval_bool(&r196), Some(true));
+    // Integer division truncates toward zero (500/42 == 11, not ~11.9).
+    assert_eq!(
+        CondArith::Bin(BinOp::Div, lit(500), lit(42)).eval(&r86),
+        Some(CondVal::Int(11))
+    );
+
+    // Unresolved variable → None (no prune).
+    let none = |_: &str| None;
+    assert_eq!(shape1.eval_bool(&none), None);
+
+    // Division / modulo by zero → None (never a wrong fold).
+    assert_eq!(CondArith::Bin(BinOp::Div, lit(1), lit(0)).eval(&r86), None);
+    assert_eq!(CondArith::Bin(BinOp::Mod, lit(1), lit(0)).eval(&r86), None);
+
+    // Arithmetic overflow → None.
+    assert_eq!(
+        CondArith::Bin(BinOp::Mul, lit(i64::MAX), lit(2)).eval(&r86),
+        None
+    );
+
+    // Bare integer at the top level is not a branch condition → eval_bool None.
+    assert_eq!(CondArith::Lit(1).eval_bool(&r86), None);
+
+    // Comparing a boolean sub-result as an integer operand → None.
+    let cmp = bin(BinOp::Gt, lit(2), lit(1)); // yields Bool
+    assert_eq!(CondArith::Bin(BinOp::Add, cmp, lit(1)).eval(&r86), None);
+}
+
+/// The CFG builder must capture a pure integer-arithmetic comparison as a
+/// `CondArith` on the `If` node, and must refuse (None) any condition that
+/// touches a call / field access / string.
+#[test]
+fn build_cond_arith_captures_pure_int_comparison() {
+    let ts_lang = Language::from(tree_sitter_java::LANGUAGE);
+    let src = br#"
+class C {
+  void m(int num, String s) {
+    if ((7 * 42) - num > 200) { foo(); }
+    if (s.length() > 200) { bar(); }
+  }
+}
+"#;
+    let (cfg, _entry) = parse_and_build(src, "java", ts_lang);
+    let ifs = if_nodes(&cfg);
+    let arith: Vec<_> = ifs
+        .iter()
+        .filter_map(|&n| cfg[n].cond_arith.clone())
+        .collect();
+
+    // Exactly one If condition is a pure int-arith comparison; the
+    // `s.length() > 200` one must NOT be captured (it contains a call).
+    assert_eq!(
+        arith.len(),
+        1,
+        "only the pure int comparison should yield a CondArith, got {arith:?}"
+    );
+    // It folds to a definite bool once `num` is known constant.
+    let r = |name: &str| if name == "num" { Some(86) } else { None };
+    assert_eq!(arith[0].eval_bool(&r), Some(true));
 }

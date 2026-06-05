@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if, clippy::redundant_closure)]
+#![allow(clippy::redundant_closure)]
 
 use crate::commands::scan::Diag;
 use crate::database::index::{Indexer, ScanRecord};
@@ -9,6 +9,7 @@ use crate::server::models::{
 };
 use crate::server::progress::ScanMetricsSnapshot;
 use crate::server::scan_log::ScanLogEntry;
+use crate::utils::targets::{TargetTouch, remember_target};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -34,11 +35,28 @@ struct StartScanRequest {
     mode: Option<String>,
     /// Engine-depth profile: "fast" | "balanced" | "deep".
     engine_profile: Option<String>,
-    #[allow(dead_code)]
+    /// Override dynamic verification for this scan.
+    ///
+    /// `true`  - force on even if config says off.
+    /// `false` - force off even if config says on.
+    /// absent  - inherit config default.
+    ///
+    /// Included in default builds; custom builds without `dynamic` return 400
+    /// when verification is requested.
+    verify: Option<bool>,
+    /// Also verify `Confidence < Medium` findings. Default false.
+    verify_all_confidence: Option<bool>,
+    /// Dynamic verification backend: "auto" | "docker" | "process" | "firecracker".
+    verify_backend: Option<String>,
+    /// Process-backend hardening profile: "standard" | "strict".
+    harden_profile: Option<String>,
+    /// Restrict the scan to these language slugs (e.g. `["java", "python"]`).
+    /// An unknown slug returns 400.
     languages: Option<Vec<String>>,
-    #[allow(dead_code)]
+    /// Whitelist: scan only files under these paths (relative to the scan root
+    /// or absolute).
     include_paths: Option<Vec<String>>,
-    #[allow(dead_code)]
+    /// Exclude these directories/files from the scan.
     exclude_paths: Option<Vec<String>>,
 }
 
@@ -78,12 +96,75 @@ fn apply_engine_profile(
     Ok(())
 }
 
+fn apply_verify_backend(
+    config: &mut crate::utils::config::Config,
+    backend: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let backend = backend.to_ascii_lowercase();
+    match backend.as_str() {
+        "auto" | "docker" | "process" | "firecracker" => {
+            config.scanner.verify_backend = backend;
+            Ok(())
+        }
+        _ => Err(bad_request(
+            "verify_backend must be one of: auto, docker, process, firecracker",
+        )),
+    }
+}
+
+fn apply_harden_profile(
+    config: &mut crate::utils::config::Config,
+    profile: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let profile = profile.to_ascii_lowercase();
+    match profile.as_str() {
+        "standard" | "strict" => {
+            config.scanner.harden_profile = profile;
+            Ok(())
+        }
+        _ => Err(bad_request(
+            "harden_profile must be one of: standard, strict",
+        )),
+    }
+}
+
+/// Restrict the scan to the requested language slugs by excluding the file
+/// extensions of every *other* supported language. Returns 400 on an unknown
+/// slug. No-op when `languages` is empty.
+fn apply_language_filter(
+    config: &mut crate::utils::config::Config,
+    languages: &[String],
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if languages.is_empty() {
+        return Ok(());
+    }
+    let mut selected: HashSet<&'static str> = HashSet::new();
+    for lang in languages {
+        let exts = crate::ast::extensions_for_lang(lang);
+        if exts.is_empty() {
+            return Err(bad_request(&format!("unknown language: {lang}")));
+        }
+        selected.extend(exts.iter().copied());
+    }
+    for (_slug, exts) in crate::ast::SUPPORTED_LANGUAGE_EXTENSIONS {
+        for ext in *exts {
+            if !selected.contains(ext) {
+                config.scanner.excluded_extensions.push((*ext).to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn start_scan(
     State(state): State<AppState>,
     body: Option<Json<StartScanRequest>>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
     let req = body.map(|b| b.0).unwrap_or_default();
-    let scan_root = resolve_requested_scan_root(req.scan_root.as_deref(), &state.scan_root)?;
+    let active_root = state.active_scan_root();
+    let scan_root = resolve_requested_scan_root(req.scan_root.as_deref(), &active_root)?;
+    let _ = remember_target(&state.database_dir, &scan_root, TargetTouch::Scanned);
+    state.set_active_scan_root(scan_root.clone());
 
     let mut config = state.config.read().clone();
     if let Some(ref mode) = req.mode {
@@ -93,8 +174,60 @@ async fn start_scan(
         apply_engine_profile(&mut config, profile)?;
     }
 
+    match req.verify {
+        Some(true) => {
+            #[cfg(feature = "dynamic")]
+            {
+                config.scanner.verify = true;
+            }
+            #[cfg(not(feature = "dynamic"))]
+            {
+                return Err(bad_request(
+                    "binary built without --features dynamic; cannot use verify",
+                ));
+            }
+        }
+        Some(false) => {
+            config.scanner.verify = false;
+        }
+        None => {}
+    }
+    if req.verify_all_confidence == Some(true) {
+        config.scanner.verify_all_confidence = true;
+    }
+    if let Some(ref backend) = req.verify_backend {
+        apply_verify_backend(&mut config, backend)?;
+    }
+    if let Some(ref profile) = req.harden_profile {
+        apply_harden_profile(&mut config, profile)?;
+    }
+
+    if let Some(ref include) = req.include_paths {
+        config
+            .scanner
+            .included_paths
+            .extend(include.iter().cloned());
+    }
+    if let Some(ref exclude) = req.exclude_paths {
+        for p in exclude {
+            // A path may name a directory subtree or a single file; cover both.
+            config.scanner.excluded_directories.push(p.clone());
+            config.scanner.excluded_files.push(p.clone());
+        }
+    }
+    if let Some(ref langs) = req.languages {
+        apply_language_filter(&mut config, langs)?;
+    }
+
+    #[cfg(not(feature = "dynamic"))]
+    if config.scanner.verify || config.scanner.verify_all_confidence {
+        return Err(bad_request(
+            "dynamic verification is enabled, but this binary was built without dynamic support; rebuild with `cargo build --features dynamic` or skip dynamic verification for this scan",
+        ));
+    }
+
     let event_tx = state.event_tx.clone();
-    let db_pool = state.db_pool.clone();
+    let db_pool = state.db_pool_for(&scan_root);
     let database_dir = state.database_dir.clone();
 
     match state
@@ -114,22 +247,19 @@ async fn start_scan(
 
 fn resolve_requested_scan_root(
     requested_root: Option<&str>,
-    configured_root: &Path,
+    active_root: &Path,
 ) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
     if let Some(root) = requested_root {
         let requested = Path::new(root)
             .canonicalize()
             .map_err(|_| bad_request("invalid scan_root"))?;
-        if requested != configured_root {
-            return Err(bad_request(
-                "scan_root must match the repository passed to nyx serve",
-            ));
+        if !requested.is_dir() {
+            return Err(bad_request("scan_root must be a directory"));
         }
+        return Ok(requested);
     }
 
-    // The request value is validation-only; scans always run against the
-    // canonical root configured when the server started.
-    Ok(configured_root.to_path_buf())
+    Ok(active_root.to_path_buf())
 }
 
 fn bad_request(message: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -140,16 +270,18 @@ fn bad_request(message: &str) -> (StatusCode, Json<serde_json::Value>) {
 }
 
 async fn list_scans(State(state): State<AppState>) -> Json<Vec<ScanView>> {
+    let scan_root = state.active_scan_root();
     let mut views: Vec<ScanView> = state
         .job_manager
         .list_jobs()
-        .iter()
-        .map(|j| job_to_view(j))
+        .into_iter()
+        .filter(|j| j.scan_root == scan_root)
+        .map(|j| job_to_view(&j))
         .collect();
 
     // Merge historical scans from DB (deduplicate by ID)
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(records) = idx.list_scans(100) {
                 let in_memory_ids: HashSet<String> = views.iter().map(|v| v.id.clone()).collect();
                 for record in records {
@@ -168,9 +300,11 @@ async fn list_scans(State(state): State<AppState>) -> Json<Vec<ScanView>> {
 }
 
 async fn active_scan(State(state): State<AppState>) -> Result<Json<ScanView>, StatusCode> {
+    let scan_root = state.active_scan_root();
     let job = state
         .job_manager
         .active_job()
+        .filter(|job| job.scan_root == scan_root)
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(job_to_view(&job)))
 }
@@ -179,14 +313,17 @@ async fn get_scan(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ScanView>, StatusCode> {
+    let scan_root = state.active_scan_root();
     // Check in-memory first
     if let Some(job) = state.job_manager.get_job(&id) {
-        return Ok(Json(job_to_view(&job)));
+        if job.scan_root == scan_root {
+            return Ok(Json(job_to_view(&job)));
+        }
     }
 
     // Fall back to DB
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(Some(record)) = idx.get_scan(&id) {
                 let mut view = scan_record_to_view(&record);
                 // Load metrics from DB
@@ -217,8 +354,8 @@ async fn delete_scan(
     }
 
     // Delete from DB (CASCADE handles metrics + logs)
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             let _ = idx.delete_scan(&id);
         }
     }
@@ -237,11 +374,14 @@ struct FindingsQuery {
 
 /// Load findings for a scan by ID (in-memory first, then DB fallback).
 fn load_scan_findings(state: &AppState, id: &str) -> Result<Vec<Diag>, StatusCode> {
+    let scan_root = state.active_scan_root();
     if let Some(job) = state.job_manager.get_job(id) {
-        return Ok(job.findings.map(|f| (*f).clone()).unwrap_or_default());
+        if job.scan_root == scan_root {
+            return Ok(job.findings.map(|f| (*f).clone()).unwrap_or_default());
+        }
     }
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(Some(record)) = idx.get_scan(id) {
                 return Ok(record
                     .findings_json
@@ -256,15 +396,18 @@ fn load_scan_findings(state: &AppState, id: &str) -> Result<Vec<Diag>, StatusCod
 
 /// Load minimal scan info for comparison headers.
 fn load_scan_info(state: &AppState, id: &str) -> Result<CompareScanInfo, StatusCode> {
+    let scan_root = state.active_scan_root();
     if let Some(job) = state.job_manager.get_job(id) {
-        return Ok(CompareScanInfo {
-            id: job.id.clone(),
-            started_at: job.started_at.map(|t| t.to_rfc3339()),
-            finding_count: job.findings.as_ref().map(|f| f.len()).unwrap_or(0),
-        });
+        if job.scan_root == scan_root {
+            return Ok(CompareScanInfo {
+                id: job.id.clone(),
+                started_at: job.started_at.map(|t| t.to_rfc3339()),
+                finding_count: job.findings.as_ref().map(|f| f.len()).unwrap_or(0),
+            });
+        }
     }
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(Some(record)) = idx.get_scan(id) {
                 return Ok(CompareScanInfo {
                     id: record.id.clone(),
@@ -308,13 +451,14 @@ async fn get_scan_findings(
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(50).min(200);
     let start = (page - 1) * per_page;
+    let scan_root = state.active_scan_root();
 
     let page_findings: Vec<FindingView> = filtered
         .into_iter()
         .enumerate()
         .skip(start)
         .take(per_page)
-        .map(|(i, d)| models::finding_from_diag_with_context(i, d, &state.scan_root))
+        .map(|(i, d)| models::finding_from_diag_with_context(i, d, &scan_root))
         .collect();
 
     Ok(Json(serde_json::json!({
@@ -342,6 +486,7 @@ async fn compare_scans(
 
     let left_findings = load_scan_findings(&state, &query.left)?;
     let right_findings = load_scan_findings(&state, &query.right)?;
+    let scan_root = state.active_scan_root();
 
     // Build fingerprint → Vec<(index, diag)> multi-maps so duplicate
     // fingerprints are preserved instead of silently dropped.
@@ -375,7 +520,7 @@ async fn compare_scans(
             for i in 0..matched {
                 let (idx, diag) = right_group[i];
                 let (_, left_diag) = left_group[i];
-                let view = models::finding_from_diag_with_context(idx, diag, &state.scan_root);
+                let view = models::finding_from_diag_with_context(idx, diag, &scan_root);
                 let changes = compute_field_changes(left_diag, diag);
                 if changes.is_empty() {
                     unchanged_findings.push(ComparedFinding {
@@ -394,7 +539,7 @@ async fn compare_scans(
             for &(idx, diag) in &right_group[matched..] {
                 new_findings.push(ComparedFinding {
                     fingerprint: fp.clone(),
-                    finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
+                    finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
                 });
             }
         } else {
@@ -402,7 +547,7 @@ async fn compare_scans(
             for &(idx, diag) in right_group {
                 new_findings.push(ComparedFinding {
                     fingerprint: fp.clone(),
-                    finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
+                    finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
                 });
             }
         }
@@ -416,7 +561,7 @@ async fn compare_scans(
         for &(idx, diag) in &left_group[start..] {
             fixed_findings.push(ComparedFinding {
                 fingerprint: fp.clone(),
-                finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
+                finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
             });
         }
     }
@@ -442,6 +587,11 @@ async fn compare_scans(
         severity_delta,
     };
 
+    // Build verdict diff from left (baseline) → right (current) using stable_hash.
+    let left_baseline = crate::baseline::diags_to_baseline_entries(&left_findings);
+    let verdict_diff_result =
+        crate::baseline::compute_verdict_diff(&left_baseline, &right_findings);
+
     Ok(Json(CompareResponse {
         left_scan: left_info,
         right_scan: right_info,
@@ -450,6 +600,7 @@ async fn compare_scans(
         fixed_findings,
         changed_findings,
         unchanged_findings,
+        verdict_diff: verdict_diff_result.entries,
     }))
 }
 
@@ -505,9 +656,12 @@ async fn get_scan_logs(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(query): Query<LogsQuery>,
 ) -> Result<Json<Vec<ScanLogEntry>>, StatusCode> {
+    let scan_root = state.active_scan_root();
     // Check in-memory (running scan)
     if let Some(job) = state.job_manager.get_job(&id) {
-        if let Some(ref collector) = job.log_collector {
+        if job.scan_root == scan_root
+            && let Some(ref collector) = job.log_collector
+        {
             let mut logs = collector.snapshot();
             if let Some(ref level) = query.level {
                 logs.retain(|l| l.level.to_string().eq_ignore_ascii_case(level));
@@ -517,8 +671,8 @@ async fn get_scan_logs(
     }
 
     // Fall back to DB
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(logs) = idx.get_scan_logs(&id, query.level.as_deref()) {
                 return Ok(Json(logs));
             }
@@ -532,16 +686,19 @@ async fn get_scan_metrics(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ScanMetricsSnapshot>, StatusCode> {
+    let scan_root = state.active_scan_root();
     // Check in-memory (running scan)
     if let Some(job) = state.job_manager.get_job(&id) {
-        if let Some(ref metrics) = job.metrics {
+        if job.scan_root == scan_root
+            && let Some(ref metrics) = job.metrics
+        {
             return Ok(Json(metrics.snapshot()));
         }
     }
 
     // Fall back to DB
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(Some(metrics)) = idx.get_scan_metrics(&id) {
                 return Ok(Json(metrics));
             }
@@ -622,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_requested_scan_root_accepts_matching_root_but_uses_configured_path() {
+    fn resolve_requested_scan_root_accepts_matching_root() {
         let dir = tempfile::tempdir().unwrap();
         let configured = dir.path().canonicalize().unwrap();
         let requested = dir.path().join(".");
@@ -635,21 +792,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_requested_scan_root_rejects_different_root() {
+    fn resolve_requested_scan_root_accepts_different_root() {
         let configured_dir = tempfile::tempdir().unwrap();
         let other_dir = tempfile::tempdir().unwrap();
         let configured = configured_dir.path().canonicalize().unwrap();
 
-        let err = resolve_requested_scan_root(
+        let resolved = resolve_requested_scan_root(
             Some(other_dir.path().to_string_lossy().as_ref()),
             &configured,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            err.1.0["error"],
-            "scan_root must match the repository passed to nyx serve"
-        );
+        assert_eq!(resolved, other_dir.path().canonicalize().unwrap());
     }
 }

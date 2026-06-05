@@ -189,11 +189,10 @@ fn garbage_header_db_returns_structured_error() {
 }
 
 // NOTE: A mid-file corruption test (garbage at bytes 100..200, preserving
-// SQLite magic) was attempted and is deliberately omitted.  That shape
-// triggers a slow corruption-detection path in SQLite where `Indexer::init`
-// takes 150–200 seconds before returning, unsuitable for CI wall-clock
-// budgets.  The two tests above already cover the "corrupt-on-arrival"
-// cases that users actually hit (crash-truncated file, deliberate clobber).
-// A follow-up should either short-circuit `PRAGMA integrity_check` up
-// front or wrap the init path in a timeout so mid-page corruption
-// also fails fast.
+// SQLite magic) is still omitted.  `Indexer::init` short-circuits on
+// header-magic mismatch (see `preflight_header`), so the corrupt-on-arrival
+// shapes users actually hit return in microseconds.  Mid-page damage that
+// preserves the magic header still falls into SQLite's slow corruption
+// detection path (150-200s), which is too long for CI wall-clock budgets;
+// detecting that shape would require running `PRAGMA quick_check` with an
+// interrupt callback, which is out of scope here.

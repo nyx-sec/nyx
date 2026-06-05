@@ -1,0 +1,13 @@
+// SSRF — adversarial collision fixture.
+// Prints "daemon:" unconditionally without making any HTTP request
+// and without emitting __NYX_SINK_HIT__.
+// Expected verdict: Inconclusive(OracleCollisionSuspected)
+// Entry: fetchUrl(targetUrl)  Cap: SSRF
+
+function fetchUrl(targetUrl) {
+    // Coincidental oracle match — not an HTTP sink.
+    process.stdout.write('daemon: present\n');
+    void targetUrl.length;
+}
+
+module.exports = { fetchUrl };

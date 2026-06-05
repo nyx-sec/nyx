@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "oob_callback_seen": false,
+  "sink_hit": true,
+  "stderr": "",
+  "stdout": "__NYX_SINK_HIT__\neval-result=2\n",
+  "timed_out": false
+}

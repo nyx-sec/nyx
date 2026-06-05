@@ -1,0 +1,41 @@
+;; Phase 09 (Track J.7) — OPEN_REDIRECT profile.
+;;
+;; Inherits the SSRF profile's outbound-allowed, secret-files-denied
+;; shape — the open-redirect oracle only needs to inspect the
+;; captured `Location:` header value, so no extra network reach is
+;; required.  The Phase 09 brief calls out loopback DNS resolution
+;; for `attacker.test`: macOS sandbox-exec already permits loopback
+;; via `(allow default)`, so the addendum is a documentation marker
+;; rather than an enforcement change.  The Linux seccomp profile
+;; (see `seccomp_policy.toml::[cap.OPEN_REDIRECT]`) opens the same
+;; socket / connect / sendto family the SSRF cap uses, which covers
+;; the loopback resolver path on linux as well.
+
+(version 1)
+(allow default)
+
+;; Secret-file denylist (mirrors `ssrf.sb`) so an attacker who pivots
+;; from an open redirect to a host-side file read still cannot
+;; exfiltrate the canonical macOS secret stores.
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (regex #"^/Users/[^/]+/\.ssh(/|$)")
+    (regex #"^/Users/[^/]+/\.aws(/|$)")
+    (regex #"^/Users/[^/]+/\.gnupg(/|$)")
+    (regex #"^/Users/[^/]+/\.netrc$")
+    (regex #"^/Users/[^/]+/\.docker(/|$)")
+    (regex #"^/Users/[^/]+/\.kube(/|$)")
+    (regex #"^/Users/[^/]+/\.config/gh(/|$)")
+    (regex #"^/Users/[^/]+/Library/Keychains(/|$)")
+    (regex #"^/Users/[^/]+/Library/Cookies(/|$)")
+    (regex #"^/Users/[^/]+/Library/Mail(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/com\.apple\.TCC(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/Slack(/|$)")
+    (subpath "/Library/Keychains"))

@@ -78,7 +78,7 @@ async fn list_functions(
     State(state): State<AppState>,
     Query(q): Query<FileQuery>,
 ) -> Result<Json<Vec<FunctionInfo>>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     Ok(Json(debug::function_list(&analysis)))
@@ -102,7 +102,7 @@ async fn get_cfg(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<CfgGraphView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
 
@@ -117,7 +117,7 @@ async fn get_ssa(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<SsaBodyView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, _opt, _cfg) = debug::analyse_function_ssa(&analysis, &q.function)?;
@@ -130,7 +130,7 @@ async fn get_taint(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<TaintAnalysisView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, opt, body_cfg) = debug::analyse_function_ssa(&analysis, &q.function)?;
@@ -168,7 +168,7 @@ async fn get_abstract_interp(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<AbstractInterpView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, opt, body_cfg) = debug::analyse_function_ssa(&analysis, &q.function)?;
@@ -202,7 +202,7 @@ async fn get_summaries(
         Some(g) if !g.is_empty() => g,
         _ => {
             if let Some(ref file) = q.file {
-                let path = validate_and_resolve(&state.scan_root, file)?;
+                let path = validate_and_resolve(&state.active_scan_root(), file)?;
                 let config = state.config.read();
                 debug::analyse_file_summaries(&path, &config)?
             } else {
@@ -242,7 +242,7 @@ async fn get_call_graph(
     let global = if scope == "file" {
         // On-demand: parse the specified file and extract summaries
         let file = q.file.as_deref().ok_or(StatusCode::BAD_REQUEST)?;
-        let path = validate_and_resolve(&state.scan_root, file)?;
+        let path = validate_and_resolve(&state.active_scan_root(), file)?;
         let config = state.config.read();
         debug::analyse_file_summaries(&path, &config)?
     } else {
@@ -262,7 +262,7 @@ async fn get_symex(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<SymexView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, opt, body_cfg) = debug::analyse_function_ssa(&analysis, &q.function)?;
@@ -281,7 +281,7 @@ async fn get_pointer(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<PointerView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, facts) = debug::analyse_function_pointer(&analysis, &q.function)?;
@@ -294,7 +294,7 @@ async fn get_type_facts(
     State(state): State<AppState>,
     Query(q): Query<FileFunctionQuery>,
 ) -> Result<Json<TypeFactsView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let analysis = debug::analyse_file(&path, &config)?;
     let (ssa, opt, _cfg) = debug::analyse_function_ssa(&analysis, &q.function)?;
@@ -312,7 +312,7 @@ async fn get_auth(
     State(state): State<AppState>,
     Query(q): Query<FileQuery>,
 ) -> Result<Json<AuthAnalysisView>, StatusCode> {
-    let path = validate_and_resolve(&state.scan_root, &q.file)?;
+    let path = validate_and_resolve(&state.active_scan_root(), &q.file)?;
     let config = state.config.read();
     let (model, bytes, enabled) = debug::analyse_file_auth(&path, &config)?;
     Ok(Json(AuthAnalysisView::from_model(&model, &bytes, enabled)))
@@ -322,8 +322,9 @@ async fn get_auth(
 
 /// Load global summaries from DB if available.
 fn load_global_summaries(state: &AppState) -> Option<crate::summary::GlobalSummaries> {
-    let pool = state.db_pool.as_ref()?;
-    load_global_summaries_from_pool(&state.scan_root, pool)
+    let scan_root = state.active_scan_root();
+    let pool = state.active_db_pool()?;
+    load_global_summaries_from_pool(&scan_root, &pool)
 }
 
 fn load_global_summaries_from_pool(

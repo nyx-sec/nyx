@@ -306,10 +306,6 @@ fn find_post_if_sinks(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> Vec<NodeInde
 }
 
 impl CfgAnalysis for IncompleteErrorHandling {
-    fn name(&self) -> &'static str {
-        "incomplete-error-handling"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let mut findings = Vec::new();
 
@@ -369,7 +365,6 @@ impl CfgAnalysis for IncompleteErrorHandling {
             if has_dangerous_successor {
                 findings.push(CfgFinding {
                     rule_id: "cfg-error-fallthrough".to_string(),
-                    title: "Error check without return".to_string(),
                     severity: Severity::Medium,
                     confidence: Confidence::Medium,
                     span: info.ast.span,

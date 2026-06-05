@@ -9,9 +9,10 @@ The classifications here are grounded in three concrete signals:
 1. **Rule depth**: how many distinct source / sanitizer / sink matchers exist
    for the language in `src/labels/<lang>.rs`, and how many vulnerability
    classes (Cap bits) those matchers cover.
-2. **Benchmark results**: rule-level precision / recall / F1 on the 492-case
+2. **Benchmark results**: rule-level precision / recall / F1 on the synthetic
    corpus in
    [`tests/benchmark/RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md).
+   `RESULTS.md` is the authoritative case counts and per-language scores.
 3. **Known weak spots**: FPs and FNs the maintainers have deliberately left
    in the benchmark rather than suppressed, plus structural engine
    limitations the corpus does not stress, documented in
@@ -42,23 +43,25 @@ use tree-sitter and are stable; parsing is not a differentiator.
 
 ### Stable tier
 
-#### Python: 100% P / 100% R / 100% F1 *(46-case corpus)*
+#### Python
 
-- **Rule depth**: 5 source families, 7 sanitizer families, 21 sink matchers
+- **Rule depth**: deep source / sanitizer / sink coverage in
+  [`src/labels/python.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/python.rs)
   spanning HTML, URL, Shell, SQL, Code, SSRF, File I/O, and Deserialization.
 - **Framework context**: Flask, Django, argparse source matchers; `flask_request`
   import-alias support.
 - **Advanced analysis**: gated sinks (`Popen`, `subprocess.run/call` with
   activation-arg awareness), most SSA-equivalence and symbolic-execution
   fixtures target Python.
-- **Fixtures**: 125 under `tests/fixtures/` plus 42 benchmark cases.
+- **Fixtures**: extensive `.py` coverage under `tests/fixtures/` plus the benchmark cases.
 - **Blind spots**: f-string interpolation is not explicitly modeled as a
   distinct taint-producing construct; string-formatting flows are caught by
   the general concatenation path.
 
-#### JavaScript: 100% P / 100% R / 100% F1 *(42-case corpus)*
+#### JavaScript
 
-- **Rule depth**: 3 source families, 10 sanitizer families, 24 sink matchers
+- **Rule depth**: deep source / sanitizer / sink coverage in
+  [`src/labels/javascript.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/javascript.rs)
   spanning HTML, URL, JSON, Shell, SQL, Code, SSRF, and File I/O.
 - **Advanced analysis**: gated sinks (`setAttribute`, `parseFromString`),
   two-level SSA solve for top-level + per-function scopes
@@ -66,15 +69,16 @@ use tree-sitter and are stable; parsing is not a differentiator.
   StringFact, abstract-interpretation interval tracking.
 - **Framework context**: Express, Koa, Fastify (via in-file import scan when
   `package.json` is absent).
-- **Fixtures**: 238 under `tests/fixtures/`; the largest fixture set of any
+- **Fixtures**: the largest `.js` set under `tests/fixtures/` of any
   language.
 - **Blind spots**: template literals are lowered through concatenation rather
   than modeled as a first-class taint operator; dynamic property access
   (`obj[user]`) is conservatively treated.
 
-#### TypeScript: 100% P / 100% R / 100% F1 *(47-case corpus)*
+#### TypeScript
 
-- **Rule depth**: Shares the JS ruleset (3 sources, 10 sanitizers, 24 sinks)
+- **Rule depth**: shares the JS ruleset (see
+  [`src/labels/typescript.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/typescript.rs))
   plus TS-specific grammar handling.
 - **Advanced analysis**: TSX and JSX grammars wired;
   discriminated-union narrowing, generic erasure, decorator flow, and
@@ -82,15 +86,16 @@ use tree-sitter and are stable; parsing is not a differentiator.
   stressors.
 - **Framework context**: Fastify detection via `detect_in_file_frameworks`
   (import-driven, no `package.json` required).
-- **Fixtures**: 39 test fixtures plus 42 benchmark cases.
+- **Fixtures**: dedicated `.ts` / `.tsx` set under `tests/fixtures/` plus the benchmark cases.
 - **Blind spots**: `as any` casts and `any`-typed flows are handled
   conservatively (treated as tainted).
 
 ### Beta tier
 
-#### Go: 100% P / 100% R / 100% F1 *(56-case corpus)*
+#### Go
 
-- **Rule depth**: 4 source families, 4 sanitizer families, 9 sink matchers
+- **Rule depth**: mid-depth source / sanitizer / sink coverage in
+  [`src/labels/go.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/go.rs)
   covering HTML, URL, Shell, SQL, SSRF, Crypto, and File I/O.
 - **Framework context**: Gin, Echo source matchers.
 - **Recent fix**: `strings.ReplaceAll` is now recognised as a CMDi sanitiser
@@ -103,9 +108,10 @@ use tree-sitter and are stable; parsing is not a differentiator.
   so production CI gates may surface additional FPs the corpus does not
   exercise.
 
-#### Java: 100% P / 100% R / 100% F1 *(35-case corpus)*
+#### Java
 
-- **Rule depth**: 3 source families, 8 sanitizer families, 10 sink matchers
+- **Rule depth**: mid-depth source / sanitizer / sink coverage in
+  [`src/labels/java.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/java.rs)
   covering HTML, URL, Shell, SQL, Code, SSRF, and Deserialization.
 - **Framework context**: Spring, JPA, Hibernate ORM rules; JNDI injection
   sinks.
@@ -115,18 +121,20 @@ use tree-sitter and are stable; parsing is not a differentiator.
   cannot be inferred are conservatively over-tainted on unusual builder
   chains.
 
-#### PHP: 100% P / 100% R / 100% F1 *(37-case corpus)*
+#### PHP
 
-- **Rule depth**: 3 source families (`$_GET`, `$_POST`, `$_REQUEST`
-  superglobals), 7 sanitizer families, 10 sink matchers covering HTML, URL,
-  Shell, SQL, Code, SSRF, File I/O, and Deserialization.
+- **Rule depth**: sources include `$_GET`, `$_POST`, `$_REQUEST`
+  superglobals plus sanitizer / sink matchers in
+  [`src/labels/php.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/php.rs)
+  covering HTML, URL, Shell, SQL, Code, SSRF, File I/O, and Deserialization.
 - **Known gaps**: no gated sinks. Limited framework context (Laravel raw
   methods only). `echo` language-construct detection is wired but its
   inner-argument propagation is narrower than function-call sinks.
 
-#### Ruby: 100% P / 100% R / 100% F1 *(39-case corpus)*
+#### Ruby
 
-- **Rule depth**: 3 source families, 7 sanitizer families, 16 sink matchers
+- **Rule depth**: source / sanitizer / sink coverage in
+  [`src/labels/ruby.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/ruby.rs)
   covering HTML, Shell, SQL, Code, SSRF, File I/O, and Deserialization. SSRF
   coverage includes `URI.open` and the low-level `OpenURI.open_uri` it
   delegates to (the canonical CarrierWave CVE-2021-21288 sink).
@@ -138,21 +146,21 @@ use tree-sitter and are stable; parsing is not a differentiator.
 - **Framework context**: Rails helpers (`sanitize_sql`, `permit`, `require`).
 - **Known gaps**: string interpolation inside shell and SQL strings is
   recognized structurally but not modeled as a distinct operator.
-  `begin/rescue/ensure` exception-edge wiring is documented as deferred
-  (structurally incompatible with `build_try()`).
+  `begin/rescue/ensure` exception-edge wiring is not implemented.
 
-#### Rust: 100% P / 100% R / 100% F1 *(70-case adversarial corpus)*
+#### Rust
 
 Rust holds the largest per-language adversarial corpus. PathFact-driven
 path-domain narrowing covers the `rs-safe-*` regression set.
 
-- **Rule depth**: 6 source families, **2** sanitizer families (prefix and
-  type-coercion), 11 sink matchers covering HTML, Shell, SQL, SSRF,
-  Deserialization, and File I/O. Extensive framework source coverage
-  (Axum, Actix, Rocket); the most of any language on the source side. The
-  narrow sanitizer count is the primary reason Rust is not in the Stable
-  tier. Engine-side path/typed sanitizer recognition (PathFact) compensates,
-  but the ruleset itself is shallow.
+- **Rule depth**: source / sanitizer / sink coverage in
+  [`src/labels/rust.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/rust.rs)
+  covering HTML, Shell, SQL, SSRF, Deserialization, and File I/O.
+  Extensive framework source coverage (Axum, Actix, Rocket); the most of
+  any language on the source side. The narrow sanitizer rule set (prefix
+  and type-coercion only) is the primary reason Rust is not in the Stable
+  tier. Engine-side path/typed sanitizer recognition (PathFact)
+  compensates, but the ruleset itself is shallow.
 - **Coverage**: SQL class (`rusqlite`, `sqlx`, `diesel`, `postgres`),
   Deserialization class (`serde_yaml`, `bincode`, `rmp_serde`, `ciborium`,
   `ron`, `toml`), file I/O (`fs::remove_file/dir/rename/copy`), and the
@@ -221,20 +229,22 @@ Clang Static Analyzer, or Infer for production use.
   doesn't make `buf` an alias for every element.
 - Nested classes beyond one level (C++ only).
 
-#### C: 100% P / 100% R / 100% F1 *(30-case corpus)*
+#### C
 
-- **Rule depth**: 3 source families, **2** sanitizer families (the
-  `sanitize_*` prefix and numeric-parse functions), 5 sink matchers spanning
-  Shell, File, SSRF, and Format-String.
+- **Rule depth**: source / sanitizer / sink coverage in
+  [`src/labels/c.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/c.rs).
+  Sanitizers are limited to the `sanitize_*` prefix and numeric-parse
+  functions; sinks span Shell, File, SSRF, and Format-String.
 - **Known gaps**: no framework rules, no gated sinks. The structural
   limitations listed above are the dominant concern; rule additions alone
   will not lift this language out of the Preview tier.
 
-#### C++: 100% P / 100% R / 100% F1 *(33-case corpus, plus 6 new fixtures for STL / builder / inline-method flows)*
+#### C++
 
-- **Rule depth**: Builds on the C ruleset with `std::cin` / `std::getline`
-  sources and a wider numeric-sanitizer set covering the full `std::sto*`
-  family (3 sources, 3 sanitizer families, 5 sinks).
+- **Rule depth**: builds on the C ruleset (see
+  [`src/labels/cpp.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/cpp.rs))
+  with `std::cin` / `std::getline` sources and a wider numeric-sanitizer
+  set covering the full `std::sto*` family.
 - **Known gaps**: still no framework rules and no gated sinks. The
   structural blind spots are now narrower than they were a release ago
   (see "What now works" above), but function pointers and the harder

@@ -1,3 +1,9 @@
+//! Shared AST-extraction helpers for the auth-analysis framework adapters.
+//!
+//! Cross-framework primitives — analysis-unit collection, call-site and
+//! `ValueRef` extraction, and tree-sitter node/string/span helpers — used by the
+//! per-framework extractors in this directory (`express`, `axum`, `django`, …).
+
 use crate::auth_analysis::config::{AuthAnalysisRules, canonical_name, matches_name, strip_quotes};
 use crate::auth_analysis::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, CallSite,
@@ -3939,6 +3945,27 @@ fn collect_param_names(
                         out.push(name_text);
                     }
                     return;
+                }
+            }
+        }
+        // TypeScript `required_parameter` / `optional_parameter`. Descend only
+        // into the binding `pattern`, never the `type` annotation: the default
+        // arm harvests id-like names from object-type fields (`user: { id }`)
+        // and lifts typed-bounded scalar ids (`UserId: number`) into
+        // `unit.params`, over-firing the user-input gate on non-route helpers.
+        // Mirrors the Rust `parameter` arm plus the Go/Python id-like filter.
+        "required_parameter" | "optional_parameter" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                if pattern.kind() == "identifier" && node.child_by_field_name("type").is_some() {
+                    let name = text(pattern, bytes);
+                    if !name.is_empty()
+                        && !out.contains(&name)
+                        && (include_id_like_typed || !is_python_id_like_typed_param(&name))
+                    {
+                        out.push(name);
+                    }
+                } else {
+                    collect_param_names(pattern, bytes, include_id_like_typed, out);
                 }
             }
         }

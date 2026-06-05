@@ -1,0 +1,29 @@
+{
+  "description": "HttpServletRequest parameter flows through a List into ProcessBuilder.command(argList) — command injection via the setter form (list attached separately from the constructor, then pb.start()). This is the dominant OWASP Benchmark cmdi shape; resolved via type-qualified ProcessBuilder.command sink on the typed receiver plus container-element taint on the argument list.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "container"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "request.getParameter (line 8) is concatenated into a list element (argList.add at line 13), the list is attached to ProcessBuilder via pb.command(argList) at line 16, and executed by pb.start() at line 17. The type-qualified ProcessBuilder.command sink fires at line 16 on the tainted container argument. Exactly one finding survives.",
+      "max_count": 1
+    }
+  ]
+}

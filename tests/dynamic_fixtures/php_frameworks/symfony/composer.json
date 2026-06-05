@@ -1,0 +1,9 @@
+{
+  "name": "nyx/fixture-symfony",
+  "require": {
+    "php": ">=8.1",
+    "symfony/framework-bundle": "^7.0",
+    "symfony/routing": "^7.0",
+    "symfony/http-kernel": "^7.0"
+  }
+}

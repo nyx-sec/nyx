@@ -13,8 +13,8 @@
 use super::events::extract_sink_arg_positions;
 use super::state::{BindingKey, SsaTaintState};
 use super::{
-    SsaTaintEvent, SsaTaintTransfer, detect_variant_inner_fact, run_ssa_taint_full, transfer_block,
-    transfer_inst,
+    SsaTaintEvent, SsaTaintTransfer, detect_variant_inner_fact, op_for_value, run_ssa_taint_full,
+    transfer_block, transfer_inst,
 };
 
 use crate::cfg::{BodyId, Cfg, FuncSummaries};
@@ -31,6 +31,47 @@ use std::collections::{HashMap, HashSet};
 /// Maximum number of parameters to probe for summary extraction.
 /// Functions with more params fall back to legacy `FuncSummary`.
 const MAX_PROBE_PARAMS: usize = 8;
+
+/// Whether return value `v` provably evaluates to a compile-time constant —
+/// its def is a `Const`, or an `Assign`/`Phi` whose every operand traces
+/// (transitively) to a constant.  A value that hits a parameter, a call, or any
+/// other op is *not* provably constant (return `false`, conservative).
+///
+/// Used by `run_probe` to recognise a clean, param-free return so the
+/// param-taint fallback does not attribute the seeded parameter's `Cap::all`
+/// to a return that cannot reach it (the dead-branch-folded
+/// `return v; v = Assign([phi([const])])` shape).  Bounded depth.
+fn rv_traces_to_constant(
+    ssa: &SsaBody,
+    v: SsaValue,
+    all_param_values: &HashSet<SsaValue>,
+    depth: u32,
+    budget: &mut u32,
+) -> bool {
+    // Node budget caps total work so a wide phi/assign DAG (shared
+    // sub-expressions are re-visited without memoisation) cannot blow up;
+    // exhausting it returns the conservative `false`.
+    if depth > 16 || *budget == 0 || all_param_values.contains(&v) {
+        return false;
+    }
+    *budget -= 1;
+    match op_for_value(ssa, v) {
+        Some(SsaOp::Const(_)) => true,
+        Some(SsaOp::Assign(uses)) => {
+            !uses.is_empty()
+                && uses
+                    .iter()
+                    .all(|&u| rv_traces_to_constant(ssa, u, all_param_values, depth + 1, budget))
+        }
+        Some(SsaOp::Phi(operands)) => {
+            !operands.is_empty()
+                && operands.iter().all(|(_, u)| {
+                    rv_traces_to_constant(ssa, *u, all_param_values, depth + 1, budget)
+                })
+        }
+        _ => false,
+    }
+}
 
 /// Extract a precise per-parameter `SsaFuncSummary` from an already-lowered SSA body.
 ///
@@ -69,6 +110,7 @@ pub fn extract_ssa_func_summary(
         None,
         formal_destructured_fields,
         param_types,
+        None,
     )
 }
 
@@ -121,6 +163,7 @@ pub fn extract_ssa_func_summary_full(
     // SQL_QUERY caps were invisible to the param-1 probe).  `None` for
     // legacy / test paths preserves prior behaviour.
     param_types: Option<&[Option<TypeKind>]>,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
     // Pre-compute type facts on the un-optimised SSA body so the per-param
     // probe can resolve sinks that depend on receiver-type inference.
@@ -135,6 +178,8 @@ pub fn extract_ssa_func_summary_full(
         analyze_types_with_param_types(ssa, cfg, &empty_consts, Some(lang), pt)
     });
     let local_type_facts_ref: Option<&TypeFactResult> = local_type_facts.as_ref();
+    let probe_const_values = crate::ssa::const_prop::const_propagate(ssa).values;
+    let probe_points_to = crate::ssa::heap::analyze_points_to(ssa, cfg, Some(lang));
     use crate::summary::SinkSite;
     use crate::summary::ssa_summary::{SsaFuncSummary, TaintTransform};
 
@@ -232,6 +277,7 @@ pub fn extract_ssa_func_summary_full(
         Vec<ReturnBlockObs>,
     ) {
         let seed_ref = if seed.is_empty() { None } else { Some(&seed) };
+        let dynamic_pts = std::cell::RefCell::new(std::collections::HashMap::new());
         let transfer = SsaTaintTransfer {
             lang,
             namespace,
@@ -244,19 +290,19 @@ pub fn extract_ssa_func_summary_full(
             global_seed: seed_ref,
             param_seed: None,
             receiver_seed: None,
-            const_values: None,
+            const_values: Some(&probe_const_values),
             type_facts: local_type_facts_ref,
             xml_parser_config: None,
             xpath_config: None,
             ssa_summaries,
             extra_labels: None,
-            base_aliases: None,
+            base_aliases,
             callee_bodies: None,
             inline_cache: None,
             context_depth: 0,
             callback_bindings: None,
-            points_to: None,
-            dynamic_pts: None,
+            points_to: Some(&probe_points_to),
+            dynamic_pts: Some(&dynamic_pts),
             import_bindings: None,
             promisify_aliases: None,
             module_aliases,
@@ -320,13 +366,17 @@ pub fn extract_ssa_func_summary_full(
                     // both when rv is tainted (derived) and when rv is untainted
                     // (the push result may have no taint but the param does).
                     // Skip when rv IS a param (already handled above) or when rv is
-                    // a Const (provably untainted constant return).
-                    let rv_is_const = ssa.blocks[bid]
-                        .body
-                        .iter()
-                        .chain(ssa.blocks[bid].phis.iter())
-                        .any(|inst| inst.value == rv && matches!(inst.op, SsaOp::Const(_)));
-                    if !all_param_values.contains(&rv) && !rv_is_const {
+                    // provably a constant (a return that traces — through Assign
+                    // copies / phis — to only `Const` values cannot carry the
+                    // seeded param's taint).  The plain-`Const` check missed the
+                    // dead-branch-folded shape `return v` where `v = Assign([phi([
+                    // const])])`: the param is fully disconnected from the return,
+                    // but the fallback would still attribute the seeded param's
+                    // `Cap::all` to it, manufacturing a spurious `param→return`
+                    // (Identity) edge that poisons every cross-file caller.
+                    if !all_param_values.contains(&rv)
+                        && !rv_traces_to_constant(ssa, rv, &all_param_values, 0, &mut 256)
+                    {
                         for (val, taint) in &exit.values {
                             if all_param_values.contains(val) {
                                 block_param_caps |= taint.caps;
@@ -824,7 +874,7 @@ pub fn extract_ssa_func_summary_full(
             xpath_config: None,
             ssa_summaries,
             extra_labels: None,
-            base_aliases: None,
+            base_aliases,
             callee_bodies: None,
             inline_cache: None,
             context_depth: 0,

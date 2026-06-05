@@ -263,7 +263,6 @@ mod inline_cache_epoch_tests {
             receiver_provenance: false,
             uses_summary: false,
             return_path_fact: crate::abstract_interp::PathFact::top(),
-            return_path_facts: SmallVec::new(),
         }))
     }
 
@@ -337,7 +336,6 @@ mod inline_cache_epoch_tests {
             receiver_provenance: false,
             uses_summary: true,
             return_path_fact: crate::abstract_interp::PathFact::top(),
-            return_path_facts: SmallVec::new(),
         }));
 
         // Caller A: argument carries an env-source origin.
@@ -404,7 +402,6 @@ mod inline_cache_epoch_tests {
             receiver_provenance: false,
             uses_summary: true,
             return_path_fact: crate::abstract_interp::PathFact::top(),
-            return_path_facts: SmallVec::new(),
         }));
 
         let state = SsaTaintState::initial();

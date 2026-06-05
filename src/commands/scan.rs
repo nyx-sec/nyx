@@ -1,11 +1,19 @@
-#![allow(clippy::collapsible_if, clippy::type_complexity)]
+//! Scan-pipeline orchestration: the two-pass + topo-batch driver behind
+//! `nyx scan`.
+//!
+//! Coordinates summary extraction (pass 1), SCC-ordered taint analysis with a
+//! bounded fixpoint (pass 2, `run_topo_batches`), the indexed parallel scan path
+//! (`scan_with_index_parallel_observer`), suppression application, and per-file
+//! panic isolation (`recover_or_propagate`).
+
+#![allow(clippy::type_complexity)]
 
 pub(crate) use crate::ast::{
     analyse_file_fused, extract_all_summaries_from_bytes, run_rules_on_bytes, run_rules_on_file,
 };
 use crate::callgraph::{CallGraph, FileBatch};
 use crate::cli::{IndexMode, OutputFormat};
-use crate::database::index::{Indexer, IssueRow};
+use crate::database::index::{IndexWriteQueue, Indexer, IssueRow};
 use crate::errors::NyxResult;
 use crate::patterns::{FindingCategory, Severity, SeverityFilter};
 use crate::server::progress::{ScanMetrics, ScanProgress, ScanStage};
@@ -180,6 +188,230 @@ pub struct Diag {
     /// no alternative paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_finding_ids: Vec<String>,
+    /// Blake3 hash of `(rule_id, path, line, col, sink_caps)` truncated to
+    /// 64 bits.  Stable across scans for the same sink location and rule.
+    /// Always present (no feature gate); enables M6.5 baseline diffing.
+    /// Zero until the post-pass in `scan::handle` computes it.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub stable_hash: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+#[cfg(test)]
+impl Default for Diag {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            line: 0,
+            col: 0,
+            severity: crate::patterns::Severity::Low,
+            id: String::new(),
+            category: crate::patterns::FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: None,
+            evidence: None,
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        }
+    }
+}
+
+/// Blake3 of `(rule_id, path, line, col, sink_caps)`, truncated to 64 bits.
+pub fn compute_stable_hash(diag: &Diag) -> u64 {
+    let mut h = blake3::Hasher::new();
+    h.update(diag.id.as_bytes());
+    h.update(b"\0");
+    h.update(diag.path.as_bytes());
+    h.update(b"\0");
+    h.update(&(diag.line as u64).to_le_bytes());
+    h.update(&(diag.col as u64).to_le_bytes());
+    let sink_caps = diag.evidence.as_ref().map_or(0u32, |e| e.sink_caps);
+    h.update(&sink_caps.to_le_bytes());
+    let out = h.finalize();
+    let bytes = out.as_bytes();
+    u64::from_le_bytes(bytes[..8].try_into().unwrap())
+}
+
+/// Aggregate status counts for dynamic verification verdicts attached to
+/// findings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DynamicVerificationSummary {
+    pub total: usize,
+    pub confirmed: usize,
+    pub partially_confirmed: usize,
+    pub not_confirmed: usize,
+    pub inconclusive: usize,
+    pub unsupported: usize,
+}
+
+impl DynamicVerificationSummary {
+    pub fn from_diags(diags: &[Diag]) -> Self {
+        let mut summary = Self::default();
+        for diag in diags {
+            let Some(verdict) = diag
+                .evidence
+                .as_ref()
+                .and_then(|ev| ev.dynamic_verdict.as_ref())
+            else {
+                continue;
+            };
+            summary.total += 1;
+            match verdict.status {
+                crate::evidence::VerifyStatus::Confirmed => summary.confirmed += 1,
+                crate::evidence::VerifyStatus::PartiallyConfirmed => {
+                    summary.partially_confirmed += 1
+                }
+                crate::evidence::VerifyStatus::NotConfirmed => summary.not_confirmed += 1,
+                crate::evidence::VerifyStatus::Inconclusive => summary.inconclusive += 1,
+                crate::evidence::VerifyStatus::Unsupported => summary.unsupported += 1,
+            }
+        }
+        summary
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.total == 0
+    }
+}
+
+/// Human-readable dynamic summary used by both CLI and server scan logs.
+pub fn format_dynamic_verification_summary(summary: &DynamicVerificationSummary) -> String {
+    let noun = if summary.total == 1 {
+        "verdict"
+    } else {
+        "verdicts"
+    };
+    format!(
+        "{} {} ({} confirmed, {} partially confirmed, {} not confirmed, {} inconclusive, {} unsupported)",
+        summary.total,
+        noun,
+        summary.confirmed,
+        summary.partially_confirmed,
+        summary.not_confirmed,
+        summary.inconclusive,
+        summary.unsupported
+    )
+}
+
+/// Apply dynamic verification to a completed scan.
+///
+/// Returns the configured verifier options so callers that perform later
+/// composite-chain re-verification can reuse preloaded summaries and callgraph
+/// context.
+#[cfg(feature = "dynamic")]
+pub(crate) fn verify_findings_for_scan(
+    diags: &mut [Diag],
+    project_name: &str,
+    db_path: &Path,
+    scan_path: &Path,
+    config: &Config,
+    verbose: bool,
+    use_index_db: bool,
+) -> Option<crate::dynamic::verify::VerifyOptions> {
+    if !config.scanner.verify {
+        return None;
+    }
+
+    let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+    // Phase 30 (Track C observability): surface the per-finding
+    // [`crate::dynamic::trace::VerifyTrace`] on stderr when the operator
+    // passes `--verbose`.
+    opts.trace_verbose = verbose;
+
+    if use_index_db && db_path.exists() {
+        opts.db_path = Some(db_path.to_path_buf());
+        // Preload cross-file summaries once so the spec-derivation pipeline
+        // can resolve the enclosing function and callgraph entry context
+        // without re-hitting SQLite per finding. Best-effort: a load failure
+        // logs and falls through to the substring heuristics.
+        opts.summaries = load_verify_summaries(project_name, db_path, scan_path);
+        if let Some(ref summaries) = opts.summaries {
+            opts.callgraph = Some(load_verify_callgraph(summaries));
+        }
+    }
+
+    let telemetry_log = crate::dynamic::telemetry::log_path();
+
+    // Track P.0: route per-finding verification through cap-keyed concurrency
+    // lanes so a slow `DESERIALIZE` harness can't head-of-line block fast
+    // `SSRF` ones. `verify_finding` takes `&Diag`, so the parallel phase is a
+    // pure read; verdicts are applied back in input order afterwards, keeping
+    // the verdict sequence identical to the sequential path (determinism
+    // contract). `NYX_DYNAMIC_VERIFY_PARALLEL=0` forces the legacy loop.
+    let parallel = std::env::var("NYX_DYNAMIC_VERIFY_PARALLEL")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true);
+
+    let results: Vec<crate::dynamic::report::VerifyResult> = if parallel && diags.len() > 1 {
+        let lane_trace =
+            verbose.then(|| std::sync::Arc::new(crate::dynamic::trace::VerifyTrace::new()));
+        let out = crate::dynamic::runner::WorkerPool::run_in_lanes(
+            &*diags,
+            lane_trace.as_ref(),
+            |d| {
+                crate::labels::Cap::from_bits_truncate(
+                    d.evidence.as_ref().map_or(0, |e| e.sink_caps),
+                )
+            },
+            |_, d| crate::dynamic::verify::verify_finding(d, &opts),
+        );
+        if let Some(trace) = &lane_trace {
+            trace.print_to_stderr();
+        }
+        out
+    } else {
+        diags
+            .iter()
+            .map(|d| crate::dynamic::verify::verify_finding(d, &opts))
+            .collect()
+    };
+
+    for (diag, mut result) in diags.iter_mut().zip(results) {
+        if result.status == crate::dynamic::report::VerifyStatus::Confirmed
+            && let Some(ref log_path) = telemetry_log
+        {
+            result.wrong =
+                crate::dynamic::telemetry::feedback_wrong_for_finding(log_path, &result.finding_id);
+        }
+        if let Some(ref mut ev) = diag.evidence {
+            // Cap-taxonomy alignment (Track L.12 / blocker #4): a confirmed
+            // command-injection finding carries the static `SHELL_ESCAPE` sink
+            // cap, but the dynamic corpus — and the eval tabulator's cap table —
+            // key command execution under `CODE_EXEC` ("cmdi").  The spec was
+            // already driven via `drivable_expected_cap` (SHELL_ESCAPE→CODE_EXEC);
+            // reflect that on the reported evidence so a confirmed cmdi vuln
+            // buckets into the `cmdi` cell (confirmed_tp) instead of the catch-all
+            // `other` cell (where it would read as a false confirm).  Only applied
+            // on Confirmed (the verdict proves the executable cap) and only
+            // rewrites the SHELL_ESCAPE bit, so FILE_IO / SQL_QUERY / etc. are
+            // untouched.  Runs after the stable-hash is computed, so dedup keys
+            // are unaffected.
+            if matches!(
+                result.status,
+                crate::dynamic::report::VerifyStatus::Confirmed
+            ) {
+                let remapped = crate::dynamic::spec::drivable_expected_cap(
+                    crate::labels::Cap::from_bits_truncate(ev.sink_caps),
+                );
+                ev.sink_caps = remapped.bits();
+            }
+            ev.dynamic_verdict = Some(result);
+        }
+    }
+
+    Some(opts)
 }
 
 /// Rollup data for grouped findings (e.g. 38 occurrences of `rs.quality.unwrap`).
@@ -279,6 +511,65 @@ pub(crate) fn is_preview_tier_path(path: &Path) -> bool {
     )
 }
 
+/// Load every persisted `FuncSummary` for `project` from `db_path` and fold
+/// them into a [`GlobalSummaries`]. Best-effort: any failure (pool init,
+/// summary load) logs and returns `None`, leaving dynamic verification on
+/// the no-summaries code path.
+///
+/// Called once at the top of the verify loop so per-finding spec derivation
+/// hits an in-memory index, not SQLite. The index is wrapped in `Arc` so
+/// `VerifyOptions` can be cloned cheaply if a caller threads it onto
+/// multiple findings concurrently in the future.
+#[cfg(feature = "dynamic")]
+fn load_verify_summaries(
+    project: &str,
+    db_path: &Path,
+    scan_root: &Path,
+) -> Option<Arc<crate::summary::GlobalSummaries>> {
+    let pool = match Indexer::init(db_path) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("verify: indexer init failed; summary-driven spec derivation off: {e}");
+            return None;
+        }
+    };
+    let idx = match Indexer::from_pool(project, &pool) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::debug!("verify: indexer open failed; summary-driven spec derivation off: {e}");
+            return None;
+        }
+    };
+    let all = match idx.load_all_summaries() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("verify: load_all_summaries failed; spec derivation off: {e}");
+            return None;
+        }
+    };
+    let root_str = scan_root.to_string_lossy().into_owned();
+    Some(Arc::new(crate::summary::merge_summaries(
+        all,
+        Some(&root_str),
+    )))
+}
+
+/// Build the whole-program [`crate::callgraph::CallGraph`] from a
+/// preloaded [`crate::summary::GlobalSummaries`] so the verifier can
+/// thread it into the callgraph-aware spec-derivation path
+/// (`SpecDerivationStrategy::FromCallgraphEntry`).
+///
+/// Best-effort: callgraph construction itself never fails, but this
+/// helper exists to keep the verify pipeline parallel with
+/// [`load_verify_summaries`] and to absorb future failure modes (e.g.
+/// interop-edge loading) behind a single optional return.
+#[cfg(feature = "dynamic")]
+fn load_verify_callgraph(
+    summaries: &crate::summary::GlobalSummaries,
+) -> Arc<crate::callgraph::CallGraph> {
+    Arc::new(crate::callgraph::build_call_graph(summaries, &[]))
+}
+
 /// Entry point called by the CLI.
 #[allow(clippy::too_many_arguments)]
 pub fn handle(
@@ -291,9 +582,18 @@ pub fn handle(
     show_instances: Option<&str>,
     database_dir: &Path,
     config: &Config,
+    baseline: Option<&Path>,
+    baseline_write: Option<&Path>,
+    gate: Option<&str>,
+    #[cfg_attr(not(feature = "dynamic"), allow(unused_variables))] verbose: bool,
 ) -> NyxResult<()> {
     let scan_path = Path::new(path).canonicalize()?;
     let (project_name, db_path) = get_project_info(&scan_path, database_dir)?;
+    let _ = crate::utils::targets::remember_target(
+        database_dir,
+        &scan_path,
+        crate::utils::targets::TargetTouch::Scanned,
+    );
 
     // Detect frameworks from project manifests and enrich the config.
     let config = &{
@@ -325,45 +625,66 @@ pub fn handle(
     // functions below.  Set to true if any C / C++ file is enumerated.
     let preview_tier_seen = Arc::new(AtomicBool::new(false));
 
-    let mut diags: Vec<Diag> = if index_mode == IndexMode::Off {
-        scan_filesystem_with_observer(
-            &scan_path,
-            config,
-            show_progress,
-            None,
-            None,
-            None,
-            Some(&preview_tier_seen),
-        )?
-    } else {
-        if index_mode == IndexMode::Rebuild || !db_path.exists() {
-            tracing::debug!("Scanning filesystem index filesystem");
-            crate::commands::index::build_index(
-                &project_name,
+    // Call-graph-derived file reachability map.  Populated by the inner
+    // observer once the call graph is built, then consumed by the chain
+    // composer below to widen cross-file Reach beyond the file-local
+    // heuristic in `findings_to_edges`.
+    let chain_reach_slot: std::sync::OnceLock<crate::callgraph::FileReachMap> =
+        std::sync::OnceLock::new();
+
+    let (mut diags, surface_map): (Vec<Diag>, crate::surface::SurfaceMap) =
+        if index_mode == IndexMode::Off {
+            scan_filesystem_with_observer(
                 &scan_path,
-                &db_path,
                 config,
                 show_progress,
-            )?;
-        }
+                None,
+                None,
+                None,
+                Some(&preview_tier_seen),
+                Some(&chain_reach_slot),
+            )?
+        } else {
+            if index_mode == IndexMode::Rebuild || !db_path.exists() {
+                tracing::debug!("Scanning filesystem index filesystem");
+                crate::commands::index::build_index(
+                    &project_name,
+                    &scan_path,
+                    &db_path,
+                    config,
+                    show_progress,
+                )?;
+            }
 
-        let pool = Indexer::init(&db_path)?;
-        if config.database.vacuum_on_startup {
-            let idx = Indexer::from_pool(&project_name, &pool)?;
-            idx.vacuum()?;
-        }
-        scan_with_index_parallel_observer(
-            &project_name,
-            pool,
-            config,
-            show_progress,
-            &scan_path,
-            None,
-            None,
-            None,
-            Some(&preview_tier_seen),
-        )?
-    };
+            let pool = Indexer::init(&db_path)?;
+            if config.database.vacuum_on_startup {
+                let idx = Indexer::from_pool(&project_name, &pool)?;
+                idx.vacuum()?;
+            }
+            // Indexed scan path: persist + return the SurfaceMap so the
+            // Phase 25 chain composer can walk it.  `scan_with_index_parallel_observer`
+            // already builds and persists the map into the `surface_map`
+            // SQLite table; reload it through the same pool so the indexed
+            // chain emission matches the non-indexed branch.
+            let scan_pool = Arc::clone(&pool);
+            let diags = scan_with_index_parallel_observer(
+                &project_name,
+                scan_pool,
+                config,
+                show_progress,
+                &scan_path,
+                None,
+                None,
+                None,
+                Some(&preview_tier_seen),
+                Some(&chain_reach_slot),
+            )?;
+            let surface_map = {
+                let idx = Indexer::from_pool(&project_name, &pool)?;
+                idx.load_surface_map()?.unwrap_or_default()
+            };
+            (diags, surface_map)
+        };
 
     // Print the Preview-tier banner to stderr once, after file enumeration
     // completes and before the console output.  Suppressed under --quiet and
@@ -413,25 +734,151 @@ pub fn handle(
 
     tracing::debug!("Emitting {:?} issues (post-filter).", diags.len());
 
+    // ── Compute stable_hash for every surviving finding ──────────────────
+    for diag in &mut diags {
+        diag.stable_hash = compute_stable_hash(diag);
+    }
+
+    // ── Dynamic verification (feature-gated) ─────────────────────────────
+    // The constructed `VerifyOptions` is held in an `Option` scoped past
+    // the per-finding loop so the composite-chain re-verification pass
+    // below can reuse the same preloaded summaries / callgraph without
+    // a second SQLite round-trip.
+    #[cfg(feature = "dynamic")]
+    let verify_opts: Option<crate::dynamic::verify::VerifyOptions> = verify_findings_for_scan(
+        &mut diags,
+        &project_name,
+        &db_path,
+        &scan_path,
+        config,
+        verbose,
+        index_mode != IndexMode::Off,
+    );
+
+    #[cfg(not(feature = "dynamic"))]
+    if config.scanner.verify && !suppress_status {
+        eprintln!(
+            "{}: dynamic verification is enabled, but this binary was built without dynamic support; running static-only. Rebuild with `cargo build --features dynamic` or set `[scanner] verify = false`.",
+            style("warning").yellow().bold()
+        );
+    }
+
+    // ── Baseline write (§M6.5): persist current findings as stripped baseline
+    if let Some(bw_path) = baseline_write {
+        if let Err(e) = crate::baseline::write_baseline(bw_path, &diags) {
+            tracing::warn!(path = %bw_path.display(), error = %e, "baseline-write failed");
+            if !suppress_status {
+                eprintln!("warning: --baseline-write failed: {e}");
+            }
+        } else if !suppress_status {
+            eprintln!("Baseline written to {}", bw_path.display());
+        }
+    }
+
+    // ── Baseline diff (§M6.5): load previous baseline and compute transitions
+    let verdict_diff = if let Some(bl_path) = baseline {
+        match crate::baseline::load_baseline(bl_path) {
+            Ok(baseline_entries) => {
+                let diff = crate::baseline::compute_verdict_diff(&baseline_entries, &diags);
+                Some(diff)
+            }
+            Err(e) => {
+                return Err(crate::errors::NyxError::Msg(format!(
+                    "--baseline {}: {e}",
+                    bl_path.display()
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
+    // ── Phase 25: compose exploit chains from findings + SurfaceMap ────
+    // When the inner scan populated the call-graph reach map, pass it
+    // to the chain layer so a finding in an internal helper whose
+    // enclosing function is only reached through a route handler still
+    // composes against a sink in the handler's file.  When the slot is
+    // empty (legacy / AST-only paths that never built a call graph),
+    // the chain layer falls back to file-local reach.
+    let chain_reach = chain_reach_slot.get();
+    let chain_edges = crate::chain::findings_to_edges_with_reach(&diags, &surface_map, chain_reach);
+    let chain_search_cfg = crate::chain::ChainSearchConfig {
+        max_depth: config.chain.max_depth,
+        min_score: config.chain.min_score,
+    };
+    // `mut` is unused when the `dynamic` feature is off: composite
+    // chain re-verification is the only mutator and is cfg-gated below.
+    #[allow(unused_mut)]
+    let mut chains = crate::chain::find_chains_with_reach(
+        &chain_edges,
+        &surface_map,
+        chain_search_cfg,
+        chain_reach,
+    );
+
+    // Track G.3: composite chain re-verification. Only the top-N chains
+    // by score reach the live composite run (cost control via
+    // `[chain] reverify_top_n` — default 5, `0` to skip). Gated on the
+    // master dynamic-verification switch (`scanner.verify`) so users who
+    // skip per-finding verification do not pay the per-chain build /
+    // sandbox cost. Mutates `chains` in place: each top-N chain's
+    // `dynamic_verdict` / `severity` / `reverify_reason` flow through to
+    // every downstream consumer (`filter_constituents`,
+    // `build_findings_json`, `build_sarif_with_chains`, console
+    // renderer).
+    #[cfg(feature = "dynamic")]
+    if let Some(ref opts) = verify_opts {
+        if config.chain.reverify_top_n > 0 && !chains.is_empty() {
+            let _ = crate::chain::reverify::reverify_top_chains(
+                &mut chains,
+                &diags,
+                &surface_map,
+                opts,
+                config.chain.reverify_top_n,
+            );
+        }
+    }
+
+    let diags_for_output = crate::output::filter_constituents(
+        diags.clone(),
+        &chains,
+        config.output.show_chain_constituents,
+    );
+
     // ── Output ──────────────────────────────────────────────────────────
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string(&diags)
+            let diff_value = verdict_diff
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null));
+            let out =
+                crate::output::build_findings_json(&diags_for_output, &chains, diff_value.as_ref());
+            let json = serde_json::to_string(&out)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");
         }
         OutputFormat::Sarif => {
-            let sarif = crate::output::build_sarif(&diags, &scan_path);
+            let sarif =
+                crate::output::build_sarif_with_chains(&diags_for_output, &chains, &scan_path);
             let json = serde_json::to_string_pretty(&sarif)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");
+            // Emit diff on stderr for SARIF (stdout is owned by the SARIF schema).
+            if let Some(ref diff) = verdict_diff {
+                eprintln!("\nBaseline comparison:");
+                eprint!("{}", crate::baseline::format_diff_console(diff));
+            }
         }
         OutputFormat::Console => {
             tracing::debug!("Printing to console");
             print!(
                 "{}",
-                crate::fmt::render_console(&diags, &project_name, Some(&stats))
+                crate::fmt::render_console(&diags_for_output, &project_name, Some(&stats), &chains,)
             );
+            if let Some(ref diff) = verdict_diff {
+                println!("\nBaseline comparison:");
+                print!("{}", crate::baseline::format_diff_console(diff));
+            }
         }
     }
 
@@ -461,6 +908,16 @@ pub fn handle(
         }
     }
 
+    // ── --gate: CI gate check (exit 2 on violation) ─────────────────────
+    if let (Some(diff), Some(gate_name)) = (&verdict_diff, gate) {
+        if !crate::baseline::check_gate(diff, gate_name) {
+            if !suppress_status {
+                eprintln!("Gate '{}' violated. Exit code 2.", gate_name);
+            }
+            std::process::exit(2);
+        }
+    }
+
     // ── --fail-on: exit non-zero if threshold breached ──────────────────
     // Suppressed findings do not count toward the threshold.
     if let Some(threshold) = fail_on {
@@ -475,9 +932,7 @@ pub fn handle(
     Ok(())
 }
 
-// --------------------------------------------------------------------------------------------
 // Shared post-processing helpers
-// --------------------------------------------------------------------------------------------
 
 /// Assign confidence, rank, and truncate diagnostics.
 pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
@@ -930,7 +1385,7 @@ fn topo_refine_enabled() -> bool {
 /// files that contain a caller of a changed key in the next iteration.
 /// This reduces per-iteration cost from O(|batch.files|) to
 /// O(|dirty_files|), which is typically a small fraction of the
-/// batch for SCCs larger than 4–8 functions.
+/// batch for SCCs larger than 4 to 8 functions.
 ///
 /// When `call_graph` is missing an edge (e.g. a summary was inserted
 /// after graph construction), we conservatively fall back to
@@ -1529,15 +1984,13 @@ fn run_topo_batches(
     result
 }
 
-// --------------------------------------------------------------------------------------------
-// Two‑pass scanning (no index)
-// --------------------------------------------------------------------------------------------
+// Two-pass scanning (no index)
 
-/// Walk the filesystem and perform a two‑pass scan:
+/// Walk the filesystem and perform a two-pass scan:
 ///
-///  **Pass 1** – Parse every file and extract function summaries.
-///  **Pass 2** – Re‑parse every file and run taint analysis with the
-///               merged cross‑file summaries.
+///  **Pass 1**: parse every file and extract function summaries.
+///  **Pass 2**: re-parse every file and run taint analysis with the
+///              merged cross-file summaries.
 ///
 /// AST pattern queries are run during pass 2 (they don't depend on summaries).
 pub(crate) fn scan_filesystem(
@@ -1545,7 +1998,21 @@ pub(crate) fn scan_filesystem(
     cfg: &Config,
     show_progress: bool,
 ) -> NyxResult<Vec<Diag>> {
-    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None)
+    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None, None)
+        .map(|(diags, _surface_map)| diags)
+}
+
+/// Same as [`scan_filesystem`] but additionally returns the `SurfaceMap`
+/// built from the post-pass-2 view.  The non-indexed path used to drop
+/// the surface map on the floor; this entry-point lets `nyx surface` (and
+/// other consumers that need the attack-surface model alongside the
+/// findings) avoid running the analysis twice.
+pub(crate) fn scan_filesystem_with_surface_map(
+    root: &Path,
+    cfg: &Config,
+    show_progress: bool,
+) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
+    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None, None)
 }
 
 /// Walk the filesystem and perform a two-pass scan, optionally reporting
@@ -1563,7 +2030,8 @@ pub(crate) fn scan_filesystem_with_observer(
     metrics: Option<&Arc<ScanMetrics>>,
     logs: Option<&Arc<ScanLogCollector>>,
     preview_tier_seen: Option<&Arc<AtomicBool>>,
-) -> NyxResult<Vec<Diag>> {
+    chain_reach_out: Option<&std::sync::OnceLock<crate::callgraph::FileReachMap>>,
+) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
     // Ensure framework context is available (handle sets it, but direct
     // callers like scan_no_index may not).
     let owned_cfg = ensure_framework_ctx(root, cfg);
@@ -1694,7 +2162,8 @@ pub(crate) fn scan_filesystem_with_observer(
             p.set_stage(ScanStage::Complete);
         }
         post_process_diags(&mut diags, cfg);
-        return Ok(diags);
+        // AST-only mode does not produce a SurfaceMap (no CFG / summaries).
+        return Ok((diags, crate::surface::SurfaceMap::new()));
     }
 
     // ── Taint mode: two-pass with fused pass 1 ──────────────────────────
@@ -1901,6 +2370,11 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
 
+    if let Some(out) = chain_reach_out {
+        let _ =
+            out.set(crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(root)));
+    }
+
     // ── Pass 2: re-run with cross-file global summaries ──────────────────
     if let Some(p) = progress {
         p.set_stage(ScanStage::Analyzing);
@@ -1915,6 +2389,7 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
     let pass2_start = std::time::Instant::now();
+    let mut gs = global_summaries;
     let mut diags: Vec<Diag> = {
         let _span = tracing::info_span!("pass2_analysis", files = all_paths.len()).entered();
         let pb = make_progress_bar(
@@ -1945,7 +2420,6 @@ pub(crate) fn scan_filesystem_with_observer(
             );
         }
 
-        let mut gs = global_summaries;
         let total_batches = batches.len() as u64 + u64::from(!orphans.is_empty());
         if let Some(p) = progress {
             p.set_batches_total(total_batches);
@@ -1966,6 +2440,20 @@ pub(crate) fn scan_filesystem_with_observer(
         result
     };
     tracing::info!(diags = diags.len(), "pass 2 complete");
+
+    // Phase 21: build the SurfaceMap from the post-pass-2 view.
+    // No persistence here; the index-backed path persists into the
+    // `surface_map` SQLite table.  The map is returned alongside the
+    // diagnostics so consumers (e.g. `nyx surface`) can avoid scanning
+    // twice.
+    let surface_map =
+        crate::surface::build::build_surface_map(&crate::surface::build::SurfaceBuildInputs {
+            files: &all_paths,
+            scan_root: Some(root),
+            global_summaries: &gs,
+            call_graph: &call_graph,
+            config: cfg,
+        });
     if let Some(p) = progress {
         p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
     }
@@ -2000,24 +2488,22 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
 
-    Ok(diags)
+    Ok((diags, surface_map))
 }
 
-// --------------------------------------------------------------------------------------------
-// Two‑pass scanning (with index)
-// --------------------------------------------------------------------------------------------
+// Two-pass scanning (with index)
 
-/// Indexed two‑pass scan:
+/// Indexed two-pass scan:
 ///
-///  **Pass 1** – For every file that needs scanning, extract summaries and
-///               persist them to the database.  Unchanged files keep their
-///               existing summaries.
-///  **Pass 2** – Load *all* summaries from the DB, merge them, and re‑run
-///               taint analysis on every file with the full cross‑file view.
-///               Files whose *own* code has not changed AND whose
-///               dependencies have not changed can serve cached issues
-///               instead.  (Today we conservatively re‑analyse every file in
-///               pass 2; caching will be refined in approach 2 / 3.)
+///  **Pass 1**: for every file that needs scanning, extract summaries and
+///              persist them to the database. Unchanged files keep their
+///              existing summaries.
+///  **Pass 2**: load *all* summaries from the DB, merge them, and re-run
+///              taint analysis on every file with the full cross-file view.
+///              Files whose *own* code has not changed AND whose
+///              dependencies have not changed can serve cached issues
+///              instead. (Today we conservatively re-analyse every file in
+///              pass 2; caching will be refined later.)
 pub fn scan_with_index_parallel(
     project: &str,
     pool: Arc<Pool<SqliteConnectionManager>>,
@@ -2031,6 +2517,7 @@ pub fn scan_with_index_parallel(
         cfg,
         show_progress,
         scan_root,
+        None,
         None,
         None,
         None,
@@ -2050,6 +2537,7 @@ pub fn scan_with_index_parallel_observer(
     metrics: Option<&Arc<ScanMetrics>>,
     logs: Option<&Arc<ScanLogCollector>>,
     preview_tier_seen: Option<&Arc<AtomicBool>>,
+    chain_reach_out: Option<&std::sync::OnceLock<crate::callgraph::FileReachMap>>,
 ) -> NyxResult<Vec<Diag>> {
     // Match scan_filesystem_with_observer: auto-fill framework detection when
     // the caller didn't supply one.  Without this, directly-invoked indexed
@@ -2156,6 +2644,8 @@ pub fn scan_with_index_parallel_observer(
         let pass1_start = std::time::Instant::now();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
         let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
+        let write_tx = writer.sender();
 
         let scan_root_ref = scan_root.to_path_buf();
         let persist_errors_ref = Arc::clone(&persist_errors);
@@ -2240,16 +2730,25 @@ pub fn scan_with_index_parallel_observer(
                                     .collect();
                                 // Single transaction for all four caches:
                                 // one fsync per file instead of four.
-                                let cpi_arg = cross_pkg_imports
-                                    .as_ref()
-                                    .map(|(ns, map)| (ns.as_str(), map.as_ref()));
-                                if let Err(e) = idx.replace_all_for_file(
-                                    path, &hash, &func_sums, &ssa_rows, &body_rows, &auth_rows,
-                                    cpi_arg,
-                                ) {
+                                let path_for_write = path.clone();
+                                let path_label = path.display().to_string();
+                                if let Err(e) = write_tx.enqueue(move |writer_idx| {
+                                    let cpi_arg = cross_pkg_imports
+                                        .as_ref()
+                                        .map(|(ns, map)| (ns.as_str(), map.as_ref()));
+                                    writer_idx.replace_all_for_file(
+                                        &path_for_write,
+                                        &hash,
+                                        &func_sums,
+                                        &ssa_rows,
+                                        &body_rows,
+                                        &auth_rows,
+                                        cpi_arg,
+                                    )
+                                }) {
                                     record_persist_error(
                                         &persist_errors_ref,
-                                        format!("summaries {}: {e}", path.display()),
+                                        format!("queue summaries {path_label}: {e}"),
                                     );
                                 }
                             }
@@ -2269,6 +2768,8 @@ pub fn scan_with_index_parallel_observer(
                 pb.inc(1);
             },
         );
+        drop(write_tx);
+        let writer_result = writer.finish("Pass 1");
         pb.finish_and_clear();
         let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
@@ -2290,6 +2791,7 @@ pub fn scan_with_index_parallel_observer(
             );
         }
         fail_if_persist_errors("Pass 1", persist_errors)?;
+        writer_result?;
     }
 
     // ── Load global summaries ────────────────────────────────────────────
@@ -2507,6 +3009,8 @@ pub fn scan_with_index_parallel_observer(
         let diag_map: DashMap<String, Vec<Diag>> = DashMap::new();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
         let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
+        let write_tx = writer.sender();
 
         let persist_errors_ref = Arc::clone(&persist_errors);
         let skipped_files_ref = Arc::clone(&skipped_files);
@@ -2543,33 +3047,42 @@ pub fn scan_with_index_parallel_observer(
                     )
                     .unwrap_or_default();
 
-                    let file_id = match &hash {
-                        Some(h) => idx.upsert_file_with_hash(&path, h),
-                        None => idx.upsert_file(&path),
-                    };
-                    match file_id {
-                        Ok(file_id) => {
-                            if let Err(e) = idx.replace_issues(
-                                file_id,
-                                d.iter().map(|d| IssueRow {
-                                    rule_id: &d.id,
-                                    severity: d.severity.as_db_str(),
-                                    line: d.line as i64,
-                                    col: d.col as i64,
+                    let issue_rows: Vec<(String, String, i64, i64)> = d
+                        .iter()
+                        .map(|d| {
+                            (
+                                d.id.clone(),
+                                d.severity.as_db_str().to_string(),
+                                d.line as i64,
+                                d.col as i64,
+                            )
+                        })
+                        .collect();
+                    let path_for_write = path.clone();
+                    let path_label = path.display().to_string();
+                    let hash_for_write = hash;
+                    if let Err(e) = write_tx.enqueue(move |writer_idx| {
+                        let file_id = match &hash_for_write {
+                            Some(h) => writer_idx.upsert_file_with_hash(&path_for_write, h),
+                            None => writer_idx.upsert_file(&path_for_write),
+                        }?;
+                        writer_idx.replace_issues(
+                            file_id,
+                            issue_rows
+                                .iter()
+                                .map(|(rule_id, severity, line, col)| IssueRow {
+                                    rule_id: rule_id.as_str(),
+                                    severity: severity.as_str(),
+                                    line: *line,
+                                    col: *col,
                                 }),
-                            ) {
-                                record_persist_error(
-                                    &persist_errors_ref,
-                                    format!("issues {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            record_persist_error(
-                                &persist_errors_ref,
-                                format!("file row {}: {e}", path.display()),
-                            );
-                        }
+                        )?;
+                        Ok(())
+                    }) {
+                        record_persist_error(
+                            &persist_errors_ref,
+                            format!("queue issues {path_label}: {e}"),
+                        );
                     }
                     d
                 } else {
@@ -2592,6 +3105,8 @@ pub fn scan_with_index_parallel_observer(
                 pb2.inc(1);
             },
         );
+        drop(write_tx);
+        let writer_result = writer.finish("AST-only pass 2");
         pb2.finish_and_clear();
         let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
@@ -2604,6 +3119,7 @@ pub fn scan_with_index_parallel_observer(
                 .store(skipped, std::sync::atomic::Ordering::Relaxed);
         }
         fail_if_persist_errors("AST-only pass 2", persist_errors)?;
+        writer_result?;
 
         let mut diags: Vec<Diag> = diag_map.into_iter().flat_map(|(_, v)| v).collect();
         let post_process_start = std::time::Instant::now();
@@ -2672,6 +3188,12 @@ pub fn scan_with_index_parallel_observer(
                 call_graph.unresolved_not_found.len() + call_graph.unresolved_ambiguous.len(),
             ),
             None,
+        );
+    }
+
+    if let Some(out) = chain_reach_out {
+        let _ = out.set(
+            crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(scan_root)),
         );
     }
 
@@ -2776,6 +3298,33 @@ pub fn scan_with_index_parallel_observer(
 
     let mut diags = topo_diags;
 
+    // Phase 21: build + persist the SurfaceMap from the post-pass-2
+    // view.  Errors here are logged but not propagated — the surface
+    // map is an additive Phase F deliverable, not a scan gate.
+    {
+        let surface_map =
+            crate::surface::build::build_surface_map(&crate::surface::build::SurfaceBuildInputs {
+                files: &files,
+                scan_root: Some(scan_root),
+                global_summaries: &global_summaries,
+                call_graph: &call_graph,
+                config: cfg,
+            });
+        let mut idx = Indexer::from_pool(project, &pool)?;
+        if let Err(e) = idx.replace_surface_map(&surface_map) {
+            tracing::warn!("failed to persist surface_map: {e}");
+        } else if let Some(l) = logs {
+            l.info(
+                format!(
+                    "Surface map: {} nodes, {} edges",
+                    surface_map.node_count(),
+                    surface_map.edge_count()
+                ),
+                None,
+            );
+        }
+    }
+
     // NOTE: Taint-mode output is *not* filtered here.  `run_rules_on_bytes`
     // already gates AST queries and auth analyses behind `mode == Full`, so
     // Taint-mode raw output is exactly the set of diagnostics the analysis
@@ -2805,9 +3354,7 @@ pub fn scan_with_index_parallel_observer(
     Ok(diags)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Low-noise prioritization pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Rules eligible for rollup grouping (high-frequency, low-signal patterns).
 const ROLLUP_RULES: &[&str] = &[
@@ -2989,6 +3536,7 @@ fn rollup_findings(
             }),
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
 
         rollups.push(rollup_diag);
@@ -3062,9 +3610,7 @@ fn apply_low_budgets(
     stats.low_budget_dropped = before - diags.len();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Inline suppression application
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Apply inline `nyx:ignore` / `nyx:ignore-next-line` suppressions to `diags`.
 ///
@@ -3098,9 +3644,57 @@ fn apply_suppressions(diags: &mut [Diag]) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+//  dynamic verification summary tests
+
+#[cfg(test)]
+mod dynamic_summary_tests {
+    use super::*;
+    use crate::evidence::{Evidence, VerifyResult, VerifyStatus};
+
+    fn diag_with_status(status: VerifyStatus) -> Diag {
+        Diag {
+            evidence: Some(Evidence {
+                dynamic_verdict: Some(VerifyResult {
+                    finding_id: "abc123".into(),
+                    status,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: None,
+                    detail: None,
+                    attempts: vec![],
+                    toolchain_match: None,
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
+                }),
+                ..Evidence::default()
+            }),
+            ..Diag::default()
+        }
+    }
+
+    #[test]
+    fn dynamic_summary_counts_verdict_statuses() {
+        let diags = vec![
+            diag_with_status(VerifyStatus::Confirmed),
+            diag_with_status(VerifyStatus::NotConfirmed),
+            diag_with_status(VerifyStatus::Inconclusive),
+            diag_with_status(VerifyStatus::Unsupported),
+            Diag::default(),
+        ];
+
+        let summary = DynamicVerificationSummary::from_diags(&diags);
+
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.confirmed, 1);
+        assert_eq!(summary.not_confirmed, 1);
+        assert_eq!(summary.inconclusive, 1);
+        assert_eq!(summary.unsupported, 1);
+    }
+}
+
 //  deduplicate_taint_flows tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod dedup_taint_flow_tests {
@@ -3171,6 +3765,7 @@ mod dedup_taint_flow_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -3338,6 +3933,7 @@ mod scc_tagging_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -3629,6 +4225,7 @@ fn severity_filter_applied_at_output_stage() {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         },
         Diag {
             path: "src/main.rs".into(),
@@ -3650,6 +4247,7 @@ fn severity_filter_applied_at_output_stage() {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         },
     ];
 
@@ -3664,9 +4262,7 @@ fn severity_filter_applied_at_output_stage() {
     assert_eq!(filtered[0].path, "src/main.rs");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Prioritization pipeline tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod prioritize_tests {
@@ -3700,6 +4296,7 @@ mod prioritize_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -4133,6 +4730,7 @@ mod prioritize_tests {
             }),
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("\"rollup\""));
@@ -4185,5 +4783,124 @@ mod prioritize_tests {
         let j1 = serde_json::to_string(&d1).unwrap();
         let j2 = serde_json::to_string(&d2).unwrap();
         assert_eq!(j1, j2, "same input should produce same output");
+    }
+}
+
+#[cfg(test)]
+mod stable_hash_tests {
+    use super::*;
+    use crate::evidence::Evidence;
+    use crate::labels::Cap;
+    use crate::patterns::{FindingCategory, Severity};
+
+    fn base_diag() -> Diag {
+        Diag {
+            path: "src/handler.rs".into(),
+            line: 42,
+            col: 5,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: None,
+            evidence: Some(Evidence {
+                sink_caps: Cap::SQL_QUERY.bits(),
+                ..Default::default()
+            }),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        }
+    }
+
+    #[test]
+    fn compute_stable_hash_is_deterministic() {
+        let d = base_diag();
+        let h1 = compute_stable_hash(&d);
+        let h2 = compute_stable_hash(&d);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_rule_id() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.id = "taint-unsanitised-flow (source 5:1)".into();
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_path() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.path = "src/other.rs".into();
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_line() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.line = 43;
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_col() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.col = 6;
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_sink_caps() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.evidence = Some(Evidence {
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        });
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_collision_resistance() {
+        let d1 = Diag {
+            path: "src/a.rs".into(),
+            line: 1,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let d2 = Diag {
+            path: "src/b.rs".into(),
+            line: 1,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let d3 = Diag {
+            path: "src/a.rs".into(),
+            line: 2,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let h1 = compute_stable_hash(&d1);
+        let h2 = compute_stable_hash(&d2);
+        let h3 = compute_stable_hash(&d3);
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h2, h3);
     }
 }

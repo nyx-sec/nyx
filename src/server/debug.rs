@@ -33,9 +33,7 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::Path;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Line-number helper
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Convert a byte offset to a 1-based line number.
 fn byte_offset_to_line(bytes: &[u8], offset: usize) -> usize {
@@ -43,9 +41,7 @@ fn byte_offset_to_line(bytes: &[u8], offset: usize) -> usize {
     bytes[..offset].iter().filter(|&&b| b == b'\n').count() + 1
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cap → human-readable names
-// ─────────────────────────────────────────────────────────────────────────────
 
 fn cap_names(c: Cap) -> Vec<String> {
     let mut names = Vec::new();
@@ -96,9 +92,7 @@ fn label_str(l: &DataLabel) -> String {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 //  View-model types
-// ═════════════════════════════════════════════════════════════════════════════
 
 // ── Function list ────────────────────────────────────────────────────────────
 
@@ -809,6 +803,8 @@ pub struct CalleeSiteView {
     pub qualifier: Option<String>,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub ordinal: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<(u32, u32)>,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -884,6 +880,7 @@ impl FuncSummaryView {
                     receiver: c.receiver.clone(),
                     qualifier: c.qualifier.clone(),
                     ordinal: c.ordinal,
+                    span: c.span,
                 })
                 .collect(),
             ssa_summary: ssa_view,
@@ -1199,6 +1196,8 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::GormDb => "GormDb".into(),
         TypeKind::SqlxDb => "SqlxDb".into(),
         TypeKind::HibernateSession => "HibernateSession".into(),
+        TypeKind::ProcessBuilder => "ProcessBuilder".into(),
+        TypeKind::Runtime => "Runtime".into(),
     }
 }
 
@@ -1392,9 +1391,7 @@ fn route_view(r: &RouteRegistration, _bytes: &[u8]) -> AuthRouteView {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 //  On-demand analysis pipeline
-// ═════════════════════════════════════════════════════════════════════════════
 
 /// Result of parsing + CFG construction for a single file.
 pub struct FileAnalysis {

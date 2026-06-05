@@ -1,0 +1,6 @@
+{
+  "name": "nyx/route-closure-fixture",
+  "require": {
+    "php": ">=8.0"
+  }
+}

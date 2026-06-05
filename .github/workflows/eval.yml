@@ -1,0 +1,348 @@
+# Real-corpus acceptance (Track R).
+#
+#   * owasp    (Phase 27 / Track R.0): Gate 6 vs a real OWASP BenchmarkJava
+#     checkout (Java).
+#   * jsts     (Phase 28 / Track R.1): Gate 7 vs OWASP NodeGoat (Express, .js)
+#     and OWASP Juice Shop (TypeScript, .ts), one matrix row per corpus.
+#   * polyglot (Phase 29 / Track R.2): Gate 8 vs OWASP RailsGoat (Rails, .rb),
+#     DVWA (PHP), DVPWA (aiohttp, .py), gosec (Go) and the RustSec advisory-db
+#     (Rust negative control), one matrix row per corpus.
+#
+# Runs on every PR that touches the dynamic verifier (src/dynamic/), the
+# eval-corpus harness (tests/eval_corpus/), or the gate script itself.
+#
+# Each gate enforces, against the committed ground truth:
+#   * verify wall-clock <= 15 min (CI budget; the dev reference is 10 min),
+#   * the per-(cap,lang) budget in tests/eval_corpus/budget.toml,
+#   * per-cap confirmed-rate / precision / recall — hard-gated only for caps
+#     in NYX_*_FLOOR_CAPS (empty by default → published report-only until a
+#     cap Confirms end to end), with destinations >= 40% / >= 0.85 / >= 0.40.
+#
+# No corpus is vendored.  Each is cloned at a pinned ref and cached so reruns
+# skip the clone.  Before the gate runs, the committed ground truth is
+# regenerated from its source against the fresh clone and asserted in sync,
+# and the converter hard-errors on any labelled path missing from the corpus,
+# so a corpus bump that drifts the labels fails the job loudly.
+
+name: eval
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "src/dynamic/**"
+      - "tests/eval_corpus/**"
+      - "scripts/m7_ship_gate.sh"
+      - ".github/workflows/eval.yml"
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "src/dynamic/**"
+      - "tests/eval_corpus/**"
+      - "scripts/m7_ship_gate.sh"
+      - ".github/workflows/eval.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  owasp:
+    name: eval / owasp-benchmark-v1.2
+    runs-on: ubuntu-latest
+    env:
+      # Gate 6 self-skips unless this points at a real checkout.
+      NYX_OWASP_CORPUS: ${{ github.workspace }}/.eval-corpus/owasp_benchmark_v1.2
+      # CI wall-clock budget: 20 min.  The 2740-file OWASP scan+verify lands
+      # right at the old 15-min ceiling on the hosted runners (observed 900.2s),
+      # so the gate tripped on CI variance alone; 1200s restores headroom.  The
+      # dev reference stays 10 min — override locally to tighten.
+      NYX_OWASP_WALLCLOCK_BUDGET_SECONDS: "1200"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # The Phase 22 Java compile pool drives `com.sun.tools.javac` out of a
+      # warm JDK; temurin 21 ships the compiler module the pool loads.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache OWASP BenchmarkJava (1.2beta)
+        id: cache-owasp
+        uses: actions/cache@v4
+        with:
+          path: .eval-corpus/owasp_benchmark_v1.2
+          key: owasp-benchmark-1.2beta
+
+      - name: Clone OWASP BenchmarkJava (1.2beta tag)
+        if: steps.cache-owasp.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 1.2beta \
+            https://github.com/OWASP-Benchmark/BenchmarkJava \
+            .eval-corpus/owasp_benchmark_v1.2
+
+      # No-compromise guard: the committed ground truth must be exactly what a
+      # fresh conversion of the pinned CSV produces.  Catches GT drift (a
+      # corpus bump, a hand-edit) before the gate runs on stale labels.
+      - name: Verify ground truth is in sync with the pinned corpus
+        run: |
+          python3 tests/eval_corpus/owasp_gt_convert.py \
+            --corpus-dir .eval-corpus/owasp_benchmark_v1.2 \
+            --output /tmp/owasp_gt_regen.json
+          python3 - <<'PY'
+          import json, sys
+          committed = json.load(open("tests/eval_corpus/ground_truth/owasp_benchmark_v1.2.json"))
+          regen = json.load(open("/tmp/owasp_gt_regen.json"))
+          if committed != regen:
+              sys.exit("committed ground truth diverges from a fresh conversion of "
+                       "the 1.2beta CSV; regenerate with owasp_gt_convert.py")
+          print(f"ground truth in sync: {len(committed)} records")
+          PY
+
+      - name: eval-corpus harness regression tests
+        run: |
+          python3 tests/eval_corpus/test_tabulate_regression.py
+          python3 tests/eval_corpus/test_manifest_gt_convert.py
+
+      - name: Gate 6 — OWASP Benchmark v1.2 acceptance
+        run: scripts/m7_ship_gate.sh --sets owasp
+
+  jsts:
+    name: eval / ${{ matrix.corpus.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus:
+          - name: nodegoat
+            repo: https://github.com/OWASP/NodeGoat
+            # NodeGoat ships no release tags; pin the default branch and let
+            # the cache key hold it stable.  The manifest's path layout
+            # (app/, config/) has been constant for years.
+            ref: master
+            env: NYX_NODEGOAT_CORPUS
+            manifest: nodegoat.manifest.toml
+            ground_truth: nodegoat.json
+          - name: juiceshop
+            repo: https://github.com/juice-shop/juice-shop
+            ref: v15.0.0
+            env: NYX_JUICESHOP_CORPUS
+            manifest: juiceshop.manifest.toml
+            ground_truth: juiceshop.json
+    env:
+      # CI wall-clock budget: 15 min.  Override locally to tighten.
+      NYX_JSTS_WALLCLOCK_BUDGET_SECONDS: "900"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # The dynamic verifier's Node build pool (Phase 23) compiles its
+      # harnesses with a real node/npm toolchain.
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache ${{ matrix.corpus.name }}
+        id: cache-corpus
+        uses: actions/cache@v4
+        with:
+          path: .eval-corpus/${{ matrix.corpus.name }}
+          key: jsts-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
+
+      - name: Clone ${{ matrix.corpus.name }} (${{ matrix.corpus.ref }})
+        if: steps.cache-corpus.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ matrix.corpus.ref }} \
+            ${{ matrix.corpus.repo }} \
+            .eval-corpus/${{ matrix.corpus.name }}
+
+      # No-compromise guard: the committed ground truth must be exactly what a
+      # fresh conversion of the curated manifest produces *against this
+      # corpus*.  manifest_gt_convert.py hard-errors on any labelled path that
+      # no longer exists in the clone (corpus drift / typo), and the diff
+      # below catches a stale committed JSON.
+      - name: Verify ground truth is in sync with the pinned corpus
+        run: |
+          python3 tests/eval_corpus/manifest_gt_convert.py \
+            --manifest tests/eval_corpus/ground_truth/${{ matrix.corpus.manifest }} \
+            --corpus-dir .eval-corpus/${{ matrix.corpus.name }} \
+            --output /tmp/${{ matrix.corpus.name }}_gt_regen.json
+          python3 - <<'PY'
+          import json, sys
+          name = "${{ matrix.corpus.ground_truth }}"
+          committed = json.load(open(f"tests/eval_corpus/ground_truth/{name}"))
+          regen = json.load(open("/tmp/${{ matrix.corpus.name }}_gt_regen.json"))
+          if committed != regen:
+              sys.exit("committed ground truth diverges from a fresh conversion of "
+                       "the manifest against the pinned corpus; regenerate with "
+                       "manifest_gt_convert.py")
+          print(f"ground truth in sync: {len(committed)} records")
+          PY
+
+      - name: eval-corpus harness regression tests
+        run: |
+          python3 tests/eval_corpus/test_tabulate_regression.py
+          python3 tests/eval_corpus/test_manifest_gt_convert.py
+
+      - name: Gate 7 — ${{ matrix.corpus.name }} acceptance
+        run: |
+          export ${{ matrix.corpus.env }}="${{ github.workspace }}/.eval-corpus/${{ matrix.corpus.name }}"
+          scripts/m7_ship_gate.sh --sets ${{ matrix.corpus.name }}
+
+  polyglot:
+    name: eval / ${{ matrix.corpus.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus:
+          - name: railsgoat
+            repo: https://github.com/OWASP/railsgoat
+            ref: rails.5.0.0
+            lang: ruby
+            env: NYX_RAILSGOAT_CORPUS
+            manifest: railsgoat.manifest.toml
+            ground_truth: railsgoat.json
+          - name: dvwa
+            repo: https://github.com/digininja/DVWA
+            ref: "2.5"
+            lang: php
+            env: NYX_DVWA_CORPUS
+            manifest: dvwa.manifest.toml
+            ground_truth: dvwa.json
+          - name: dvpwa
+            repo: https://github.com/anxolerd/dvpwa
+            # DVPWA ships no release tags; pin the default branch and let the
+            # cache key hold it stable.
+            ref: master
+            lang: python
+            env: NYX_DVPWA_CORPUS
+            manifest: dvpwa.manifest.toml
+            ground_truth: dvpwa.json
+          - name: gosec
+            repo: https://github.com/securego/gosec
+            ref: v2.26.1
+            lang: go
+            env: NYX_GOSEC_CORPUS
+            manifest: gosec.manifest.toml
+            ground_truth: gosec.json
+          - name: rustsec
+            repo: https://github.com/rustsec/advisory-db
+            # advisory-db ships no release tags; pin the default branch.  This
+            # is the Rust NEGATIVE CONTROL (advisory metadata, no scannable
+            # source) — its committed ground truth is empty by construction.
+            ref: main
+            lang: rust
+            env: NYX_RUSTSEC_CORPUS
+            manifest: rustsec.manifest.toml
+            ground_truth: rustsec.json
+    env:
+      # CI wall-clock budget: 15 min.  Override locally to tighten.
+      NYX_POLYGLOT_WALLCLOCK_BUDGET_SECONDS: "900"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # The dynamic verifier's per-language build pool (Phase 22/23) compiles
+      # its harnesses with a real toolchain.  Each matrix row sets up only the
+      # toolchain for its corpus's target language; the Rust row needs no extra
+      # step (the rust toolchain above covers it, and advisory-db has no
+      # buildable source anyway).
+      - name: Set up Ruby
+        if: matrix.corpus.lang == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Set up PHP
+        if: matrix.corpus.lang == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+
+      - name: Set up Python
+        if: matrix.corpus.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Go
+        if: matrix.corpus.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Cache ${{ matrix.corpus.name }}
+        id: cache-corpus
+        uses: actions/cache@v4
+        with:
+          path: .eval-corpus/${{ matrix.corpus.name }}
+          key: polyglot-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
+
+      - name: Clone ${{ matrix.corpus.name }} (${{ matrix.corpus.ref }})
+        if: steps.cache-corpus.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ matrix.corpus.ref }} \
+            ${{ matrix.corpus.repo }} \
+            .eval-corpus/${{ matrix.corpus.name }}
+
+      # No-compromise guard: the committed ground truth must be exactly what a
+      # fresh conversion of the curated manifest produces *against this corpus*.
+      # manifest_gt_convert.py hard-errors on any labelled path that no longer
+      # exists in the clone (corpus drift / typo); the diff below catches a
+      # stale committed JSON.  For the RustSec negative control the manifest
+      # carries `negative_control = true` and zero entries, so the converter
+      # emits an empty `[]` — still validated against the real clone.
+      - name: Verify ground truth is in sync with the pinned corpus
+        run: |
+          python3 tests/eval_corpus/manifest_gt_convert.py \
+            --manifest tests/eval_corpus/ground_truth/${{ matrix.corpus.manifest }} \
+            --corpus-dir .eval-corpus/${{ matrix.corpus.name }} \
+            --output /tmp/${{ matrix.corpus.name }}_gt_regen.json
+          python3 - <<'PY'
+          import json, sys
+          name = "${{ matrix.corpus.ground_truth }}"
+          committed = json.load(open(f"tests/eval_corpus/ground_truth/{name}"))
+          regen = json.load(open("/tmp/${{ matrix.corpus.name }}_gt_regen.json"))
+          if committed != regen:
+              sys.exit("committed ground truth diverges from a fresh conversion of "
+                       "the manifest against the pinned corpus; regenerate with "
+                       "manifest_gt_convert.py")
+          print(f"ground truth in sync: {len(committed)} records")
+          PY
+
+      - name: eval-corpus harness regression tests
+        run: |
+          python3 tests/eval_corpus/test_tabulate_regression.py
+          python3 tests/eval_corpus/test_manifest_gt_convert.py
+
+      - name: Gate 8 — ${{ matrix.corpus.name }} acceptance
+        run: |
+          export ${{ matrix.corpus.env }}="${{ github.workspace }}/.eval-corpus/${{ matrix.corpus.name }}"
+          scripts/m7_ship_gate.sh --sets ${{ matrix.corpus.name }}

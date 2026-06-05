@@ -2,6 +2,44 @@
 export type Confidence = 'Low' | 'Medium' | 'High';
 export type FlowStepKind = 'source' | 'assignment' | 'call' | 'phi' | 'sink';
 
+// Dynamic verification types (from src/evidence.rs VerifyStatus / VerifyResult)
+export type VerifyStatus =
+  | 'Confirmed'
+  | 'PartiallyConfirmed'
+  | 'NotConfirmed'
+  | 'Inconclusive'
+  | 'Unsupported';
+
+export interface AttemptSummary {
+  payload_label: string;
+  exit_code?: number;
+  timed_out: boolean;
+  triggered: boolean;
+  sink_hit?: boolean;
+}
+
+export interface VerifyResult {
+  finding_id: string;
+  status: VerifyStatus;
+  triggered_payload?: string;
+  /** Typed UnsupportedReason (PascalCase string) */
+  reason?: string;
+  /** Typed InconclusiveReason (PascalCase string) */
+  inconclusive_reason?: string;
+  detail?: string;
+  attempts?: AttemptSummary[];
+  toolchain_match?: string;
+}
+
+export interface DynamicVerificationSummary {
+  total: number;
+  confirmed: number;
+  partially_confirmed: number;
+  not_confirmed: number;
+  inconclusive: number;
+  unsupported: number;
+}
+
 export interface FlowStep {
   step: number;
   kind: FlowStepKind;
@@ -40,6 +78,8 @@ export interface Evidence {
   flow_steps: FlowStep[];
   explanation?: string;
   confidence_limiters: string[];
+  /** Dynamic verification result; present only when --verify was active. */
+  dynamic_verdict?: VerifyResult;
 }
 
 // Finding types
@@ -57,10 +97,31 @@ export interface RelatedFindingView {
   severity: string;
 }
 
+// Baseline / patch-validation types (M6.5)
+export type VerdictTransition =
+  | 'New'
+  | 'Unchanged'
+  | 'Resolved'
+  | 'Regressed'
+  | 'FlippedConfirmed'
+  | 'FlippedNotConfirmed';
+
+export interface VerdictDiffEntry {
+  stable_hash: number;
+  path: string;
+  line: number;
+  rule_id: string;
+  baseline_status?: VerifyStatus;
+  current_status?: VerifyStatus;
+  transition: VerdictTransition;
+}
+
 export interface FindingView {
   index: number;
   fingerprint: string;
   portable_fingerprint?: string;
+  /** Blake3-derived stable cross-commit identity (M6.5). */
+  stable_hash?: number;
   path: string;
   line: number;
   col: number;
@@ -79,6 +140,7 @@ export interface FindingView {
   triage_note?: string;
   code_context?: CodeContextView;
   evidence?: Evidence;
+  dynamic_verdict?: VerifyResult;
   guard_kind?: string;
   rank_reason?: [string, string][];
   sanitizer_status?: string;
@@ -100,6 +162,7 @@ export interface FilterValues {
   languages: string[];
   rules: string[];
   statuses: string[];
+  verification_statuses: string[];
 }
 
 // Scan types
@@ -133,6 +196,17 @@ export interface ScanView {
   files_scanned?: number;
   timing?: TimingBreakdown;
   metrics?: ScanMetricsSnapshot;
+}
+
+export interface TargetView {
+  id: string;
+  name: string;
+  path: string;
+  db_path: string;
+  last_seen_at: string;
+  last_scan_at?: string;
+  active: boolean;
+  exists: boolean;
 }
 
 // Scan Comparison types
@@ -173,6 +247,8 @@ export interface CompareResponse {
   fixed_findings: ComparedFinding[];
   changed_findings: ChangedFinding[];
   unchanged_findings: ComparedFinding[];
+  /** Verdict-level diff (M6.5). Present when findings carry stable_hash values. */
+  verdict_diff?: VerdictDiffEntry[];
 }
 
 // Overview types
@@ -302,6 +378,7 @@ export interface ScannerQuality {
   call_resolution_rate: number;
   symex_verified_rate: number;
   symex_breakdown: Record<string, number>;
+  dynamic_verification: DynamicVerificationSummary;
 }
 
 export interface IssueCategoryBucket {
@@ -842,4 +919,107 @@ export interface AuthAnalysisView {
   routes: AuthRouteView[];
   units: AuthUnitView[];
   enabled: boolean;
+}
+
+// ── Surface map (Phase 21–23) ───────────────────────────────────────
+
+export interface SurfaceSourceLocation {
+  file: string;
+  line: number;
+  col: number;
+}
+
+export type SurfaceFramework =
+  | 'flask'
+  | 'fast_api'
+  | 'django'
+  | 'express'
+  | 'koa'
+  | 'spring'
+  | 'jax_rs'
+  | 'quarkus'
+  | 'rails'
+  | 'sinatra'
+  | 'laravel'
+  | 'slim'
+  | 'axum'
+  | 'actix'
+  | 'rocket'
+  | 'net_http'
+  | 'gin'
+  | 'next_app_router'
+  | 'next_server_action';
+
+export type SurfaceHttpMethod =
+  | 'GET'
+  | 'HEAD'
+  | 'POST'
+  | 'PUT'
+  | 'PATCH'
+  | 'DELETE'
+  | 'OPTIONS';
+
+export type SurfaceDataStoreKind =
+  | 'sql'
+  | 'key_value'
+  | 'document'
+  | 'blob_store'
+  | 'filesystem'
+  | 'unknown';
+
+export type SurfaceExternalKind =
+  | 'http_api'
+  | 'message_broker'
+  | 'search_index'
+  | 'auth_provider'
+  | 'unknown';
+
+export type SurfaceEdgeKind =
+  | 'calls'
+  | 'reads_from'
+  | 'writes_to'
+  | 'talks_to'
+  | 'reaches'
+  | 'triggers'
+  | 'auth_required_on';
+
+export type SurfaceNode =
+  | {
+      node: 'entry_point';
+      location: SurfaceSourceLocation;
+      framework: SurfaceFramework;
+      method: SurfaceHttpMethod;
+      route: string;
+      handler_name: string;
+      handler_location: SurfaceSourceLocation;
+      auth_required: boolean;
+    }
+  | {
+      node: 'data_store';
+      location: SurfaceSourceLocation;
+      kind: SurfaceDataStoreKind;
+      label: string;
+    }
+  | {
+      node: 'external_service';
+      location: SurfaceSourceLocation;
+      kind: SurfaceExternalKind;
+      label: string;
+    }
+  | {
+      node: 'dangerous_local';
+      location: SurfaceSourceLocation;
+      function_name: string;
+      cap_bits: number;
+    };
+
+export interface SurfaceEdge {
+  from: number;
+  to: number;
+  kind: SurfaceEdgeKind;
+}
+
+export interface SurfaceMap {
+  nodes: SurfaceNode[];
+  edges: SurfaceEdge[];
 }

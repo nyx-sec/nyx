@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use crate::commands::scan::Diag;
 use crate::database::index::{Indexer, ScanRecord};
 use crate::evidence::{Confidence, Verdict};
@@ -122,8 +120,7 @@ async fn overview(State(state): State<AppState>) -> Json<OverviewResponse> {
             fixed_since_last,
             reintroduced: reintroduced_count,
             // Files-scanned proxy for repo size, used for size-aware
-            // severity dampening in `health::compute`.  See
-            // `docs/health-score-audit.md` for calibration data.
+            // severity dampening in `health::compute`.
             repo_files: scanner_quality
                 .as_ref()
                 .map(|q| q.files_scanned)
@@ -177,8 +174,8 @@ async fn overview(State(state): State<AppState>) -> Json<OverviewResponse> {
 async fn overview_trends(State(state): State<AppState>) -> Json<Vec<TrendPoint>> {
     let mut points = Vec::new();
 
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(scans) = idx.list_scans(20) {
                 let completed: Vec<&ScanRecord> =
                     scans.iter().filter(|s| s.status == "completed").collect();
@@ -239,10 +236,9 @@ fn set_baseline_inner(state: &AppState, scan_id: &str) -> Result<StatusCode, Sta
         return Err(StatusCode::BAD_REQUEST);
     }
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_scans", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx = Indexer::from_pool("_scans", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     idx.set_metadata(BASELINE_KEY, scan_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
@@ -251,10 +247,9 @@ fn set_baseline_inner(state: &AppState, scan_id: &str) -> Result<StatusCode, Sta
 /// DELETE /api/overview/baseline, clear the pinned baseline.
 async fn clear_baseline(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_scans", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx = Indexer::from_pool("_scans", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     idx.delete_metadata(BASELINE_KEY)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
@@ -285,10 +280,10 @@ impl ScanHistory {
         let mut scans = Vec::new();
         let mut first_seen: HashMap<String, String> = HashMap::new();
 
-        let Some(ref pool) = state.db_pool else {
+        let Some(pool) = state.active_db_pool() else {
             return Self { scans, first_seen };
         };
-        let Ok(idx) = Indexer::from_pool("_scans", pool) else {
+        let Ok(idx) = Indexer::from_pool("_scans", &pool) else {
             return Self { scans, first_seen };
         };
 
@@ -409,10 +404,11 @@ impl ScanHistory {
 fn collect_recent_scans(state: &AppState, limit: usize) -> Vec<ScanSummary> {
     let mut seen = HashSet::new();
     let mut scans = Vec::new();
+    let scan_root = state.active_scan_root();
 
     // In-memory first
     for job in state.job_manager.list_jobs() {
-        if seen.insert(job.id.clone()) {
+        if job.scan_root == scan_root && seen.insert(job.id.clone()) {
             scans.push(ScanSummary {
                 id: job.id.clone(),
                 status: format!("{:?}", job.status).to_ascii_lowercase(),
@@ -424,8 +420,8 @@ fn collect_recent_scans(state: &AppState, limit: usize) -> Vec<ScanSummary> {
     }
 
     // DB fallback
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             if let Ok(records) = idx.list_scans(limit as i64) {
                 for r in records {
                     if seen.insert(r.id.clone()) {
@@ -453,10 +449,10 @@ fn compute_triage_coverage(state: &AppState, findings: &[Diag]) -> f64 {
         return 0.0;
     }
 
-    let Some(ref pool) = state.db_pool else {
+    let Some(pool) = state.active_db_pool() else {
         return 0.0;
     };
-    let Ok(idx) = Indexer::from_pool("_scans", pool) else {
+    let Ok(idx) = Indexer::from_pool("_scans", &pool) else {
         return 0.0;
     };
 
@@ -498,10 +494,10 @@ fn compute_noisy_rules(
     findings: &[Diag],
     by_rule: &HashMap<String, usize>,
 ) -> Vec<NoisyRule> {
-    let Some(ref pool) = state.db_pool else {
+    let Some(pool) = state.active_db_pool() else {
         return vec![];
     };
-    let Ok(idx) = Indexer::from_pool("_scans", pool) else {
+    let Ok(idx) = Indexer::from_pool("_scans", &pool) else {
         return vec![];
     };
 
@@ -767,8 +763,8 @@ fn compute_scanner_quality(
     findings: &[Diag],
     latest_scan_id: Option<&str>,
 ) -> Option<ScannerQuality> {
-    let pool = state.db_pool.as_ref()?;
-    let idx = Indexer::from_pool("_scans", pool).ok()?;
+    let pool = state.active_db_pool()?;
+    let idx = Indexer::from_pool("_scans", &pool).ok()?;
 
     let mut files_scanned = 0u64;
     let mut files_skipped = 0u64;
@@ -838,6 +834,9 @@ fn compute_scanner_quality(
         call_resolution_rate,
         symex_verified_rate,
         symex_breakdown: breakdown,
+        dynamic_verification: crate::commands::scan::DynamicVerificationSummary::from_diags(
+            findings,
+        ),
     })
 }
 
@@ -885,10 +884,10 @@ fn compute_suppression_hygiene(state: &AppState, findings: &[Diag]) -> Suppressi
     if findings.is_empty() {
         return hygiene;
     }
-    let Some(ref pool) = state.db_pool else {
+    let Some(pool) = state.active_db_pool() else {
         return hygiene;
     };
-    let Ok(idx) = Indexer::from_pool("_scans", pool) else {
+    let Ok(idx) = Indexer::from_pool("_scans", &pool) else {
         return hygiene;
     };
     let triage_map = idx.get_all_triage_states().unwrap_or_default();
@@ -948,8 +947,8 @@ fn compute_backlog(state: &AppState, findings: &[Diag], history: &ScanHistory) -
     // Pull DB-cached first_seen first; fall back to in-memory history map.
     let fingerprints: Vec<String> = findings.iter().map(compute_fingerprint).collect();
     let mut cached: HashMap<String, String> = HashMap::new();
-    if let Some(ref pool) = state.db_pool {
-        if let Ok(idx) = Indexer::from_pool("_scans", pool) {
+    if let Some(pool) = state.active_db_pool() {
+        if let Ok(idx) = Indexer::from_pool("_scans", &pool) {
             cached = idx.get_first_seen_map(&fingerprints).unwrap_or_default();
         }
     }
@@ -1011,8 +1010,8 @@ fn compute_backlog(state: &AppState, findings: &[Diag], history: &ScanHistory) -
 }
 
 fn compute_baseline_info(state: &AppState, findings: &[Diag]) -> Option<BaselineInfo> {
-    let pool = state.db_pool.as_ref()?;
-    let idx = Indexer::from_pool("_scans", pool).ok()?;
+    let pool = state.active_db_pool()?;
+    let idx = Indexer::from_pool("_scans", &pool).ok()?;
     let scan_id = idx.get_metadata(BASELINE_KEY).ok().flatten()?;
     if scan_id.is_empty() {
         return None;
@@ -1128,7 +1127,4 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-// `compute_health_score` moved to `crate::server::health::compute`
-// after the v2 audit (2026-04-28).  See `docs/health-score-audit.md`
-// for calibration data and the rationale, and `docs/health-score.md`
-// for the customer-facing methodology.
+// `compute_health_score` moved to `crate::server::health::compute`.

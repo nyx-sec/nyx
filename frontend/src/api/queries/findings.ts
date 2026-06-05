@@ -11,6 +11,7 @@ export interface FindingsParams {
   language?: string;
   rule_id?: string;
   status?: string;
+  verification?: string;
   search?: string;
   sort_by?: string;
   sort_dir?: string;

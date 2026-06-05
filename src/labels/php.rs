@@ -528,13 +528,12 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // is a `Location: ...` header, so the dashboard / OWASP bucket
     // correctly classifies redirect-class flows independently of CRLF.
     //
-    // Activation: arg 0 prefix `Location:` (case-insensitive).  When arg
-    // 0 is a constant string starting with `Location:` the gate fires and
-    // checks payload arg 0 for taint; constants like `Content-Type: ...`
-    // are suppressed by the safe-literal branch.  When arg 0 is a binary
-    // expression (`"Location: " . $url`) or otherwise dynamic, the
-    // value-extraction returns `None` and the gate fires conservatively
-    // — matching the existing convention in `setAttribute`/`parseFromString`.
+    // Fires only on a positive `Location:` literal at arg 0 (a constant, or a
+    // concat whose leading literal is `Location:` — `extract_const_string_arg`
+    // returns the left-most literal). `LiteralOnly` makes the dynamic/unknown
+    // case suppress rather than fire conservatively, so `header($notALocation)`
+    // and 404-status-line forms no longer mis-classify as OPEN_REDIRECT. The
+    // flat HEADER_INJECTION sink above still fires on any tainted `header()`.
     SinkGate {
         callee_matcher: "=header",
         arg_index: 0,
@@ -545,7 +544,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         payload_args: &[0],
         keyword_name: None,
         dangerous_kwargs: &[],
-        activation: GateActivation::ValueMatch,
+        activation: GateActivation::LiteralOnly,
     },
     // Smarty `$smarty->fetch($name)` — only the `string:` resource prefix
     // accepts an inline template *source*; the bare form (`page.tpl`) is a

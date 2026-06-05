@@ -1,0 +1,54 @@
+;; Phase 21 (Track M.3) — SQL / migration profile.
+;;
+;; SQL verification uses a local SQLite stub as the observable boundary.
+;; The harness should be able to open that DB/log path and its own workdir,
+;; but it should not be able to use a SQLi payload as a network egress path.
+;; Non-loopback outbound is therefore denied while loopback stays available
+;; for DB/probe stubs.
+
+(version 1)
+(allow default)
+
+;; Network: deny non-loopback egress, keep local stub IPC reachable.
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+
+;; Standard filesystem-escape denylist shared with the other strict profiles.
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (regex #"^/Users/[^/]+/\.ssh(/|$)")
+    (regex #"^/Users/[^/]+/\.aws(/|$)")
+    (regex #"^/Users/[^/]+/\.gnupg(/|$)")
+    (regex #"^/Users/[^/]+/\.netrc$")
+    (regex #"^/Users/[^/]+/\.docker(/|$)")
+    (regex #"^/Users/[^/]+/\.kube(/|$)")
+    (regex #"^/Users/[^/]+/\.config/gh(/|$)")
+    (regex #"^/Users/[^/]+/Library/Keychains(/|$)")
+    (regex #"^/Users/[^/]+/Library/Cookies(/|$)")
+    (regex #"^/Users/[^/]+/Library/Mail(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/com\.apple\.TCC(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/Slack(/|$)")
+    (subpath "/Library/Keychains"))
+
+;; Writes are constrained to the harness workdir, harmless device files,
+;; and the verifier-owned SQL stub directory. The runner supplies
+;; SQL_STUB_ROOT from NYX_SQL_ENDPOINT's parent directory.
+(deny file-write*
+    (subpath "/")
+    (with no-log))
+(allow file-write*
+    (subpath (param "WORKDIR"))
+    (subpath (param "SQL_STUB_ROOT"))
+    (literal "/dev/null")
+    (literal "/dev/dtracehelper")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr"))
+(allow file-read*
+    (subpath (param "SQL_STUB_ROOT")))

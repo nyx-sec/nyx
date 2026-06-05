@@ -53,7 +53,7 @@ When a private helper is called only from authorized route handlers in the same 
 
 - Iterated to a small fixpoint so transitive chains (route to mid_helper to leaf_helper) are covered.
 - Refuses to authorize helpers with no in-file caller, helpers called from a mix of authorized and unauthorized callers, and helpers called only from un-lifted helpers.
-- Cross-file equivalent is deferred.
+- Cross-file caller-scope lifting is not implemented yet.
 
 This closes the FastAPI / Django / Flask shape where a route authenticates via decorator or dependency, then delegates to a private helper that performs the sink.
 
@@ -116,7 +116,7 @@ Matched as last-segment + case-insensitive `starts_with` (so a single entry `"Gu
 
 ### Recognised actor names
 
-Recognised by default: `user.id`, `user.user_id`, `user.uid`, `session.user_id`, `current_user.id`, plus typed extractor parameters with `CurrentUser`, `SessionUser`, `AuthUser`, `Extension<...>` shapes. To add a custom binding pattern, file an issue or add a fixture; the heuristic is in [`src/auth_analysis/checks.rs`](https://github.com/elicpeter/nyx/blob/master/src/auth_analysis/checks.rs) under `extract_validation_target` and friends.
+Recognised by default: `user.id`, `user.user_id`, `user.uid`, `session.user_id`, `current_user.id`, plus typed extractor parameters with `CurrentUser`, `SessionUser`, `AuthUser`, `Extension<...>` shapes. To add a custom binding pattern, file an issue or add a fixture; the heuristic lives in [`src/auth_analysis/extract/common.rs`](https://github.com/elicpeter/nyx/blob/master/src/auth_analysis/extract/common.rs) under the `*self_actor*` helpers (`collect_self_actor_binding`, `collect_typed_extractor_self_actor`, `is_self_actor_type_text`).
 
 ### Suppress
 

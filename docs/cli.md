@@ -74,7 +74,7 @@ nyx scan [PATH] [OPTIONS]
 | `--fail-on <SEV>` | *(none)* | Exit code 1 if any finding >= this severity |
 | `--show-suppressed` | off | Show inline-suppressed findings (dimmed, tagged `[SUPPRESSED]`) |
 | `--keep-nonprod-severity` | off | Don't downgrade severity for test/vendor paths |
-| `--all` | off | Disable category filtering, rollups, and LOW budgets -- show everything |
+| `--all` | off | Disable category filtering, rollups, and LOW budgets. Shows everything |
 | `--include-quality` | off | Include Quality-category findings (hidden by default) |
 | `--max-low <N>` | `20` | Maximum total LOW findings to show |
 | `--max-low-per-file <N>` | `1` | Maximum LOW findings per file |
@@ -151,6 +151,28 @@ nyx scan --engine-profile deep --no-smt --explain-engine
 ```
 
 <p align="center"><img src="assets/screenshots/docs/cli-explain-engine.png" alt="nyx scan --engine-profile deep --explain-engine output: resolved config showing every analysis pass, its current state, and the CLI flag/env var that controls it" width="900"/></p>
+
+### Dynamic verification
+
+Available in default builds, or in custom builds with `--features dynamic`. See [dynamic.md](dynamic.md) for the full pipeline and verdict semantics.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--verify` | on | Enable dynamic verification (default when built with `dynamic`). Conflicts with `--no-verify` |
+| `--no-verify` | off | Skip verification for this run. Useful for fast static-only scans without editing config |
+| `--verify-all-confidence` | off | Also verify findings below `Confidence >= Medium`. Slower; intended for payload tuning |
+| `--backend <BACKEND>` | `auto` | Sandbox backend: `auto` (docker if available, else process), `docker` (required), `process` (in-process runner) |
+| `--unsafe-sandbox` | off | Force the process backend. Equivalent to `--backend process`. Cannot combine with `--backend docker` |
+| `--harden <PROFILE>` | `standard` | Process-backend lockdown: `standard` (no-new-privs + rlimit on Linux) or `strict` (namespaces + chroot + seccomp on Linux; `sandbox-exec` on macOS) |
+| `--verbose` | off | Flush the per-finding `VerifyTrace` to stderr after each verdict. Same stream that lands in `expected/trace.jsonl` in the repro bundle |
+
+### Baseline / patch validation
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--baseline <FILE>` | *(none)* | Read a prior scan's JSON (or a stripped `.nyx/baseline.json`) and diff it against this scan on `stable_hash`. Reports `New` / `Resolved` / `FlippedConfirmed` / `FlippedNotConfirmed` transitions |
+| `--baseline-write <FILE>` | *(none)* | After scanning, write a stripped baseline (only `stable_hash`, `dynamic_verdict`, `severity`, `path`, `rule_id`; no source). Safe to commit |
+| `--gate <GATE>` | *(none)* | CI gate to enforce when `--baseline` is active. `no-new-confirmed` exits 2 on any new Confirmed finding; `resolve-all-confirmed` exits 2 if any baseline-Confirmed finding is not fully resolved |
 
 ### Examples
 
@@ -245,6 +267,64 @@ Remove index data.
 |---------------|-------------|
 | `PROJECT` | Project name or path to clean |
 | `--all` | Clean all indexed projects |
+
+---
+
+## `nyx surface`
+
+Print the project's attack-surface map.
+
+```
+nyx surface [PATH] [--format <FMT>] [--build]
+```
+
+Loads the `SurfaceMap` persisted by the most recent indexed scan when available; otherwise runs the per-language framework probes against the on-disk source to produce an entry-points-only map. Pass `--build` to force a full inline build (pass-1 summary extraction + call-graph construction) on an unscanned project, which adds `DataStore` / `ExternalService` / `DangerousLocal` nodes the entry-points-only fallback omits.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format <FMT>` | `text` | Output format: `text` (indented tree), `json` (canonical SurfaceMap), `dot` (Graphviz source), or `svg` (spawns `dot` locally) |
+| `--build` | off | Force a full SurfaceMap build inline when no indexed scan exists. Same cost as `nyx index build` |
+
+Pipe `dot` output through `dot -Tsvg` for a renderable graph, or use `--format svg` for a one-step render when graphviz is installed.
+
+---
+
+## `nyx serve`
+
+Start the local browser UI for browsing scan results.
+
+```
+nyx serve [PATH] [OPTIONS]
+```
+
+**PATH** defaults to `.` (current directory). The server binds to a loopback address only and refuses non-loopback hosts at startup.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --port <PORT>` | *(from config)* | Port to bind to (overrides `[server].port`) |
+| `--host <HOST>` | *(from config)* | Host to bind to (overrides `[server].host`) |
+| `--no-browser` | off | Skip opening the browser automatically |
+
+See [serve.md](serve.md) for the UI tour, route map, and CSRF / host-header behaviour.
+
+---
+
+## `nyx verify-feedback`
+
+Record a correction or confirmation against a dynamic-verifier verdict. Requires `--features dynamic`.
+
+```
+nyx verify-feedback <FINDING_ID> [--wrong <REASON> | --right] [--upload]
+```
+
+| Argument/Flag | Description |
+|---------------|-------------|
+| `FINDING_ID` | Stable 16-char hex id shown in `nyx scan --verify` output |
+| `--wrong <REASON>` | Mark the verdict wrong and record the reason. Conflicts with `--right` |
+| `--right` | Confirm the verdict. Conflicts with `--wrong` |
+| `--upload` | Reserved; uploading to Nyx telemetry is not yet implemented |
+
+Feedback is written to the local telemetry log under the platform cache dir.
 
 ---
 

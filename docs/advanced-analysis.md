@@ -267,11 +267,11 @@ while the pass stabilises.
 | CLI flag | `--backwards-analysis` / `--no-backwards-analysis` |
 | Env var (legacy) | `NYX_BACKWARDS=1` |
 
-**Limitations (first cut).** Reverse call-graph expansion past a
-`ReachedParam` is deferred; the walk terminates at function parameters
-rather than crossing back into callers.  Path-constraint pruning is
-conservative: only the accumulated `PredicateSummary` bits are consulted,
-not the full symbolic predicate stack.  Depth-bounded at k=2 for
+**Limitations.** Reverse call-graph expansion stops at `ReachedParam`; the walk
+terminates at function parameters rather than crossing back into callers.
+Path-constraint pruning is conservative: only the accumulated
+`PredicateSummary` bits are consulted, not the full symbolic predicate stack.
+Depth-bounded at k=2 for
 cross-function body expansion.  See `DEFAULT_BACKWARDS_DEPTH`,
 `BACKWARDS_VALUE_BUDGET`, and `MAX_BACKWARDS_CALLEE_BLOCKS` in
 `src/taint/backwards.rs` for the exact bounds.

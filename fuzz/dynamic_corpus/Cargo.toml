@@ -1,0 +1,14 @@
+[package]
+name = "nyx-dynamic-corpus"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Mutation-based dynamic corpus fuzzer for Nyx payload discovery"
+
+[dependencies]
+nyx-scanner = { path = "../..", features = ["dynamic"] }
+serde_json = "1"
+
+[[bin]]
+name = "nyx-dynamic-corpus"
+path = "src/main.rs"

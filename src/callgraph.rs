@@ -20,16 +20,13 @@ use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Metadata attached to each call-graph edge.
 #[derive(Debug, Clone)]
 pub struct CallEdge {
     /// The raw callee string as it appeared in source (e.g. `"env::var"`).
     /// Preserved for diagnostics, **not** the normalized form used for resolution.
-    #[allow(dead_code)] // used for future diagnostics and path display
     pub call_site: String,
 }
 
@@ -52,10 +49,10 @@ pub struct AmbiguousCallee {
 ///
 /// Nodes are [`FuncKey`]s (one per function definition across all files).
 /// Edges represent call-site relationships resolved after pass 1.
+#[derive(Debug)]
 pub struct CallGraph {
     pub graph: DiGraph<FuncKey, CallEdge>,
     /// `FuncKey → NodeIndex` for quick lookup.
-    #[allow(dead_code)] // used for future topo-ordered analysis and call-graph queries
     pub index: HashMap<FuncKey, NodeIndex>,
     /// Callee strings that could not be resolved to any [`FuncKey`].
     pub unresolved_not_found: Vec<UnresolvedCallee>,
@@ -77,9 +74,7 @@ pub struct CallGraphAnalysis {
     pub topo_scc_callee_first: Vec<usize>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Callee-name normalization
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract the last segment of a qualified callee name for resolution.
 ///
@@ -165,9 +160,7 @@ pub(crate) fn callee_container_hint(raw: &str) -> &str {
     ""
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Class / container → method index
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Per-language `(container, method_name)` → candidate [`FuncKey`] index.
 ///
@@ -260,20 +253,6 @@ impl ClassMethodIndex {
                 .unwrap_or_default(),
         }
     }
-
-    /// Number of distinct `(lang, container, method)` keys.  Exposed
-    /// for diagnostics / tests; production code uses [`Self::resolve`].
-    #[allow(dead_code)]
-    pub fn container_keys_len(&self) -> usize {
-        self.by_container.len()
-    }
-
-    /// Number of distinct `(lang, method)` keys.  Exposed for
-    /// diagnostics / tests.
-    #[allow(dead_code)]
-    pub fn name_keys_len(&self) -> usize {
-        self.by_name.len()
-    }
 }
 
 // ── Type hierarchy index ────────────────────────────────────────────────
@@ -293,11 +272,6 @@ impl ClassMethodIndex {
 pub struct TypeHierarchyIndex {
     /// `(lang, super_type)` → distinct sub-type / impl container names.
     by_super: HashMap<(Lang, String), SmallVec<[String; 4]>>,
-    /// `(lang, sub_type)` → super-types this type extends / implements.
-    /// Future use for `super.method()` resolution; populated for
-    /// completeness today.
-    #[allow(dead_code)]
-    by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>>,
 }
 
 impl TypeHierarchyIndex {
@@ -308,7 +282,6 @@ impl TypeHierarchyIndex {
     /// summary) collapse via the membership check.
     pub fn build(summaries: &GlobalSummaries) -> Self {
         let mut by_super: HashMap<(Lang, String), SmallVec<[String; 4]>> = HashMap::new();
-        let mut by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>> = HashMap::new();
 
         for (key, summary) in summaries.iter() {
             let lang = key.lang;
@@ -320,14 +293,10 @@ impl TypeHierarchyIndex {
                 if !subs.iter().any(|s| s == sub) {
                     subs.push(sub.clone());
                 }
-                let sups = by_sub.entry((lang, sub.clone())).or_default();
-                if !sups.iter().any(|s| s == sup) {
-                    sups.push(sup.clone());
-                }
             }
         }
 
-        TypeHierarchyIndex { by_super, by_sub }
+        TypeHierarchyIndex { by_super }
     }
 
     /// Return the distinct sub-type / impl container names for
@@ -337,16 +306,6 @@ impl TypeHierarchyIndex {
     pub fn subs_of(&self, lang: Lang, super_type: &str) -> &[String] {
         self.by_super
             .get(&(lang, super_type.to_string()))
-            .map(|v| v.as_slice())
-            .unwrap_or_default()
-    }
-
-    /// Return the recorded super-types of `sub_type`.  Empty when
-    /// `sub_type` has no recorded super-types in this language.
-    #[allow(dead_code)]
-    pub fn supers_of(&self, lang: Lang, sub_type: &str) -> &[String] {
-        self.by_sub
-            .get(&(lang, sub_type.to_string()))
             .map(|v| v.as_slice())
             .unwrap_or_default()
     }
@@ -409,9 +368,7 @@ impl TypeHierarchyIndex {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Call-graph construction
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Build the whole-program call graph from merged summaries.
 ///
@@ -777,9 +734,7 @@ fn resolve_via_interop(
     None
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  SCC / topological analysis
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute SCC decomposition and topological ordering of the call graph.
 ///
@@ -807,9 +762,7 @@ pub fn analyse(cg: &CallGraph) -> CallGraphAnalysis {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  File-level batch ordering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// A batch of files at a single topological position, annotated with whether
 /// any contributing SCC contains mutual recursion (len > 1) and whether any
@@ -862,6 +815,141 @@ pub fn callers_of(cg: &CallGraph, callee: &FuncKey) -> Vec<FuncKey> {
         .collect()
 }
 
+/// Reverse-edge BFS: return every [`FuncKey`] that *transitively* calls
+/// `callee`, i.e. the union of [`callers_of`] applied recursively until
+/// the reverse frontier is exhausted.
+///
+/// Used by the chain composer to widen file-scoped reach: a sink inside
+/// `internal_helper.py` whose enclosing function is reached only through
+/// `routes.py` is *reachable* in the chain sense, but the file-local
+/// match in `chain::edges::locate_reach` / `chain::search::compose_chain`
+/// misses it.  This helper produces the closure once so callers can
+/// resolve reach in O(1) afterwards.
+///
+/// Excludes `callee` itself from the returned set, matching the
+/// "strictly upstream" semantics callers want.  Empty when `callee` is
+/// unknown to the graph.
+///
+/// Cost: O(V + E) BFS from `callee`'s reverse frontier; bounded by the
+/// connected component size.
+pub fn callers_transitive(cg: &CallGraph, callee: &FuncKey) -> std::collections::HashSet<FuncKey> {
+    let mut seen: std::collections::HashSet<FuncKey> = std::collections::HashSet::new();
+    let Some(&start) = cg.index.get(callee) else {
+        return seen;
+    };
+    let mut frontier: Vec<NodeIndex> = cg
+        .graph
+        .neighbors_directed(start, petgraph::Direction::Incoming)
+        .collect();
+    while let Some(node) = frontier.pop() {
+        let key = cg.graph[node].clone();
+        if !seen.insert(key) {
+            continue;
+        }
+        for next in cg
+            .graph
+            .neighbors_directed(node, petgraph::Direction::Incoming)
+        {
+            if !seen.contains(&cg.graph[next]) {
+                frontier.push(next);
+            }
+        }
+    }
+    seen
+}
+
+/// File-level transitive reach map built from a [`CallGraph`].
+///
+/// For each `namespace` (file path) in the graph, records every other
+/// namespace that contains at least one transitive caller.  Built once
+/// per scan so the chain composer can widen a finding's
+/// `Reach::Reachable` decision beyond the file-local heuristic in
+/// `chain::edges::locate_reach` without re-running BFS per
+/// finding.
+///
+/// Map shape: `callee_namespace → { caller_namespace, … }`.  A file
+/// always appears in its own caller set so intra-file recursion stays
+/// reachable.
+///
+/// `scan_root` is optional path-normalisation context.  Callers that
+/// build the map without a scan root must pass project-relative POSIX
+/// paths to [`FileReachMap::reaches`] directly.  When a root is set
+/// (typical in production scans), [`FileReachMap::reaches`] applies
+/// [`crate::symbol::normalize_namespace`] to its arguments before
+/// lookup so absolute host paths (the convention on
+/// [`crate::commands::scan::Diag`]'s `path`) and project-relative paths
+/// (the convention on call-graph [`FuncKey::namespace`] and
+/// [`crate::surface::SourceLocation::file`]) both resolve to the
+/// stored keys.
+#[derive(Debug, Default, Clone)]
+pub struct FileReachMap {
+    by_callee_ns: HashMap<String, std::collections::HashSet<String>>,
+    scan_root: Option<String>,
+}
+
+impl FileReachMap {
+    /// Build the map from every function's reverse transitive closure.
+    ///
+    /// O(V × (V + E)) worst case, but the per-function BFS is sparse on
+    /// real call graphs (median in-degree < 4 on the eval corpus).
+    ///
+    /// The returned map has no scan root configured; pair with
+    /// [`FileReachMap::with_scan_root`] when callers may pass absolute
+    /// paths.
+    pub fn build(cg: &CallGraph) -> Self {
+        let mut by_callee_ns: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        for callee in cg.index.keys() {
+            let entry = by_callee_ns.entry(callee.namespace.clone()).or_default();
+            entry.insert(callee.namespace.clone());
+            for caller in callers_transitive(cg, callee) {
+                entry.insert(caller.namespace);
+            }
+        }
+        FileReachMap {
+            by_callee_ns,
+            scan_root: None,
+        }
+    }
+
+    /// Attach a scan root so [`FileReachMap::reaches`] can normalise
+    /// absolute host paths back to the project-relative POSIX form the
+    /// map keys use.  Pass `None` to clear an existing root.
+    pub fn with_scan_root<P: AsRef<std::path::Path>>(mut self, root: Option<P>) -> Self {
+        self.scan_root = root.map(|p| p.as_ref().to_string_lossy().into_owned());
+        self
+    }
+
+    /// True when `caller` transitively reaches at least one function
+    /// defined in `callee`.  Inputs may be either project-relative
+    /// POSIX paths (matching the call-graph namespace convention) or
+    /// absolute host paths when a scan root was set via
+    /// [`FileReachMap::with_scan_root`].  False when either path is
+    /// unknown to the graph (conservative: chain composer falls back
+    /// to the file-local heuristic).
+    pub fn reaches(&self, caller: &str, callee: &str) -> bool {
+        let lookup_callee = self.normalize(callee);
+        let lookup_caller = self.normalize(caller);
+        self.by_callee_ns
+            .get(lookup_callee.as_ref())
+            .is_some_and(|set| set.contains(lookup_caller.as_ref()))
+    }
+
+    /// Number of distinct callee namespaces tracked.  Exposed for
+    /// diagnostics / tests.
+    pub fn callee_ns_len(&self) -> usize {
+        self.by_callee_ns.len()
+    }
+
+    fn normalize<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.scan_root.as_deref() {
+            Some(root) => {
+                std::borrow::Cow::Owned(crate::symbol::normalize_namespace(path, Some(root)))
+            }
+            None => std::borrow::Cow::Borrowed(path),
+        }
+    }
+}
+
 /// Compute the set of file namespaces that must be re-analysed when a
 /// given set of callee [`FuncKey`]s have had their summaries refined.
 ///
@@ -905,10 +993,16 @@ pub fn scc_spans_files(cg: &CallGraph, scc: &[NodeIndex]) -> bool {
     iter.any(|n| cg.graph[*n].namespace.as_str() != first_ns)
 }
 
-/// Like [`scc_file_batches`] but annotates each batch with whether any
-/// contributing SCC has mutual recursion (`len > 1`).
+/// Map SCC topological order to an ordered sequence of file-path batches
+/// annotated with whether any contributing SCC is mutually recursive
+/// (`len > 1`) or cross-file.
 ///
-/// Returns `(ordered_batches, orphan_files)`.
+/// A file is placed in the earliest batch where any of its functions appear
+/// (min topo index), so leaf callees become available before the callers
+/// that depend on them.
+///
+/// Returns `(ordered_batches, orphan_files)`. Orphans are paths from
+/// `all_files` that have no functions in the call graph.
 pub fn scc_file_batches_with_metadata<'a>(
     cg: &CallGraph,
     analysis: &CallGraphAnalysis,
@@ -989,8 +1083,8 @@ pub fn scc_file_batches_with_metadata<'a>(
 ///
 /// Returns `(ordered_batches, orphan_files)` where orphan_files are paths
 /// from `all_files` that have no functions in the call graph.
-#[allow(dead_code)] // kept for tests; production callers use scc_file_batches_with_metadata
-pub fn scc_file_batches<'a>(
+#[cfg(test)]
+pub(super) fn scc_file_batches<'a>(
     cg: &CallGraph,
     analysis: &CallGraphAnalysis,
     all_files: &'a [PathBuf],
@@ -1033,9 +1127,7 @@ pub fn scc_file_batches<'a>(
     (batches, orphans)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -2797,5 +2889,128 @@ mod tests {
         assert_eq!(cg.graph.edge_count(), 1);
         assert!(cg.unresolved_not_found.is_empty());
         assert!(cg.unresolved_ambiguous.is_empty());
+    }
+
+    // ── callers_transitive + FileReachMap ───────────────────────────────
+
+    /// Three-hop chain across three files:
+    /// `routes.py::handle -> service.py::process -> helper.py::sink`
+    /// `callers_transitive(sink)` must return both `process` and `handle`.
+    /// `FileReachMap` must record `routes.py` and `service.py` as callers
+    /// of `helper.py`.
+    #[test]
+    fn callers_transitive_walks_multi_hop_chain() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["process"]);
+        let process = make_summary("process", "service.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, process, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+
+        let sink_key = FuncKey {
+            lang: Lang::Python,
+            namespace: "helper.py".into(),
+            name: "sink".into(),
+            arity: Some(0),
+            ..Default::default()
+        };
+        let transitive = callers_transitive(&cg, &sink_key);
+        let caller_names: std::collections::HashSet<String> =
+            transitive.iter().map(|k| k.name.clone()).collect();
+        assert!(
+            caller_names.contains("process"),
+            "process should reach sink"
+        );
+        assert!(caller_names.contains("handle"), "handle should reach sink");
+        assert_eq!(transitive.len(), 2, "sink itself must be excluded");
+
+        let reach = FileReachMap::build(&cg);
+        assert!(reach.reaches("routes.py", "helper.py"));
+        assert!(reach.reaches("service.py", "helper.py"));
+        assert!(reach.reaches("helper.py", "helper.py"), "self-reach");
+        assert!(!reach.reaches("helper.py", "routes.py"));
+    }
+
+    #[test]
+    fn callers_transitive_empty_for_unknown_key() {
+        let leaf = make_summary("leaf", "a.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![leaf], None);
+        let cg = build_call_graph(&gs, &[]);
+        let ghost = FuncKey {
+            lang: Lang::Python,
+            namespace: "nowhere.py".into(),
+            name: "ghost".into(),
+            arity: Some(0),
+            ..Default::default()
+        };
+        assert!(callers_transitive(&cg, &ghost).is_empty());
+    }
+
+    #[test]
+    fn file_reach_map_handles_disconnected_components() {
+        let a_caller = make_summary("a_caller", "a.py", "python", 0, vec!["a_sink"]);
+        let a_sink = make_summary("a_sink", "a.py", "python", 0, vec![]);
+        let b_caller = make_summary("b_caller", "b.py", "python", 0, vec!["b_sink"]);
+        let b_sink = make_summary("b_sink", "b.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![a_caller, a_sink, b_caller, b_sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+
+        assert!(reach.reaches("a.py", "a.py"));
+        assert!(reach.reaches("b.py", "b.py"));
+        // Disconnected: a.py does not reach b.py.
+        assert!(!reach.reaches("a.py", "b.py"));
+        assert!(!reach.reaches("b.py", "a.py"));
+        assert_eq!(reach.callee_ns_len(), 2);
+    }
+
+    /// `with_scan_root` normalises absolute host paths to the
+    /// project-relative POSIX form the map keys carry, so
+    /// `reaches("/abs/scan/routes.py", "/abs/scan/helper.py")` finds
+    /// the same entry as the project-relative
+    /// `reaches("routes.py", "helper.py")` call.  Mirrors the
+    /// production wire-up in `src/commands/scan.rs`: the call-graph
+    /// uses project-relative namespaces while `Diag.path` (from
+    /// `src/ast.rs`) is the absolute walker path.
+    #[test]
+    fn file_reach_map_with_scan_root_normalises_absolute_paths() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let scan_root = std::path::Path::new("/abs/scan");
+        let reach = FileReachMap::build(&cg).with_scan_root(Some(scan_root));
+
+        // Mixed conventions: surface (project-relative) caller,
+        // Diag (absolute) callee.  Pre-fix this returned false.
+        assert!(reach.reaches("routes.py", "/abs/scan/helper.py"));
+        // Both absolute: also resolves.
+        assert!(reach.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Trailing-slash root works.
+        let reach_trail =
+            FileReachMap::build(&cg).with_scan_root(Some(std::path::Path::new("/abs/scan/")));
+        assert!(reach_trail.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Both project-relative: still resolves (legacy behaviour).
+        assert!(reach.reaches("routes.py", "helper.py"));
+        // Path outside the root falls through normalize_namespace
+        // unchanged and does not collide with a project-relative key.
+        assert!(!reach.reaches("/other/root/routes.py", "/other/root/helper.py"));
+    }
+
+    /// `with_scan_root(None)` clears a previously set root and
+    /// restores strict project-relative lookup semantics.
+    #[test]
+    fn file_reach_map_with_scan_root_none_clears_root() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach: FileReachMap = FileReachMap::build(&cg)
+            .with_scan_root(Some(std::path::Path::new("/abs/scan")))
+            .with_scan_root::<&std::path::Path>(None);
+
+        // Absolute lookup no longer resolves once root is cleared.
+        assert!(!reach.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Project-relative still works.
+        assert!(reach.reaches("routes.py", "helper.py"));
     }
 }

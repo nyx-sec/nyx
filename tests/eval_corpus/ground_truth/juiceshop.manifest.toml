@@ -1,0 +1,66 @@
+# OWASP Juice Shop — curated vuln ground-truth manifest (Phase 28, Track R.1).
+#
+# Juice Shop is an intentionally-vulnerable TypeScript/Express + Angular
+# app.  Its `data/static/challenges.yml` enumerates challenges but pins no
+# source file/line, so it cannot drive file-level ground truth on its own.
+# This manifest IS the authoritative source: one [[entry]] per known-
+# vulnerable server-side handler, curated from the project's own challenge
+# definitions + companion guide, each with a `note` citing the challenge.
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/juiceshop.json.  CI regenerates it against a fresh clone of
+# the pinned tag and asserts byte-equality; the converter HARD-ERRORS on
+# any path that no longer exists in the corpus, so a Juice Shop bump that
+# refactors a route fails the eval job loudly instead of silently dropping
+# recall.  Re-pin `pinned_ref` and re-validate the paths together.
+#
+# `cap` is a nyx cap label (tabulate.py).  `path` is relative to the Juice
+# Shop clone root, POSIX separators.  Lang is inferred from the extension
+# (.ts -> typescript).  All `vuln = true`: Juice Shop is all-vulnerable, so
+# there is no benign-control file to pair against.  As with NodeGoat,
+# precision vs this manifest is informational (an unlabelled finding may be
+# a real uncurated vuln, not a false positive) while recall is the
+# meaningful floor.  See tests/eval_corpus/budget.toml for the gate policy.
+
+corpus = "juiceshop"
+upstream = "https://github.com/juice-shop/juice-shop"
+# Pinned to a stable release tag.  The server-side handlers below
+# (routes/*.ts, lib/insecurity.ts) have been stable across the TypeScript
+# era of Juice Shop; re-validate if the tag is bumped.
+pinned_ref = "v15.0.0"
+
+[[entry]]
+path = "routes/login.ts"
+cap = "sqli"
+vuln = true
+note = "login builds a raw `models.sequelize.query(\"... WHERE email = '\" + req.body.email + \"' ...\")` — SQL injection auth bypass (challenge: loginAdmin / loginBender)."
+
+[[entry]]
+path = "routes/search.ts"
+cap = "sqli"
+vuln = true
+note = "product search concatenates the `q` criteria into a raw `models.sequelize.query` LIKE clause — UNION-based SQL injection (challenge: unionSqlInjection / dbSchema)."
+
+[[entry]]
+path = "routes/fileServer.ts"
+cap = "path_traversal"
+vuln = true
+note = "serveKeyFiles / file download resolves a user-controlled filename under the ftp dir without containment — path traversal (challenge: accessLogDisclosure / forgottenDevBackup)."
+
+[[entry]]
+path = "routes/redirect.ts"
+cap = "redirect"
+vuln = true
+note = "redirect endpoint forwards to the `to` query param via an allow-list that is bypassable by substring — open redirect (challenge: redirectCryptoCurrency / redirect)."
+
+[[entry]]
+path = "routes/profileImageUrlUpload.ts"
+cap = "ssrf"
+vuln = true
+note = "profile image upload fetches an arbitrary user-supplied imageUrl server-side — SSRF (challenge: ssrf)."
+
+[[entry]]
+path = "lib/insecurity.ts"
+cap = "crypto"
+vuln = true
+note = "hardcoded HMAC/JWT key material and weak hashing (md5-based `hash`) — broken cryptography / hardcoded secret (challenge: weakCryptography / jwt*)."

@@ -1,0 +1,70 @@
+# DVPWA (Damn Vulnerable Python Web Application) — curated ground-truth
+# manifest (Phase 29, Track R.2).
+#
+# DVPWA is an intentionally-vulnerable aiohttp app whose headline flaw is
+# SQL injection (the package is literally named `sqli`).  It ships no
+# machine-readable per-file labels, so this manifest IS the authoritative
+# source.  Its DAO layer is convenient: one method builds a query with
+# Python `%` string-formatting (the injectable sink) while its siblings use
+# proper parameterized `cur.execute(q, params)` — so the parameterized DAOs
+# serve as genuine benign controls (vuln = false) for the sqli cell, making
+# precision there meaningful, not just informational.
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/dvpwa.json.  CI regenerates it against a fresh clone of the
+# pinned ref and asserts byte-equality; the converter HARD-ERRORS on any
+# path that no longer exists, so a corpus bump that moves a DAO fails the
+# job loudly rather than silently dropping recall.
+#
+# `cap` is a nyx cap label (tabulate.py), aligned to how nyx classifies each
+# sink (the request-scoped ownership lookups in views.py surface as `auth`).
+# `path` is relative to the DVPWA clone root, POSIX separators.  Lang is
+# inferred from the extension (.py -> python).  See
+# tests/eval_corpus/budget.toml for the gate policy on these cells.
+
+corpus = "dvpwa"
+upstream = "https://github.com/anxolerd/dvpwa"
+# DVPWA publishes no release tags; the eval job pins the default branch via
+# the CI cache key (clone HEAD a1d8f89fac2e57093189853c6527c2b01fc1d9c1).
+# The sqli/ package layout has been stable; re-validate if the cache key is
+# bumped.
+pinned_ref = "master"
+
+# ── SQL injection (sqli) — one injectable sink + parameterized controls ──────
+[[entry]]
+path = "sqli/dao/student.py"
+cap = "sqli"
+vuln = true
+note = "Student.create builds the INSERT with Python `%` formatting (\"... VALUES ('%(name)s')\" % {'name': name}) on the request-supplied student name, then cur.execute(q) — SQL injection."
+
+[[entry]]
+path = "sqli/dao/course.py"
+cap = "sqli"
+vuln = false
+note = "benign control: every Course query uses parameterized cur.execute(q, params) / VALUES (%(title)s, %(description)s) — not injectable."
+
+[[entry]]
+path = "sqli/dao/review.py"
+cap = "sqli"
+vuln = false
+note = "benign control: Review.create / get_for_course bind via cur.execute(q, params) with %(course_id)s / %s placeholders — parameterized."
+
+[[entry]]
+path = "sqli/dao/mark.py"
+cap = "sqli"
+vuln = false
+note = "benign control: Mark.create / get_for_student bind via parameterized cur.execute(q, params) — not injectable."
+
+# ── Weak crypto (crypto) ─────────────────────────────────────────────────────
+[[entry]]
+path = "sqli/dao/user.py"
+cap = "crypto"
+vuln = true
+note = "User.check_password compares against md5(password).hexdigest() — unsalted MD5 for credential storage (weak cryptography)."
+
+# ── Broken access control (auth) ─────────────────────────────────────────────
+[[entry]]
+path = "sqli/views.py"
+cap = "auth"
+vuln = true
+note = "request handlers resolve the acting user from a client-controlled session id and act on objects without an ownership/authorization check — broken access control."

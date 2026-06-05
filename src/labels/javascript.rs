@@ -221,11 +221,8 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["res.redirect"],
-        label: DataLabel::Sink(Cap::SSRF),
-        case_sensitive: false,
-    },
+    // `res.redirect` is OPEN_REDIRECT only (see the dedicated rule below): a
+    // 302 to the browser is client-side navigation, not SSRF.
     LabelRule {
         matchers: &["res.sendFile", "res.download"],
         label: DataLabel::Sink(Cap::FILE_IO),
@@ -909,6 +906,37 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
             object_destination_fields: &["url", "prefixUrl"],
+        },
+    },
+    // `request` npm library: `request.get(url)` / `request.post(url, …)`. The
+    // Destination gate fires only on a tainted URL arg, so the `req.get(header)`
+    // header-read collision (constant arg 0) never activates.
+    SinkGate {
+        callee_matcher: "request.get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url", "uri"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "request.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url", "uri"],
         },
     },
     // `undici.request(url | opts[, opts])`, opts exposes `origin` and

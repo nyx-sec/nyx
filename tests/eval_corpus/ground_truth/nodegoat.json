@@ -1,0 +1,32 @@
+[
+  {
+    "path": "app/routes/allocations.js",
+    "line": 0,
+    "cap": "unauthorized_id",
+    "vuln": true
+  },
+  {
+    "path": "app/routes/contributions.js",
+    "line": 0,
+    "cap": "cmdi",
+    "vuln": true
+  },
+  {
+    "path": "app/routes/memos.js",
+    "line": 0,
+    "cap": "xss",
+    "vuln": true
+  },
+  {
+    "path": "app/routes/profile.js",
+    "line": 0,
+    "cap": "xss",
+    "vuln": true
+  },
+  {
+    "path": "config/env/all.js",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  }
+]

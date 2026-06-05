@@ -1,0 +1,8 @@
+{
+  "name": "nyx-harness-jsdom",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "jsdom": "^24.1.1"
+  }
+}

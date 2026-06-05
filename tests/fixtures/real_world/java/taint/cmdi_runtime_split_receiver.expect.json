@@ -1,0 +1,30 @@
+{
+  "description": "HttpServletRequest header flows into a String[] env array passed to a split-receiver Runtime.exec — command injection via the `Runtime r = Runtime.getRuntime(); ... r.exec(cmd, argsEnv)` shape (the dominant remaining OWASP Benchmark cmdi form). The callee text at the sink is `r.exec`, which does not suffix-match the flat `Runtime.exec` rule; resolution depends on the receiver `r` carrying TypeKind::Runtime (from the `Runtime.getRuntime()` factory / the `Runtime` declared type) so the type-qualified resolver rewrites `r.exec` → `Runtime.exec`. Taint is in the env array (arg 1), so no payload-arg restriction may be applied.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "runtime",
+    "split-receiver"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "request.getHeader (line 7) flows into the env array element argsEnv (line 15), which is passed as arg 1 of r.exec at line 16. The receiver r is typed Runtime via Runtime.getRuntime() (line 13), so the type-qualified Runtime.exec sink fires at the split-receiver call. Exactly one finding survives.",
+      "max_count": 1
+    }
+  ]
+}

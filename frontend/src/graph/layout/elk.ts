@@ -39,6 +39,14 @@ const PRESETS: Record<GraphViewKind, ElkLayoutPreset> = {
     padding: 32,
     edgeRouting: 'ORTHOGONAL',
   },
+  surface: {
+    direction: 'RIGHT',
+    nodeSpacing: 44,
+    layerSpacing: 156,
+    edgeNodeSpacing: 28,
+    padding: 36,
+    edgeRouting: 'POLYLINE',
+  },
 };
 
 function measureNode(

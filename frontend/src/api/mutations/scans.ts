@@ -4,11 +4,26 @@ import type { ScanView } from '../types';
 
 export type ScanMode = 'full' | 'ast' | 'cfg' | 'taint';
 export type EngineProfile = 'fast' | 'balanced' | 'deep';
+export type VerifyBackend = 'auto' | 'docker' | 'process' | 'firecracker';
+export type HardenProfile = 'standard' | 'strict';
 
 export interface StartScanBody {
   scan_root?: string;
   mode?: ScanMode;
   engine_profile?: EngineProfile;
+  /**
+   * Override dynamic verification for this scan.
+   * true - force on.
+   * false - force off.
+   * absent - use server config default.
+   */
+  verify?: boolean;
+  /** Also verify Confidence < Medium findings. Default false. */
+  verify_all_confidence?: boolean;
+  /** Sandbox backend for dynamic verification. */
+  verify_backend?: VerifyBackend;
+  /** Process-backend hardening profile. */
+  harden_profile?: HardenProfile;
 }
 
 export function useStartScan() {

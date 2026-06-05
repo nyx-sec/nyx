@@ -6,7 +6,7 @@
 //! distinguish different objects.
 //!
 //! Design:
-#![allow(clippy::collapsible_if, clippy::new_without_default)]
+#![allow(clippy::new_without_default)]
 //! - `FieldSlot::Named` for object properties (per-field precision).
 //! - `FieldSlot::Elements` for container contents (flow-insensitive union ,
 //!   deliberately lower precision than named fields).
@@ -35,9 +35,7 @@ const MAX_FIELDS_PER_OBJECT: usize = 8;
 /// `Elements` (taint unioned, value set to `Unknown`).
 pub const MAX_TRACKED_INDICES: usize = 16;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Heap key: allocation-site identity + field slot.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -365,9 +363,7 @@ impl SymbolicHeap {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolve a container operation index argument to a [`FieldSlot`].
 ///
@@ -440,9 +436,7 @@ pub fn resolve_singleton_object(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

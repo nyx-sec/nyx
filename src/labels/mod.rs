@@ -670,6 +670,31 @@ pub fn is_js_ts_handler_param_name(name: &str) -> bool {
     false
 }
 
+/// Bare bindings denoting an Express/Koa request sub-object when the handler
+/// param is destructured (`({ query }, res) => …`). Kept out of
+/// [`is_js_ts_handler_param_name`] so a plain param named `query`/`body` is
+/// never seeded; the SSA seeder additionally requires a sibling response param.
+const JS_TS_REQUEST_FIELD_NAMES: &[&str] =
+    &["query", "body", "params", "headers", "cookies", "cookie"];
+
+/// True when `name` is a bare destructured request-field binding. Only
+/// meaningful behind the destructured-handler-param gate in the SSA seeder.
+pub fn is_express_request_field_name(name: &str) -> bool {
+    JS_TS_REQUEST_FIELD_NAMES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+/// True for the conventional Express/Koa/Fastify response-object parameter
+/// (`res`/`response`/`reply`) — the structural signal that a function is a
+/// route handler, so a sibling destructured `{ query }` is a real source.
+pub fn is_handler_response_param_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "res" | "response" | "reply"
+    )
+}
+
 #[inline(always)]
 pub fn lookup(lang: &str, raw: &str) -> Kind {
     CLASSIFIERS
@@ -861,6 +886,10 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
     // User input patterns
     if cl.contains("argv")
         || cl.contains("stdin")
+        || cl.contains("fgets")
+        || cl.contains("scanf")
+        || cl.contains("gets")
+        || cl.contains("recv")
         || cl.contains("request")
         || cl.contains("form")
         || cl.contains("query")
@@ -1492,7 +1521,11 @@ pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'stat
         | "TypeOrmRepo.createQueryBuilder"
         | "TypeOrmManager.query"
         | "TypeOrmManager.createQueryBuilder"
-        | "MikroOrmEm.execute" => Some(&[0]),
+        | "MikroOrmEm.execute"
+        // `ProcessBuilder.command(argList)` — arg 0 is the command list;
+        // any later positional args are not part of the v1 shape.  Restrict
+        // sink-taint scanning to arg 0 so receiver / unrelated args don't fire.
+        | "ProcessBuilder.command" => Some(&[0]),
         _ => None,
     }
 }

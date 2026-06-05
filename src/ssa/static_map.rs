@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if, clippy::redundant_closure)]
+#![allow(clippy::redundant_closure)]
 
 //! Static hash-map lookup abstract analysis.
 //!

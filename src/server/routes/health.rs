@@ -13,7 +13,7 @@ async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> 
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "scan_root": state.scan_root.display().to_string(),
+        "scan_root": state.active_scan_root().display().to_string(),
     }))
 }
 

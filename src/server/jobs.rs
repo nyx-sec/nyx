@@ -98,7 +98,7 @@ impl JobManager {
         db_pool: Option<Arc<Pool<SqliteConnectionManager>>>,
         database_dir: PathBuf,
     ) -> Result<String, &'static str> {
-        let mut active = self.active_job_id.lock().unwrap();
+        let mut active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
         if active.is_some() {
             return Err("A scan is already running");
         }
@@ -129,8 +129,8 @@ impl JobManager {
         };
 
         {
-            let mut jobs = self.jobs.lock().unwrap();
-            let mut order = self.job_order.lock().unwrap();
+            let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+            let mut order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
 
             // Evict oldest if at capacity.
             while order.len() >= self.max_jobs {
@@ -239,7 +239,7 @@ impl JobManager {
                         Some(&log_collector),
                     )?;
                     let pool = Indexer::init(&db_path)?;
-                    scan::scan_with_index_parallel_observer(
+                    let mut diags = scan::scan_with_index_parallel_observer(
                         &project_name,
                         pool,
                         &config,
@@ -249,8 +249,27 @@ impl JobManager {
                         Some(&metrics),
                         Some(&log_collector),
                         None,
-                    )
+                        None,
+                    )?;
+                    for diag in &mut diags {
+                        diag.stable_hash = scan::compute_stable_hash(diag);
+                    }
+                    #[cfg(feature = "dynamic")]
+                    {
+                        let _verify_opts = scan::verify_findings_for_scan(
+                            &mut diags,
+                            &project_name,
+                            &db_path,
+                            &scan_root,
+                            &config,
+                            false,
+                            true,
+                        );
+                    }
+                    Ok(diags)
                 });
+            #[cfg(feature = "dynamic")]
+            crate::dynamic::sandbox::cleanup_docker_containers();
             let elapsed = start.elapsed().as_secs_f64();
 
             // Collect snapshots and do expensive work (post-processing,
@@ -266,7 +285,23 @@ impl JobManager {
 
             // Prepare the final state outside the lock.
             let (status, diags, error_str) = match result {
-                Ok(diags) => {
+                Ok(mut diags) => {
+                    // Compute stable_hash for every finding (§M6.5 cross-commit identity).
+                    // The CLI handler does this in commands/scan.rs::handle, but the
+                    // server scan path bypasses handle, so do it here.
+                    for d in &mut diags {
+                        d.stable_hash = scan::compute_stable_hash(d);
+                    }
+                    let dynamic_summary = scan::DynamicVerificationSummary::from_diags(&diags);
+                    if !dynamic_summary.is_empty() {
+                        log_collector.info(
+                            format!(
+                                "Dynamic verification: {}",
+                                scan::format_dynamic_verification_summary(&dynamic_summary)
+                            ),
+                            None,
+                        );
+                    }
                     log_collector.info(format!("Scan completed: {} findings", diags.len()), None);
                     (JobStatus::Completed, Some(Arc::new(diags)), None)
                 }
@@ -288,7 +323,7 @@ impl JobManager {
 
             // Brief lock: just update in-memory job state.
             {
-                let mut jobs = manager.jobs.lock().unwrap();
+                let mut jobs = manager.jobs.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(job) = jobs.get_mut(&jid) {
                     job.finished_at = Some(finished_at);
                     job.duration_secs = Some(elapsed);
@@ -303,7 +338,10 @@ impl JobManager {
 
             // Clear active flag.
             {
-                let mut active = manager.active_job_id.lock().unwrap();
+                let mut active = manager
+                    .active_job_id
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 if active.as_deref() == Some(&jid) {
                     *active = None;
                 }
@@ -361,13 +399,17 @@ impl JobManager {
 
     /// Get a specific job.
     pub fn get_job(&self, id: &str) -> Option<ScanJob> {
-        self.jobs.lock().unwrap().get(id).cloned()
+        self.jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
     }
 
     /// List all jobs, most recent first.
     pub fn list_jobs(&self) -> Vec<ScanJob> {
-        let jobs = self.jobs.lock().unwrap();
-        let order = self.job_order.lock().unwrap();
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order
             .iter()
             .rev()
@@ -377,16 +419,20 @@ impl JobManager {
 
     /// Get the currently active (running) job.
     pub fn active_job(&self) -> Option<ScanJob> {
-        let active = self.active_job_id.lock().unwrap();
-        active
-            .as_ref()
-            .and_then(|id| self.jobs.lock().unwrap().get(id).cloned())
+        let active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
+        active.as_ref().and_then(|id| {
+            self.jobs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(id)
+                .cloned()
+        })
     }
 
     /// Get the latest completed job.
     pub fn get_latest_completed(&self) -> Option<ScanJob> {
-        let jobs = self.jobs.lock().unwrap();
-        let order = self.job_order.lock().unwrap();
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order
             .iter()
             .rev()
@@ -397,17 +443,17 @@ impl JobManager {
 
     /// Remove a job from in-memory state. Rejects if the scan is currently running.
     pub fn remove_job(&self, id: &str) -> Result<(), &'static str> {
-        let active = self.active_job_id.lock().unwrap();
+        let active = self.active_job_id.lock().unwrap_or_else(|p| p.into_inner());
         if active.as_deref() == Some(id) {
             return Err("Cannot delete a running scan");
         }
         drop(active);
 
-        let mut jobs = self.jobs.lock().unwrap();
+        let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
         if jobs.remove(id).is_none() {
             return Err("Scan not found");
         }
-        let mut order = self.job_order.lock().unwrap();
+        let mut order = self.job_order.lock().unwrap_or_else(|p| p.into_inner());
         order.retain(|x| x != id);
         Ok(())
     }

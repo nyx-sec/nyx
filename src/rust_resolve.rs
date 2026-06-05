@@ -52,9 +52,7 @@ impl RustUseMap {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Module path derivation
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Find the crate root by walking up from `file_path` looking for `Cargo.toml`.
 ///
@@ -137,9 +135,7 @@ pub fn derive_module_path(file_path: &Path, scan_root: Option<&Path>) -> Option<
     Some(path)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Use-declaration parsing
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse every top-level `use_declaration` of a Rust source tree into a
 /// [`RustUseMap`].
@@ -328,9 +324,7 @@ fn join_segments(prefix: &[String], suffix: &[String]) -> String {
     all.join("::")
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Resolution helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolve a Rust callee `(qualifier, name)` against a use map.
 ///
@@ -389,9 +383,7 @@ pub fn split_module_and_name(qualified: &str) -> (String, String) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

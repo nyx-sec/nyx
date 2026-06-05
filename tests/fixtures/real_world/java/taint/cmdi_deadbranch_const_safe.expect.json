@@ -1,0 +1,19 @@
+{
+  "description": "Dead-branch constant condition (OWASP Benchmark cmdi non-vulnerable shape). `(7*42) - num > 200` with num=86 is 208 > 200 — always true — so `bar` is the constant string and the `else bar = param` arm is statically dead. The constant-branch fold (src/ssa/const_prop.rs::fold_constant_branches) evaluates the captured CondArith tree, prunes the dead edge, and drops the tainted phi operand AND neutralises the dead block so copy-prop cannot alias `bar`<->`param`. Result: `r.exec(cmd + bar)` carries no taint. Asserts NO taint finding fires (strict_unexpected promotes any taint-unsanitised-flow to a hard failure).",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "runtime",
+    "dead-branch",
+    "const-fold",
+    "precision"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": []
+}

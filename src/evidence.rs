@@ -4,17 +4,16 @@
 //! sanitizer/guard info, state-machine transitions) in a structured form
 //! that can be serialized to JSON and consumed by ranking, filtering,
 //! and downstream tooling.
-#![allow(clippy::collapsible_if)]
 
 use crate::commands::scan::Diag;
+use crate::labels::Cap;
 use crate::patterns::Severity;
+use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Confidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Confidence level for a diagnostic finding.
 ///
@@ -52,9 +51,7 @@ impl FromStr for Confidence {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Flow Steps
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// The kind of operation at a flow step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,9 +111,7 @@ pub struct FlowStep {
     pub is_cross_file: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Symbolic verdict
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Symbolic verification verdict for a taint path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,9 +149,809 @@ pub struct SymbolicVerdict {
     pub cutoff_notes: Vec<String>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+//  Dynamic verification verdict types (always present; not feature-gated)
+
+/// Why dynamic verification cannot be attempted for a finding.
+///
+/// Typed so that callers can pattern-match on the reason rather than parsing
+/// strings. Serializes as PascalCase (e.g. `"BackendUnavailable"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum UnsupportedReason {
+    /// The binary was not built with `--features dynamic`, or no backend
+    /// implementation exists yet for this platform.
+    BackendUnavailable,
+    /// The entry kind (e.g. `HttpRoute`, `CliSubcommand`) is not yet supported;
+    /// only `EntryKind::Function` is driven in current milestones.
+    EntryKindUnsupported,
+    /// The lang emitter does not yet support the spec's [`crate::dynamic::spec::PayloadSlot`]
+    /// shape (e.g. `PayloadSlot::Param(n>0)` on Rust, `PayloadSlot::HttpBody`
+    /// on JavaScript). Distinct from [`UnsupportedReason::EntryKindUnsupported`]:
+    /// the entry kind is driveable, only the payload-injection slot is not.
+    PayloadSlotUnsupported,
+    /// Finding confidence is below `Medium`; dynamic verification is not
+    /// attempted for low-confidence findings to avoid noise.
+    ConfidenceTooLow,
+    /// The finding has no `flow_steps` from which to derive an entry point.
+    NoFlowSteps,
+    /// No payload corpus exists for the sink capability.
+    NoPayloadsForCap,
+    /// A `HarnessSpec` could not be derived from the finding (missing entry
+    /// function, unresolvable language, or zero sink capability bits).
+    SpecDerivationFailed,
+    /// The harness required a file that was redacted by the mount filter for
+    /// secret containment. Path of the redacted file is carried inline.
+    RequiredFileRedactedForSecrets(String),
+    /// The language is not yet supported by the dynamic harness emitter.
+    LangUnsupported,
+    /// Phase 11 (Track J.9): the requested `(cap, lang)` pair has no
+    /// payloads in the corpus because no sound oracle exists for it
+    /// (e.g. `Cap::CRYPTO` "weak random" has no externally-observable
+    /// test vector, `Cap::SHELL_ESCAPE` / `Cap::URL_ENCODE` /
+    /// `Cap::ENV_VAR` are pure sanitizers / sources and cannot fire a
+    /// sink).  Distinct from
+    /// [`UnsupportedReason::NoPayloadsForCap`]: that variant means a
+    /// payload *could* exist but the corpus has not yet carved one,
+    /// while `SoundOracleUnavailable` is a structural impossibility.
+    /// Carries the cap, the language the runner was asked to drive,
+    /// and a human-actionable hint pointing at why no oracle is
+    /// achievable.
+    SoundOracleUnavailable {
+        /// The capability whose sink we cannot soundly observe.
+        cap: Cap,
+        /// The language the run targeted (kept for telemetry parity
+        /// with the other typed reasons that carry a `Lang`).
+        lang: Lang,
+        /// One-line explanation of why no oracle exists for this cap.
+        hint: String,
+    },
+}
+
+/// Discriminant tag for [`EntryKind`].
+///
+/// Phase 18 (Track M.0) extends [`EntryKind`] with data-bearing variants
+/// (`ClassMethod`, `MessageHandler`, `ScheduledJob`, …) so the enum can no
+/// longer be `Copy` and cannot appear in `&'static [EntryKind]` slices.
+/// `EntryKindTag` is the unit-only sibling used for: the per-emitter
+/// supported-set declaration (`LangEmitter::entry_kinds_supported` returns
+/// `&'static [EntryKindTag]`), the supported / attempted fields on
+/// [`InconclusiveReason::EntryKindUnsupported`], and any other site that
+/// needs a `Copy + Hash` discriminant.
+///
+/// `Unknown` is the back-compat fallback: a future variant that an older
+/// binary doesn't recognise round-trips as `Unknown` rather than failing
+/// deserialisation.  Mirrors the `#[serde(other)]` shape on the
+/// data-bearing enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum EntryKindTag {
+    Function,
+    HttpRoute,
+    CliSubcommand,
+    LibraryApi,
+    ClassMethod,
+    MessageHandler,
+    ScheduledJob,
+    GraphQLResolver,
+    WebSocket,
+    Middleware,
+    Migration,
+    /// Back-compat fallback for unrecognised variants from future bundles.
+    #[serde(other)]
+    Unknown,
+}
+
+impl fmt::Display for EntryKindTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl EntryKindTag {
+    /// Stable string form (matches the Serde PascalCase representation).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "Function",
+            Self::HttpRoute => "HttpRoute",
+            Self::CliSubcommand => "CliSubcommand",
+            Self::LibraryApi => "LibraryApi",
+            Self::ClassMethod => "ClassMethod",
+            Self::MessageHandler => "MessageHandler",
+            Self::ScheduledJob => "ScheduledJob",
+            Self::GraphQLResolver => "GraphQLResolver",
+            Self::WebSocket => "WebSocket",
+            Self::Middleware => "Middleware",
+            Self::Migration => "Migration",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+/// What kind of entry point a harness should call.
+///
+/// Lives in `evidence.rs` (not `dynamic::spec`) so that
+/// [`InconclusiveReason::EntryKindUnsupported`] can name the attempted /
+/// supported variants without depending on the `dynamic` feature. The
+/// canonical accessor is `crate::dynamic::spec::EntryKind` (re-export).
+///
+/// Phase 18 (Track M.0) extends the enum with seven data-bearing variants
+/// (`ClassMethod`, `MessageHandler`, `ScheduledJob`, `GraphQLResolver`,
+/// `WebSocket`, `Middleware`, `Migration`) plus an `Unknown` back-compat
+/// fallback.  Each new variant carries the language-agnostic minimum
+/// context the per-language adapter needs to stand the entry up; lang
+/// emitters opt in per follow-up phase (19 / 20 / 21) and unsupported
+/// kinds short-circuit to `Inconclusive(EntryKindUnsupported)` with a
+/// hint pointing at the phase that will close the gap.
+///
+/// Because the new variants own `String` / `serde_json::Value` payloads
+/// the enum is no longer `Copy` (or `Hash`).  The sibling
+/// [`EntryKindTag`] discriminant is the right type for any site that
+/// needs a `Copy + Hash` handle (supported-set lookups, hashmap keys,
+/// `InconclusiveReason::EntryKindUnsupported` fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum EntryKind {
+    /// Free function. Build a `main` that calls it directly.
+    Function,
+    /// HTTP route. Stand up the framework, send a request.
+    HttpRoute,
+    /// CLI subcommand. Spawn the binary with crafted argv.
+    CliSubcommand,
+    /// Library API surface. Build an in-process consumer.
+    LibraryApi,
+    /// Method on a class / struct / module type.  Carries the qualified
+    /// class name and the method to drive so the lang emitter can build
+    /// a `Cls(<ctor-args>).method(<payload>)` invocation.  Land in
+    /// Phase 19.
+    ClassMethod { class: String, method: String },
+    /// Message-queue subscriber / consumer.  `queue` is the topic /
+    /// stream / channel name; `message_schema`, when present, is a
+    /// free-form JSON description of the expected message body that the
+    /// harness can use to mint a fresh envelope around the payload.
+    /// Land in Phase 20.
+    MessageHandler {
+        queue: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_schema: Option<serde_json::Value>,
+    },
+    /// Scheduled job / cron handler.  `schedule`, when present, is the
+    /// raw schedule expression as it appears in source (cron syntax,
+    /// rate string, etc.) — kept opaque because each scheduler library
+    /// uses a slightly different grammar.  Land in Phase 21.
+    ScheduledJob {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
+    },
+    /// GraphQL resolver — `type_name.field` pair the harness drives via
+    /// an in-process GraphQL execution layer.  Land in Phase 21.
+    GraphQLResolver { type_name: String, field: String },
+    /// WebSocket handler — `path` is the canonical mount point; the
+    /// harness opens a loopback ws connection and sends the payload as
+    /// the first message frame.  Land in Phase 21.
+    WebSocket { path: String },
+    /// HTTP / framework middleware — `name` is the middleware identifier
+    /// (class name, function name, registration key) the harness mounts
+    /// on a synthetic pipeline before invoking it with a crafted
+    /// request.  Land in Phase 21.
+    Middleware { name: String },
+    /// Database migration / schema-change script — `version`, when
+    /// present, is the migration revision identifier (Alembic / Flyway /
+    /// Rails string) so the harness can pin the apply step.  Land in
+    /// Phase 21.
+    Migration {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// Back-compat fallback.  An older binary that does not yet
+    /// recognise a future variant deserialises it into `Unknown` rather
+    /// than failing the bundle load.  Mirrors the
+    /// `#[serde(other)]` shape on [`EntryKindTag`].
+    Unknown,
+}
+
+impl EntryKind {
+    /// Discriminant tag — used for supported-set lookups and any other
+    /// site that needs a `Copy + Hash` handle.
+    pub fn tag(&self) -> EntryKindTag {
+        match self {
+            Self::Function => EntryKindTag::Function,
+            Self::HttpRoute => EntryKindTag::HttpRoute,
+            Self::CliSubcommand => EntryKindTag::CliSubcommand,
+            Self::LibraryApi => EntryKindTag::LibraryApi,
+            Self::ClassMethod { .. } => EntryKindTag::ClassMethod,
+            Self::MessageHandler { .. } => EntryKindTag::MessageHandler,
+            Self::ScheduledJob { .. } => EntryKindTag::ScheduledJob,
+            Self::GraphQLResolver { .. } => EntryKindTag::GraphQLResolver,
+            Self::WebSocket { .. } => EntryKindTag::WebSocket,
+            Self::Middleware { .. } => EntryKindTag::Middleware,
+            Self::Migration { .. } => EntryKindTag::Migration,
+            Self::Unknown => EntryKindTag::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.tag().as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for EntryKind {
+    /// Back-compat deserialiser.  Externally-tagged enums do not
+    /// support `#[serde(other)]` on Serde 1.0.228, so we route through
+    /// `serde_json::Value` and fall through to [`EntryKind::Unknown`]
+    /// for any tag the current binary does not recognise.  Older
+    /// bundles whose `entry_kind` is a bare PascalCase string (the
+    /// pre-Phase-18 wire format for the four unit variants) continue
+    /// to decode unchanged.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let value = serde_json::Value::deserialize(deserializer).map_err(D::Error::custom)?;
+
+        // Bare-string form (legacy unit variants).
+        if let Some(tag) = value.as_str() {
+            return Ok(match tag {
+                "Function" => Self::Function,
+                "HttpRoute" => Self::HttpRoute,
+                "CliSubcommand" => Self::CliSubcommand,
+                "LibraryApi" => Self::LibraryApi,
+                "Unknown" => Self::Unknown,
+                _ => Self::Unknown,
+            });
+        }
+
+        // Externally-tagged struct form: { "ClassMethod": { ... } }.
+        if let Some(map) = value.as_object() {
+            if map.len() == 1 {
+                let (tag, body) = map.iter().next().expect("len == 1");
+                let body = body.clone();
+                let parsed = match tag.as_str() {
+                    "Function" => Some(Self::Function),
+                    "HttpRoute" => Some(Self::HttpRoute),
+                    "CliSubcommand" => Some(Self::CliSubcommand),
+                    "LibraryApi" => Some(Self::LibraryApi),
+                    "Unknown" => Some(Self::Unknown),
+                    "ClassMethod" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            class: String,
+                            method: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::ClassMethod {
+                                class: f.class,
+                                method: f.method,
+                            })
+                    }
+                    "MessageHandler" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            queue: String,
+                            #[serde(default)]
+                            message_schema: Option<serde_json::Value>,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::MessageHandler {
+                                queue: f.queue,
+                                message_schema: f.message_schema,
+                            })
+                    }
+                    "ScheduledJob" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            #[serde(default)]
+                            schedule: Option<String>,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::ScheduledJob {
+                                schedule: f.schedule,
+                            })
+                    }
+                    "GraphQLResolver" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            type_name: String,
+                            field: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::GraphQLResolver {
+                                type_name: f.type_name,
+                                field: f.field,
+                            })
+                    }
+                    "WebSocket" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            path: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::WebSocket { path: f.path })
+                    }
+                    "Middleware" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            name: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::Middleware { name: f.name })
+                    }
+                    "Migration" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            #[serde(default)]
+                            version: Option<String>,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::Migration { version: f.version })
+                    }
+                    _ => None,
+                };
+                return Ok(parsed.unwrap_or(Self::Unknown));
+            }
+        }
+
+        Ok(Self::Unknown)
+    }
+}
+
+/// Spec-derivation strategy attempted by [`crate::dynamic::spec::HarnessSpec::from_finding_opts`].
+///
+/// Lives in `evidence.rs` (not `dynamic::spec`) so that
+/// [`InconclusiveReason::SpecDerivationFailed`] can carry a `Vec` of attempted
+/// strategies without requiring the `dynamic` feature.  The canonical
+/// accessor is `crate::dynamic::spec::SpecDerivationStrategy` (re-export).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum SpecDerivationStrategy {
+    /// Walk the finding's `evidence.flow_steps`. Original derivation path:
+    /// the outermost `Source` step with a `function` annotation becomes the
+    /// entry point. Requires non-empty `flow_steps`.
+    FromFlowSteps,
+    /// Inspect the diag's `id` (rule namespace, e.g. `py.cmdi.os_system`,
+    /// `java.deser.readobject`, `rs.auth.missing_ownership_check.taint`) plus
+    /// `evidence.sink_caps` to synthesize a single-step flow. Used when the
+    /// rule namespace alone identifies a sink class.
+    FromRuleNamespace,
+    /// Walk a matching [`crate::summary::FuncSummary`] for the sink's
+    /// enclosing function and construct a synthetic param-to-sink flow per
+    /// parameter when no real `flow_steps` exist.
+    FromFuncSummaryWalk,
+    /// Resolve an entry point through the call graph by treating an entry-kind
+    /// function (HTTP route, CLI handler) as the spec entry.
+    FromCallgraphEntry,
+}
+
+impl fmt::Display for SpecDerivationStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::FromFlowSteps => "from_flow_steps",
+            Self::FromRuleNamespace => "from_rule_namespace",
+            Self::FromFuncSummaryWalk => "from_func_summary_walk",
+            Self::FromCallgraphEntry => "from_callgraph_entry",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Typed reason for `VerifyStatus::Inconclusive`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum InconclusiveReason {
+    /// The oracle fired but the sink-reachability probe did not — likely an
+    /// oracle collision where a coincidental output matched the marker pattern.
+    OracleCollisionSuspected,
+    /// The repro artifact could not be written to disk; verdict cannot be
+    /// independently reproduced.
+    NonReproducible,
+    /// Harness build failed after retries.
+    BuildFailed,
+    /// Sandbox error (spawn failure, I/O error, etc.).
+    SandboxError,
+    /// Every [`SpecDerivationStrategy`] candidate was attempted but none
+    /// produced a runnable [`crate::dynamic::spec::HarnessSpec`]. Distinct
+    /// from [`UnsupportedReason::SpecDerivationFailed`]: the latter covers
+    /// genuinely unmodellable findings (e.g. unknown language, zero sink
+    /// bits), while this variant signals that the rule namespace, sink
+    /// evidence, or call graph carried enough signal that derivation
+    /// *should* have worked but did not.
+    SpecDerivationFailed {
+        tried: Vec<SpecDerivationStrategy>,
+        hint: String,
+    },
+    /// The lang-specific harness emitter does not yet support the spec's
+    /// [`EntryKind`].  Carries the language, the attempted entry kind, the
+    /// list of entry kinds the emitter currently understands, and a
+    /// human-actionable hint pointing at the phase that will add support.
+    ///
+    /// Phase 18: `attempted` / `supported` use the [`EntryKindTag`]
+    /// discriminant rather than the (now data-bearing) [`EntryKind`] so
+    /// the verdict stays cheap to copy and the serialised form remains
+    /// a list of PascalCase strings.
+    EntryKindUnsupported {
+        lang: Lang,
+        attempted: EntryKindTag,
+        supported: Vec<EntryKindTag>,
+        hint: String,
+    },
+    /// The capability's corpus lacks a paired benign control payload, so
+    /// the differential-confirmation rule (§4.1) cannot be evaluated.
+    /// Downgrades the verdict from a would-be `Confirmed` because the
+    /// vulnerable-only firing might still be caused by a coincidental
+    /// oracle match (a benign control would rule that out).
+    NoBenignControl,
+    /// The differential rule observed `!vuln_probe_fires && benign_probe_fires`:
+    /// the benign control triggered the oracle but the vulnerable payload
+    /// did not.  Surfaces a misconfigured corpus, a swapped pair, or an
+    /// oracle that fires unconditionally; never a valid `Confirmed`.
+    ReversedDifferential,
+    /// Phase 08 §C.4: the harness process died with a crash signal
+    /// (SIGSEGV / SIGABRT / etc.) but no sink-site
+    /// [`crate::dynamic::probe::ProbeKind::Crash`] record was written —
+    /// i.e. the crash happened outside the instrumented sink (setup
+    /// code, harness build, library init).  Downgrades the verdict
+    /// rather than letting an unrelated abort masquerade as a
+    /// confirmed sink fire.
+    UnrelatedCrash,
+    /// Phase 18 §E.2: the sandbox backend in use cannot enforce the
+    /// isolation a given oracle relies on (e.g. macOS process backend
+    /// without `sandbox-exec`, so filesystem-escape oracles would run
+    /// against an unconfined host).  Downgrades the verdict rather
+    /// than letting an unhardened backend produce a false `Confirmed`.
+    BackendInsufficient {
+        backend: String,
+        oracle_kind: String,
+    },
+    /// Phase 30 §C — the dynamic policy module refused to execute a
+    /// finding whose static metadata mentions credentials, private
+    /// keys, or a production endpoint regex.  The second security
+    /// layer above the existing
+    /// [`crate::dynamic::policy::Scrubber`] forensic redaction: even a
+    /// successful confirmation is unsafe to obtain when the payload
+    /// would have to mention or transmit live secrets.  Carries the
+    /// rule name that fired (`credentials`, `private-key`,
+    /// `production-endpoint`) and an evidence excerpt for triage.
+    PolicyDeniedDynamic {
+        rule: String,
+        /// Logical name of the diag field that matched the deny rule
+        /// (e.g. `path`, `evidence.notes[2]`, `flow_steps[1].snippet`).
+        /// Empty string for verdicts loaded from older telemetry that
+        /// did not capture this field.
+        #[serde(default)]
+        field: String,
+        excerpt: String,
+    },
+}
+
+impl fmt::Display for InconclusiveReason {
+    /// Human-readable phrasing per variant.  Used by callers that splice
+    /// the typed reason into a user-facing string (e.g. the
+    /// `reverify_reason` field on a chain finding).  Consumers that need
+    /// structured access should read the enum variant directly via
+    /// `VerifyResult::inconclusive_reason`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OracleCollisionSuspected => {
+                f.write_str("oracle collision suspected (marker matched without sink reach)")
+            }
+            Self::NonReproducible => f.write_str("repro artifact could not be written"),
+            Self::BuildFailed => f.write_str("harness build failed after retries"),
+            Self::SandboxError => f.write_str("sandbox error"),
+            Self::SpecDerivationFailed { tried, hint } => {
+                f.write_str("spec derivation failed (tried: ")?;
+                for (i, s) in tried.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{s}")?;
+                }
+                write!(f, "; hint: {hint})")
+            }
+            Self::EntryKindUnsupported {
+                lang,
+                attempted,
+                supported,
+                hint,
+            } => {
+                write!(
+                    f,
+                    "entry kind {attempted:?} unsupported for {lang:?} (supported: "
+                )?;
+                for (i, k) in supported.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{k:?}")?;
+                }
+                write!(f, "; hint: {hint})")
+            }
+            Self::NoBenignControl => {
+                f.write_str("no benign control payload available for differential confirmation")
+            }
+            Self::ReversedDifferential => f.write_str(
+                "reversed differential (benign payload fired, vulnerable payload did not)",
+            ),
+            Self::UnrelatedCrash => f.write_str("harness crashed outside the instrumented sink"),
+            Self::BackendInsufficient {
+                backend,
+                oracle_kind,
+            } => write!(
+                f,
+                "{backend} backend cannot enforce isolation for {oracle_kind} oracle"
+            ),
+            Self::PolicyDeniedDynamic {
+                rule,
+                field,
+                excerpt,
+            } => {
+                if field.is_empty() {
+                    write!(
+                        f,
+                        "dynamic execution refused by policy rule {rule} (matched: {excerpt})"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "dynamic execution refused by policy rule {rule} (matched {field}: {excerpt})"
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// High-level outcome of a dynamic verification attempt.
+///
+/// Serializes as PascalCase (`"Confirmed"`, `"NotConfirmed"`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum VerifyStatus {
+    /// Sink fired with at least one payload. The static finding is exploitable
+    /// against the live target.
+    Confirmed,
+    /// The in-harness sink-reachability probe fired (sink reached) but the
+    /// oracle marker was never observed (no file write / no OOB callback /
+    /// output did not contain the proof token), so the exploit chain did not
+    /// complete. Semantically `{ sink_reached: true, exit_propagated: false }`.
+    /// Ranks above `NotConfirmed` (runtime corroboration that the sink is
+    /// reachable) but below `Confirmed` (no proven exploit). Used so engine
+    /// work can ratchet on real sink-reachability gaps without overstating.
+    PartiallyConfirmed,
+    /// All payloads ran cleanly. Either the path is infeasible at runtime
+    /// or the corpus is too narrow. Treat as "static-only", not "false positive".
+    NotConfirmed,
+    /// Could not build, run, or observe (toolchain missing, sandbox refused,
+    /// timeout on every attempt, etc.).
+    Inconclusive,
+    /// Dynamic verification was not attempted. See `reason` for the typed cause.
+    Unsupported,
+}
+
+/// Summary of a single payload attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptSummary {
+    pub payload_label: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub triggered: bool,
+    /// Whether the in-harness sink-reachability probe fired for this attempt.
+    #[serde(default)]
+    pub sink_hit: bool,
+}
+
+/// Outcome of the Phase 07 differential confirmation rule.
+///
+/// Reflects which side of the (vulnerable, benign-control) probe pair
+/// fired the oracle.  Stored on [`VerifyResult::differential`] so
+/// operators can see the actual rule input that produced the verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum DifferentialVerdict {
+    /// Vulnerable payload fired the oracle and the benign control did not.
+    Confirmed,
+    /// Stronger tier of [`DifferentialVerdict::Confirmed`]: in addition to
+    /// the in-process oracle firing, an out-of-band callback to the
+    /// per-finding nonce was observed by the
+    /// [`crate::dynamic::oob::OobListener`].  Emitted when the runner
+    /// exercised a payload with
+    /// [`crate::dynamic::corpus::CuratedPayload::oob_nonce_slot`] = `true`
+    /// and the listener saw the nonce.  Such payloads are structurally
+    /// self-confirming (a benign URL cannot hit a per-finding nonce), so
+    /// the verdict is treated as terminal positive evidence even when
+    /// `benign_control` is `None`.
+    ConfirmedProvenOob,
+    /// Softer tier of [`DifferentialVerdict::Confirmed`]: the
+    /// differential rule still produced positive evidence, but the
+    /// handler's framework binding carries a middleware whose name was
+    /// recognised by
+    /// [`crate::dynamic::framework::auth_markers::classify`] as an
+    /// `InputValidation` or `OutputSanitization` layer.  The handler
+    /// likely runs behind a known-protective filter, so the verdict is
+    /// retained as Confirmed-class for triggering / reporting but is
+    /// distinguished at the enum level so operators can prioritise
+    /// findings without a known guard.  Guard names are persisted on
+    /// [`DifferentialOutcome::known_guards`].
+    ConfirmedWithKnownGuard,
+    /// Both vulnerable and benign payloads fired the oracle — the oracle
+    /// cannot discriminate; downgrade to
+    /// [`InconclusiveReason::OracleCollisionSuspected`].
+    OracleCollisionSuspected,
+    /// Neither payload fired.
+    NotConfirmed,
+    /// Only the benign payload fired (vulnerable did not).  Surfaces a
+    /// misconfigured corpus or a swapped pair; downgrade to
+    /// [`InconclusiveReason::ReversedDifferential`].
+    ReversedDifferential,
+}
+
+/// Probe-arg snapshot stored on [`DifferentialOutcome`].
+///
+/// Mirrors `crate::dynamic::probe::ProbeArg` without depending on the
+/// `dynamic` feature.  The conversion is centralised in
+/// `crate::dynamic::differential::build_outcome`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value")]
+pub enum DifferentialProbeArg {
+    String(String),
+    Bytes(Vec<u8>),
+    Int(i64),
+}
+
+/// One probe observation captured during a differential payload run.
+///
+/// Mirrors `crate::dynamic::probe::SinkProbe` without depending on the
+/// `dynamic` feature.  Embedded inside
+/// [`DifferentialOutcome::vuln_probes`] /
+/// [`DifferentialOutcome::benign_probes`] for forensic review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferentialProbeRecord {
+    pub sink_callee: String,
+    pub args: Vec<DifferentialProbeArg>,
+    pub captured_at_ns: u64,
+    pub payload_id: String,
+}
+
+/// Per-primitive entry inside [`HardeningSummary::primitives`].
+///
+/// Mirrors the Linux process backend's `PrimitiveStatus`-per-primitive
+/// table without depending on the `dynamic` feature.  `status` is one of
+/// `"applied"`, `"failed"`, or `"skipped"`; `errno` is populated when
+/// `status == "failed"`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardeningPrimitive {
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errno: Option<i32>,
+}
+
+/// Portable, JSON-serialisable projection of the per-run hardening
+/// outcome the process backend stamps on `SandboxOutcome`.
+///
+/// Stored on [`VerifyResult::hardening_outcome`] so callers (eval-corpus
+/// tabulator, repro round-trips, end-to-end acceptance tests) can assert
+/// on the matched profile and per-primitive status without depending on
+/// the platform-cfg'd `HardeningRecord` enum.  `backend` is one of
+/// `"linux-process"` or `"macos-process"`; `level` is the coarse outcome
+/// (`"trusted"` / `"sandboxed"` / `"failed"` on macOS;
+/// `"baseline"` / `"full"` / `"partial"` / `"none"` on Linux); `profile`
+/// is the matched `.sb` name on macOS and empty on Linux; `primitives`
+/// is empty on macOS and one entry per primitive on Linux.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardeningSummary {
+    pub backend: String,
+    pub level: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub primitives: Vec<HardeningPrimitive>,
+}
+
+/// Full record of a Phase 07 differential confirmation run.
+///
+/// Captures the rule's verdict plus the raw probe traces from both the
+/// vulnerable payload run and the benign-control run.  Stored on
+/// [`VerifyResult::differential`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferentialOutcome {
+    pub verdict: DifferentialVerdict,
+    /// Label of the vulnerable payload (matches
+    /// [`AttemptSummary::payload_label`] for the same run).
+    pub vuln_label: String,
+    /// Label of the benign-control payload.
+    pub benign_label: String,
+    /// Probe records drained from the vulnerable run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vuln_probes: Vec<DifferentialProbeRecord>,
+    /// Probe records drained from the benign run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benign_probes: Vec<DifferentialProbeRecord>,
+    /// Middleware names recognised as protective input-validation /
+    /// output-sanitization layers when the verdict was demoted to
+    /// [`DifferentialVerdict::ConfirmedWithKnownGuard`].  Populated by
+    /// [`crate::dynamic::middleware_demotion::apply_demotion`].  Empty
+    /// when no demotion applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_guards: Vec<String>,
+}
+
+/// Result of a dynamic verification attempt for one finding.
+///
+/// Always present when `config.scanner.verify` is true and the `dynamic`
+/// feature is enabled. The `status` field is the high-level verdict;
+/// `reason` carries the typed `UnsupportedReason` when status is
+/// `Unsupported`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyResult {
+    /// Stable ID of the finding this result is for.
+    pub finding_id: String,
+    /// High-level outcome.
+    pub status: VerifyStatus,
+    /// Label of the payload that triggered, when `status == Confirmed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggered_payload: Option<String>,
+    /// Typed reason for `Unsupported` status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<UnsupportedReason>,
+    /// Typed reason for `Inconclusive` status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inconclusive_reason: Option<InconclusiveReason>,
+    /// Free-form error detail (used for `Inconclusive` status).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Per-attempt log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<AttemptSummary>,
+    /// How well the resolved toolchain matches the project's pinned toolchain.
+    /// `"exact"` = precise match; `"drift"` = closest approximation used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain_match: Option<String>,
+    /// Phase 07 differential-confirmation trace.  Present whenever the
+    /// verifier ran both a vulnerable payload and its paired benign
+    /// control (status `Confirmed` and the `OracleCollisionSuspected` /
+    /// `ReversedDifferential` Inconclusive paths).  `None` for verdicts
+    /// that never reached the differential step (e.g. `NoPayloadsForCap`,
+    /// `BuildFailed`, `NoBenignControl`, `NotConfirmed` with vuln-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub differential: Option<DifferentialOutcome>,
+    /// Eval-corpus repro stability flag.  `Some(true)` when `reproduce.sh`
+    /// inside the verifier's bundle replayed green (`ReplayResult::Pass`),
+    /// `Some(false)` when it diverged or aborted, `None` when no replay
+    /// has been attempted (host infrastructure missing, backend not
+    /// supported, etc.).  Drives the `stable_replays` column in
+    /// `tests/eval_corpus/tabulate.py` — the eval-corpus
+    /// `repro_stability` budget cannot fire until this field carries a
+    /// `Some(true)` for at least one Confirmed row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_stable: Option<bool>,
+    /// Eval-corpus manual-triage flag.  `Some(true)` when the user
+    /// recorded a `wrong:<reason>` verdict via `nyx verify-feedback` or
+    /// when an automated ground-truth pass marked this finding as a
+    /// false confirmed.  `Some(false)` when explicitly marked right;
+    /// `None` when no triage has happened.  Drives the
+    /// `wrong_confirmed` column in `tests/eval_corpus/tabulate.py`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrong: Option<bool>,
+    /// Phase 17/18 per-run hardening outcome, projected from the
+    /// triggering attempt's [`crate::dynamic::sandbox::SandboxOutcome`].
+    /// Populated only when a payload actually ran under the process
+    /// backend on Linux or macOS and the run captured a primitive
+    /// outcome; `None` for docker-backend runs, host platforms with no
+    /// hardening primitives, or verdicts that never executed a payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardening_outcome: Option<HardeningSummary>,
+}
+
 //  Evidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Structured evidence for a diagnostic finding.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -241,6 +1036,12 @@ pub struct Evidence {
     /// summary path that did not preserve destination metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_exfil_field: Option<String>,
+
+    /// Result of dynamic verification for this finding, when
+    /// `config.scanner.verify` is true and the `dynamic` feature is enabled.
+    /// Always `None` in static-only scans and in non-dynamic builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_verdict: Option<VerifyResult>,
 }
 
 fn is_zero_cap_bits(v: &u32) -> bool {
@@ -266,6 +1067,7 @@ impl Evidence {
             && self.symbolic.is_none()
             && self.sink_caps == 0
             && self.engine_notes.is_empty()
+            && self.dynamic_verdict.is_none()
     }
 }
 
@@ -295,9 +1097,7 @@ pub struct StateEvidence {
     pub to_state: String,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  compute_confidence
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Derive a confidence level for `diag` based on its rule ID, severity,
 /// evidence, and analysis kind.
@@ -609,9 +1409,7 @@ fn cap_specificity_score(notes: &[String]) -> i32 {
     0
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Explanation & Confidence Limiters
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Generate a human-readable explanation of a taint finding from its evidence.
 pub fn generate_explanation(diag: &Diag) -> Option<String> {
@@ -779,9 +1577,7 @@ pub fn compute_confidence_limiters(diag: &Diag) -> Vec<String> {
     limiters
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -809,6 +1605,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -1410,5 +2207,171 @@ mod tests {
         // Verify snake_case serialization
         let json = serde_json::to_string(&crate::labels::SourceKind::UserInput).unwrap();
         assert_eq!(json, "\"user_input\"");
+    }
+
+    // ── Phase 18 (Track M.0) — EntryKind data-bearing variants ──────────────
+
+    /// Legacy unit variants round-trip as bare PascalCase strings — the
+    /// pre-Phase-18 wire format an older binary expects.
+    #[test]
+    fn entry_kind_legacy_unit_variants_round_trip() {
+        for (kind, json) in [
+            (EntryKind::Function, "\"Function\""),
+            (EntryKind::HttpRoute, "\"HttpRoute\""),
+            (EntryKind::CliSubcommand, "\"CliSubcommand\""),
+            (EntryKind::LibraryApi, "\"LibraryApi\""),
+        ] {
+            let serialised = serde_json::to_string(&kind).unwrap();
+            assert_eq!(serialised, json, "serialise {kind:?}");
+            let parsed: EntryKind = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, kind, "deserialise {json}");
+        }
+    }
+
+    /// New Phase 18 variants serialise as externally-tagged objects and
+    /// round-trip with their data payloads intact.
+    #[test]
+    fn entry_kind_phase_18_variants_round_trip() {
+        let cases: Vec<EntryKind> = vec![
+            EntryKind::ClassMethod {
+                class: "UserController".into(),
+                method: "show".into(),
+            },
+            EntryKind::MessageHandler {
+                queue: "orders.new".into(),
+                message_schema: Some(serde_json::json!({"type":"object"})),
+            },
+            EntryKind::MessageHandler {
+                queue: "orders.new".into(),
+                message_schema: None,
+            },
+            EntryKind::ScheduledJob {
+                schedule: Some("0 */6 * * *".into()),
+            },
+            EntryKind::ScheduledJob { schedule: None },
+            EntryKind::GraphQLResolver {
+                type_name: "Query".into(),
+                field: "user".into(),
+            },
+            EntryKind::WebSocket {
+                path: "/ws/feed".into(),
+            },
+            EntryKind::Middleware {
+                name: "auth_filter".into(),
+            },
+            EntryKind::Migration {
+                version: Some("0042_user_table".into()),
+            },
+            EntryKind::Migration { version: None },
+            EntryKind::Unknown,
+        ];
+        for kind in cases {
+            let json = serde_json::to_string(&kind).unwrap();
+            let parsed: EntryKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, kind, "round-trip {json}");
+        }
+    }
+
+    /// Back-compat: a bundle that mentions a future variant the current
+    /// binary does not recognise deserialises to [`EntryKind::Unknown`]
+    /// instead of failing the parse.  Mirrors the
+    /// `#[serde(other)]` shape promised in the Phase 18 brief.
+    #[test]
+    fn entry_kind_unknown_future_variant_falls_back_to_unknown() {
+        // Externally-tagged object form.
+        let unknown_obj = r#"{"FutureKind":{"foo":42}}"#;
+        let parsed: EntryKind = serde_json::from_str(unknown_obj).unwrap();
+        assert_eq!(parsed, EntryKind::Unknown);
+
+        // Bare-string form (e.g. older binary writes a future name as a
+        // unit tag rather than a struct).
+        let unknown_str = "\"FutureKind\"";
+        let parsed: EntryKind = serde_json::from_str(unknown_str).unwrap();
+        assert_eq!(parsed, EntryKind::Unknown);
+    }
+
+    /// Tag discriminant projection — used by every supported-set lookup
+    /// path so the slice can stay `'static` after Phase 18.
+    #[test]
+    fn entry_kind_tag_matches_variant_for_each_phase_18_variant() {
+        assert_eq!(EntryKind::Function.tag(), EntryKindTag::Function);
+        assert_eq!(EntryKind::HttpRoute.tag(), EntryKindTag::HttpRoute);
+        assert_eq!(EntryKind::CliSubcommand.tag(), EntryKindTag::CliSubcommand);
+        assert_eq!(EntryKind::LibraryApi.tag(), EntryKindTag::LibraryApi);
+        assert_eq!(
+            EntryKind::ClassMethod {
+                class: String::new(),
+                method: String::new()
+            }
+            .tag(),
+            EntryKindTag::ClassMethod
+        );
+        assert_eq!(
+            EntryKind::MessageHandler {
+                queue: String::new(),
+                message_schema: None
+            }
+            .tag(),
+            EntryKindTag::MessageHandler
+        );
+        assert_eq!(
+            EntryKind::ScheduledJob { schedule: None }.tag(),
+            EntryKindTag::ScheduledJob
+        );
+        assert_eq!(
+            EntryKind::GraphQLResolver {
+                type_name: String::new(),
+                field: String::new()
+            }
+            .tag(),
+            EntryKindTag::GraphQLResolver
+        );
+        assert_eq!(
+            EntryKind::WebSocket {
+                path: String::new()
+            }
+            .tag(),
+            EntryKindTag::WebSocket
+        );
+        assert_eq!(
+            EntryKind::Middleware {
+                name: String::new()
+            }
+            .tag(),
+            EntryKindTag::Middleware
+        );
+        assert_eq!(
+            EntryKind::Migration { version: None }.tag(),
+            EntryKindTag::Migration
+        );
+        assert_eq!(EntryKind::Unknown.tag(), EntryKindTag::Unknown);
+    }
+
+    /// [`EntryKindTag`] round-trips through the externally-tagged wire
+    /// format used by [`InconclusiveReason::EntryKindUnsupported`] and
+    /// honours `#[serde(other)]` for unknown tags.
+    #[test]
+    fn entry_kind_tag_serde_round_trip_and_unknown_fallback() {
+        for tag in [
+            EntryKindTag::Function,
+            EntryKindTag::HttpRoute,
+            EntryKindTag::CliSubcommand,
+            EntryKindTag::LibraryApi,
+            EntryKindTag::ClassMethod,
+            EntryKindTag::MessageHandler,
+            EntryKindTag::ScheduledJob,
+            EntryKindTag::GraphQLResolver,
+            EntryKindTag::WebSocket,
+            EntryKindTag::Middleware,
+            EntryKindTag::Migration,
+            EntryKindTag::Unknown,
+        ] {
+            let json = serde_json::to_string(&tag).unwrap();
+            let rt: EntryKindTag = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt, tag);
+        }
+        // Future tag → Unknown via `#[serde(other)]`.
+        let parsed: EntryKindTag = serde_json::from_str("\"FutureKind\"").unwrap();
+        assert_eq!(parsed, EntryKindTag::Unknown);
     }
 }

@@ -56,6 +56,7 @@
 //! - [`sql_semantics`]: ACL-join and `user_id`-predicate detection without a
 //!   SQL parser
 
+pub mod auth_markers;
 pub mod checks;
 pub mod config;
 pub mod extract;
@@ -1014,7 +1015,18 @@ fn auth_finding_to_diag(finding: &checks::AuthFinding, tree: &Tree, file_path: &
         guard_kind: None,
         message: Some(finding.message.clone()),
         labels: vec![],
-        confidence: Some(Confidence::Medium),
+        // Auth-analysis findings are *structural* (parameter-name + control-flow
+        // shape heuristics) and carry no taint witness — `source = None`,
+        // `sink_caps = 0`, no flow steps — so the per-payload dynamic oracle
+        // cannot confirm or refute them (missing-authz needs a 2-user
+        // differential the corpus does not run). Emitting them at Medium put a
+        // large zero-witness, dynamically-Unsupported tranche on the default /
+        // verified surface (the bulk of the nodegoat/railsgoat/juiceshop `auth`
+        // FP flood). Demote to Low so they sit below the default min-confidence
+        // and verify gates while remaining available for access-control audits.
+        // assert_has tests pin rule-id presence, not confidence, so they stay
+        // green.
+        confidence: Some(Confidence::Low),
         evidence: Some(Evidence {
             source: None,
             sink: Some(SpanEvidence {
@@ -1037,6 +1049,7 @@ fn auth_finding_to_diag(finding: &checks::AuthFinding, tree: &Tree, file_path: &
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: Vec::new(),
+        stable_hash: 0,
     }
 }
 

@@ -1,0 +1,231 @@
+# Phase 17 (Track E.1) — seccomp-bpf default-deny allowlist.
+#
+# Format
+# ------
+# Each `[base]` syscall is allowed unconditionally (every harness needs
+# them for stdio + interpreter / runtime startup).  Each `[cap.<NAME>]`
+# table adds syscalls allowed only when that `Cap` bit is set in
+# `SandboxOptions::seccomp_caps`.  Unknown / unset caps fall back to the
+# base list, so a finding with no cap-aware needs runs with the strictest
+# possible filter.
+#
+# `<NAME>` must match a `Cap::*` const declared in `src/labels/mod.rs`.
+# The list of known names is mirrored in `build.rs::CAP_BIT_FOR_NAME`;
+# add the bit value alongside the const when extending [`Cap`].
+#
+# Build-time codegen
+# ------------------
+# `build.rs` reads this file and emits `OUT_DIR/seccomp_policy.rs`
+# containing two `&'static [&'static str]` tables (`BASE` + `CAP`).
+# Runtime then maps the syscall names to x86_64 / aarch64 numbers via
+# `syscalls.rs` and compiles a BPF program per cap-bits.
+
+[base]
+allow = [
+    "read",
+    "write",
+    "writev",
+    "readv",
+    "close",
+    "fstat",
+    "lseek",
+    "lstat",
+    "stat",
+    "newfstatat",
+    "statx",
+    "mmap",
+    "mremap",
+    "munmap",
+    "brk",
+    "rt_sigaction",
+    "rt_sigreturn",
+    "rt_sigprocmask",
+    "sigaltstack",
+    "exit",
+    "exit_group",
+    "futex",
+    "set_robust_list",
+    "get_robust_list",
+    "getrandom",
+    "getpid",
+    "gettid",
+    "getuid",
+    "geteuid",
+    "getgid",
+    "getegid",
+    "clock_gettime",
+    "clock_getres",
+    "clock_nanosleep",
+    "nanosleep",
+    "ioctl",
+    "fcntl",
+    "dup",
+    "dup2",
+    "dup3",
+    "pipe",
+    "pipe2",
+    "uname",
+    "arch_prctl",
+    "prlimit64",
+    "getrlimit",
+    "set_tid_address",
+    "rseq",
+    "madvise",
+    "mprotect",
+    "epoll_create1",
+    "epoll_ctl",
+    "epoll_wait",
+    "epoll_pwait",
+    "poll",
+    "ppoll",
+    "select",
+    "pselect6",
+    "wait4",
+    "waitid",
+    "tgkill",
+    "kill",
+    "openat",
+    "open",
+    "execve",
+    "execveat",
+    "access",
+    "faccessat",
+    "faccessat2",
+    "readlink",
+    "readlinkat",
+    "getcwd",
+    "getdents",
+    "getdents64",
+    "sched_getaffinity",
+    "sched_setaffinity",
+    "sched_yield",
+    "prctl",
+    "membarrier",
+    # Interpreter cold-start additions.  These are universal enough that
+    # cap-gating them buys nothing while breaking real harnesses:
+    # - `socketpair(AF_UNIX, ...)` — Node v18+ binds an internal worker
+    #   thread via an anonymous Unix-domain pair; not a network reach.
+    # - `umask` — Python's `tempfile` calls it during stdlib init; only
+    #   mutates the calling process's file-creation mask.
+    # - `setrlimit` — older glibc `__libc_setrlimit` shims fall through to
+    #   the legacy syscall instead of `prlimit64`; the caller can only
+    #   lower its own limits (raise is gated by the hard limit set by the
+    #   parent before exec).
+    "socketpair",
+    "umask",
+    "setrlimit",
+]
+
+[cap.SQL_QUERY]
+# SQLite / driver paths use lock + truncate + sync ops on top of the base
+# openat / read / write set.
+allow = [
+    "fdatasync",
+    "fsync",
+    "fallocate",
+    "ftruncate",
+    "flock",
+    "pread64",
+    "pwrite64",
+]
+
+[cap.FILE_IO]
+# File reads + directory walks need the dirfd / xattr / link family on
+# top of the base set.
+allow = [
+    "pread64",
+    "pwrite64",
+    "readlinkat",
+    "linkat",
+    "symlinkat",
+    "unlinkat",
+    "mkdirat",
+    "renameat",
+    "renameat2",
+    "utimensat",
+    "fchmod",
+    "fchown",
+    "fchmodat",
+    "fchownat",
+    "getxattr",
+    "fgetxattr",
+    "lgetxattr",
+    "listxattr",
+    "flistxattr",
+    "llistxattr",
+    "copy_file_range",
+    "sendfile",
+]
+
+[cap.SSRF]
+# Outbound HTTP needs the socket / connect / TLS handshake set.
+allow = [
+    "socket",
+    "connect",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "shutdown",
+    "getsockname",
+    "getpeername",
+    "getsockopt",
+    "setsockopt",
+    "bind",
+    "listen",
+    "accept",
+    "accept4",
+]
+
+[cap.CODE_EXEC]
+# `subprocess.run(...)` / `os.system(...)` payloads need fork + exec.
+allow = [
+    "clone",
+    "clone3",
+    "fork",
+    "vfork",
+    "execve",
+    "execveat",
+    "wait4",
+    "waitid",
+]
+
+[cap.HTML_ESCAPE]
+# Pure-CPU sanitizer paths need only the base set; this entry exists so
+# the build-time codegen sees the cap and emits an explicit table even
+# when the allowlist is empty.
+allow = []
+
+[cap.DESERIALIZE]
+# pickle / Marshal / unserialize paths typically only need the base I/O
+# set; codegen-only entry.
+allow = []
+
+[cap.HEADER_INJECTION]
+# CRLF-sensitive header sinks share the SSRF socket family.
+allow = [
+    "socket",
+    "connect",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "getsockname",
+    "getpeername",
+    "getsockopt",
+    "setsockopt",
+]
+
+[cap.OPEN_REDIRECT]
+allow = [
+    "socket",
+    "connect",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "getsockname",
+    "getpeername",
+    "getsockopt",
+    "setsockopt",
+]

@@ -1,0 +1,167 @@
+name: Corpus Promote
+
+# Weekly automated promotion-PR template.
+#
+# Scans fuzz-discovered/ for candidates not yet in src/dynamic/corpus.rs
+# and opens a PR proposing them for human review (§16.4 — no auto-merge).
+#
+# Also runs the marker-collision audit as a hard gate: if any collision is
+# found the workflow fails rather than proposing the promotion.
+
+on:
+  schedule:
+    # Sundays at 09:00 UTC — offset from the fuzz run (06:00 UTC) so
+    # discovered candidates are ready before the promotion job runs.
+    - cron: "0 9 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (print PR body but do not open)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: corpus-promote
+  cancel-in-progress: true
+
+jobs:
+  promote:
+    name: Propose corpus promotions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ── Marker collision audit ──────────────────────────────────────────────
+      - name: Marker collision audit
+        run: |
+          set -euo pipefail
+          cargo build --features dynamic -p nyx-scanner 2>/dev/null || true
+          cd fuzz/dynamic_corpus
+          cargo run -- audit-markers
+        env:
+          RUST_LOG: error
+
+      # ── Discover candidates ─────────────────────────────────────────────────
+      - name: Find promotion candidates
+        id: candidates
+        run: |
+          set -euo pipefail
+          count=0
+          files=""
+          if [ -d fuzz-discovered ]; then
+            while IFS= read -r f; do
+              # Skip .gitkeep, sidecar JSONs, and files already listed in corpus.rs.
+              [[ "$f" == *".gitkeep" ]] && continue
+              [[ "$f" == *".json" ]] && continue
+              bytes=$(xxd -p "$f" | tr -d '\n')
+              if ! grep -q "$bytes" src/dynamic/corpus.rs 2>/dev/null; then
+                count=$((count + 1))
+                files="$files $f"
+              fi
+            done < <(find fuzz-discovered -type f | sort)
+          fi
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if no new candidates
+        if: steps.candidates.outputs.count == '0'
+        run: |
+          echo "No new candidates found in fuzz-discovered/. Nothing to promote."
+
+      # ── Open promotion PR ───────────────────────────────────────────────────
+      - name: Open promotion PR
+        if: >
+          steps.candidates.outputs.count != '0' &&
+          github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_COUNT: ${{ steps.candidates.outputs.count }}
+          CANDIDATE_FILES: ${{ steps.candidates.outputs.files }}
+        run: |
+          set -euo pipefail
+          branch="corpus-promote-$(date +%Y%m%d)"
+          git checkout -b "$branch"
+
+          # Stage candidate files into fuzz-discovered (already there).
+          # The PR body provides the reviewer with everything they need.
+
+          # Build PR body into a temp file to avoid shell re-interpolation of
+          # sidecar JSON content (which may contain backticks or $(...) sequences).
+          body_file=$(mktemp)
+
+          cat > "$body_file" <<'PREAMBLE'
+          ## Corpus Promotion Proposal
+
+          This PR was generated automatically by the weekly corpus-promote workflow.
+          It does **not** auto-merge — a human reviewer must approve each candidate
+          before it can land in `src/dynamic/corpus.rs` (§16.4).
+
+          ### Candidates
+
+          The following payloads were discovered by the internal mutation fuzzer and
+          confirmed via `sink_hit && oracle_fired` against instrumented fixtures:
+
+          PREAMBLE
+
+          for f in $CANDIDATE_FILES; do
+            sidecar="${f}.json"
+            printf -- '- `%s`\n' "$f" >> "$body_file"
+            if [ -f "$sidecar" ]; then
+              printf '  ```json\n' >> "$body_file"
+              cat "$sidecar" >> "$body_file"
+              printf '\n  ```\n' >> "$body_file"
+            fi
+          done
+
+          cat >> "$body_file" <<'CHECKLIST'
+
+          ### Review checklist
+
+          - [ ] Bytes are a genuine attack vector, not a fixture artifact
+          - [ ] Oracle marker is unique (no collision with other caps)
+          - [ ] `fixture_paths` updated in `src/dynamic/corpus.rs`
+          - [ ] `since_corpus_version` set to next version
+          - [ ] `CORPUS_VERSION` bumped and bump history updated
+
+          _Generated by corpus_promote.yml — do not auto-merge._
+          CHECKLIST
+
+          git add fuzz-discovered/ || true
+          git diff --cached --quiet || git commit -m "chore: add ${CANDIDATE_COUNT} fuzzer-discovered corpus candidates"
+
+          git push origin "$branch"
+
+          gh pr create \
+            --title "chore(corpus): promote ${CANDIDATE_COUNT} fuzzer-discovered payload(s)" \
+            --body "$(cat "$body_file")" \
+            --base master \
+            --label "corpus-promotion" || true
+
+          rm -f "$body_file"
+
+      - name: Dry run summary
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "Dry run: would promote ${{ steps.candidates.outputs.count }} candidate(s)."
+          echo "Files: ${{ steps.candidates.outputs.files }}"

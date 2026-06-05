@@ -1,3 +1,9 @@
+//! Literal and constant-expression extraction from tree-sitter AST nodes.
+//!
+//! Parses integer and string literals, folds constant binary ops, and derives
+//! template/string prefixes and quote stripping for CFG construction and
+//! const propagation.
+
 use super::conditions::unwrap_parens;
 use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
 use super::{
@@ -1198,10 +1204,22 @@ pub(super) fn is_syntactic_literal(node: Node, code: &[u8]) -> bool {
         | "string_content"
         | "string_fragment" => !has_string_interpolation(node),
 
-        // Numbers
-        "integer" | "integer_literal" | "int_literal" | "float" | "float_literal" | "number" => {
-            true
-        }
+        // Numbers.  Java's grammar uses radix-tagged kinds
+        // (`decimal_integer_literal`, `hex_integer_literal`, …) rather than a
+        // bare `integer`, so `int num = 86;` would otherwise miss this arm and
+        // lower to `Const(None)` (Varying) instead of `Const("86")`.
+        "integer"
+        | "integer_literal"
+        | "int_literal"
+        | "float"
+        | "float_literal"
+        | "number"
+        | "decimal_integer_literal"
+        | "hex_integer_literal"
+        | "octal_integer_literal"
+        | "binary_integer_literal"
+        | "decimal_floating_point_literal"
+        | "hex_floating_point_literal" => true,
 
         // Booleans / null / nil / none
         "true" | "false" | "null" | "nil" | "none" | "null_literal" | "boolean"
@@ -2542,6 +2560,37 @@ pub(super) fn def_use(
                         right = child.child_by_field_name("right");
                         break;
                     }
+                }
+            }
+            // Java `enhanced_for_statement` binds the loop variable on the
+            // `name` field and the iterable on the `value` field; Ruby's
+            // `for x in coll` uses `pattern`/`value`.  Neither uses the
+            // JS/Python `left`/`right` convention, so without this mapping
+            // the loop binding was never recorded as a define and taint on
+            // the iterable could not reach the loop variable (OWASP's
+            // dominant `for (Cookie c : req.getCookies())` shape).
+            if left.is_none() && right.is_none() {
+                if let Some(v) = ast.child_by_field_name("value") {
+                    left = ast
+                        .child_by_field_name("name")
+                        .or_else(|| ast.child_by_field_name("pattern"));
+                    right = Some(v);
+                }
+            }
+            // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`:
+            // the iterable and binding are unnamed children separated by the
+            // `as` keyword (only `body` is a named field).  Map the binding
+            // onto `left` and the iterable onto `right` so the shared
+            // define/use logic below records the loop variable.
+            if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
+                let mut cursor = ast.walk();
+                let kids: Vec<Node> = ast.children(&mut cursor).collect();
+                if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
+                    right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
+                    left = kids[as_pos + 1..]
+                        .iter()
+                        .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
+                        .copied();
                 }
             }
             if left.is_none() && right.is_none() {

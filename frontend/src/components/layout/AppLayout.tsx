@@ -17,6 +17,7 @@ import { RulesPage } from '../../pages/RulesPage';
 import { TriagePage } from '../../pages/TriagePage';
 import { ConfigPage } from '../../pages/ConfigPage';
 import { ExplorerPage } from '../../pages/ExplorerPage';
+import { SurfacePage } from '../../pages/SurfacePage';
 import { DebugLayout } from '../../pages/debug/DebugLayout';
 import { CallGraphPage } from '../../pages/debug/CallGraphPage';
 import { SummaryExplorerPage } from '../../pages/debug/SummaryExplorerPage';
@@ -49,6 +50,12 @@ export function AppLayout() {
         group: 'Navigate',
         label: 'Explorer',
         to: '/explorer',
+      },
+      {
+        id: 'go-surface',
+        group: 'Navigate',
+        label: 'Attack surface',
+        to: '/surface',
       },
       {
         id: 'go-debug-cg',
@@ -141,6 +148,7 @@ export function AppLayout() {
             <Route path="/triage" element={<TriagePage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="/explorer" element={<ExplorerPage />} />
+            <Route path="/surface" element={<SurfacePage />} />
             <Route path="/debug" element={<DebugLayout />}>
               <Route
                 index

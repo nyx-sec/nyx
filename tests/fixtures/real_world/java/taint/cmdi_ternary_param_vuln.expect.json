@@ -1,0 +1,32 @@
+{
+  "description": "Constant-condition ternary with VULNERABLE polarity. `(500/42) + num > 200` is `11 + 196 = 207 > 200` (integer division) — always true — and the TRUE arm assigns the tainted `param`, so the reachable arm carries taint and only the `: \"...\"` const arm is dead. The Java ternary diamond split + fold must prune the DEAD const arm while keeping the live `bar = param`, so the command-injection finding at `r.exec(cmd + bar)` MUST still fire. Zero-false-negative guard: proves the diamond/fold never prunes the reachable tainted arm.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "servlet",
+    "runtime",
+    "ternary",
+    "const-fold",
+    "no-false-negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "must_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "evidence_contains": [],
+      "notes": "request.getHeader (line 12) flows into bar on the always-taken true arm (line 15), then into r.exec at line 19. Exactly one finding survives.",
+      "max_count": 1
+    }
+  ]
+}

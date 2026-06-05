@@ -1,0 +1,26 @@
+// Phase 10 (Track D.3) stub-end-to-end fixture: Java + SQL.
+//
+// The verifier publishes:
+//
+//   * NYX_SQL_ENDPOINT — absolute path of a SQLite DB the SqlStub owns.
+//   * NYX_SQL_LOG      — companion log path the harness appends executed
+//     queries to so the host SqlStub picks them up on drain_events()
+//     even when the harness never opens an on-the-wire JDBC connection
+//     (classpath lacks sqlite-jdbc, SQL string is pre-flighted before
+//     DriverManager.getConnection, sandbox blocks file-DB access).
+//
+// This file is a body-only fragment: the companion test in
+// tests/stubs_e2e_per_lang.rs wraps it with a `public class Main { … }`
+// shell that splices the Java probe shim as class members ahead of
+// `public static void main`, so the shim's __nyx_stub_sql_record helper
+// is in scope.  The fixture stays JDK-stdlib only — no java.sql import,
+// no sqlite-jdbc jar on the classpath — by recording the attempted
+// tautology with `driver = "manual"`.  This mirrors the Phase 26
+// "no live driver available" path that real Java sink callsites take
+// when the build matrix lacks a JDBC driver.
+String query = "SELECT 1 WHERE 'a' = 'a' OR 1=1 --";
+java.util.Map<String,String> detail = new java.util.LinkedHashMap<>();
+detail.put("driver", "manual");
+__nyx_stub_sql_record(query, detail);
+String ep = System.getenv("NYX_SQL_ENDPOINT");
+System.out.println(ep == null ? "no-endpoint" : ep);

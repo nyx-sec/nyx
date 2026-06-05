@@ -12,11 +12,7 @@
 //! `export_summaries` converts in-graph [`LocalFuncSummary`] values to
 //! the serializable [`crate::summary::FuncSummary`] form.
 
-#![allow(
-    clippy::collapsible_if,
-    clippy::let_and_return,
-    clippy::unnecessary_map_or
-)]
+#![allow(clippy::let_and_return, clippy::unnecessary_map_or)]
 
 use petgraph::algo::dominators::{Dominators, simple_fast};
 use petgraph::prelude::*;
@@ -431,6 +427,131 @@ pub enum BinOp {
     GtEq,
 }
 
+impl BinOp {
+    /// True for the six comparison operators (result is a boolean 0/1).
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+        )
+    }
+}
+
+/// A branch condition captured as a pure integer-arithmetic + comparison
+/// expression tree at CFG-build time (where the real tree-sitter AST is
+/// available, so operator precedence and parentheses are correct by
+/// construction — no text re-parsing downstream).
+///
+/// Built only when *every* leaf is an integer literal or a plain identifier
+/// and *every* interior node is an arithmetic / comparison / bitwise operator,
+/// a unary `-`, or a parenthesis.  Any call, field access, string, container,
+/// or compound-boolean (`&&` / `||`) subtree makes the builder return `None`
+/// for the whole condition.  Identifiers are stored by name and resolved to
+/// their constant SSA value at fold time
+/// ([`crate::ssa::const_prop::fold_constant_branches`]); the actual numeric
+/// evaluation is shared in [`CondArith::eval`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CondArith {
+    /// Integer literal.
+    Lit(i64),
+    /// Identifier — resolved to a constant integer at fold time, else unknown.
+    Var(String),
+    /// Unary integer negation: `-x`.
+    Neg(Box<CondArith>),
+    /// Binary arithmetic / bitwise / comparison.
+    Bin(BinOp, Box<CondArith>, Box<CondArith>),
+}
+
+/// Result of folding a [`CondArith`] against a constant environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondVal {
+    Int(i64),
+    Bool(bool),
+}
+
+impl CondArith {
+    /// Evaluate against a variable→constant-integer resolver.  Returns `None`
+    /// the moment anything is non-constant or an operation is undefined
+    /// (division/modulo by zero, arithmetic overflow, type mismatch), so a
+    /// caller can only ever prune on a *definite* result.  All integer
+    /// arithmetic is checked; overflow yields `None` rather than a wrapped
+    /// value, which keeps the fold sound across the i32/i64 gap.
+    pub fn eval(&self, resolve: &impl Fn(&str) -> Option<i64>) -> Option<CondVal> {
+        match self {
+            CondArith::Lit(n) => Some(CondVal::Int(*n)),
+            CondArith::Var(name) => resolve(name).map(CondVal::Int),
+            CondArith::Neg(inner) => match inner.eval(resolve)? {
+                CondVal::Int(n) => n.checked_neg().map(CondVal::Int),
+                CondVal::Bool(_) => None,
+            },
+            CondArith::Bin(op, l, r) => {
+                let lhs = match l.eval(resolve)? {
+                    CondVal::Int(n) => n,
+                    CondVal::Bool(_) => return None,
+                };
+                let rhs = match r.eval(resolve)? {
+                    CondVal::Int(n) => n,
+                    CondVal::Bool(_) => return None,
+                };
+                let arith = |v: Option<i64>| v.map(CondVal::Int);
+                match op {
+                    BinOp::Add => arith(lhs.checked_add(rhs)),
+                    BinOp::Sub => arith(lhs.checked_sub(rhs)),
+                    BinOp::Mul => arith(lhs.checked_mul(rhs)),
+                    // Java/Rust integer division and modulo both truncate
+                    // toward zero; `checked_*` rejects div-by-zero and
+                    // i64::MIN / -1 overflow.
+                    BinOp::Div => arith(lhs.checked_div(rhs)),
+                    BinOp::Mod => arith(lhs.checked_rem(rhs)),
+                    BinOp::BitAnd => arith(Some(lhs & rhs)),
+                    BinOp::BitOr => arith(Some(lhs | rhs)),
+                    BinOp::BitXor => arith(Some(lhs ^ rhs)),
+                    BinOp::LeftShift => u32::try_from(rhs)
+                        .ok()
+                        .and_then(|s| lhs.checked_shl(s))
+                        .map(CondVal::Int),
+                    BinOp::RightShift => u32::try_from(rhs)
+                        .ok()
+                        .and_then(|s| lhs.checked_shr(s))
+                        .map(CondVal::Int),
+                    BinOp::Eq => Some(CondVal::Bool(lhs == rhs)),
+                    BinOp::NotEq => Some(CondVal::Bool(lhs != rhs)),
+                    BinOp::Lt => Some(CondVal::Bool(lhs < rhs)),
+                    BinOp::LtEq => Some(CondVal::Bool(lhs <= rhs)),
+                    BinOp::Gt => Some(CondVal::Bool(lhs > rhs)),
+                    BinOp::GtEq => Some(CondVal::Bool(lhs >= rhs)),
+                }
+            }
+        }
+    }
+
+    /// Evaluate to a definite boolean, or `None`.  The top-level node must be a
+    /// comparison (a bare integer is not a branch condition we fold).
+    pub fn eval_bool(&self, resolve: &impl Fn(&str) -> Option<i64>) -> Option<bool> {
+        match self.eval(resolve)? {
+            CondVal::Bool(b) => Some(b),
+            CondVal::Int(_) => None,
+        }
+    }
+
+    /// Collect every identifier name referenced by the tree.
+    pub fn collect_vars(&self, out: &mut Vec<String>) {
+        match self {
+            CondArith::Lit(_) => {}
+            CondArith::Var(name) => {
+                if !out.iter().any(|v| v == name) {
+                    out.push(name.clone());
+                }
+            }
+            CondArith::Neg(inner) => inner.collect_vars(out),
+            CondArith::Bin(_, l, r) => {
+                l.collect_vars(out);
+                r.collect_vars(out);
+            }
+        }
+    }
+}
+
 /// Call-related metadata for CFG nodes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallMeta {
@@ -662,6 +783,17 @@ pub struct NodeInfo {
     pub condition_vars: Vec<String>,
     /// For If nodes: whether the condition has a leading negation (`!` / `not`).
     pub condition_negated: bool,
+    /// For If / conditional (ternary) nodes: the condition as a pure
+    /// integer-arithmetic + comparison expression tree, when the whole
+    /// condition is built only from integer literals, identifiers, arithmetic
+    /// / comparison operators, and parentheses.  `None` for any condition that
+    /// touches a call, field access, string, compound boolean (`&&`/`||`), or
+    /// any shape this evaluator cannot prove constant.  Consumed by
+    /// [`crate::ssa::const_prop::fold_constant_branches`] to prune branches
+    /// whose condition folds to a definite boolean once its variables are
+    /// resolved to constants — closing the synthetic "dead branch keeps the
+    /// tainted phi operand alive" false positive without any text re-parsing.
+    pub cond_arith: Option<CondArith>,
     /// True when this is a Call node whose argument list contains only
     /// syntactic literal values (strings, numbers, booleans, null/nil,
     /// arrays/lists/tuples of literals). Also true for zero-argument calls
@@ -791,10 +923,7 @@ impl NodeInfo {
 /// lose information.
 #[derive(Debug, Clone)]
 pub struct LocalFuncSummary {
-    #[allow(dead_code)] // used for future intra-file graph traversal
     pub entry: NodeIndex,
-    #[allow(dead_code)] // used for future intra-file graph traversal
-    pub exit: NodeIndex,
     pub source_caps: Cap,
     pub sanitizer_caps: Cap,
     pub sink_caps: Cap,
@@ -822,9 +951,7 @@ pub struct LocalFuncSummary {
 pub type Cfg = Graph<NodeInfo, EdgeKind>;
 pub type FuncSummaries = HashMap<FuncKey, LocalFuncSummary>;
 
-// -------------------------------------------------------------------------
 // Per-body CFG types
-// -------------------------------------------------------------------------
 
 /// Opaque identifier for an executable body within a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -901,7 +1028,6 @@ pub struct BodyCfg {
     pub meta: BodyMeta,
     pub graph: Cfg,
     pub entry: NodeIndex,
-    pub exit: NodeIndex,
 }
 
 /// A single import alias binding: local alias → original exported name + module.
@@ -1069,7 +1195,7 @@ fn extract_condition_raw<'a>(
     ast: Node<'a>,
     lang: &str,
     code: &'a [u8],
-) -> (Option<String>, Vec<String>, bool) {
+) -> (Option<String>, Vec<String>, bool, Option<CondArith>) {
     // 1. Find the condition subtree.
     let cond_node = ast.child_by_field_name("condition").or_else(|| {
         // Rust `if_expression` uses positional children: the condition is
@@ -1089,7 +1215,7 @@ fn extract_condition_raw<'a>(
     });
 
     let Some(cond) = cond_node else {
-        return (None, Vec::new(), false);
+        return (None, Vec::new(), false, None);
     };
 
     // 2. Detect leading negation (`!expr`, `not expr`, Ruby `unless`).
@@ -1107,7 +1233,20 @@ fn extract_condition_raw<'a>(
     let text = text_of(cond, code)
         .map(|t| truncate_at_char_boundary(&t, MAX_CONDITION_TEXT_LEN).to_string());
 
-    (text, vars, negated)
+    // 5. Capture the pure integer-arithmetic + comparison tree (for constant
+    //    branch folding).  Built from the FULL condition node `cond` (not the
+    //    negation-stripped `inner`) so the folded boolean matches the
+    //    Branch terminator's `true_blk = cond-true` semantics directly.  Ruby
+    //    `unless` swaps the True/False edges in the CFG builder (lines
+    //    ~5029), so the branch polarity would be inverted — skip it to stay
+    //    sound (`unless` with a constant arithmetic guard is negligible).
+    let cond_arith = if ast.kind() == "unless" {
+        None
+    } else {
+        build_cond_arith(cond, lang, code, 0)
+    };
+
+    (text, vars, negated, cond_arith)
 }
 
 /// Detect leading negation and return the inner expression.
@@ -1242,6 +1381,174 @@ fn extract_bin_op(ast: Node, lang: &str) -> Option<BinOp> {
             _ => None, // Boolean (&&, ||), assignment ops, etc.
         };
     }
+    None
+}
+
+/// Parse an integer literal node to its `i64` value, honouring hex / octal /
+/// binary radix prefixes and Java/Rust digit separators (`1_000`).  Returns
+/// `None` for floats, non-literals, or values that overflow `i64`.
+fn parse_int_literal(node: Node, code: &[u8]) -> Option<i64> {
+    let kind = node.kind();
+    let is_int = matches!(
+        kind,
+        "integer"
+            | "integer_literal"
+            | "int_literal"
+            | "number"
+            | "number_literal"
+            | "decimal_integer_literal"
+            | "hex_integer_literal"
+            | "octal_integer_literal"
+            | "binary_integer_literal"
+    );
+    if !is_int {
+        return None;
+    }
+    let raw = std::str::from_utf8(&code[node.byte_range()]).ok()?.trim();
+    // Strip Java long suffix and digit separators.
+    let cleaned: String = raw
+        .trim_end_matches(['l', 'L'])
+        .chars()
+        .filter(|c| *c != '_')
+        .collect();
+    if let Ok(v) = cleaned.parse::<i64>() {
+        return Some(v);
+    }
+    if let Some(h) = cleaned
+        .strip_prefix("0x")
+        .or_else(|| cleaned.strip_prefix("0X"))
+    {
+        return i64::from_str_radix(h, 16).ok();
+    }
+    if let Some(o) = cleaned
+        .strip_prefix("0o")
+        .or_else(|| cleaned.strip_prefix("0O"))
+    {
+        return i64::from_str_radix(o, 8).ok();
+    }
+    if let Some(b) = cleaned
+        .strip_prefix("0b")
+        .or_else(|| cleaned.strip_prefix("0B"))
+    {
+        return i64::from_str_radix(b, 2).ok();
+    }
+    None
+}
+
+/// Map the operator token of a binary expression node to a [`BinOp`].
+/// Scans for the single anonymous operator child (operands are named).
+/// Returns `None` for boolean operators (`&&` / `||`), assignment, or any
+/// token not in the arithmetic / bitwise / comparison set — those make the
+/// enclosing [`CondArith`] build bail.
+fn binary_op_token(node: Node) -> Option<BinOp> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_named() {
+            continue;
+        }
+        return match child.kind() {
+            "+" => Some(BinOp::Add),
+            "-" => Some(BinOp::Sub),
+            "*" => Some(BinOp::Mul),
+            "/" => Some(BinOp::Div),
+            "%" => Some(BinOp::Mod),
+            "&" => Some(BinOp::BitAnd),
+            "|" => Some(BinOp::BitOr),
+            "^" => Some(BinOp::BitXor),
+            "<<" => Some(BinOp::LeftShift),
+            ">>" => Some(BinOp::RightShift),
+            "==" | "===" => Some(BinOp::Eq),
+            "!=" | "!==" => Some(BinOp::NotEq),
+            "<" => Some(BinOp::Lt),
+            "<=" => Some(BinOp::LtEq),
+            ">" => Some(BinOp::Gt),
+            ">=" => Some(BinOp::GtEq),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// Build a [`CondArith`] tree from a condition AST subtree, or `None` if the
+/// condition is not a pure integer-arithmetic + comparison expression.  Uses
+/// the real tree-sitter node so operator precedence and parentheses are
+/// already encoded in the tree shape — no text parsing.  Conservative by
+/// construction: any unrecognised node kind (call, field access, string,
+/// boolean `&&`/`||`, unary `!`) returns `None`, which disables folding for
+/// that branch (never a wrong fold).  Depth-bounded to guard against
+/// pathological nesting.
+pub(super) fn build_cond_arith(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    depth: u32,
+) -> Option<CondArith> {
+    if depth > 64 {
+        return None;
+    }
+    let kind = node.kind();
+
+    // Unwrap parentheses (transparent to value).
+    if matches!(
+        kind,
+        "parenthesized_expression" | "parenthesized" | "parenthesized_statement"
+    ) {
+        let inner = node.named_child(0)?;
+        return build_cond_arith(inner, lang, code, depth + 1);
+    }
+
+    if let Some(n) = parse_int_literal(node, code) {
+        return Some(CondArith::Lit(n));
+    }
+
+    // Bare identifier (reject dotted paths / field access — those are not
+    // captured here; only a plain local whose const value we can resolve).
+    if matches!(kind, "identifier" | "simple_identifier") {
+        let name = text_of(node, code)?;
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        {
+            return Some(CondArith::Var(name));
+        }
+        return None;
+    }
+
+    // Unary `-` only (boolean `!` / `not` is intentionally unsupported: its
+    // operand would be a boolean, which `CondArith::eval` rejects, so folding
+    // a negated condition is left to the conservative `None` path).
+    if matches!(
+        kind,
+        "unary_expression" | "unary_operator" | "prefix_unary_expression" | "unary"
+    ) {
+        let operand = node.named_child(0)?;
+        let mut cursor = node.walk();
+        let is_neg = node
+            .children(&mut cursor)
+            .any(|c| !c.is_named() && c.kind() == "-");
+        if is_neg {
+            return Some(CondArith::Neg(Box::new(build_cond_arith(
+                operand,
+                lang,
+                code,
+                depth + 1,
+            )?)));
+        }
+        return None;
+    }
+
+    // Binary arithmetic / comparison: exactly two operands + one operator.
+    if is_binary_expr_kind(kind, lang) {
+        if node.named_child_count() != 2 {
+            return None; // chained comparison (Python `a < b < c`) etc.
+        }
+        let op = binary_op_token(node)?;
+        let lhs = build_cond_arith(node.named_child(0)?, lang, code, depth + 1)?;
+        let rhs = build_cond_arith(node.named_child(1)?, lang, code, depth + 1)?;
+        return Some(CondArith::Bin(op, Box::new(lhs), Box::new(rhs)));
+    }
+
     None
 }
 
@@ -2071,6 +2378,32 @@ fn is_binary_expr_kind(kind: &str, lang: &str) -> bool {
     }
 }
 
+/// Classification text for a for-each loop's iterable expression.
+///
+/// Subscript / index iterables (`$_GET['x']`, `params[:list]`, `arr[i]`)
+/// classify on their **base object**: taint sources are keyed on the base
+/// name (`$_GET`, `params`), and the trailing index would otherwise break
+/// the word-boundary suffix match in `classify`.  Non-subscript iterables
+/// (method calls, member chains, bare identifiers) use their full text.
+fn iterable_label_text(iter: Node, code: &[u8]) -> Option<String> {
+    if matches!(
+        iter.kind(),
+        "subscript_expression" | "subscript" | "index_expression" | "element_reference"
+    ) {
+        let base = iter
+            .child_by_field_name("object")
+            .or_else(|| iter.child_by_field_name("operand"))
+            .or_else(|| iter.child_by_field_name("value"))
+            .or_else(|| iter.child(0));
+        if let Some(b) = base
+            && let Some(t) = text_of(b, code)
+        {
+            return Some(t);
+        }
+    }
+    text_of(iter, code)
+}
+
 /// Create a node in one short borrow and optionally attach a taint label.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn push_node<'a>(
@@ -2208,6 +2541,51 @@ pub(super) fn push_node<'a>(
         && ast.kind() == "for_statement"
         && let Some(right) = ast.child_by_field_name("right")
         && let Some(iter_text) = text_of(right, code)
+    {
+        text = iter_text;
+    }
+
+    // Java `for (T x : iter)`: tree-sitter-java emits `enhanced_for_statement`
+    // with the iterable on the `value` field.  Classify against the iterable
+    // text so a source-returning call (`req.getCookies()`,
+    // `req.getParameterValues(..)`) lights up a Source on the loop node and
+    // the loop binding inherits its taint — the same loop-binding-inherits-
+    // iterator-taint contract the JS/Python rewrites above provide.  The
+    // loop variable itself is recorded as a define by `def_use`'s Kind::For
+    // arm (via the `name`/`value` mapping), so the Source-labeled loop node
+    // taints the binding directly.
+    if lang == "java"
+        && ast.kind() == "enhanced_for_statement"
+        && let Some(value) = ast.child_by_field_name("value")
+        && let Some(iter_text) = iterable_label_text(value, code)
+    {
+        text = iter_text;
+    }
+
+    // PHP `foreach ($iter as $v)` / `foreach ($iter as $k => $v)`: the
+    // iterable is the named child immediately preceding the `as` keyword
+    // (only `body` is a named field).  Classify against the iterable text so
+    // a superglobal/source iterable (`$_GET[..]`, `$_POST[..]`) taints the
+    // loop binding, matching the JS/Python/Java rewrites.
+    if lang == "php" && ast.kind() == "foreach_statement" {
+        let mut cursor = ast.walk();
+        let kids: Vec<Node> = ast.children(&mut cursor).collect();
+        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as")
+            && let Some(iter_node) = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied()
+            && let Some(iter_text) = iterable_label_text(iter_node, code)
+        {
+            text = iter_text;
+        }
+    }
+
+    // Ruby `for x in coll`: tree-sitter-ruby's `for` node carries the
+    // iterable on the `value` field.  (The idiomatic `coll.each { |x| }`
+    // form is a method call with a block and is handled by the call/block
+    // machinery, not here.)
+    if lang == "ruby"
+        && ast.kind() == "for"
+        && let Some(value) = ast.child_by_field_name("value")
+        && let Some(iter_text) = iterable_label_text(value, code)
     {
         text = iter_text;
     }
@@ -2508,6 +2886,23 @@ pub(super) fn push_node<'a>(
                 }
                 text = member_text;
             }
+        }
+    }
+
+    // Conditions can contain source/sink calls whose argument side effects are
+    // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
+    // Classify the condition call so output-parameter sources still lower as
+    // SSA calls while the CFG node keeps its branch shape.
+    if labels.is_empty()
+        && matches!(lookup(lang, ast.kind()), Kind::If | Kind::While)
+        && let Some(cond) = ast.child_by_field_name("condition")
+        && let Some((ident, ident_span)) = first_call_ident_with_span(cond, lang, code)
+        && let Some(l) = classify(lang, &ident, extra)
+    {
+        labels.push(l);
+        text = ident;
+        if inner_text_span.is_none() {
+            inner_text_span = Some(ident_span);
         }
     }
 
@@ -3147,11 +3542,12 @@ pub(super) fn push_node<'a>(
     };
 
     // Extract condition metadata for If nodes.
-    let (condition_text, condition_vars, condition_negated) = if kind == StmtKind::If {
-        extract_condition_raw(ast, lang, code)
-    } else {
-        (None, Vec::new(), false)
-    };
+    let (condition_text, condition_vars, condition_negated, cond_arith) =
+        if matches!(lookup(lang, ast.kind()), Kind::If) {
+            extract_condition_raw(ast, lang, code)
+        } else {
+            (None, Vec::new(), false, None)
+        };
 
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
@@ -3427,6 +3823,7 @@ pub(super) fn push_node<'a>(
         condition_text,
         condition_vars,
         condition_negated,
+        cond_arith,
         all_args_literal,
         catch_param: false,
         arg_callees,
@@ -4677,10 +5074,8 @@ fn apply_arg_source_bindings(
     }
 }
 
-// -------------------------------------------------------------------------
 //    The recursive *work‑horse* that converts an AST node into a CFG slice.
 //    Returns the set of *exit* nodes that need to be wired further.
-// -------------------------------------------------------------------------
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_sub<'a>(
     ast: Node<'a>,
@@ -4701,9 +5096,7 @@ pub(super) fn build_sub<'a>(
     current_body_id: BodyId,
 ) -> Vec<NodeIndex> {
     match lookup(lang, ast.kind()) {
-        // ─────────────────────────────────────────────────────────────────
         //  IF‑/ELSE: two branches that re‑merge afterwards
-        // ─────────────────────────────────────────────────────────────────
         Kind::If => {
             // Some grammars (Go `if init; cond {}`, sibling C-style forms)
             // attach an init / "initializer" subtree that runs before the
@@ -4985,9 +5378,7 @@ pub(super) fn build_sub<'a>(
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────
         //  WHILE / FOR: classic loop with a back edge.
-        // ─────────────────────────────────────────────────────────────────
         Kind::While | Kind::For => {
             let header = push_node(
                 g,
@@ -5129,9 +5520,7 @@ pub(super) fn build_sub<'a>(
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────
         //  Control-flow sinks (return / break / continue).
-        // ─────────────────────────────────────────────────────────────────
         Kind::Return => {
             if has_call_descendant(ast, lang) {
                 // Return-call bug fix: emit a Call node BEFORE the Return so
@@ -5427,9 +5816,7 @@ pub(super) fn build_sub<'a>(
             current_body_id,
         ),
 
-        // ─────────────────────────────────────────────────────────────────
         //  BLOCK: statements execute sequentially
-        // ─────────────────────────────────────────────────────────────────
         Kind::SourceFile | Kind::Block => {
             // Ruby body_statement with rescue/ensure = implicit begin/rescue
             if lang == "ruby" && ast.kind() == "body_statement" {
@@ -5664,7 +6051,7 @@ pub(super) fn build_sub<'a>(
             for idx in fn_graph.node_indices() {
                 let info = &fn_graph[idx];
                 if let Some(callee) = &info.call.callee {
-                    let site = build_callee_site(callee, info, lang);
+                    let site = build_callee_site(callee, info, lang, code);
                     // Dedup by (name, arity, receiver, qualifier, ordinal).  A
                     // single function may legitimately contain multiple distinct
                     // calls to the same callee (e.g. different ordinals or
@@ -5789,7 +6176,6 @@ pub(super) fn build_sub<'a>(
                 key,
                 LocalFuncSummary {
                     entry: fn_entry,
-                    exit: fn_exit,
                     source_caps: fn_src_bits,
                     sanitizer_caps: fn_sani_bits,
                     sink_caps: fn_sink_bits,
@@ -5839,7 +6225,6 @@ pub(super) fn build_sub<'a>(
                 },
                 graph: fn_graph,
                 entry: fn_entry,
-                exit: fn_exit,
             });
 
             // ── 7) Insert placeholder in parent graph ─────────────────────────
@@ -5899,10 +6284,14 @@ pub(super) fn build_sub<'a>(
                 );
             }
 
-            // JS/TS ternary-RHS split: `var x = c ? a : b;` and
+            // JS/TS/Java ternary-RHS split: `var x = c ? a : b;` and
             // `obj.prop = c ? a : b;` lower to a real diamond CFG so the
             // condition is control-flow (not a data-flow `uses` entry).
-            if matches!(lang, "javascript" | "typescript" | "tsx")
+            // Java uses the same `ternary_expression` AST kind; routing it
+            // through the diamond lets `fold_constant_branches` prune dead
+            // constant-condition arms (`cond ? "const" : param`) the same way
+            // it does for the if-form.
+            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
                 && let Some((lhs_ast, ternary_ast)) = find_ternary_rhs_wrapper(ast)
             {
                 let (lhs_text, lhs_labels) =
@@ -6157,8 +6546,8 @@ pub(super) fn build_sub<'a>(
 
         // Assignment that may contain a call (Python `x = os.getenv(...)`, Ruby `x = gets()`)
         Kind::Assignment => {
-            // JS/TS ternary-RHS split, same rationale as the CallWrapper branch.
-            if matches!(lang, "javascript" | "typescript" | "tsx")
+            // JS/TS/Java ternary-RHS split, same rationale as the CallWrapper branch.
+            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
                 && let (Some(left), Some(right)) = (
                     ast.child_by_field_name("left"),
                     ast.child_by_field_name("right"),
@@ -6259,9 +6648,7 @@ pub(super) fn build_sub<'a>(
             analysis_rules,
         ),
 
-        // ─────────────────────────────────────────────────────────────────
         //  Every other node = simple sequential statement
-        // ─────────────────────────────────────────────────────────────────
         _ => {
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
             // (Phase 06): handles arrow-bodied components like
@@ -6428,7 +6815,6 @@ pub(crate) fn build_cfg<'a>(
         },
         graph: g,
         entry,
-        exit,
     };
     bodies.insert(0, toplevel);
     // Sort by BodyId so that bodies[i].meta.id == BodyId(i).
@@ -6632,7 +7018,12 @@ fn apply_gated_label_rules(
 ///   remains the single segment immediately before the leaf (back-compat
 ///   with the legacy heuristic).  For method calls the qualifier is
 ///   redundant with `receiver` and is left `None`.
-fn build_callee_site(callee: &str, info: &NodeInfo, lang: &str) -> crate::summary::CalleeSite {
+fn build_callee_site(
+    callee: &str,
+    info: &NodeInfo,
+    lang: &str,
+    code: &[u8],
+) -> crate::summary::CalleeSite {
     use crate::summary::CalleeSite;
 
     let receiver = info.call.receiver.clone();
@@ -6661,13 +7052,37 @@ fn build_callee_site(callee: &str, info: &NodeInfo, lang: &str) -> crate::summar
         None
     };
 
+    let span = callee_span_line_col(code, info.ast.span.0);
+
     CalleeSite {
         name: callee.to_string(),
         arity,
         receiver,
         qualifier,
         ordinal: info.call.call_ordinal,
+        span,
     }
+}
+
+/// Convert a byte offset into a 1-based `(line, col)` pair against `code`.
+///
+/// Returns `None` only when `code` is empty (no source to resolve against);
+/// out-of-range offsets are clamped to `code.len()` so a synthetic node
+/// whose span overshoots the file still produces the last-line coordinate
+/// rather than `None`.
+fn callee_span_line_col(code: &[u8], offset: usize) -> Option<(u32, u32)> {
+    if code.is_empty() {
+        return None;
+    }
+    let clamped = offset.min(code.len());
+    let prefix = &code[..clamped];
+    let line = prefix.iter().filter(|&&b| b == b'\n').count() as u32 + 1;
+    let col_bytes = match prefix.iter().rposition(|&b| b == b'\n') {
+        Some(idx) => clamped - idx - 1,
+        None => clamped,
+    } as u32
+        + 1;
+    Some((line, col_bytes))
 }
 
 /// Convert the graph‑local `FuncSummaries` into serialisable [`FuncSummary`]
@@ -6720,22 +7135,6 @@ pub(crate) fn export_summaries(
         })
         .collect()
 }
-
-// pub(crate) fn dump_cfg(g: &Cfg) {
-//     debug!(target: "taint", "CFG DUMP: nodes = {}, edges = {}", g.node_count(), g.edge_count());
-//     for idx in g.node_indices() {
-//         debug!(target: "taint", "  node {:>3}: {:?}", idx.index(), g[idx]);
-//     }
-//     for e in g.edge_references() {
-//         debug!(
-//             target: "taint",
-//             "  edge {:>3} → {:<3} ({:?})",
-//             e.source().index(),
-//             e.target().index(),
-//             e.weight()
-//         );
-//     }
-// }
 
 #[cfg(test)]
 mod cfg_tests;

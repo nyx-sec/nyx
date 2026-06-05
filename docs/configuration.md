@@ -16,8 +16,8 @@ Run `nyx config path` to see the exact directory on your system.
 
 ## File Precedence
 
-1. **`nyx.conf`** -- Default config (auto-created from built-in template on first run)
-2. **`nyx.local`** -- User overrides (loaded on top of defaults)
+1. **`nyx.conf`**: default config (auto-created from built-in template on first run)
+2. **`nyx.local`**: user overrides (loaded on top of defaults)
 
 Both files are optional. CLI flags take precedence over both.
 
@@ -40,7 +40,7 @@ excluded_extensions = ["jpg", "png", "exe"]
 excluded_extensions = ["foo", "jpg"]
 
 # Effective result:
-# ["exe", "foo", "jpg", "png"]  -- sorted, deduped union
+# ["exe", "foo", "jpg", "png"]  (sorted, deduped union)
 ```
 
 ---
@@ -65,6 +65,13 @@ excluded_extensions = ["foo", "jpg"]
 | `scan_hidden_files` | bool | `false` | Scan dot-files |
 | `include_nonprod` | bool | `false` | Keep original severity for test/vendor paths |
 | `enable_state_analysis` | bool | `true` | Enable resource lifecycle + auth state analysis. Detects use-after-close, double-close, resource leaks (per-function scope), and unauthenticated access. Requires `mode = "full"` or `mode = "taint"`. |
+| `enable_auth_analysis` | bool | `true` | Enable auth-state analysis within the state engine. When false, only resource lifecycle findings (leak, use-after-close, double-close) are produced. |
+| `enable_panic_recovery` | bool | `false` | Catch per-file analysis panics as warnings and continue. When false, a panic aborts the scan, preserving the loud-fail behaviour for users debugging engine bugs. |
+| `enable_auth_as_taint` | bool | `false` | Fold auth analysis into the SSA/taint engine via `Cap::UNAUTHORIZED_ID`. Off while the standalone path still carries stable detection. |
+| `verify` | bool | `true` | Run dynamic verification on each `Confidence >= Medium` finding after the static pass. Included in default builds; custom `--no-default-features` builds need `--features dynamic`. CLI overrides: `--verify` / `--no-verify`. |
+| `verify_all_confidence` | bool | `false` | Extend dynamic verification to findings below `Confidence::Medium`. Intended for corpus-building, not production scans. CLI: `--verify-all-confidence`. |
+| `verify_backend` | string | `"auto"` | Sandbox backend for dynamic verification. `"auto"` picks docker when available else process; `"docker"` requires docker; `"process"` runs in-process (same as `--unsafe-sandbox`). |
+| `harden_profile` | string | `"standard"` | Process-backend hardening profile. `"standard"` engages `PR_SET_NO_NEW_PRIVS` + `setrlimit(RLIMIT_AS)` on Linux; `"strict"` adds namespace unshare, chroot to workdir, and a default-deny seccomp filter on Linux, plus `sandbox-exec` wrapping on macOS keyed off the finding's expected cap. |
 
 ### `[database]`
 
@@ -119,6 +126,7 @@ Configuration for the local web UI (`nyx serve`).
 | `auto_reload` | bool | `true` | Auto-reload UI when scan results change |
 | `persist_runs` | bool | `true` | Persist scan runs for history view |
 | `max_saved_runs` | int | `50` | Maximum number of saved runs |
+| `triage_sync` | bool | `true` | Auto-sync triage decisions to `.nyx/triage.json` in the project root so changes can be committed to git. |
 
 ### `[runs]`
 
@@ -173,10 +181,10 @@ Release-grade switches for the optional analysis passes.  Each toggle has a
 matching CLI flag (pair of `--foo` / `--no-foo`) that overrides the config
 value for a single run.  These used to be `NYX_*` environment variables
 (`NYX_CONSTRAINT`, `NYX_ABSTRACT_INTERP`, `NYX_SYMEX`, `NYX_CROSS_FILE_SYMEX`,
-`NYX_SYMEX_INTERPROC`, `NYX_CONTEXT_SENSITIVE`, `NYX_PARSE_TIMEOUT_MS`,
-`NYX_SMT`); those env vars are still honored as a last-resort override when
-nyx is used as a library (no CLI entry point), but the config/CLI surface is
-the stable path.
+`NYX_SYMEX_INTERPROC`, `NYX_CONTEXT_SENSITIVE`, `NYX_BACKWARDS`,
+`NYX_PARSE_TIMEOUT_MS`, `NYX_SMT`); those env vars are still honored as a
+fallback default when nyx is used as a library (no CLI entry point), but the
+config/CLI surface is the stable path.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -185,6 +193,8 @@ the stable path.
 | `context_sensitive` | bool | `true` | k=1 context-sensitive callee inlining for intra-file calls |
 | `backwards_analysis` | bool | `false` | Demand-driven backwards taint walk from sinks (adds scan time; default off) |
 | `parse_timeout_ms` | int | `10000` | Per-file tree-sitter parse timeout; `0` disables the cap |
+| `max_origins` | int | `32` | Maximum taint origins retained per lattice value. Excess origins are dropped deterministically (sorted by source location) and an `OriginsTruncated` engine note is recorded. CLI: `--max-origins`. |
+| `max_pointsto` | int | `32` | Maximum abstract heap objects retained per intra-procedural points-to set. Excess objects are dropped and a `PointsToTruncated` engine note is recorded. CLI: `--max-pointsto`. |
 
 **`[analysis.engine.symex]`** sub-section:
 
@@ -208,10 +218,32 @@ CLI flag map (each pair is `--enable / --no-enable`):
 | `symex.cross_file` | `--cross-file-symex` / `--no-cross-file-symex` |
 | `symex.interprocedural` | `--symex-interproc` / `--no-symex-interproc` |
 | `symex.smt` | `--smt` / `--no-smt` |
+| `max_origins` | `--max-origins <N>` |
+| `max_pointsto` | `--max-pointsto <N>` |
 
 **Engine-depth profile shortcut**: instead of flipping individual toggles, pass `--engine-profile {fast,balanced,deep}` to set the whole stack at once.  Individual flags override the profile, so `--engine-profile fast --backwards-analysis` runs the fast stack with backwards analysis on.  See `docs/cli.md` for the exact toggle matrix.
 
 **Explain effective engine**: pass `--explain-engine` to print the resolved engine configuration (profile + config + CLI overrides) and exit without scanning.
+
+### `[chain]`
+
+Bounded-DFS path search across taint findings. Emits multi-step attack chains when several findings link through shared SSA values or call edges.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_depth` | int | `4` | Maximum per-finding hops in a single chain path. |
+| `min_score` | float | `9.5` | Score threshold; chains below this value are dropped. |
+| `reverify_top_n` | int | `5` | Only the top-N chains by score are eligible for composite dynamic re-verification. `0` disables composite re-verification. |
+
+### `[telemetry]`
+
+Sampling policy for the on-disk event log written by dynamic verification (`~/.cache/nyx/dynamic/events.jsonl`). Confirmed and Inconclusive verdicts are calibration-critical and kept by default; other verdict statuses can be downsampled to bound log growth. Decisions are seeded by `spec_hash` for determinism. See `docs/dynamic.md` for the on-disk schema and `NYX_NO_TELEMETRY=1` opt-out.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `keep_all_confirmed` | bool | `true` | Always retain `Confirmed` verdicts. |
+| `keep_all_inconclusive` | bool | `true` | Always retain `Inconclusive` verdicts. |
+| `sample_rate_other` | float | `1.0` | Retention probability for verdicts not covered by the keep-all flags. `1.0` keeps everything, `0.0` drops everything. |
 
 ### `[detectors.data_exfil]`
 
@@ -354,7 +386,7 @@ nyx config show
 
 Config is validated after loading and merging. Validation checks include:
 
-- Server port must be 1–65535
+- Server port must be 1 to 65535
 - Server host must not be empty
 - `max_saved_runs` must be > 0 when `persist_runs` is true
 - `max_runs` must be > 0 when `persist` is true
@@ -391,9 +423,9 @@ State analysis requires `mode = "full"` or `mode = "taint"`. It has no effect in
 ### Engine-version mismatch is handled automatically
 
 Nyx stores the scanner's `CARGO_PKG_VERSION` in the project index database.
-When the version recorded in the DB differs from the running binary; or the
-row is missing entirely; every cached summary, SSA body, and file-hash row
-is wiped on the next open so the next scan rebuilds the index against the new
+When the version recorded in the DB differs from the running binary, or the
+row is missing entirely, every cached summary, SSA body, and file-hash row
+is wiped on the next open. The next scan rebuilds the index against the new
 engine. No flag is needed; CI pipelines keep working across upgrades.
 
 The rebuild is logged at `info` level:
@@ -436,4 +468,4 @@ On the next scan Nyx builds a fresh index from scratch.
 
 ## Reserved Fields
 
-Some config fields are defined but not yet implemented. They are marked `(RESERVED)` in the default config and accept values without effect. This allows forward-compatible config files; settings will activate when the feature is implemented without requiring config changes.
+Some config fields are defined but not yet implemented. They are marked `(RESERVED)` in the default config and accept values without effect. Config files stay forward-compatible: settings start having an effect when the feature ships, with no edit needed.

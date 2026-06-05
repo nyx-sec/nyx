@@ -1,0 +1,84 @@
+# DVWA (Damn Vulnerable Web Application) — curated ground-truth manifest
+# (Phase 29, Track R.2).
+#
+# DVWA is an intentionally-vulnerable PHP app.  Unlike the other Track R
+# apps it ships its vulnerabilities as graded source variants under
+# vulnerabilities/<module>/source/{low,medium,high,impossible}.php, where
+# `low.php` is the textbook-vulnerable handler and `impossible.php` is the
+# hardened, secure rewrite of the SAME sink.  That gives DVWA real
+# vuln/benign PAIRS (low = vuln, impossible = benign control) the way OWASP
+# Benchmark does — so precision against this manifest is meaningful, not
+# just informational: a Confirmed finding on an `impossible.php` control is
+# a genuine false confirm.
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/dvwa.json.  CI regenerates it against a fresh clone of the
+# pinned tag and asserts byte-equality; the converter HARD-ERRORS on any
+# path that no longer exists, so a DVWA bump that restructures a module
+# fails loudly rather than silently dropping recall.  Re-pin `pinned_ref`
+# and re-validate the paths together.
+#
+# `cap` is a nyx cap label (tabulate.py), aligned to how nyx classifies the
+# sink.  `path` is relative to the DVWA clone root, POSIX separators.  Lang
+# is inferred from the extension (.php -> php).  See
+# tests/eval_corpus/budget.toml for the gate policy on these cells.
+
+corpus = "dvwa"
+upstream = "https://github.com/digininja/DVWA"
+# Pinned to release tag 2.5 (clone HEAD
+# a96943dc1f52f390ee5df72144660636c4b7dd06).  The
+# vulnerabilities/<module>/source/{low,impossible}.php layout has been stable
+# for years; re-validate if the tag is bumped.
+pinned_ref = "2.5"
+
+# ── SQL injection (sqli) ─────────────────────────────────────────────────────
+[[entry]]
+path = "vulnerabilities/sqli/source/low.php"
+cap = "sqli"
+vuln = true
+note = "id = $_REQUEST['id'] is concatenated straight into \"... WHERE user_id = '$id'\" and run via mysqli_query — classic SQL injection."
+
+[[entry]]
+path = "vulnerabilities/sqli/source/impossible.php"
+cap = "sqli"
+vuln = false
+note = "benign control: same query via PDO prepare + bindParam(:id, PDO::PARAM_INT) with is_numeric/intval validation — parameterized, not injectable."
+
+# ── OS command injection (cmdi) ──────────────────────────────────────────────
+[[entry]]
+path = "vulnerabilities/exec/source/low.php"
+cap = "cmdi"
+vuln = true
+note = "target = $_REQUEST['ip'] is concatenated into shell_exec('ping -c 4 ' . $target) with no validation — OS command injection."
+
+[[entry]]
+path = "vulnerabilities/exec/source/impossible.php"
+cap = "cmdi"
+vuln = false
+note = "benign control: the IP is split into 4 octets and each is_numeric-checked before being reassembled and passed to shell_exec — not injectable."
+
+# ── Open redirect (redirect) ─────────────────────────────────────────────────
+[[entry]]
+path = "vulnerabilities/open_redirect/source/low.php"
+cap = "redirect"
+vuln = true
+note = "header('location: ' . $_GET['redirect']) forwards to an unvalidated user-supplied URL — open redirect."
+
+[[entry]]
+path = "vulnerabilities/open_redirect/source/impossible.php"
+cap = "redirect"
+vuln = false
+note = "benign control: redirect target is chosen by an integer switch on is_numeric($_GET['redirect']) — no user-controlled URL reaches the Location header."
+
+# ── CRLF / HTTP header injection (header_injection) ──────────────────────────
+[[entry]]
+path = "vulnerabilities/open_redirect/source/low.php"
+cap = "header_injection"
+vuln = true
+note = "the same unvalidated $_GET['redirect'] flows into a raw header() call, so CRLF in the value splits/injects response headers — HTTP header injection."
+
+[[entry]]
+path = "vulnerabilities/open_redirect/source/impossible.php"
+cap = "header_injection"
+vuln = false
+note = "benign control: only a fixed, integer-selected target string reaches header() — no user bytes, so no CRLF injection."

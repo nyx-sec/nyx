@@ -1,0 +1,104 @@
+# Replay every tree-committed dynamic repro bundle with host language
+# toolchains blocked so we catch regressions where a bundle silently
+# depends on an interpreter the operator does not have.
+#
+# The setup step prepends deny-list wrappers for python3, node, ruby,
+# php, and Java so the only toolchain the bundle can use is the docker
+# daemon.  reproduce.sh in --docker mode pulls the pinned base image
+# (via docker_pull.sh) and runs the harness inside the container; if the
+# bundle accidentally relied on a host interpreter the run falls over
+# before the sentinel check.
+#
+# Adding a new fixture: extend the `matrix.fixture` list with the new
+# `tests/repro_fixtures/<toolchain_id>/<spec_hash>` path.  The bundle
+# must already exist on disk, see tests/repro_fixture_bundles.rs for
+# the regeneration recipe.
+
+name: repro-bare
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bare-image-replay:
+    name: repro-bare / ${{ matrix.fixture }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture:
+          - tests/repro_fixtures/python-3.11/repro
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Block host language toolchains
+        run: |
+          set -euo pipefail
+
+          # Do not mutate the hosted runner image.  ubuntu-latest carries
+          # preinstalled and cached language runtimes, and apt package
+          # relationships can shift underneath us as the image is updated.
+          # A PATH-level deny layer gives this job the bare-host semantics it
+          # needs without depending on apt being able to uninstall core bits.
+          deny_dir="${RUNNER_TEMP}/nyx-deny-toolchains"
+          mkdir -p "$deny_dir"
+          for exe in \
+            python python3 python3.10 python3.11 python3.12 python3.13 python3.14 \
+            node npm npx corepack \
+            ruby gem bundle \
+            php \
+            java javac jar
+          do
+            {
+              printf '%s\n' '#!/bin/sh'
+              printf '%s\n' 'echo "error: host language toolchain is disabled in repro-bare; use the Docker replay path" >&2'
+              printf '%s\n' 'exit 127'
+            } > "${deny_dir}/${exe}"
+            chmod +x "${deny_dir}/${exe}"
+          done
+
+          export PATH="${deny_dir}:${PATH}"
+          echo "${deny_dir}" >> "${GITHUB_PATH}"
+          hash -r 2>/dev/null || true
+
+          # Confirm the deny layer is active — surface the failure here
+          # rather than inside reproduce.sh where it would look like a
+          # bundle bug.
+          for exe in python3 node ruby php java; do
+            resolved="$(command -v "${exe}" || true)"
+            if [ "${resolved}" != "${deny_dir}/${exe}" ]; then
+              echo "error: ${exe} deny wrapper is not first on PATH (got ${resolved:-not found})" >&2
+              exit 1
+            fi
+            if "${exe}" --version >/dev/null 2>&1; then
+              echo "error: ${exe} still runs after host-toolchain block" >&2
+              exit 1
+            fi
+          done
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "error: docker is no longer reachable after host-toolchain block" >&2
+            exit 1
+          fi
+
+      - name: Verify docker is reachable
+        run: docker info
+
+      - name: Pre-pull pinned image
+        working-directory: ${{ matrix.fixture }}
+        run: ./docker_pull.sh
+
+      - name: Replay bundle via docker
+        working-directory: ${{ matrix.fixture }}
+        run: ./reproduce.sh --docker

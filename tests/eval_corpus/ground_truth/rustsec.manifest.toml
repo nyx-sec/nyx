@@ -1,0 +1,37 @@
+# RustSec advisory-db — Rust negative-control corpus (Phase 29, Track R.2).
+#
+# The plan's Rust real-corpus row is the RustSec advisory database.  Unlike
+# RailsGoat / DVWA / DVPWA / gosec, advisory-db ships advisory METADATA
+# (TOML + Markdown under crates/<crate>/RUSTSEC-*.md), not vulnerable Rust
+# SOURCE.  A static scan of it therefore contains zero `.rs` files and nyx
+# correctly produces zero findings — so there are no source-level vuln
+# positives to label, and no canonical scannable "RustGoat" exists to
+# substitute without fabricating paths (which the CI byte-equality + path
+# existence guards would reject outright).
+#
+# advisory-db is still worth pinning and scanning as a NEGATIVE CONTROL for
+# the Rust language path:
+#   * it exercises the Rust scan + verify pipeline (Phase 23 Rust build
+#     pool) end to end on a large real-world tree (thousands of files) and
+#     asserts it stays within the wall-clock budget without crashing, and
+#   * it is an over-confirmation guard: nyx must Confirm NOTHING on a corpus
+#     with no real source vulns.  Any Confirmed finding here is provably a
+#     false confirm and trips the per-cell false_confirmed_rate budget
+#     (tests/eval_corpus/budget.toml) — a genuine regression sentinel if a
+#     future change makes nyx treat advisory text as scannable code.
+#
+# `negative_control = true` tells manifest_gt_convert.py to emit an empty
+# `[]` ground truth.  It is mutually exclusive with `[[entry]]` tables, so a
+# real Rust vuln can never be silently hidden behind the flag.  When a
+# scannable advisory-backed Rust corpus (a vulnerable crate pinned at its
+# affected version with a source-level taint sink) is curated, drop the flag
+# and add [[entry]] tables here exactly as the other Track R.2 manifests do.
+
+corpus = "rustsec"
+upstream = "https://github.com/rustsec/advisory-db"
+# advisory-db publishes no release tags; the eval job pins the default
+# branch via the CI cache key (clone HEAD
+# eaf48e749baa3d5e27d304107d8abf175fd756bb).
+pinned_ref = "main"
+
+negative_control = true
