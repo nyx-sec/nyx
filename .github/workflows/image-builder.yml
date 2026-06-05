@@ -47,7 +47,7 @@ jobs:
           cargo run -F image-builder --bin nyx-image-builder -- verify
 
       - name: Open PR on drift
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "image-builder: refresh pinned digests"
