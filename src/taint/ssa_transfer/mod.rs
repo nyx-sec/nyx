@@ -1,5 +1,13 @@
+//! Block-level SSA taint worklist — the sole taint engine for all 10 languages.
+//!
+//! Drives a forward dataflow fixpoint over [`crate::ssa::SsaBody`] blocks
+//! (`run_ssa_taint` / `run_ssa_taint_full`), propagating `SsaTaintState` through
+//! `transfer_inst` with branch-aware narrowing, k=1 context-sensitive inlining
+//! (`inline`), gated-sink detection (`events`), and interprocedural summary
+//! extraction (`summary_extract`). Submodules: `events`, `inline`, `state`,
+//! `summary_extract`.
+
 #![allow(
-    clippy::collapsible_if,
     clippy::if_same_then_else,
     clippy::manual_flatten,
     clippy::needless_range_loop,
@@ -1189,7 +1197,7 @@ fn compute_succ_states(
                     (*false_blk, exit_state.clone()),
                 ];
             };
-            if cond_info.kind == crate::cfg::StmtKind::If && !cond_info.condition_vars.is_empty() {
+            if cond_info.condition_text.is_some() && !cond_info.condition_vars.is_empty() {
                 let cond_text = cond_info.condition_text.as_deref().unwrap_or("");
                 let (kind, target_var) = classify_condition_with_target(cond_text);
 
@@ -1238,6 +1246,7 @@ fn compute_succ_states(
                     true_polarity,
                     transfer.interner,
                     ssa,
+                    transfer.base_aliases,
                 );
                 // Apply validation/predicate to false branch
                 apply_branch_predicates(
@@ -1247,6 +1256,7 @@ fn compute_succ_states(
                     false_polarity,
                     transfer.interner,
                     ssa,
+                    transfer.base_aliases,
                 );
 
                 // PathFact branch narrowing, language-agnostic.  The
@@ -1478,6 +1488,7 @@ fn apply_branch_predicates(
     polarity: bool,
     interner: &SymbolInterner,
     ssa: &SsaBody,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
 ) {
     // Validation-like predicates: mark condition vars as validated when polarity is true
     if matches!(
@@ -1584,17 +1595,25 @@ fn apply_branch_predicates(
     if kind == PredicateKind::ShellMetaValidated && !polarity {
         for var in condition_vars {
             let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
-            for (val, _) in state.values.iter() {
-                if let Some(name) = ssa
-                    .value_defs
-                    .get(val.0 as usize)
-                    .and_then(|vd| vd.var_name.as_deref())
-                {
-                    if name == var {
-                        to_clear.push(*val);
+            let mut names: SmallVec<[&str; 4]> = smallvec::smallvec![var.as_str()];
+            if let Some(aliases) = base_aliases.and_then(|aliases| aliases.aliases_of(var)) {
+                for alias in aliases {
+                    if alias != var {
+                        names.push(alias.as_str());
                     }
                 }
             }
+            for &name_to_clear in names.iter() {
+                for (idx, def) in ssa.value_defs.iter().enumerate() {
+                    if def.var_name.as_deref() == Some(name_to_clear) {
+                        let val = SsaValue(idx as u32);
+                        to_clear.push(val);
+                        collect_copy_alias_operands(val, ssa, &mut to_clear);
+                    }
+                }
+            }
+            to_clear.sort_by_key(|v| v.0);
+            to_clear.dedup_by_key(|v| v.0);
             for val in to_clear {
                 if let Some(taint) = state.get(val).cloned() {
                     let new_caps = taint.caps & !Cap::SHELL_ESCAPE;
@@ -1635,6 +1654,33 @@ fn apply_branch_predicates(
                     Err(idx) => state.predicates.insert(idx, (sym, summary)),
                 }
             }
+        }
+    }
+}
+
+fn collect_copy_alias_operands(root: SsaValue, ssa: &SsaBody, out: &mut SmallVec<[SsaValue; 4]>) {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        let Some(def_inst) = find_inst_for_value(cur, ssa) else {
+            continue;
+        };
+        match &def_inst.op {
+            SsaOp::Assign(uses) if uses.len() == 1 => {
+                let alias = uses[0];
+                out.push(alias);
+                stack.push(alias);
+            }
+            SsaOp::Phi(operands) => {
+                for &(_, alias) in operands {
+                    out.push(alias);
+                    stack.push(alias);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -3114,20 +3160,13 @@ fn extract_inline_return_taint(
     let return_path_fact =
         return_path_fact_acc.unwrap_or_else(crate::abstract_interp::PathFact::top);
 
-    // Only keep per-return-path entries when at least one entry carries
-    // meaningful signal (non-Top path_fact or a variant_inner_fact).  A
-    // list of all-Top entries adds bytes on disk without helping a
-    // caller pick a path.  Additionally require ≥2 distinct entries ,
-    // a single-entry list is no finer than the joined `return_path_fact`.
-    let return_path_facts = if per_return_path_entries.len() >= 2
+    // Surface per-return-path signal in the gate below: at least two
+    // distinct entries with non-Top path_fact or a variant_inner_fact.
+    // Single-entry lists are no finer than the joined `return_path_fact`.
+    let has_per_return_path_signal = per_return_path_entries.len() >= 2
         && per_return_path_entries
             .iter()
-            .any(|e| !e.path_fact.is_top() || e.variant_inner_fact.is_some())
-    {
-        per_return_path_entries
-    } else {
-        SmallVec::new()
-    };
+            .any(|e| !e.path_fact.is_top() || e.variant_inner_fact.is_some());
 
     // Even when the callee produces no return taint and no param/receiver
     // provenance, a non-Top PathFact on the return is still meaningful
@@ -3138,7 +3177,7 @@ fn extract_inline_return_taint(
         && !final_receiver
         && final_internal.is_empty()
         && return_path_fact.is_top()
-        && return_path_facts.is_empty()
+        && !has_per_return_path_signal
     {
         return CachedInlineShape(None);
     }
@@ -3150,7 +3189,6 @@ fn extract_inline_return_taint(
         receiver_provenance: final_receiver,
         uses_summary: true, // inline analysis is a form of summary
         return_path_fact,
-        return_path_facts,
     }))
 }
 
@@ -3325,7 +3363,6 @@ fn apply_cached_shape(
         return InlineResult {
             return_taint: None,
             return_path_fact: crate::abstract_interp::PathFact::top(),
-            return_path_facts: SmallVec::new(),
         };
     };
 
@@ -3407,7 +3444,6 @@ fn apply_cached_shape(
     InlineResult {
         return_taint,
         return_path_fact: ret.return_path_fact.clone(),
-        return_path_facts: ret.return_path_facts.clone(),
     }
 }
 
@@ -3613,6 +3649,59 @@ fn apply_container_elem_read_w4(
             if cell_may_any {
                 state.validated_may.insert(sym);
             }
+        }
+    }
+}
+
+/// Validated-reconstruction support (read side): when reading an
+/// element of a container whose BASE symbol was validated by a
+/// branch guard on this path (e.g. the true branch of
+/// `if (is_numeric($octet[0]) && is_numeric($octet[1]) && …)` marks
+/// the `octet` symbol validated), propagate that validation to the
+/// element-read result so a value later rebuilt from the elements
+/// (`$target = $octet[0] . '.' . $octet[1]`) is recognised as
+/// validated by the Assign-arm reconstruction propagation.
+///
+/// This is the symbol-level counterpart to `apply_container_elem_read_w4`,
+/// which lifts validation off `(loc, ELEM)` field cells; the branch
+/// guard marks the symbol, not the cells, so the cell path alone misses
+/// the "validate each element then rebuild" idiom.  Consistent with the
+/// engine's existing policy of validating the whole base symbol on a
+/// single element type-check — it extends the reach of that decision to
+/// element reads, it does not introduce a new validation criterion.
+fn apply_container_read_receiver_validation(
+    inst: &SsaInst,
+    ssa: &SsaBody,
+    transfer: &SsaTaintTransfer,
+    state: &mut SsaTaintState,
+) {
+    let SsaOp::Call {
+        callee, receiver, ..
+    } = &inst.op
+    else {
+        return;
+    };
+    if !crate::pointer::is_container_read_callee_pub(callee) {
+        return;
+    }
+    let Some(rcv) = *receiver else {
+        return;
+    };
+    let (rcv_must, rcv_may) = ssa_value_validated_bits(rcv, ssa, transfer.interner, state);
+    if !rcv_must && !rcv_may {
+        return;
+    }
+    if let Some(name) = ssa
+        .value_defs
+        .get(inst.value.0 as usize)
+        .and_then(|vd| vd.var_name.as_deref())
+        && let Some(sym) = transfer.interner.get(name)
+    {
+        if rcv_must {
+            state.validated_must.insert(sym);
+        }
+        if rcv_may {
+            state.validated_may.insert(sym);
         }
     }
 }
@@ -3992,6 +4081,11 @@ pub(super) fn transfer_inst(
             receiver,
             ..
         } => {
+            if is_noreturn_call(transfer.lang, callee) {
+                *state = SsaTaintState::bot();
+                return;
+            }
+
             // Excluded callees (e.g. router.get, app.post) should not propagate
             // taint through their return value, they are framework scaffolding,
             // not data-flow operations.
@@ -5651,6 +5745,44 @@ pub(super) fn transfer_inst(
                         uses_summary: inherited_summary,
                     },
                 );
+
+                // Validated-reconstruction propagation: when a tainted value is
+                // rebuilt from operands that are themselves all validated (e.g.
+                // `$target = $octet[0] . '.' . $octet[1] . '.' . $octet[2]`
+                // where each `$octet[i]` inherited an `is_numeric` branch-guard
+                // validation), the result is validated too.  We AND `must` /
+                // OR `may` over the TAINTED operands only — string literals and
+                // other untainted operands carry no taint into the sink, so
+                // they neither contribute to nor block validation.  This is the
+                // scalar counterpart to the field-cell `must_all`/`may_any`
+                // lift below and closes the "validate-each-part then rebuild"
+                // idiom (DVWA exec/source/impossible.php).
+                let mut tainted_must_all = true;
+                let mut tainted_may_any = false;
+                let mut saw_tainted = false;
+                for &u in uses {
+                    if state.get(u).is_some() {
+                        saw_tainted = true;
+                        let (am, av) = ssa_value_validated_bits(u, ssa, transfer.interner, state);
+                        tainted_must_all &= am;
+                        tainted_may_any |= av;
+                    }
+                }
+                if saw_tainted
+                    && (tainted_must_all || tainted_may_any)
+                    && let Some(name) = ssa
+                        .value_defs
+                        .get(inst.value.0 as usize)
+                        .and_then(|vd| vd.var_name.as_deref())
+                    && let Some(sym) = transfer.interner.get(name)
+                {
+                    if tainted_must_all {
+                        state.validated_must.insert(sym);
+                    }
+                    if tainted_may_any {
+                        state.validated_may.insert(sym);
+                    }
+                }
             }
 
             // Synthetic base-update Assign emitted by SSA lowering for
@@ -5849,7 +5981,28 @@ pub(super) fn transfer_inst(
                         .split_once('.')
                         .map(|(root, _)| crate::labels::is_js_ts_handler_param_name(root))
                         .unwrap_or(false);
-                    if crate::labels::is_js_ts_handler_param_name(var_name) || root_is_handler {
+                    // Destructured Express request param (`({ query }, res) =>
+                    // …`): `query` lowers as a bare `Param`, so the textual
+                    // `req.query` source label never matches. Seed it only when
+                    // a sibling response param is present (the route-handler
+                    // signal), so a plain `paginate(query)` stays un-seeded.
+                    let is_destructured_request_field =
+                        crate::labels::is_express_request_field_name(var_name) && {
+                            let eb = &ssa.blocks[ssa.entry.0 as usize];
+                            eb.phis.iter().chain(eb.body.iter()).any(|i| {
+                                matches!(i.op, SsaOp::Param { .. })
+                                    && ssa
+                                        .value_defs
+                                        .get(i.value.0 as usize)
+                                        .and_then(|vd| vd.var_name.as_deref())
+                                        .map(crate::labels::is_handler_response_param_name)
+                                        .unwrap_or(false)
+                            })
+                        };
+                    if crate::labels::is_js_ts_handler_param_name(var_name)
+                        || root_is_handler
+                        || is_destructured_request_field
+                    {
                         let origin = TaintOrigin {
                             node: inst.cfg_node,
                             source_kind: SourceKind::UserInput,
@@ -6020,6 +6173,7 @@ pub(super) fn transfer_inst(
     // before container-handled early-returns inside the Call arm.
     if matches!(&inst.op, SsaOp::Call { .. }) {
         apply_container_elem_read_w4(inst, ssa, transfer, state);
+        apply_container_read_receiver_validation(inst, ssa, transfer, state);
     }
 
     // Constraint propagation through instructions
@@ -7669,7 +7823,7 @@ fn collect_block_events(
             }
 
             // Collect tainted SSA values that flow into this sink
-            let tainted = collect_tainted_sink_values(
+            let mut tainted = collect_tainted_sink_values(
                 inst,
                 info,
                 &state,
@@ -7680,6 +7834,7 @@ fn collect_block_events(
                 positions_override,
                 destination_override,
             );
+            refine_exec_argv_array_shell_taint(inst, transfer.lang, &state, ssa, &mut tainted);
             if tainted.is_empty() {
                 continue;
             }
@@ -7730,6 +7885,117 @@ fn collect_block_events(
             );
         }
     }
+}
+
+fn refine_exec_argv_array_shell_taint(
+    inst: &SsaInst,
+    lang: Lang,
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+    tainted: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
+) {
+    if !matches!(lang, Lang::C | Lang::Cpp) {
+        return;
+    }
+    let SsaOp::Call { callee, args, .. } = &inst.op else {
+        return;
+    };
+    let method = crate::labels::bare_method_name(callee);
+    if !matches!(method, "execv" | "execve" | "execvp" | "execvpe") {
+        return;
+    }
+    let Some(argv_values) = args.get(1) else {
+        return;
+    };
+    if argv_values.is_empty() {
+        return;
+    }
+
+    for (value, caps, origins) in tainted.iter_mut() {
+        if !argv_values.iter().any(|argv| argv == value) {
+            continue;
+        }
+        let Some((argv_caps, argv_origins)) =
+            exec_argv_non_executable_shell_taint(*value, inst.value, state, ssa)
+        else {
+            continue;
+        };
+        *caps = (*caps & !Cap::SHELL_ESCAPE) | argv_caps;
+        if argv_caps.contains(Cap::SHELL_ESCAPE) {
+            *origins = argv_origins;
+        }
+    }
+
+    tainted.retain(|(_, caps, _)| caps.contains(Cap::SHELL_ESCAPE));
+}
+
+fn exec_argv_non_executable_shell_taint(
+    argv: SsaValue,
+    sink_value: SsaValue,
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+) -> Option<(Cap, SmallVec<[TaintOrigin; 2]>)> {
+    let mut stores: Vec<(u32, SmallVec<[SsaValue; 2]>)> = Vec::new();
+    for block in &ssa.blocks {
+        for candidate in block.phis.iter().chain(block.body.iter()) {
+            if candidate.value.0 >= sink_value.0 {
+                continue;
+            }
+            let SsaOp::Call {
+                callee,
+                args,
+                receiver: Some(receiver),
+                ..
+            } = &candidate.op
+            else {
+                continue;
+            };
+            if callee != "__index_set__" || *receiver != argv {
+                continue;
+            }
+            stores.push((candidate.value.0, args.get(1).cloned().unwrap_or_default()));
+        }
+    }
+    if stores.is_empty() {
+        return None;
+    }
+    stores.sort_by_key(|(value, _)| *value);
+
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    for (_, values) in stores.into_iter().skip(1) {
+        for value in values {
+            let Some(taint) = state.get(value) else {
+                continue;
+            };
+            if !taint.caps.contains(Cap::SHELL_ESCAPE) {
+                continue;
+            }
+            let non_env_origins: SmallVec<[TaintOrigin; 2]> = taint
+                .origins
+                .iter()
+                .copied()
+                .filter(|origin| origin.source_kind != SourceKind::EnvironmentConfig)
+                .collect();
+            if non_env_origins.is_empty() {
+                continue;
+            }
+            caps |= Cap::SHELL_ESCAPE;
+            for origin in non_env_origins {
+                push_origin_bounded(&mut origins, origin);
+            }
+        }
+    }
+
+    Some((caps, origins))
+}
+
+fn is_noreturn_call(lang: Lang, callee: &str) -> bool {
+    if !matches!(lang, Lang::C | Lang::Cpp) {
+        return false;
+    }
+    let method = crate::labels::bare_method_name(callee);
+    matches!(method, "exit" | "_Exit" | "quick_exit" | "abort")
 }
 
 // ── Primary sink-site attribution ───────────────────────────────────────
@@ -8172,34 +8438,120 @@ fn try_curl_url_propagation(
 ///   sets `const_values: Some(&callee_body.opt.const_values)` on the child
 ///   transfer, so callee-local constants are resolved.
 /// - Unknown / non-integer / out-of-bounds: falls back to `HeapSlot::Elements`.
-fn resolve_container_index(index_val: SsaValue, transfer: &SsaTaintTransfer) -> HeapSlot {
-    use crate::ssa::heap::MAX_TRACKED_INDICES;
-
-    if let Some(cv) = transfer.const_values {
-        if let Some(crate::ssa::const_prop::ConstLattice::Int(n)) = cv.get(&index_val) {
-            if *n >= 0 && (*n as u64) < MAX_TRACKED_INDICES as u64 {
-                return HeapSlot::Index(*n as u64);
-            }
+///
+/// Map a proven constant index/key to its precise `HeapSlot`, or `None`
+/// (caller falls back to `HeapSlot::Elements`).
+///
+/// * Non-negative integer within `MAX_TRACKED_INDICES` → `Index(n)`.
+/// * Any other string constant → `Key(hash)` — a keyed read sees only its own
+///   key's cell (plus dynamic-key taint in `Elements`); a read of a *different*
+///   constant key cannot inherit it.  Unknown/dynamic keys keep the coarse
+///   `Elements` merge, so no precision is lost and no false negative arises.
+///
+/// Both the SSA-value path (`resolve_container_index`) and the
+/// literal-argument path (`resolve_op_slot`) funnel through here so a
+/// `put("k", …)` written with a literal and a `get(kVar)` whose `kVar`
+/// const-props to `"k"` resolve to the *same* slot.
+fn slot_from_const(c: &crate::ssa::const_prop::ConstLattice) -> Option<HeapSlot> {
+    use crate::ssa::const_prop::ConstLattice;
+    use crate::ssa::heap::{MAX_TRACKED_INDICES, hash_const_key};
+    match c {
+        ConstLattice::Int(n) if *n >= 0 && (*n as u64) < MAX_TRACKED_INDICES as u64 => {
+            Some(HeapSlot::Index(*n as u64))
         }
+        ConstLattice::Str(s) => Some(HeapSlot::Key(hash_const_key(s))),
+        _ => None,
     }
-    HeapSlot::Elements
+}
+
+/// Look up the SSA op that defines value `v`, searching `v`'s defining block.
+pub(super) fn op_for_value(ssa: &SsaBody, v: SsaValue) -> Option<&SsaOp> {
+    let vd = ssa.value_defs.get(v.0 as usize)?;
+    let blk = ssa.blocks.iter().find(|b| b.id == vd.block)?;
+    blk.phis
+        .iter()
+        .chain(blk.body.iter())
+        .find(|i| i.value == v)
+        .map(|i| &i.op)
+}
+
+/// Resolve a container index/key SSA value to a `HeapSlot` by tracing its
+/// definition to an underlying constant.  Handles the case where a literal
+/// key (`map.get("k")`) surfaces as a *copy* of a `Const` (e.g.
+/// `v = Assign([const])` from a cast/temporary) that the optimised
+/// `const_values` map records as `Varying` rather than the literal.  Bounded
+/// depth; follows single-use `Assign` copies only (no phi merge, to stay
+/// precise — a key joined across paths is genuinely dynamic).
+fn slot_from_ssa_value(v: SsaValue, ssa: &SsaBody, depth: u32) -> Option<HeapSlot> {
+    if depth > 8 {
+        return None;
+    }
+    match op_for_value(ssa, v)? {
+        SsaOp::Const(Some(text)) => {
+            slot_from_const(&crate::ssa::const_prop::ConstLattice::parse(text))
+        }
+        SsaOp::Assign(uses) if uses.len() == 1 => slot_from_ssa_value(uses[0], ssa, depth + 1),
+        _ => None,
+    }
+}
+
+fn resolve_container_index(index_val: SsaValue, transfer: &SsaTaintTransfer) -> HeapSlot {
+    transfer
+        .const_values
+        .and_then(|cv| cv.get(&index_val))
+        .and_then(slot_from_const)
+        .unwrap_or(HeapSlot::Elements)
 }
 
 /// Resolve the `HeapSlot` for a container operation given its `index_arg`.
 ///
 /// When `index_arg` is `Some(idx_pos)`, applies `arg_offset` and resolves
-/// the SSA value from `args`.  Otherwise returns `HeapSlot::Elements`.
+/// the index/key.  Two channels, checked in order:
+///   1. the SSA value at that argument position (a *variable* index/key that
+///      const-props to an int/string);
+///   2. the parallel `arg_string_literals` slot (a *literal* index/key, e.g.
+///      `map.get("keyB")`, which carries no SSA value because it is not a
+///      variable — the dominant OWASP shape).
+///
+/// Otherwise returns `HeapSlot::Elements`.
 fn resolve_op_slot(
     index_arg: Option<usize>,
     arg_offset: usize,
     args: &[SmallVec<[SsaValue; 2]>],
+    arg_string_literals: &[Option<String>],
+    ssa: &SsaBody,
     transfer: &SsaTaintTransfer,
 ) -> HeapSlot {
     if let Some(idx_pos) = index_arg {
         let effective = idx_pos + arg_offset;
-        if let Some(arg_vals) = args.get(effective) {
-            if let Some(&v) = arg_vals.first() {
-                return resolve_container_index(v, transfer);
+        // 1. Variable index/key channel: an SSA value that const-props to an
+        //    int/string.  Only claim resolution when it yields a *precise*
+        //    slot — a literal key/index often surfaces here as an SSA value
+        //    that const-prop could not pin down (so `resolve_container_index`
+        //    returns `Elements`); in that case fall through to the next
+        //    channel rather than collapsing to the coarse merge.
+        if let Some(&v) = args.get(effective).and_then(|g| g.first()) {
+            let slot = resolve_container_index(v, transfer);
+            if slot != HeapSlot::Elements {
+                return slot;
+            }
+            // 1b. SSA-trace channel: the value is a literal that surfaced as a
+            //     copy of a `Const` (e.g. `(String) map.get("k")` lowers the
+            //     key to `v = Assign([const])`, which optimised `const_values`
+            //     records as `Varying`).  Follow the def to the underlying
+            //     constant so the keyed slot is recovered.
+            if let Some(slot) = slot_from_ssa_value(v, ssa, 0) {
+                return slot;
+            }
+        }
+        // 2. Literal index/key channel: the constant (string/int) literal
+        //    captured at CFG build, parsed through the same `slot_from_const`
+        //    mapping the variable path uses.  This is the dominant OWASP
+        //    shape (`map.get("keyB")`), where the key is a bare literal.
+        if let Some(Some(lit)) = arg_string_literals.get(effective) {
+            let parsed = crate::ssa::const_prop::ConstLattice::parse(lit);
+            if let Some(slot) = slot_from_const(&parsed) {
+                return slot;
             }
         }
     }
@@ -8218,7 +8570,7 @@ fn resolve_op_slot(
 /// default propagation.
 fn try_container_propagation(
     inst: &SsaInst,
-    _info: &NodeInfo,
+    info: &NodeInfo,
     args: &[SmallVec<[SsaValue; 2]>],
     receiver: &Option<SsaValue>,
     state: &mut SsaTaintState,
@@ -8285,7 +8637,14 @@ fn try_container_propagation(
             };
 
             // Resolve index argument to HeapSlot (Index(n) or Elements).
-            let slot = resolve_op_slot(index_arg, arg_offset, args, transfer);
+            let slot = resolve_op_slot(
+                index_arg,
+                arg_offset,
+                args,
+                &info.call.arg_string_literals,
+                ssa,
+                transfer,
+            );
 
             // Collect taint from value argument(s)
             let mut val_caps = Cap::empty();
@@ -8303,7 +8662,6 @@ fn try_container_propagation(
                     }
                 }
             }
-
             if val_caps.is_empty() {
                 return true; // Container op handled, but no taint to propagate
             }
@@ -8367,7 +8725,14 @@ fn try_container_propagation(
             } else {
                 0
             };
-            let slot = resolve_op_slot(index_arg, arg_offset, args, transfer);
+            let slot = resolve_op_slot(
+                index_arg,
+                arg_offset,
+                args,
+                &info.call.arg_string_literals,
+                ssa,
+                transfer,
+            );
 
             // When points-to info available, load from heap objects
             if let Some(pts) = lookup_pts(transfer, container_val) {

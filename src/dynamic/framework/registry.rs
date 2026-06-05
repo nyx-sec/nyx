@@ -1,0 +1,186 @@
+//! Per-language [`super::FrameworkAdapter`] dispatch table.
+//!
+//! Phase 01 (Track L.0) ships an empty table for every language; the
+//! [`super::FrameworkAdapter`] trait, [`super::FrameworkBinding`] data
+//! shape, and the [`super::detect_binding`] dispatcher are wired
+//! through so subsequent Track-L phases only need to register a
+//! concrete adapter here.
+//!
+//! # Ordering contract
+//!
+//! Within each `static` slice, adapters must be listed in alphabetical
+//! order of [`super::FrameworkAdapter::name`].  The lexical ordering
+//! gives a deterministic first-match result that survives merges /
+//! rebases without subtle re-ordering bugs.  A `framework` unit test
+//! (`registry_is_empty_for_every_lang_phase_01`)
+//! captures the Phase-01 starting baseline so a phase that registers
+//! its first adapter is forced to update both the slice *and* the
+//! regression guard in the same change.
+
+use super::FrameworkAdapter;
+use crate::symbol::Lang;
+
+/// Adapters registered for `lang`, returned in deterministic
+/// first-match order.  Returns an empty slice for languages that have
+/// no adapters registered yet.
+pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
+    match lang {
+        Lang::Rust => RUST,
+        Lang::C => C,
+        Lang::Cpp => CPP,
+        Lang::Java => JAVA,
+        Lang::Go => GO,
+        Lang::Php => PHP,
+        Lang::Python => PYTHON,
+        Lang::Ruby => RUBY,
+        Lang::TypeScript => TYPESCRIPT,
+        Lang::JavaScript => JAVASCRIPT,
+    }
+}
+
+// Phase 03 (Track J.1) registers per-language deserialize-sink
+// adapters into the matching language slice.  Phase 04 (Track J.2)
+// adds the SSTI-sink adapters.  Within each slice adapters are
+// listed in alphabetical order of [`FrameworkAdapter::name`] so a
+// later phase that appends a new adapter cannot silently re-order
+// the existing first-match.
+static RUST: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoRustAdapter,
+    &super::adapters::DataExfilRustAdapter,
+    &super::adapters::GraphqlJuniperAdapter,
+    &super::adapters::HeaderRustAdapter,
+    &super::adapters::MigrationRefineryAdapter,
+    &super::adapters::MigrationSqlxAdapter,
+    &super::adapters::RedirectRustAdapter,
+    &super::adapters::RustActixAdapter,
+    &super::adapters::RustAxumAdapter,
+    &super::adapters::RustRocketAdapter,
+    &super::adapters::RustWarpAdapter,
+];
+static C: &[&dyn FrameworkAdapter] = &[];
+static CPP: &[&dyn FrameworkAdapter] = &[];
+static JAVA: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoJavaAdapter,
+    &super::adapters::DataExfilJavaAdapter,
+    &super::adapters::HeaderJavaAdapter,
+    &super::adapters::JavaDeserializeAdapter,
+    &super::adapters::JavaMicronautAdapter,
+    &super::adapters::JavaQuarkusAdapter,
+    &super::adapters::JavaServletAdapter,
+    &super::adapters::JavaSpringAdapter,
+    &super::adapters::JavaThymeleafAdapter,
+    &super::adapters::KafkaJavaAdapter,
+    &super::adapters::LdapSpringAdapter,
+    &super::adapters::MiddlewareSpringAdapter,
+    &super::adapters::MigrationFlywayAdapter,
+    &super::adapters::MigrationLiquibaseAdapter,
+    &super::adapters::RabbitJavaAdapter,
+    &super::adapters::RedirectJavaAdapter,
+    &super::adapters::ScheduledQuartzAdapter,
+    &super::adapters::SqsJavaAdapter,
+    &super::adapters::XpathJavaAdapter,
+    &super::adapters::XxeJavaAdapter,
+];
+static GO: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoGoAdapter,
+    &super::adapters::DataExfilGoAdapter,
+    &super::adapters::GoChiAdapter,
+    &super::adapters::GoEchoAdapter,
+    &super::adapters::GoFiberAdapter,
+    &super::adapters::GoGinAdapter,
+    &super::adapters::GraphqlGqlgenAdapter,
+    &super::adapters::HeaderGoAdapter,
+    &super::adapters::MigrationGoMigrateAdapter,
+    &super::adapters::NatsGoAdapter,
+    &super::adapters::PubsubGoAdapter,
+    &super::adapters::RedirectGoAdapter,
+    &super::adapters::XxeGoAdapter,
+];
+static PHP: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoPhpAdapter,
+    &super::adapters::DataExfilPhpAdapter,
+    &super::adapters::HeaderPhpAdapter,
+    &super::adapters::LdapPhpAdapter,
+    &super::adapters::MiddlewareLaravelAdapter,
+    &super::adapters::MigrationLaravelAdapter,
+    &super::adapters::PhpCodeIgniterAdapter,
+    &super::adapters::PhpLaravelAdapter,
+    &super::adapters::PhpSymfonyAdapter,
+    &super::adapters::PhpTwigAdapter,
+    &super::adapters::PhpUnserializeAdapter,
+    &super::adapters::RedirectPhpAdapter,
+    &super::adapters::XpathPhpAdapter,
+    &super::adapters::XxePhpAdapter,
+];
+static PYTHON: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoPythonAdapter,
+    &super::adapters::DataExfilPythonAdapter,
+    &super::adapters::GraphqlGrapheneAdapter,
+    &super::adapters::HeaderPythonAdapter,
+    &super::adapters::KafkaPythonAdapter,
+    &super::adapters::LdapPythonAdapter,
+    &super::adapters::MiddlewareDjangoAdapter,
+    &super::adapters::MigrationDjangoAdapter,
+    &super::adapters::MigrationFlaskAdapter,
+    &super::adapters::PubsubPythonAdapter,
+    &super::adapters::PythonDjangoAdapter,
+    &super::adapters::PythonFastApiAdapter,
+    &super::adapters::PythonFlaskAdapter,
+    &super::adapters::PythonJinja2Adapter,
+    &super::adapters::PythonPickleAdapter,
+    &super::adapters::PythonStarletteAdapter,
+    &super::adapters::RabbitPythonAdapter,
+    &super::adapters::RedirectPythonAdapter,
+    &super::adapters::ScheduledCeleryAdapter,
+    &super::adapters::SqsPythonAdapter,
+    &super::adapters::WebsocketChannelsAdapter,
+    &super::adapters::WebsocketSocketIoAdapter,
+    &super::adapters::XpathPythonAdapter,
+    &super::adapters::XxePythonAdapter,
+];
+static RUBY: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoRubyAdapter,
+    &super::adapters::DataExfilRubyAdapter,
+    &super::adapters::HeaderRubyAdapter,
+    &super::adapters::MiddlewareRailsAdapter,
+    &super::adapters::MigrationRailsAdapter,
+    &super::adapters::RedirectRubyAdapter,
+    &super::adapters::RubyErbAdapter,
+    &super::adapters::RubyHanamiAdapter,
+    &super::adapters::RubyMarshalAdapter,
+    &super::adapters::RubyRailsAdapter,
+    &super::adapters::RubySinatraAdapter,
+    &super::adapters::ScheduledSidekiqAdapter,
+    &super::adapters::WebsocketActionCableAdapter,
+    &super::adapters::XxeRubyAdapter,
+];
+static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::PpJsonDeepAssignTsAdapter,
+    &super::adapters::PpLodashMergeTsAdapter,
+    &super::adapters::PpObjectAssignTsAdapter,
+    &super::adapters::TsNestAdapter,
+];
+static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::CryptoJsAdapter,
+    &super::adapters::DataExfilJsAdapter,
+    &super::adapters::GraphqlApolloAdapter,
+    &super::adapters::GraphqlRelayAdapter,
+    &super::adapters::HeaderJsAdapter,
+    &super::adapters::JsExpressAdapter,
+    &super::adapters::JsFastifyAdapter,
+    &super::adapters::JsHandlebarsAdapter,
+    &super::adapters::JsKoaAdapter,
+    &super::adapters::JsNestAdapter,
+    &super::adapters::MiddlewareExpressAdapter,
+    &super::adapters::MigrationKnexAdapter,
+    &super::adapters::MigrationPrismaAdapter,
+    &super::adapters::MigrationSequelizeAdapter,
+    &super::adapters::PpJsonDeepAssignJsAdapter,
+    &super::adapters::PpLodashMergeJsAdapter,
+    &super::adapters::PpObjectAssignJsAdapter,
+    &super::adapters::RedirectJsAdapter,
+    &super::adapters::ScheduledCronAdapter,
+    &super::adapters::SqsNodeAdapter,
+    &super::adapters::WebsocketWsAdapter,
+    &super::adapters::XpathJsAdapter,
+];

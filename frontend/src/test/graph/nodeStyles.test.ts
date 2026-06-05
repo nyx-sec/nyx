@@ -49,6 +49,29 @@ describe('getNodeStyle', () => {
     const s = getNodeStyle('Call', 'callgraph', { isRecursive: true });
     expect(s.fill).toBe('#5a5042');
   });
+
+  it('returns a double shape for surface entry-point nodes', () => {
+    const s = getNodeStyle('EntryPoint', 'surface');
+    expect(s.shape).toBe('double');
+    expect(s.fill).toBe('#1c5c38');
+  });
+
+  it('returns a terminal shape for surface dangerous-local nodes', () => {
+    const s = getNodeStyle('DangerousLocal', 'surface');
+    expect(s.shape).toBe('terminal');
+    expect(s.fill).toBe('#9d2f25');
+  });
+
+  it('returns a warning fill for surface data-store nodes', () => {
+    const s = getNodeStyle('DataStore', 'surface');
+    expect(s.fill).toBe('#8c6310');
+    expect(s.shape).toBe('rect');
+  });
+
+  it('returns an accent fill for surface external-service nodes', () => {
+    const s = getNodeStyle('ExternalService', 'surface');
+    expect(s.fill).toBe('#0b3d2a');
+  });
 });
 
 describe('getEdgeStyle', () => {
@@ -88,6 +111,28 @@ describe('getEdgeStyle', () => {
 
   it('returns neutral call graph edges', () => {
     const s = getEdgeStyle('Call', 'callgraph');
+    expect(s.dash).toEqual([]);
+  });
+
+  it('returns a dashed style for surface auth_required_on edges', () => {
+    const s = getEdgeStyle('auth_required_on', 'surface');
+    expect(s.dash).toEqual([2, 4]);
+  });
+
+  it('returns a solid danger color for surface reaches edges', () => {
+    const s = getEdgeStyle('reaches', 'surface');
+    expect(s.color).toBe('#9d2f25');
+    expect(s.dash).toEqual([]);
+  });
+
+  it('returns a dashed success style for surface triggers edges', () => {
+    const s = getEdgeStyle('triggers', 'surface');
+    expect(s.dash).toEqual([4, 3]);
+  });
+
+  it('returns a fallback style for unknown surface edge kinds', () => {
+    const s = getEdgeStyle('mystery', 'surface');
+    expect(s.color).toContain('rgba');
     expect(s.dash).toEqual([]);
   });
 });

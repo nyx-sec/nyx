@@ -1,10 +1,9 @@
-use crate::database::index::Indexer;
 use crate::errors::NyxResult;
 use crate::server::app::{AppState, ServerEvent, build_router};
 use crate::server::jobs::JobManager;
 use crate::server::security::LocalServerSecurity;
 use crate::utils::config::Config;
-use crate::utils::project::get_project_info;
+use crate::utils::targets::{TargetTouch, remember_target};
 use console::style;
 use parking_lot::RwLock;
 use std::path::Path;
@@ -31,18 +30,7 @@ pub fn handle(
     let rayon_stack_size = config.performance.rayon_thread_stack_size;
 
     let (event_tx, _) = tokio::sync::broadcast::channel(64);
-
-    // Initialize DB pool for scan persistence
-    let db_pool = {
-        let (_, db_path) = get_project_info(&scan_root, database_dir)?;
-        match Indexer::init(&db_path) {
-            Ok(pool) => Some(pool),
-            Err(e) => {
-                tracing::warn!("Failed to initialize scan DB: {e}");
-                None
-            }
-        }
-    };
+    let _ = remember_target(database_dir, &scan_root, TargetTouch::Seen);
 
     let addr = socket_addr(&host, port);
 
@@ -75,16 +63,17 @@ pub fn handle(
         let security = LocalServerSecurity::new(local_addr.port());
 
         let state = AppState {
-            scan_root: scan_root.clone(),
+            scan_root: Arc::new(RwLock::new(scan_root.clone())),
             config_dir: config_dir.to_path_buf(),
             database_dir: database_dir.to_path_buf(),
             security,
             config: Arc::new(RwLock::new(config.clone())),
             job_manager: Arc::new(JobManager::new(max_jobs, rayon_stack_size)),
             event_tx: event_tx.clone(),
-            db_pool,
+            db_pools: Arc::new(RwLock::new(std::collections::HashMap::new())),
             findings_cache: Arc::new(RwLock::new(None)),
         };
+        let _ = state.db_pool_for(&scan_root);
 
         // Invalidate the findings cache whenever a scan finishes so the next
         // request rebuilds against fresh diags. The next-request rebuild keeps

@@ -34,7 +34,8 @@ async fn get_file(
     State(state): State<AppState>,
     Query(query): Query<FileQuery>,
 ) -> ApiResult<Json<FileResponse>> {
-    let opened = open_repo_text_file(&state.scan_root, &query.path, DEFAULT_UI_MAX_FILE_BYTES)
+    let scan_root = state.active_scan_root();
+    let opened = open_repo_text_file(&scan_root, &query.path, DEFAULT_UI_MAX_FILE_BYTES)
         .map_err(|e| map_path_error(e, &query.path))?;
     let content = opened.content;
     let all_lines: Vec<&str> = content.lines().collect();

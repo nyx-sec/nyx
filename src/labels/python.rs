@@ -288,6 +288,11 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: true,
     },
     // SQL injection: sqlite3 / SQLAlchemy / generic DB connection execute.
+    // `cur` / `cursor` are the canonical psycopg2 / aiopg / aiosqlite cursor
+    // aliases; `cur.execute(q)` on a DB cursor is unambiguous and was a recall
+    // gap (dvpwa blind-SQLi uses `cur.execute`). `match_suffix_cs` is
+    // word-boundary anchored, so `cur.execute` does not collide with
+    // `cursor.execute`.
     LabelRule {
         matchers: &[
             "conn.execute",
@@ -295,6 +300,10 @@ pub static RULES: &[LabelRule] = &[
             "session.execute",
             "engine.execute",
             "db.execute",
+            "cur.execute",
+            "cur.executemany",
+            "cursor.executescript",
+            "cur.executescript",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,

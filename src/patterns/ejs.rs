@@ -85,6 +85,7 @@ pub fn scan_ejs_file(path: &Path, bytes: &[u8]) -> Vec<Diag> {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             });
         }
     }

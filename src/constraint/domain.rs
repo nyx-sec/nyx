@@ -231,6 +231,13 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         | TypeKind::GormDb
         | TypeKind::SqlxDb
         | TypeKind::HibernateSession => 3,
+        // ProcessBuilder participates only in the type-qualified callee
+        // resolver via `label_prefix()`; no dedicated bitset slot, share
+        // the Object index like the other receiver-only TypeKinds.
+        TypeKind::ProcessBuilder => 3,
+        // Runtime is likewise a type-qualified-resolver-only receiver kind
+        // (`Runtime.exec`); no dedicated bitset slot, share the Object index.
+        TypeKind::Runtime => 3,
     }
 }
 

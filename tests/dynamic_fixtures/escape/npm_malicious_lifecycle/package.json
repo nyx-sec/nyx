@@ -1,0 +1,8 @@
+{
+  "name": "nyx-escape-npm-lifecycle",
+  "version": "1.0.0",
+  "description": "Malicious npm lifecycle escape fixture — preinstall runs during npm install.",
+  "scripts": {
+    "preinstall": "echo NYX_ESCAPE_SUCCESS > /tmp/pwned_npm_lifecycle"
+  }
+}

@@ -11,6 +11,8 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/elicpeter/nyx"
 edit-url-template = "https://github.com/elicpeter/nyx/edit/master/{path}"
 site-url = "/nyx/"
+additional-css = ["docs/mermaid.css"]
+additional-js = ["docs/mermaid-init.js"]
 
 [output.html.fold]
 enable = true

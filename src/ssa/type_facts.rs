@@ -1,5 +1,11 @@
 #![allow(clippy::if_same_then_else)]
 
+//! Lightweight type inference for SSA values.
+//!
+//! Derives [`TypeKind`] facts (ints, URLs, HTTP clients/responses, DB
+//! connections, file handles) from constructors, factories, and literals, used
+//! to suppress type-safe sinks and to resolve receiver-qualified callees.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
@@ -261,6 +267,33 @@ pub enum TypeKind {
     /// arbitrary-receiver-name shape (`sess`, `hibernateSession`, etc.)
     /// via type-qualified resolution.
     HibernateSession,
+    /// A `java.lang.ProcessBuilder` instance produced by
+    /// `new ProcessBuilder(...)`.  The dominant OWASP Benchmark
+    /// command-injection shape builds an argument `List<String>`, attaches
+    /// it via `pb.command(argList)`, then runs it with `pb.start()`.  The
+    /// argument list is a separate channel from the constructor, so the
+    /// flat `ProcessBuilder` constructor sink never sees the tainted args.
+    /// Mapping the receiver to this TypeKind lets the type-qualified
+    /// resolver rewrite `pb.command(argList)` → `ProcessBuilder.command`
+    /// against the flat SHELL_ESCAPE rule in `labels/java.rs`, so tainted
+    /// list contents reaching the command builder are caught at the
+    /// `command(...)` call site.
+    ProcessBuilder,
+    /// A `java.lang.Runtime` instance produced by the static factory
+    /// `Runtime.getRuntime()`.  The dominant OWASP Benchmark
+    /// command-injection shape splits the receiver across statements:
+    /// `Runtime r = Runtime.getRuntime(); ... r.exec(args, argsEnv)`.  The
+    /// callee text at the sink is `r.exec`, which does not suffix-match the
+    /// flat `Runtime.exec` rule in `labels/java.rs` (the chained
+    /// `Runtime.getRuntime().exec(...)` form fires only because its callee
+    /// text literally contains `Runtime`).  Mapping the receiver `r` to
+    /// this TypeKind lets the type-qualified resolver rewrite `r.exec(...)`
+    /// → `Runtime.exec` against the flat SHELL_ESCAPE rule, so tainted data
+    /// reaching the split-receiver exec is caught.  No payload-arg
+    /// restriction: `Runtime.exec` overloads place the tainted data in
+    /// either the command (arg 0) or the environment array (arg 1), so the
+    /// default all-args sink scan must cover every position.
+    Runtime,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -318,6 +351,8 @@ impl TypeKind {
             Self::GormDb => Some("GormDb"),
             Self::SqlxDb => Some("SqlxDb"),
             Self::HibernateSession => Some("HibernateSession"),
+            Self::ProcessBuilder => Some("ProcessBuilder"),
+            Self::Runtime => Some("Runtime"),
             _ => None,
         }
     }
@@ -708,6 +743,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "openSession" | "getCurrentSession" | "openStatelessSession" => {
                 Some(TypeKind::HibernateSession)
             }
+            // `new ProcessBuilder(...)` — the receiver's `command(argList)`
+            // setter is a command-injection sink for the list contents.
+            // Type-qualified resolution rewrites `pb.command(...)` →
+            // `ProcessBuilder.command` against the flat SHELL_ESCAPE rule.
+            "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+            // `Runtime.getRuntime()` — the static factory returns the
+            // singleton `java.lang.Runtime`.  Gating on `callee.contains
+            // ("Runtime")` keeps an unrelated `foo.getRuntime()` method from
+            // being mistyped.  Type-qualified resolution rewrites the
+            // split-receiver `r.exec(...)` → `Runtime.exec` against the flat
+            // SHELL_ESCAPE rule.
+            "getRuntime" if callee.contains("Runtime") => Some(TypeKind::Runtime),
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => {

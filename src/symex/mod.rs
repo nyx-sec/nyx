@@ -9,11 +9,7 @@
 //! Symbolic expression trees (`SymbolicValue`) preserve computation structure
 //! through the path walk, enabling richer witness strings.
 
-#![allow(
-    clippy::collapsible_if,
-    clippy::manual_ignore_case_cmp,
-    clippy::needless_borrow
-)]
+#![allow(clippy::manual_ignore_case_cmp, clippy::needless_borrow)]
 
 pub mod executor;
 pub mod heap;

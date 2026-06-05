@@ -1,0 +1,68 @@
+name: image-builder
+
+# Phase 19 (Track E.3): daily drift PR.
+#
+# Runs `nyx-image-builder build --all` on a Linux runner that has docker
+# available, captures the rewritten `tools/image-builder/images.toml`, and
+# opens a PR when any pinned digest changed.  The PR is reviewed manually
+# before merge so a hostile upstream image cannot silently land in
+# `IMAGE_DIGESTS`.
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  schedule:
+    # 04:23 UTC daily — off-peak for the major upstream registries so
+    # transient pull errors are rare.
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: image-builder
+  cancel-in-progress: false
+
+jobs:
+  refresh-digests:
+    name: refresh image digests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Verify docker is reachable
+        run: docker info
+
+      - name: Build pinned-digest catalogue
+        run: |
+          cargo run -F image-builder --bin nyx-image-builder -- build --all
+
+      - name: Verify catalogue against local pulls
+        run: |
+          cargo run -F image-builder --bin nyx-image-builder -- verify
+
+      - name: Open PR on drift
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "image-builder: refresh pinned digests"
+          title: "image-builder: refresh pinned digests"
+          body: |
+            Automated digest refresh by `nyx-image-builder build --all`.
+
+            The CI job pulled every base image in
+            `tools/image-builder/images.toml`, captured the resolved
+            `sha256:` digest, and wrote it back into the file.  Review
+            the diff before merging — a hostile upstream image would
+            show up here as an unexpected digest change.
+          branch: image-builder/refresh-digests
+          base: master
+          delete-branch: true
+          labels: |
+            image-builder
+            automation

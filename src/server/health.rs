@@ -1,8 +1,6 @@
 //! Health-score scoring engine, v3.5.
 //!
-//! Pure-function scoring over a `HealthInputs` struct.  Documented in
-//! `docs/health-score-audit.md` (calibration, rationale) and
-//! `docs/health-score.md` (customer methodology).
+//! Pure-function scoring over a `HealthInputs` struct.
 //!
 //! ## Conceptual model
 //!
@@ -37,8 +35,8 @@
 //!   low-confidence HIGHs that got `NotAttempted` from symex doesn't
 //!   pay the same ceiling cost as a repo with 5 `Confirmed` HIGHs.
 //! * Tighter modifier ranges so they can't flip a band.
-//! * No `parse_success_rate` (it's actually a cache-miss metric ,
-//!   see `project_parse_success_rate_misnomer.md`).
+//! * No `parse_success_rate`. It is a cache-miss metric, not a parse
+//!   success metric.
 
 use crate::commands::scan::Diag;
 use crate::evidence::{Confidence, Verdict};
@@ -47,10 +45,8 @@ use crate::server::models::{BacklogStats, FindingSummary, HealthComponent, Healt
 
 // ── Tunables ─────────────────────────────────────────────────────────────────
 //
-// Calibrated for v0.5.0 scanner FP rate.  As Nyx symex coverage and
-// rule precision improve, the HIGH ceilings should tighten, see
-// `docs/health-score-audit.md` "Calibration trajectory" for the
-// roadmap.
+// Calibrated for the current scanner false-positive rate. As Nyx symex
+// coverage and rule precision improve, the HIGH ceilings may tighten.
 
 /// Below this file count, we floor the size divisor at 1.0, tiny
 /// repos can't claim infinite per-LOC dilution from one finding.
@@ -619,6 +615,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -659,28 +656,6 @@ mod tests {
             has_history: false,
             blanket_suppression_rate: None,
         }
-    }
-
-    #[allow(dead_code)]
-    fn with_history<'a>(
-        summary: &'a FindingSummary,
-        findings: &'a [Diag],
-        triage: f64,
-        files: u64,
-    ) -> HealthInputs<'a> {
-        HealthInputs {
-            has_history: true,
-            ..first_scan(summary, findings, triage, files)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn sev_score(h: &HealthScore) -> u8 {
-        h.components
-            .iter()
-            .find(|c| c.label == "Severity pressure")
-            .unwrap()
-            .score
     }
 
     // ── Foundational behaviour ───────────────────────────────────────

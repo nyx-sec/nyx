@@ -31,6 +31,13 @@ const CONFIG: Record<GraphViewKind, TextLayoutConfig> = {
     maxSecondaryLines: 2,
     maxSublabelLines: 1,
   },
+  surface: {
+    primaryChars: 32,
+    secondaryChars: 32,
+    maxPrimaryLines: 2,
+    maxSecondaryLines: 2,
+    maxSublabelLines: 1,
+  },
 };
 
 function normalizeWhitespace(value: string): string {

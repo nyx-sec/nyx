@@ -8,6 +8,7 @@ import { escapeHtml, highlightSyntax } from '../utils/syntaxHighlight';
 import { parseNoteText } from '../utils/parseNote';
 import { findingToMarkdown } from '../utils/findingMarkdown';
 import { CopyMarkdownButton } from '../components/CopyMarkdownButton';
+import { VerdictBadge } from '../components/VerdictBadge';
 import { Dropdown, DropdownItem } from '../components/ui/Dropdown';
 import { CodeViewerModal } from '../modals/CodeViewerModal';
 import type {
@@ -16,6 +17,7 @@ import type {
   FlowStep,
   SpanEvidence,
   RelatedFindingView,
+  VerifyResult,
 } from '../api/types';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -701,6 +703,107 @@ function HowToFix({ finding }: { finding: FindingView }) {
   );
 }
 
+// ── Dynamic Verification Panel ──────────────────────────────────────────────
+
+export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
+  const [copied, setCopied] = useState(false);
+  const attempts = verdict.attempts ?? [];
+  // The repro bundle is keyed by spec_hash (not finding_id) inside the Nyx
+  // cache.  Rather than showing a path that may not match, surface the CLI
+  // command that locates and opens the bundle regardless of the hash.
+  const reproCmd = `nyx repro --finding ${verdict.finding_id}`;
+
+  const copyCmd = () => {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(reproCmd).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {},
+    );
+  };
+
+  return (
+    <div className="dynamic-verdict-section">
+      <div className="dynamic-verdict-badge-row">
+        <VerdictBadge verdict={verdict} />
+        {verdict.toolchain_match && (
+          <span
+            className="dynamic-toolchain-match"
+            title={`Toolchain match: ${verdict.toolchain_match}`}
+          >
+            {verdict.toolchain_match === 'exact'
+              ? 'exact toolchain'
+              : 'approximate toolchain'}
+          </span>
+        )}
+      </div>
+
+      {verdict.status === 'Confirmed' && (
+        <div className="repro-panel" data-testid="repro-panel">
+          <div className="repro-cmd-row">
+            <span className="repro-label">Reproduce:</span>
+            <code className="repro-cmd">{reproCmd}</code>
+            <button
+              type="button"
+              className="btn btn-sm repro-copy-btn"
+              onClick={copyCmd}
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(verdict.reason || verdict.inconclusive_reason || verdict.detail) && (
+        <div className="dynamic-verdict-detail">
+          {verdict.reason && (
+            <div>
+              <strong>Reason:</strong> {verdict.reason}
+            </div>
+          )}
+          {verdict.inconclusive_reason && (
+            <div>
+              <strong>Inconclusive reason:</strong>{' '}
+              {verdict.inconclusive_reason}
+            </div>
+          )}
+          {verdict.detail && (
+            <div className="dynamic-verdict-detail-text">{verdict.detail}</div>
+          )}
+        </div>
+      )}
+
+      {attempts.length > 0 && (
+        <div className="dynamic-attempts">
+          <strong>Payload attempts:</strong>
+          <ul className="dynamic-attempt-list">
+            {attempts.map((a, i) => (
+              <li
+                key={i}
+                className={`attempt-row ${a.triggered ? 'triggered' : ''}`}
+              >
+                <code>{a.payload_label}</code>
+                <span className="attempt-outcome">
+                  {a.triggered
+                    ? 'triggered'
+                    : a.timed_out
+                      ? 'timeout'
+                      : 'no hit'}
+                </span>
+                {a.exit_code != null && (
+                  <span className="attempt-exit-code">exit {a.exit_code}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Status Control ──────────────────────────────────────────────────────────
 
 function StatusControl({
@@ -861,6 +964,7 @@ export function FindingDetailPage() {
 
   const f = finding;
   const evidence = f.evidence;
+  const dynamicVerdict = evidence?.dynamic_verdict ?? f.dynamic_verdict;
   const isState = isStateFinding(f);
   const hasWhySection =
     f.message ||
@@ -1014,6 +1118,13 @@ export function FindingDetailPage() {
       {hasRelated && (
         <CollapsibleSection title="Related Findings">
           <RelatedFindings findings={f.related_findings} />
+        </CollapsibleSection>
+      )}
+
+      {/* Dynamic Verification */}
+      {dynamicVerdict && (
+        <CollapsibleSection title="Dynamic Verification">
+          <DynamicVerdictSection verdict={dynamicVerdict} />
         </CollapsibleSection>
       )}
 

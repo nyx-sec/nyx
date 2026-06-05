@@ -6,11 +6,7 @@
 //! Cross-file symbolic summary modeling: when a callee has an
 //! `SsaFuncSummary` available via `GlobalSummaries`, the Call instruction's
 //! return value is modeled symbolically instead of being treated as opaque.
-#![allow(
-    clippy::collapsible_if,
-    clippy::if_same_then_else,
-    clippy::too_many_arguments
-)]
+#![allow(clippy::if_same_then_else, clippy::too_many_arguments)]
 
 use crate::cfg::Cfg;
 use crate::ssa::const_prop::ConstLattice;
@@ -422,9 +418,7 @@ pub fn transfer_inst(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Heap helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Record a field store in the symbolic heap when the instruction defines
 /// a dotted path (e.g., `user.name`).
@@ -685,9 +679,7 @@ pub fn transfer_block(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  String method dispatch
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Attempt to model a callee as a recognized string operation.
 ///
@@ -809,9 +801,7 @@ fn try_transform_method(
     Some(SymbolicCallResult { value, tainted })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cross-file symbolic summary resolution
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Model a callee's return value from its SSA summary.
 ///
@@ -969,9 +959,7 @@ fn resolve_callee_symbolically(
     model_from_summary(summary, arg_syms, all_operands, state, result_value)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+
+# Hanami action fixture. The harness invokes the action with a Rack env.
+gem 'hanami-controller'
+gem 'rack'

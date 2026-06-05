@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "note": "ASPIRATIONAL placeholder — values were hand-typed, not captured from a real bench run. Regenerate with: benches/regen_baseline.sh (requires --features dynamic and python3 on PATH). Commit the updated file to establish a real regression reference for M3+.",
+  "benchmarks": {
+    "harness_build_cold": {
+      "mean_ns": 800000,
+      "stddev_ns": 120000,
+      "description": "Fresh workdir; spec → BuiltHarness including source gen + disk write."
+    },
+    "harness_build_warm": {
+      "mean_ns": 180000,
+      "stddev_ns": 30000,
+      "description": "Workdir already staged; file write skipped by dst.exists() guard."
+    },
+    "sandbox_run_payload": {
+      "mean_ns": 120000000,
+      "stddev_ns": 15000000,
+      "description": "Single process-backend run with sqli payload; includes python3 startup + settrace."
+    }
+  },
+  "regression_thresholds": {
+    "harness_build_cold": 2.0,
+    "harness_build_warm": 2.0,
+    "sandbox_run_payload": 1.5
+  }
+}

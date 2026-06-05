@@ -1,0 +1,88 @@
+# OWASP RailsGoat — curated vuln ground-truth manifest (Phase 29, Track R.2).
+#
+# RailsGoat is an intentionally-vulnerable Ruby on Rails app that maps the
+# OWASP Top 10 to concrete controllers/models.  Like NodeGoat / Juice Shop
+# (Phase 28) it ships no machine-readable per-file vuln labels, so this
+# manifest IS the authoritative source: one [[entry]] per known-vulnerable
+# location, curated from the project's own tutorial walk-throughs, each with
+# a `note` citing why.
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/railsgoat.json.  CI regenerates it against a fresh clone of
+# the pinned tag and asserts byte-equality, and the converter HARD-ERRORS on
+# any path that no longer exists in the corpus, so a RailsGoat bump that
+# moves a controller fails the eval job loudly rather than silently dropping
+# recall.  Update `pinned_ref` + the paths together when re-pinning.
+#
+# `cap` is a nyx cap label (tabulate.py); it is aligned with how nyx
+# classifies the sink in each file (e.g. a missing ownership check on a
+# direct-object lookup surfaces as `auth`, not `unauthorized_id`), so recall
+# (did nyx catch the canonical vuln) is meaningful.  `path` is relative to
+# the RailsGoat clone root, POSIX separators.  Lang is inferred from the
+# extension (.rb -> ruby).  All `vuln = true`: RailsGoat is all-vulnerable,
+# so there is no benign-control file to pair against — precision vs this
+# manifest is informational (an unlabelled finding may be a real uncurated
+# vuln), while recall is the meaningful floor.  See
+# tests/eval_corpus/budget.toml for how the gate treats these cells.
+
+corpus = "railsgoat"
+upstream = "https://github.com/OWASP/railsgoat"
+# Pinned to the stable Rails 5 release tag (clone HEAD
+# 0766ca80bf2d94acbde1dd4aaf7baf9b86afe4eb).  The app/controllers + app/models
+# layout below has been stable across this tag; re-validate the paths if the
+# ref is bumped.
+pinned_ref = "rails.5.0.0"
+
+[[entry]]
+path = "app/controllers/users_controller.rb"
+cap = "auth"
+vuln = true
+note = "update looks up the account with User.where(\"id = '#{params[:user][:id]}'\") and mass-assigns user_params (params.require(:user).permit!) with no ownership check — broken access control / mass-assignment privilege escalation (OWASP A4/A5)."
+
+[[entry]]
+path = "app/controllers/messages_controller.rb"
+cap = "auth"
+vuln = true
+note = "show / destroy fetch Message.where(id: params[:id]) with no check that the message belongs to current_user — insecure direct object reference (OWASP A4 broken access control)."
+
+[[entry]]
+path = "app/controllers/admin_controller.rb"
+cap = "auth"
+vuln = true
+note = "administrative actions are gated by a bypassable admin_param check (params[:admin_id] != \"1\"); update_user / delete_user act on any admin_id — broken access control / privilege escalation (OWASP A5)."
+
+[[entry]]
+path = "app/models/user.rb"
+cap = "crypto"
+vuln = true
+note = "passwords are hashed with Digest::MD5.hexdigest (hash_password / authenticate) — unsalted weak hash for credential storage (OWASP A2 cryptographic failure)."
+
+[[entry]]
+path = "app/controllers/password_resets_controller.rb"
+cap = "crypto"
+vuln = true
+note = "generate_token derives the reset token as Digest::MD5.hexdigest(email) — a predictable, forgeable password-reset token (weak cryptography)."
+
+[[entry]]
+path = "app/controllers/password_resets_controller.rb"
+cap = "deserialize"
+vuln = true
+note = "reset_password runs Marshal.load(Base64.decode64(params[:user])) on attacker-controlled input — insecure deserialization leading to RCE (OWASP A8)."
+
+[[entry]]
+path = "app/controllers/sessions_controller.rb"
+cap = "redirect"
+vuln = true
+note = "create redirects to params[:url] with no allow-list (path = params[:url] then redirect_to path) — open redirect (OWASP unvalidated redirects)."
+
+[[entry]]
+path = "app/controllers/benefit_forms_controller.rb"
+cap = "path_traversal"
+vuln = true
+note = "download builds send_file from a user-controlled params[:name] path with no containment — arbitrary file read / path traversal."
+
+[[entry]]
+path = "app/controllers/benefit_forms_controller.rb"
+cap = "deserialize"
+vuln = true
+note = "download calls params[:type].constantize.new(path), constantizing a user-supplied class name — unsafe reflection / object injection."

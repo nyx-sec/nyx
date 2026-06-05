@@ -69,6 +69,7 @@ fn high_confidence_taint_diag(path: &str, line: u32) -> Diag {
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: Vec::new(),
+        stable_hash: 0,
     }
 }
 

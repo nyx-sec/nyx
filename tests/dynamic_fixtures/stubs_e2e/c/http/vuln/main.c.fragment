@@ -1,0 +1,14 @@
+/* Phase 10 (Track D.3) — C HTTP recorder body-only fragment.
+ *
+ * Wrapped at test time by `wrap_c_fragment(body, shim)`.  The
+ * fixture surfaces an SSRF attempt at the IMDS metadata endpoint
+ * through the shim recorder, so the host-side HttpStub captures
+ * the attempted outbound call without the harness opening a real
+ * socket.  Mirrors the per-lang HTTP recording siblings.
+ */
+const char *method = "GET";
+const char *url = "http://169.254.169.254/latest/meta-data/";
+const char *body = NULL;
+const char *detail_keys[] = { "driver" };
+const char *detail_vals[] = { "manual" };
+__nyx_stub_http_record(method, url, body, detail_keys, detail_vals, 1);

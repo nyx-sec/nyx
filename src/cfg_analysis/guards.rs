@@ -1,4 +1,7 @@
-#![allow(clippy::collapsible_if)]
+//! Unguarded-sink detection via CFG dominator analysis.
+//!
+//! Flags dangerous sinks that are not dominated by an appropriate guard
+//! (validation or auth check) on every path from an entry point.
 
 use super::dominators::{self, dominates};
 use super::rules;
@@ -175,6 +178,109 @@ fn ssa_all_sink_operands_const_or_param(ctx: &AnalysisContext, sink: NodeIndex) 
         .all(|group| group.iter().all(|v| operand_safe(*v)));
     let receiver_ok = receiver.is_none_or(operand_safe);
     args_ok && receiver_ok
+}
+
+/// Suppress a `cfg-unguarded-sink` finding when the sink restricts its
+/// injection payload to specific argument positions (`sink_payload_args`)
+/// and every operand at those positions resolves to a concrete constant.
+///
+/// The flat [`is_all_args_constant`] check inspects *every* operand, so a
+/// safe parameterised call like Go's
+/// `db.QueryContext(context.Background(), "SELECT … $1", bind)` is wrongly
+/// rejected: only arg 1 (the SQL string, `payload_args = [1]`) can carry an
+/// injection, yet the non-payload `context.Background()` call and the
+/// positional bind value are non-constant operands that defeat the
+/// all-operands test.  The taint engine already honours the payload-arg
+/// gate (no `taint-unsanitised-flow` fires), so under `!has_taint` a sink
+/// whose payload positions are all literals is safe by construction.
+fn sink_payload_args_const(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let payload_positions = match &ctx.cfg[sink].call.sink_payload_args {
+        Some(p) if !p.is_empty() => p,
+        _ => return false,
+    };
+    let Some(facts) = ctx.body_const_facts else {
+        return false;
+    };
+    let Some(&sink_val) = facts.ssa.cfg_node_map.get(&sink) else {
+        return false;
+    };
+    let Some(inst) = find_inst(&facts.ssa, sink_val) else {
+        return false;
+    };
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return false;
+    };
+    // Every payload-position operand must resolve to a concrete literal.  A
+    // payload position outside the recorded arg list cannot be proven safe.
+    payload_positions.iter().all(|&pos| match args.get(pos) {
+        Some(group) => group.iter().all(|v| {
+            matches!(
+                facts.const_values.get(v),
+                Some(
+                    ConstLattice::Str(_)
+                        | ConstLattice::Int(_)
+                        | ConstLattice::Bool(_)
+                        | ConstLattice::Null
+                )
+            )
+        }),
+        None => false,
+    })
+}
+
+/// Suppress a `cfg-unguarded-sink` SSRF finding when the sink's URL operand
+/// is origin-locked: it is the result of a `new URL(path, base)` /
+/// `urljoin(base, path)` / `url.JoinPath(base, …)` builder whose base
+/// argument pins the scheme+host, so the (attacker-controlled) path
+/// component cannot redirect the request off the locked origin.
+///
+/// Mirrors the taint engine's `StringFact::from_url_with_base` prefix-lock
+/// (`url_builder_arg_indices` + `is_string_safe_for_ssrf`): the taint engine
+/// stays silent on this shape, so the parallel structural finding is a false
+/// positive.  The base is recognised as either a string literal recorded on
+/// the builder node (`arg_string_literals[base_idx]`) or a const-bound
+/// identifier whose SSA operand resolves to a concrete string.
+fn sink_url_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    if !sink_caps.contains(Cap::SSRF) {
+        return false;
+    }
+    let sink_info = &ctx.cfg[sink];
+    let sink_func = sink_info.ast.enclosing_func.as_deref();
+    // CFG one-hop trace (mirrors `is_all_args_constant`): the SSA
+    // `cfg_node_map` only covers the body whose facts are attached to `ctx`,
+    // so for a sink inside a nested function (e.g. an Express arrow handler)
+    // the SSA path misses it.  Walk the CFG instead: for every variable the
+    // sink uses, find its defining node in the same function and test whether
+    // that definition is an origin-locking URL builder.
+    sink_info.taint.uses.iter().any(|u| {
+        ctx.cfg.node_indices().any(|idx| {
+            let info = &ctx.cfg[idx];
+            if info.ast.enclosing_func.as_deref() != sink_func {
+                return false;
+            }
+            if info.taint.defines.as_deref() != Some(u.as_str()) {
+                return false;
+            }
+            // `info` defines `u`.  Is it `new URL(path, base)` / `urljoin` /
+            // `JoinPath` with a string-literal base pinning scheme+host?
+            let Some(callee) = info.call.callee.as_deref() else {
+                return false;
+            };
+            let Some((_path_idx, base_idx)) = crate::ssa::type_facts::url_builder_arg_indices(
+                ctx.lang,
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            ) else {
+                return false;
+            };
+            info.call
+                .arg_string_literals
+                .get(base_idx)
+                .and_then(|s| s.as_deref())
+                .is_some()
+        })
+    })
 }
 
 /// Return true if the SSA body contains a *named* variable whose definition
@@ -2493,6 +2599,18 @@ fn local_is_param_derived<'a>(
             continue;
         }
         found_def = true;
+        // A `foreach` / `for-each` loop binding iterates collection
+        // *elements*, not a direct parameter pass-through.  Even when the
+        // iterable is a bare parameter (`foreach ($param as $v)`), the
+        // per-element values are not simple wrapper plumbing, so do not
+        // clear them as parameter-derived — keep the structural finding
+        // for `foreach ($param as $v) { sink($v) }` shapes (literal-keyed
+        // arrays are already suppressed earlier by
+        // `sink_arg_uses_safe_foreach_key`).
+        if info.kind == StmtKind::Loop {
+            all_def_clear = false;
+            break;
+        }
         if info
             .taint
             .labels
@@ -2715,10 +2833,6 @@ fn sink_in_entrypoint(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
 }
 
 impl CfgAnalysis for UnguardedSink {
-    fn name(&self) -> &'static str {
-        "unguarded-sink"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
         let sink_nodes = dominators::find_sink_nodes(ctx.cfg);
@@ -2796,6 +2910,29 @@ impl CfgAnalysis for UnguardedSink {
             // If sink args are all constants (including one-hop constant bindings)
             // and taint didn't confirm, this is a false positive, skip it.
             if is_all_args_constant(ctx, *sink) && !has_taint {
+                continue;
+            }
+
+            // Payload-arg-gated sinks (e.g. Go `db.QueryContext(ctx, sql,
+            // ...binds)`, `payload_args = [1]`): only the payload positions can
+            // carry an injection.  When the taint engine is already silent
+            // (`!has_taint`) and every payload-position operand is a constant
+            // literal, the non-payload operands (a `context.Context`, bind
+            // values) cannot make the call dangerous, so the structural finding
+            // is a false positive even though `is_all_args_constant` rejects it.
+            if !has_taint && sink_payload_args_const(ctx, *sink) {
+                continue;
+            }
+
+            // Origin-locked URL SSRF sinks (`fetch(new URL(path, "https://…"))`):
+            // the builder's literal base pins scheme+host, so the
+            // attacker-controlled path cannot redirect off-origin.  The taint
+            // engine already suppresses this via the abstract prefix-lock, so
+            // the parallel structural finding is a false positive.  NOT gated
+            // on `!has_taint`: the origin lock holds precisely *because* the
+            // tainted path reaches the builder — the host stays fixed — so the
+            // syntactic taint-reaches signal must not re-open the finding.
+            if sink_url_origin_locked(ctx, *sink, sink_caps) {
                 continue;
             }
 
@@ -2976,7 +3113,6 @@ impl CfgAnalysis for UnguardedSink {
 
             findings.push(CfgFinding {
                 rule_id: "cfg-unguarded-sink".to_string(),
-                title: "Unguarded sink".to_string(),
                 severity,
                 confidence,
                 span: sink_info.ast.span,

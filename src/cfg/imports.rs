@@ -135,9 +135,7 @@ fn map_fs_module_to_promises(module: &str) -> Option<String> {
     }
 }
 
-// -------------------------------------------------------------------------
 //  Import binding extraction
-// -------------------------------------------------------------------------
 
 /// Walk the top-level AST nodes and collect import alias bindings:
 ///
@@ -615,6 +613,4 @@ fn scoped_identifier_matches(node: Node, code: &[u8], crate_prefix: &str, leaf: 
         (Some(p), Some(l)) if p == crate_prefix && l == leaf)
 }
 
-// -------------------------------------------------------------------------
 //  === PUBLIC ENTRY POINT =================================================
-// -------------------------------------------------------------------------

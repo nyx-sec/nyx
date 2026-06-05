@@ -1,0 +1,9 @@
+// Phase 10 — SqlStub positive fixture.
+//
+// A SQL-cap sink that interpolates an untrusted username straight
+// into a SELECT.  The driving harness opens the SqlStub's SQLite DB
+// (`NYX_SQL_ENDPOINT`), runs the query, and records it on the
+// stub.  Oracle: `Oracle::StubEvent { kind: StubKind::Sql, needle:
+// "OR 1=1" }` fires because the recorded summary contains the
+// tautology.
+SELECT * FROM users WHERE name = '' OR 1=1 --';

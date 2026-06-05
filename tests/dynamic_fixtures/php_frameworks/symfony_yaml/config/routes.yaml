@@ -1,0 +1,4 @@
+report_show:
+  path: /reports/{id}
+  controller: App\Controller\ReportController::show
+  methods: [POST]

@@ -1,0 +1,8 @@
+// Phase 10 — FilesystemStub positive fixture (FILE_IO cap).
+//
+// The harness reads `NYX_FS_ROOT`, then attempts to open a
+// path-traversal payload (`../../../etc/passwd`) under that root.
+// The wrapper records the access; oracle:
+// `Oracle::StubEvent { kind: StubKind::Filesystem, needle:
+// "/etc/passwd" }` fires.
+read ../../../etc/passwd

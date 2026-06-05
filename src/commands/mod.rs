@@ -14,6 +14,7 @@ pub mod rules;
 pub mod scan;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod surface;
 
 use crate::cli::{Commands, EngineProfile, IndexMode, ScanMode};
 use crate::errors::NyxResult;
@@ -57,6 +58,7 @@ pub fn handle_command(
             all_targets,
             keep_nonprod_severity,
             quiet,
+            verbose,
             fail_on,
             no_state,
             no_rank,
@@ -97,6 +99,15 @@ pub fn handle_command(
             high_only,
             ast_only,
             cfg_only,
+            verify,
+            no_verify,
+            verify_all_confidence,
+            unsafe_sandbox,
+            backend,
+            harden,
+            baseline,
+            baseline_write,
+            gate,
         } => {
             // ── Apply profile first (CLI flags override after) ──────────
             if let Some(ref name) = profile {
@@ -307,6 +318,58 @@ pub fn handle_command(
             // resolved straight from config; no CLI overrides yet.
             let _ = crate::utils::detector_options::install(config.detectors.clone());
 
+            // ── Dynamic verification ────────────────────────────────────
+            #[cfg(feature = "dynamic")]
+            {
+                // Validate and apply --unsafe-sandbox / --backend combo.
+                let explicit_backend = backend.as_deref().unwrap_or("auto");
+                if unsafe_sandbox && explicit_backend == "docker" {
+                    return Err(crate::errors::NyxError::Msg(
+                        "--unsafe-sandbox and --backend docker are mutually exclusive: \
+                         --unsafe-sandbox forces the process backend; \
+                         docker cannot be reached through this flag."
+                            .into(),
+                    ));
+                }
+                let resolved_backend = if unsafe_sandbox {
+                    "process"
+                } else {
+                    explicit_backend
+                };
+                // --verify / --no-verify override the config default.
+                if no_verify {
+                    config.scanner.verify = false;
+                } else if verify {
+                    config.scanner.verify = true;
+                }
+                // --verify-all-confidence overrides the confidence gate.
+                if verify_all_confidence {
+                    config.scanner.verify_all_confidence = true;
+                }
+                config.scanner.verify_backend = resolved_backend.to_owned();
+                // --harden=<standard|strict> overrides the config default.
+                if let Some(ref profile) = harden {
+                    config.scanner.harden_profile = profile.to_owned();
+                }
+            }
+            // Without the dynamic feature, keep the user's verify toggle in
+            // the resolved config so the scan command can either suppress the
+            // warning (`--no-verify`) or explain why verification is static-only.
+            #[cfg(not(feature = "dynamic"))]
+            {
+                if no_verify {
+                    config.scanner.verify = false;
+                } else if verify {
+                    config.scanner.verify = true;
+                }
+                if verify_all_confidence {
+                    config.scanner.verify_all_confidence = true;
+                }
+                let _ = unsafe_sandbox;
+                let _ = backend;
+                let _ = harden;
+            }
+
             // ── --explain-engine: print resolved config and exit ────────
             if explain_engine {
                 print_engine_explanation(config, engine_profile);
@@ -325,7 +388,26 @@ pub fn handle_command(
                 show_instances.as_deref(),
                 database_dir,
                 config,
+                baseline.as_deref().map(std::path::Path::new),
+                baseline_write.as_deref().map(std::path::Path::new),
+                gate.as_deref(),
+                verbose,
             )?;
+        }
+        #[cfg(feature = "dynamic")]
+        Commands::VerifyFeedback {
+            finding_id,
+            wrong,
+            right,
+            upload,
+        } => {
+            handle_verify_feedback(&finding_id, wrong.as_deref(), right, upload)?;
+        }
+        #[cfg(not(feature = "dynamic"))]
+        Commands::VerifyFeedback { .. } => {
+            return Err(crate::errors::NyxError::Msg(
+                "The `dynamic` feature is not enabled. Rebuild with `cargo build --features dynamic`.".into(),
+            ));
         }
         Commands::Index { action } => {
             install_from_config(config);
@@ -356,6 +438,14 @@ pub fn handle_command(
         Commands::Rules { action } => {
             self::rules::handle(action, config)?;
         }
+        Commands::Surface {
+            path,
+            format,
+            build,
+        } => {
+            install_from_config(config);
+            surface::handle(&path, format, build, database_dir, config)?;
+        }
         Commands::Serve {
             path,
             port,
@@ -384,6 +474,59 @@ pub fn handle_command(
             }
         }
     }
+    Ok(())
+}
+
+/// Handle `nyx verify-feedback` (§21.2).
+///
+/// Records the user's correction or confirmation for a finding verdict.
+/// Local-first: writes to the telemetry log; no auto-upload.
+#[cfg(feature = "dynamic")]
+fn handle_verify_feedback(
+    finding_id: &str,
+    wrong: Option<&str>,
+    right: bool,
+    upload: bool,
+) -> crate::errors::NyxResult<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let _ = upload; // Upload not yet implemented (reserved).
+
+    let feedback_kind = if let Some(reason) = wrong {
+        format!("wrong:{reason}")
+    } else if right {
+        "right".to_owned()
+    } else {
+        return Err(crate::errors::NyxError::Msg(
+            "specify --wrong \"reason\" or --right".into(),
+        ));
+    };
+
+    let record = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "event": "verify_feedback",
+        "finding_id": finding_id,
+        "feedback": feedback_kind,
+    });
+
+    // Append to the telemetry log.
+    if let Some(log_path) = crate::dynamic::telemetry::log_path() {
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(f, "{}", serde_json::to_string(&record).unwrap_or_default());
+        }
+        eprintln!(
+            "Feedback recorded for finding {}. Log: {}",
+            finding_id,
+            log_path.display()
+        );
+    } else {
+        eprintln!("Feedback recorded (in-memory only; cannot determine cache path).");
+    }
+
     Ok(())
 }
 

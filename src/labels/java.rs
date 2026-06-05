@@ -14,8 +14,17 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &[
             "getParameter",
+            // Iterable/collection-returning request accessors.  `getParameter`
+            // (word-boundary suffix match) does NOT cover `getParameterValues`
+            // etc., and these are the dominant untrusted-input shapes inside
+            // for-each loops (`for (String s : req.getParameterValues("v"))`).
+            "getParameterValues",
+            "getParameterMap",
+            "getParameterNames",
             "getInputStream",
             "getHeader",
+            "getHeaders",
+            "getHeaderNames",
             "getCookies",
             "getReader",
             "getQueryString",
@@ -48,9 +57,30 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
-    // OWASP ESAPI encoders
+    // OWASP ESAPI encoders.  The idiomatic call site is the fluent
+    // `ESAPI.encoder().encodeForHTML(x)` chain, which Java's chain collapse
+    // rewrites to the callee text `ESAPI.encodeForHTML` (the intermediate
+    // `encoder()` call is dropped), so the class-qualified
+    // `Encoder.encodeForHTML` matcher never fires on it.  Match the
+    // `ESAPI.`- and `encoder.`-qualified forms so a value run through the
+    // canonical XSS encoder has its HTML_ESCAPE cap cleared before it reaches
+    // a `response.getWriter()` sink.  Deliberately NOT matched bare: the OWASP
+    // Benchmark ships a decoy `Utils.encodeForHTML(...)` that returns the
+    // string UNCHANGED to test whether a scanner is fooled by the method name,
+    // so a bare `encodeForHTML` matcher would suppress real reflected-XSS.
     LabelRule {
-        matchers: &["Encoder.encodeForHTML", "Encoder.encodeForJavaScript"],
+        matchers: &[
+            "Encoder.encodeForHTML",
+            "Encoder.encodeForJavaScript",
+            "ESAPI.encodeForHTML",
+            "ESAPI.encodeForHTMLAttribute",
+            "ESAPI.encodeForJavaScript",
+            "ESAPI.encodeForCSS",
+            "encoder.encodeForHTML",
+            "encoder.encodeForHTMLAttribute",
+            "encoder.encodeForJavaScript",
+            "encoder.encodeForCSS",
+        ],
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
@@ -114,6 +144,23 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["Runtime.exec", "ProcessBuilder"],
         label: DataLabel::Sink(Cap::SHELL_ESCAPE),
         case_sensitive: false,
+    },
+    // `ProcessBuilder.command(argList)` — the dominant OWASP Benchmark
+    // command-injection shape builds an argument `List<String>`, attaches it
+    // via `pb.command(argList)`, then runs `pb.start()`.  The argument list is
+    // a separate channel from the constructor, so the flat `ProcessBuilder`
+    // constructor sink above never sees the tainted args.  This rule fires
+    // only via type-qualified resolution: the receiver `pb` must carry a
+    // `TypeKind::ProcessBuilder` fact (set by `constructor_type` for
+    // `new ProcessBuilder(...)`), so the resolver rewrites `pb.command(...)` →
+    // `ProcessBuilder.command`.  Case-sensitive and receiver-typed to avoid
+    // colliding with the many unrelated `.command(...)` methods (CLI builders,
+    // JCommander, picocli, Swing actions).  The payload is restricted to arg 0
+    // (the command list) via `type_qualified_sink_payload_args`.
+    LabelRule {
+        matchers: &["ProcessBuilder.command"],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
     },
     LabelRule {
         matchers: &["executeQuery", "executeUpdate"],
@@ -206,10 +253,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: true,
     },
-    // HTTP response sinks, println/print are broad (also match System.out)
-    // but necessary to catch response.getWriter().println() via suffix matching.
+    // HTTP response reflected-XSS sinks.  `println` / `print` / `write` are
+    // the servlet response-writer output verbs; `write` is the dominant form
+    // in real servlets (`response.getWriter().write(html)`).  All three are
+    // matched bare because Java collapses the writer chain
+    // `response.getWriter().write(x)` to the callee text `response.write`
+    // (the intermediate `getWriter()` call is dropped), so a receiver-typed
+    // `HttpResponse.write` rule never sees it.  The breadth is bounded two
+    // ways: `System.out.println` / `System.err.println` are excluded by
+    // `suppress_known_safe_callees`, and `receiver_incompatible_sink_caps`
+    // strips `HTML_ESCAPE` whenever the receiver resolves to a non-response
+    // type (a `FileWriter` / `FileOutputStream` typed `FileHandle`, a DB
+    // connection, etc.), so genuine file/stream writes do not register as XSS.
     LabelRule {
-        matchers: &["println", "print"],
+        matchers: &["println", "print", "write"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },

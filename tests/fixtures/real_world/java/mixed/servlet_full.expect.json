@@ -80,14 +80,14 @@
       "notes": "source at 11:9 (request.getParameter(\"input\")) flows through SQL query (line 17) into result set output at out.println(rs.getString(1)); second-order taint via tainted query results"
     },
     {
-      "rule_id": "java.xss.getwriter_print",
+      "rule_id": "taint-unsanitised-flow",
       "severity": "MEDIUM",
       "must_not_match": true,
       "line_range": [
         26,
         26
       ],
-      "notes": "response.getWriter().println(new String(data)) — file-read data, Layer B suppresses (regression guard)"
+      "notes": "response.getWriter().println(new String(data)) — file-read bytes, not reflected request input, must NOT raise reflected-XSS (Cap::HTML_ESCAPE). Regression guard retargeted from the retired java.xss.getwriter_print AST pattern to the taint sink that now owns reflected XSS."
     }
   ]
 }

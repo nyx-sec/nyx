@@ -1,0 +1,5 @@
+{
+  "backend": "Docker",
+  "memory_mib": 256,
+  "timeout_secs": 30.0
+}

@@ -102,6 +102,7 @@ fn make_diag(
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: vec![],
+        stable_hash: 0,
     }
 }
 

@@ -50,12 +50,12 @@ async fn set_triage(
         ));
     }
 
-    let pool = state.db_pool.as_ref().ok_or((
+    let pool = state.active_db_pool().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": "database not available" })),
     ))?;
 
-    let idx = Indexer::from_pool("_triage", pool).map_err(|e| {
+    let idx = Indexer::from_pool("_triage", &pool).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -100,10 +100,10 @@ async fn list_triage(
     Query(query): Query<ListTriageQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_triage", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx =
+        Indexer::from_pool("_triage", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(50).clamp(1, 500);
@@ -167,10 +167,10 @@ async fn get_audit_log(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_triage", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx =
+        Indexer::from_pool("_triage", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(50).clamp(1, 500);
@@ -210,12 +210,12 @@ async fn add_suppression(
         ));
     }
 
-    let pool = state.db_pool.as_ref().ok_or((
+    let pool = state.active_db_pool().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": "database not available" })),
     ))?;
 
-    let idx = Indexer::from_pool("_triage", pool).map_err(|e| {
+    let idx = Indexer::from_pool("_triage", &pool).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -277,10 +277,10 @@ async fn list_suppressions(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_triage", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx =
+        Indexer::from_pool("_triage", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let rules = idx
         .get_suppression_rules()
@@ -301,10 +301,10 @@ async fn remove_suppression(
     Query(query): Query<DeleteSuppressionQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let pool = state
-        .db_pool
-        .as_ref()
+        .active_db_pool()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let idx = Indexer::from_pool("_triage", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx =
+        Indexer::from_pool("_triage", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let deleted = idx
         .delete_suppression_rule(query.id)
@@ -323,9 +323,10 @@ fn auto_sync_to_file(state: &AppState) {
     if !sync_enabled {
         return;
     }
-    if let Some(ref pool) = state.db_pool {
+    if let Some(pool) = state.active_db_pool() {
+        let scan_root = state.active_scan_root();
         let findings = load_latest_findings(state);
-        let _ = crate::server::triage_sync::sync_to_file(pool, &findings, &state.scan_root);
+        let _ = crate::server::triage_sync::sync_to_file(&pool, &findings, &scan_root);
     }
 }
 
@@ -334,28 +335,29 @@ fn auto_sync_to_file(state: &AppState) {
 async fn export_triage_file(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let pool = state.db_pool.as_ref().ok_or((
+    let pool = state.active_db_pool().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": "database not available" })),
     ))?;
 
     let findings = load_latest_findings(&state);
-    let file = crate::server::triage_sync::export_triage(pool, &findings, &state.scan_root)
-        .map_err(|e| {
+    let scan_root = state.active_scan_root();
+    let file =
+        crate::server::triage_sync::export_triage(&pool, &findings, &scan_root).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": e })),
             )
         })?;
 
-    crate::server::triage_sync::save_triage_file(&state.scan_root, &file).map_err(|e| {
+    crate::server::triage_sync::save_triage_file(&scan_root, &file).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e })),
         )
     })?;
 
-    let path = crate::server::triage_sync::triage_file_path(&state.scan_root).map_err(|e| {
+    let path = crate::server::triage_sync::triage_file_path(&scan_root).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e })),
@@ -373,12 +375,13 @@ async fn export_triage_file(
 async fn import_triage_file(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let pool = state.db_pool.as_ref().ok_or((
+    let pool = state.active_db_pool().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": "database not available" })),
     ))?;
 
-    let file = crate::server::triage_sync::load_triage_file_checked(&state.scan_root)
+    let scan_root = state.active_scan_root();
+    let file = crate::server::triage_sync::load_triage_file_checked(&scan_root)
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -391,14 +394,13 @@ async fn import_triage_file(
         ))?;
 
     let findings = load_latest_findings(&state);
-    let applied =
-        crate::server::triage_sync::import_triage(pool, &findings, &state.scan_root, &file)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": e })),
-                )
-            })?;
+    let applied = crate::server::triage_sync::import_triage(&pool, &findings, &scan_root, &file)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        })?;
 
     Ok(Json(serde_json::json!({
         "imported": applied,
@@ -410,8 +412,9 @@ async fn import_triage_file(
 // ── GET /api/triage/sync-status ─────────────────────────────────────────────
 
 async fn get_sync_status(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let path = crate::server::triage_sync::triage_file_path(&state.scan_root).ok();
-    let file = crate::server::triage_sync::load_triage_file(&state.scan_root);
+    let scan_root = state.active_scan_root();
+    let path = crate::server::triage_sync::triage_file_path(&scan_root).ok();
+    let file = crate::server::triage_sync::load_triage_file(&scan_root);
     let sync_enabled = state.config.read().server.triage_sync;
 
     Json(serde_json::json!({

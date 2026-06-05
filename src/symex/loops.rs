@@ -3,7 +3,6 @@
 //! Detects back edges, computes natural loop bodies, identifies induction
 //! variables, and determines loop exit successors. All analysis is computed
 //! once per `explore_finding()` invocation and shared across all paths.
-#![allow(clippy::collapsible_if)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,9 +33,7 @@ pub struct LoopInfo {
     doms: Dominators<NodeIndex>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Public API
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Analyse loop structure in an SSA body.
 ///
@@ -108,9 +105,7 @@ impl LoopInfo {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Build a petgraph from SSA block successors.
 ///
@@ -304,9 +299,7 @@ fn is_simple_increment(ssa: &SsaBody, inc_val: SsaValue, phi_val: SsaValue) -> b
     false
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

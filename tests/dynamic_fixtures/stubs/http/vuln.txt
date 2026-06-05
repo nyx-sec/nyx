@@ -1,0 +1,10 @@
+// Phase 10 — HttpStub positive fixture (SSRF cap).
+//
+// The harness reads `NYX_HTTP_ENDPOINT`, opens a TCP connection,
+// and issues a GET with an attacker-controlled path.  The recorded
+// summary is the request line.  Oracle:
+// `Oracle::StubEvent { kind: StubKind::Http, needle: "169.254" }`
+// fires because the URL embeds a metadata-service host the
+// untrusted user supplied.
+GET /metadata HTTP/1.1
+Host: 169.254.169.254

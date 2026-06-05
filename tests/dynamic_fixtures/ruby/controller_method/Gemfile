@@ -1,0 +1,4 @@
+source 'https://rubygems.org'
+
+# Phase 15 fixture — generic controller-method shape.  No framework
+# dep is required at runtime; the Gemfile is informational.

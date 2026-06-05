@@ -1,0 +1,470 @@
+//! Phase 11 (Track J.9) — `Cap::UNAUTHORIZED_ID` corpus acceptance.
+//!
+//! Asserts the corpus + IDOR oracle for all seven backend-capable
+//! languages.  The vuln payload supplies an `owner_id` belonging to
+//! another user; the
+//! [`nyx_scanner::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+//! predicate fires when `caller_id != owner_id`.  Per-lang harness
+//! dispatchers are deferred — see `.pitboss/play/deferred.md`.
+//!
+//! `cargo nextest run --features dynamic --test unauthorized_id_corpus`.
+
+#![cfg(feature = "dynamic")]
+
+mod common;
+
+use nyx_scanner::dynamic::corpus::{payloads_for_lang, resolve_benign_control_lang};
+use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired};
+use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
+use nyx_scanner::dynamic::sandbox::SandboxOutcome;
+use nyx_scanner::labels::Cap;
+use nyx_scanner::symbol::Lang;
+use std::time::Duration;
+
+const LANGS: &[Lang] = &[
+    Lang::Python,
+    Lang::Ruby,
+    Lang::Java,
+    Lang::Php,
+    Lang::JavaScript,
+    Lang::Go,
+    Lang::Rust,
+];
+
+fn outcome() -> SandboxOutcome {
+    SandboxOutcome {
+        exit_code: Some(0),
+        stdout: vec![],
+        stderr: vec![],
+        timed_out: false,
+        oob_callback_seen: false,
+        sink_hit: false,
+        duration: Duration::from_millis(1),
+        hardening_outcome: None,
+    }
+}
+
+fn idor_probe(caller: &str, owner: &str) -> SinkProbe {
+    SinkProbe {
+        sink_callee: "__nyx_idor_lookup".into(),
+        args: vec![],
+        captured_at_ns: 1,
+        payload_id: "idor-test".into(),
+        kind: ProbeKind::IdorAccess {
+            caller_id: caller.into(),
+            owner_id: owner.into(),
+        },
+        witness: ProbeWitness::empty(),
+    }
+}
+
+#[test]
+fn corpus_registers_unauthorized_id_for_each_supported_lang() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::UNAUTHORIZED_ID, *lang);
+        assert!(!slice.is_empty(), "UNAUTHORIZED_ID missing for {lang:?}");
+        assert!(slice.iter().any(|p| !p.is_benign));
+        assert!(slice.iter().any(|p| p.is_benign));
+    }
+}
+
+#[test]
+fn idor_payloads_pair_benign_per_lang() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::UNAUTHORIZED_ID, *lang);
+        let vuln = slice.iter().find(|p| !p.is_benign).expect("vuln");
+        let resolved = resolve_benign_control_lang(vuln, Cap::UNAUTHORIZED_ID, *lang)
+            .expect("benign control resolves");
+        assert!(resolved.is_benign);
+        match &vuln.oracle {
+            Oracle::SinkProbe { predicates } => assert!(
+                predicates
+                    .iter()
+                    .any(|p| matches!(p, ProbePredicate::IdorBoundaryCrossed))
+            ),
+            other => panic!("expected SinkProbe, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn idor_predicate_fires_on_boundary_crossing() {
+    let oracle = Oracle::SinkProbe {
+        predicates: &[ProbePredicate::IdorBoundaryCrossed],
+    };
+    assert!(oracle_fired(
+        &oracle,
+        &outcome(),
+        &[idor_probe("alice", "bob")]
+    ));
+    assert!(!oracle_fired(
+        &oracle,
+        &outcome(),
+        &[idor_probe("alice", "alice")]
+    ));
+    assert!(!oracle_fired(&oracle, &outcome(), &[]));
+}
+
+/// Drives the per-language UNAUTHORIZED_ID fixtures through `run_spec`
+/// and asserts the vuln payload Confirms while the benign control does
+/// not.  Each fixture pair shares a single entry function (`run`); the
+/// harness emitter resolves the payload-vs-record boundary via the
+/// hard-coded `caller_id = "alice"` it embeds in the probe shim.
+mod e2e_unauthorized_id {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::spec::{
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
+    };
+    use nyx_scanner::evidence::DifferentialVerdict;
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn command_available(bin: &str) -> bool {
+        // Go's CLI uses `go version` (subcommand) instead of `go
+        // --version` and exits non-zero on `--version`.  Every other
+        // toolchain here (python3, ruby, node, javac, php, cargo)
+        // accepts `--version`.
+        let arg = if bin == "go" { "version" } else { "--version" };
+        Command::new(bin)
+            .arg(arg)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn build_spec(lang: Lang, fixture: &str, entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/unauthorized_id")
+            .join(match lang {
+                Lang::Python => "python",
+                Lang::Ruby => "ruby",
+                Lang::JavaScript => "js",
+                Lang::Java => "java",
+                Lang::Php => "php",
+                Lang::Go => "go",
+                Lang::Rust => "rust",
+                _ => unreachable!(
+                    "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
+                ),
+            })
+            .join(fixture);
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(fixture);
+        std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"e2e-unauthorized-id|");
+        digest.update(fixture.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang,
+            toolchain_id: default_toolchain_id(lang).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::UNAUTHORIZED_ID,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
+        };
+
+        (spec, tmp)
+    }
+
+    fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        let required = match lang {
+            Lang::Python => "python3",
+            Lang::Ruby => "ruby",
+            Lang::JavaScript => "node",
+            Lang::Java => "javac",
+            Lang::Php => "php",
+            Lang::Go => "go",
+            Lang::Rust => "cargo",
+            _ => unreachable!(
+                "UNAUTHORIZED_ID e2e currently covers Python + Ruby + JavaScript + Java + Php + Go + Rust"
+            ),
+        };
+        if !command_available(required) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {required}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(lang, fixture, entry_name);
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
+        }
+    }
+
+    /// The runner draws the curated payload pair (vuln "bob" + benign "alice")
+    /// from `payloads_for_lang(Cap::UNAUTHORIZED_ID, Lang::Python)`.  Pointed at
+    /// the vuln fixture:
+    ///
+    /// * `bob` → fixture returns bob's record → probe(caller=alice, owner=bob)
+    ///   → `IdorBoundaryCrossed` fires.
+    /// * `alice` → fixture returns alice's record → probe(caller=alice,
+    ///   owner=alice) → predicate clears.
+    ///
+    /// The vuln-vs-benign differential lands at `Confirmed`.
+    #[test]
+    fn python_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Python UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    /// Pointed at the benign fixture:
+    ///
+    /// * `bob` → fixture rejects (returns None) → no probe.
+    /// * `alice` → fixture returns alice's record → probe(alice, alice) →
+    ///   predicate clears.
+    ///
+    /// Neither payload fires the predicate; the differential lands at
+    /// `NotConfirmed`.
+    #[test]
+    fn python_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Python, "benign.py", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Python UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Ruby pair, same shape as Python: the vuln fixture returns the
+    /// record for any owner_id, the benign fixture returns nil when
+    /// owner_id != caller_id.  Skips when `ruby` is not on PATH.
+    #[test]
+    fn ruby_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Ruby UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn ruby_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "benign.rb", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Ruby UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// JavaScript pair, same shape as Python + Ruby: the vuln fixture
+    /// returns `STORE[ownerId]` for any owner_id, the benign fixture
+    /// returns `null` when `ownerId !== CALLER_ID`.  Skips when `node`
+    /// is not on PATH.
+    #[test]
+    fn javascript_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "JavaScript UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn javascript_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "benign.js", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "JavaScript UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Java pair, same shape as Python + Ruby + JavaScript: the vuln
+    /// fixture's `STORE.get(ownerId)` materialises a record for any
+    /// owner_id; the harness emits a `ProbeKind::IdorAccess` and
+    /// `IdorBoundaryCrossed` fires for `bob`.  The benign fixture's
+    /// `if (!CALLER.equals(ownerId)) return null;` short-circuits for
+    /// the non-caller payload so no probe is emitted and the predicate
+    /// stays clear.  Skips when `javac` is not on PATH.
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Java UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn java_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Benign.java", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Java UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// PHP pair, same shape as Python + Ruby + JavaScript + Java.  The
+    /// vuln fixture's `$STORE[$ownerId]` materialises a record for any
+    /// owner_id; the harness emits `ProbeKind::IdorAccess` and
+    /// `IdorBoundaryCrossed` fires for `bob`.  The benign fixture's
+    /// `if ($ownerId !== CALLER_ID) return null;` short-circuit clears
+    /// the predicate for the non-caller payload.  Skips when `php` is
+    /// not on PATH.
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "PHP UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn php_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "benign.php", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "PHP UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Go pair, same shape as Python + Ruby + JavaScript + Java + Php.
+    /// The vuln fixture's `store[ownerID]` materialises `"bob@x"` for
+    /// the `bob` payload; the harness's `reflect`-driven presence check
+    /// fires the `IdorAccess(alice, bob)` probe and
+    /// `IdorBoundaryCrossed` confirms the differential.  The benign
+    /// fixture's `if ownerID != callerID { return "" }` short-circuit
+    /// returns an empty string for the non-caller payload so the
+    /// presence check clears and no probe fires.  Skips when `go` is
+    /// not on PATH.
+    #[test]
+    fn go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Go UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn go_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "benign.go", "Run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Go UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+
+    /// Rust pair, same shape as Python + Ruby + JavaScript + Java +
+    /// Php + Go.  The vuln fixture's `store.get(owner_id).cloned()`
+    /// returns `Some(_)` for any `owner_id`; the harness's `.is_some()`
+    /// gate fires the `IdorAccess(alice, bob)` probe and
+    /// `IdorBoundaryCrossed` confirms the differential.  The benign
+    /// fixture's `if owner_id != CALLER_ID { return None; }` short-
+    /// circuit returns `None` for the non-caller payload so the gate
+    /// clears and no probe fires.  Skips when `cargo` is not on PATH.
+    #[test]
+    fn rust_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Rust UNAUTHORIZED_ID vuln must confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn rust_benign_does_not_confirm_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "benign.rs", "run") else {
+            return;
+        };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "Rust UNAUTHORIZED_ID benign control must not confirm via run_spec; got {outcome:?}",
+        );
+    }
+}

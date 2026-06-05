@@ -2,8 +2,8 @@
 //!
 //! Produces professional, security-tool-grade aligned output with a clear
 //! severity hierarchy, normalised taint flow rendering, and stable wrapping.
-#![allow(clippy::collapsible_if)]
 
+use crate::chain::finding::ChainFinding;
 use crate::commands::scan::{Diag, SuppressionStats};
 use crate::patterns::Severity;
 use console::style;
@@ -12,18 +12,28 @@ use std::collections::BTreeMap;
 /// Default maximum line width when terminal size is unknown.
 const DEFAULT_WIDTH: usize = 100;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Public API
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Render all diagnostics as grouped, formatted console output with a summary.
+///
+/// `chains` is the list of composed exploit chains emitted alongside
+/// `diags`.  When non-empty, a `Chains` section is printed ahead of the
+/// per-file findings.  Callers that have already gated constituent
+/// findings on `[output] show_chain_constituents` should pass the
+/// filtered `diags` slice so the constituent listing matches the JSON /
+/// SARIF emitters.
 pub fn render_console(
     diags: &[Diag],
     project_name: &str,
     suppression_stats: Option<&SuppressionStats>,
+    chains: &[ChainFinding],
 ) -> String {
     let width = terminal_width();
     let mut out = String::new();
+
+    if !chains.is_empty() {
+        out.push_str(&render_chains(chains, width));
+    }
 
     let mut grouped: BTreeMap<&str, Vec<&Diag>> = BTreeMap::new();
     for d in diags {
@@ -37,6 +47,18 @@ pub fn render_console(
             out.push_str(&render_diag(d, width));
             out.push('\n'); // blank line between findings
         }
+    }
+
+    let dynamic_summary = crate::commands::scan::DynamicVerificationSummary::from_diags(diags);
+    if !dynamic_summary.is_empty() {
+        out.push_str(&format!(
+            "{} {}\n\n",
+            style("Dynamic verification:").cyan().bold(),
+            style(crate::commands::scan::format_dynamic_verification_summary(
+                &dynamic_summary
+            ))
+            .dim()
+        ));
     }
 
     let suppressed_count = diags.iter().filter(|d| d.suppressed).count();
@@ -165,9 +187,7 @@ pub fn shorten_callee(s: &str) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Welcome screen
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Render the branded welcome screen shown when `nyx` is invoked with no arguments.
 pub fn render_welcome() -> String {
@@ -179,7 +199,7 @@ pub fn render_welcome() -> String {
     for line in LOGO {
         out.push_str(&format!(
             "  {}\n",
-            style(line).true_color(114, 243, 215).bold()
+            style(line).true_color(46, 160, 103).bold()
         ));
     }
 
@@ -233,12 +253,71 @@ const LOGO: &[&str] = &[
     r"╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝",
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Internal rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Indentation for body/evidence lines (spaces).
 const BODY_INDENT: usize = 6;
+
+/// Render the `Chains` header section.  Each chain is summarised on
+/// two lines: severity + impact + score header, then sink location +
+/// constituent count.
+fn render_chains(chains: &[ChainFinding], _width: usize) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}\n",
+        style(format!("Chains ({})", chains.len()))
+            .bold()
+            .underlined()
+    ));
+    for c in chains {
+        let sev = chain_severity_tag(c.severity);
+        let impact = format!("{:?}", c.implied_impact);
+        let header = format!(
+            "  {} [{}] {}  (score: {:.1}, {} members)",
+            sev,
+            impact,
+            style(&c.sink.function_name).bold(),
+            c.score,
+            c.members.len()
+        );
+        out.push_str(&format!("{header}\n"));
+        out.push_str(&format!(
+            "      {} {}:{}:{}\n",
+            style("sink:").dim(),
+            c.sink.file,
+            c.sink.line,
+            c.sink.col
+        ));
+        for m in &c.members {
+            out.push_str(&format!(
+                "      {} {} {}:{}:{}\n",
+                style("via:").dim(),
+                style(&m.rule_id).dim(),
+                m.location.file,
+                m.location.line,
+                m.location.col
+            ));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Render a chain severity tag with the same shape as the per-diag
+/// severity tag so chain output reads consistently next to findings.
+fn chain_severity_tag(s: crate::chain::finding::ChainSeverity) -> String {
+    use crate::chain::finding::ChainSeverity;
+    match s {
+        ChainSeverity::Critical => format!(
+            "{} {}",
+            style("✖").red().bold(),
+            style("[CRITICAL]").red().bold()
+        ),
+        ChainSeverity::High => format!("{} {}", style("✖").red(), style("[HIGH]").red()),
+        ChainSeverity::Medium => format!("{} {}", style("⚠").yellow(), style("[MEDIUM]").yellow()),
+        ChainSeverity::Low => format!("{} {}", style("●").dim(), style("[LOW]").dim()),
+    }
+}
 
 /// Render a single diagnostic block.
 fn render_diag(d: &Diag, width: usize) -> String {
@@ -424,6 +503,14 @@ fn render_diag(d: &Diag, width: usize) -> String {
         ));
     }
 
+    // ── Dynamic verification annotation ──────────────────────────────
+    if let Some(ev) = d.evidence.as_ref() {
+        if let Some(ref dv) = ev.dynamic_verdict {
+            let annotation = format_dynamic_verdict_annotation(dv);
+            out.push_str(&format!("{indent_str}{}\n", style(&annotation).dim()));
+        }
+    }
+
     out
 }
 
@@ -453,6 +540,104 @@ fn state_remediation_hint(rule_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Format a dynamic verification annotation line.
+///
+/// Spec §5.4: `[DYN: confirmed via {payload}]` / `[DYN: not confirmed]` /
+/// `[DYN: unsupported ({reason})]` / `[DYN: inconclusive ({reason})]`
+fn format_dynamic_verdict_annotation(dv: &crate::evidence::VerifyResult) -> String {
+    use crate::evidence::VerifyStatus;
+    match dv.status {
+        VerifyStatus::Confirmed => {
+            let pid = dv.triggered_payload.as_deref().unwrap_or("unknown");
+            format!("[DYN: confirmed via {pid}]")
+        }
+        VerifyStatus::PartiallyConfirmed => "[DYN: partially confirmed (sink reached)]".to_string(),
+        VerifyStatus::NotConfirmed => "[DYN: not confirmed]".to_string(),
+        VerifyStatus::Unsupported => {
+            let reason = dv
+                .reason
+                .as_ref()
+                .map(format_unsupported_reason)
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("[DYN: unsupported ({reason})]")
+        }
+        VerifyStatus::Inconclusive => {
+            let reason = dv
+                .inconclusive_reason
+                .as_ref()
+                .map(format_inconclusive_reason)
+                .unwrap_or_else(|| {
+                    dv.detail
+                        .as_deref()
+                        .map(|d| d.chars().take(40).collect())
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            format!("[DYN: inconclusive ({reason})]")
+        }
+    }
+}
+
+fn format_unsupported_reason(r: &crate::evidence::UnsupportedReason) -> String {
+    use crate::evidence::UnsupportedReason;
+    match r {
+        UnsupportedReason::BackendUnavailable => "backend unavailable".to_string(),
+        UnsupportedReason::EntryKindUnsupported => "entry kind not supported".to_string(),
+        UnsupportedReason::PayloadSlotUnsupported => "payload slot not supported".to_string(),
+        UnsupportedReason::ConfidenceTooLow => "confidence too low".to_string(),
+        UnsupportedReason::NoFlowSteps => "no flow steps".to_string(),
+        UnsupportedReason::NoPayloadsForCap => "no payloads for cap".to_string(),
+        UnsupportedReason::SpecDerivationFailed => "spec derivation failed".to_string(),
+        UnsupportedReason::RequiredFileRedactedForSecrets(_) => {
+            "file redacted for secrets".to_string()
+        }
+        UnsupportedReason::LangUnsupported => "language not supported".to_string(),
+        UnsupportedReason::SoundOracleUnavailable { cap, lang, hint } => {
+            if hint.is_empty() {
+                format!("sound oracle unavailable ({cap:?}, {lang:?})")
+            } else {
+                format!("sound oracle unavailable ({cap:?}, {lang:?}): {hint}")
+            }
+        }
+    }
+}
+
+fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String {
+    use crate::evidence::InconclusiveReason;
+    match r {
+        InconclusiveReason::OracleCollisionSuspected => "oracle collision".to_string(),
+        InconclusiveReason::NonReproducible => "non-reproducible".to_string(),
+        InconclusiveReason::BuildFailed => "build failed".to_string(),
+        InconclusiveReason::SandboxError => "sandbox error".to_string(),
+        InconclusiveReason::SpecDerivationFailed { hint, .. } => {
+            if hint.is_empty() {
+                "spec derivation failed".to_string()
+            } else {
+                format!("spec derivation failed ({hint})")
+            }
+        }
+        InconclusiveReason::EntryKindUnsupported {
+            lang,
+            attempted,
+            supported,
+            ..
+        } => {
+            format!("entry kind {attempted} unsupported for {lang:?} (supported: {supported:?})")
+        }
+        InconclusiveReason::NoBenignControl => "no benign control payload".to_string(),
+        InconclusiveReason::ReversedDifferential => "reversed differential".to_string(),
+        InconclusiveReason::UnrelatedCrash => "unrelated crash (not sink-site)".to_string(),
+        InconclusiveReason::BackendInsufficient {
+            backend,
+            oracle_kind,
+        } => {
+            format!("backend {backend} cannot enforce {oracle_kind} oracle")
+        }
+        InconclusiveReason::PolicyDeniedDynamic { rule, .. } => {
+            format!("dynamic execution refused by policy ({rule})")
+        }
+    }
+}
+
 /// Colored severity tag with icon. The tag is the visual anchor of each finding.
 ///
 /// - HIGH:   bold red
@@ -478,9 +663,7 @@ fn severity_tag(sev: Severity) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Text utilities
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Collapse spacing artefacts in method chains.
 ///
@@ -583,9 +766,7 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -763,6 +944,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
             Diag {
                 path: "src/b.rs".into(),
@@ -784,9 +966,10 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
         ];
-        let output = render_console(&diags, "test-project", None);
+        let output = render_console(&diags, "test-project", None, &[]);
         let stripped = strip_ansi(&output);
         assert!(stripped.contains("src/a.rs"));
         assert!(stripped.contains("src/b.rs"));
@@ -819,8 +1002,9 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }];
-        let output = render_console(&diags, "proj", None);
+        let output = render_console(&diags, "proj", None, &[]);
         let stripped = strip_ansi(&output);
         assert!(stripped.contains("Source:"), "should contain Source label");
         assert!(stripped.contains("Sink:"), "should contain Sink label");
@@ -854,6 +1038,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
             Diag {
                 path: "src/a.rs".into(),
@@ -875,9 +1060,10 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
         ];
-        let output = render_console(&diags, "proj", None);
+        let output = render_console(&diags, "proj", None, &[]);
         let stripped = strip_ansi(&output);
         // There should be a blank line between the two findings
         assert!(
@@ -908,6 +1094,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -938,6 +1125,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -972,6 +1160,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -1065,6 +1254,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 120);
         let stripped = strip_ansi(&output);
@@ -1111,6 +1301,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             };
             let output = render_diag(&d, 100);
             let stripped = strip_ansi(&output);
@@ -1143,6 +1334,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 100);
         let stripped = strip_ansi(&output);
@@ -1179,6 +1371,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 100);
         let stripped = strip_ansi(&output);
@@ -1211,6 +1404,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -1257,6 +1451,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 

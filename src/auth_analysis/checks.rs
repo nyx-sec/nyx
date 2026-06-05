@@ -902,6 +902,24 @@ fn is_self_scoped_session_base(base: &str) -> bool {
             | "ctx.session.currentUser"
             | "ctx.state.user"
             | "ctx.state.currentUser"
+            // The caller's own id from the session is self-scoped: fetching
+            // your own record with it is not IDOR (only a foreign,
+            // request-supplied id is). The `.user` forms above missed the
+            // `req.session.userId` / `session.uid` idiom.
+            | "req.session.userId"
+            | "request.session.userId"
+            | "session.userId"
+            | "req.session.userid"
+            | "request.session.userid"
+            | "session.userid"
+            | "req.session.uid"
+            | "request.session.uid"
+            | "session.uid"
+            | "ctx.session.userId"
+            | "ctx.session.userid"
+            | "ctx.session.uid"
+            | "ctx.state.userId"
+            | "ctx.state.uid"
     )
 }
 

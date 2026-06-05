@@ -17,9 +17,7 @@ use crate::taint::Finding;
 use super::state::SymbolicState;
 use super::value::SymbolicValue;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Public API
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract a human-readable witness string for a confirmed finding.
 ///
@@ -118,9 +116,7 @@ pub fn extract_witness(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// When the sink expression is a `Call`, find the most informative tainted
 /// argument to use for witness generation instead of the opaque return value.
@@ -464,9 +460,7 @@ fn evaluate_concrete(expr: &SymbolicValue) -> String {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Transform–sink mismatch detection
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Heuristic check: does a protective transform in the expression match
 /// the sink's vulnerability class?
@@ -529,9 +523,7 @@ fn cap_description(cap: Cap) -> &'static str {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -9,6 +9,7 @@
 
 - [CLI reference](cli.md)
 - [Browser UI](serve.md)
+- [Dynamic verification](dynamic.md)
 - [Configuration](configuration.md)
 - [Output formats](output.md)
 

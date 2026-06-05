@@ -50,13 +50,13 @@
 //!
 //! Each [`commands::scan::Diag`] carries:
 //!
-//! - `path`, `line`, `col` — source location of the sink
-//! - `id` — rule identifier (e.g. `taint-unsanitised-flow`, `cfg-auth-gap`)
-//! - `severity` — Critical / High / Medium / Low / Info
-//! - `confidence` — Low / Medium / High; capped at Medium when an engine
+//! - `path`, `line`, `col`: source location of the sink
+//! - `id`: rule identifier (e.g. `taint-unsanitised-flow`, `cfg-auth-gap`)
+//! - `severity`: Critical / High / Medium / Low / Info
+//! - `confidence`: Low / Medium / High; capped at Medium when an engine
 //!   budget was hit
-//! - `rank_score` — deterministic attack-surface score for truncation ordering
-//! - `evidence` — optional [`evidence::Evidence`] with source/sink spans,
+//! - `rank_score`: deterministic attack-surface score for truncation ordering
+//! - `evidence`: optional [`evidence::Evidence`] with source/sink spans,
 //!   flow steps, and [`engine_notes::EngineNote`] values describing precision loss
 //!
 //! Engine notes communicate when a bound was hit. A finding carrying
@@ -91,14 +91,18 @@
 pub mod abstract_interp;
 pub mod ast;
 pub mod auth_analysis;
+pub mod baseline;
 pub mod callgraph;
 pub mod cfg;
 pub mod cfg_analysis;
+pub mod chain;
 pub mod cli;
 pub mod commands;
 pub mod constraint;
 pub mod convergence_telemetry;
 pub mod database;
+#[cfg(feature = "dynamic")]
+pub mod dynamic;
 pub mod engine_notes;
 pub mod entry_points;
 pub mod errors;
@@ -118,6 +122,7 @@ pub mod ssa;
 pub mod state;
 pub mod summary;
 pub mod suppress;
+pub mod surface;
 pub mod symbol;
 pub mod symex;
 pub mod taint;
@@ -143,4 +148,23 @@ use utils::config::Config;
 /// [`commands::scan::scan_with_index_parallel`] instead.
 pub fn scan_no_index(root: &Path, cfg: &Config) -> NyxResult<Vec<commands::scan::Diag>> {
     commands::scan::scan_filesystem(root, cfg, false)
+}
+
+/// Same as [`scan_no_index`] but additionally returns the [`SurfaceMap`]
+/// built from the post-pass-2 view.
+///
+/// The non-indexed scan path used to drop the surface map on the floor,
+/// which forced `nyx surface` (and any other consumer that wanted both
+/// findings and the attack-surface model) to either run the analysis
+/// twice or fall back to an entry-point-only build with no DataStore /
+/// ExternalService / DangerousLocal nodes and no `Reaches` edges.
+///
+/// Use this entry point when you need both halves of the analysis.
+///
+/// [`SurfaceMap`]: surface::SurfaceMap
+pub fn scan_no_index_with_surface_map(
+    root: &Path,
+    cfg: &Config,
+) -> NyxResult<(Vec<commands::scan::Diag>, surface::SurfaceMap)> {
+    commands::scan::scan_filesystem_with_surface_map(root, cfg, false)
 }

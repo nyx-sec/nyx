@@ -147,3 +147,71 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}/
           if-no-files-found: ignore
           retention-days: 14
+
+  harness-fuzz:
+    name: harness-fuzz-${{ matrix.cap }}
+    runs-on: ubuntu-latest
+    # Run only on schedule and manual dispatch — 50 k iterations per cap is
+    # too slow for PR checks but is the right cadence for weekly corpus growth.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cap: sql_query
+            harness: tests/dynamic_fixtures/python/sqli_positive.py
+          - cap: code_exec
+            harness: tests/dynamic_fixtures/python/cmdi_positive.py
+          - cap: file_io
+            harness: tests/dynamic_fixtures/python/fileio_positive.py
+          - cap: ssrf
+            harness: tests/dynamic_fixtures/python/ssrf_positive.py
+          - cap: html_escape
+            harness: tests/dynamic_fixtures/python/xss_positive.py
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+          cache-workspaces: |
+            .
+            fuzz/dynamic_corpus
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build nyx-dynamic-corpus
+        working-directory: fuzz/dynamic_corpus
+        run: cargo build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run harness fuzzer — ${{ matrix.cap }}
+        run: |
+          fuzz/dynamic_corpus/target/debug/nyx-dynamic-corpus run \
+            --cap ${{ matrix.cap }} \
+            --spec-hash "ci-${{ matrix.cap }}" \
+            --harness-cmd "python3 ${{ matrix.harness }}" \
+            --iterations 50000 \
+            --output fuzz-discovered
+
+      - name: Upload discovered candidates
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-fuzz-${{ matrix.cap }}-${{ github.run_id }}
+          path: fuzz-discovered/
+          if-no-files-found: ignore
+          retention-days: 30

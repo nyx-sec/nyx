@@ -1,0 +1,56 @@
+[
+  {
+    "path": "app/controllers/admin_controller.rb",
+    "line": 0,
+    "cap": "auth",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/benefit_forms_controller.rb",
+    "line": 0,
+    "cap": "deserialize",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/benefit_forms_controller.rb",
+    "line": 0,
+    "cap": "path_traversal",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/messages_controller.rb",
+    "line": 0,
+    "cap": "auth",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/password_resets_controller.rb",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/password_resets_controller.rb",
+    "line": 0,
+    "cap": "deserialize",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/sessions_controller.rb",
+    "line": 0,
+    "cap": "redirect",
+    "vuln": true
+  },
+  {
+    "path": "app/controllers/users_controller.rb",
+    "line": 0,
+    "cap": "auth",
+    "vuln": true
+  },
+  {
+    "path": "app/models/user.rb",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  }
+]

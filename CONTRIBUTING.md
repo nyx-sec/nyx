@@ -29,6 +29,8 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 - **Rust 1.88+** (edition 2024)
 - Git
+- **Node 20+** — only if you touch the browser UI under `frontend/` (the
+  `nyx serve` web app). Pure-Rust changes do not need it.
 
 ### Building
 
@@ -43,12 +45,28 @@ cargo install --path . # Install as `nyx` binary
 
 ### Running Quality Checks
 
+The fastest way to reproduce CI locally is the bundled script — it runs the same
+commands CI runs (fmt, Clippy, tests, and the frontend checks):
+
 ```bash
-cargo test --bin nyx                   # Unit tests (inline in modules)
-cargo clippy --all -- -D warnings      # Lint, treats warnings as errors
-cargo fmt                              # Format code
-cargo fmt -- --check                   # Check formatting without modifying
+./scripts/check.sh              # Mirror CI: fmt + clippy + tests (+ frontend)
+./scripts/check.sh --rust-only  # Skip the frontend checks
+./scripts/fix.sh                # Auto-fix: cargo fmt + clippy --fix + prettier/eslint
 ```
+
+Or run the steps individually:
+
+```bash
+cargo test --all-features                                  # Tests, incl. tests/ integration suite
+cargo clippy --all-targets --all-features -- -D warnings   # Lint, warnings = errors
+cargo fmt                                                  # Format code
+cargo fmt -- --check                                       # Check formatting without modifying
+```
+
+> **Match CI exactly.** CI lints and tests with `--all-targets --all-features`.
+> The older `cargo test --bin nyx` / `cargo clippy --all` commands skip the
+> `tests/` integration suite and feature-gated code, so they can pass locally
+> while CI fails. Prefer `./scripts/check.sh`.
 
 > **Note**: The first build downloads and compiles tree-sitter grammars for all 10 languages. Subsequent builds are faster.
 
@@ -63,6 +81,12 @@ Benchmark fixtures live in `benches/fixtures/`. Criterion produces HTML reports 
 ---
 
 ## Project Layout
+
+> **New here?** [`docs/how-it-works.md`](docs/how-it-works.md) walks the analysis
+> pipeline end to end (with a diagram), and [`docs/detectors/taint.md`](docs/detectors/taint.md)
+> covers the taint engine. The easiest first contribution is usually a new AST
+> pattern (see [below](#how-to-add-a-new-ast-pattern)) — small, self-contained,
+> and well templated.
 
 ```
 src/
@@ -260,12 +284,13 @@ Adding a new language requires changes across several modules. Use an existing l
 
 ## Testing
 
-### Unit Tests
+### Tests
 
-All tests are inline `#[test]` blocks inside source modules. Run them with:
+Unit tests are inline `#[test]` blocks inside source modules; integration tests
+live under `tests/`. Run everything the way CI does:
 
 ```bash
-cargo test --bin nyx
+cargo test --all-features
 ```
 
 ### What to Test
@@ -280,7 +305,7 @@ cargo test --bin nyx
 CI runs Clippy with strict settings. Before submitting:
 
 ```bash
-cargo clippy --all -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ---
@@ -293,10 +318,10 @@ First-time contributors are welcome. If you are unsure where to start, open an i
 
 2. **Keep PRs focused**. One logical change per PR.
 
-3. **Ensure CI passes**:
+3. **Ensure CI passes** — run `./scripts/check.sh` (mirrors CI), or the steps individually:
    ```bash
-   cargo test --bin nyx
-   cargo clippy --all -- -D warnings
+   cargo test --all-features
+   cargo clippy --all-targets --all-features -- -D warnings
    cargo fmt -- --check
    ```
 
@@ -340,7 +365,7 @@ We welcome well-motivated feature proposals. Please describe:
 
 1. Update version in `Cargo.toml`.
 2. Update `CHANGELOG.md` with the new version section.
-3. Run full test suite: `cargo test --bin nyx && cargo clippy --all -- -D warnings`.
+3. Run full checks: `./scripts/check.sh` (or `cargo test --all-features && cargo clippy --all-targets --all-features -- -D warnings`).
 4. Create a git tag: `git tag v0.x.y`.
 5. Push tag: `git push origin v0.x.y`.
 6. CI builds release binaries and publishes to crates.io.

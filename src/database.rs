@@ -19,11 +19,19 @@ pub mod index {
     use r2d2_sqlite::SqliteConnectionManager;
     use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
     use std::fs;
+    use std::io::Read;
     use std::ops::Deref;
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    /// How long each SQLite connection waits for the single writer slot.
+    ///
+    /// Indexed scans can have dozens of Rayon workers finishing analysis at
+    /// once. SQLite still permits only one writer, so a timeout here turns that
+    /// burst into short backpressure instead of surfacing SQLITE_BUSY.
+    const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// DB schema (foreign‑keys enabled).
     const SCHEMA: &str = r#"
@@ -206,6 +214,36 @@ pub mod index {
             first_seen_at TEXT NOT NULL
         );
 
+        -- Dynamic verdict cache (§12 Q5).
+        -- Keyed on (spec_hash, entry_content_hash, transitive_import_digest).
+        -- Invalidation: any of entry content, import digest, toolchain_id,
+        -- corpus_version, or spec_format_version change → DELETE row → re-run.
+        CREATE TABLE IF NOT EXISTS dynamic_verdict_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spec_hash TEXT NOT NULL,
+            entry_content_hash TEXT NOT NULL,
+            transitive_import_digest TEXT NOT NULL,
+            toolchain_id TEXT NOT NULL,
+            corpus_version INTEGER NOT NULL,
+            spec_format_version INTEGER NOT NULL,
+            verdict_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(spec_hash, entry_content_hash, transitive_import_digest,
+                   toolchain_id, corpus_version, spec_format_version)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dynamic_verdict_cache_spec_hash
+            ON dynamic_verdict_cache(spec_hash);
+
+        -- Phase 21: persisted attack-surface map.  One row per project.
+        -- Stored as canonical JSON so the round-trip is byte-identical
+        -- across rescans (see `SurfaceMap::to_json`).
+        CREATE TABLE IF NOT EXISTS surface_map (
+            project TEXT PRIMARY KEY,
+            map_json BLOB NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
         -- Indexes on (project, file_path) for the per-file replace_* paths.
         -- Without these, every DELETE WHERE project=? AND file_path=? does a
         -- full table scan, which dominates indexing time as the cache grows.
@@ -252,9 +290,6 @@ pub mod index {
     ///   footprint.
     pub const SCHEMA_VERSION: &str = "4";
 
-    // TODO: ADD CLEANS FOR EACH TABLE BASED ON PROJECT WHICH RUNS ON CLEAN
-    // TODO: ADD DROP AND GIVE A CLI PARAMETER FOR DROP
-
     /// A single issue row, ready for insertion.
     #[derive(Debug, Clone)]
     pub struct IssueRow<'a> {
@@ -262,6 +297,127 @@ pub mod index {
         pub severity: &'a str,
         pub line: i64,
         pub col: i64,
+    }
+
+    type IndexWriteJob = Box<dyn FnOnce(&mut Indexer) -> NyxResult<()> + Send + 'static>;
+
+    #[derive(Default)]
+    struct IndexWriteReport {
+        error_count: usize,
+        samples: Vec<String>,
+    }
+
+    impl IndexWriteReport {
+        fn record(&mut self, err: impl ToString) {
+            self.error_count += 1;
+            if self.samples.len() < 8 {
+                self.samples.push(err.to_string());
+            }
+        }
+    }
+
+    /// Bounded handle for submitting persisted-index writes.
+    ///
+    /// The scanner can keep parsing in parallel while this sender applies
+    /// backpressure when SQLite's single writer falls behind.
+    #[derive(Clone)]
+    pub(crate) struct IndexWriteSender {
+        tx: crossbeam_channel::Sender<IndexWriteJob>,
+    }
+
+    impl IndexWriteSender {
+        pub(crate) fn enqueue<F>(&self, job: F) -> NyxResult<()>
+        where
+            F: FnOnce(&mut Indexer) -> NyxResult<()> + Send + 'static,
+        {
+            self.tx
+                .send(Box::new(job))
+                .map_err(|_| NyxError::Msg("database writer stopped before accepting write".into()))
+        }
+    }
+
+    /// Single-writer queue for project index mutations.
+    ///
+    /// SQLite permits many readers but only one writer. Parallel scans should
+    /// therefore submit analyzed file results here instead of letting every
+    /// Rayon worker compete for the writer lock.
+    pub(crate) struct IndexWriteQueue {
+        tx: IndexWriteSender,
+        handle: std::thread::JoinHandle<IndexWriteReport>,
+    }
+
+    impl IndexWriteQueue {
+        pub(crate) fn start(
+            project: impl Into<String>,
+            pool: Arc<Pool<SqliteConnectionManager>>,
+        ) -> Self {
+            let capacity = std::env::var("NYX_INDEX_WRITE_QUEUE_MAX")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or_else(|| (num_cpus::get() * 2).max(64));
+            Self::start_with_capacity(project, pool, capacity)
+        }
+
+        pub(crate) fn start_with_capacity(
+            project: impl Into<String>,
+            pool: Arc<Pool<SqliteConnectionManager>>,
+            capacity: usize,
+        ) -> Self {
+            let project = project.into();
+            let (tx, rx) = crossbeam_channel::bounded::<IndexWriteJob>(capacity.max(1));
+            let handle = std::thread::spawn(move || {
+                let mut report = IndexWriteReport::default();
+                let mut idx = match Indexer::from_pool(&project, &pool) {
+                    Ok(idx) => idx,
+                    Err(err) => {
+                        report.record(format!("writer init: {err}"));
+                        return report;
+                    }
+                };
+
+                for job in rx {
+                    if let Err(err) = job(&mut idx) {
+                        report.record(err);
+                    }
+                }
+
+                report
+            });
+
+            Self {
+                tx: IndexWriteSender { tx },
+                handle,
+            }
+        }
+
+        pub(crate) fn sender(&self) -> IndexWriteSender {
+            self.tx.clone()
+        }
+
+        pub(crate) fn finish(self, stage: &str) -> NyxResult<()> {
+            let Self { tx, handle } = self;
+            drop(tx);
+            let report = handle
+                .join()
+                .map_err(|_| NyxError::Msg(format!("{stage} database writer panicked")))?;
+            if report.error_count == 0 {
+                return Ok(());
+            }
+
+            let mut details = report.samples;
+            if report.error_count > details.len() {
+                details.push(format!(
+                    "... and {} more",
+                    report.error_count - details.len()
+                ));
+            }
+
+            Err(NyxError::Msg(format!(
+                "{stage} failed to persist scan state: {}",
+                details.join("; ")
+            )))
+        }
     }
 
     /// A scan record for DB persistence.
@@ -311,9 +467,62 @@ pub mod index {
         project: String,
     }
 
+    /// SQLite database files start with this 16-byte ASCII magic.
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+    /// Reject obviously non-SQLite files before handing them to the
+    /// connection pool, where the same rejection costs minutes instead of
+    /// microseconds on some corruption shapes.
+    ///
+    /// Returns `Ok(())` when:
+    ///   * the file does not exist (the pool will `CREATE` it),
+    ///   * the file is zero-length (SQLite treats this as a fresh DB),
+    ///   * the first 16 bytes match the SQLite magic header,
+    ///   * the file is shorter than the magic but non-empty (extremely
+    ///     unusual; we defer to SQLite rather than gating arbitrarily).
+    ///
+    /// Returns `Err(NyxError::Sql(...))` carrying `SQLITE_NOTADB` when the
+    /// header is present but does not match.
+    fn preflight_header(database_path: &Path) -> NyxResult<()> {
+        let Ok(meta) = fs::metadata(database_path) else {
+            return Ok(());
+        };
+        if !meta.is_file() {
+            return Ok(());
+        }
+        if meta.len() < SQLITE_MAGIC.len() as u64 {
+            return Ok(());
+        }
+        let mut head = [0u8; 16];
+        let mut f = fs::File::open(database_path)?;
+        f.read_exact(&mut head)?;
+        if &head != SQLITE_MAGIC {
+            return Err(NyxError::Sql(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                Some(format!(
+                    "file at {} is not a SQLite database (header magic mismatch)",
+                    database_path.display(),
+                )),
+            )));
+        }
+        Ok(())
+    }
+
     impl Indexer {
         pub fn init(database_path: &Path) -> NyxResult<Arc<Pool<SqliteConnectionManager>>> {
             let _span = tracing::info_span!("db_init", path = %database_path.display()).entered();
+
+            // Fast-fail when the existing file is clearly not a SQLite
+            // database.  Without this guard, certain corruption shapes
+            // (truncated header, header overwritten with arbitrary bytes,
+            // mid-page damage that preserves magic) can keep SQLite busy
+            // for 150-200 seconds inside the PRAGMA / schema execution
+            // below before it surfaces SQLITE_NOTADB or SQLITE_CORRUPT.
+            // A zero-length file is treated as a fresh DB by SQLite, so we
+            // only validate when the file is large enough to hold the
+            // 16-byte magic header.
+            preflight_header(database_path)?;
+
             // NO_MUTEX is safe because r2d2 ensures each pooled connection
             // is only ever used by one thread at a time.  Combined with WAL
             // mode this allows concurrent readers + a single writer without
@@ -321,31 +530,9 @@ pub mod index {
             let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            let manager = SqliteConnectionManager::file(database_path).with_flags(flags);
-            // r2d2's default `max_size` is 10, which can stall rayon
-            // workers on machines with more cores than that during the
-            // parallel indexing pass.  Size the pool to comfortably hold
-            // a connection per rayon thread plus a small slack.
-            //
-            // `NYX_INDEX_POOL_MAX` overrides the auto-sized default. Use it in
-            // fd-constrained environments (test sandboxes, containers with low
-            // ulimit) where many parallel indexed scans would otherwise exhaust
-            // EMFILE: each pooled SQLite WAL connection costs ~3 fds (db + -wal
-            // + -shm), so 30 parallel scans × 16 conns × 3 fds = 1440 fds.
-            let max_conns = std::env::var("NYX_INDEX_POOL_MAX")
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .filter(|n| *n >= 1)
-                .unwrap_or_else(|| (num_cpus::get() as u32 + 4).max(16));
-            let pool = Arc::new(Pool::builder().max_size(max_conns).build(manager)?);
-
             {
-                let conn = pool.get()?;
+                let conn = Self::open_configured_connection(database_path, flags)?;
                 conn.pragma_update(None, "journal_mode", "WAL")?;
-                conn.pragma_update(None, "synchronous", "NORMAL")?;
-                conn.pragma_update(None, "cache_size", "-8000")?; // 8 MB
-                conn.pragma_update(None, "temp_store", "MEMORY")?;
-                conn.pragma_update(None, "mmap_size", "268435456")?; // 256 MB
                 conn.execute_batch(SCHEMA)?;
 
                 // Migrate: if the function_summaries table is missing any required
@@ -472,6 +659,22 @@ pub mod index {
                     conn.execute_batch(SCHEMA)?;
                 }
 
+                // Phase 21: ensure the `surface_map` table exists on
+                // DBs created before this column set was introduced.
+                let surface_exists: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = 'surface_map'",
+                        [],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !surface_exists {
+                    tracing::info!("creating surface_map table");
+                    conn.execute_batch(SCHEMA)?;
+                }
+
                 // Schema version check: invalidate cached summary tables
                 // when the on-disk artefact layout has changed in an
                 // incompatible way, independently of the engine version.
@@ -483,7 +686,46 @@ pub mod index {
                 // version changes so stale serialized data cannot be loaded.
                 Self::check_engine_version(&conn)?;
             }
+
+            let manager = SqliteConnectionManager::file(database_path)
+                .with_flags(flags)
+                .with_init(Self::configure_connection);
+            // r2d2's default `max_size` is 10, which can stall rayon
+            // workers on machines with more cores than that during the
+            // parallel indexing pass.  Size the pool to comfortably hold
+            // a connection per rayon thread plus a small slack.
+            //
+            // `NYX_INDEX_POOL_MAX` overrides the auto-sized default. Use it in
+            // fd-constrained environments (test sandboxes, containers with low
+            // ulimit) where many parallel indexed scans would otherwise exhaust
+            // EMFILE: each pooled SQLite WAL connection costs ~3 fds (db + -wal
+            // + -shm), so 30 parallel scans × 16 conns × 3 fds = 1440 fds.
+            let max_conns = std::env::var("NYX_INDEX_POOL_MAX")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or_else(|| (num_cpus::get() as u32 + 4).max(16));
+            let pool = Arc::new(Pool::builder().max_size(max_conns).build(manager)?);
             Ok(pool)
+        }
+
+        fn open_configured_connection(
+            database_path: &Path,
+            flags: OpenFlags,
+        ) -> rusqlite::Result<Connection> {
+            let mut conn = Connection::open_with_flags(database_path, flags)?;
+            Self::configure_connection(&mut conn)?;
+            Ok(conn)
+        }
+
+        fn configure_connection(conn: &mut Connection) -> rusqlite::Result<()> {
+            conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+            conn.pragma_update(None, "cache_size", -8000i64)?; // 8 MB
+            conn.pragma_update(None, "temp_store", "MEMORY")?;
+            conn.pragma_update(None, "mmap_size", 268_435_456i64)?; // 256 MB
+            Ok(())
         }
 
         /// Add a column to an existing table when it is missing.
@@ -686,7 +928,9 @@ pub mod index {
         ///
         /// Short-circuits on mtime: if the stored mtime matches the
         /// filesystem mtime, the file is assumed unchanged (skip hash).
-        #[allow(dead_code)] // used in tests and by should_scan_with_hash callers may fall back
+        /// Production scans use `should_scan_with_hash`, which avoids the
+        /// redundant `digest_file` read; this variant exists for tests.
+        #[cfg(test)]
         pub fn should_scan(&self, path: &Path) -> NyxResult<bool> {
             let meta = fs::metadata(path)?;
             let mtime = meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -852,6 +1096,7 @@ pub mod index {
                     rollup: None,
                     finding_id: String::new(),
                     alternative_finding_ids: Vec::new(),
+                    stable_hash: 0,
                 })
             })?;
 
@@ -1806,6 +2051,60 @@ pub mod index {
             Ok(out)
         }
 
+        /// Persist a [`crate::surface::SurfaceMap`] for this project.
+        ///
+        /// Replaces any previously-persisted map; the table holds one row
+        /// per project.  The map is canonicalised before serialisation so
+        /// `replace_surface_map` + `load_surface_map` round-trip is
+        /// byte-identical for structurally identical maps.
+        pub fn replace_surface_map(&mut self, map: &crate::surface::SurfaceMap) -> NyxResult<()> {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+            let mut canon = map.clone();
+            let bytes = canon
+                .to_json()
+                .map_err(|e| NyxError::Msg(format!("surface map serialise: {e}")))?;
+            self.c().execute(
+                "INSERT OR REPLACE INTO surface_map (project, map_json, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![self.project, bytes, now],
+            )?;
+            Ok(())
+        }
+
+        /// Load the persisted [`crate::surface::SurfaceMap`] for this
+        /// project, or `None` when no map has been written.
+        pub fn load_surface_map(&self) -> NyxResult<Option<crate::surface::SurfaceMap>> {
+            let row: Option<Vec<u8>> = self
+                .c()
+                .query_row(
+                    "SELECT map_json FROM surface_map WHERE project = ?1",
+                    params![self.project],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?;
+            let Some(bytes) = row else {
+                return Ok(None);
+            };
+            let map = crate::surface::SurfaceMap::from_json(&bytes)
+                .map_err(|e| NyxError::Msg(format!("surface map deserialise: {e}")))?;
+            Ok(Some(map))
+        }
+
+        /// Return the raw JSON bytes stored for the surface map without
+        /// deserialising.  Used by the round-trip parity tests so they
+        /// can compare on-disk bytes across rescans.
+        pub fn load_surface_map_bytes(&self) -> NyxResult<Option<Vec<u8>>> {
+            let row: Option<Vec<u8>> = self
+                .c()
+                .query_row(
+                    "SELECT map_json FROM surface_map WHERE project = ?1",
+                    params![self.project],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?;
+            Ok(row)
+        }
+
         /// Remove a file and all derived persisted state for this project.
         ///
         /// This deletes the file row, issues, and all persisted summary rows so
@@ -1867,9 +2166,7 @@ pub mod index {
                 .collect::<Result<_, _>>()?)
         }
 
-        // -------------------------------------------------------------------------
         // Scan persistence
-        // -------------------------------------------------------------------------
 
         /// Insert a new scan record.
         pub fn insert_scan(&self, record: &ScanRecord) -> NyxResult<()> {
@@ -2135,9 +2432,7 @@ pub mod index {
             Ok(rows)
         }
 
-        // -------------------------------------------------------------------------
         // Triage state management
-        // -------------------------------------------------------------------------
 
         /// Get the triage state for a single finding fingerprint.
         /// Returns (state, note, updated_at) or None if no triage state exists.
@@ -2159,7 +2454,6 @@ pub mod index {
 
         /// Set the triage state for a single finding. Upserts the state and
         /// appends an audit log entry. Returns the previous state (or "open").
-        #[allow(dead_code)]
         pub fn set_triage_state(
             &self,
             fingerprint: &str,
@@ -2518,9 +2812,7 @@ pub mod index {
             Ok(count > 0)
         }
 
-        // -------------------------------------------------------------------------
         // Maintenance utilities
-        // -------------------------------------------------------------------------
         pub fn clear(&self) -> NyxResult<()> {
             self.c().execute_batch(
                 r#"
@@ -2545,10 +2837,8 @@ pub mod index {
             Ok(())
         }
 
-        // -------------------------------------------------------------------------
         // Helpers
-        // -------------------------------------------------------------------------
-        #[allow(dead_code)] // used by should_scan() and tests
+        #[cfg(test)]
         fn digest_file(path: &Path) -> NyxResult<Vec<u8>> {
             let mut hasher = blake3::Hasher::new();
             let mut file = fs::File::open(path)?;
@@ -3052,7 +3342,7 @@ fn clear_drops_ssa_summaries_table() {
 // ── CalleeSsaBody persistence tests ──────────────────────────────────────
 
 /// Helper: build a minimal CalleeSsaBody for DB tests.
-#[allow(dead_code)] // used by tests below
+#[cfg(test)]
 fn make_test_callee_body(
     num_blocks: usize,
     param_count: usize,
@@ -3619,6 +3909,77 @@ fn fresh_db_no_migration_needed() {
     assert!(idx.load_all_ssa_summaries().unwrap().is_empty());
     assert!(idx.load_all_ssa_bodies().unwrap().is_empty());
     assert!(idx.get_files("proj").unwrap().is_empty());
+}
+
+#[test]
+fn init_applies_busy_timeout_to_every_pooled_connection() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let pool = index::Indexer::init(&db).unwrap();
+
+    // Hold several connections at once so r2d2 must hand out distinct pooled
+    // handles. The timeout is connection-local, so configuring only the schema
+    // setup connection would leave later worker connections at rusqlite's
+    // default.
+    let conns: Vec<_> = (0..4).map(|_| pool.get().unwrap()).collect();
+    for conn in &conns {
+        let timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout_ms, 60_000);
+    }
+}
+
+#[test]
+fn index_write_queue_serializes_parallel_writes() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let pool = index::Indexer::init(&db).unwrap();
+    let project = "proj";
+    let writer =
+        index::IndexWriteQueue::start_with_capacity(project, std::sync::Arc::clone(&pool), 2);
+    let tx = writer.sender();
+
+    let mut handles = Vec::new();
+    for i in 0..16 {
+        let path = td.path().join(format!("file_{i}.rs"));
+        let source = format!("fn f_{i}() {{}}\n");
+        std::fs::write(&path, &source).unwrap();
+        let hash = index::Indexer::digest_bytes(source.as_bytes());
+        let tx = tx.clone();
+        handles.push(std::thread::spawn(move || {
+            tx.enqueue(move |idx| {
+                let file_id = idx.upsert_file_with_hash(&path, &hash)?;
+                let issue_rows = [(String::from("test-rule"), String::from("LOW"), 1_i64, 0_i64)];
+                idx.replace_issues(
+                    file_id,
+                    issue_rows
+                        .iter()
+                        .map(|(rule_id, severity, line, col)| index::IssueRow {
+                            rule_id: rule_id.as_str(),
+                            severity: severity.as_str(),
+                            line: *line,
+                            col: *col,
+                        }),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    drop(tx);
+    writer.finish("test").unwrap();
+
+    let idx = index::Indexer::from_pool(project, &pool).unwrap();
+    let files = idx.get_files(project).unwrap();
+    assert_eq!(files.len(), 16);
+    for path in files {
+        assert_eq!(idx.get_issues_from_file(&path).unwrap().len(), 1);
+    }
 }
 
 #[test]

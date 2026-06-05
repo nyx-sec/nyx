@@ -531,10 +531,6 @@ fn has_explicit_lock_acquire(ctx: &AnalysisContext, acquire: NodeIndex) -> bool 
 }
 
 impl CfgAnalysis for ResourceMisuse {
-    fn name(&self) -> &'static str {
-        "resource-misuse"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let pairs = rules::resource_pairs(ctx.lang);
         let exit = match dominators::find_exit_node(ctx.cfg) {
@@ -631,7 +627,6 @@ impl CfgAnalysis for ResourceMisuse {
                         } else {
                             "cfg-resource-leak".to_string()
                         },
-                        title: format!("{} may leak", pair.resource_name),
                         severity: Severity::Medium,
                         confidence: Confidence::Medium,
                         span: info.ast.span,

@@ -5,10 +5,12 @@ use crate::server::progress::TimingBreakdown;
 use crate::server::routes;
 use crate::server::security::LocalServerSecurity;
 use crate::utils::config::Config;
+use crate::utils::project::get_project_info;
 use axum::Router;
 use parking_lot::RwLock;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -61,15 +63,60 @@ pub struct CachedFindings {
 /// Shared application state accessible to all route handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub scan_root: PathBuf,
+    pub scan_root: Arc<RwLock<PathBuf>>,
     pub config_dir: PathBuf,
     pub database_dir: PathBuf,
     pub security: Arc<LocalServerSecurity>,
     pub config: Arc<RwLock<Config>>,
     pub job_manager: Arc<JobManager>,
     pub event_tx: broadcast::Sender<ServerEvent>,
-    pub db_pool: Option<Arc<Pool<SqliteConnectionManager>>>,
+    pub db_pools: Arc<RwLock<HashMap<PathBuf, Arc<Pool<SqliteConnectionManager>>>>>,
     pub findings_cache: Arc<RwLock<Option<CachedFindings>>>,
+}
+
+impl AppState {
+    pub fn active_scan_root(&self) -> PathBuf {
+        self.scan_root.read().clone()
+    }
+
+    pub fn set_active_scan_root(&self, scan_root: PathBuf) {
+        *self.scan_root.write() = scan_root;
+        *self.findings_cache.write() = None;
+    }
+
+    pub fn db_pool_for(
+        &self,
+        scan_root: &std::path::Path,
+    ) -> Option<Arc<Pool<SqliteConnectionManager>>> {
+        let canonical = scan_root
+            .canonicalize()
+            .unwrap_or_else(|_| scan_root.to_path_buf());
+        if let Some(pool) = self.db_pools.read().get(&canonical).cloned() {
+            return Some(pool);
+        }
+
+        let (_, db_path) = match get_project_info(&canonical, &self.database_dir) {
+            Ok(info) => info,
+            Err(e) => {
+                tracing::warn!("Failed to resolve target DB path: {e}");
+                return None;
+            }
+        };
+        let pool = match crate::database::index::Indexer::init(&db_path) {
+            Ok(pool) => pool,
+            Err(e) => {
+                tracing::warn!("Failed to initialize target DB {}: {e}", db_path.display());
+                return None;
+            }
+        };
+
+        self.db_pools.write().insert(canonical, Arc::clone(&pool));
+        Some(pool)
+    }
+
+    pub fn active_db_pool(&self) -> Option<Arc<Pool<SqliteConnectionManager>>> {
+        self.db_pool_for(&self.active_scan_root())
+    }
 }
 
 /// 50 MiB cap on request bodies, generous for config uploads, tight
@@ -135,14 +182,14 @@ mod tests {
     fn test_state(scan_root: PathBuf, port: u16) -> AppState {
         let (event_tx, _) = broadcast::channel(8);
         AppState {
-            scan_root: scan_root.clone(),
+            scan_root: Arc::new(RwLock::new(scan_root.clone())),
             config_dir: scan_root.clone(),
             database_dir: scan_root,
             security: LocalServerSecurity::new(port),
             config: Arc::new(RwLock::new(Config::default())),
             job_manager: Arc::new(JobManager::new(4, 8 * 1024 * 1024)),
             event_tx,
-            db_pool: None,
+            db_pools: Arc::new(RwLock::new(HashMap::new())),
             findings_cache: Arc::new(RwLock::new(None)),
         }
     }

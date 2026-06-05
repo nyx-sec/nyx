@@ -157,10 +157,6 @@ fn find_auth_nodes(ctx: &AnalysisContext) -> Vec<NodeIndex> {
 }
 
 impl CfgAnalysis for AuthGap {
-    fn name(&self) -> &'static str {
-        "auth-gap"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         // Decorator/annotation/attribute auth on the body declaration
         // already gates every sink in the body, skip the
@@ -218,7 +214,6 @@ impl CfgAnalysis for AuthGap {
 
                 findings.push(CfgFinding {
                     rule_id: "cfg-auth-gap".to_string(),
-                    title: "Missing auth check".to_string(),
                     severity: Severity::High,
                     confidence: Confidence::Medium,
                     span: info.ast.span,

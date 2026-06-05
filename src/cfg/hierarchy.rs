@@ -54,9 +54,7 @@ pub(crate) fn collect_hierarchy_edges(
     acc
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Java
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_java<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -146,9 +144,7 @@ fn type_identifier_text(n: Node<'_>, code: &[u8]) -> Option<String> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Rust
-// ─────────────────────────────────────────────────────────────────────
 
 /// Walk for `impl_item` nodes and emit edges from the concrete type to
 /// the trait being implemented.  Inherent impls (`impl Foo {}`) emit
@@ -199,9 +195,7 @@ fn rust_path_leaf(n: Node<'_>, code: &[u8]) -> Option<String> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  TypeScript / JavaScript
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_ts<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -268,9 +262,7 @@ fn collect_ts_heritage<F: FnMut(String, String)>(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Python
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_python<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -314,9 +306,7 @@ fn python_base_text(n: Node<'_>, code: &[u8]) -> Option<String> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Ruby
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -345,9 +335,7 @@ fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  PHP
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_php<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -382,9 +370,7 @@ fn collect_php<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  C++
-// ─────────────────────────────────────────────────────────────────────
 
 fn collect_cpp<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
@@ -419,9 +405,7 @@ fn collect_cpp<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────
 //  Helpers
-// ─────────────────────────────────────────────────────────────────────
 
 fn walk<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
     f(node);

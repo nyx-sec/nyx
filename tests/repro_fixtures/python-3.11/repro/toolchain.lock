@@ -1,0 +1,12 @@
+{
+  "files": {
+    "entry/extracted_source.py": "d18631435ec059c8cabafe7854f18d45e06a5c62da6274710712cf862cf9afa8",
+    "harness/Dockerfile.harness": "9ae78bdafc9cf11e9530f8c88deebc62b4c754c7ffa4759a40c80049c5a84586",
+    "harness/harness.py": "15cc817251cf0c8915be782996b4af9b5b456f0b8fd75c360dcda153e071961c",
+    "payload/payload.bin": "f3dc1d1a3d5a282cb6f171544ad5c8a5e78a6065a6decf6955c20763302bd574"
+  },
+  "lock_version": 1,
+  "pinned_image": "python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834",
+  "spec_hash": "repro",
+  "toolchain_id": "python-3.11"
+}

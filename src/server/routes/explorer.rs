@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 use crate::database::index::Indexer;
 use crate::server::app::AppState;
 use crate::server::models::lang_for_finding_path;
@@ -126,8 +124,8 @@ async fn get_tree(
     State(state): State<AppState>,
     Query(query): Query<TreeQuery>,
 ) -> Result<Json<Vec<TreeEntry>>, StatusCode> {
-    let resolved =
-        resolve_repo_dir(&state.scan_root, query.path.as_deref()).map_err(map_path_error)?;
+    let scan_root = state.active_scan_root();
+    let resolved = resolve_repo_dir(&scan_root, query.path.as_deref()).map_err(map_path_error)?;
     let canonical = resolved.canonical;
 
     // Load findings and pre-compute per-file and per-directory aggregates
@@ -245,14 +243,15 @@ async fn get_symbols(
     State(state): State<AppState>,
     Query(query): Query<SymbolsQuery>,
 ) -> Result<Json<Vec<SymbolEntry>>, StatusCode> {
-    let resolved = resolve_repo_path(&state.scan_root, &query.path).map_err(map_path_error)?;
+    let scan_root = state.active_scan_root();
+    let resolved = resolve_repo_path(&scan_root, &query.path).map_err(map_path_error)?;
 
-    let pool = match &state.db_pool {
+    let pool = match state.active_db_pool() {
         Some(p) => p,
         None => return Ok(Json(vec![])),
     };
 
-    let idx = Indexer::from_pool("_scans", pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let idx = Indexer::from_pool("_scans", &pool).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Build absolute path for DB lookup (DB stores absolute paths)
     let canonical_root = resolved.root;
@@ -330,7 +329,8 @@ async fn get_findings(
     State(state): State<AppState>,
     Query(query): Query<ExplorerFindingsQuery>,
 ) -> Result<Json<Vec<ExplorerFinding>>, StatusCode> {
-    let resolved = resolve_repo_path(&state.scan_root, &query.path).map_err(map_path_error)?;
+    let scan_root = state.active_scan_root();
+    let resolved = resolve_repo_path(&scan_root, &query.path).map_err(map_path_error)?;
 
     let findings = load_latest_findings(&state);
     let root_str = resolved.root.to_string_lossy();

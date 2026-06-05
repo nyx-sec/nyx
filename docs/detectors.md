@@ -9,6 +9,17 @@ Nyx ships four independent detector families. They run together in `--mode full`
 | [State model](detectors/state.md) | `state-*` | Per-function state lattice | Use-after-close, double-close, leaks, unauthenticated access |
 | [AST patterns](detectors/patterns.md) | `<lang>.<cat>.<name>` | Tree-sitter structural match | Banned APIs, weak crypto, dangerous constructs |
 
+```mermaid
+flowchart LR
+    Taint["Taint analysis<br/>cross-file source-to-sink"] --> Normalize["Normalize findings"]
+    Cfg["CFG structural<br/>guards, exits, resource paths"] --> Normalize
+    State["State model<br/>resource and auth lattice"] --> Normalize
+    Ast["AST patterns<br/>tree-sitter structural match"] --> Normalize
+    Normalize --> Dedupe["Deduplicate<br/>same site, rule, severity"]
+    Dedupe --> Rank["Rank<br/>severity, evidence, context"]
+    Rank --> Output["Console, JSON, SARIF, UI"]
+```
+
 The taint family is split into cap-specific rule classes when a sink callee carries multiple vulnerability classes:
 
 | Rule id | Cap | Surface |

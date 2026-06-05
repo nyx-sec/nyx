@@ -8,6 +8,7 @@ on:
     branches: ["master"]
   pull_request:
     branches: ["master"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -197,8 +198,8 @@ jobs:
       - name: Compile check at MSRV
         run: cargo check --all-features --tests
 
-  rust-stable-test:
-    name: rust-stable-test
+  rust-stable-test-linux-without-docker:
+    name: rust-stable-test / linux-without-docker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -210,8 +211,59 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - name: Rust tests (stable)
-        run: cargo nextest run --all-features
+      - name: Rust tests (stable, no docker)
+        run: cargo nextest run --no-fail-fast --all-features
+
+  rust-stable-test-linux-with-docker:
+    name: rust-stable-test / linux-with-docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Pull language images for sandbox tests
+        run: |
+          docker pull python:3-slim
+          docker pull node:20-slim
+          docker pull eclipse-temurin:21-jre-jammy
+          docker pull php:8-cli
+
+      - name: Smoke-test interpreter availability
+        run: |
+          docker run --rm python:3-slim python3 --version
+          docker run --rm node:20-slim node --version
+          docker run --rm eclipse-temurin:21-jre-jammy java -version
+          docker run --rm php:8-cli php --version
+
+      - name: Rust tests with docker (sandbox escape gate)
+        run: cargo nextest run --no-fail-fast --all-features --test dynamic_sandbox_escape --test dynamic_parity
+
+  escape-positive-control:
+    name: escape-positive-control
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Pull python image
+        run: docker pull python:3-slim
+
+      - name: Escape positive control (gate wiring check)
+        run: |
+          cargo nextest run --no-fail-fast --all-features --test dynamic_sandbox_escape \
+            -- --include-ignored positive_control_cap_sys_admin
 
   cross-platform-smoke:
     name: cross-platform-smoke
@@ -234,7 +286,7 @@ jobs:
         run: cargo build --release --all-features
 
       - name: Smoke tests
-        run: cargo nextest run --all-features --test integration_tests --test pattern_tests --test cli_validation_tests
+        run: cargo nextest run --no-fail-fast --all-features --test integration_tests --test pattern_tests --test cli_validation_tests
 
   rust-beta-test:
     name: rust-beta-test
@@ -250,7 +302,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Rust tests (beta)
-        run: cargo nextest run --all-features
+        run: cargo nextest run --no-fail-fast --all-features
 
   cargo-package:
     name: cargo-package
@@ -299,16 +351,18 @@ jobs:
           cache: true
           cache-key: benchmark-gate-release
 
+      - uses: taiki-e/install-action@nextest
+
       - name: Build benchmark + perf test binaries
-        run: cargo test --release --all-features --test benchmark_test --test perf_tests --no-run
+        run: cargo nextest run --release --all-features --test benchmark_test --test perf_tests --no-run
 
       - name: Accuracy regression gate (P/R/F1)
-        run: cargo test --release --all-features --test benchmark_test -- --ignored --nocapture benchmark_evaluation
+        run: cargo nextest run --no-fail-fast --release --all-features --test benchmark_test --run-ignored only --no-capture benchmark_evaluation
 
       - name: Performance regression gate
         env:
           NYX_CI_BENCH: "1"
-        run: cargo test --release --all-features --test perf_tests -- --nocapture
+        run: cargo nextest run --no-fail-fast --release --all-features --test perf_tests --no-capture
 
       - name: Upload benchmark results
         if: always()
@@ -317,3 +371,34 @@ jobs:
           name: benchmark-results
           path: tests/benchmark/results/latest.json
           if-no-files-found: warn
+
+  corpus-marker-audit:
+    name: corpus-marker-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Marker collision audit (§16.3)
+        run: python3 scripts/corpus_dashboard.py
+        # Exits non-zero if any oracle marker from one cap appears in another
+        # cap's payload bytes.  This catches cross-cap oracle collisions that
+        # would cause false-positive confirmed verdicts.
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Corpus unit tests (no_marker_collisions, all_payloads_have_fixture_paths)
+        run: cargo nextest run --no-fail-fast --lib -p nyx-scanner dynamic::corpus
+        env:
+          RUST_LOG: error
+
+      - name: Corpus dashboard sync check (Python/Rust payload table parity)
+        run: python3 scripts/check_corpus_sync.py

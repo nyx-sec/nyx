@@ -58,6 +58,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     es.addEventListener('scan_started', () => {
       setIsScanRunning(true);
       queryClient.invalidateQueries({ queryKey: ['scans'] });
+      queryClient.invalidateQueries({ queryKey: ['targets'] });
     });
 
     es.addEventListener('scan_progress', (e) => {
@@ -75,12 +76,14 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: ['scans'] });
       queryClient.invalidateQueries({ queryKey: ['overview'] });
       queryClient.invalidateQueries({ queryKey: ['findings'] });
+      queryClient.invalidateQueries({ queryKey: ['targets'] });
     });
 
     es.addEventListener('scan_failed', () => {
       setScanProgress(null);
       setIsScanRunning(false);
       queryClient.invalidateQueries({ queryKey: ['scans'] });
+      queryClient.invalidateQueries({ queryKey: ['targets'] });
     });
 
     es.addEventListener('config_changed', () => {

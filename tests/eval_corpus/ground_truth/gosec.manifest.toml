@@ -1,0 +1,42 @@
+# gosec — curated Go ground-truth manifest (Phase 29, Track R.2).
+#
+# gosec is the Go SAST tool; its repo doubles as the de-facto Go security
+# corpus.  Most of gosec's rule samples live as Go source embedded in
+# backtick string literals inside testutils/g*_samples.go — those are NOT
+# scannable by a taint analyzer (the vulnerable code is string data, not
+# real AST), so they are deliberately NOT labelled here.  gosec also ships a
+# small set of REAL, compilable sample programs under goanalysis/testdata
+# that carry the tool's OWN inline `// want 'GNNN ...'` expectations — that
+# is the authoritative, scannable ground truth this manifest pins.
+#
+# Because the eval scans the whole gosec checkout (the tool's own source
+# included), unlabelled findings are expected and are NOT false positives —
+# precision against this manifest is informational, recall on the curated
+# samples is the meaningful floor (same policy as the all-vulnerable apps;
+# see tests/eval_corpus/budget.toml).
+#
+# tests/eval_corpus/manifest_gt_convert.py turns this into the committed
+# ground_truth/gosec.json.  CI regenerates it against a fresh clone of the
+# pinned tag and asserts byte-equality; the converter HARD-ERRORS on any
+# path that no longer exists, so a gosec bump that moves the testdata fails
+# the job loudly.  `cap` is a nyx cap label (tabulate.py); `path` is relative
+# to the gosec clone root, POSIX separators; lang is inferred (.go -> go).
+
+corpus = "gosec"
+upstream = "https://github.com/securego/gosec"
+# Pinned to release tag v2.26.1 (clone HEAD
+# 4a3bd8af174872c778439083ded7adbf3747e770).  goanalysis/testdata/src/a/ has
+# been stable; re-validate if the tag is bumped.
+pinned_ref = "v2.26.1"
+
+[[entry]]
+path = "goanalysis/testdata/src/a/basic_output.go"
+cap = "cmdi"
+vuln = true
+note = "VulnerableFunction runs exec.Command(\"sh\", \"-c\", getUserInput()) — subprocess launched with a non-constant argument (gosec's own `// want G204 [CWE-78]` expectation)."
+
+[[entry]]
+path = "goanalysis/testdata/src/a/basic_output.go"
+cap = "crypto"
+vuln = true
+note = "VulnerableFunction imports crypto/md5 and calls md5.New() — weak cryptographic primitive (gosec's own `// want G401/G501` expectations)."

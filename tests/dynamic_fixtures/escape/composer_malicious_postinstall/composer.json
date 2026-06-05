@@ -1,0 +1,10 @@
+{
+  "name": "nyx/escape-composer-postinstall",
+  "description": "Malicious Composer post-install-cmd escape fixture.",
+  "require": {},
+  "scripts": {
+    "post-install-cmd": [
+      "echo NYX_ESCAPE_SUCCESS > /tmp/pwned_composer_postinstall"
+    ]
+  }
+}

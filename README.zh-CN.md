@@ -1,13 +1,13 @@
 <div align="center">
-  <img src="assets/nyx-wordmark.svg" alt="nyx" height="110"/>
+  <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
-**本地优先的安全扫描器，自带浏览器 UI。在本地扫描代码仓库并在浏览器中分诊处理，无需云端、无需账号。**
+**本地优先的安全扫描器，带沙箱动态验证和浏览器 UI。在本地扫描代码仓库并在浏览器中分诊处理，无需云端、无需账号。**
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/elicpeter/nyx/ci.yml?branch=master)](https://github.com/elicpeter/nyx/actions)
-[![Docs](https://img.shields.io/badge/docs-elicpeter.github.io%2Fnyx-blue)](https://elicpeter.github.io/nyx/)
+[![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
 [English](./README.md) · 简体中文
 </div>
@@ -18,7 +18,7 @@
 
 ## 本地扫描，本地浏览
 
-Nyx 在你的代码仓库上运行跨语言污点分析，然后将结果通过绑定到 `127.0.0.1` 的 React UI 提供给你。你会得到一份带严重等级、证据、以及分步**流可视化**的发现列表，从源 → 净化器 → 汇逐步呈现数据流。分诊决策持久化在 `.nyx/triage.json` 中，与代码一同提交，团队共享同一份分诊状态。
+Nyx 在你的代码仓库上运行跨语言污点分析，然后对中高置信度发现运行小型沙箱 harness，验证真实代码里 source 到 sink 的流是否会触发。结果通过绑定到 `127.0.0.1` 的 React UI 提供给你。你会看到严重等级、静态证据、动态验证结果，以及分步**流可视化**，从源 → 净化器 → 汇逐步呈现数据流。分诊决策持久化在 `.nyx/triage.json` 中，与代码一同提交，团队共享同一份分诊状态。
 
 ```bash
 cargo install nyx-scanner
@@ -26,7 +26,7 @@ nyx scan           # 运行分析器，把发现缓存到 .nyx/
 nyx serve          # 在浏览器中打开 http://localhost:9700
 ```
 
-一切都留在你本地：仅回环绑定、强制 host 头校验、所有变更操作均带 CSRF、无遥测、无登录。
+一切都留在你本地：仅回环绑定、强制 host 头校验、所有变更操作均带 CSRF、无远程遥测、无登录。
 
 <p align="center"><img src="assets/screenshots/overview.png" alt="一个小型 JS 应用的总览仪表盘：健康分 C 78，五项分量分解（严重度压力、置信度质量、趋势、分诊覆盖、回归抗性），3 条发现，OWASP A03 与 A02 类别，置信度分布与问题类别条形图，受影响最多的文件" width="900"/></p>
 
@@ -38,7 +38,7 @@ nyx serve          # 在浏览器中打开 http://localhost:9700
 |---|---|
 | **总览** | 仪表盘：按严重等级分类的发现计数、热点文件、引擎画像摘要 |
 | **发现** | 可浏览列表，含严重度徽章、分诊状态、规则筛选、语言筛选 |
-| **发现详情** | 流路径可视化，带编号步骤（源 → 净化器 → 汇）、代码片段、证据、跨文件标记、分诊下拉框 |
+| **发现详情** | 流路径可视化，带编号步骤（源 → 净化器 → 汇）、动态验证结果、代码片段、证据、跨文件标记、分诊下拉框 |
 | **分诊** | 批量更新状态（open、investigating、fixed、false_positive、accepted_risk、suppressed），审计日志，JSON 导入/导出 |
 | **资源管理器** | 文件树，含每个文件的符号列表与发现叠加层 |
 | **扫描** | 历史记录、指标，对比两次扫描查看差异 |
@@ -46,7 +46,7 @@ nyx serve          # 在浏览器中打开 http://localhost:9700
 | **配置** | 实时配置编辑器；无需重启即可重载 |
 
 
-`nyx serve` 参数：`--port <N>`（默认 `9700`）、`--host <addr>`（仅回环：`127.0.0.1`、`localhost`、`::1`）、`--no-browser`。持久化设置见 `nyx.conf` 的 `[server]` 段，分页面 UI 介绍与安全模型详见 [Browser UI 指南](https://elicpeter.github.io/nyx/serve.html)。
+`nyx serve` 参数：`--port <N>`（默认 `9700`）、`--host <addr>`（仅回环：`127.0.0.1`、`localhost`、`::1`）、`--no-browser`。持久化设置见 `nyx.conf` 的 `[server]` 段，分页面 UI 介绍与安全模型详见 [Browser UI 指南](https://nyxscan.dev/docs/serve.html)。
 
 ---
 
@@ -71,12 +71,12 @@ nyx scan --mode ast
 nyx scan --engine-profile deep
 ```
 
-正向跨文件污点在所有画像下都会运行。Symex 与按需后向遍历是可选项，可通过 `--engine-profile deep` 一次性开启，或单独开启（`--symex`、`--backwards-analysis`）。完整开关矩阵见 [CLI 参考](https://elicpeter.github.io/nyx/cli.html#engine-depth-profile)。
+正向跨文件污点在所有画像下都会运行。Symex 与按需后向遍历是可选项，可通过 `--engine-profile deep` 一次性开启，或单独开启（`--symex`、`--backwards-analysis`）。完整开关矩阵见 [CLI 参考](https://nyxscan.dev/docs/cli.html#engine-depth-profile)。
 
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.7.0
+- uses: elicpeter/nyx@v0.8.0
   with:
     format: sarif
     fail-on: MEDIUM
@@ -117,7 +117,7 @@ cd nyx && cargo build --release
 
 ## 语言支持
 
-全部 10 种语言都通过 tree-sitter 解析并跑完整流水线，但规则深度与引擎覆盖并不均衡。在 [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) 的 507 案例语料上，所有十种语言的基准 F1 均为 100%，因此 F1 已无法单独区分梯度。分级反映规则深度、门控汇覆盖、以及合成语料未充分覆盖的结构性惯用法：
+全部 10 种语言都通过 tree-sitter 解析并跑完整流水线，但规则深度与引擎覆盖并不均衡。在 [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) 的合成语料上，所有十种语言在最近一次基线测量中 F1 均为 100%（见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)），因此 F1 已无法单独区分梯度。分级反映规则深度、门控汇覆盖、以及合成语料未充分覆盖的结构性惯用法：
 
 | 梯度 | 语言 | F1 | 适合用作 CI 门禁吗？ |
 |---|---|---|---|
@@ -125,7 +125,7 @@ cd nyx && cargo build --release
 | **Beta** | Java、PHP、Ruby、Rust、Go | 100% | 适合，需轻度 FP 分诊 |
 | **预览** | C、C++ | 合成语料 100% | 不适合。已跟踪 STL 容器流、builder 链、内联类成员函数；尚未覆盖深度指针别名与函数指针。建议与 clang-tidy 或 Clang Static Analyzer 搭配使用 |
 
-聚合规则级 F1：100.0%（P=1.000，R=1.000）。所有真实 CVE 用例均触发，语料无未关闭的 FP。各维度详情与已知盲区见 [语言成熟度页面](https://elicpeter.github.io/nyx/language-maturity.html)。
+所有真实 CVE 用例均触发，语料在记录基线下无未关闭的 FP（P=R=F1=1.000）。各维度详情与已知盲区见 [语言成熟度页面](https://nyxscan.dev/docs/language-maturity.html)。
 
 ### 通过真实 CVE 验证
 
@@ -180,9 +180,22 @@ cd nyx && cargo build --release
 1. **Pass 1**：用 tree-sitter 解析每个文件，构建过程内 CFG（petgraph），下降到剪枝后的 SSA（在支配边界上做 Cytron phi 插入），并导出每函数摘要（source/sanitizer/sink 能力位、污点变换、指向集、被调集合）。
 2. **摘要合并**：将每文件摘要并集合并为 `GlobalSummaries` 映射。
 3. **Pass 2**：在跨文件上下文与有限上下文敏感（文件内被调用 k=1 内联，SCC 不动点上限 64 次迭代，超过内联体大小阈值的被调用走摘要回退）下重新分析每个文件。正向数据流工作表通过 SSA 格传播污点，保证收敛。调用图 SCC 迭代到不动点（在上限内），使相互递归函数能拿到准确摘要。
-4. **排序、去重、输出**：按 严重度 × 证据强度 × 源类可利用性 打分，并输出到控制台、JSON 或 SARIF。
+4. **排序、去重、动态验证、输出**：按 严重度 × 证据强度 × 源类可利用性 打分。默认构建会对中高置信度发现做动态验证，然后输出到控制台、JSON、SARIF 和浏览器 UI。
 
-检测器家族：污点（跨文件 source→sink，含 SQLi、XSS、命令/代码执行、反序列化、SSRF、路径穿越、格式串、加密、LDAP 注入、XPath 注入、HTTP 头/响应拆分、开放重定向、服务端模板注入、XXE、原型污染、数据外泄、以及 auth 折入的能力位类规则）、CFG 结构（鉴权缺失、未守卫汇、资源泄漏）、状态模型（use-after-close、double-close、must-leak、unauthed-access）、AST 模式（tree-sitter 结构匹配）。完整检测器文档：[Detectors](https://elicpeter.github.io/nyx/detectors.html)。
+检测器家族：污点（跨文件 source→sink，含 SQLi、XSS、命令/代码执行、反序列化、SSRF、路径穿越、格式串、加密、LDAP 注入、XPath 注入、HTTP 头/响应拆分、开放重定向、服务端模板注入、XXE、原型污染、数据外泄、以及 auth 折入的能力位类规则）、CFG 结构（鉴权缺失、未守卫汇、资源泄漏）、状态模型（use-after-close、double-close、must-leak、unauthed-access）、AST 模式（tree-sitter 结构匹配）。完整检测器文档：[Detectors](https://nyxscan.dev/docs/detectors.html)。
+
+---
+
+## 动态验证
+
+静态分析说明 source 到 sink 可达。动态验证会尝试证明这条路径在真实代码里会触发。默认构建开启该功能，`nyx scan` 会为中高置信度发现生成 harness，在沙箱中用 curated payload 运行，并把结果写入 `evidence.dynamic_verdict`。
+
+```bash
+nyx scan --verify          # 默认行为的显式写法
+nyx scan --no-verify       # 只跑静态分析，适合本地快速循环
+```
+
+`Confirmed` 只有在攻击 payload 触发 sink 且对应的良性 control 保持干净时才会出现。`NotConfirmed` 表示 harness 跑完但没有触发，不等于发现已关闭。完整能力矩阵、后端与限制见 [Dynamic verification](https://nyxscan.dev/docs/dynamic.html)。
 
 ---
 
@@ -207,13 +220,13 @@ kind     = "sanitizer"
 cap      = "html_escape"
 ```
 
-或交互式添加规则：`nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`。能力位（caps）：`env_var`、`html_escape`、`shell_escape`、`url_encode`、`json_parse`、`file_io`、`fmt_string`、`sql_query`、`deserialize`、`ssrf`、`data_exfil`、`code_exec`、`crypto`、`unauthorized_id`、`ldap_injection`、`xpath_injection`、`header_injection`、`open_redirect`、`ssti`、`xxe`、`prototype_pollution`、`all`。完整 schema：[Configuration](https://elicpeter.github.io/nyx/configuration.html)。运行 `nyx rules list` 可在终端浏览注册表。
+或交互式添加规则：`nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`。能力位（caps）：`env_var`、`html_escape`、`shell_escape`、`url_encode`、`json_parse`、`file_io`、`fmt_string`、`sql_query`、`deserialize`、`ssrf`、`data_exfil`、`code_exec`、`crypto`、`unauthorized_id`、`ldap_injection`、`xpath_injection`、`header_injection`、`open_redirect`、`ssti`、`xxe`、`prototype_pollution`、`all`。完整 schema：[Configuration](https://nyxscan.dev/docs/configuration.html)。运行 `nyx rules list` 可在终端浏览注册表。
 
 ---
 
 ## 状态
 
-正在积极开发中。API、检测器行为、配置项可能在版本间发生变化。507 案例语料上的规则级 F1 是 CI 回归下限；分语言详情见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)。
+正在积极开发中。API、检测器行为、配置项可能在版本间发生变化。合成语料上的规则级 F1 是 CI 回归下限；分语言详情见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)。
 
 污点分析是过程间的。持久化的每函数 SSA 摘要带有按返回路径的变换与参数粒度的指向集，调用图 SCC（包括跨文件 SCC）迭代到联合不动点。默认 `balanced` 画像还会对文件内被调用做 k=1 上下文敏感内联。Symex（含跨文件与过程间帧）以及按需后向遍历是可选项。可分别用 `--symex` 与 `--backwards-analysis` 单独开启，或通过 `--engine-profile deep` 一并开启。
 
@@ -228,12 +241,12 @@ cap      = "html_escape"
 
 ## 文档
 
-完整文档站点：**[elicpeter.github.io/nyx](https://elicpeter.github.io/nyx/)**。
+完整文档站点：**[nyxscan.dev/docs](https://nyxscan.dev/docs/)**。
 
-- [Quick Start](https://elicpeter.github.io/nyx/quickstart.html) · [CLI Reference](https://elicpeter.github.io/nyx/cli.html) · [Installation](https://elicpeter.github.io/nyx/installation.html)
-- [`nyx serve`](https://elicpeter.github.io/nyx/serve.html) · [Output Formats](https://elicpeter.github.io/nyx/output.html) · [Configuration](https://elicpeter.github.io/nyx/configuration.html)
-- [How it works](https://elicpeter.github.io/nyx/how-it-works.html) · [Detectors](https://elicpeter.github.io/nyx/detectors.html)（[Taint](https://elicpeter.github.io/nyx/detectors/taint.html)、[CFG](https://elicpeter.github.io/nyx/detectors/cfg.html)、[State](https://elicpeter.github.io/nyx/detectors/state.html)、[AST Patterns](https://elicpeter.github.io/nyx/detectors/patterns.html)）
-- [Rule Reference](https://elicpeter.github.io/nyx/rules.html) · [Language Maturity](https://elicpeter.github.io/nyx/language-maturity.html) · [Advanced Analysis](https://elicpeter.github.io/nyx/advanced-analysis.html) · [Auth Analysis](https://elicpeter.github.io/nyx/auth.html)
+- [Quick Start](https://nyxscan.dev/docs/quickstart.html) · [CLI Reference](https://nyxscan.dev/docs/cli.html) · [Installation](https://nyxscan.dev/docs/installation.html)
+- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html)
+- [How it works](https://nyxscan.dev/docs/how-it-works.html) · [Detectors](https://nyxscan.dev/docs/detectors.html)（[Taint](https://nyxscan.dev/docs/detectors/taint.html)、[CFG](https://nyxscan.dev/docs/detectors/cfg.html)、[State](https://nyxscan.dev/docs/detectors/state.html)、[AST Patterns](https://nyxscan.dev/docs/detectors/patterns.html)）
+- [Rule Reference](https://nyxscan.dev/docs/rules.html) · [Language Maturity](https://nyxscan.dev/docs/language-maturity.html) · [Advanced Analysis](https://nyxscan.dev/docs/advanced-analysis.html) · [Auth Analysis](https://nyxscan.dev/docs/auth.html)
 
 ---
 

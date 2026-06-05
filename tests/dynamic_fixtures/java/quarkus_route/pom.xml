@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>nyx</groupId>
+  <artifactId>quarkus-route-fixture</artifactId>
+  <version>0.0.1</version>
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+  </properties>
+  <dependencies>
+    <!--
+      The route-replay harness reflects over the Jakarta REST annotations
+      (`@Path`/`@GET`) at runtime; it never touches a live Quarkus server,
+      so `jakarta.ws.rs-api` is the only jar it needs.  Pulling the full
+      `quarkus-resteasy-reactive` runtime (Vert.x, Netty, RESTEasy, 200+
+      transitive jars) only bloated `-cp lib/*`, which slowed cold JVM
+      startup past the 5s run timeout on contended CI runners and made
+      this fixture flaky.  Quarkus REST routes are written with these very
+      `jakarta.ws.rs` annotations, so the shape stays faithful.
+    -->
+    <dependency>
+      <groupId>jakarta.ws.rs</groupId>
+      <artifactId>jakarta.ws.rs-api</artifactId>
+      <version>3.1.0</version>
+    </dependency>
+  </dependencies>
+</project>

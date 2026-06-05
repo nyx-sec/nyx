@@ -1,0 +1,9 @@
+// Phase 10 (Track D.3) — C++ HTTP recorder body-only fragment.
+//
+// Wrapped at test time by `wrap_cpp_fragment(body, shim)`.  Records
+// an SSRF attempt at the IMDS metadata endpoint through the shim
+// recorder; the host-side HttpStub captures the attempted outbound
+// call without the harness opening a real socket.
+std::string method = "GET";
+std::string url = "http://169.254.169.254/latest/meta-data/";
+__nyx_stub_http_record(method, url, std::string(), { {"driver", "manual"} });

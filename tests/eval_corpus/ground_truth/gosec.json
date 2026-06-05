@@ -1,0 +1,14 @@
+[
+  {
+    "path": "goanalysis/testdata/src/a/basic_output.go",
+    "line": 0,
+    "cap": "cmdi",
+    "vuln": true
+  },
+  {
+    "path": "goanalysis/testdata/src/a/basic_output.go",
+    "line": 0,
+    "cap": "crypto",
+    "vuln": true
+  }
+]

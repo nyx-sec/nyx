@@ -556,9 +556,7 @@ fn cross_file_sanitizer_resolved_via_global_summaries() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Shared test helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse Rust source bytes → FileCfg
 fn parse_rust(src: &[u8]) -> FileCfg {
@@ -777,9 +775,7 @@ fn cross_file_sink_cap_only_site_leaves_primary_location_none() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Multi-file integration tests (real parsing, full pass-1 → pass-2 pipeline)
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn multi_file_source_to_sink_detected() {
@@ -1070,9 +1066,7 @@ fn multi_file_chain_source_sanitize_sink_across_files() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Edge-case unit tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn sanitizer_strips_only_matching_bits() {
@@ -1435,9 +1429,7 @@ fn multiple_cross_file_sources_one_sanitised() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Multi-language helpers and tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse source bytes for any supported language → FileCfg
 fn parse_lang(src: &[u8], slug: &str, ts_lang: tree_sitter::Language) -> FileCfg {
@@ -1575,6 +1567,159 @@ fn c_source_to_sink() {
         findings.len(),
         1,
         "C: source->sink should produce 1 finding"
+    );
+}
+
+#[test]
+fn c_fgets_condition_to_execvp_argv_fires() {
+    let src = br#"#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+  char url_buf[256];
+  if (!fgets(url_buf, sizeof url_buf, stdin)) return 1;
+  const char *args[3];
+  args[0] = "ssh";
+  args[1] = url_buf;
+  args[2] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: fgets stdin should reach execvp argv, got {findings:#?}"
+    );
+}
+
+#[test]
+fn c_fgets_reaches_printf_data_arg() {
+    let src = br#"#include <stdio.h>
+int main(void) {
+  char buf[256];
+  if (!fgets(buf, sizeof buf, stdin)) return 1;
+  printf("%s", buf);
+  return 0;
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: fgets buffer should reach printf data arg, got {findings:#?}"
+    );
+}
+
+#[test]
+fn c_gets_reaches_printf_data_arg() {
+    let src = br#"#include <stdio.h>
+int main(void) {
+  char buf[256];
+  gets(buf);
+  printf("%s\n", buf);
+  return 0;
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: gets buffer should reach printf data arg, got {findings:#?}"
+    );
+}
+
+#[test]
+fn c_execvp_ignores_env_config_executable_path() {
+    let src = br#"#include <stdlib.h>
+#include <unistd.h>
+int main(void) {
+  const char *ssh = getenv("GIT_SSH");
+  const char *args[2];
+  args[0] = ssh;
+  args[1] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "C: env-config executable path should not be treated as argv injection"
+    );
+}
+
+#[test]
+fn c_dash_prefix_guard_suppresses_execvp_argv_injection() {
+    let src = br#"#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+  char url_buf[256];
+  if (!fgets(url_buf, sizeof url_buf, stdin)) return 1;
+  char *ssh_host = url_buf;
+  if (ssh_host[0] == '-') return 1;
+  const char *args[3];
+  args[0] = "ssh";
+  args[1] = ssh_host;
+  args[2] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_lang(src, "c", lang);
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "C: dash-prefix rejection should clear argv-injection taint, got {findings:#?}"
     );
 }
 
@@ -1803,9 +1948,7 @@ fn ruby_source_to_sink() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Cross-language multi-file tests
-// ─────────────────────────────────────────────────────────────────────────────
 //
 // Cross-language resolution now requires explicit InteropEdge declarations.
 // Without an edge, functions from different languages are never resolved ,
@@ -4549,6 +4692,248 @@ fn ssa_summary_param_to_sink() {
 }
 
 #[test]
+fn c_summary_param_to_execvp_argv_sink() {
+    use crate::state::symbol::SymbolInterner;
+
+    let src = br#"#include <unistd.h>
+int do_ssh_connect(char *url) {
+  const char *ssh;
+  char *ssh_host = url;
+  const char *port = 0;
+  get_host_and_port_min(&ssh_host, &port);
+  if (!port) port = "22";
+  ssh = getenv("GIT_SSH");
+  if (!ssh) ssh = "ssh";
+  const char *args[8];
+  int nargs = 0;
+  args[nargs++] = ssh;
+  if (port) {
+    args[nargs++] = "-p";
+    args[nargs++] = port;
+  }
+  args[nargs++] = ssh_host;
+  args[nargs++] = "git-upload-pack";
+  args[nargs++] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+"#;
+    let file_cfg = parse_lang(
+        src,
+        "c",
+        tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+    );
+    for body in &file_cfg.bodies {
+        if body.meta.name.as_deref() != Some("do_ssh_connect") {
+            continue;
+        }
+        let interner = SymbolInterner::from_cfg(&body.graph);
+        let ssa = crate::ssa::lower_to_ssa_with_params(
+            &body.graph,
+            body.entry,
+            Some("do_ssh_connect"),
+            false,
+            &body.meta.params,
+        )
+        .expect("C function should lower to SSA");
+        let param_count = body.meta.params.len();
+        let summary = ssa_transfer::extract_ssa_func_summary(
+            &ssa,
+            &body.graph,
+            &file_cfg.summaries,
+            None,
+            Lang::C,
+            "test.c",
+            &interner,
+            param_count,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            summary
+                .param_to_sink_caps()
+                .iter()
+                .any(|(idx, caps)| *idx == 0 && caps.contains(Cap::SHELL_ESCAPE)),
+            "C summary should record url param reaching execvp argv, got {:?}",
+            summary.param_to_sink_caps()
+        );
+        return;
+    }
+
+    panic!("do_ssh_connect function not found");
+}
+
+#[test]
+fn c_summary_dash_prefix_guard_suppresses_execvp_argv_sink() {
+    use crate::state::symbol::SymbolInterner;
+
+    let src = br#"#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+int do_ssh_connect(char *url) {
+  const char *ssh;
+  char *ssh_host = url;
+  const char *port = 0;
+  if (!port) port = "22";
+  if (ssh_host[0] == '-') {
+    fprintf(stderr, "strange hostname '%s' blocked\n", ssh_host);
+    exit(1);
+  }
+  ssh = getenv("GIT_SSH");
+  if (!ssh) ssh = "ssh";
+  const char *args[8];
+  int nargs = 0;
+  args[nargs++] = ssh;
+  if (port) {
+    args[nargs++] = "-p";
+    args[nargs++] = port;
+  }
+  args[nargs++] = ssh_host;
+  args[nargs++] = "git-upload-pack";
+  args[nargs++] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+"#;
+    let file_cfg = parse_lang(
+        src,
+        "c",
+        tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+    );
+    for body in &file_cfg.bodies {
+        if body.meta.name.as_deref() != Some("do_ssh_connect") {
+            continue;
+        }
+        let interner = SymbolInterner::from_cfg(&body.graph);
+        let ssa = crate::ssa::lower_to_ssa_with_params(
+            &body.graph,
+            body.entry,
+            Some("do_ssh_connect"),
+            false,
+            &body.meta.params,
+        )
+        .expect("C function should lower to SSA");
+        let summary = ssa_transfer::extract_ssa_func_summary(
+            &ssa,
+            &body.graph,
+            &file_cfg.summaries,
+            None,
+            Lang::C,
+            "test.c",
+            &interner,
+            body.meta.params.len(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !summary
+                .param_to_sink_caps()
+                .iter()
+                .any(|(idx, caps)| *idx == 0 && caps.contains(Cap::SHELL_ESCAPE)),
+            "dash-prefix guard should suppress argv-injection summary, got {:?}",
+            summary.param_to_sink_caps()
+        );
+        return;
+    }
+
+    panic!("do_ssh_connect function not found");
+}
+
+#[test]
+fn c_fgets_reaches_execvp_argv_through_summary() {
+    let src = br#"#include <stdio.h>
+#include <unistd.h>
+int do_ssh_connect(char *url) {
+  char *ssh_host = url;
+  const char *args[3];
+  args[0] = "ssh";
+  args[1] = ssh_host;
+  args[2] = 0;
+  return execvp(args[0], (char *const *)args);
+}
+int main(void) {
+  char url_buf[256];
+  if (!fgets(url_buf, sizeof url_buf, stdin)) return 1;
+  return do_ssh_connect(url_buf);
+}
+"#;
+    let file_cfg = parse_lang(
+        src,
+        "c",
+        tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+    );
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "test.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "C: fgets source should flow through do_ssh_connect summary, got {findings:#?}"
+    );
+}
+
+#[test]
+fn cve_2017_1000117_vulnerable_fixture_fires() {
+    let src = include_bytes!("../../tests/benchmark/cve_corpus/c/CVE-2017-1000117/vulnerable.c");
+    let file_cfg = parse_lang(
+        src,
+        "c",
+        tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+    );
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "vulnerable.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.source_kind == crate::labels::SourceKind::UserInput),
+        "CVE-2017-1000117 vulnerable fixture should fire, got {findings:#?}"
+    );
+}
+
+#[test]
+fn cve_2017_1000117_patched_fixture_suppresses_dash_guard() {
+    let src = include_bytes!("../../tests/benchmark/cve_corpus/c/CVE-2017-1000117/patched.c");
+    let file_cfg = parse_lang(
+        src,
+        "c",
+        tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+    );
+    let findings = analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::C,
+        "patched.c",
+        &[],
+        None,
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.source_kind != crate::labels::SourceKind::UserInput),
+        "CVE-2017-1000117 patched fixture should suppress argv injection, got {findings:#?}"
+    );
+}
+
+#[test]
 fn ssa_cross_function_taint_with_sanitizer_wrapper() {
     // Cross-function: caller passes tainted data through sanitizer wrapper
     // The SSA summary should capture the sanitizer's StripBits, reducing taint at call site
@@ -5763,9 +6148,7 @@ fn link_alternative_paths_three_way_group() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Typed call-graph devirtualisation (typed_call_receivers)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// when a method call's receiver was constructed from a known
 /// constructor (`File::open` → `FileHandle`), the SSA-extraction

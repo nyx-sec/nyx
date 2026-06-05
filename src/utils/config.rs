@@ -202,6 +202,13 @@ pub struct ScannerConfig {
     /// Excluded files
     pub excluded_files: Vec<String>,
 
+    /// Restrict the scan to these paths (relative to the scan root or absolute)
+    /// as a whitelist. When non-empty, only files matching one of these paths
+    /// are scanned; empty (default) scans everything not otherwise excluded.
+    /// Populated programmatically (e.g. the server `include_paths` request
+    /// field), not typically set in config files.
+    pub included_paths: Vec<String>,
+
     /// RESERVED: not yet wired to walker. Whether to respect the global ignore file.
     pub read_global_ignore: bool,
 
@@ -248,6 +255,67 @@ pub struct ScannerConfig {
     /// subsystem still carries the stable detection; flipping to `true`
     /// enables the taint-based path alongside it.
     pub enable_auth_as_taint: bool,
+
+    /// Run dynamic verification on each finding after the static pass.
+    ///
+    /// Default `true`. Each `Confidence >= Medium` finding is passed to
+    /// `dynamic::verify_finding` and the result is stored in
+    /// `Evidence::dynamic_verdict`. Use `--no-verify` (CLI) or set
+    /// `verify = false` in `nyx.toml` to disable.
+    ///
+    /// Included in default builds. Custom `--no-default-features` builds need
+    /// `--features dynamic`; without that feature the CLI warns and runs
+    /// static-only.
+    ///
+    /// Migration note: existing `nyx.toml` files that already set
+    /// `verify = false` keep the opt-out behaviour; only the inherited
+    /// default changes.
+    #[serde(default = "default_verify")]
+    pub verify: bool,
+
+    /// Extend dynamic verification to findings below `Confidence::Medium`.
+    ///
+    /// By default only `Confidence >= Medium` findings are verified
+    /// (§5.1). Set this to `true` (or pass `--verify-all-confidence`)
+    /// to also verify `Low`-confidence findings.  Intended for
+    /// backfill / corpus-building runs, not production scans.
+    #[serde(default)]
+    pub verify_all_confidence: bool,
+
+    /// Sandbox backend for dynamic verification.
+    ///
+    /// `"auto"` (default): docker when available, else process.
+    /// `"docker"`: require docker; fail if unavailable.
+    /// `"process"`: in-process runner (same as `--unsafe-sandbox`).
+    #[serde(default = "default_verify_backend")]
+    pub verify_backend: String,
+
+    /// Process-backend hardening profile applied during dynamic verification.
+    ///
+    /// `"standard"` (default): the historical baseline. On Linux this
+    /// engages `prctl(PR_SET_NO_NEW_PRIVS)` plus `setrlimit(RLIMIT_AS)`;
+    /// on macOS the harness runs without a `sandbox-exec` wrap.
+    /// `"strict"`: opts into the full Phase 17/18 lockdown. On Linux the
+    /// process backend layers the namespace unshare, chroot to workdir,
+    /// and default-deny seccomp filter on top of the baseline. On macOS
+    /// the harness is wrapped with `sandbox-exec -f <profile>.sb` keyed
+    /// off the finding's expected cap (FILE_IO → `path_traversal.sb`,
+    /// CODE_EXEC → `cmdi.sb`, SSRF → `ssrf.sb`, …).
+    ///
+    /// Opt-in. Interpreted Linux harnesses (python3, node, java) may
+    /// SIGSYS under strict seccomp until the per-language allowlists are
+    /// expanded; static native harnesses run unaffected.
+    #[serde(default = "default_harden_profile")]
+    pub harden_profile: String,
+}
+fn default_verify() -> bool {
+    true
+}
+fn default_verify_backend() -> String {
+    "auto".to_owned()
+}
+fn default_harden_profile() -> String {
+    "standard".to_owned()
 }
 impl Default for ScannerConfig {
     fn default() -> Self {
@@ -274,6 +342,7 @@ impl Default for ScannerConfig {
             .map(str::to_owned)
             .collect(),
             excluded_files: vec![].into_iter().map(str::to_owned).collect(),
+            included_paths: Vec::new(),
             read_global_ignore: false,
             read_vcsignore: true,
             require_git_to_read_vcsignore: true,
@@ -285,6 +354,10 @@ impl Default for ScannerConfig {
             enable_auth_analysis: true,
             enable_panic_recovery: false,
             enable_auth_as_taint: false,
+            verify: true,
+            verify_all_confidence: false,
+            verify_backend: "auto".to_owned(),
+            harden_profile: "standard".to_owned(),
         }
     }
 }
@@ -381,6 +454,17 @@ pub struct OutputConfig {
     /// Number of example locations to store in rollup findings.
     #[serde(default = "default_rollup_examples")]
     pub rollup_examples: u32,
+
+    /// Phase 25 — whether the JSON / SARIF / console output should
+    /// continue to emit constituent findings that already belong to a
+    /// composed [`crate::chain::ChainFinding`].
+    ///
+    /// Default `true` (preserve every individual finding so existing
+    /// pipelines see no behavioural change).  Set to `false` to fold
+    /// chain members into the `chains: [...]` array exclusively; the
+    /// findings array still emits every non-member.
+    #[serde(default = "default_show_chain_constituents")]
+    pub show_chain_constituents: bool,
 }
 
 fn default_max_low() -> u32 {
@@ -394,6 +478,9 @@ fn default_max_low_per_rule() -> u32 {
 }
 fn default_rollup_examples() -> u32 {
     5
+}
+fn default_show_chain_constituents() -> bool {
+    true
 }
 
 impl Default for OutputConfig {
@@ -412,6 +499,7 @@ impl Default for OutputConfig {
             max_low_per_file: 1,
             max_low_per_rule: 10,
             rollup_examples: 5,
+            show_chain_constituents: true,
         }
     }
 }
@@ -632,6 +720,36 @@ pub struct AnalysisRulesConfig {
     pub engine: crate::utils::AnalysisOptions,
 }
 
+/// Phase 25 — `[chain]` section of `nyx.toml`.
+///
+/// Drives the bounded-DFS path search in
+/// [`crate::chain::search::find_chains`].
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct ChainConfig {
+    /// Maximum number of per-finding hops in a single chain path.
+    /// Defaults to `4`.
+    pub max_depth: usize,
+    /// Path-search threshold.  Chains with a score strictly below
+    /// this value are dropped.  Defaults to
+    /// [`crate::chain::score::min_score_default`].
+    pub min_score: f64,
+    /// Phase 26 — Track G.3: only the top-N chains (by score) are
+    /// considered for composite dynamic re-verification.  Defaults to
+    /// `5`.  Set to `0` to disable composite re-verification entirely.
+    pub reverify_top_n: usize,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 4,
+            min_score: 9.5,
+            reverify_top_n: 5,
+        }
+    }
+}
+
 /// Configuration for the local web UI server (`nyx serve`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -667,6 +785,30 @@ impl Default for ServerConfig {
             persist_runs: true,
             max_saved_runs: 50,
             triage_sync: true,
+        }
+    }
+}
+
+/// Phase 27 — `[telemetry]` section.  Controls the on-disk event log
+/// sampling policy.  Confirmed and Inconclusive verdicts are calibration
+/// critical and are retained by default; other verdict statuses can be
+/// downsampled via `sample_rate_other` to bound log growth on high-volume
+/// scans.  Decisions are seeded by `spec_hash` for determinism — see
+/// [`crate::dynamic::telemetry::SamplingPolicy`].
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    pub keep_all_confirmed: bool,
+    pub keep_all_inconclusive: bool,
+    pub sample_rate_other: f32,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            keep_all_confirmed: true,
+            keep_all_inconclusive: true,
+            sample_rate_other: 1.0,
         }
     }
 }
@@ -783,12 +925,20 @@ pub struct Config {
     pub output: OutputConfig,
     pub performance: PerformanceConfig,
     pub analysis: AnalysisRulesConfig,
+    /// Phase 25 — `[chain]` section.  Controls bounded path search
+    /// and the chain-emission score threshold.
+    #[serde(default)]
+    pub chain: ChainConfig,
     /// Per-detector knobs ([detectors.*] in nyx.conf).  Currently exposes
     /// `[detectors.data_exfil]` for cross-boundary leak suppression.
     #[serde(default)]
     pub detectors: crate::utils::detector_options::DetectorOptions,
     pub server: ServerConfig,
     pub runs: RunsConfig,
+    /// Phase 27 — `[telemetry]` section.  Sampling policy for the dynamic
+    /// event log.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
     pub profiles: HashMap<String, ScanProfile>,
     /// Detected frameworks for the current project, set by the scan pipeline,
     /// not persisted to config files.
@@ -1094,6 +1244,9 @@ pub(crate) fn merge_configs(mut default: Config, user: Config) -> Config {
 
     // --- RunsConfig ---
     default.runs = user.runs;
+
+    // --- TelemetryConfig ---
+    default.telemetry = user.telemetry;
 
     // --- Profiles (user profile with same name fully replaces) ---
     for (name, profile) in user.profiles {
@@ -1583,6 +1736,17 @@ fn runs_config_defaults() {
     assert!(!cfg.save_logs);
     assert!(!cfg.save_stdout);
     assert!(cfg.save_code_snippets);
+}
+
+#[test]
+fn output_config_preserves_chain_constituents_by_default() {
+    // Phase 25 deferred decision (b): the default keeps every constituent
+    // finding in the `findings: [...]` array so existing pipelines see no
+    // behavioural change. Flipping this to `false` is a deliberate breaking
+    // change and must be done explicitly, not silently. Guarding both the
+    // `Default` impl and the serde-default getter so neither drifts alone.
+    assert!(OutputConfig::default().show_chain_constituents);
+    assert!(default_show_chain_constituents());
 }
 
 #[test]

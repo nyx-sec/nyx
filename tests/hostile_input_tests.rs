@@ -229,12 +229,17 @@ fn binary_null_heavy_input_is_skipped() {
 
 /// Invalid UTF-8 in a recognised source extension must not panic.
 /// tree-sitter can operate on raw bytes; we just check that it survives.
+/// Budget widened from 2 s to 10 s after the pitboss parallel `cargo test`
+/// invocation surfaced ~2.8 s wall time under shared-runner CPU pressure
+/// even though the isolated test runs well under 100 ms.  The point is
+/// to catch a runaway, not to benchmark, so 10 s leaves clear headroom
+/// without masking a real regression.
 #[test]
 fn invalid_utf8_does_not_panic() {
     let bytes = b"\xff\xfe\xfd\xfc\n\xde\xad\xbe\xef\n// trailing\n".to_vec();
     let path = Path::new("junk.rs");
     let cfg = hostile_cfg();
-    let _ = with_time_budget(Duration::from_secs(2), "invalid utf8", || {
+    let _ = with_time_budget(Duration::from_secs(10), "invalid utf8", || {
         run_rules_on_bytes(&bytes, path, &cfg, None, None).expect("invalid UTF-8 should not error")
     });
 }
@@ -260,10 +265,13 @@ fn empty_file_is_noop() {
 /// right-associative expression, the latter is a separate stress case
 /// dominated by recursive descent and not representative of real input.
 ///
-/// Generous debug-build budget (20 s) because the full analysis pipeline
+/// Generous debug-build budget (40 s) because the full analysis pipeline
 /// runs on every statement; release builds are an order of magnitude
 /// faster.  The point is to guard against regressions that are
-/// super-linear in statement count, not to benchmark.
+/// super-linear in statement count, not to benchmark.  Budget widened
+/// from 20 s after the pitboss parallel `cargo test` invocation surfaced
+/// 24-25 s wall time under shared-runner CPU pressure even though the
+/// isolated test runs in ~3.7 s.
 #[test]
 fn very_long_single_line_parses() {
     run_on_prod_stack(|| {
@@ -275,7 +283,7 @@ fn very_long_single_line_parses() {
 
         let path = Path::new("long_line.js");
         let cfg = hostile_cfg();
-        let _ = with_time_budget(Duration::from_secs(20), "long line parse", || {
+        let _ = with_time_budget(Duration::from_secs(40), "long line parse", || {
             run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
                 .expect("long-line file should parse")
         });
@@ -348,7 +356,10 @@ fn deeply_nested_if_statements_do_not_stack_overflow() {
 
 /// Lots of small functions in one file stresses the pass-1/pass-2 bookkeeping
 /// (summary extraction, callgraph build).  2 000 functions is cheap but
-/// plausible for generated code.
+/// plausible for generated code.  Budget widened from 15 s after the
+/// pitboss parallel `cargo test` invocation surfaced 15.3 s under
+/// shared-runner CPU pressure even though the isolated test runs in
+/// ~3.7 s.
 #[test]
 fn many_small_functions_do_not_explode() {
     let mut s = String::with_capacity(2000 * 32);
@@ -358,7 +369,7 @@ fn many_small_functions_do_not_explode() {
 
     let path = Path::new("many_funcs.js");
     let cfg = hostile_cfg();
-    let _ = with_time_budget(Duration::from_secs(15), "many-funcs scan", || {
+    let _ = with_time_budget(Duration::from_secs(30), "many-funcs scan", || {
         run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
             .expect("many-functions file should scan")
     });

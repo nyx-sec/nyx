@@ -19,9 +19,9 @@ Human-readable, color-coded output to stdout. Status messages go to stderr.
 
 | Tag | Color | Meaning |
 |-----|-------|---------|
-| `[HIGH]` | Red, bold | Critical -- likely exploitable |
-| `[MEDIUM]` | Orange, bold | Important -- may be exploitable |
-| `[LOW]` | Muted blue-gray | Informational -- code quality or weak signal |
+| `[HIGH]` | Red, bold | Critical, likely exploitable |
+| `[MEDIUM]` | Orange, bold | Important, may be exploitable |
+| `[LOW]` | Muted blue-gray | Informational: code quality or weak signal |
 
 ### Evidence fields
 
@@ -69,48 +69,71 @@ Use --include-quality, --max-low, or --all to adjust.
 
 ## JSON
 
-Machine-readable JSON array. Each finding is an object:
+Machine-readable JSON object. The main keys are:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `findings` | array | Finding objects |
+| `chains` | array | Composed exploit chains, when emitted |
+| `dynamic_verification` | object | Count of attached dynamic verdicts |
+| `verdict_diff` | object | Baseline comparison, only when `--baseline` is used |
 
 ```json
-[
-  {
-    "path": "src/handler.rs",
-    "line": 12,
-    "col": 5,
-    "severity": "High",
-    "id": "taint-unsanitised-flow (source 5:11)",
-    "path_validated": false,
-    "labels": [
-      ["Source", "env::var(\"CMD\") at 5:11"],
-      ["Sink", "Command::new(\"sh\").arg(\"-c\")"]
-    ],
-    "confidence": "High",
-    "evidence": {
-      "source": {
-        "path": "src/handler.rs",
-        "line": 5,
-        "col": 11,
-        "kind": "source",
-        "snippet": "env::var(\"CMD\")"
+{
+  "findings": [
+    {
+      "path": "src/handler.rs",
+      "line": 12,
+      "col": 5,
+      "severity": "High",
+      "id": "taint-unsanitised-flow (source 5:11)",
+      "path_validated": false,
+      "labels": [
+        ["Source", "env::var(\"CMD\") at 5:11"],
+        ["Sink", "Command::new(\"sh\").arg(\"-c\")"]
+      ],
+      "confidence": "High",
+      "evidence": {
+        "source": {
+          "path": "src/handler.rs",
+          "line": 5,
+          "col": 11,
+          "kind": "source",
+          "snippet": "env::var(\"CMD\")"
+        },
+        "sink": {
+          "path": "src/handler.rs",
+          "line": 12,
+          "col": 5,
+          "kind": "sink",
+          "snippet": "Command::new(\"sh\")"
+        },
+        "notes": ["source_kind:EnvironmentConfig"],
+        "dynamic_verdict": {
+          "finding_id": "a3b12f0c91e04420",
+          "status": "Confirmed",
+          "triggered_payload": "cmdi-echo-marker"
+        }
       },
-      "sink": {
-        "path": "src/handler.rs",
-        "line": 12,
-        "col": 5,
-        "kind": "sink",
-        "snippet": "Command::new(\"sh\")"
-      },
-      "notes": ["source_kind:EnvironmentConfig"]
-    },
-    "rank_score": 76.0,
-    "rank_reason": [
-      ["severity_base", "60"],
-      ["analysis_kind", "10"],
-      ["source_kind", "5"],
-      ["evidence_count", "1"]
-    ]
+      "rank_score": 76.0,
+      "rank_reason": [
+        ["severity_base", "60"],
+        ["analysis_kind", "10"],
+        ["source_kind", "5"],
+        ["evidence_count", "1"]
+      ]
+    }
+  ],
+  "chains": [],
+  "dynamic_verification": {
+    "total": 1,
+    "confirmed": 1,
+    "partially_confirmed": 0,
+    "not_confirmed": 0,
+    "inconclusive": 0,
+    "unsupported": 0
   }
-]
+}
 ```
 
 ### Field descriptions
@@ -132,6 +155,7 @@ Machine-readable JSON array. Each finding is an object:
 | `rank_score` | float | no | Attack-surface score (omitted when ranking disabled) |
 | `rank_reason` | array | no | Score breakdown (omitted when ranking disabled) |
 | `rollup` | object | no | Rollup data when findings are grouped (see below) |
+| `chain_member_of` | int | no | Stable hash of the emitted chain this finding belongs to |
 
 Fields marked "no" are omitted when empty/null/false to keep output compact.
 
@@ -139,9 +163,9 @@ Fields marked "no" are omitted when empty/null/false to keep output compact.
 
 | Level | Meaning |
 |-------|---------|
-| `High` | Strong signal -- taint-confirmed flow, definite state violation |
-| `Medium` | Moderate signal -- resource leak, path-validated taint, CFG structural |
-| `Low` | Weak signal -- AST pattern match, possible resource leak, degraded analysis |
+| `High` | Strong signal: taint-confirmed flow, definite state violation |
+| `Medium` | Moderate signal: resource leak, path-validated taint, CFG structural |
+| `Low` | Weak signal: AST pattern match, possible resource leak, degraded analysis |
 
 ### Evidence object
 
@@ -155,8 +179,39 @@ The `evidence` field provides structured provenance data:
 | `sanitizers` | array | Sanitizer spans |
 | `state` | object | State-machine evidence (machine, subject, from_state, to_state) |
 | `notes` | array | Free-form notes (e.g. `"source_kind:UserInput"`, `"path_validated"`) |
+| `dynamic_verdict` | object | Dynamic verification result, when verification ran or was skipped for a typed reason |
 
 All fields are omitted when empty/null.
+
+### Dynamic verdict object
+
+`evidence.dynamic_verdict` uses this shape:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `finding_id` | string | Stable 16-character hex finding id |
+| `status` | string | `Confirmed`, `PartiallyConfirmed`, `NotConfirmed`, `Inconclusive`, or `Unsupported` |
+| `triggered_payload` | string | Payload label for `Confirmed` verdicts |
+| `reason` | object/string | Typed reason for `Unsupported` |
+| `inconclusive_reason` | object/string | Typed reason for `Inconclusive` |
+| `detail` | string | Extra build, sandbox, or policy detail |
+| `attempts` | array | Per-payload attempt summaries |
+| `toolchain_match` | string | `exact` or `drift` |
+| `differential` | object | Vulnerable versus benign control result, when both ran |
+| `hardening_outcome` | object | Process-backend hardening result, when recorded |
+
+The top-level `dynamic_verification` object counts verdict statuses across the emitted findings:
+
+```json
+{
+  "total": 4,
+  "confirmed": 2,
+  "partially_confirmed": 0,
+  "not_confirmed": 1,
+  "inconclusive": 0,
+  "unsupported": 1
+}
+```
 
 ### Rollup object
 
@@ -192,12 +247,13 @@ nyx scan . --format sarif > results.sarif
 
 The SARIF output includes:
 
-- **Tool metadata** -- Nyx name and version
-- **Rules** -- Rule ID, description, severity mapping
-- **Results** -- One result per finding with location, message, and properties
-- **Properties** -- Each result includes `category` and optionally `confidence` and `rollup.count`
-- **Related locations** -- Rollup findings include example locations in `relatedLocations`
-- **Artifacts** -- File paths referenced by findings
+- **Tool metadata**: Nyx name and version
+- **Rules**: Rule ID, description, severity mapping
+- **Results**: One result per finding with location, message, and properties
+- **Properties**: Each result includes `category` and optionally `confidence`, `rollup.count`, and `nyx_dynamic_verdict`
+- **Fingerprints**: Dynamic verdict status is added as `partialFingerprints.dynamic_verdict_status` when present
+- **Related locations**: Rollup findings include example locations in `relatedLocations`
+- **Artifacts**: File paths referenced by findings
 
 ### GitHub Code Scanning integration
 
@@ -219,9 +275,10 @@ The SARIF output includes:
 |------|---------|
 | `0` | Scan completed successfully; no findings matched `--fail-on` threshold |
 | `1` | `--fail-on` threshold breached (at least one finding meets or exceeds the specified severity) |
-| Non-zero | Error (I/O, config, database, parse error) |
+| `2` | `--gate` policy tripped (e.g. `no-new-confirmed` saw a new Confirmed finding, or `resolve-all-confirmed` saw a previously Confirmed finding still open) |
+| Other non-zero | Error (I/O, config, database, parse error) |
 
-Without `--fail-on`, Nyx always exits `0` on a successful scan regardless of findings count.
+Without `--fail-on` or `--gate`, Nyx always exits `0` on a successful scan regardless of findings count.
 
 ---
 
@@ -229,9 +286,9 @@ Without `--fail-on`, Nyx always exits `0` on a successful scan regardless of fin
 
 | Level | Description | Typical rules |
 |-------|-------------|---------------|
-| **High** | Critical vulnerabilities -- likely exploitable | Command injection, unsafe deserialization, banned C functions, taint-confirmed flows with user input sources |
-| **Medium** | Important issues -- may be exploitable with additional context | SQL concatenation, XSS sinks, reflection, unguarded sinks, resource leaks |
-| **Low** | Informational -- code quality or weak signals | Weak crypto algorithms, insecure randomness, `unwrap()`/`panic!()`, type-safety escapes |
+| **High** | Critical vulnerabilities, likely exploitable | Command injection, unsafe deserialization, banned C functions, taint-confirmed flows with user input sources |
+| **Medium** | Important issues, may be exploitable with additional context | SQL concatenation, XSS sinks, reflection, unguarded sinks, resource leaks |
+| **Low** | Informational: code quality or weak signals | Weak crypto algorithms, insecure randomness, `unwrap()`/`panic!()`, type-safety escapes |
 
 ### Non-production severity downgrade
 
@@ -260,13 +317,13 @@ Suppress specific findings directly in source code using `nyx:ignore` comments. 
 ### Directive forms
 
 ```python
-x = dangerous()  # nyx:ignore taint-unsanitised-flow     ← suppresses this line
+x = dangerous()  # nyx:ignore taint-unsanitised-flow     (suppresses this line)
 # nyx:ignore-next-line taint-unsanitised-flow
-x = dangerous()                                           ← suppresses this line
+x = dangerous()                                           (suppressed by the comment above)
 ```
 
-- `nyx:ignore <RULE_ID>` -- suppresses findings on the **same line** as the comment.
-- `nyx:ignore-next-line <RULE_ID>` -- suppresses findings on the **next line**.
+- `nyx:ignore <RULE_ID>`: suppresses findings on the **same line** as the comment.
+- `nyx:ignore-next-line <RULE_ID>`: suppresses findings on the **next line**.
 - For taint findings, the primary line is the **sink line** (the `line` field in output).
 
 ### Rule ID matching

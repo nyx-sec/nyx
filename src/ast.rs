@@ -102,6 +102,7 @@ fn parse_timeout_diag(path: &Path, timeout_ms: u64) -> Diag {
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: Vec::new(),
+        stable_hash: 0,
     }
 }
 
@@ -234,10 +235,17 @@ fn build_taint_diag(
                 .map(sanitize_desc)
         })
         .unwrap_or_else(|| "(unknown)".into());
+    // Sink-callee attribution: when the sink node is an *argument* of a call
+    // (e.g. PHP `header("location: " . $_GET['x'])` — the `$_GET[...]` subscript
+    // carries `callee = "$_GET"` but `outer_callee = "header"`), the enclosing
+    // call is the real sink and should be displayed, not the source token.
+    // `outer_callee` is only populated for nested/argument positions, so for a
+    // plain call node it is None and we fall back to the node's own callee.
     let call_site_callee = cfg_graph[finding.sink]
         .call
-        .callee
+        .outer_callee
         .as_deref()
+        .or(cfg_graph[finding.sink].call.callee.as_deref())
         .map(sanitize_desc)
         .unwrap_or_else(|| "(unknown)".into());
     let kind_label = source_kind_label(finding.source_kind);
@@ -706,6 +714,7 @@ fn build_taint_diag(
         rollup: None,
         finding_id: finding.finding_id.clone(),
         alternative_finding_ids: finding.alternative_finding_ids.to_vec(),
+        stable_hash: 0,
     };
 
     // Post-fill explanation and confidence limiters
@@ -777,6 +786,35 @@ fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
         Some("rb") => Some((Language::from(tree_sitter_ruby::LANGUAGE), "ruby")),
         _ => None,
     }
+}
+
+/// All language slugs the scanner can parse, paired with the file extensions
+/// that map to them. Single source of truth shared with [`lang_for_path`]; the
+/// `supported_extensions_resolve_to_their_slug` test asserts they stay in sync.
+pub(crate) const SUPPORTED_LANGUAGE_EXTENSIONS: &[(&str, &[&str])] = &[
+    ("rust", &["rs"]),
+    ("c", &["c"]),
+    (
+        "cpp",
+        &["cpp", "cc", "cxx", "c++", "hpp", "hxx", "hh", "h++"],
+    ),
+    ("java", &["java"]),
+    ("go", &["go"]),
+    ("php", &["php"]),
+    ("python", &["py"]),
+    ("typescript", &["ts", "tsx"]),
+    ("javascript", &["js", "jsx"]),
+    ("ruby", &["rb"]),
+];
+
+/// File extensions associated with a language slug (case-insensitive). Returns
+/// an empty slice if `slug` is not a supported language.
+pub fn extensions_for_lang(slug: &str) -> &'static [&'static str] {
+    SUPPORTED_LANGUAGE_EXTENSIONS
+        .iter()
+        .find(|(s, _)| s.eq_ignore_ascii_case(slug))
+        .map(|(_, exts)| *exts)
+        .unwrap_or(&[])
 }
 
 /// Fast binary-file guard: skip if >1% NUL bytes.
@@ -965,9 +1003,11 @@ fn is_test_suppressible_pattern(id: &str) -> bool {
     // deterministic test data, insecure RNG used for fixture seeding.
     id.ends_with(".secrets.hardcoded_secret")
         || id.ends_with(".secrets.hardcoded_key")
+        || id.ends_with(".crypto.hardcoded_key")
         || id.ends_with(".crypto.math_random")
         || id.ends_with(".crypto.insecure_random")
         || id.ends_with(".crypto.weak_digest")
+        || id.ends_with(".crypto.weak_algorithm")
         || id.ends_with(".crypto.md5")
         || id.ends_with(".crypto.sha1")
         || id.ends_with(".crypto.rand")
@@ -1041,9 +1081,7 @@ fn downgrade_severity(s: Severity) -> Severity {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  ParsedSource + ParsedFile: shared parse/CFG pipeline
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Level 1: parsed tree + lang info. No CFG construction.
 struct ParsedSource<'a> {
@@ -1363,6 +1401,7 @@ impl<'a> ParsedSource<'a> {
                         rollup: None,
                         finding_id: String::new(),
                         alternative_finding_ids: Vec::new(),
+                        stable_hash: 0,
                     });
                 }
             }
@@ -1890,7 +1929,6 @@ impl<'a> ParsedFile<'a> {
                 cfg: &body.graph,
                 entry: body.entry,
                 lang: caller_lang,
-                file_path: &self.source.file_path_str,
                 source_bytes: self.source.bytes,
                 func_summaries: self.local_summaries(),
                 global_summaries,
@@ -1950,13 +1988,35 @@ impl<'a> ParsedFile<'a> {
                     cfg_analysis::Confidence::Medium => crate::evidence::Confidence::Medium,
                     cfg_analysis::Confidence::Low => crate::evidence::Confidence::Low,
                 });
+                // Carry the sink node's resolved Sink caps onto the structural
+                // finding's evidence so downstream cap-classification (and the
+                // eval `cap_of`) buckets `cfg-unguarded-sink` under its real cap
+                // (sqli/cmdi/ssrf/…) instead of the catch-all `other`. Without
+                // this every taint-less structural sink finding fell through to
+                // `other`, hiding real recall (e.g. dvpwa `cur.execute` SQLi)
+                // and inflating the `other` bucket. Non-sink structural findings
+                // (resource-leak, auth-gap) carry no Sink label, so this is 0.
+                let cf_sink_caps: u32 = cf
+                    .evidence
+                    .first()
+                    .map(|&n| {
+                        cfg_ctx.cfg[n].taint.labels.iter().fold(0u32, |acc, l| {
+                            if let crate::labels::DataLabel::Sink(c) = l {
+                                acc | c.bits()
+                            } else {
+                                acc
+                            }
+                        })
+                    })
+                    .unwrap_or(0);
+                let cf_category = FindingCategory::for_structural_rule(&cf.rule_id);
                 out.push(Diag {
                     path: self.source.path.to_string_lossy().into_owned(),
                     line: point.row + 1,
                     col: point.column + 1,
                     severity: cf.severity,
                     id: cf.rule_id,
-                    category: FindingCategory::Security,
+                    category: cf_category,
                     path_validated: false,
                     guard_kind: None,
                     message: Some(cf.message),
@@ -1971,6 +2031,7 @@ impl<'a> ParsedFile<'a> {
                             kind: "sink".into(),
                             snippet: None,
                         }),
+                        sink_caps: cf_sink_caps,
                         guards: vec![],
                         sanitizers: vec![],
                         state: None,
@@ -1984,6 +2045,7 @@ impl<'a> ParsedFile<'a> {
                     rollup: None,
                     finding_id: String::new(),
                     alternative_finding_ids: Vec::new(),
+                    stable_hash: 0,
                 });
             }
         } // end for body in bodies (CFG structural analyses)
@@ -2031,7 +2093,7 @@ impl<'a> ParsedFile<'a> {
                         col: point.column + 1,
                         severity: sf.severity,
                         id: sf.rule_id.clone(),
-                        category: FindingCategory::Security,
+                        category: FindingCategory::for_structural_rule(&sf.rule_id),
                         path_validated: false,
                         guard_kind: None,
                         message: Some(sf.message.clone()),
@@ -2064,6 +2126,7 @@ impl<'a> ParsedFile<'a> {
                         rollup: None,
                         finding_id: String::new(),
                         alternative_finding_ids: Vec::new(),
+                        stable_hash: 0,
                     });
                 }
 
@@ -2157,9 +2220,7 @@ impl<'a> ParsedFile<'a> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Pass 1: Extract function summaries (no taint analysis)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Extract function summaries from pre-read bytes.
 ///
@@ -2305,7 +2366,10 @@ pub fn perf_stage_breakdown_fused(
         TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &taint_diags);
     let _filtered: Vec<_> = ast_findings
         .into_iter()
-        .filter(|d| !suppression.should_suppress(&d.id, d.line))
+        .filter(|d| {
+            !suppression.should_suppress(&d.id, d.line)
+                && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+        })
         .collect();
     let t_suppr = s_suppr.elapsed().as_micros();
 
@@ -2449,9 +2513,7 @@ pub fn extract_all_summaries_from_bytes(
     ))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Constant-argument suppression helper
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns `true` when the captured call node has only literal arguments
 /// (string, number, boolean, null/nil/none), or identifier arguments that
@@ -5351,9 +5413,7 @@ fn has_interpolation(node: tree_sitter::Node) -> bool {
     false
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Layer B: AST pattern suppression when taint confirms safety
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Map the second segment of a pattern ID (e.g. "cmdi" from "py.cmdi.os_system")
 /// to the `Cap` that taint analysis models. Returns `None` for categories taint
@@ -5425,6 +5485,14 @@ struct TaintSuppressionCtx {
     /// 11 inline analysis but the sink's enclosing scope has no
     /// labelled Sanitizer of its own.
     interproc_sanitizer_callers: HashSet<Option<String>>,
+    /// Union of resolved sink-cap bits for cap-specific taint findings at
+    /// each line.  Used by [`Self::is_redundant_ast_pattern`] to drop an
+    /// AST-pattern finding only when the flow engine already emitted a
+    /// specific rule id for the same vulnerability class.  Legacy generic
+    /// findings (`taint-unsanitised-flow`, `cfg-unguarded-sink`) are not
+    /// canonical enough to subsume language-specific AST rule IDs such as
+    /// `py.cmdi.subprocess_shell` or `c.cmdi.system`.
+    specific_taint_finding_caps_by_line: HashMap<usize, u32>,
 }
 
 impl TaintSuppressionCtx {
@@ -5623,6 +5691,26 @@ impl TaintSuppressionCtx {
             .map(|d| d.line)
             .collect();
 
+        // Cap bits per line for cap-specific flow-backed findings only, so a
+        // redundant AST pattern at the same line+cap can be dropped in favour
+        // of the richer flow.  Do not count legacy generic findings here:
+        // `taint-unsanitised-flow` and `cfg-unguarded-sink` carry evidence,
+        // but their rule ids are deliberately catch-alls, while AST `cmdi`,
+        // `sqli`, etc. IDs are the canonical namespace many tests, SARIF
+        // consumers, and dynamic-verification spec derivation rely on.
+        let mut specific_taint_finding_caps_by_line: HashMap<usize, u32> = HashMap::new();
+        for d in taint_diags {
+            if d.id.starts_with("taint-") && !d.id.starts_with("taint-unsanitised-flow") {
+                if let Some(caps) = d.evidence.as_ref().map(|e| e.sink_caps) {
+                    if caps != 0 {
+                        *specific_taint_finding_caps_by_line
+                            .entry(d.line)
+                            .or_default() |= caps;
+                    }
+                }
+            }
+        }
+
         // Per-function partition of taint findings.  Maps each finding's
         // line to the enclosing function scope by reusing
         // `sink_func_at_line` (the same span/function mapping the Sink-side
@@ -5646,7 +5734,28 @@ impl TaintSuppressionCtx {
             engine_validated_funcs,
             source_killed_funcs,
             interproc_sanitizer_callers,
+            specific_taint_finding_caps_by_line,
         }
+    }
+
+    /// Returns `true` when an AST pattern finding is a redundant restatement
+    /// of a flow the taint engine already reported at the same line.
+    ///
+    /// The taint / structural flow finding carries source + path evidence the
+    /// bare pattern lacks, so when both fire at the same line for the same
+    /// cap the pattern is pure duplicate noise.  This is the
+    /// taint-found-it-UNSAFE counterpart to [`Self::should_suppress`]'s
+    /// taint-found-it-SAFE logic: there, no flow finding means the pattern
+    /// may carry unique signal; here, a same-cap flow finding means it does
+    /// not.  Cap-matched (not line-only) so a pattern whose cap differs from
+    /// the co-located flow's cap — a genuinely distinct sink — is preserved.
+    fn is_redundant_ast_pattern(&self, pattern_id: &str, line: usize) -> bool {
+        let Some(cap) = pattern_category_cap(pattern_id) else {
+            return false;
+        };
+        self.specific_taint_finding_caps_by_line
+            .get(&line)
+            .is_some_and(|caps| caps & cap.bits() != 0)
     }
 
     /// Returns `true` if this AST pattern finding should be suppressed.
@@ -5734,9 +5843,7 @@ impl TaintSuppressionCtx {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Pass 2 / single‑file: Full rule execution (AST queries + taint)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Run all enabled analyses on pre-read bytes and return diagnostics.
 ///
@@ -5779,11 +5886,10 @@ pub fn run_rules_on_bytes(
             let suppression =
                 TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
             let ast_findings = parsed.source.run_ast_queries(cfg);
-            out.extend(
-                ast_findings
-                    .into_iter()
-                    .filter(|d| !suppression.should_suppress(&d.id, d.line)),
-            );
+            out.extend(ast_findings.into_iter().filter(|d| {
+                !suppression.should_suppress(&d.id, d.line)
+                    && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+            }));
         }
         if cfg.scanner.mode == AnalysisMode::Full {
             out.extend(parsed.run_auth_analyses(cfg, global_summaries, scan_root));
@@ -5812,9 +5918,7 @@ pub fn run_rules_on_file(
     run_rules_on_bytes(&bytes, path, cfg, global_summaries, scan_root)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Fused single-pass: extract summaries + run full analysis in one parse/CFG
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of a fused analysis pass: both function summaries and diagnostics.
 pub struct FusedResult {
@@ -5979,11 +6083,10 @@ pub fn analyse_file_fused(
         if needs_cfg && cfg.scanner.mode == AnalysisMode::Full {
             let suppression =
                 TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
-            out.extend(
-                ast_findings
-                    .into_iter()
-                    .filter(|d| !suppression.should_suppress(&d.id, d.line)),
-            );
+            out.extend(ast_findings.into_iter().filter(|d| {
+                !suppression.should_suppress(&d.id, d.line)
+                    && !suppression.is_redundant_ast_pattern(&d.id, d.line)
+            }));
         } else {
             out.extend(ast_findings);
         }
@@ -6086,9 +6189,7 @@ pub fn analyse_file_fused(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Text-based pattern scanning (non-tree-sitter files)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Run text-based pattern scanners on files whose extension is not supported
 /// by tree-sitter.  Currently handles `.ejs` templates.

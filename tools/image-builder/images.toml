@@ -1,0 +1,125 @@
+# Pinned-digest catalogue consumed by `nyx-image-builder` and the
+# `build.rs` codegen that populates `src/dynamic/toolchain.rs::IMAGE_DIGESTS`.
+#
+# Each `[[image]]` entry corresponds to one `(lang, toolchain)` cell of the
+# Docker backend.  The `toolchain_id` matches the IDs surfaced by
+# `src/dynamic/toolchain.rs` (`python-3.11`, `node-20`, `java-21`, …) and is
+# the lookup key used by `IMAGE_DIGESTS`.
+#
+# Fields:
+#   - toolchain_id   string  Lookup key (see toolchain.rs).
+#   - base           string  Docker image reference (e.g. "python:3.11-slim").
+#                            The `nyx-image-builder verify` command refuses to
+#                            run if this is not pinnable to a digest.
+#   - toolchain      string  Human-readable interpreter / compiler version.
+#   - packages       table   Inline pinned package names → versions (apt /
+#                            apk pins applied during image build).  Empty `{}`
+#                            when the upstream image already covers everything.
+#   - digest         string  `sha256:…` content digest written back by
+#                            `nyx-image-builder build`.  Empty until the
+#                            first successful build.
+#
+# The CI workflow runs `nyx-image-builder build --all` daily.  When any digest
+# drifts, the workflow opens a PR updating this file; reviewers approve before
+# the new digest pin is merged.
+
+[[image]]
+toolchain_id = "python-3.11"
+base = "python:3.11-slim"
+toolchain = "Python 3.11"
+packages = {}
+digest = "sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834"
+
+[[image]]
+toolchain_id = "python-3.12"
+base = "python:3.12-slim"
+toolchain = "Python 3.12"
+packages = {}
+digest = "sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461"
+
+[[image]]
+toolchain_id = "python-3.13"
+base = "python:3.13-slim"
+toolchain = "Python 3.13"
+packages = {}
+digest = "sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f"
+
+[[image]]
+toolchain_id = "node-18"
+base = "node:18-slim"
+toolchain = "Node.js 18"
+packages = {}
+digest = "sha256:f9ab18e354e6855ae56ef2b290dd225c1e51a564f87584b9bd21dd651838830e"
+
+[[image]]
+toolchain_id = "node-20"
+base = "node:20-slim"
+toolchain = "Node.js 20"
+packages = {}
+digest = "sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0"
+
+[[image]]
+toolchain_id = "node-22"
+base = "node:22-slim"
+toolchain = "Node.js 22"
+packages = {}
+digest = "sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb"
+
+[[image]]
+toolchain_id = "java-17"
+base = "eclipse-temurin:17-jre-jammy"
+toolchain = "Eclipse Temurin 17 JRE"
+packages = {}
+digest = "sha256:47c73dc23524b031bed0a5030410c722af6a8b49d4b25898ea8f4615895065f0"
+
+[[image]]
+toolchain_id = "java-21"
+base = "eclipse-temurin:21-jre-jammy"
+toolchain = "Eclipse Temurin 21 JRE"
+packages = {}
+digest = "sha256:199aebeb3adcde4910695cdebfe782ada38dadb6cc8013159b58d3724451befd"
+
+[[image]]
+toolchain_id = "php-8.1"
+base = "php:8.1-cli"
+toolchain = "PHP 8.1 CLI"
+packages = {}
+digest = "sha256:76e563191d1ade120313a8736df24154d21da5155c0756f147c0b01bd19d9087"
+
+[[image]]
+toolchain_id = "php-8.2"
+base = "php:8.2-cli"
+toolchain = "PHP 8.2 CLI"
+packages = {}
+digest = "sha256:506f27f6416650a7ef41561ebdb4f93ebdcacb48dabda2af029241c956bbd8ff"
+
+[[image]]
+toolchain_id = "php-8.3"
+base = "php:8.3-cli"
+toolchain = "PHP 8.3 CLI"
+packages = {}
+digest = "sha256:7e091064b23740d5c154ebcfcf69631dd16770a791409f83e4416d0ae9f660b5"
+
+[[image]]
+toolchain_id = "ruby-3.2"
+base = "ruby:3.2-slim"
+toolchain = "Ruby 3.2"
+packages = {}
+digest = "sha256:84184c9e2c368885a1d0c93ad1953c33d81081058d274b87b4aa6f3e209e5d16"
+
+[[image]]
+toolchain_id = "ruby-3.3"
+base = "ruby:3.3-slim"
+toolchain = "Ruby 3.3"
+packages = {}
+digest = "sha256:a26bfb9409c02987e6b7f8649f0d4c71cc8a4a97475f3f1edfc2fc6a490021ae"
+
+# Native runtime image: compiled Rust + Go binaries are copied into a
+# `debian:bookworm-slim` container.  Kept here so the image-builder workflow
+# pins it alongside the per-lang interpreter images.
+[[image]]
+toolchain_id = "native-binary"
+base = "debian:bookworm-slim"
+toolchain = "Debian 12 slim (native binary runner)"
+packages = {}
+digest = "sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3"

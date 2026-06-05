@@ -9,15 +9,7 @@
       "must_match": true,
       "line_range": [5, 12],
       "evidence_contains": [],
-      "notes": "catch(Exception e) binds e as tainted; e flows to println sink via catch parameter"
-    },
-    {
-      "rule_id": "java.xss.getwriter_print",
-      "severity": "MEDIUM",
-      "must_match": true,
-      "line_range": [10, 10],
-      "evidence_contains": [],
-      "notes": "response.getWriter().println() in catch block — AST pattern detects potential XSS via error response"
+      "notes": "catch(Exception e) binds e as tainted; e flows to response.getWriter().println at line 10 — reflected XSS via error response. Replaces the retired java.xss.getwriter_print AST pattern: reflected XSS is now a taint sink (Sink(Cap::HTML_ESCAPE)), so this is taint-confirmed rather than flagged on every writer call."
     }
   ]
 }

@@ -100,38 +100,6 @@ fn build_reversed_graph(cfg: &Cfg) -> Graph<NodeInfo, EdgeKind> {
     rev
 }
 
-/// Find all nodes matching a specific callee name pattern.
-#[allow(dead_code)]
-pub fn find_call_nodes_matching(cfg: &Cfg, matchers: &[&str]) -> Vec<NodeIndex> {
-    cfg.node_indices()
-        .filter(|&idx| {
-            if cfg[idx].kind != StmtKind::Call {
-                return false;
-            }
-            if let Some(callee) = &cfg[idx].call.callee {
-                let callee_lower = callee.to_ascii_lowercase();
-                matchers.iter().any(|m| {
-                    let ml = m.to_ascii_lowercase();
-                    if ml.ends_with('_') {
-                        callee_lower.starts_with(&ml)
-                    } else {
-                        callee_lower.ends_with(&ml)
-                    }
-                })
-            } else {
-                false
-            }
-        })
-        .collect()
-}
-
-/// Check if there exists any path from `from` to `to` in the CFG.
-#[allow(dead_code)]
-pub fn has_path(cfg: &Cfg, from: NodeIndex, to: NodeIndex) -> bool {
-    let reachable = reachable_set(cfg, from);
-    reachable.contains(&to)
-}
-
 /// Compute shortest distance (in hops) from `from` to `to`.
 pub fn shortest_distance(cfg: &Cfg, from: NodeIndex, to: NodeIndex) -> Option<usize> {
     use std::collections::VecDeque;

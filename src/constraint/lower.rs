@@ -15,8 +15,6 @@
 //!    literal operand. Necessary because individual comparisons are NOT
 //!    decomposed into separate SSA operations (condition nodes → `Nop`).
 
-#![allow(clippy::collapsible_if)]
-
 use crate::cfg::NodeInfo;
 use crate::ssa::const_prop::ConstLattice;
 use crate::ssa::ir::{BlockId, SsaBody, SsaValue};

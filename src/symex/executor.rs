@@ -14,7 +14,7 @@
 //! termination. Verdict aggregation is sound: `Infeasible` is only returned
 //! when the entire relevant search space was explored without budget exhaustion.
 
-#![allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_map_or)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -33,9 +33,7 @@ use super::state::{PathConstraint, SymbolicState};
 use super::transfer::{self, SymexHeapCtx, SymexSummaryCtx};
 use super::value::SymbolicValue;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Budget constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Maximum branch forks per finding before falling back to single-path.
 const MAX_FORKS_PER_FINDING: usize = 3;
@@ -47,9 +45,7 @@ const MAX_PATHS_PER_FINDING: usize = 8;
 /// ALL paths for one finding. Global, not per-path.
 const MAX_TOTAL_STEPS: usize = 500;
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// A single exploration path in flight.
 ///
@@ -103,9 +99,7 @@ pub(super) struct ExplorationResult {
     pub interproc_cutoffs: Vec<super::interproc::CutoffReason>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Reachability
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute the set of blocks on some CFG path from source to sink.
 ///
@@ -172,9 +166,7 @@ fn compute_source_sink_reachable(
     forward.intersection(&backward).copied().collect()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Exploration engine
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Run multi-path symbolic exploration for a single finding.
 ///
@@ -1138,9 +1130,7 @@ fn try_extract_witness(
         .or_else(|| state.sym_state.get_sink_witness(finding, ssa))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Verdict aggregation
-// ─────────────────────────────────────────────────────────────────────────────
 
 impl ExplorationResult {
     /// Aggregate per-path outcomes into a single [`SymbolicVerdict`].
@@ -1221,9 +1211,7 @@ impl ExplorationResult {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Witness enrichment
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Append interprocedural context to a witness string.
 ///
@@ -1269,9 +1257,7 @@ fn append_interproc_context(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 //  Tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

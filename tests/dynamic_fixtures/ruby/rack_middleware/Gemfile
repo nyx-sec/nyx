@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+
+# Rack middleware fixture. The harness builds the env through
+# Rack::MockRequest before dispatching the middleware.
+gem 'rack'

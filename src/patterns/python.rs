@@ -193,6 +193,34 @@ pub const PATTERNS: &[Pattern] = &[
         category: PatternCategory::Crypto,
         confidence: Confidence::Medium,
     },
+    // Bare-call forms after `from hashlib import md5, sha1` (the qualified
+    // `hashlib.md5(...)` form above is an `attribute` call and never matches
+    // these `identifier`-function queries, so there is no double-count). Closes
+    // the dvpwa weak-hash recall gap. Held at Low confidence: a project-local
+    // function literally named `md5`/`sha1` is a rare incidental FP, so this
+    // sits below the default high-confidence surface.
+    Pattern {
+        id: "py.crypto.md5_bare",
+        description: "md5() (from hashlib) uses a weak hash algorithm",
+        query: r#"(call
+                     function: (identifier) @fn (#eq? @fn "md5"))
+                   @vuln"#,
+        severity: Severity::Low,
+        tier: PatternTier::A,
+        category: PatternCategory::Crypto,
+        confidence: Confidence::Low,
+    },
+    Pattern {
+        id: "py.crypto.sha1_bare",
+        description: "sha1() (from hashlib) uses a weak hash algorithm",
+        query: r#"(call
+                     function: (identifier) @fn (#eq? @fn "sha1"))
+                   @vuln"#,
+        severity: Severity::Low,
+        tier: PatternTier::A,
+        category: PatternCategory::Crypto,
+        confidence: Confidence::Low,
+    },
     // ── Tier A: Template injection ─────────────────────────────────────
     Pattern {
         id: "py.xss.jinja_from_string",

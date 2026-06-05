@@ -1,13 +1,13 @@
 <div align="center">
-  <img src="assets/nyx-wordmark.svg" alt="nyx" height="110"/>
+  <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
-**A local-first security scanner with a browser UI. Scan your repo and triage in your browser, with no cloud and no account.**
+**A local-first security scanner with sandboxed dynamic verification and a browser UI. Scan your repo and triage in your browser, with no cloud and no account.**
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/elicpeter/nyx/ci.yml?branch=master)](https://github.com/elicpeter/nyx/actions)
-[![Docs](https://img.shields.io/badge/docs-elicpeter.github.io%2Fnyx-blue)](https://elicpeter.github.io/nyx/)
+[![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
 English · [简体中文](./README.zh-CN.md)
 </div>
@@ -18,7 +18,7 @@ English · [简体中文](./README.zh-CN.md)
 
 ## Scan locally, browse locally
 
-Nyx runs a cross-language taint analysis on your repository, then serves the results to a React UI bound to `127.0.0.1`. You get a finding list with severity, evidence, and a step-by-step **flow visualiser** that walks the dataflow from source → sanitizer → sink. Triage decisions persist to `.nyx/triage.json`, which commits alongside your code so the team shares one triage state.
+Nyx runs cross-language taint analysis on your repository, then verifies Medium or higher confidence findings by running small sandboxed harnesses against the real code. Results are served to a React UI bound to `127.0.0.1`. You get severity, static evidence, dynamic verdicts, and a step-by-step **flow visualiser** that walks the dataflow from source → sanitizer → sink. Triage decisions persist to `.nyx/triage.json`, which commits alongside your code so the team shares one triage state.
 
 ```bash
 cargo install nyx-scanner
@@ -26,7 +26,7 @@ nyx scan           # runs the analyzer, caches findings in .nyx/
 nyx serve          # opens http://localhost:9700 in your browser
 ```
 
-Everything stays on your machine: loopback-only bind, host-header enforcement, CSRF on every mutation, no telemetry, no login.
+Everything stays on your machine: loopback-only bind, host-header enforcement, CSRF on every mutation, no remote telemetry, no login.
 
 <p align="center"><img src="assets/screenshots/overview.png" alt="Overview dashboard for a small JS app: Health Score C 78 with the five-component breakdown (Severity pressure, Confidence quality, Trend, Triage coverage, Regression resistance), 3 findings detected, OWASP A03 and A02 buckets, confidence distribution and issue category bars, top affected files" width="900"/></p>
 
@@ -38,7 +38,7 @@ Everything stays on your machine: loopback-only bind, host-header enforcement, C
 |---|---|
 | **Overview** | Dashboard: finding counts by severity, top offenders, engine profile summary |
 | **Findings** | Browsable list with severity badges, triage status, rule filter, language filter |
-| **Finding detail** | Flow-path visualiser with numbered steps (source → sanitizer → sink), code snippets, evidence, cross-file markers, triage dropdown |
+| **Finding detail** | Flow-path visualiser with numbered steps (source → sanitizer → sink), dynamic verdicts, code snippets, evidence, cross-file markers, triage dropdown |
 | **Triage** | Bulk update states (open, investigating, fixed, false_positive, accepted_risk, suppressed), audit trail, import/export JSON |
 | **Explorer** | File tree with per-file symbol list and finding overlay |
 | **Scans** | Run history, metrics, diff two scans to see what changed |
@@ -46,7 +46,7 @@ Everything stays on your machine: loopback-only bind, host-header enforcement, C
 | **Config** | Live config editor; reload without restart |
 
 
-`nyx serve` flags: `--port <N>` (default `9700`), `--host <addr>` (loopback only: `127.0.0.1`, `localhost`, or `::1`), `--no-browser`. See `[server]` in `nyx.conf` for persistent settings, and the [Browser UI guide](https://elicpeter.github.io/nyx/serve.html) for the page-by-page UI tour and security model.
+`nyx serve` flags: `--port <N>` (default `9700`), `--host <addr>` (loopback only: `127.0.0.1`, `localhost`, or `::1`), `--no-browser`. See `[server]` in `nyx.conf` for persistent settings, and the [Browser UI guide](https://nyxscan.dev/docs/serve.html) for the page-by-page UI tour and security model.
 
 ---
 
@@ -71,12 +71,12 @@ nyx scan --mode ast
 nyx scan --engine-profile deep
 ```
 
-Forward cross-file taint runs in every profile. Symex and the demand-driven backwards walk are opt-in. Turn them on either via `--engine-profile deep`, or individually (`--symex`, `--backwards-analysis`). See the [CLI reference](https://elicpeter.github.io/nyx/cli.html#engine-depth-profile) for the full toggle matrix.
+Forward cross-file taint runs in every profile. Symex and the demand-driven backwards walk are opt-in. Turn them on either via `--engine-profile deep`, or individually (`--symex`, `--backwards-analysis`). See the [CLI reference](https://nyxscan.dev/docs/cli.html#engine-depth-profile) for the full toggle matrix.
 
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.7.0
+- uses: elicpeter/nyx@v0.8.0
   with:
     format: sarif
     fail-on: MEDIUM
@@ -117,7 +117,7 @@ Requires stable Rust 1.88+. The frontend is compiled and embedded in the binary 
 
 ## Languages
 
-All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the 507-case corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% across all ten languages, so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
+All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the synthetic corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% across all ten languages at the last measured baseline (see [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)), so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
 
 | Tier | Languages | F1 | Use as a CI gate? |
 |---|---|---|---|
@@ -125,7 +125,7 @@ All 10 languages parse via tree-sitter and run through the full pipeline, but ru
 | **Beta** | Java, PHP, Ruby, Rust, Go | 100% | Yes, with light FP triage |
 | **Preview** | C, C++ | 100% on synthetic corpus | No. STL container flow, builder chains, and inline class member functions are tracked, but deep pointer aliasing and function pointers are not. Pair with clang-tidy or Clang Static Analyzer |
 
-Aggregate rule-level F1: 100.0% (P=1.000, R=1.000). All real-CVE fixtures fire and the corpus carries zero open FPs. Per-dimension detail and known blind spots live on the [Language maturity page](https://elicpeter.github.io/nyx/language-maturity.html).
+All real-CVE fixtures fire and the corpus carries zero open FPs at the recorded baseline (P=R=F1=1.000). Per-dimension detail and known blind spots live on the [Language maturity page](https://nyxscan.dev/docs/language-maturity.html).
 
 ### Validated against real CVEs
 
@@ -183,12 +183,45 @@ Fixtures live under [`tests/benchmark/cve_corpus/`](tests/benchmark/cve_corpus/)
 
 Two passes over the filesystem, with an optional SQLite index to skip unchanged files:
 
+```mermaid
+flowchart LR
+    Repo["Repository files"] --> Pass1["Pass 1 per file<br/>tree-sitter, CFG, SSA"]
+    Pass1 --> Summaries["Function summaries<br/>sources, sinks, sanitizers, points-to"]
+    Summaries --> Index["SQLite index<br/>optional incremental cache"]
+    Index --> Pass2["Pass 2 cross-file<br/>global summaries, k=1 inline, SCC fixpoint"]
+    Pass2 --> Rank["Rank and dedupe<br/>severity, evidence, exploitability"]
+    Rank --> Verify["Dynamic verification<br/>sandboxed harnesses, verdicts"]
+    Verify --> Output["Console, JSON, SARIF<br/>and browser UI"]
+```
+
 1. **Pass 1**: parse each file via tree-sitter, build an intra-procedural CFG (petgraph), lower to pruned SSA (Cytron phi insertion over dominance frontiers), and export per-function summaries (source/sanitizer/sink caps, taint transforms, points-to, callees).
 2. **Summary merge**: union all per-file summaries into a `GlobalSummaries` map.
 3. **Pass 2**: re-analyze each file with cross-file context under bounded context sensitivity (k=1 inlining for intra-file callees, SCC fixpoint capped at 64 iterations, and summary fallback for callees above the inline body-size cap). A forward dataflow worklist propagates taint through the SSA lattice with guaranteed convergence. Call-graph SCCs iterate to fixed-point (within the cap) so mutually recursive functions get accurate summaries.
-4. **Rank, dedupe, emit**: findings are scored by severity × evidence strength × source-kind exploitability, then emitted to console, JSON, or SARIF.
+4. **Rank, dedupe, verify, emit**: findings are scored by severity × evidence strength × source-kind exploitability. Medium or higher confidence findings are dynamically verified by default, then results are emitted to console, JSON, SARIF, and the browser UI.
 
-Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://elicpeter.github.io/nyx/detectors.html).
+Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://nyxscan.dev/docs/detectors.html).
+
+---
+
+## Verify findings dynamically
+
+Static analysis says a sink is reachable. Dynamic verification tries to prove it. With `--verify` (on by default), Nyx builds a small harness around each Medium-or-higher finding, runs it in a sandbox against a curated payload corpus, and stamps a verdict onto the finding.
+
+```bash
+nyx scan --verify          # build + run a harness per finding (default)
+nyx scan --no-verify       # static analysis only, for fast local loops
+```
+
+A finding is **Confirmed** only when an attacker-controlled payload fires the sink *and* a paired benign control stays clean. That differential rule, plus behavioral oracles (a template that renders `49`, a deserializer that resolves a gadget class, a redirect that leaves the origin), keeps the verifier from confirming on an echoed string. Sinks behind a recognized guard demote to `ConfirmedWithKnownGuard`; sinks reached without a completed exploit chain land as `PartiallyConfirmed`.
+
+Coverage spans 18 verifiable capability classes and 120+ registered adapters across all ten languages (Flask, Django, Express, NestJS, Spring, Rails, Laravel, Gin, Axum, and more), with per-language build pools and copy-on-write workdirs to keep the per-finding cost low. Confirmed findings write a hermetic repro bundle with a `reproduce.sh`. Runs are deterministic: every payload is seeded from the spec hash.
+
+```bash
+# CI: fail the build if a new Confirmed finding appears vs. a baseline
+nyx scan --baseline .nyx/baseline.json --gate no-new-confirmed
+```
+
+Backends: Docker (preferred, network-blocked by default) or an in-process runner with `--harden {standard,strict}`. Full matrix, oracle list, and limitations: [Dynamic verification](https://nyxscan.dev/docs/dynamic.html).
 
 ---
 
@@ -213,13 +246,13 @@ kind     = "sanitizer"
 cap      = "html_escape"
 ```
 
-Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`. Full schema: [Configuration](https://elicpeter.github.io/nyx/configuration.html). Run `nyx rules list` to browse the registry from the terminal.
+Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`. Full schema: [Configuration](https://nyxscan.dev/docs/configuration.html). Run `nyx rules list` to browse the registry from the terminal.
 
 ---
 
 ## Status
 
-Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the 507-case corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
+Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the synthetic corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
 
 Taint analysis is interprocedural. Persisted per-function SSA summaries carry per-return-path transforms and parameter-granularity points-to, and call-graph SCCs (including SCCs that span files) iterate to a joint fixed-point. The default `balanced` profile also runs k=1 context-sensitive inlining for intra-file callees. Symex (with cross-file and interprocedural frames) and the demand-driven backwards walk are opt-in. Enable them individually with `--symex` and `--backwards-analysis`, or together with `--engine-profile deep`.
 
@@ -234,12 +267,12 @@ Limitations:
 
 ## Documentation
 
-Browse the full docs site at **[elicpeter.github.io/nyx](https://elicpeter.github.io/nyx/)**.
+Browse the full docs site at **[nyxscan.dev/docs](https://nyxscan.dev/docs/)**.
 
-- [Quick Start](https://elicpeter.github.io/nyx/quickstart.html) · [CLI Reference](https://elicpeter.github.io/nyx/cli.html) · [Installation](https://elicpeter.github.io/nyx/installation.html)
-- [`nyx serve`](https://elicpeter.github.io/nyx/serve.html) · [Output Formats](https://elicpeter.github.io/nyx/output.html) · [Configuration](https://elicpeter.github.io/nyx/configuration.html)
-- [How it works](https://elicpeter.github.io/nyx/how-it-works.html) · [Detectors](https://elicpeter.github.io/nyx/detectors.html) ([Taint](https://elicpeter.github.io/nyx/detectors/taint.html), [CFG](https://elicpeter.github.io/nyx/detectors/cfg.html), [State](https://elicpeter.github.io/nyx/detectors/state.html), [AST Patterns](https://elicpeter.github.io/nyx/detectors/patterns.html))
-- [Rule Reference](https://elicpeter.github.io/nyx/rules.html) · [Language Maturity](https://elicpeter.github.io/nyx/language-maturity.html) · [Advanced Analysis](https://elicpeter.github.io/nyx/advanced-analysis.html) · [Auth Analysis](https://elicpeter.github.io/nyx/auth.html)
+- [Quick Start](https://nyxscan.dev/docs/quickstart.html) · [CLI Reference](https://nyxscan.dev/docs/cli.html) · [Installation](https://nyxscan.dev/docs/installation.html)
+- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html) · [Dynamic verification](https://nyxscan.dev/docs/dynamic.html)
+- [How it works](https://nyxscan.dev/docs/how-it-works.html) · [Detectors](https://nyxscan.dev/docs/detectors.html) ([Taint](https://nyxscan.dev/docs/detectors/taint.html), [CFG](https://nyxscan.dev/docs/detectors/cfg.html), [State](https://nyxscan.dev/docs/detectors/state.html), [AST Patterns](https://nyxscan.dev/docs/detectors/patterns.html))
+- [Rule Reference](https://nyxscan.dev/docs/rules.html) · [Language Maturity](https://nyxscan.dev/docs/language-maturity.html) · [Advanced Analysis](https://nyxscan.dev/docs/advanced-analysis.html) · [Auth Analysis](https://nyxscan.dev/docs/auth.html)
 
 ---
 

@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+
+# Sinatra route fixture. The harness replays a Rack request through the
+# real Sinatra app class.
+gem 'sinatra'

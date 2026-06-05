@@ -1,4 +1,4 @@
-export type GraphViewKind = 'callgraph' | 'cfg';
+export type GraphViewKind = 'callgraph' | 'cfg' | 'surface';
 
 export interface GraphPoint {
   x: number;

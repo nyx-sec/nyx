@@ -11,6 +11,20 @@ nyx serve --no-browser            # don't auto-open
 
 Persistent settings live under `[server]` in `nyx.conf` / `nyx.local`.
 
+```mermaid
+flowchart LR
+    Scan["nyx scan<br/>or UI-started scan"] --> Cache[".nyx findings<br/>plus SQLite project index"]
+    Cache --> Serve["nyx serve<br/>loopback API and embedded React UI"]
+    Serve --> Review["Review findings<br/>flow, evidence, history"]
+    Review --> Triage["Update triage state<br/>investigate, suppress, accept, fix"]
+    Triage --> Sync[".nyx/triage.json<br/>optional repo-synced state"]
+    Sync --> Cache
+```
+
+Starting a scan from the UI runs dynamic verification on `Confidence >= Medium`
+findings by default. Check "Skip dynamic verification" in the scan modal to get
+a fast static-only result. See [Dynamic verification](dynamic.md) for details.
+
 <p align="center"><img src="assets/screenshots/docs/serve-overview.png" alt="Nyx UI overview: total findings, severity breakdown, language and category distribution, top affected files" width="900"/></p>
 
 ## What it serves, and what it doesn't
@@ -21,10 +35,10 @@ There is **no** account, no telemetry, no remote logging, no auto-update ping. T
 
 ## Security model
 
-`nyx serve` enforces three things at the HTTP layer ([`src/server/security.rs`](https://github.com/elicpeter/nyx/blob/master/src/server/security.rs)):
+`nyx serve` enforces three things:
 
-1. **Loopback bind only.** `--host` and `[server].host` are clamped to `127.0.0.1`, `localhost`, or `::1`. Any other value is refused at startup with `Nyx serve only binds to loopback addresses; refused host '<value>'`.
-2. **Host-header check.** Every request must carry a `Host` header that matches the bound address and port. Missing or mismatched headers get a `400 invalid Host header`. Defends against DNS rebinding.
+1. **Loopback bind only.** `--host` and `[server].host` are clamped to `127.0.0.1`, `localhost`, or `::1`. Any other value is refused at startup with `Nyx serve only binds to loopback addresses; refused host '<value>'` ([`src/commands/serve.rs`](https://github.com/elicpeter/nyx/blob/master/src/commands/serve.rs)).
+2. **Host-header check.** Every request must carry a `Host` header that matches the bound address and port. Missing or mismatched headers get a `400 invalid Host header`. Defends against DNS rebinding ([`src/server/security.rs`](https://github.com/elicpeter/nyx/blob/master/src/server/security.rs)).
 3. **CSRF on mutations.** `POST` / `PUT` / `PATCH` / `DELETE` requests must carry a per-process CSRF token in the `x-nyx-csrf` header. The token is generated once when the server starts and exposed at `GET /api/health` so the embedded SPA can read it. Cross-origin mutations are rejected before the CSRF check via the `Origin` header.
 
 If you forward the port over SSH or expose it through a reverse proxy, the host-header check will reject the request because the `Host` won't match `localhost:9700`. That's the intended behaviour. Don't do this without a deliberate reason; the loopback bind is part of the security model.
@@ -82,7 +96,7 @@ Modifiers in the ±5 range nudge the result for trend (only after the second sca
 
 It's a Nyx-finding-pressure metric, not a security audit. Score 100 means Nyx didn't find anything under its current rules and language coverage; it doesn't certify the absence of vulnerabilities. The score doesn't see runtime config, IAM, secret stores, dependency CVEs, or anything outside the source tree being scanned. A repo of mostly Kotlin (where Nyx coverage is thin) will score artificially well because most of the code never gets evaluated.
 
-Ceilings are calibrated for the current scanner false-positive rates. As symex coverage and rule precision improve, the ceilings tighten. Calibration data and the rationale behind each tunable lives in [health-score-audit.md](health-score-audit.md).
+Ceilings are calibrated for the current scanner false-positive rates. As symex coverage and rule precision improve, the ceilings may tighten.
 
 ### Findings and Finding detail
 
@@ -94,7 +108,7 @@ Clicking through opens the **flow visualiser**: a numbered walk from source to s
 
 <p align="center"><img src="assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow showing source → call → sink steps, How to fix guidance, and evidence panel" width="900"/></p>
 
-Engine notes call out when precision was bounded for that finding (`OriginsTruncated`, `PointsToTruncated`, `PathWidened`, `ForwardBailed`, etc.). Anything tagged `under-report` means the emitted flow is real and the result set is a lower bound; `over-report` means widening or bail. `--require-converged` in the CLI drops the over-report ones for strict gates.
+Engine notes call out when precision was bounded for that finding (`OriginsTruncated`, `PointsToTruncated`, `WorklistCapped`, `PredicateStateWidened`, `SsaLoweringBailed`, etc.). Each note carries a direction tag: `under-report` means the emitted flow is real and the result set is a lower bound; `over-report` means widening dropped a guard; `bail` means analysis aborted before producing a trustworthy result. `--require-converged` in the CLI drops over-report and bail notes for strict gates.
 
 ### Triage
 

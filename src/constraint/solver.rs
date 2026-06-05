@@ -275,6 +275,14 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // type-qualified resolution to `Template.process`, the SSTI
         // sink defined in `labels/java.rs`.
         "Template" => Some(TypeKind::Template),
+        // `java.lang.Runtime` declared receiver type.  Routes the
+        // split-receiver shape `Runtime r = Runtime.getRuntime(); ...
+        // r.exec(...)` through type-qualified resolution to
+        // `Runtime.exec` (the only `Runtime.*` rule, always SHELL_ESCAPE),
+        // complementing the `constructor_type` factory route for
+        // `Runtime.getRuntime()`.  No benign `Runtime.exec` exists, so
+        // typing any `Runtime`-declared receiver carries no FP risk.
+        "Runtime" => Some(TypeKind::Runtime),
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces

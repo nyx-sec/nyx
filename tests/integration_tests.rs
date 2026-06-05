@@ -596,9 +596,14 @@ fn error_throw_terminates() {
 #[test]
 fn binary_json_output() {
     let fixture = fixture_path("rust_web_app");
+    let home = tempfile::tempdir().expect("temp home");
     #[allow(deprecated)]
     let cmd = assert_cmd::Command::cargo_bin("nyx")
         .expect("nyx binary should exist")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_DATA_HOME", home.path().join(".local/share"))
+        .env("NO_COLOR", "1")
         .arg("scan")
         .arg(fixture.to_str().unwrap())
         .arg("--no-index")
@@ -615,16 +620,24 @@ fn binary_json_output() {
     );
 
     let stdout = String::from_utf8_lossy(&cmd.stdout);
-    // Find the JSON array in stdout (config notes and "Finished" surround it)
-    let json_start = stdout.find('[').expect("Expected JSON array in stdout");
-    let json_end = stdout.rfind(']').expect("Expected closing bracket in JSON") + 1;
+    // Phase 25: JSON output is `{ "findings": [...], "chains": [...] }`.
+    let json_start = stdout.find('{').expect("Expected JSON object in stdout");
+    let json_end = stdout.rfind('}').expect("Expected closing brace in JSON") + 1;
     let json_str = &stdout[json_start..json_end];
-    let parsed: Vec<serde_json::Value> =
-        serde_json::from_str(json_str).expect("stdout should contain valid JSON array");
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).expect("stdout should contain valid JSON object");
 
+    let findings = parsed["findings"]
+        .as_array()
+        .expect("JSON output must have a `findings` array");
     assert!(
-        !parsed.is_empty(),
+        !findings.is_empty(),
         "Expected at least 1 finding in JSON output"
+    );
+    // Phase 25: every scan emits a `chains` array (possibly empty).
+    assert!(
+        parsed["chains"].is_array(),
+        "JSON output must have a `chains` array"
     );
 }
 
@@ -914,6 +927,27 @@ fn fp_guard_framework_flask_escape() {
 #[test]
 fn fp_guard_framework_express_res_json() {
     let dir = fixture_path("fp_guards/framework_express_res_json");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, broker-adapter receiver collisions: OSS-shaped handlers named
+/// `handler` / `process` and a non-SQS `.send(...)` publisher must stay
+/// ordinary helper code unless receiver facts prove the call is on a broker
+/// runtime object.
+#[test]
+fn fp_guard_broker_adapter_receiver_collisions() {
+    let dir = fixture_path("fp_guards/broker_adapter_collisions");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Phase 21 adapter collisions: framework-marked files can contain
+/// ordinary helpers, controller bootstrappers, mailer queues, and migration
+/// formatting functions that must not be promoted to dynamic entry kinds.
+#[test]
+fn fp_guard_phase21_adapter_collisions() {
+    let dir = fixture_path("fp_guards/phase21_adapter_collisions");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
     validate_expectations(&diags, &dir);
 }
