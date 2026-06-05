@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,8 @@ pub enum ScanStage {
     BuildingCallGraph = 4,
     Analyzing = 5,
     PostProcessing = 6,
-    Complete = 7,
+    DynamicVerification = 7,
+    Complete = 8,
 }
 
 impl ScanStage {
@@ -27,6 +28,7 @@ impl ScanStage {
             Self::BuildingCallGraph => "building_call_graph",
             Self::Analyzing => "analyzing",
             Self::PostProcessing => "post_processing",
+            Self::DynamicVerification => "dynamic_verification",
             Self::Complete => "complete",
         }
     }
@@ -43,6 +45,10 @@ pub struct ScanProgress {
     files_skipped: AtomicU64,
     batches_total: AtomicU64,
     batches_completed: AtomicU64,
+    dynamic_expected: AtomicBool,
+    dynamic_finished: AtomicBool,
+    dynamic_total: AtomicU64,
+    dynamic_completed: AtomicU64,
     current_file: Mutex<String>,
     started_at: Instant,
     walk_ms: AtomicU64,
@@ -50,6 +56,7 @@ pub struct ScanProgress {
     call_graph_ms: AtomicU64,
     pass2_ms: AtomicU64,
     post_process_ms: AtomicU64,
+    dynamic_verify_ms: AtomicU64,
     languages: Mutex<HashMap<String, u64>>,
 }
 
@@ -69,6 +76,10 @@ impl ScanProgress {
             files_skipped: AtomicU64::new(0),
             batches_total: AtomicU64::new(0),
             batches_completed: AtomicU64::new(0),
+            dynamic_expected: AtomicBool::new(false),
+            dynamic_finished: AtomicBool::new(false),
+            dynamic_total: AtomicU64::new(0),
+            dynamic_completed: AtomicU64::new(0),
             current_file: Mutex::new(String::new()),
             started_at: Instant::now(),
             walk_ms: AtomicU64::new(0),
@@ -76,12 +87,50 @@ impl ScanProgress {
             call_graph_ms: AtomicU64::new(0),
             pass2_ms: AtomicU64::new(0),
             post_process_ms: AtomicU64::new(0),
+            dynamic_verify_ms: AtomicU64::new(0),
             languages: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn set_stage(&self, stage: ScanStage) {
+        let stage = if stage == ScanStage::Complete
+            && self.dynamic_expected.load(Relaxed)
+            && !self.dynamic_finished.load(Relaxed)
+        {
+            ScanStage::PostProcessing
+        } else {
+            stage
+        };
         self.stage.store(stage as u8, Relaxed);
+    }
+
+    pub fn expect_dynamic_verification(&self) {
+        self.dynamic_expected.store(true, Relaxed);
+        self.dynamic_finished.store(false, Relaxed);
+        self.dynamic_total.store(0, Relaxed);
+        self.dynamic_completed.store(0, Relaxed);
+    }
+
+    pub fn start_dynamic_verification(&self, total: u64) {
+        self.dynamic_expected.store(true, Relaxed);
+        self.dynamic_finished.store(false, Relaxed);
+        self.dynamic_total.store(total, Relaxed);
+        self.dynamic_completed.store(0, Relaxed);
+        self.stage
+            .store(ScanStage::DynamicVerification as u8, Relaxed);
+    }
+
+    pub fn inc_dynamic_completed(&self, n: u64) {
+        self.dynamic_completed.fetch_add(n, Relaxed);
+    }
+
+    pub fn finish_dynamic_verification(&self) {
+        self.dynamic_finished.store(true, Relaxed);
+        let total = self.dynamic_total.load(Relaxed);
+        if total > 0 {
+            self.dynamic_completed.store(total, Relaxed);
+        }
+        self.stage.store(ScanStage::Complete as u8, Relaxed);
     }
 
     pub fn set_files_discovered(&self, count: u64) {
@@ -143,6 +192,10 @@ impl ScanProgress {
         self.post_process_ms.fetch_add(ms, Relaxed);
     }
 
+    pub fn record_dynamic_verify_ms(&self, ms: u64) {
+        self.dynamic_verify_ms.fetch_add(ms, Relaxed);
+    }
+
     pub fn record_language(&self, lang: &str) {
         if let Ok(mut langs) = self.languages.try_lock() {
             *langs.entry(lang.to_string()).or_insert(0) += 1;
@@ -158,6 +211,9 @@ impl ScanProgress {
             x if x == ScanStage::BuildingCallGraph as u8 => ScanStage::BuildingCallGraph.as_str(),
             x if x == ScanStage::Analyzing as u8 => ScanStage::Analyzing.as_str(),
             x if x == ScanStage::PostProcessing as u8 => ScanStage::PostProcessing.as_str(),
+            x if x == ScanStage::DynamicVerification as u8 => {
+                ScanStage::DynamicVerification.as_str()
+            }
             x if x == ScanStage::Complete as u8 => ScanStage::Complete.as_str(),
             _ => "unknown",
         }
@@ -183,6 +239,9 @@ impl ScanProgress {
             files_skipped: self.files_skipped.load(Relaxed),
             batches_total: self.batches_total.load(Relaxed),
             batches_completed: self.batches_completed.load(Relaxed),
+            dynamic_enabled: self.dynamic_expected.load(Relaxed),
+            dynamic_total: self.dynamic_total.load(Relaxed),
+            dynamic_completed: self.dynamic_completed.load(Relaxed),
             current_file,
             elapsed_ms: self.elapsed_ms(),
             timing: TimingBreakdown {
@@ -191,6 +250,7 @@ impl ScanProgress {
                 call_graph_ms: self.call_graph_ms.load(Relaxed),
                 pass2_ms: self.pass2_ms.load(Relaxed),
                 post_process_ms: self.post_process_ms.load(Relaxed),
+                dynamic_verify_ms: self.dynamic_verify_ms.load(Relaxed),
             },
             languages,
         }
@@ -207,6 +267,9 @@ pub struct ScanProgressSnapshot {
     pub files_skipped: u64,
     pub batches_total: u64,
     pub batches_completed: u64,
+    pub dynamic_enabled: bool,
+    pub dynamic_total: u64,
+    pub dynamic_completed: u64,
     pub current_file: String,
     pub elapsed_ms: u64,
     pub timing: TimingBreakdown,
@@ -221,6 +284,8 @@ pub struct TimingBreakdown {
     pub call_graph_ms: u64,
     pub pass2_ms: u64,
     pub post_process_ms: u64,
+    #[serde(default)]
+    pub dynamic_verify_ms: u64,
 }
 
 /// Engine-level metrics collected during a scan.
@@ -258,6 +323,39 @@ impl ScanMetrics {
             summaries_reused: self.summaries_reused.load(Relaxed),
             unresolved_calls: self.unresolved_calls.load(Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_verification_defers_static_complete_stage() {
+        let progress = ScanProgress::new();
+
+        progress.expect_dynamic_verification();
+        progress.set_stage(ScanStage::Complete);
+
+        let static_done = progress.snapshot();
+        assert_eq!(static_done.stage, "post_processing");
+        assert!(static_done.dynamic_enabled);
+        assert_eq!(static_done.dynamic_total, 0);
+        assert_eq!(static_done.dynamic_completed, 0);
+
+        progress.start_dynamic_verification(3);
+        progress.inc_dynamic_completed(2);
+
+        let verifying = progress.snapshot();
+        assert_eq!(verifying.stage, "dynamic_verification");
+        assert_eq!(verifying.dynamic_total, 3);
+        assert_eq!(verifying.dynamic_completed, 2);
+
+        progress.finish_dynamic_verification();
+
+        let complete = progress.snapshot();
+        assert_eq!(complete.stage, "complete");
+        assert_eq!(complete.dynamic_completed, 3);
     }
 }
 

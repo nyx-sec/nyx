@@ -84,6 +84,7 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 
 ### Frontend
 
+- **Project target selector in `nyx serve`.** The sidebar now remembers scan roots, lets you switch the active target, and accepts a new project path without restarting the server. `/api/targets` backs the selector, scans can opt into a different `scan_root`, and `nyx scan` / `nyx index build` register the projects they touch so `nyx serve` can pick them up later.
 - **Surface page** with ELK auto-layout and the shared node-style palette.
 - **Verdict badge** on finding detail, plus a dynamic-verdict section that surfaces the verdict, the payload that triggered it, and a link to the repro bundle.
 - **Scan compare** gains a dynamic-verdict diff column so two scans can be compared on what was confirmed versus what was downgraded.

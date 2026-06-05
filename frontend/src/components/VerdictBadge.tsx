@@ -49,7 +49,6 @@ export function VerdictBadge({ verdict, compact = false }: VerdictBadgeProps) {
   const { status } = verdict;
   const label = STATUS_LABELS[status] ?? status;
   const tooltip = verdictTooltip(verdict);
-  const flame = status === 'Confirmed' ? '🔥 ' : '';
 
   return (
     <span
@@ -57,7 +56,6 @@ export function VerdictBadge({ verdict, compact = false }: VerdictBadgeProps) {
       title={tooltip}
       data-testid={`verdict-badge-${status.toLowerCase()}`}
     >
-      {flame}
       {compact ? status.charAt(0) : label}
     </span>
   );

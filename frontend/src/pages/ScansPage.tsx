@@ -29,36 +29,86 @@ function ScanProgress({
 }: {
   data: NonNullable<ReturnType<typeof useSSE>['scanProgress']>;
 }) {
-  const stages = [
+  type ProgressStage =
+    | 'discovering'
+    | 'indexing'
+    | 'loading_summaries'
+    | 'building_call_graph'
+    | 'analyzing'
+    | 'post_processing'
+    | 'dynamic_verification'
+    | 'complete';
+
+  const hasDynamicStage =
+    data.dynamic_enabled ||
+    data.dynamic_total > 0 ||
+    data.stage === 'dynamic_verification';
+  const stages: ProgressStage[] = [
     'discovering',
     'indexing',
     'loading_summaries',
     'building_call_graph',
     'analyzing',
     'post_processing',
+    ...(hasDynamicStage ? ['dynamic_verification' as ProgressStage] : []),
     'complete',
-  ] as const;
-  const stageLabels: Record<string, string> = {
+  ];
+  const stageLabels: Record<ProgressStage, string> = {
     discovering: 'Discovering',
     indexing: 'Indexing',
     loading_summaries: 'Loading Summaries',
     building_call_graph: 'Call Graph',
     analyzing: 'Analyzing',
     post_processing: 'Post-Process',
+    dynamic_verification: 'Dynamic Verify',
     complete: 'Complete',
   };
-  const currentIdx = stages.indexOf(data.stage as (typeof stages)[number]);
+  const currentIdx = stages.indexOf(data.stage as ProgressStage);
 
-  const total = data.files_discovered || 1;
-  const processed =
+  const totalFiles = data.files_discovered || 0;
+  const safeTotalFiles = totalFiles || 1;
+  const processedFiles =
     data.stage === 'indexing'
       ? data.files_parsed
       : data.stage === 'analyzing' || data.stage === 'post_processing'
         ? data.files_analyzed
         : data.stage === 'complete'
-          ? total
+          ? totalFiles
           : 0;
-  const pct = Math.min(100, (processed / total) * 100);
+  const dynamicTotal = data.dynamic_total ?? 0;
+  const dynamicCompleted = Math.min(
+    data.dynamic_completed ?? 0,
+    dynamicTotal || data.dynamic_completed || 0,
+  );
+  const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+  const stageProgress =
+    data.stage === 'indexing'
+      ? clamp01(data.files_parsed / safeTotalFiles)
+      : data.stage === 'loading_summaries' ||
+          data.stage === 'building_call_graph' ||
+          data.stage === 'post_processing'
+        ? 0.5
+        : data.stage === 'analyzing'
+          ? clamp01(data.files_analyzed / safeTotalFiles)
+          : data.stage === 'dynamic_verification'
+            ? dynamicTotal > 0
+              ? clamp01(dynamicCompleted / dynamicTotal)
+              : 0
+            : data.stage === 'complete'
+              ? 1
+              : 0;
+  const stageTransitions = stages.length - 1;
+  const rawPct =
+    currentIdx >= 0
+      ? ((currentIdx + stageProgress) / stageTransitions) * 100
+      : 0;
+  const pct = data.stage === 'complete' ? 100 : Math.min(99, rawPct);
+  const primaryProgressLabel =
+    data.stage === 'dynamic_verification'
+      ? dynamicTotal > 0
+        ? `${dynamicCompleted} / ${dynamicTotal} findings verified`
+        : 'Verifying findings'
+      : `${processedFiles} / ${totalFiles} files`;
   const elapsed = data.elapsed_ms
     ? (data.elapsed_ms / 1000).toFixed(1) + 's'
     : '-';
@@ -89,23 +139,26 @@ function ScanProgress({
         <div className="progress-bar-fill" style={{ width: `${pct}%` }}></div>
       </div>
       <div className="progress-stats">
-        <span>
-          {processed} / {data.files_discovered || 0} files
-        </span>
+        <span>{primaryProgressLabel}</span>
         <span>{pct.toFixed(0)}%</span>
       </div>
       <div className="progress-stats">
         <span>{data.files_parsed || 0} indexed</span>
         <span>{data.files_skipped || 0} reused</span>
         <span>{data.files_analyzed || 0} analyzed</span>
+        {dynamicTotal > 0 && <span>{dynamicCompleted} verified</span>}
       </div>
-      {data.batches_total > 0 && (
+      {(data.batches_total > 0 || data.stage === 'dynamic_verification') && (
         <div className="progress-stats">
-          <span>
-            Batch {Math.min(data.batches_completed, data.batches_total)} /{' '}
-            {data.batches_total}
-          </span>
-          <span>{stageLabels[data.stage] || data.stage}</span>
+          {data.batches_total > 0 ? (
+            <span>
+              Batch {Math.min(data.batches_completed, data.batches_total)} /{' '}
+              {data.batches_total}
+            </span>
+          ) : (
+            <span>Dynamic verification</span>
+          )}
+          <span>{stageLabels[data.stage as ProgressStage] || data.stage}</span>
         </div>
       )}
       <div className="progress-stats">
@@ -113,6 +166,9 @@ function ScanProgress({
         <span>Index {data.timing.pass1_ms}ms</span>
         <span>Graph {data.timing.call_graph_ms}ms</span>
         <span>Analyze {data.timing.pass2_ms}ms</span>
+        {(data.timing.dynamic_verify_ms ?? 0) > 0 && (
+          <span>Verify {data.timing.dynamic_verify_ms}ms</span>
+        )}
       </div>
       {data.current_file && (
         <div className="progress-current-file">

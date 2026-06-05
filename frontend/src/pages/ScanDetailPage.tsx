@@ -34,6 +34,7 @@ function SummaryTab({ scan }: { scan: ScanView }) {
   const langs = (scan.languages || []).join(', ') || '-';
 
   const timing = scan.timing;
+  const dynamicVerifyMs = timing?.dynamic_verify_ms ?? 0;
   let total = 0;
   if (timing) {
     total =
@@ -41,7 +42,8 @@ function SummaryTab({ scan }: { scan: ScanView }) {
       timing.pass1_ms +
       timing.call_graph_ms +
       timing.pass2_ms +
-      timing.post_process_ms;
+      timing.post_process_ms +
+      dynamicVerifyMs;
   }
   const pct = (ms: number) => ((ms / total) * 100).toFixed(1);
 
@@ -151,6 +153,13 @@ function SummaryTab({ scan }: { scan: ScanView }) {
                 style={{ width: `${pct(timing.post_process_ms)}%` }}
                 title={`Post-process: ${timing.post_process_ms}ms`}
               ></div>
+              {dynamicVerifyMs > 0 && (
+                <div
+                  className="timing-bar-segment postprocess"
+                  style={{ width: `${pct(dynamicVerifyMs)}%` }}
+                  title={`Dynamic verification: ${dynamicVerifyMs}ms`}
+                ></div>
+              )}
             </div>
             <div className="timing-legend">
               <span className="timing-legend-item">
@@ -188,6 +197,15 @@ function SummaryTab({ scan }: { scan: ScanView }) {
                 ></span>{' '}
                 Post {timing.post_process_ms}ms
               </span>
+              {dynamicVerifyMs > 0 && (
+                <span className="timing-legend-item">
+                  <span
+                    className="timing-legend-dot"
+                    style={{ background: 'var(--text-tertiary)' }}
+                  ></span>{' '}
+                  Dynamic {dynamicVerifyMs}ms
+                </span>
+              )}
             </div>
           </div>
         )}

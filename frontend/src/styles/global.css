@@ -179,7 +179,7 @@ a:hover {
 }
 .target-switcher {
   position: relative;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
 }
 .target-trigger,
 .target-option,
@@ -191,27 +191,43 @@ a:hover {
 }
 .target-trigger {
   width: 100%;
-  min-height: 48px;
+  min-height: 34px;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 12px;
+  grid-template-columns: 34px minmax(0, 1fr) 8px;
   align-items: center;
   gap: var(--space-2);
-  padding: 7px 8px;
-  border: 1px solid var(--border);
+  padding: 0 var(--space-2) 0 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
   text-align: left;
 }
 .target-trigger:hover,
 .target-trigger[aria-expanded='true'] {
-  border-color: var(--line-strong);
   background: var(--bg-secondary);
 }
-.target-avatar,
+.target-trigger[aria-expanded='true'] {
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.target-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
 .target-option-avatar {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
@@ -219,6 +235,7 @@ a:hover {
   background: var(--accent-light);
   color: var(--accent);
   font-weight: var(--weight-semibold);
+  font-size: 0.85rem;
   flex-shrink: 0;
 }
 .target-trigger-copy,
@@ -227,6 +244,9 @@ a:hover {
   display: flex;
   flex-direction: column;
   line-height: 1.25;
+}
+.target-trigger-copy {
+  padding-left: var(--space-2);
 }
 .target-name,
 .target-option-name {
@@ -237,6 +257,12 @@ a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.target-trigger .target-path {
+  display: none;
+}
+.target-option-name {
+  font-size: var(--text-sm);
+}
 .target-path,
 .target-option-path {
   color: var(--text-tertiary);
@@ -246,10 +272,11 @@ a:hover {
   white-space: nowrap;
 }
 .target-caret {
-  width: 8px;
-  height: 8px;
-  border-right: 1.5px solid var(--text-tertiary);
-  border-bottom: 1.5px solid var(--text-tertiary);
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--text-secondary);
   transform: rotate(45deg) translateY(-2px);
   transition: transform var(--transition-base);
 }
@@ -260,13 +287,14 @@ a:hover {
   position: absolute;
   left: var(--space-3);
   right: var(--space-3);
-  top: calc(100% - var(--space-1));
+  top: 100%;
   z-index: 30;
+  margin-top: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 12px 28px rgba(13, 12, 10, 0.12);
 }
 .target-options {
   display: flex;
@@ -277,12 +305,12 @@ a:hover {
 }
 .target-option {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 42px;
-  padding: 5px 6px;
+  min-height: 44px;
+  padding: 6px;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
@@ -297,11 +325,6 @@ a:hover {
 .target-option:disabled {
   cursor: default;
   opacity: 0.7;
-}
-.target-option-avatar {
-  width: 28px;
-  height: 28px;
-  font-size: 0.8rem;
 }
 .target-add-form {
   display: grid;

@@ -194,7 +194,7 @@ jobs:
         working-directory: fuzz/dynamic_corpus
         run: cargo build
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 

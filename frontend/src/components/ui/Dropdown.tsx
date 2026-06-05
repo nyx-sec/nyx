@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { CheckIcon } from '../icons/Icons';
 
 interface DropdownProps {
   trigger: (opts: { open: boolean }) => ReactNode;
@@ -94,7 +95,7 @@ export function DropdownItem({
       onClick={onClick}
     >
       <span className="dropdown-item-check" aria-hidden>
-        {checked ? '✓' : ''}
+        {checked && <CheckIcon size={14} />}
       </span>
       <span className="dropdown-item-label">{children}</span>
       {hint && <span className="dropdown-item-hint">{hint}</span>}

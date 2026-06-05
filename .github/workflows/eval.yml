@@ -75,14 +75,14 @@ jobs:
       # The Phase 22 Java compile pool drives `com.sun.tools.javac` out of a
       # warm JDK; temurin 21 ships the compiler module the pool loads.
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Cache OWASP BenchmarkJava (1.2beta)
         id: cache-owasp
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .eval-corpus/owasp_benchmark_v1.2
           key: owasp-benchmark-1.2beta
@@ -158,13 +158,13 @@ jobs:
       # The dynamic verifier's Node build pool (Phase 23) compiles its
       # harnesses with a real node/npm toolchain.
       - name: Set up Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
       - name: Cache ${{ matrix.corpus.name }}
         id: cache-corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .eval-corpus/${{ matrix.corpus.name }}
           key: jsts-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
@@ -288,19 +288,19 @@ jobs:
 
       - name: Set up Python
         if: matrix.corpus.lang == 'python'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Set up Go
         if: matrix.corpus.lang == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.22"
 
       - name: Cache ${{ matrix.corpus.name }}
         id: cache-corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .eval-corpus/${{ matrix.corpus.name }}
           key: polyglot-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}

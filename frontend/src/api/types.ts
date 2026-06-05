@@ -172,6 +172,7 @@ export interface TimingBreakdown {
   call_graph_ms: number;
   pass2_ms: number;
   post_process_ms: number;
+  dynamic_verify_ms?: number;
 }
 
 export interface ScanMetricsSnapshot {

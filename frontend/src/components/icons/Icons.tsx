@@ -153,6 +153,14 @@ export function CloseIcon({ className, size = 14 }: IconProps) {
   );
 }
 
+export function CheckIcon({ className, size = 14 }: IconProps) {
+  return (
+    <svg {...svgProps({ className, size })} viewBox="0 0 14 14">
+      <path d="M2.5 7.5l3 3 6-7" />
+    </svg>
+  );
+}
+
 export function SunIcon({ className, size = 16 }: IconProps) {
   return (
     <svg {...svgProps({ className, size })} viewBox="0 0 16 16">
@@ -199,4 +207,5 @@ export const ICONS: Record<string, FC<IconProps>> = {
   debug: DebugIcon,
   folder: FolderIcon,
   tag: TagIcon,
+  check: CheckIcon,
 };
