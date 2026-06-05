@@ -6,7 +6,7 @@
 //! [`Commands::is_structured_output`], [`Commands::is_serve`], and
 //! [`Commands::is_informational`].
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -61,6 +61,7 @@ impl Commands {
                 matches!(action, ConfigAction::Show { .. } | ConfigAction::Path)
             }
             Commands::Index { action } => matches!(action, IndexAction::Status { .. }),
+            Commands::Repro { .. } => true,
             _ => false,
         }
     }
@@ -587,6 +588,45 @@ pub enum Commands {
         /// Upload feedback to Nyx telemetry (not yet implemented; reserved).
         #[arg(long)]
         upload: bool,
+    },
+
+    /// Replay a dynamic repro bundle for a confirmed finding.
+    ///
+    /// Repro bundles are keyed by spec hash in Nyx's cache, but findings shown
+    /// in scan output and the browser UI use a stable finding id. `--finding`
+    /// locates the newest matching cached bundle by reading each bundle's
+    /// manifest. Use `--spec-hash` when you already know the cache key, or
+    /// `--bundle` for an explicit bundle directory.
+    #[cfg_attr(not(feature = "dynamic"), command(hide = true))]
+    #[command(group(
+        ArgGroup::new("target")
+            .required(true)
+            .args(["finding", "spec_hash", "bundle"])
+    ))]
+    Repro {
+        /// Stable finding ID shown in dynamic verdict output and the UI.
+        #[arg(long, value_name = "ID")]
+        finding: Option<String>,
+
+        /// Exact spec hash / cache directory name to replay.
+        #[arg(long = "spec-hash", value_name = "HASH")]
+        spec_hash: Option<String>,
+
+        /// Explicit repro bundle directory.
+        #[arg(long, value_name = "DIR")]
+        bundle: Option<std::path::PathBuf>,
+
+        /// Replay with the bundle's Docker backend.
+        #[arg(long)]
+        docker: bool,
+
+        /// Print the resolved bundle path and exit without replaying.
+        #[arg(long, conflicts_with = "list")]
+        print_path: bool,
+
+        /// List every cached bundle matching --finding, newest first.
+        #[arg(long, requires = "finding")]
+        list: bool,
     },
 
     /// Manage project indexes

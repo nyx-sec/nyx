@@ -4,6 +4,12 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
+- **`nyx repro` subcommand.** Replays dynamic repro bundles by finding id,
+  spec hash, or explicit bundle path, with `--docker`, `--print-path`, and
+  `--list` helpers. The CLI now matches the browser UI's reproduced command
+  and uses bundle manifests to bridge stable finding ids to spec-hash cache
+  directories.
+
 ## [0.8.0] - 2026-06-06
 
 The dynamic-verification release. An attack-surface map, a sandboxed dynamic verifier, a framework adapter registry that grounds both, the per-language build infrastructure that makes per-finding verification affordable at corpus scale, and the first real-corpus acceptance gates.
