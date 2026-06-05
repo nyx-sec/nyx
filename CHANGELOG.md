@@ -4,7 +4,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-06-01
+## [0.8.0] - 2026-06-06
 
 The dynamic-verification release. An attack-surface map, a sandboxed dynamic verifier, a framework adapter registry that grounds both, the per-language build infrastructure that makes per-finding verification affordable at corpus scale, and the first real-corpus acceptance gates.
 
@@ -75,6 +75,7 @@ The attack-surface map and chain composer turn the flat finding list into a rout
 - **`nyx scan --verify`** (enabled by default in standard builds) and `--backend {auto,process,docker}` select the dynamic-verification harness. `--no-verify` skips verification for a single run without changing config.
 - **`nyx scan --harden {standard,strict}`** picks the process-backend hardening profile. `standard` is no-new-privs plus a memory rlimit on Linux. `strict` layers namespace unshare, chroot to the workdir, and a default-deny seccomp filter on Linux, or wraps the harness with `sandbox-exec` on macOS.
 - **Patch-validation CI mode.** `--baseline FILE` reads a previous scan's JSON (or a stripped `.nyx/baseline.json` written by `--baseline-write`) and diffs it against the current scan on `stable_hash`, emitting `New` / `Resolved` / `FlippedConfirmed` / `FlippedNotConfirmed` transitions. `--gate {no-new-confirmed,resolve-all-confirmed}` exits non-zero when the diff violates the policy so CI fails the build instead of merging an unreviewed regression. The stripped baseline carries only `stable_hash`, `dynamic_verdict`, `severity`, `path`, and `rule_id`, so persisting it between scans does not leak source.
+- **Repository triage in CI.** `nyx scan` now reads the same `.nyx/triage.json` file written by `nyx serve`. Terminal triage states (`false_positive`, `accepted_risk`, `suppressed`, `fixed`) are hidden from CLI output and excluded from `--fail-on` by default, while `--show-suppressed` includes them with `triage_state` / `triage_note` metadata for JSON, SARIF, and console output.
 - **`nyx scan --verify-all-confidence`** drops the Medium cutoff and re-verifies everything.
 - **`nyx scan --unsafe-sandbox`** disables hardening (development only, never for CI).
 - **`nyx verify-feedback <finding_id> --wrong <reason> | --right`** records a correction or confirmation for a finding's verdict in the local telemetry log.
