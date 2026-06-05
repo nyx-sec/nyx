@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
-**本地优先的安全扫描器，自带浏览器 UI。在本地扫描代码仓库并在浏览器中分诊处理，无需云端、无需账号。**
+**本地优先的安全扫描器，带沙箱动态验证和浏览器 UI。在本地扫描代码仓库并在浏览器中分诊处理，无需云端、无需账号。**
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
@@ -18,7 +18,7 @@
 
 ## 本地扫描，本地浏览
 
-Nyx 在你的代码仓库上运行跨语言污点分析，然后将结果通过绑定到 `127.0.0.1` 的 React UI 提供给你。你会得到一份带严重等级、证据、以及分步**流可视化**的发现列表，从源 → 净化器 → 汇逐步呈现数据流。分诊决策持久化在 `.nyx/triage.json` 中，与代码一同提交，团队共享同一份分诊状态。
+Nyx 在你的代码仓库上运行跨语言污点分析，然后对中高置信度发现运行小型沙箱 harness，验证真实代码里 source 到 sink 的流是否会触发。结果通过绑定到 `127.0.0.1` 的 React UI 提供给你。你会看到严重等级、静态证据、动态验证结果，以及分步**流可视化**，从源 → 净化器 → 汇逐步呈现数据流。分诊决策持久化在 `.nyx/triage.json` 中，与代码一同提交，团队共享同一份分诊状态。
 
 ```bash
 cargo install nyx-scanner
@@ -26,7 +26,7 @@ nyx scan           # 运行分析器，把发现缓存到 .nyx/
 nyx serve          # 在浏览器中打开 http://localhost:9700
 ```
 
-一切都留在你本地：仅回环绑定、强制 host 头校验、所有变更操作均带 CSRF、无遥测、无登录。
+一切都留在你本地：仅回环绑定、强制 host 头校验、所有变更操作均带 CSRF、无远程遥测、无登录。
 
 <p align="center"><img src="assets/screenshots/overview.png" alt="一个小型 JS 应用的总览仪表盘：健康分 C 78，五项分量分解（严重度压力、置信度质量、趋势、分诊覆盖、回归抗性），3 条发现，OWASP A03 与 A02 类别，置信度分布与问题类别条形图，受影响最多的文件" width="900"/></p>
 
@@ -38,7 +38,7 @@ nyx serve          # 在浏览器中打开 http://localhost:9700
 |---|---|
 | **总览** | 仪表盘：按严重等级分类的发现计数、热点文件、引擎画像摘要 |
 | **发现** | 可浏览列表，含严重度徽章、分诊状态、规则筛选、语言筛选 |
-| **发现详情** | 流路径可视化，带编号步骤（源 → 净化器 → 汇）、代码片段、证据、跨文件标记、分诊下拉框 |
+| **发现详情** | 流路径可视化，带编号步骤（源 → 净化器 → 汇）、动态验证结果、代码片段、证据、跨文件标记、分诊下拉框 |
 | **分诊** | 批量更新状态（open、investigating、fixed、false_positive、accepted_risk、suppressed），审计日志，JSON 导入/导出 |
 | **资源管理器** | 文件树，含每个文件的符号列表与发现叠加层 |
 | **扫描** | 历史记录、指标，对比两次扫描查看差异 |
@@ -76,7 +76,7 @@ nyx scan --engine-profile deep
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.7.0
+- uses: elicpeter/nyx@v0.8.0
   with:
     format: sarif
     fail-on: MEDIUM
@@ -180,9 +180,22 @@ cd nyx && cargo build --release
 1. **Pass 1**：用 tree-sitter 解析每个文件，构建过程内 CFG（petgraph），下降到剪枝后的 SSA（在支配边界上做 Cytron phi 插入），并导出每函数摘要（source/sanitizer/sink 能力位、污点变换、指向集、被调集合）。
 2. **摘要合并**：将每文件摘要并集合并为 `GlobalSummaries` 映射。
 3. **Pass 2**：在跨文件上下文与有限上下文敏感（文件内被调用 k=1 内联，SCC 不动点上限 64 次迭代，超过内联体大小阈值的被调用走摘要回退）下重新分析每个文件。正向数据流工作表通过 SSA 格传播污点，保证收敛。调用图 SCC 迭代到不动点（在上限内），使相互递归函数能拿到准确摘要。
-4. **排序、去重、输出**：按 严重度 × 证据强度 × 源类可利用性 打分，并输出到控制台、JSON 或 SARIF。
+4. **排序、去重、动态验证、输出**：按 严重度 × 证据强度 × 源类可利用性 打分。默认构建会对中高置信度发现做动态验证，然后输出到控制台、JSON、SARIF 和浏览器 UI。
 
 检测器家族：污点（跨文件 source→sink，含 SQLi、XSS、命令/代码执行、反序列化、SSRF、路径穿越、格式串、加密、LDAP 注入、XPath 注入、HTTP 头/响应拆分、开放重定向、服务端模板注入、XXE、原型污染、数据外泄、以及 auth 折入的能力位类规则）、CFG 结构（鉴权缺失、未守卫汇、资源泄漏）、状态模型（use-after-close、double-close、must-leak、unauthed-access）、AST 模式（tree-sitter 结构匹配）。完整检测器文档：[Detectors](https://nyxscan.dev/docs/detectors.html)。
+
+---
+
+## 动态验证
+
+静态分析说明 source 到 sink 可达。动态验证会尝试证明这条路径在真实代码里会触发。默认构建开启该功能，`nyx scan` 会为中高置信度发现生成 harness，在沙箱中用 curated payload 运行，并把结果写入 `evidence.dynamic_verdict`。
+
+```bash
+nyx scan --verify          # 默认行为的显式写法
+nyx scan --no-verify       # 只跑静态分析，适合本地快速循环
+```
+
+`Confirmed` 只有在攻击 payload 触发 sink 且对应的良性 control 保持干净时才会出现。`NotConfirmed` 表示 harness 跑完但没有触发，不等于发现已关闭。完整能力矩阵、后端与限制见 [Dynamic verification](https://nyxscan.dev/docs/dynamic.html)。
 
 ---
 

@@ -14,6 +14,7 @@
 .DS_Store
 .z3-trace
 .pitboss
+.eval-corpus
 .node_modules-target
 node_modules
 __pycache__/

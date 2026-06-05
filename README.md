@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
-**A local-first security scanner with a browser UI. Scan your repo and triage in your browser, with no cloud and no account.**
+**A local-first security scanner with sandboxed dynamic verification and a browser UI. Scan your repo and triage in your browser, with no cloud and no account.**
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
@@ -18,7 +18,7 @@ English · [简体中文](./README.zh-CN.md)
 
 ## Scan locally, browse locally
 
-Nyx runs a cross-language taint analysis on your repository, then serves the results to a React UI bound to `127.0.0.1`. You get a finding list with severity, evidence, and a step-by-step **flow visualiser** that walks the dataflow from source → sanitizer → sink. Triage decisions persist to `.nyx/triage.json`, which commits alongside your code so the team shares one triage state.
+Nyx runs cross-language taint analysis on your repository, then verifies Medium or higher confidence findings by running small sandboxed harnesses against the real code. Results are served to a React UI bound to `127.0.0.1`. You get severity, static evidence, dynamic verdicts, and a step-by-step **flow visualiser** that walks the dataflow from source → sanitizer → sink. Triage decisions persist to `.nyx/triage.json`, which commits alongside your code so the team shares one triage state.
 
 ```bash
 cargo install nyx-scanner
@@ -26,7 +26,7 @@ nyx scan           # runs the analyzer, caches findings in .nyx/
 nyx serve          # opens http://localhost:9700 in your browser
 ```
 
-Everything stays on your machine: loopback-only bind, host-header enforcement, CSRF on every mutation, no telemetry, no login.
+Everything stays on your machine: loopback-only bind, host-header enforcement, CSRF on every mutation, no remote telemetry, no login.
 
 <p align="center"><img src="assets/screenshots/overview.png" alt="Overview dashboard for a small JS app: Health Score C 78 with the five-component breakdown (Severity pressure, Confidence quality, Trend, Triage coverage, Regression resistance), 3 findings detected, OWASP A03 and A02 buckets, confidence distribution and issue category bars, top affected files" width="900"/></p>
 
@@ -38,7 +38,7 @@ Everything stays on your machine: loopback-only bind, host-header enforcement, C
 |---|---|
 | **Overview** | Dashboard: finding counts by severity, top offenders, engine profile summary |
 | **Findings** | Browsable list with severity badges, triage status, rule filter, language filter |
-| **Finding detail** | Flow-path visualiser with numbered steps (source → sanitizer → sink), code snippets, evidence, cross-file markers, triage dropdown |
+| **Finding detail** | Flow-path visualiser with numbered steps (source → sanitizer → sink), dynamic verdicts, code snippets, evidence, cross-file markers, triage dropdown |
 | **Triage** | Bulk update states (open, investigating, fixed, false_positive, accepted_risk, suppressed), audit trail, import/export JSON |
 | **Explorer** | File tree with per-file symbol list and finding overlay |
 | **Scans** | Run history, metrics, diff two scans to see what changed |
@@ -190,13 +190,14 @@ flowchart LR
     Summaries --> Index["SQLite index<br/>optional incremental cache"]
     Index --> Pass2["Pass 2 cross-file<br/>global summaries, k=1 inline, SCC fixpoint"]
     Pass2 --> Rank["Rank and dedupe<br/>severity, evidence, exploitability"]
-    Rank --> Output["Console, JSON, SARIF<br/>and browser UI"]
+    Rank --> Verify["Dynamic verification<br/>sandboxed harnesses, verdicts"]
+    Verify --> Output["Console, JSON, SARIF<br/>and browser UI"]
 ```
 
 1. **Pass 1**: parse each file via tree-sitter, build an intra-procedural CFG (petgraph), lower to pruned SSA (Cytron phi insertion over dominance frontiers), and export per-function summaries (source/sanitizer/sink caps, taint transforms, points-to, callees).
 2. **Summary merge**: union all per-file summaries into a `GlobalSummaries` map.
 3. **Pass 2**: re-analyze each file with cross-file context under bounded context sensitivity (k=1 inlining for intra-file callees, SCC fixpoint capped at 64 iterations, and summary fallback for callees above the inline body-size cap). A forward dataflow worklist propagates taint through the SSA lattice with guaranteed convergence. Call-graph SCCs iterate to fixed-point (within the cap) so mutually recursive functions get accurate summaries.
-4. **Rank, dedupe, emit**: findings are scored by severity × evidence strength × source-kind exploitability, then emitted to console, JSON, or SARIF.
+4. **Rank, dedupe, verify, emit**: findings are scored by severity × evidence strength × source-kind exploitability. Medium or higher confidence findings are dynamically verified by default, then results are emitted to console, JSON, SARIF, and the browser UI.
 
 Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://nyxscan.dev/docs/detectors.html).
 
@@ -213,7 +214,7 @@ nyx scan --no-verify       # static analysis only, for fast local loops
 
 A finding is **Confirmed** only when an attacker-controlled payload fires the sink *and* a paired benign control stays clean. That differential rule, plus behavioral oracles (a template that renders `49`, a deserializer that resolves a gadget class, a redirect that leaves the origin), keeps the verifier from confirming on an echoed string. Sinks behind a recognized guard demote to `ConfirmedWithKnownGuard`; sinks reached without a completed exploit chain land as `PartiallyConfirmed`.
 
-Coverage spans 18 capability classes and 130+ framework adapters across all ten languages (Flask, Django, Express, NestJS, Spring, Rails, Laravel, Gin, Axum, and more), with per-language build pools and copy-on-write workdirs to keep the per-finding cost low. Confirmed findings write a hermetic repro bundle with a `reproduce.sh`. Runs are deterministic: every payload is seeded from the spec hash.
+Coverage spans 18 verifiable capability classes and 120+ registered adapters across all ten languages (Flask, Django, Express, NestJS, Spring, Rails, Laravel, Gin, Axum, and more), with per-language build pools and copy-on-write workdirs to keep the per-finding cost low. Confirmed findings write a hermetic repro bundle with a `reproduce.sh`. Runs are deterministic: every payload is seeded from the spec hash.
 
 ```bash
 # CI: fail the build if a new Confirmed finding appears vs. a baseline

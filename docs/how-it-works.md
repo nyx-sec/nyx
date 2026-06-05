@@ -18,7 +18,9 @@ flowchart TD
     Pass2 --> Calls["Call precision<br/>k=1 inline, summaries, SCC fixed-point"]
     Taint --> Findings["Findings with evidence<br/>source, path, sink, engine notes"]
     Calls --> Findings
-    Findings --> Emit["Rank, dedupe, emit<br/>console, JSON, SARIF, UI"]
+    Findings --> Rank["Rank and dedupe<br/>severity, confidence, score"]
+    Rank --> Verify["Dynamic verification<br/>sandboxed harnesses, verdicts"]
+    Verify --> Emit["Emit<br/>console, JSON, SARIF, UI"]
 ```
 
 **Pass 1, per file.** Tree-sitter parses the file. Nyx builds an intra-procedural control-flow graph, lowers it to SSA, and extracts a summary per function describing what that function does at the boundary: which arguments flow to sinks, which sources it reads from, which sinks it calls, what taint it strips, what it returns. Summaries are persisted to SQLite ([`src/summary/`](https://github.com/elicpeter/nyx/tree/master/src/summary/), [`src/database.rs`](https://github.com/elicpeter/nyx/blob/master/src/database.rs)).
@@ -32,6 +34,8 @@ Two extra layers tune precision around calls. **Context-sensitive inlining** (k=
 When a method call has a receiver typed as a super-class, trait, or interface, **hierarchy fan-out** widens the resolved callee set to every concrete implementer the engine has seen. A class diagram extracted in pass 1 (Java extends/implements, Rust impl-for, TS/JS extends, Python bases, Ruby includes, PHP extends/implements, C++ inheritance) feeds an index that the call resolver consults during pass 2. The fan-out is capped at 8 implementers per call site; over-fanning is a precision tax, not a soundness issue.
 
 A separate **field-sensitive points-to** pass tracks abstract locations down to the field level, so `c.mu.Lock()` is a lock on `Field(c, mu)` rather than on `c` as a whole. That distinction is what lets the resource-lifecycle and taint passes tell `obj.field = tainted; sink(obj.other_field)` apart from the conservative whole-variable approximation. Subscript reads and writes (`arr[i]`, `map[k] = v`) lower to synthetic `__index_get__` / `__index_set__` calls so the same container model handles them. Set `NYX_POINTER_ANALYSIS=0` to fall back to the pre-pointer-pass behaviour for baseline comparison.
+
+**Dynamic verification.** After ranking and dedupe, default builds verify Medium and High confidence findings unless `--no-verify` or `scanner.verify = false` is set. The verifier derives a small harness from the finding, runs it in a sandbox against curated payloads, and stores the result on `evidence.dynamic_verdict`. `Confirmed` means a vulnerable payload fired and its benign control stayed clean. `NotConfirmed` means the harness ran but did not fire, not that the finding is closed.
 
 ## Optional analyses on top
 
@@ -62,6 +66,6 @@ Findings whose engine notes indicate a bound was hit can be filtered with `--req
 
 ## What you get out
 
-Each finding carries the source location, the sink location, the path in between (when symex produced one), the rule ID, severity, attack-surface score, confidence level, and a list of engine notes describing any precision loss along the way. Console output is human-readable; JSON and SARIF carry the full evidence object for tooling.
+Each finding carries the source location, the sink location, the path in between (when symex produced one), the rule ID, severity, attack-surface score, confidence level, dynamic verdict when one was attempted, and a list of engine notes describing any precision loss along the way. Console output is human-readable; JSON and SARIF carry the full evidence object for tooling.
 
 For the JSON shape and SARIF mapping, see [output.md](output.md).
