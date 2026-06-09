@@ -134,7 +134,7 @@ thiserror = "2.0.18"
 dashmap = "6.2.1"
 parking_lot = "0.12.5"
 petgraph = { version = "0.8.3", features = ["serde-1"] }
-bitflags = "2.12.1"
+bitflags = "2.13.0"
 phf = { version = "0.13.1", features = ["macros"] }
 indicatif = "0.18.4"
 smallvec = { version = "1.15.1", features = ["serde"] }
@@ -143,8 +143,8 @@ uuid = { version = "1.23.2", features = ["v4"] }
 axum = { version = "0.8.9", optional = true }
 bytes = { version = "1.11.1", optional = true }
 h2 = { version = "0.4.14", optional = true }
-http = { version = "1.4.1", optional = true }
-prost = { version = "0.14.3", optional = true }
+http = { version = "1.4.2", optional = true }
+prost = { version = "0.14.4", optional = true }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "signal", "sync", "net", "io-util"], optional = true }
 tokio-stream = { version = "0.1.18", features = ["sync"], optional = true }
 tower-http = { version = "0.6.11", features = ["cors", "compression-gzip", "trace", "set-header", "limit"], optional = true }
