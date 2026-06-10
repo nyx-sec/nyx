@@ -167,6 +167,14 @@ pub struct Diag {
     /// Breakdown of how the ranking score was computed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank_reason: Option<Vec<(String, String)>>,
+    /// Worst-case attack-surface exposure: the externally-reachable
+    /// route that can drive this finding, when the surface map's
+    /// entry-points reach the finding's file (directly or via the call
+    /// graph).  `None` when the project has no detected entry-points
+    /// or no route reaches the file.  Populated by
+    /// [`crate::surface::exposure::annotate_exposure`] before ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<crate::surface::exposure::Exposure>,
     /// Whether this finding was suppressed by an inline `nyx:ignore` directive.
     #[serde(default, skip_serializing_if = "is_false")]
     pub suppressed: bool,
@@ -251,6 +259,7 @@ impl Default for Diag {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: default_triage_state(),
@@ -346,6 +355,7 @@ pub fn format_dynamic_verification_summary(summary: &DynamicVerificationSummary)
 /// composite-chain re-verification can reuse preloaded summaries and callgraph
 /// context.
 #[cfg(feature = "dynamic")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_findings_for_scan(
     diags: &mut [Diag],
     project_name: &str,
@@ -2547,6 +2557,15 @@ pub(crate) fn scan_filesystem_with_observer(
     if let Some(p) = progress {
         p.set_stage(ScanStage::PostProcessing);
     }
+    // Surface exposure: tag each finding with the worst-case route that
+    // reaches it before ranking, so `rank_diags` can weigh external
+    // reachability.
+    crate::surface::exposure::annotate_exposure(
+        &mut diags,
+        &surface_map,
+        chain_reach_out.and_then(|s| s.get()),
+        Some(root),
+    );
     post_process_diags(&mut diags, cfg);
     if let Some(p) = progress {
         p.record_post_process_ms(pp_start.elapsed().as_millis() as u64);
@@ -3398,6 +3417,15 @@ pub fn scan_with_index_parallel_observer(
                 None,
             );
         }
+        // Surface exposure: tag each finding with the worst-case route
+        // that reaches it before ranking, so `rank_diags` can weigh
+        // external reachability.
+        crate::surface::exposure::annotate_exposure(
+            &mut diags,
+            &surface_map,
+            chain_reach_out.and_then(|s| s.get()),
+            Some(scan_root),
+        );
     }
 
     // NOTE: Taint-mode output is *not* filtered here.  `run_rules_on_bytes`
@@ -3603,6 +3631,7 @@ fn rollup_findings(
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -3837,6 +3866,7 @@ mod dedup_taint_flow_tests {
             }),
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4007,6 +4037,7 @@ mod scc_tagging_tests {
             evidence: Some(Evidence::default()),
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4301,6 +4332,7 @@ fn severity_filter_applied_at_output_stage() {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4325,6 +4357,7 @@ fn severity_filter_applied_at_output_stage() {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4376,6 +4409,7 @@ mod prioritize_tests {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4809,6 +4843,7 @@ mod prioritize_tests {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
@@ -4901,6 +4936,7 @@ mod stable_hash_tests {
             }),
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),

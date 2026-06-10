@@ -32,7 +32,7 @@ use crate::errors::{NyxError, NyxResult};
 use crate::summary::GlobalSummaries;
 use crate::surface::{
     DataStoreKind, EdgeKind, EntryPoint, ExternalServiceKind, SurfaceMap, SurfaceNode,
-    build::{SurfaceBuildInputs, build_surface_map},
+    build::{SurfaceBuildInputs, SurfaceCoverage, build_surface_map_with_coverage},
 };
 use crate::utils::Config;
 use crate::utils::project::get_project_info;
@@ -60,11 +60,18 @@ pub fn handle(
     config: &Config,
 ) -> NyxResult<()> {
     let scan_root = Path::new(path).canonicalize()?;
-    let map = if build_inline {
-        build_full_from_filesystem(&scan_root, config)?
+    let (map, coverage) = if build_inline {
+        let (m, c) = build_full_from_filesystem(&scan_root, config)?;
+        (m, Some(c))
     } else {
         load_or_build(&scan_root, database_dir, config)?
     };
+    // Coverage goes to stderr so stdout stays clean for json / dot / svg
+    // consumers.  Only available when the map was built this run (a
+    // persisted map carries no coverage).
+    if let Some(cov) = &coverage {
+        eprint!("{}", render_coverage(cov));
+    }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     match format {
@@ -97,7 +104,7 @@ pub fn load_or_build(
     scan_root: &Path,
     database_dir: &Path,
     config: &Config,
-) -> NyxResult<SurfaceMap> {
+) -> NyxResult<(SurfaceMap, Option<SurfaceCoverage>)> {
     if let Ok((project, db_path)) = get_project_info(scan_root, database_dir)
         && db_path.exists()
         && let Ok(pool) = Indexer::init(&db_path)
@@ -105,12 +112,25 @@ pub fn load_or_build(
         && let Ok(Some(map)) = idx.load_surface_map()
         && !map.nodes.is_empty()
     {
-        return Ok(map);
+        // Persisted map: no coverage to report.  Say where the data came
+        // from on stderr — a reviewer comparing the tree against freshly
+        // edited source needs to know it reflects the last indexed scan,
+        // not the working tree.
+        eprintln!(
+            "Surface map: {} nodes, {} edges from the last indexed scan (pass --build to rebuild from source)",
+            map.node_count(),
+            map.edge_count()
+        );
+        return Ok((map, None));
     }
-    build_from_filesystem(scan_root, config)
+    let (map, cov) = build_from_filesystem(scan_root, config)?;
+    Ok((map, Some(cov)))
 }
 
-fn build_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<SurfaceMap> {
+fn build_from_filesystem(
+    scan_root: &Path,
+    config: &Config,
+) -> NyxResult<(SurfaceMap, SurfaceCoverage)> {
     let files = collect_files(scan_root, config)?;
     let summaries = GlobalSummaries::new();
     let call_graph = callgraph::build_call_graph(&summaries, &[]);
@@ -121,7 +141,7 @@ fn build_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<Surface
         call_graph: &call_graph,
         config,
     };
-    Ok(build_surface_map(&inputs))
+    Ok(build_surface_map_with_coverage(&inputs))
 }
 
 /// Build a full SurfaceMap from source by running pass-1 summary
@@ -129,7 +149,10 @@ fn build_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<Surface
 /// resulting [`GlobalSummaries`] + [`CallGraph`] to
 /// [`build_surface_map`].  Same cost as `nyx index build` pass 1 but
 /// holds nothing in SQLite.
-fn build_full_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<SurfaceMap> {
+fn build_full_from_filesystem(
+    scan_root: &Path,
+    config: &Config,
+) -> NyxResult<(SurfaceMap, SurfaceCoverage)> {
     let files = collect_files(scan_root, config)?;
     let mut summaries = build_summaries_inline(&files, scan_root, config);
     summaries.install_hierarchy();
@@ -141,7 +164,26 @@ fn build_full_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<Su
         call_graph: &call_graph,
         config,
     };
-    Ok(build_surface_map(&inputs))
+    Ok(build_surface_map_with_coverage(&inputs))
+}
+
+/// One-line coverage summary printed to stderr after a fresh build, so an
+/// operator can tell a genuinely small attack surface apart from "our
+/// probes did not understand this project".  Parse failures and
+/// unsupported-language skips were previously swallowed silently.
+fn render_coverage(cov: &SurfaceCoverage) -> String {
+    let mut s = format!(
+        "Coverage: {} files, {} in a supported language ({} parsed, {} with routes)",
+        cov.files_total, cov.files_supported, cov.files_parsed, cov.files_with_entry_points,
+    );
+    if cov.files_parse_failed > 0 {
+        s.push_str(&format!(", {} unparsed", cov.files_parse_failed));
+    }
+    if cov.files_unreadable > 0 {
+        s.push_str(&format!(", {} unreadable", cov.files_unreadable));
+    }
+    s.push('\n');
+    s
 }
 
 /// Run pass-1 summary extraction across `files` in parallel and merge
@@ -242,6 +284,36 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
         return out;
     }
 
+    // Risk banner: the highest-risk entry-points first, so a reviewer
+    // sees "what should I look at" before the per-file inventory.
+    let risks = crate::surface::risk::assess_entry_risks(map);
+    let risk_by_idx: std::collections::HashMap<usize, &crate::surface::risk::EntryRisk> =
+        risks.iter().map(|r| (r.entry_idx, r)).collect();
+    let top: Vec<&crate::surface::risk::EntryRisk> = risks
+        .iter()
+        .filter(|r| r.tier >= crate::surface::risk::RiskTier::Medium)
+        .take(10)
+        .collect();
+    if !top.is_empty() {
+        out.push_str("Top risk entry-points\n");
+        for r in &top {
+            let Some(SurfaceNode::EntryPoint(ep)) = map.nodes.get(r.entry_idx) else {
+                continue;
+            };
+            out.push_str(&format!(
+                "  [{}] {} {} ({:?}) — {} [{}:{}]\n",
+                r.tier.tag(),
+                method_str(ep.method),
+                ep.route,
+                ep.framework,
+                r.factors.join(", "),
+                ep.location.file,
+                ep.location.line
+            ));
+        }
+        out.push('\n');
+    }
+
     let mut by_file: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (idx, node) in map.nodes.iter().enumerate() {
         by_file
@@ -252,7 +324,7 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
 
     let mut reached: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for edge in &map.edges {
-        if matches!(edge.kind, EdgeKind::Reaches) {
+        if edge.kind.is_reach_like() {
             reached.insert(edge.to);
         }
     }
@@ -269,7 +341,7 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
                 let SurfaceNode::EntryPoint(ep) = &map.nodes[ei] else {
                     continue;
                 };
-                render_entry_point(&mut out, ep, ei as u32, map);
+                render_entry_point(&mut out, ep, ei as u32, map, risk_by_idx.get(&ei).copied());
             }
         }
         for &i in indices {
@@ -323,24 +395,46 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
     out
 }
 
-fn render_entry_point(out: &mut String, ep: &EntryPoint, ep_idx: u32, map: &SurfaceMap) {
+fn render_entry_point(
+    out: &mut String,
+    ep: &EntryPoint,
+    ep_idx: u32,
+    map: &SurfaceMap,
+    risk: Option<&crate::surface::risk::EntryRisk>,
+) {
     let auth = if ep.auth_required { " [auth]" } else { "" };
+    // Only Medium and above gets a tag — every line reading `[low]`
+    // would be noise, absence of a tag *is* the low signal.
+    let risk_tag = risk
+        .filter(|r| r.tier >= crate::surface::risk::RiskTier::Medium)
+        .map(|r| format!(" [risk: {}]", r.tier.tag()))
+        .unwrap_or_default();
     out.push_str(&format!(
-        "  {} {} ({:?}){}\n",
+        "  {} {} ({:?}){}{}\n",
         method_str(ep.method),
         ep.route,
         ep.framework,
-        auth
+        auth,
+        risk_tag
     ));
     out.push_str(&format!(
         "    handler: {} at {}:{}\n",
         ep.handler_name, ep.handler_location.file, ep.handler_location.line
     ));
-    let mut reached: Vec<&SurfaceNode> = map
+    // Dedupe destinations: a read-write data store carries both a
+    // ReadsFrom and a WritesTo edge to the same node — one line each
+    // would print the store twice.
+    let mut to_indices: Vec<u32> = map
         .edges
         .iter()
-        .filter(|e| e.from == ep_idx && matches!(e.kind, EdgeKind::Reaches))
-        .filter_map(|e| map.nodes.get(e.to as usize))
+        .filter(|e| e.from == ep_idx && e.kind.is_reach_like())
+        .map(|e| e.to)
+        .collect();
+    to_indices.sort_unstable();
+    to_indices.dedup();
+    let mut reached: Vec<&SurfaceNode> = to_indices
+        .iter()
+        .filter_map(|&i| map.nodes.get(i as usize))
         .collect();
     reached.sort_by(|a, b| a.location().cmp(b.location()));
     if reached.is_empty() {
@@ -364,9 +458,16 @@ fn render_node_line(out: &mut String, node: &SurfaceNode, prefix: &str) {
             ));
         }
         SurfaceNode::DataStore(ds) => {
+            let access = match ds.access {
+                crate::surface::AccessMode::Read => ", read",
+                crate::surface::AccessMode::Write => ", write",
+                crate::surface::AccessMode::ReadWrite => ", read-write",
+                crate::surface::AccessMode::Unknown => "",
+            };
             out.push_str(&format!(
-                "{prefix}data-store ({}): {} [{}:{}]\n",
+                "{prefix}data-store ({}{}): {} [{}:{}]\n",
                 ds_kind_str(ds.kind),
+                access,
                 ds.label,
                 ds.location.file,
                 ds.location.line
@@ -382,9 +483,14 @@ fn render_node_line(out: &mut String, node: &SurfaceNode, prefix: &str) {
             ));
         }
         SurfaceNode::DangerousLocal(dl) => {
+            let caps = if dl.label.is_empty() {
+                crate::surface::cap_label_string(dl.cap_bits)
+            } else {
+                dl.label.clone()
+            };
             out.push_str(&format!(
-                "{prefix}dangerous: {} (cap=0x{:x}) [{}:{}]\n",
-                dl.function_name, dl.cap_bits, dl.location.file, dl.location.line
+                "{prefix}dangerous ({}): {} [{}:{}]\n",
+                caps, dl.function_name, dl.location.file, dl.location.line
             ));
         }
     }
@@ -474,15 +580,22 @@ pub fn render_dot(map: &SurfaceMap) -> String {
                 "component",
                 "#8b3aa5",
             ),
-            SurfaceNode::DangerousLocal(dl) => (
-                format!(
-                    "Dangerous\\n{}\\ncap=0x{:x}",
-                    escape_dot(&dl.function_name),
-                    dl.cap_bits
-                ),
-                "octagon",
-                "#c44141",
-            ),
+            SurfaceNode::DangerousLocal(dl) => {
+                let caps = if dl.label.is_empty() {
+                    crate::surface::cap_label_string(dl.cap_bits)
+                } else {
+                    dl.label.clone()
+                };
+                (
+                    format!(
+                        "Dangerous ({})\\n{}",
+                        escape_dot(&caps),
+                        escape_dot(&dl.function_name),
+                    ),
+                    "octagon",
+                    "#c44141",
+                )
+            }
         };
         out.push_str(&format!(
             "  n{i} [label=\"{label}\", shape={shape}, color=\"{color}\", fontcolor=\"{color}\"];\n",
@@ -603,6 +716,7 @@ mod tests {
                 location: SourceLocation::new("app.py", 12, 1),
                 function_name: "eval".into(),
                 cap_bits: crate::labels::Cap::CODE_EXEC.bits(),
+                label: "code-exec".into(),
             },
         ));
         // Build edge after canonicalize so indices are stable.
@@ -625,7 +739,7 @@ mod tests {
         m.canonicalize();
         let text = render_text(&m, None);
         assert!(text.contains("reaches:"));
-        assert!(text.contains("dangerous: eval"));
+        assert!(text.contains("dangerous (code-exec): eval"));
     }
 
     #[test]
@@ -691,7 +805,7 @@ mod tests {
 
         let cfg = Config::default();
         let canon = project_dir.canonicalize().unwrap();
-        let map = build_full_from_filesystem(&canon, &cfg).expect("inline build succeeds");
+        let (map, _cov) = build_full_from_filesystem(&canon, &cfg).expect("inline build succeeds");
 
         let has_entry = map
             .nodes
@@ -722,7 +836,7 @@ mod tests {
 
         let cfg = Config::default();
         let canon = project_dir.canonicalize().unwrap();
-        let map = build_from_filesystem(&canon, &cfg).expect("fallback build succeeds");
+        let (map, _cov) = build_from_filesystem(&canon, &cfg).expect("fallback build succeeds");
 
         // Entry point should still appear (framework probes run in the
         // fallback path too).

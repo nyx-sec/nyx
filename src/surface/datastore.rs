@@ -12,8 +12,9 @@
 //! are forgiving — the surface map is informational, not a finding
 //! that fires on its own.
 
-use super::{DataStore, DataStoreKind, SourceLocation, SurfaceNode};
-use crate::summary::{CalleeSite, FuncSummary, GlobalSummaries};
+use super::{AccessMode, DataStore, DataStoreKind, SourceLocation, SurfaceNode, namespace_file};
+use crate::labels::Cap;
+use crate::summary::GlobalSummaries;
 
 /// One detection rule: leaf-name pattern → store kind + label.  Stored
 /// as a flat list so adding a new ORM / driver is a one-line edit.
@@ -355,9 +356,15 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
     let mut seen: std::collections::HashSet<(String, u32, String)> =
         std::collections::HashSet::new();
     for (key, summary) in summaries.iter() {
+        // Project-relative POSIX file, keyed off the FuncKey namespace so a
+        // data-store node and the entry-point that reaches it agree on file
+        // identity (FuncSummary.file_path is an absolute path).
+        let file = namespace_file(&key.namespace).to_string();
+        let owner = key.qualified_name();
         let typed = summaries
             .get_ssa(key)
             .map(|s| s.typed_call_receivers.as_slice());
+        let mut matched_for_fn = false;
         for callee in &summary.callees {
             let rule = match_rule(&callee.name).or_else(|| {
                 typed
@@ -365,7 +372,8 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
                     .and_then(|c| match_rule(&qualify(c, &callee.name)))
             });
             let Some(rule) = rule else { continue };
-            let location = call_site_location(summary, callee);
+            matched_for_fn = true;
+            let location = call_site_location(&file, callee.span);
             let dedup = (location.file.clone(), location.line, rule.label.to_string());
             if !seen.insert(dedup) {
                 continue;
@@ -374,10 +382,115 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
                 location,
                 kind: rule.kind,
                 label: rule.label.to_string(),
+                owner: owner.clone(),
+                access: classify_access(leaf_segment(&callee.name)),
             }));
+        }
+
+        // Cap-driven fallback: a function whose own `sink_caps` include
+        // SQL_QUERY / FILE_IO is a data-store access site even when no
+        // direct callee matched the driver table (custom DAO wrapper,
+        // cross-file-resolved execute).  Mirrors external.rs's SSRF
+        // fallback.  Skipped when a named driver already fired so the
+        // precise label wins.
+        if !matched_for_fn {
+            let caps = summary.sink_caps();
+            let fallback = if caps.contains(Cap::SQL_QUERY) {
+                Some((DataStoreKind::Sql, "SQL query"))
+            } else if caps.contains(Cap::FILE_IO) {
+                Some((DataStoreKind::Filesystem, "File access"))
+            } else {
+                None
+            };
+            if let Some((kind, label)) = fallback {
+                let dedup = (file.clone(), 0, label.to_string());
+                if seen.insert(dedup) {
+                    out.push(SurfaceNode::DataStore(DataStore {
+                        location: call_site_location(&file, None),
+                        kind,
+                        label: label.to_string(),
+                        owner: owner.clone(),
+                        // Cap bits carry no operation direction; a raw
+                        // SQL_QUERY / FILE_IO sink can be either.
+                        access: AccessMode::ReadWrite,
+                    }));
+                }
+            }
         }
     }
     out
+}
+
+/// Classify the operation direction of a data-store access from the
+/// callee's leaf name.  Whole-prefix match on a lowercase verb table —
+/// `findOne` / `find_by_id` / `findAll` all classify as reads via the
+/// `find` prefix.  Connect-/client-construction sites and unrecognised
+/// verbs stay [`AccessMode::Unknown`] so reachability keeps emitting
+/// the conservative `ReadsFrom` edge for them.
+fn classify_access(leaf: &str) -> AccessMode {
+    const READ: &[&str] = &[
+        "find",
+        "get",
+        "query",
+        "select",
+        "read",
+        "fetch",
+        "scan",
+        "count",
+        "exists",
+        "aggregate",
+        "lrange",
+        "smembers",
+        "hget",
+        "mget",
+        "keys",
+        "first",
+        "pluck",
+        "all",
+    ];
+    const WRITE: &[&str] = &[
+        "insert", "update", "delete", "save", "create", "set", "put", "write", "remove", "drop",
+        "truncate", "upsert", "persist", "destroy", "del", "hset", "lpush", "rpush", "sadd",
+        "zadd", "append", "rename", "unlink", "mkdir", "rmdir", "incr", "decr", "expire",
+    ];
+    const READ_WRITE: &[&str] = &[
+        "execute",
+        "executemany",
+        "executescript",
+        "exec",
+        "run",
+        "batch",
+        "transaction",
+        "pipeline",
+    ];
+    let l = leaf.trim();
+    // Verb-prefix match with a word boundary: the verb must be the whole
+    // leaf, or be followed by `_` (snake_case), an uppercase letter
+    // (camelCase), or a digit.  `findOne` / `find_by_id` → read;
+    // `settings` does NOT match `set`.
+    let has_prefix = |verbs: &[&str]| {
+        verbs.iter().any(|v| {
+            l.get(..v.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(v))
+                && l.get(v.len()..)
+                    .is_some_and(|rest| match rest.chars().next() {
+                        None => true,
+                        Some(c) => c == '_' || c.is_ascii_uppercase() || c.is_ascii_digit(),
+                    })
+        })
+    };
+    // Order matters: WRITE before READ so `setex`-style verbs with a
+    // read-looking suffix do not misclassify; READ_WRITE checked first
+    // because `execute` would otherwise never match.
+    if has_prefix(READ_WRITE) {
+        AccessMode::ReadWrite
+    } else if has_prefix(WRITE) {
+        AccessMode::Write
+    } else if has_prefix(READ) {
+        AccessMode::Read
+    } else {
+        AccessMode::Unknown
+    }
 }
 
 /// Last segment of a callee text after the final `.` or `::`.
@@ -422,15 +535,14 @@ fn match_rule(callee: &str) -> Option<&'static DriverRule> {
     })
 }
 
-/// Source location of a call site.  Reads the 1-based `(line, col)`
-/// recorded on the [`CalleeSite`] at CFG-build time (populated for every
-/// summary produced after the span field landed); for legacy summaries
-/// loaded from SQLite with no span, falls back to the function's host
-/// file with line 0.
-fn call_site_location(summary: &FuncSummary, callee: &CalleeSite) -> SourceLocation {
-    let (line, col) = callee.span.unwrap_or((0, 0));
+/// Source location of a call site in the project-relative `file`.  Reads
+/// the 1-based `(line, col)` recorded on the [`CalleeSite`] at CFG-build
+/// time when `span` is `Some`; for legacy summaries loaded from SQLite
+/// with no span (and the cap-driven fallback path) falls back to line 0.
+fn call_site_location(file: &str, span: Option<(u32, u32)>) -> SourceLocation {
+    let (line, col) = span.unwrap_or((0, 0));
     SourceLocation {
-        file: summary.file_path.clone(),
+        file: file.to_string(),
         line,
         col,
     }
@@ -439,6 +551,7 @@ fn call_site_location(summary: &FuncSummary, callee: &CalleeSite) -> SourceLocat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::{CalleeSite, FuncSummary};
     use crate::symbol::{FuncKey, Lang};
 
     fn summary_with_callees(name: &str, file: &str, callees: &[&str]) -> (FuncKey, FuncSummary) {
@@ -455,6 +568,49 @@ mod tests {
             ..Default::default()
         };
         (key, summary)
+    }
+
+    #[test]
+    fn classify_access_verb_boundaries() {
+        assert_eq!(classify_access("findOne"), AccessMode::Read);
+        assert_eq!(classify_access("find_by_id"), AccessMode::Read);
+        assert_eq!(classify_access("get"), AccessMode::Read);
+        assert_eq!(classify_access("insertMany"), AccessMode::Write);
+        assert_eq!(classify_access("save"), AccessMode::Write);
+        assert_eq!(classify_access("deleteOne"), AccessMode::Write);
+        assert_eq!(classify_access("execute"), AccessMode::ReadWrite);
+        assert_eq!(classify_access("executemany"), AccessMode::ReadWrite);
+        assert_eq!(classify_access("Exec"), AccessMode::ReadWrite);
+        // Boundary safety: a lowercase continuation is NOT a verb match.
+        assert_eq!(classify_access("settings"), AccessMode::Unknown);
+        assert_eq!(classify_access("allocate"), AccessMode::Unknown);
+        assert_eq!(classify_access("connect"), AccessMode::Unknown);
+    }
+
+    #[test]
+    fn detected_store_carries_access_mode() {
+        // `connect`-style driver match → Unknown access; the node still
+        // surfaces and reachability treats it as a conservative read.
+        let mut gs = GlobalSummaries::new();
+        let (key, summary) = summary_with_callees("init", "db.py", &["psycopg2.connect"]);
+        gs.insert(key, summary);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.access, AccessMode::Unknown);
+
+        // `pool.query` driver match → leaf `query` classifies as Read.
+        let mut gs = GlobalSummaries::new();
+        let (key, summary) = summary_with_callees("run", "db.js", &["pool.query"]);
+        gs.insert(key, summary);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.access, AccessMode::Read);
     }
 
     #[test]
@@ -482,6 +638,56 @@ mod tests {
         };
         assert_eq!(ds.location.line, 42);
         assert_eq!(ds.location.col, 13);
+    }
+
+    #[test]
+    fn cap_fallback_emits_sql_store_with_owner() {
+        // A custom DAO wrapper: no callee matches DRIVER_RULES, but the
+        // function's own sink_caps carry SQL_QUERY.  The cap-driven fallback
+        // surfaces a generic Sql node carrying the owning function name.
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "dao.py", "run_query", None);
+        let summary = FuncSummary {
+            name: "run_query".into(),
+            file_path: "dao.py".into(),
+            lang: "python".into(),
+            sink_caps: Cap::SQL_QUERY.bits(),
+            callees: vec![CalleeSite::bare("self._exec")],
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1, "got {nodes:?}");
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.kind, DataStoreKind::Sql);
+        assert_eq!(ds.label, "SQL query");
+        assert_eq!(ds.owner, "run_query");
+        assert_eq!(ds.location.file, "dao.py");
+    }
+
+    #[test]
+    fn named_driver_suppresses_cap_fallback() {
+        // When a named driver call already fired, the precise label wins and
+        // the generic cap fallback does not double-emit.
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "dao.py", "init", None);
+        let summary = FuncSummary {
+            name: "init".into(),
+            file_path: "dao.py".into(),
+            lang: "python".into(),
+            sink_caps: Cap::SQL_QUERY.bits(),
+            callees: vec![CalleeSite::bare("psycopg2.connect")],
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.label, "PostgreSQL (psycopg2)");
     }
 
     #[test]

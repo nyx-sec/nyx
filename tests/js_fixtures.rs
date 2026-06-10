@@ -445,6 +445,7 @@ mod js_fixture_tests {
             evidence: Some(evidence),
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),

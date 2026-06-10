@@ -463,6 +463,7 @@ mod tests {
             location: loc(file, line),
             function_name: fname.into(),
             cap_bits: caps.bits(),
+            label: String::new(),
         })
     }
 
@@ -671,6 +672,8 @@ mod tests {
                 location: loc("app.py", 5),
                 kind: DataStoreKind::KeyValue,
                 label: "redis://127.0.0.1:6379".into(),
+                owner: String::new(),
+                access: Default::default(),
             }));
         let boosted = find_chains(
             &[edge()],

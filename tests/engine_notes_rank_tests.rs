@@ -64,6 +64,7 @@ fn high_confidence_taint_diag(path: &str, line: u32) -> Diag {
         }),
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),

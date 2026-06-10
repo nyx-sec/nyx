@@ -50,6 +50,7 @@ fn diag_with_caps(path: &str, line: usize, caps: Cap) -> Diag {
         }),
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),

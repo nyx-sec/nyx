@@ -192,35 +192,41 @@ pub fn pick_chain_cap(bits: u32) -> Option<Cap> {
 }
 
 fn locate_reach(loc: &SourceLocation, surface: &SurfaceMap, reach: Option<&FileReachMap>) -> Reach {
-    // Pass 1: file-local match (legacy behaviour, always applies).
-    for node in &surface.nodes {
-        if let SurfaceNode::EntryPoint(ep) = node
-            && ep.handler_location.file == loc.file
-        {
-            return Reach::Reachable {
-                location: ep.location.clone(),
-                method: ep.method,
-                route: ep.route.clone(),
-                auth_required: ep.auth_required,
-            };
+    // Within each pass, prefer an *unauthenticated* entry-point over an
+    // auth-gated one: the chain composer scores worst-case exposure, and
+    // taking the first match used to under-report whenever an auth-gated
+    // route happened to sort first in the same file.
+    let pick = |matches_entry: &dyn Fn(&crate::surface::EntryPoint) -> bool| -> Option<Reach> {
+        let mut best: Option<&crate::surface::EntryPoint> = None;
+        for node in &surface.nodes {
+            if let SurfaceNode::EntryPoint(ep) = node
+                && matches_entry(ep)
+            {
+                if !ep.auth_required {
+                    best = Some(ep);
+                    break;
+                }
+                best.get_or_insert(ep);
+            }
         }
+        best.map(|ep| Reach::Reachable {
+            location: ep.location.clone(),
+            method: ep.method,
+            route: ep.route.clone(),
+            auth_required: ep.auth_required,
+        })
+    };
+    // Pass 1: file-local match (legacy behaviour, always applies).
+    if let Some(found) = pick(&|ep| ep.handler_location.file == loc.file) {
+        return found;
     }
     // Pass 2: transitive caller match via the call graph.  Only fires
     // when `reach` is supplied — keeps the legacy file-local behaviour
     // for callers that have not yet wired the call-graph reach map.
-    if let Some(reach) = reach {
-        for node in &surface.nodes {
-            if let SurfaceNode::EntryPoint(ep) = node
-                && reach.reaches(&ep.handler_location.file, &loc.file)
-            {
-                return Reach::Reachable {
-                    location: ep.location.clone(),
-                    method: ep.method,
-                    route: ep.route.clone(),
-                    auth_required: ep.auth_required,
-                };
-            }
-        }
+    if let Some(reach) = reach
+        && let Some(found) = pick(&|ep| reach.reaches(&ep.handler_location.file, &loc.file))
+    {
+        return found;
     }
     Reach::Unreachable
 }

@@ -7,9 +7,9 @@
 //! consulted so a probe with no SSRF cap (DNS resolver, SMTP sender)
 //! still surfaces as an external service.
 
-use super::{ExternalService, ExternalServiceKind, SourceLocation, SurfaceNode};
+use super::{ExternalService, ExternalServiceKind, SourceLocation, SurfaceNode, namespace_file};
 use crate::labels::Cap;
-use crate::summary::{CalleeSite, FuncSummary, GlobalSummaries};
+use crate::summary::GlobalSummaries;
 
 struct ClientRule {
     leaf: &'static str,
@@ -337,9 +337,15 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
     let mut out: Vec<SurfaceNode> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for (key, summary) in summaries.iter() {
+        // Project-relative POSIX file, keyed off the FuncKey namespace so an
+        // external-service node and the entry-point that reaches it agree on
+        // file identity (FuncSummary.file_path is an absolute path).
+        let file = namespace_file(&key.namespace).to_string();
+        let owner = key.qualified_name();
         let typed = summaries
             .get_ssa(key)
             .map(|s| s.typed_call_receivers.as_slice());
+        let mut matched_for_fn = false;
         for callee in &summary.callees {
             let rule = match_rule(&callee.name).or_else(|| {
                 typed
@@ -347,7 +353,8 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
                     .and_then(|c| match_rule(&qualify(c, &callee.name)))
             });
             let Some(rule) = rule else { continue };
-            let location = call_site_location(summary, Some(callee));
+            matched_for_fn = true;
+            let location = call_site_location(&file, callee.span);
             if !seen.insert((location.file.clone(), rule.label.to_string())) {
                 continue;
             }
@@ -355,22 +362,35 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
                 location,
                 kind: rule.kind,
                 label: rule.label.to_string(),
+                owner: owner.clone(),
             }));
         }
-    }
-    // Also surface any function whose own sink_caps include SSRF — the
-    // function itself is an outbound network call site even if the
-    // direct callee did not match the rule list.  Use the function's
-    // file as the location and synthesise a generic label.
-    for (_key, summary) in summaries.iter() {
-        if summary.sink_caps().contains(Cap::SSRF) {
-            let loc = call_site_location(summary, None);
-            let dedup = (loc.file.clone(), "Outbound HTTP".to_string());
+
+        // Cap-driven fallback: a function whose own sink_caps include SSRF
+        // (outbound request) or DATA_EXFIL (data leaving the system) is an
+        // egress site even when the direct callee did not match the rule
+        // list.  Skipped when a named client already fired for this function
+        // so the precise label wins and the generic node does not
+        // double-count the same egress.
+        if matched_for_fn {
+            continue;
+        }
+        let caps = summary.sink_caps();
+        let fallback = if caps.contains(Cap::SSRF) {
+            Some(("Outbound HTTP", ExternalServiceKind::HttpApi))
+        } else if caps.contains(Cap::DATA_EXFIL) {
+            Some(("Data egress", ExternalServiceKind::Unknown))
+        } else {
+            None
+        };
+        if let Some((label, kind)) = fallback {
+            let dedup = (file.clone(), label.to_string());
             if seen.insert(dedup) {
                 out.push(SurfaceNode::ExternalService(ExternalService {
-                    location: loc,
-                    kind: ExternalServiceKind::HttpApi,
-                    label: "Outbound HTTP".to_string(),
+                    location: call_site_location(&file, None),
+                    kind,
+                    label: label.to_string(),
+                    owner: owner.clone(),
                 }));
             }
         }
@@ -410,14 +430,15 @@ fn match_rule(callee: &str) -> Option<&'static ClientRule> {
     })
 }
 
-/// Source location of an external-service call site.  Reads the 1-based
-/// `(line, col)` recorded on the [`CalleeSite`] at CFG-build time when
-/// available; otherwise (sink-cap–only fallback path, or legacy summaries
-/// loaded from SQLite) returns the function's host file with line 0.
-fn call_site_location(summary: &FuncSummary, callee: Option<&CalleeSite>) -> SourceLocation {
-    let (line, col) = callee.and_then(|c| c.span).unwrap_or((0, 0));
+/// Source location of an external-service call site in the
+/// project-relative `file`.  Reads the 1-based `(line, col)` recorded on
+/// the [`crate::summary::CalleeSite`] at CFG-build time when `span` is
+/// `Some`; otherwise (sink-cap–only fallback path, or legacy summaries
+/// loaded from SQLite) returns the file with line 0.
+fn call_site_location(file: &str, span: Option<(u32, u32)>) -> SourceLocation {
+    let (line, col) = span.unwrap_or((0, 0));
     SourceLocation {
-        file: summary.file_path.clone(),
+        file: file.to_string(),
         line,
         col,
     }
@@ -426,7 +447,7 @@ fn call_site_location(summary: &FuncSummary, callee: Option<&CalleeSite>) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::summary::CalleeSite;
+    use crate::summary::{CalleeSite, FuncSummary};
     use crate::symbol::{FuncKey, Lang};
 
     #[test]
@@ -448,6 +469,48 @@ mod tests {
             panic!()
         };
         assert_eq!(es.label, "requests (Python)");
+    }
+
+    #[test]
+    fn ssrf_cap_fallback_carries_owner() {
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "proxy.py", "forward", None);
+        let summary = FuncSummary {
+            name: "forward".into(),
+            file_path: "/abs/proxy.py".into(),
+            lang: "python".into(),
+            sink_caps: Cap::SSRF.bits(),
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_external_services(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::ExternalService(es) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(es.label, "Outbound HTTP");
+        assert_eq!(es.owner, "forward");
+        assert_eq!(es.location.file, "proxy.py");
+    }
+
+    #[test]
+    fn data_exfil_cap_emits_egress_node() {
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "leak.py", "dump", None);
+        let summary = FuncSummary {
+            name: "dump".into(),
+            file_path: "leak.py".into(),
+            lang: "python".into(),
+            sink_caps: Cap::DATA_EXFIL.bits(),
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_external_services(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::ExternalService(es) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(es.label, "Data egress");
     }
 
     #[test]

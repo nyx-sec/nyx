@@ -78,6 +78,7 @@ fn make_diag(id: &str, path: &str, line: usize) -> Diag {
         evidence: Some(Evidence::default()),
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),
