@@ -25,6 +25,7 @@ fn base_diag() -> Diag {
         evidence: None,
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),

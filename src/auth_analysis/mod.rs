@@ -1044,6 +1044,7 @@ fn auth_finding_to_diag(finding: &checks::AuthFinding, tree: &Tree, file_path: &
         }),
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),

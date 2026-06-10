@@ -26,10 +26,12 @@ use std::path::Path;
 pub mod build;
 pub mod dangerous;
 pub mod datastore;
+pub mod exposure;
 pub mod external;
 pub mod graph;
 pub mod lang;
 pub mod reachability;
+pub mod risk;
 
 /// Stable source location used as the primary key for every
 /// [`SurfaceNode`].  `file` is a project-relative POSIX path so the
@@ -109,6 +111,53 @@ pub struct DataStore {
     pub location: SourceLocation,
     pub kind: DataStoreKind,
     pub label: String,
+    /// Qualified name of the function that owns this access site
+    /// (`Class::method` or a free function name).  Used by reachability
+    /// to connect an entry-point to this store only when the owning
+    /// function is actually on the call-graph frontier, rather than the
+    /// coarse "any node in the same file" match.  Empty for legacy maps
+    /// loaded from SQLite before the field landed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
+    /// Whether the access site reads, writes, or does both, classified
+    /// from the callee name at detection time (`find`/`get`/`select` →
+    /// read, `insert`/`save`/`delete` → write, `execute`/`exec` →
+    /// read-write).  Drives the [`EdgeKind::ReadsFrom`] /
+    /// [`EdgeKind::WritesTo`] split in reachability.  `Unknown` for
+    /// connect-style sites and legacy maps loaded from SQLite before
+    /// the field landed.
+    #[serde(default, skip_serializing_if = "AccessMode::is_unknown")]
+    pub access: AccessMode,
+}
+
+/// Direction of a data-store access site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessMode {
+    Read,
+    Write,
+    ReadWrite,
+    #[default]
+    Unknown,
+}
+
+impl AccessMode {
+    /// Serde helper: `Unknown` is the default and is omitted from the
+    /// canonical JSON so legacy payloads stay byte-identical.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, AccessMode::Unknown)
+    }
+
+    /// True when the site can write (Write or ReadWrite).
+    pub fn writes(self) -> bool {
+        matches!(self, AccessMode::Write | AccessMode::ReadWrite)
+    }
+
+    /// True when the site can read (Read, ReadWrite, or Unknown — an
+    /// unclassified site is conservatively treated as a read).
+    pub fn reads(self) -> bool {
+        !matches!(self, AccessMode::Write)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -130,6 +179,10 @@ pub struct ExternalService {
     pub location: SourceLocation,
     pub kind: ExternalServiceKind,
     pub label: String,
+    /// Qualified name of the function that owns this egress site.  See
+    /// [`DataStore::owner`] for why reachability needs it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -151,6 +204,13 @@ pub struct DangerousLocal {
     pub location: SourceLocation,
     pub function_name: String,
     pub cap_bits: u32,
+    /// Human-readable sink-class label decoded from `cap_bits`
+    /// (e.g. `"code-exec"`, `"deserialize, ssti"`).  Lets the CLI and
+    /// the chain composer name the danger without re-deriving it from
+    /// the raw bitfield.  Empty for legacy maps loaded from SQLite
+    /// before the field landed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 /// A node in the [`SurfaceMap`].  Every variant carries a
@@ -201,34 +261,107 @@ impl SurfaceNode {
     }
 }
 
-/// Semantic kind of an edge in the [`SurfaceMap`].  Encodes the
-/// seven edge classes the chain composer walks; persistence is via
-/// JSON so adding a variant is a non-breaking schema change as long
-/// as the SQLite-level migration drops the old surface_map rows.
+/// Semantic kind of an edge in the [`SurfaceMap`].
+///
+/// Persistence is via JSON so adding a variant is a non-breaking schema
+/// change as long as the SQLite-level migration drops the old
+/// surface_map rows.
+///
+/// Emission status (kept honest so the next maintainer does not inherit
+/// a false mental model):
+///
+/// * **Emitted today** by [`reachability::populate_reaches_edges`]:
+///   [`EdgeKind::ReadsFrom`] (entry → data store the entry reads),
+///   [`EdgeKind::WritesTo`] (entry → data store the entry writes,
+///   from [`DataStore::access`]), [`EdgeKind::TalksTo`] (entry →
+///   external service), and [`EdgeKind::Reaches`] (entry →
+///   dangerous-local sink). These four are [`EdgeKind::is_reach_like`].
+/// * **Reserved** (no production construction site yet):
+///   [`EdgeKind::Calls`] (would lift call-graph edges, currently
+///   redundant with the [`crate::callgraph::CallGraph`] itself),
+///   [`EdgeKind::Triggers`] (needs job/webhook entry modelling), and
+///   [`EdgeKind::AuthRequiredOn`] (needs a dedicated auth-check node
+///   to originate from — today the auth signal rides on
+///   [`EntryPoint::auth_required`] instead).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// Caller → callee.  Wraps the call-graph edge so consumers do
     /// not have to consult [`crate::callgraph::CallGraph`] directly.
+    /// Reserved — not emitted.
     Calls,
-    /// Function or entry-point reads from a data store / external
-    /// service.
+    /// Entry-point reads from a data store.  Emitted by reachability.
     ReadsFrom,
-    /// Function or entry-point writes to a data store.
+    /// Entry-point writes to a data store.  Emitted by reachability
+    /// when [`DataStore::access`] classifies the site as writing.
     WritesTo,
-    /// Function or entry-point sends a request to an external
-    /// service.
+    /// Entry-point sends a request to an external service.  Emitted by
+    /// reachability.
     TalksTo,
     /// Entry-point reaches a dangerous-local sink through some
-    /// transitive call chain.
+    /// transitive call chain.  Emitted by reachability.
     Reaches,
     /// Entry-point triggers a side-effecting action (job, email,
-    /// webhook) other than a direct call.
+    /// webhook) other than a direct call.  Reserved.
     Triggers,
     /// Entry-point gates downstream access on a successful auth
     /// check.  The `from` is the auth-check node, the `to` is the
-    /// entry-point.
+    /// entry-point.  Reserved — needs an auth-check node.
     AuthRequiredOn,
+}
+
+impl EdgeKind {
+    /// True for the edge classes that connect an entry-point to a
+    /// reachable sink / store / external service.  The CLI tree and any
+    /// "what does this entry reach" query treat all three uniformly.
+    pub fn is_reach_like(self) -> bool {
+        matches!(
+            self,
+            EdgeKind::Reaches | EdgeKind::ReadsFrom | EdgeKind::TalksTo | EdgeKind::WritesTo
+        )
+    }
+}
+
+/// Decode a [`crate::labels::Cap`] bitfield into a stable, human-readable
+/// list of sink-class slugs (e.g. `0x400` → `["code-exec"]`).  Order is
+/// fixed (low bit first) so two equal bitfields render identically.
+/// Used for [`DangerousLocal::label`] and the `nyx surface` CLI so the
+/// raw `0x{:x}` debug dump never reaches a user.
+pub fn cap_labels(bits: u32) -> Vec<&'static str> {
+    use crate::labels::Cap;
+    const TABLE: &[(Cap, &str)] = &[
+        (Cap::CODE_EXEC, "code-exec"),
+        (Cap::DESERIALIZE, "deserialize"),
+        (Cap::SSTI, "ssti"),
+        (Cap::FMT_STRING, "format-string"),
+        (Cap::SQL_QUERY, "sql"),
+        (Cap::SSRF, "ssrf"),
+        (Cap::FILE_IO, "file-io"),
+        (Cap::LDAP_INJECTION, "ldap-injection"),
+        (Cap::XPATH_INJECTION, "xpath-injection"),
+        (Cap::HEADER_INJECTION, "header-injection"),
+        (Cap::OPEN_REDIRECT, "open-redirect"),
+        (Cap::XXE, "xxe"),
+        (Cap::PROTOTYPE_POLLUTION, "prototype-pollution"),
+        (Cap::CRYPTO, "weak-crypto"),
+        (Cap::DATA_EXFIL, "data-exfil"),
+        (Cap::UNAUTHORIZED_ID, "unauthorized-id"),
+    ];
+    let caps = Cap::from_bits_truncate(bits);
+    let mut out: Vec<&'static str> = TABLE
+        .iter()
+        .filter(|(c, _)| caps.contains(*c))
+        .map(|(_, s)| *s)
+        .collect();
+    if out.is_empty() {
+        out.push("sink");
+    }
+    out
+}
+
+/// Comma-joined form of [`cap_labels`].
+pub fn cap_label_string(bits: u32) -> String {
+    cap_labels(bits).join(", ")
 }
 
 /// A single edge in the [`SurfaceMap`].  `from` and `to` are indices
@@ -335,6 +468,21 @@ impl SurfaceMap {
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(bytes)
     }
+}
+
+/// Strip the optional `@pkg/name::` package prefix from a [`crate::symbol::FuncKey`]
+/// namespace, returning the project-relative POSIX file path part.
+///
+/// `namespace_with_package` produces `"@scope/name::src/file.ts"` for
+/// JS/TS files inside resolved packages; the file part is the
+/// project-relative path that matches an [`EntryPoint`]'s
+/// `handler_location.file`.  This is the single source of truth the
+/// detectors and the reachability pass both key on, so a data-store /
+/// external / dangerous-local node and the entry-point that reaches it
+/// agree on file identity even though `FuncSummary.file_path` is stored
+/// as an absolute path.
+pub fn namespace_file(ns: &str) -> &str {
+    ns.rsplit_once("::").map(|(_, rest)| rest).unwrap_or(ns)
 }
 
 /// Convert an absolute path to a project-relative POSIX path string.

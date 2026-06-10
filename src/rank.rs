@@ -55,6 +55,32 @@ pub fn compute_attack_rank(diag: &Diag) -> AttackRank {
         components.push(("evidence".into(), format!("{evidence_bonus}")));
     }
 
+    // ── 3b. Surface exposure ────────────────────────────────────────────
+    //
+    // A finding reachable from a surface entry-point is more exploitable
+    // than an internal one; reachable *without auth* more so.  Transitive
+    // reach (through the call graph rather than in the handler's own
+    // file) is slightly discounted because the file-level reach map can
+    // over-approximate.  Magnitudes keep the severity tier ordering: the
+    // maximum exposure bonus (+10) plus all other Medium-tier bonuses
+    // stays below the High severity base (see tier tests).
+    if let Some(exp) = &diag.exposure {
+        let mut exposure_bonus = if exp.auth_required { 4.0 } else { 10.0 };
+        if exp.transitive {
+            exposure_bonus -= 2.0;
+        }
+        score += exposure_bonus;
+        let auth_tag = if exp.auth_required {
+            "auth-gated"
+        } else {
+            "unauthenticated"
+        };
+        components.push((
+            "exposure".into(),
+            format!("{exposure_bonus:+} ({auth_tag})"),
+        ));
+    }
+
     // ── 4. State finding sub-ranking ────────────────────────────────────
     let state_bonus = state_finding_bonus(&diag.id);
     score += state_bonus;
@@ -421,6 +447,7 @@ mod tests {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),

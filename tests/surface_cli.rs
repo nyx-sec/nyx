@@ -116,7 +116,7 @@ fn load_or_build_falls_back_to_filesystem_when_no_db() {
     .unwrap();
     let db_dir = tempfile::tempdir().unwrap();
     let cfg = Config::default();
-    let map = load_or_build(tmp.path(), db_dir.path(), &cfg).expect("load_or_build");
+    let (map, _cov) = load_or_build(tmp.path(), db_dir.path(), &cfg).expect("load_or_build");
     assert!(
         map.entry_points().next().is_some(),
         "expected at least one entry-point in fallback path"

@@ -241,6 +241,23 @@ pub fn build_sarif_with_chains(diags: &[Diag], chains: &[ChainFinding], scan_roo
                 props.insert("data_exfil_field".into(), json!(field));
             }
 
+            // Attack-surface exposure: the externally-reachable route
+            // that drives this finding.  Lets a SARIF consumer (CI gate,
+            // dashboard) filter on "reachable from an unauthenticated
+            // route" without re-running the surface build.
+            if let Some(exp) = &d.exposure {
+                props.insert(
+                    "exposure".into(),
+                    json!({
+                        "route": exp.route,
+                        "method": format!("{:?}", exp.method),
+                        "framework": format!("{:?}", exp.framework),
+                        "auth_required": exp.auth_required,
+                        "transitive": exp.transitive,
+                    }),
+                );
+            }
+
             if !d.finding_id.is_empty() {
                 props.insert("finding_id".into(), json!(d.finding_id));
             }
@@ -395,6 +412,7 @@ mod tests {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),

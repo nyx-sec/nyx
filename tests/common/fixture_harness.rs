@@ -968,6 +968,7 @@ fn make_diag(path: &Path, func: &str, cap: Cap, sink_line: u32) -> Diag {
         evidence: Some(evidence),
         rank_score: None,
         rank_reason: None,
+        exposure: None,
         suppressed: false,
         suppression: None,
         triage_state: "open".to_string(),

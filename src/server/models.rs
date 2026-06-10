@@ -78,6 +78,10 @@ pub struct FindingView {
     pub guard_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rank_reason: Option<Vec<(String, String)>>,
+    /// Worst-case attack-surface exposure (route, method, auth) when a
+    /// surface entry-point reaches this finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<crate::surface::exposure::Exposure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sanitizer_status: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -345,6 +349,7 @@ pub fn finding_from_diag(index: usize, d: &Diag) -> FindingView {
             .and_then(|ev| ev.dynamic_verdict.clone()),
         guard_kind: None,
         rank_reason: None,
+        exposure: d.exposure.clone(),
         sanitizer_status: None,
         related_findings: vec![],
     }
@@ -937,6 +942,7 @@ mod tests {
             evidence: None,
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),

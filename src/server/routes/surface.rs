@@ -31,12 +31,24 @@ async fn get_surface(State(state): State<AppState>) -> ApiResult<Json<Value>> {
             .await
             .map_err(|e| ApiError::internal(format!("surface map task failed: {e}")))?;
 
-    let mut map =
+    let (mut map, _coverage) =
         join_result.map_err(|e| ApiError::internal(format!("failed to build surface map: {e}")))?;
+    // Risk is derived from the canonicalised map, so canonicalise (via
+    // `to_json`) first to lock node indices, then assess.
     let bytes = map
         .to_json()
         .map_err(|e| ApiError::internal(format!("encode surface map: {e}")))?;
-    let value: Value = serde_json::from_slice(&bytes)
+    let mut value: Value = serde_json::from_slice(&bytes)
         .map_err(|e| ApiError::internal(format!("re-parse surface map JSON: {e}")))?;
+    // Attach per-entry-point risk assessment alongside the raw map so the
+    // frontend can render a risk-sorted view without re-deriving scores.
+    let risks = crate::surface::risk::assess_entry_risks(&map);
+    if let Value::Object(obj) = &mut value {
+        obj.insert(
+            "entry_risks".into(),
+            serde_json::to_value(&risks)
+                .map_err(|e| ApiError::internal(format!("encode entry risks: {e}")))?,
+        );
+    }
     Ok(Json(value))
 }

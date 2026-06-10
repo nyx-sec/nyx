@@ -45,6 +45,7 @@ fn fixture_surface_map() -> SurfaceMap {
         location: loc("app.py", 30),
         function_name: "shell.exec".into(),
         cap_bits: Cap::CODE_EXEC.bits(),
+        label: String::new(),
     }));
     m
 }
@@ -77,6 +78,7 @@ fn fixture_findings() -> Vec<Diag> {
             evidence: Some(ev),
             rank_score: None,
             rank_reason: None,
+            exposure: None,
             suppressed: false,
             suppression: None,
             triage_state: "open".to_string(),
