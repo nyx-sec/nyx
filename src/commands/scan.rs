@@ -355,6 +355,7 @@ pub fn format_dynamic_verification_summary(summary: &DynamicVerificationSummary)
 /// composite-chain re-verification can reuse preloaded summaries and callgraph
 /// context.
 #[cfg(feature = "dynamic")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_findings_for_scan(
     diags: &mut [Diag],
     project_name: &str,

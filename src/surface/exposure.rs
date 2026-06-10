@@ -3,7 +3,7 @@
 //!
 //! This is the bridge that makes the attack surface participate in the
 //! core finding pipeline instead of living off to the side in `nyx
-//! surface`: every [`Diag`](crate::commands::scan::Diag) gets an
+//! surface`: every [`Diag`] gets an
 //! optional [`Exposure`] annotation describing the *worst-case* route
 //! that reaches it (unauthenticated preferred over auth-gated, direct
 //! file match preferred over transitive call-graph reach), and the
@@ -11,7 +11,7 @@
 //! reachable findings sort above internal ones.
 //!
 //! Matching granularity is file-level, same as the chain composer's
-//! [`Reach`](crate::chain::Reach): a finding in `views.py` is exposed
+//! [`Reach`](crate::chain::edges::Reach): a finding in `views.py` is exposed
 //! when an entry-point's handler lives in `views.py`, or — when a
 //! [`FileReachMap`] is supplied — when some handler's file transitively
 //! reaches `views.py` through the call graph.
