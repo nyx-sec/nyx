@@ -18,6 +18,7 @@
 //! | `src/server/` (any file)     | server start_scan verify wiring           |
 //! | `src/rank.rs`                | dynamic-verdict rank scoring              |
 //! | `src/chain/reverify.rs`      | composite chain re-verification           |
+//! | `src/commands/repro.rs`      | `nyx repro` subcommand; `#[cfg(feature="dynamic")]`|
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,10 @@ const ALLOWED: &[&str] = &[
     // Composite chain re-verification is the public bridge between the chain
     // composer and the dynamic verifier.
     "chain/reverify.rs",
+    // The `nyx repro` subcommand replays dynamic verification bundles. The
+    // whole module is `#[cfg(feature = "dynamic")]` in commands/mod.rs, so it
+    // never compiles into the feature-agnostic static path.
+    "commands/repro.rs",
     // The dynamic module itself is obviously allowed.
     "dynamic/",
 ];
