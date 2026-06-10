@@ -87,9 +87,13 @@ pub enum Framework {
 /// Every node carries the route's declared path string, HTTP method,
 /// and a resolved handler [`SourceLocation`] pointing at the function
 /// definition.  `auth_required` is `true` when the decorator stack
-/// (or framework equivalent) contains an auth guard the probe was
-/// able to identify; Phase 21 recognises Flask's `@login_required`,
-/// `@auth_required`, and `@jwt_required` decorators.
+/// (or framework equivalent — annotation, middleware argument, or a
+/// body-level guard call) contains an auth marker the probe was able
+/// to identify.  The marker set is the per-framework registry in
+/// [`crate::auth_analysis::auth_markers`] (e.g. Flask's
+/// `@login_required` / `@auth_required` / `@jwt_required` /
+/// `@token_required` / `@requires_auth` / `@authenticated` /
+/// `@require_login`), not a fixed three-decorator list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryPoint {
     pub location: SourceLocation,

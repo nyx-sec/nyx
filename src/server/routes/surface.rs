@@ -3,9 +3,12 @@
 //! Loads the map persisted by the most recent indexed scan from
 //! SQLite, falling back to building a fresh entry-point-only map from
 //! the on-disk source when no scan has populated one yet.  The
-//! response shape is the canonical `SurfaceMap` JSON — identical to
-//! `nyx surface --format json` — so the frontend can reuse the same
-//! deserialisation in both surfaces.
+//! response is the canonical `SurfaceMap` JSON (the same `nodes` +
+//! `edges` shape `nyx surface --format json` emits, so the frontend
+//! reuses the same `SurfaceMap` deserialiser) plus one extra
+//! top-level `entry_risks` array — the per-entry-point risk
+//! assessment the CLI prints as a banner rather than serialising.
+//! Consumers that only need the map ignore the extra key.
 
 use crate::commands::surface::load_or_build;
 use crate::server::app::AppState;

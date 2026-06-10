@@ -36,8 +36,12 @@ impl RiskTier {
     /// * the same route behind auth is `High` (40 ≥ 35);
     /// * an unauthenticated route writing a SQL store is `High`
     ///   ((15 + 5) × 1.5 + 5 = 35 ≥ 35);
-    /// * a route that only reads a store or talks to one service is
-    ///   `Medium`;
+    /// * an unauthenticated route that only reads a SQL store
+    ///   (15 × 1.5 + 5 = 27) or talks to one external service
+    ///   (8 × 1.5 + 5 = 17) is `Medium`;
+    /// * the same single read / single egress *behind auth* (no ×1.5
+    ///   scaling) usually stays `Low` — an auth-gated KV/document read
+    ///   (10) or one external call (8) is below the 12 threshold;
     /// * a route with no reachable destination at all is `Low`.
     pub fn from_score(score: f64) -> Self {
         if score >= 60.0 {
