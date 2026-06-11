@@ -16,6 +16,7 @@
 use crate::dynamic::lang;
 use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::UnsupportedReason;
+use crate::labels::Cap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static WORKDIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+const HARNESS_BASE_ENV: &str = "NYX_HARNESS_BASE";
 
 /// A built harness ready to hand off to the sandbox.
 #[derive(Debug, Clone)]
@@ -69,6 +71,11 @@ pub fn build(spec: &HarnessSpec) -> Result<BuiltHarness, HarnessError> {
 /// shallow (resolves to `/private/tmp` on macOS, `/tmp` on Linux) and keeps
 /// payload depth assumptions portable.
 ///
+/// Tests and hermetic callers may set `NYX_HARNESS_BASE` to redirect this
+/// scratch tree away from a small system `/tmp`. `CARGO_TARGET_TMPDIR` is used
+/// automatically for non-FILE_IO cargo test runs; FILE_IO keeps the shallow
+/// default unless the explicit override is present.
+///
 /// The per-run suffix is intentional: the workdir contains mutable build
 /// products, probe channels, and sometimes a long-lived Docker container
 /// mount.  Reusing `/tmp/nyx-harness/{spec_hash}` across concurrent
@@ -78,11 +85,7 @@ fn stage_harness(
     spec: &HarnessSpec,
     harness_src: &lang::HarnessSource,
 ) -> Result<PathBuf, HarnessError> {
-    let base_dir = if cfg!(unix) {
-        PathBuf::from("/tmp/nyx-harness")
-    } else {
-        std::env::temp_dir().join("nyx-harness")
-    };
+    let base_dir = harness_base_dir(spec);
     let workdir = unique_workdir(&base_dir, &spec.spec_hash);
     fs::create_dir_all(&workdir)?;
 
@@ -118,6 +121,37 @@ fn stage_harness(
     }
 
     Ok(workdir)
+}
+
+fn harness_base_dir(spec: &HarnessSpec) -> PathBuf {
+    let explicit = std::env::var_os(HARNESS_BASE_ENV)
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    harness_base_dir_from(
+        explicit,
+        std::env::var_os("CARGO_TARGET_TMPDIR").map(PathBuf::from),
+        spec,
+    )
+}
+
+fn harness_base_dir_from(
+    explicit: Option<PathBuf>,
+    cargo_target_tmpdir: Option<PathBuf>,
+    spec: &HarnessSpec,
+) -> PathBuf {
+    if let Some(base) = explicit {
+        return base;
+    }
+    if !spec.expected_cap.contains(Cap::FILE_IO)
+        && let Some(base) = cargo_target_tmpdir.filter(|p| !p.as_os_str().is_empty())
+    {
+        return base.join("nyx-harness");
+    }
+    if cfg!(unix) {
+        PathBuf::from("/tmp/nyx-harness")
+    } else {
+        std::env::temp_dir().join("nyx-harness")
+    }
 }
 
 fn unique_workdir(base_dir: &Path, spec_hash: &str) -> PathBuf {

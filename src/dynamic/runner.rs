@@ -181,6 +181,25 @@ pub enum RunError {
     },
 }
 
+struct HarnessWorkdirCleanup {
+    path: PathBuf,
+}
+
+impl HarnessWorkdirCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for HarnessWorkdirCleanup {
+    fn drop(&mut self) {
+        if std::env::var_os("NYX_KEEP_HARNESS").is_some() {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 impl From<SandboxError> for RunError {
     fn from(e: SandboxError) -> Self {
         RunError::Sandbox(e)
@@ -273,6 +292,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             Err(e) => return Err(RunError::Harness(e)),
         }
     };
+    let _harness_workdir_cleanup = HarnessWorkdirCleanup::new(harness.workdir.clone());
 
     // Build-time isolation and dependency setup — dispatched by language.
     match spec.lang {

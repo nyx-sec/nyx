@@ -327,8 +327,17 @@ pub fn run_fixture_and_compare_to_golden(spec: &FixtureSpec<'_>) {
     let fixture_src = fixture_root.join(spec.fixture);
     let golden_path = fixture_root.join(format!("{}.golden.json", spec.fixture));
 
-    let tmp = TempDir::new().expect("create tempdir");
+    let tmp = fixture_tempdir();
     let diag_path = stage_fixture(&fixture_src, &tmp, spec.copy);
+    let previous_harness_base = if should_redirect_harness_base(spec.cap) {
+        let previous = std::env::var_os("NYX_HARNESS_BASE");
+        unsafe {
+            std::env::set_var("NYX_HARNESS_BASE", tmp.path().join("harness"));
+        }
+        Some(previous)
+    } else {
+        None
+    };
 
     // SAFETY: env mutation is serialised by FIXTURE_LOCK and the vars are
     // cleared before the lock guard drops at end of function.
@@ -361,6 +370,12 @@ pub fn run_fixture_and_compare_to_golden(spec: &FixtureSpec<'_>) {
     unsafe {
         std::env::remove_var("NYX_REPRO_BASE");
         std::env::remove_var("NYX_TELEMETRY_PATH");
+        if let Some(previous) = previous_harness_base {
+            match previous {
+                Some(path) => std::env::set_var("NYX_HARNESS_BASE", path),
+                None => std::env::remove_var("NYX_HARNESS_BASE"),
+            }
+        }
     }
 
     let current = GoldenVerdict::from(&result);
@@ -401,6 +416,28 @@ fn fixture_dir(lang_dir: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/dynamic_fixtures")
         .join(lang_dir)
+}
+
+fn fixture_scratch_root() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_TMPDIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("nyx-fixtures")
+}
+
+fn fixture_tempdir() -> TempDir {
+    let root = fixture_scratch_root();
+    std::fs::create_dir_all(&root)
+        .unwrap_or_else(|e| panic!("create fixture scratch root {}: {e}", root.display()));
+    tempfile::Builder::new()
+        .prefix("nyx-fixture-")
+        .tempdir_in(&root)
+        .expect("create fixture tempdir")
+}
+
+fn should_redirect_harness_base(cap: Cap) -> bool {
+    !cap.contains(Cap::FILE_IO)
 }
 
 fn stage_fixture(src: &Path, tmp: &TempDir, copy: CopyStrategy) -> PathBuf {
@@ -490,9 +527,18 @@ pub fn run_shape_fixture_lang(
         .join(shape_dir);
     let fixture_src = fixture_root.join(file);
 
-    let tmp = TempDir::new().expect("create tempdir");
+    let tmp = fixture_tempdir();
     let dst = tmp.path().join(file);
     std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+    let previous_harness_base = if should_redirect_harness_base(cap) {
+        let previous = std::env::var_os("NYX_HARNESS_BASE");
+        unsafe {
+            std::env::set_var("NYX_HARNESS_BASE", tmp.path().join("harness"));
+        }
+        Some(previous)
+    } else {
+        None
+    };
 
     // SAFETY: env mutation is serialised by FIXTURE_LOCK and cleared at end.
     unsafe {
@@ -575,6 +621,12 @@ pub fn run_shape_fixture_lang(
     unsafe {
         std::env::remove_var("NYX_REPRO_BASE");
         std::env::remove_var("NYX_TELEMETRY_PATH");
+        if let Some(previous) = previous_harness_base {
+            match previous {
+                Some(path) => std::env::set_var("NYX_HARNESS_BASE", path),
+                None => std::env::remove_var("NYX_HARNESS_BASE"),
+            }
+        }
     }
 
     // Project the [`RunOutcome`] / [`RunError`] back onto a
@@ -859,7 +911,7 @@ pub fn run_harness_snapshot_lang(
 
     // Stage into tempdir so the spec.entry_file path matches what the
     // verifier sees at runtime.
-    let tmp = TempDir::new().expect("create tempdir");
+    let tmp = fixture_tempdir();
     let dst = tmp.path().join(file);
     std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
     let entry_file = dst.to_string_lossy().into_owned();
