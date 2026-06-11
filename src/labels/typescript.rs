@@ -546,6 +546,34 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
+    // ── Lodash `_.template` SSTI/RCE gates, mirrors `labels/javascript.rs` ─
+    // (Strapi CVE-2023-22621 class).  Lodash compiles `<% ... %>` evaluate
+    // blocks into a JS Function; gate on the `evaluate` option and fire
+    // conservatively when missing/dynamic.
+    SinkGate {
+        callee_matcher: "_.template",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: Some("evaluate"),
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    SinkGate {
+        callee_matcher: "lodash.template",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: Some("evaluate"),
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
     // ── XML XXE gates, mirrors `labels/javascript.rs` ────────────────────
     SinkGate {
         callee_matcher: "xml2js.parseString",
@@ -750,6 +778,37 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
     SinkGate {
         callee_matcher: "https.request",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["host", "hostname", "path", "protocol", "port", "origin"],
+        },
+    },
+    // Node `http.get` / `https.get` convenience wrappers around `.request()`.
+    // Same destination semantics. Motivated by CVE-2025-64430 (Parse Server
+    // SSRF via http.get(uri)). Mirrors `labels/javascript.rs`.
+    SinkGate {
+        callee_matcher: "http.get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["host", "hostname", "path", "protocol", "port", "origin"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "https.get",
         arg_index: 0,
         dangerous_values: &[],
         dangerous_prefixes: &[],
@@ -1069,6 +1128,69 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::LiteralOnly,
+    },
+    // `set-value` standalone helper (CVE-2019-10747 / CVE-2021-23440) —
+    // recursive set-by-path helper that did not block `__proto__` keys.
+    // Mirrors `labels/javascript.rs`.
+    SinkGate {
+        callee_matcher: "setValue",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `dot-prop` standalone helper: `dotProp.set(obj, path, val)` —
+    // CVE-2020-8116.  Mirrors `labels/javascript.rs`.
+    SinkGate {
+        callee_matcher: "dotProp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `jsonpath` / `jsonpath-plus` `jp.set(obj, path, value)` family —
+    // mirrors `labels/javascript.rs`.
+    SinkGate {
+        callee_matcher: "jp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jsonpath.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
     },
 ];
 

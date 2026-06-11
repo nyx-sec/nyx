@@ -558,6 +558,41 @@ impl AnalysisState {
                 }
                 changed
             }
+            SsaOp::Call {
+                callee, receiver, ..
+            } => {
+                // Re-project the `Field(pt(receiver), ELEM)` cell for
+                // container reads.  `transfer_inst` (pass 1) projects this
+                // from a snapshot of `pt(receiver)`, but the receiver's set
+                // is often still empty or partial on that pass (e.g. the
+                // container comes from a `FieldProj` that only resolves in
+                // the fixpoint, or from a value unified by a later `Assign`).
+                // Without re-projecting here, the promised `Field(_, ELEM)`
+                // members never appear and per-element parent-field aliasing
+                // through the read result is dropped.  The fresh-alloc
+                // fallback added in pass 1 is preserved (`union_in_place`
+                // only adds members), so this strictly refines the set.
+                let Some(rcv) = receiver else {
+                    return false;
+                };
+                if !is_container_read_callee(callee) || (rcv.0 as usize) >= self.parent.len() {
+                    return false;
+                }
+                let rcv_rep = self.find(rcv.0) as usize;
+                let rcv_pt = self.pt[rcv_rep].clone();
+                // Mirror the pass-1 guard: skip empty (nothing to project)
+                // and Top (already maximally imprecise) receivers.
+                if rcv_pt.is_empty() || rcv_pt.is_top() {
+                    return false;
+                }
+                let mut new_pt = PointsToSet::empty();
+                for parent_loc in rcv_pt.iter() {
+                    let proj = self.interner.intern_field(parent_loc, FieldId::ELEM);
+                    new_pt.insert(proj);
+                }
+                let v_rep = self.find(v) as usize;
+                self.pt[v_rep].union_in_place(&new_pt)
+            }
             // No re-propagation needed for leaf ops.
             _ => false,
         }
@@ -1012,6 +1047,68 @@ mod tests {
         assert!(
             saw_elem,
             "container read result should include Field(_, ELEM); got {pt_e:?}"
+        );
+    }
+
+    /// Regression for the fixpoint re-projection of container reads.
+    ///
+    /// Shape: `e := this.queue.shift()`. The receiver of `shift` is a
+    /// `FieldProj` (`this.queue`) whose points-to set is *empty* on pass 1
+    /// (field projections only resolve in the fixpoint). Before the fix,
+    /// `propagate_inst` never re-evaluated `SsaOp::Call`, so the promised
+    /// `Field(Field(SelfParam, "queue"), ELEM)` member was never projected
+    /// into the result and only the fresh allocation remained. After the
+    /// fix the nested ELEM cell must appear once the receiver converges.
+    #[test]
+    fn container_read_reprojects_elem_after_receiver_converges() {
+        let mut b = BodyBuilder::new();
+        // `this` is the self parameter.
+        let this = b.fresh(Some("this"));
+        b.emit(this, SsaOp::SelfParam, Some("this"));
+        // `q := this.queue`, a field projection whose pt is empty in pass 1.
+        let queue_field = b.intern_field("queue");
+        let q = b.fresh(Some("q"));
+        b.emit(
+            q,
+            SsaOp::FieldProj {
+                receiver: this,
+                field: queue_field,
+                projected_type: None,
+            },
+            Some("q"),
+        );
+        // `e := q.shift()`, container read whose receiver (`q`) only
+        // converges during the fixpoint.
+        let e = b.fresh(Some("e"));
+        b.emit(
+            e,
+            SsaOp::Call {
+                callee: "shift".into(),
+                callee_text: None,
+                args: vec![],
+                receiver: Some(q),
+            },
+            Some("e"),
+        );
+
+        let body = b.build();
+        let facts = analyse_body(&body, BodyId(0));
+        let pt_e = facts.pt(e);
+        // The result must now include a Field(_, ELEM) member projected
+        // from the converged receiver set (not just the fresh alloc).
+        let mut saw_elem = false;
+        for loc in pt_e.iter() {
+            if let crate::pointer::AbsLoc::Field { field, .. } = facts.interner.resolve(loc)
+                && *field == FieldId::ELEM
+            {
+                saw_elem = true;
+                break;
+            }
+        }
+        assert!(
+            saw_elem,
+            "container read with a FieldProj receiver must re-project \
+             Field(_, ELEM) in the fixpoint; got {pt_e:?}"
         );
     }
 

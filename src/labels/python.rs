@@ -1643,6 +1643,11 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
         "typed_parameter",
         "default_parameter",
         "typed_default_parameter",
+        // `*args` / `**kwargs`: without these the splat params are dropped,
+        // registering wrong arity and never seeding caller taint into the
+        // variadic positions.
+        "list_splat_pattern",
+        "dictionary_splat_pattern",
     ],
     self_param_kinds: &[],
     ident_fields: &["name"],
@@ -1667,8 +1672,25 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
 
 #[cfg(test)]
 mod tests {
-    use super::KINDS;
+    use super::{KINDS, PARAM_CONFIG};
     use crate::labels::Kind;
+
+    #[test]
+    fn splat_params_are_extracted() {
+        // `*args` (list_splat_pattern) and `**kwargs` (dictionary_splat_pattern)
+        // must be recognised param nodes so arity registers correctly and the
+        // variadic positions are seeded with caller taint.
+        assert!(
+            PARAM_CONFIG
+                .param_node_kinds
+                .contains(&"list_splat_pattern")
+        );
+        assert!(
+            PARAM_CONFIG
+                .param_node_kinds
+                .contains(&"dictionary_splat_pattern")
+        );
+    }
 
     #[test]
     fn lambda_classified_as_function() {

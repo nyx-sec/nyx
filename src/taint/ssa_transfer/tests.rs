@@ -1650,6 +1650,7 @@ mod fanout_merge_tests {
             sink_caps: Cap::empty(),
             param_to_sink: vec![],
             param_to_sink_sites: vec![],
+            param_to_return_strip: vec![],
             propagates_taint: false,
             propagating_params: vec![],
             param_container_to_return: vec![],

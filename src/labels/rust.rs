@@ -403,6 +403,12 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "impl_item"            => Kind::Block,
     "trait_item"           => Kind::Block,
     "declaration_list"     => Kind::Block,
+    // Inline modules `mod foo { ... }` wrap their items in a
+    // `declaration_list`; map to Block so the CFG builder recurses into the
+    // body and the `function_item`s inside are lowered, instead of dropping
+    // the whole module (the old `Kind::Trivia` mapping discarded every
+    // function/source/sink inside an inline module).
+    "mod_item"             => Kind::Block,
 
     // data-flow
     "call_expression"        => Kind::CallFn,
@@ -430,7 +436,6 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "{" => Kind::Trivia, "}" => Kind::Trivia, "\n" => Kind::Trivia,
     "use_declaration"  => Kind::Trivia,
     "attribute_item"   => Kind::Trivia,
-    "mod_item"         => Kind::Trivia,
     "type_item"        => Kind::Trivia,
 };
 
@@ -613,4 +618,19 @@ pub fn phase_c_auth_rules() -> Vec<RuntimeLabelRule> {
             case_sensitive: false,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KINDS;
+    use crate::labels::Kind;
+
+    #[test]
+    fn mod_item_is_walkable_block_not_trivia() {
+        // Inline `mod foo { ... }` must be a Block so the CFG builder recurses
+        // into the module body; the old Trivia mapping dropped every function,
+        // source, and sink inside inline modules.
+        assert_eq!(KINDS.get("mod_item"), Some(&Kind::Block));
+        assert_ne!(KINDS.get("mod_item"), Some(&Kind::Trivia));
+    }
 }

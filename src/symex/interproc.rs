@@ -268,6 +268,38 @@ pub struct InterprocCtx<'a> {
     pub caller_namespace: &'a str,
 }
 
+impl<'a> InterprocCtx<'a> {
+    /// Build a child context for resolving calls *inside* a frame.
+    ///
+    /// All shared state (budgets, caches, reentry counts) is carried by
+    /// reference, so the child observes the same interior-mutable counters.
+    /// When `descended_cross_file` is true the frame was itself reached by a
+    /// cross-file body resolution, so `cross_file_depth` is bumped to enforce
+    /// `MAX_CROSS_FILE_DEPTH` on any further cross-file descents. Without this
+    /// the depth never increments and the guard at `execute_callee` is dead
+    /// (always `0 >= 1 == false`), allowing cross-file bodies to keep resolving
+    /// further cross-file bodies up to `max_depth` instead of the intended one
+    /// level.
+    fn child_for_nested(&self, descended_cross_file: bool) -> InterprocCtx<'a> {
+        InterprocCtx {
+            callee_bodies: self.callee_bodies,
+            cfg: self.cfg,
+            lang: self.lang,
+            max_depth: self.max_depth,
+            budget: self.budget,
+            cache: self.cache,
+            reentry_counts: self.reentry_counts,
+            max_reentry_per_func: self.max_reentry_per_func,
+            scc_membership: self.scc_membership,
+            max_scc_reentry: self.max_scc_reentry,
+            stats: self.stats,
+            cross_file_bodies: self.cross_file_bodies,
+            cross_file_depth: self.cross_file_depth + usize::from(descended_cross_file),
+            caller_namespace: self.caller_namespace,
+        }
+    }
+}
+
 /// Budget counters shared across all interprocedural frames for one finding.
 #[derive(Clone, Copy, Debug)]
 pub struct InterprocBudget {
@@ -728,16 +760,48 @@ pub fn execute_callee(
     let mut initial_state = SymbolicState::new();
     initial_state.seed_from_const_values(&body.opt.const_values);
 
-    // Seed parameters: walk callee SSA for Param instructions
+    // Seed parameters: walk callee SSA for Param / SelfParam instructions.
+    //
+    // The caller (`transfer.rs` Call arm and `handle_nested_calls`) PREPENDS
+    // the method receiver into `arg_values` at index 0 whenever the call has a
+    // receiver. SSA lowering (`src/ssa/lower.rs`) emits that receiver as
+    // `SsaOp::SelfParam` and assigns `Param { index }` positions starting at 0
+    // to the non-receiver formals only. So when the callee body is a method
+    // (has a `SelfParam`), the positional formal `Param{index}` must be seeded
+    // from `arg_values[index + 1]` (skipping the receiver at slot 0), and the
+    // `SelfParam` itself from `arg_values[0]`. Free functions (no `SelfParam`)
+    // map `Param{index}` directly to `arg_values[index]`. This matches the
+    // taint engine's inline path, which builds `param_seed` from non-receiver
+    // args and carries receiver taint on a separate `receiver_seed` channel
+    // consumed by `SelfParam` (`src/taint/ssa_transfer/mod.rs`).
+    let has_self_param = body
+        .ssa
+        .blocks
+        .iter()
+        .flat_map(|block| block.phis.iter().chain(block.body.iter()))
+        .any(|inst| matches!(inst.op, SsaOp::SelfParam));
+    let param_offset = if has_self_param { 1 } else { 0 };
     for block in &body.ssa.blocks {
         for inst in block.phis.iter().chain(block.body.iter()) {
-            if let SsaOp::Param { index } = &inst.op {
-                if let Some((_, sym, tainted)) = arg_values.get(*index) {
-                    initial_state.set(inst.value, sym.clone());
-                    if *tainted {
-                        initial_state.mark_tainted(inst.value);
+            match &inst.op {
+                SsaOp::Param { index } => {
+                    if let Some((_, sym, tainted)) = arg_values.get(*index + param_offset) {
+                        initial_state.set(inst.value, sym.clone());
+                        if *tainted {
+                            initial_state.mark_tainted(inst.value);
+                        }
                     }
                 }
+                SsaOp::SelfParam => {
+                    // Receiver was prepended at slot 0 by the caller.
+                    if let Some((_, sym, tainted)) = arg_values.first() {
+                        initial_state.set(inst.value, sym.clone());
+                        if *tainted {
+                            initial_state.mark_tainted(inst.value);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -751,6 +815,12 @@ pub fn execute_callee(
     frame_chain.push(normalized.to_string());
 
     // ─── Work-queue exploration (intra-callee forking) ────────
+    //
+    // Nested calls executed inside this frame go through a child context whose
+    // `cross_file_depth` is bumped when this frame was itself reached via a
+    // cross-file body. This keeps `MAX_CROSS_FILE_DEPTH` enforced across nested
+    // descents (the shared `ctx` would otherwise never increment the field).
+    let nested_ctx = ctx.child_for_nested(is_cross_file);
 
     let mut exit_states: Vec<CalleeExitState> = Vec::new();
     let mut internal_findings: Vec<InternalSinkFinding> = Vec::new();
@@ -853,7 +923,7 @@ pub fn execute_callee(
             // Handle nested calls
             handle_nested_calls(
                 block,
-                ctx,
+                &nested_ctx,
                 &mut path.sym_state,
                 depth,
                 &frame_chain,
@@ -1561,5 +1631,47 @@ mod tests {
         assert_eq!(stats.total_frames, 0);
         assert_eq!(stats.cutoffs, 0);
         assert_eq!(stats.forks, 0);
+    }
+
+    #[test]
+    fn child_for_nested_bumps_cross_file_depth_only_on_descent() {
+        // Backing state for the borrowed-by-reference InterprocCtx fields.
+        let bodies: HashMap<crate::symbol::FuncKey, CalleeSsaBody> = HashMap::new();
+        let cfg = Cfg::new();
+        let budget = Cell::new(InterprocBudget::new());
+        let cache = RefCell::new(InterprocCache::new());
+        let reentry = RefCell::new(HashMap::new());
+        let stats = Cell::new(InterprocStats::default());
+
+        let ctx = InterprocCtx {
+            callee_bodies: &bodies,
+            cfg: &cfg,
+            lang: Lang::JavaScript,
+            max_depth: DEFAULT_MAX_DEPTH,
+            budget: &budget,
+            cache: &cache,
+            reentry_counts: &reentry,
+            max_reentry_per_func: DEFAULT_MAX_REENTRY_PER_FUNC,
+            scc_membership: None,
+            max_scc_reentry: DEFAULT_MAX_SCC_REENTRY,
+            stats: &stats,
+            cross_file_bodies: None,
+            cross_file_depth: 0,
+            caller_namespace: "test.js",
+        };
+
+        // Intra-file descent leaves cross_file_depth untouched.
+        let intra = ctx.child_for_nested(false);
+        assert_eq!(intra.cross_file_depth, 0);
+
+        // A cross-file descent bumps the depth so the guard at execute_callee
+        // (>= MAX_CROSS_FILE_DEPTH) trips on the next cross-file step.
+        let xfile = ctx.child_for_nested(true);
+        assert_eq!(xfile.cross_file_depth, 1);
+        assert!(xfile.cross_file_depth >= MAX_CROSS_FILE_DEPTH);
+
+        // Nested cross-file from an already-cross-file frame keeps climbing.
+        let xfile2 = xfile.child_for_nested(true);
+        assert_eq!(xfile2.cross_file_depth, 2);
     }
 }

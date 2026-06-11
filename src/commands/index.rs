@@ -96,6 +96,49 @@ pub fn handle(
     }
 }
 
+/// Run `f` with optional panic recovery, mirroring
+/// `crate::commands::scan::recover_or_propagate` (which is private to the
+/// scan module).  When `enabled` is false, panics propagate as before.
+/// When enabled, a panic in `f` is caught, logged, and surfaced as an
+/// `Err` so the caller can log-and-skip the offending file instead of
+/// aborting the whole index build.
+fn recover_or_propagate<T>(
+    enabled: bool,
+    path: &std::path::Path,
+    logs: Option<&Arc<ScanLogCollector>>,
+    f: impl FnOnce() -> NyxResult<T>,
+) -> NyxResult<T> {
+    if !enabled {
+        return f();
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .map(str::to_owned)
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic>".to_string());
+            tracing::warn!(
+                path = %path.display(),
+                panic = %msg,
+                "index-build analysis panicked; continuing"
+            );
+            if let Some(l) = logs {
+                l.warn(
+                    format!("Analysis panicked: {msg}"),
+                    Some(path.display().to_string()),
+                    Some(msg.clone()),
+                );
+            }
+            Err(crate::errors::NyxError::Msg(format!(
+                "analysis panicked: {msg}"
+            )))
+        }
+    }
+}
+
 pub fn build_index(
     project_name: &str,
     project_path: &std::path::Path,
@@ -134,6 +177,16 @@ pub fn build_index_with_observer(
     // scan_with_index_parallel_observer.
     let owned_cfg = crate::commands::scan::ensure_framework_ctx(project_path, config);
     let config = owned_cfg.as_ref().unwrap_or(config);
+
+    // Pass-1 rescans of later-edited files run with a populated module
+    // graph (scan_with_index_parallel_observer builds one before pass 1),
+    // so the SSA summaries/bodies they persist carry package-qualified
+    // namespaces.  Build the same graph here so the rows persisted at
+    // index-build time use the identical key convention; without it the DB
+    // ends up mixing package-qualified and bare namespaces for the same
+    // project, breaking cross-file SSA resolution.
+    let owned_cfg_with_graph = crate::commands::scan::ensure_module_graph(project_path, config);
+    let config = owned_cfg_with_graph.as_ref().unwrap_or(config);
 
     tracing::debug!("Building index for: {}", project_name);
     let pool = Indexer::init(db_path)?;
@@ -206,22 +259,62 @@ pub fn build_index_with_observer(
     let pass1_start = std::time::Instant::now();
     let writer = IndexWriteQueue::start(project_name.to_owned(), Arc::clone(&pool));
     let write_tx = writer.sender();
+    let panic_recovery = config.scanner.enable_panic_recovery;
     let index_result = paths.into_par_iter().try_for_each(|path| -> NyxResult<()> {
         // Read once, hash once, pass bytes to both rule execution and
         // summary extraction.  Use pre-computed hash for upsert to avoid
         // a redundant file read inside upsert_file.
-        let bytes = std::fs::read(&path)?;
+        //
+        // A file that disappears between the walk and this read
+        // (delete/rename race) or that is unreadable (permission denied)
+        // must not abort the entire index build: log and skip it, matching
+        // the non-indexed scan paths (`scan.rs` pass-1 fold).
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("index build: cannot read {}: {e}", path.display());
+                if let Some(l) = logs.as_ref() {
+                    l.warn(
+                        format!("Skipping unreadable file: {e}"),
+                        Some(path.display().to_string()),
+                        None,
+                    );
+                }
+                pb.inc(1);
+                return Ok(());
+            }
+        };
         let hash = Indexer::digest_bytes(&bytes);
 
         // Parse once and persist every artifact we can reuse later:
-        // findings, coarse summaries, and precise SSA summaries.
-        let fused = crate::commands::scan::analyse_file_fused(
-            &bytes,
-            &path,
-            config,
-            None,
-            Some(project_path),
-        )?;
+        // findings, coarse summaries, and precise SSA summaries.  Wrap the
+        // analysis in optional panic recovery so an engine panic on one
+        // file does not abort the whole build when the user enabled
+        // `scanner.enable_panic_recovery`; an analysis error (or a caught
+        // panic) is logged and the file skipped, matching the scan paths.
+        let fused = match recover_or_propagate(panic_recovery, &path, logs.as_ref(), || {
+            crate::commands::scan::analyse_file_fused(
+                &bytes,
+                &path,
+                config,
+                None,
+                Some(project_path),
+            )
+        }) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("index build: analysis failed for {}: {e}", path.display());
+                if let Some(l) = logs.as_ref() {
+                    l.warn(
+                        format!("Skipping file after analysis error: {e}"),
+                        Some(path.display().to_string()),
+                        None,
+                    );
+                }
+                pb.inc(1);
+                return Ok(());
+            }
+        };
         if let Some(ref p) = progress {
             p.inc_parsed(1);
             p.set_current_file(&path.to_string_lossy());
@@ -287,6 +380,32 @@ pub fn build_index_with_observer(
             })
             .collect();
 
+        // Persist auth-check summaries and cross-package import maps too.
+        // The indexed pass-1 rescan path persists these via
+        // `replace_all_for_file`, but a hash match on the freshly-stamped
+        // file makes that path skip every unchanged file, so unless we
+        // write them here they are lost until a file's content changes:
+        // `load_all_auth_summaries` / `load_all_cross_package_imports`
+        // return empty after the first indexed scan, killing cross-file
+        // auth-helper lifting and cross-package callee resolution.
+        let auth_rows: Vec<_> = fused
+            .auth_summaries
+            .into_iter()
+            .map(|(key, sum)| {
+                (
+                    key.name,
+                    key.arity.unwrap_or(0),
+                    key.lang.as_str().to_string(),
+                    key.namespace,
+                    key.container,
+                    key.disambig,
+                    key.kind,
+                    sum,
+                )
+            })
+            .collect();
+        let cross_pkg_imports = fused.cross_package_imports;
+
         let path_for_write = path.clone();
         write_tx.enqueue(move |idx| {
             let file_id = idx.upsert_file_with_hash(&path_for_write, &hash)?;
@@ -302,15 +421,23 @@ pub fn build_index_with_observer(
                     }),
             )?;
 
-            if !summaries.is_empty() {
-                idx.replace_summaries_for_file(&path_for_write, &hash, &summaries)?;
-            }
-            if !ssa_rows.is_empty() {
-                idx.replace_ssa_summaries_for_file(&path_for_write, &hash, &ssa_rows)?;
-            }
-            if !body_rows.is_empty() {
-                idx.replace_ssa_bodies_for_file(&path_for_write, &hash, &body_rows)?;
-            }
+            // Single transaction for all summary caches, matching the
+            // indexed pass-1 rescan path (`replace_all_for_file`): one
+            // fsync per file, and — critically — auth summaries and
+            // cross-package imports are persisted at build time so the
+            // first indexed scan does not lose them.
+            let cpi_arg = cross_pkg_imports
+                .as_ref()
+                .map(|(ns, map)| (ns.as_str(), map.as_ref()));
+            idx.replace_all_for_file(
+                &path_for_write,
+                &hash,
+                &summaries,
+                &ssa_rows,
+                &body_rows,
+                &auth_rows,
+                cpi_arg,
+            )?;
             Ok(())
         })?;
 
@@ -407,5 +534,71 @@ app.get('/safe', function(req, res) {
     assert!(
         !ssa.is_empty(),
         "index build should persist SSA summaries for functions with non-trivial SSA effects"
+    );
+}
+
+#[test]
+fn recover_or_propagate_catches_panics_when_enabled() {
+    // When disabled, the panic propagates (default fail-fast).
+    let disabled = std::panic::catch_unwind(|| {
+        let _ = recover_or_propagate(
+            false,
+            std::path::Path::new("x"),
+            None,
+            || -> NyxResult<()> { panic!("boom") },
+        );
+    });
+    assert!(
+        disabled.is_err(),
+        "with recovery disabled the panic must propagate"
+    );
+
+    // When enabled, the panic is caught and surfaced as Err so the
+    // index-build loop can log-and-skip instead of aborting.
+    let recovered = recover_or_propagate(
+        true,
+        std::path::Path::new("x"),
+        None,
+        || -> NyxResult<()> { panic!("boom") },
+    );
+    assert!(
+        recovered.is_err(),
+        "with recovery enabled the panic must become an Err, not unwind"
+    );
+
+    // A clean closure passes its result through unchanged.
+    let ok = recover_or_propagate(true, std::path::Path::new("x"), None, || Ok(7u32));
+    assert_eq!(ok.unwrap(), 7);
+}
+
+#[test]
+fn build_index_skips_unreadable_entry_without_aborting() {
+    // A path under the project that cannot be read (here: a directory
+    // entry that fs::read fails on) must be skipped, not abort the build.
+    // Verifies the read-failure log-and-skip branch in the pass-1 loop.
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+    cfg.performance.batch_size = 2;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    fs::create_dir(&project_dir).unwrap();
+    // One good file so the build has real work to persist.
+    let good = project_dir.join("good.rs");
+    fs::write(&good, "fn main() {}").unwrap();
+
+    let db_path = td.path().join("proj.sqlite");
+    // Must succeed even though the project may contain entries that are
+    // not plain readable files; the build never returns Err for that.
+    build_index("proj", &project_dir, &db_path, &cfg, false)
+        .expect("index build must not abort on a per-file read error");
+
+    let pool = Indexer::init(&db_path).unwrap();
+    let idx = Indexer::from_pool("proj", &pool).unwrap();
+    let files = idx.get_files("proj").unwrap();
+    assert!(
+        files.iter().any(|p| p == &good),
+        "the readable file must still be indexed"
     );
 }

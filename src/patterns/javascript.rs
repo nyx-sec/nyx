@@ -117,7 +117,7 @@ pub const PATTERNS: &[Pattern] = &[
                      function: (member_expression
                        property: (property_identifier) @prop (#eq? @prop "createHash"))
                      arguments: (arguments
-                       (string) @alg (#match? @alg "\"(md5|sha1)\"")))
+                       (string) @alg (#match? @alg "^[\"'](md5|sha1)[\"']$")))
                    @vuln"#,
         severity: Severity::Low,
         tier: PatternTier::A,
@@ -201,7 +201,7 @@ pub const PATTERNS: &[Pattern] = &[
         query: r#"(call_expression
                      function: (identifier) @id (#eq? @id "fetch")
                      arguments: (arguments
-                       (string) @url (#match? @url "^\"http://")))
+                       (string) @url (#match? @url "^[\"']http://")))
                    @vuln"#,
         severity: Severity::Low,
         tier: PatternTier::A,

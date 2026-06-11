@@ -1053,6 +1053,67 @@ pub mod index {
             Ok(())
         }
 
+        /// Recompute a finding's [`crate::patterns::FindingCategory`] from
+        /// its rule id alone.
+        ///
+        /// The `issues` table persists only `(rule_id, severity, line, col)`,
+        /// not the category, so cached rows served by
+        /// [`Self::get_issues_from_file`] must reconstruct it.  Hardcoding
+        /// `Security` here resurrects quality findings (e.g.
+        /// `rs.quality.unwrap`) past the `include_quality` filter and the
+        /// quality-rollup, producing cold/warm non-determinism for unchanged
+        /// files.  Mapping is best-effort and falls back to `Security`:
+        ///
+        /// * structural / state-machine ids (`state-*`, `cfg-*`) route through
+        ///   [`crate::patterns::FindingCategory::for_structural_rule`]
+        ///   (reliability for leaks/error-fallthrough, security otherwise);
+        /// * AST-pattern ids look up their declared
+        ///   [`crate::patterns::PatternCategory`] in a one-time index built
+        ///   over every language's pattern registry;
+        /// * everything else (taint flows, etc.) stays `Security`.
+        fn category_for_rule_id(rule_id: &str) -> crate::patterns::FindingCategory {
+            use crate::patterns::FindingCategory;
+            use std::sync::OnceLock;
+
+            // Structural / state-machine findings are not AST patterns and
+            // carry no language slug; classify them by id directly.
+            if rule_id.starts_with("state-") || rule_id.starts_with("cfg-") {
+                return FindingCategory::for_structural_rule(rule_id);
+            }
+
+            // Lazily build a rule_id -> FindingCategory index across every
+            // language's static pattern registry.  Distinct ids only; alias
+            // slugs share the same pattern slice so duplicate inserts are a
+            // no-op.
+            static PATTERN_CATEGORIES: OnceLock<
+                std::collections::HashMap<String, FindingCategory>,
+            > = OnceLock::new();
+            let map = PATTERN_CATEGORIES.get_or_init(|| {
+                let mut m = std::collections::HashMap::new();
+                for lang in [
+                    "rust",
+                    "typescript",
+                    "javascript",
+                    "c",
+                    "cpp",
+                    "java",
+                    "go",
+                    "php",
+                    "python",
+                    "ruby",
+                ] {
+                    for p in crate::patterns::load(lang) {
+                        m.insert(p.id.to_string(), p.category.finding_category());
+                    }
+                }
+                m
+            });
+
+            map.get(rule_id)
+                .copied()
+                .unwrap_or(FindingCategory::Security)
+        }
+
         /// Gets the issues for a specific file so we don't have to rescan
         pub fn get_issues_from_file(&self, path: &Path) -> NyxResult<Vec<Diag>> {
             let file_id: i64 = self.c().query_row(
@@ -1076,13 +1137,15 @@ pub mod index {
                     );
                     Severity::Medium
                 });
+                let rule_id: String = row.get::<_, String>(0)?;
+                let category = Self::category_for_rule_id(&rule_id);
                 Ok(Diag {
                     path: path.to_string_lossy().to_string(),
-                    id: row.get::<_, String>(0)?, // rule_id
+                    id: rule_id, // rule_id
                     line: row.get::<_, i64>(2)? as usize,
                     col: row.get::<_, i64>(3)? as usize,
                     severity,
-                    category: crate::patterns::FindingCategory::Security,
+                    category,
                     path_validated: false,
                     guard_kind: None,
                     message: None,
@@ -1695,8 +1758,14 @@ pub mod index {
         /// * function and auth summaries: DELETE-then-INSERT regardless
         ///   of input length, so emptying a file's summaries clears
         ///   stale rows.
-        /// * SSA summaries and bodies: only touched when the input is
-        ///   non-empty, matching the existing scan path.
+        /// * SSA summaries and bodies: DELETE always runs so a file that
+        ///   no longer yields any SSA artifacts (functions removed, file
+        ///   gutted, or SSA lowering now failing for every function)
+        ///   clears its stale high-precedence rows; the INSERT loop is
+        ///   skipped when the new set is empty.  Leaving stale SSA rows
+        ///   would let deleted/phantom functions keep resolving cross-file
+        ///   via resolve step 0.5 (SSA summaries outrank coarse
+        ///   FuncSummary), so the DELETE must not be gated on non-empty.
         #[allow(clippy::too_many_arguments)]
         pub fn replace_all_for_file(
             &mut self,
@@ -1780,13 +1849,15 @@ pub mod index {
                 }
             }
 
-            // ssa_function_summaries, only touched when non-empty.
+            // ssa_function_summaries: DELETE always, INSERT only when
+            // the new set is non-empty, so emptying a file's SSA
+            // summaries clears its stale high-precedence rows.
+            tx.execute(
+                "DELETE FROM ssa_function_summaries
+                 WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str],
+            )?;
             if !ssa_summaries.is_empty() {
-                tx.execute(
-                    "DELETE FROM ssa_function_summaries
-                     WHERE project = ?1 AND file_path = ?2",
-                    params![self.project, path_str],
-                )?;
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_summaries
                         (project, file_path, file_hash, name, arity, lang, namespace,
@@ -1822,13 +1893,15 @@ pub mod index {
                 }
             }
 
-            // ssa_function_bodies, only touched when non-empty.
+            // ssa_function_bodies: DELETE always, INSERT only when the
+            // new set is non-empty, so emptying a file's SSA bodies
+            // clears its stale high-precedence rows.
+            tx.execute(
+                "DELETE FROM ssa_function_bodies
+                 WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str],
+            )?;
             if !ssa_bodies.is_empty() {
-                tx.execute(
-                    "DELETE FROM ssa_function_bodies
-                     WHERE project = ?1 AND file_path = ?2",
-                    params![self.project, path_str],
-                )?;
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_bodies
                         (project, file_path, file_hash, name, arity, lang, namespace,
@@ -2923,6 +2996,65 @@ fn replace_issues_and_query_back() {
 }
 
 #[test]
+fn get_issues_from_file_recomputes_category_from_rule_id() {
+    // Regression for the hardcoded `category = Security` bug: cached rows
+    // must reconstruct the finding category from the rule id, otherwise a
+    // quality finding (correctly dropped/rolled-up on the cold scan)
+    // resurfaces as an ungrouped Security finding on every warm scan.
+    use crate::patterns::FindingCategory;
+
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let file = td.path().join("lib.rs");
+    std::fs::write(&file, "fn main() {}").unwrap();
+
+    let pool = index::Indexer::init(&db).unwrap();
+    let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
+    let fid = idx.upsert_file(&file).unwrap();
+
+    let issues = [
+        // Tier-A quality AST pattern -> must come back as Quality.
+        index::IssueRow {
+            rule_id: "rs.quality.unwrap",
+            severity: "Low",
+            line: 1,
+            col: 1,
+        },
+        // Structural resource leak -> Reliability.
+        index::IssueRow {
+            rule_id: "state-resource-leak",
+            severity: "Medium",
+            line: 2,
+            col: 1,
+        },
+        // Taint-style id (not in any AST registry) -> Security fallback.
+        index::IssueRow {
+            rule_id: "taint-sql-injection",
+            severity: "High",
+            line: 3,
+            col: 1,
+        },
+    ];
+    idx.replace_issues(fid, issues).unwrap();
+
+    let stored = idx.get_issues_from_file(&file).unwrap();
+    let cat = |id: &str| {
+        stored
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+            .category
+    };
+    assert_eq!(
+        cat("rs.quality.unwrap"),
+        FindingCategory::Quality,
+        "quality AST pattern must not be resurrected as Security on warm scans"
+    );
+    assert_eq!(cat("state-resource-leak"), FindingCategory::Reliability);
+    assert_eq!(cat("taint-sql-injection"), FindingCategory::Security);
+}
+
+#[test]
 fn clear_and_vacuum_reset_tables() {
     let td = tempfile::tempdir().unwrap();
     let db = td.path().join("nyx.sqlite");
@@ -3284,6 +3416,81 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
         "old summary should be replaced, not duplicated"
     );
     assert_eq!(loaded[0].1, "new_func");
+}
+
+#[test]
+fn replace_all_for_file_clears_stale_ssa_rows_when_emptied() {
+    // Regression for the gated-DELETE staleness bug: a file edited so it no
+    // longer yields any SSA summaries (functions removed / file gutted /
+    // lowering now failing) must clear its high-precedence ssa_function_*
+    // rows.  Otherwise phantom functions keep resolving cross-file via
+    // resolve step 0.5 (SSA outranks coarse FuncSummary).
+    use crate::labels::Cap;
+    use crate::summary::ssa_summary::{SsaFuncSummary, TaintTransform};
+
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let f = td.path().join("lib.py");
+    std::fs::write(&f, "v1").unwrap();
+
+    let pool = index::Indexer::init(&db).unwrap();
+    let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
+
+    let hash_v1 = index::Indexer::digest_bytes(b"v1");
+    let ssa_sums = vec![(
+        "old_func".to_string(),
+        1_usize,
+        "python".to_string(),
+        "lib.py".to_string(),
+        String::new(),
+        None,
+        crate::symbol::FuncKind::Function,
+        SsaFuncSummary {
+            param_to_return: vec![(0, TaintTransform::Identity)],
+            param_to_sink: vec![],
+            source_caps: Cap::empty(),
+            param_to_sink_param: vec![],
+            param_container_to_return: vec![],
+            param_to_container_store: vec![],
+            return_type: None,
+            return_abstract: None,
+            source_to_callback: vec![],
+            receiver_to_return: None,
+            receiver_to_sink: Cap::empty(),
+            abstract_transfer: vec![],
+            param_return_paths: vec![],
+            points_to: Default::default(),
+            field_points_to: Default::default(),
+            return_path_facts: smallvec::SmallVec::new(),
+            typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
+            param_to_gate_filters: vec![],
+            entry_kind: None,
+        },
+    )];
+
+    // Pass 1: file has one SSA summary.
+    idx.replace_all_for_file(&f, &hash_v1, &[], &ssa_sums, &[], &[], None)
+        .unwrap();
+    assert_eq!(
+        idx.load_all_ssa_summaries().unwrap().len(),
+        1,
+        "SSA summary should persist on first write"
+    );
+
+    // Pass 2: file gutted — new hash, empty SSA summaries/bodies.  The old
+    // row must be deleted, not left behind.
+    let hash_v2 = index::Indexer::digest_bytes(b"v2");
+    idx.replace_all_for_file(&f, &hash_v2, &[], &[], &[], &[], None)
+        .unwrap();
+    assert!(
+        idx.load_all_ssa_summaries().unwrap().is_empty(),
+        "stale SSA summary rows must be cleared when the new set is empty"
+    );
+    assert!(
+        idx.load_all_ssa_bodies().unwrap().is_empty(),
+        "stale SSA body rows must be cleared when the new set is empty"
+    );
 }
 
 #[test]

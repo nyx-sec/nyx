@@ -407,8 +407,23 @@ pub fn extract_findings(
                 if !lifecycle.contains(ResourceLifecycle::CLOSED) {
                     continue;
                 }
-                // Check if there are intervening Call nodes between acquire and release
-                // in the CFG (these could throw and bypass the release)
+                // Check if there are intervening Call nodes between acquire and
+                // release in the CFG (these could throw and bypass the release).
+                //
+                // NOTE: a stricter variant (audit #59) tried to exclude the
+                // resource's own lifecycle ops (the acquire/release proxy
+                // calls) and require reachability from the acquire node, to
+                // suppress spurious findings on correctly open/close-paired
+                // proxies.  That over-suppressed a *tested* true positive: a
+                // class-field resource (`this.fd = fs.openSync(...)` in `open()`
+                // with `close()` in a separate method — see
+                // `tests/fixtures/real_world/typescript/cfg/try_catch_typed.ts`)
+                // has only its own acquire call in scope, so excluding it left
+                // zero intervening calls and dropped the must-match leak
+                // finding.  Distinguishing a clean same-scope open/close pair
+                // from a cross-method field leak needs proper inter-method
+                // lifecycle modelling (deep-fix queue), so we keep the original
+                // span-based exclusion here.
                 let has_intervening_calls = cfg.node_references().any(|(_, ni)| {
                     ni.kind == StmtKind::Call
                         && ni.ast.enclosing_func == info.ast.enclosing_func
@@ -567,11 +582,23 @@ fn is_web_entrypoint_simple(
         _ => &["request", "req"],
     };
 
-    let has_web_params = func_summaries.values().any(|s| {
-        s.param_names
-            .iter()
-            .any(|p| web_params.contains(&p.to_ascii_lowercase().as_str()))
-    });
+    // Confirm web parameters against THIS candidate handler only, not any
+    // function in the file.  Scanning every summary made an unrelated
+    // function's `req`/`r`/`ctx` parameter promote every
+    // `process_*`/`api_*`/`serve_*` function in the file to a web
+    // entrypoint, firing High-severity state-unauthed-access on batch/CLI
+    // code.  Filter the file-level summary map down to the named function
+    // via `FuncKey.name` (matches `info.ast.enclosing_func`); summary
+    // `entry` NodeIndexes are not valid in the per-body CFG, so the name
+    // is the safe selector here.
+    let has_web_params = func_summaries
+        .iter()
+        .filter(|(key, _)| key.name == func_name)
+        .any(|(_, s)| {
+            s.param_names
+                .iter()
+                .any(|p| web_params.contains(&p.to_ascii_lowercase().as_str()))
+        });
 
     // Only handle_* and route_* are strong enough to skip param confirmation.
     // api_*, serve_*, process_* require web parameter evidence.
@@ -915,5 +942,69 @@ mod tests {
             findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
         );
         assert_eq!(findings[0].rule_id, "state-resource-leak");
+    }
+
+    /// Finding #64: `is_web_entrypoint_simple` must confirm web parameters
+    /// against the *candidate* handler only, not any function in the file.
+    /// Before the fix, an unrelated `read_stream(req)` in the same file
+    /// promoted every `process_*` function to a web entrypoint, firing
+    /// High-severity `state-unauthed-access` on batch/CLI code.
+    #[test]
+    fn web_entrypoint_param_confirmation_is_per_function() {
+        use crate::cfg::LocalFuncSummary;
+        use crate::symbol::FuncKey;
+        use petgraph::graph::NodeIndex;
+
+        fn summary(name: &str, params: &[&str]) -> (FuncKey, LocalFuncSummary) {
+            let key = FuncKey::new_function(Lang::Python, "f.py", name, Some(params.len()));
+            let s = LocalFuncSummary {
+                entry: NodeIndex::new(0),
+                source_caps: Cap::empty(),
+                sanitizer_caps: Cap::empty(),
+                sink_caps: Cap::empty(),
+                param_count: params.len(),
+                param_names: params.iter().map(|p| p.to_string()).collect(),
+                propagating_params: Vec::new(),
+                tainted_sink_params: Vec::new(),
+                callees: Vec::new(),
+                container: String::new(),
+                disambig: None,
+                kind: crate::symbol::FuncKind::Function,
+            };
+            (key, s)
+        }
+
+        // `process_data` has NO web-like parameters; `read_stream` does.
+        let mut summaries: crate::cfg::FuncSummaries = HashMap::new();
+        let (k1, s1) = summary("process_data", &["data"]);
+        let (k2, s2) = summary("read_stream", &["req"]);
+        summaries.insert(k1, s1);
+        summaries.insert(k2, s2);
+
+        let cfg: Cfg = Graph::new();
+
+        // The unrelated `read_stream(req)` must NOT promote `process_data`.
+        assert!(
+            !is_web_entrypoint_simple("process_data", Lang::Python, &summaries, &cfg),
+            "process_data has no web params and must not be a web entrypoint just \
+             because an unrelated function in the file does"
+        );
+
+        // `read_stream` is not a handler-prefixed name, so even though it
+        // carries the `req` param it is NOT an entrypoint — confirms the
+        // name gate still stands independently of the param check.
+        assert!(
+            !is_web_entrypoint_simple("read_stream", Lang::Python, &summaries, &cfg),
+            "read_stream lacks a handler-prefixed name and must not be an entrypoint"
+        );
+
+        // Positive control: give `process_data` its own `req` param.
+        let mut summaries2: crate::cfg::FuncSummaries = HashMap::new();
+        let (k3, s3) = summary("process_data", &["req"]);
+        summaries2.insert(k3, s3);
+        assert!(
+            is_web_entrypoint_simple("process_data", Lang::Python, &summaries2, &cfg),
+            "process_data with its own web param must be a web entrypoint"
+        );
     }
 }

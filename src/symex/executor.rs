@@ -401,7 +401,9 @@ fn run_path(
         // Global step budget
         if *total_steps >= MAX_TOTAL_STEPS {
             *search_exhausted = false;
-            return Some(record_outcome(state, finding, ssa, cfg));
+            // Budget cut mid-walk: constraints beyond this point are unchecked,
+            // so feasibility is unproven → Inconclusive, not Confirmed.
+            return Some(record_cutoff(state, finding, ssa, cfg));
         }
 
         let block_id = state.current_block;
@@ -454,8 +456,9 @@ fn run_path(
                     continue;
                 }
             }
-            // Stuck (infinite loop / nested loops with no exit)
-            return Some(record_outcome(state, finding, ssa, cfg));
+            // Stuck (infinite loop / nested loops with no exit): the path never
+            // reached a terminal, so feasibility is unproven → Inconclusive.
+            return Some(record_cutoff(state, finding, ssa, cfg));
         }
 
         // Move exception context into sym_state before block transfer
@@ -1114,6 +1117,30 @@ fn record_outcome(
     }
 }
 
+/// Record the outcome for a path cut short by a budget/loop cutoff.
+///
+/// Unlike [`record_outcome`], the path did NOT reach a normal terminal: it was
+/// abandoned mid-walk (global step budget exhausted, or a loop with no
+/// reachable exit). Constraints beyond the cutoff point were never checked, so
+/// feasibility is unproven and the verdict must be `Inconclusive` (which
+/// contributes 0 to confidence), not `Confirmed`. A best-effort witness is
+/// still extracted for diagnostics. Mirrors `analyse_finding_path`, which
+/// already returns `Inconclusive` for the over-budget (`>MAX_PATH_BLOCKS`)
+/// case.
+fn record_cutoff(
+    state: &ExplorationState,
+    finding: &Finding,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+) -> PathOutcome {
+    let witness = try_extract_witness(state, finding, ssa, cfg);
+    PathOutcome {
+        verdict: Verdict::Inconclusive,
+        constraints_checked: state.constraints_checked,
+        witness,
+    }
+}
+
 /// Best-effort witness extraction from the current symbolic state.
 ///
 /// Used by both `record_outcome` (Confirmed paths) and inconclusive exits
@@ -1514,6 +1541,77 @@ mod tests {
         };
         let v = result.aggregate_verdict();
         assert_eq!(v.verdict, Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn record_cutoff_is_inconclusive_not_confirmed() {
+        // A path abandoned at a budget/loop cutoff has unchecked constraints
+        // beyond the cutoff point, so its outcome must be Inconclusive (which
+        // contributes 0 to confidence), NOT Confirmed. record_outcome (used
+        // only at genuine terminal states) still yields Confirmed.
+        let n0 = NodeIndex::new(0);
+        let n1 = NodeIndex::new(1);
+        let b0 = BlockId(0);
+        let b1 = BlockId(1);
+        let ssa = SsaBody {
+            blocks: vec![
+                SsaBlock {
+                    id: b0,
+                    phis: vec![],
+                    body: vec![],
+                    terminator: Terminator::Goto(b1),
+                    preds: smallvec![],
+                    succs: smallvec![b1],
+                },
+                SsaBlock {
+                    id: b1,
+                    phis: vec![],
+                    body: vec![],
+                    terminator: Terminator::Return(None),
+                    preds: smallvec![b0],
+                    succs: smallvec![],
+                },
+            ],
+            entry: b0,
+            value_defs: vec![make_value_def(b0, n0), make_value_def(b1, n1)],
+            cfg_node_map: HashMap::new(),
+            exception_edges: vec![],
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
+        };
+        let cfg = Cfg::new();
+        let finding = make_finding(n0, n1);
+        let state = ExplorationState {
+            sym_state: SymbolicState::new(),
+            env: constraint::PathEnv::empty(),
+            current_block: b0,
+            predecessor: None,
+            forks_used: 0,
+            steps_taken: 0,
+            constraints_checked: 3,
+            visit_counts: HashMap::new(),
+            exception_context: None,
+        };
+
+        let cutoff = record_cutoff(&state, &finding, &ssa, &cfg);
+        assert_eq!(cutoff.verdict, Verdict::Inconclusive);
+        assert_eq!(cutoff.constraints_checked, 3);
+
+        let terminal = record_outcome(&state, &finding, &ssa, &cfg);
+        assert_eq!(terminal.verdict, Verdict::Confirmed);
+
+        // A lone budget-cut path must NOT aggregate to Confirmed.
+        let result = ExplorationResult {
+            paths_completed: vec![cutoff],
+            paths_pruned: 1,
+            total_steps: MAX_TOTAL_STEPS,
+            search_exhausted: false,
+            interproc_findings: Vec::new(),
+            interproc_cutoffs: Vec::new(),
+        };
+        assert_eq!(result.aggregate_verdict().verdict, Verdict::Inconclusive);
     }
 
     #[test]

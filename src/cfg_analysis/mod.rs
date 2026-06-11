@@ -288,7 +288,11 @@ pub(crate) fn is_guard_call(
                         if callee_lower.starts_with(&ml) {
                             return true;
                         }
-                    } else if callee_lower.ends_with(&ml) {
+                    } else if guards::suffix_matches_at_leaf_boundary(&callee_lower, &ml) {
+                        // Leaf-boundary match, not a bare `ends_with`: otherwise
+                        // `invalidate` matches the `validate` guard and `unquote`
+                        // matches `quote`, registering cache-invalidation /
+                        // URL-decode calls as guards and suppressing real sinks.
                         return true;
                     }
                 }
@@ -305,7 +309,7 @@ pub(crate) fn is_guard_call(
                     if callee_lower.starts_with(&ml) {
                         return true;
                     }
-                } else if callee_lower.ends_with(&ml) {
+                } else if guards::suffix_matches_at_leaf_boundary(&callee_lower, &ml) {
                     return true;
                 }
             }

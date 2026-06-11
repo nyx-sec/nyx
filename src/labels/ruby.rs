@@ -542,6 +542,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // structure
     "program"               => Kind::SourceFile,
     "body_statement"        => Kind::Block,
+    // Brace blocks (`{ ... }`, including `->(){ ... }` lambda bodies) expose
+    // their body as a `block_body` node (do-end blocks use `body_statement`,
+    // already mapped above).  Without this, multi-statement brace-block bodies
+    // collapse into a single leaf Seq node and lose all intra-body taint flow.
+    "block_body"            => Kind::Block,
     "do_block"              => Kind::Function,
     "then"                  => Kind::Block,
     "else"                  => Kind::Block,
@@ -716,5 +721,19 @@ mod ar_query_tests {
     fn callee_with_module_path_resolves_leaf() {
         assert!(ar_query_safe_shape("Foo::Bar.where", "pair", false));
         assert!(ar_query_safe_shape("a.b.c.where", "pair", false));
+    }
+}
+
+#[cfg(test)]
+mod kinds_tests {
+    use super::KINDS;
+    use crate::labels::Kind;
+
+    #[test]
+    fn block_body_is_walkable_block() {
+        // Brace blocks (incl. lambda bodies) expose their body as `block_body`;
+        // it must be a Block so multi-statement bodies are walked instead of
+        // collapsing into one leaf Seq node and losing intra-body taint flow.
+        assert_eq!(KINDS.get("block_body"), Some(&Kind::Block));
     }
 }

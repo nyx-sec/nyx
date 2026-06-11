@@ -996,14 +996,35 @@ fn resolve_file_or_index(candidate: &Path) -> Option<PathBuf> {
     if candidate.is_file() {
         return Some(normalize_path(candidate));
     }
-    for ext in RESOLVE_EXTENSIONS {
-        let mut with_ext = candidate.to_path_buf();
-        match with_ext.extension() {
-            Some(_) => {}
-            None => {
-                with_ext.set_extension(ext);
-                if with_ext.is_file() {
-                    return Some(normalize_path(&with_ext));
+    // Node / TS resolution appends each candidate extension to the FULL
+    // specifier, regardless of whether the last segment already contains a
+    // dot. `Path::set_extension` *replaces* the trailing component after the
+    // last `.`, so it is wrong here: it would turn `./user.service` into
+    // `./user.ts` and never produce `./user.service.ts` (the dominant
+    // Angular/NestJS `.service`/`.component`/`.module`/`.controller`
+    // convention). Build the appended filename by hand instead.
+    if let Some(name) = candidate.file_name().and_then(|n| n.to_str()) {
+        for ext in RESOLVE_EXTENSIONS {
+            let appended = candidate.with_file_name(format!("{name}.{ext}"));
+            if appended.is_file() {
+                return Some(normalize_path(&appended));
+            }
+        }
+    }
+    // TypeScript NodeNext / ESM idiom: an `import './x.js'` (or `.mjs` /
+    // `.cjs`) frequently refers to `x.ts` / `x.mts` / `x.cts` on disk. When
+    // the specifier carries a JS-family extension that did not resolve as a
+    // file above, retry with each TS-family extension swapped in.
+    if let Some(stem) = candidate.file_stem().and_then(|s| s.to_str()) {
+        let has_js_ext = candidate
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "js" | "jsx" | "mjs" | "cjs"));
+        if has_js_ext {
+            for ext in ["ts", "tsx", "mts", "cts"] {
+                let swapped = candidate.with_file_name(format!("{stem}.{ext}"));
+                if swapped.is_file() {
+                    return Some(normalize_path(&swapped));
                 }
             }
         }
@@ -1039,4 +1060,74 @@ fn normalize_path(p: &Path) -> PathBuf {
 
 fn canonicalize_or_owned(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
+#[cfg(test)]
+mod resolve_file_ext_tests {
+    use super::resolve_file_or_index;
+    use std::fs;
+
+    /// `import './user.service'` must resolve to `user.service.ts` on disk:
+    /// the extension is APPENDED to the full specifier, not replacing the
+    /// `.service` suffix (the Angular/NestJS convention).
+    #[test]
+    fn resolves_dotted_basename_by_appending_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("user.service.ts");
+        fs::write(&target, "export const x = 1;").unwrap();
+
+        // The specifier as the importer would join it: no extension appended.
+        let candidate = dir.path().join("user.service");
+        let resolved = resolve_file_or_index(&candidate)
+            .expect("'./user.service' should resolve to user.service.ts");
+        assert!(
+            resolved.ends_with("user.service.ts"),
+            "expected user.service.ts, got {resolved:?}"
+        );
+    }
+
+    /// TypeScript NodeNext idiom: `import './x.js'` resolves to `x.ts` on disk.
+    #[test]
+    fn resolves_js_specifier_to_ts_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("x.ts");
+        fs::write(&target, "export const y = 2;").unwrap();
+
+        let candidate = dir.path().join("x.js");
+        let resolved = resolve_file_or_index(&candidate)
+            .expect("'./x.js' should resolve to x.ts under NodeNext semantics");
+        assert!(
+            resolved.ends_with("x.ts"),
+            "expected x.ts, got {resolved:?}"
+        );
+    }
+
+    /// Extensionless specifiers still resolve (no regression).
+    #[test]
+    fn resolves_extensionless_specifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("plain.ts");
+        fs::write(&target, "export const z = 3;").unwrap();
+
+        let candidate = dir.path().join("plain");
+        let resolved =
+            resolve_file_or_index(&candidate).expect("'./plain' should resolve to plain.ts");
+        assert!(resolved.ends_with("plain.ts"), "got {resolved:?}");
+    }
+
+    /// A non-JS asset import (e.g. `./image.css`) with no matching source on
+    /// disk must NOT spuriously resolve to an unrelated file.
+    #[test]
+    fn does_not_spuriously_resolve_unrelated_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        // A same-stem .ts exists, but a `.css` import is not a JS-family
+        // extension, so the NodeNext swap must not fire.
+        fs::write(dir.path().join("image.ts"), "x").unwrap();
+
+        let candidate = dir.path().join("image.css");
+        assert!(
+            resolve_file_or_index(&candidate).is_none(),
+            "a .css specifier must not resolve to image.ts"
+        );
+    }
 }

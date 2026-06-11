@@ -488,12 +488,24 @@ impl AbstractState {
 
     /// Partial order: self ⊑ other.
     pub fn leq(&self, other: &Self) -> bool {
-        // Every non-Top entry in self must have a corresponding entry in other
-        // with self[v] ⊑ other[v]. Entries only in other are fine (Top ⊑ anything
-        // is false, but absent self entries are Top which is handled).
+        // self ⊑ other iff for every SSA value v: self[v] ⊑ other[v], using the
+        // convention that an absent entry is Top.
+        //
+        // Three cases by where v is stored:
+        //   - in both:      check self[v] ⊑ other[v]  (loop over self below).
+        //   - in self only: other[v] = Top, and self[v] ⊑ Top always holds — ok.
+        //   - in other only: self[v] = Top; since stored entries are non-Top,
+        //     Top ⋢ other[v], so self ⋢ other. This case was previously missed.
         for (v, val) in &self.values {
             let other_val = other.get(*v);
             if !val.leq(&other_val) {
+                return false;
+            }
+        }
+        // Any value present only in `other` means self[v] = Top ⋢ other[v]
+        // (other's stored entries are non-Top), so self ⋢ other.
+        for (v, _) in &other.values {
+            if self.values.binary_search_by_key(v, |(id, _)| *id).is_err() {
                 return false;
             }
         }
@@ -673,6 +685,36 @@ mod tests {
         let v1 = w.get(SsaValue(1));
         assert_eq!(v1.interval.lo, Some(0)); // stable
         assert_eq!(v1.interval.hi, None); // grew → widened
+    }
+
+    #[test]
+    fn abstract_state_leq_respects_other_only_entries() {
+        // self = empty (every value is implicitly Top).
+        // other = { v1: [0,5] } (a non-Top, hence strictly-lower fact).
+        // Since Top ⋢ [0,5], empty ⋢ other.
+        let bounded = AbstractValue {
+            interval: IntervalFact {
+                lo: Some(0),
+                hi: Some(5),
+            },
+            string: StringFact::top(),
+            bits: BitFact::top(),
+            path: PathFact::top(),
+        };
+        let empty = AbstractState::empty();
+        let mut other = AbstractState::empty();
+        other.set(SsaValue(1), bounded);
+
+        // The bug under test: empty.leq(other) used to return true.
+        assert!(
+            !empty.leq(&other),
+            "empty (Top everywhere) must not be ⊑ a state with a bounded entry"
+        );
+        // Sanity: the reverse direction holds (a bounded state ⊑ all-Top).
+        assert!(other.leq(&empty), "a bounded state must be ⊑ all-Top");
+        // Reflexivity still holds.
+        assert!(other.leq(&other));
+        assert!(empty.leq(&empty));
     }
 
     #[test]

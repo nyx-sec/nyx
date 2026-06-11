@@ -4,6 +4,7 @@ use super::{AnalysisContext, CfgAnalysis, CfgFinding, Confidence};
 use crate::cfg::{EdgeKind, StmtKind};
 use crate::patterns::Severity;
 use crate::symbol::Lang;
+use petgraph::algo::dominators::Dominators;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
@@ -132,11 +133,14 @@ fn release_on_all_exit_paths(
     acquire: NodeIndex,
     release_nodes: &[NodeIndex],
     exit: NodeIndex,
+    post_doms: Option<&Dominators<NodeIndex>>,
 ) -> bool {
-    // Use post-dominators as optimization: if any release post-dominates acquire, it's fine
-    if let Some(post_doms) = dominators::compute_post_dominators(ctx.cfg) {
+    // Use post-dominators as optimization: if any release post-dominates acquire, it's fine.
+    // The post-dominator tree is computed once per CFG by the caller (the CFG is
+    // immutable across acquire sites), so it is threaded in rather than recomputed here.
+    if let Some(post_doms) = post_doms {
         for &release in release_nodes {
-            if dominators::dominates(&post_doms, release, acquire) {
+            if dominators::dominates(post_doms, release, acquire) {
                 return true;
             }
         }
@@ -363,8 +367,13 @@ fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
 
         if references_var && start < end && end <= ctx.source_bytes.len() {
             let span_text = &ctx.source_bytes[start..end];
-            // `->` anywhere in span means pointer-to-member store
-            if span_text.windows(2).any(|w| w == b"->") {
+            // `ptr->field = var` pointer-to-member store.  A bare `->`
+            // anywhere in the span is NOT enough: a member READ on or near
+            // the handle (`fread(buf->data, 1, n, fp)`, PHP
+            // `$conn->query(...)`) also contains `->` but transfers no
+            // ownership, so requiring the `= ` (assignment, not `==`) keeps
+            // the suppression to actual stores.
+            if has_arrow_field_assignment(span_text) {
                 return true;
             }
             // `.field = var` pattern (but not `==`)
@@ -384,7 +393,7 @@ fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
         {
             let is_field_write = if start < end && end <= ctx.source_bytes.len() {
                 let span_text = &ctx.source_bytes[start..end];
-                span_text.windows(2).any(|w| w == b"->") || has_dot_field_assignment(span_text)
+                has_arrow_field_assignment(span_text) || has_dot_field_assignment(span_text)
             } else {
                 false
             };
@@ -425,6 +434,58 @@ fn has_dot_field_assignment(span_text: &[u8]) -> bool {
             if j < span_text.len()
                 && span_text[j] == b'='
                 && (j + 1 >= span_text.len() || span_text[j + 1] != b'=')
+            {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Check if `span_text` contains a pointer-to-member assignment pattern like
+/// `ptr->field = var` (but not a member READ such as `fread(buf->data, ...)`,
+/// PHP `$conn->query(...)`, or a comparison `a->b == c`).
+///
+/// A bare `->` anywhere in the span is insufficient — only an arrow access
+/// that is the LHS of an assignment indicates an ownership-transfer store.
+/// We require, after one or more `->ident` (or `.ident`) member-access
+/// segments, a single `=` that is not part of `==` / `!=` / `<=` / `>=`.
+fn has_arrow_field_assignment(span_text: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 1 < span_text.len() {
+        if span_text[i] == b'-' && span_text[i + 1] == b'>' {
+            // Walk past chained member-access segments: `->ident`,
+            // `.ident`, further `->ident`, and any whitespace, looking for
+            // the assignment `=`.
+            let mut j = i + 2;
+            loop {
+                // identifier chars
+                while j < span_text.len()
+                    && (span_text[j].is_ascii_alphanumeric() || span_text[j] == b'_')
+                {
+                    j += 1;
+                }
+                // chained `->` / `.` member access keeps the LHS going
+                if j + 1 < span_text.len() && span_text[j] == b'-' && span_text[j + 1] == b'>' {
+                    j += 2;
+                    continue;
+                }
+                if j < span_text.len() && span_text[j] == b'.' {
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            // Skip whitespace before the operator
+            while j < span_text.len() && span_text[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            // Reject `==`, `!=`, `<=`, `>=` — only a bare `=` is a store.
+            if j < span_text.len()
+                && span_text[j] == b'='
+                && (j + 1 >= span_text.len() || span_text[j + 1] != b'=')
+                && (j == 0 || !matches!(span_text[j - 1], b'!' | b'<' | b'>' | b'='))
             {
                 return true;
             }
@@ -538,6 +599,12 @@ impl CfgAnalysis for ResourceMisuse {
             None => return Vec::new(),
         };
 
+        // The CFG is immutable for the duration of this pass, so the
+        // post-dominator tree only needs to be computed once.  Previously
+        // `release_on_all_exit_paths` recomputed it for every acquire site,
+        // turning the body's post-dominator analysis into an O(A) hot spot.
+        let post_doms = dominators::compute_post_dominators(ctx.cfg);
+
         let mut findings = Vec::new();
 
         for pair in pairs {
@@ -593,8 +660,13 @@ impl CfgAnalysis for ResourceMisuse {
                         continue;
                     }
                 }
-                if !release_on_all_exit_paths(ctx, acquire, &release_nodes, exit)
-                    && !is_ownership_transferred(ctx, acquire)
+                if !release_on_all_exit_paths(
+                    ctx,
+                    acquire,
+                    &release_nodes,
+                    exit,
+                    post_doms.as_ref(),
+                ) && !is_ownership_transferred(ctx, acquire)
                     && !is_consumed_by_owner(ctx, acquire)
                 {
                     // For mutex pairs, require an explicit .acquire()/.lock() call
@@ -723,5 +795,31 @@ mod tests {
         // should also gate it out: first arg is not a string literal.
         let info = call_node(vec![None], vec![vec!["receiver_func".into()]]);
         assert!(!is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn arrow_field_assignment_matches_real_stores() {
+        // Genuine ownership-transfer stores: `ptr->field = var`.
+        assert!(has_arrow_field_assignment(b"ctx->fp = fp"));
+        assert!(has_arrow_field_assignment(b"p->next = cfg->variables"));
+        // Chained member access on the LHS.
+        assert!(has_arrow_field_assignment(b"a->b->c = handle"));
+        // Whitespace variations.
+        assert!(has_arrow_field_assignment(b"obj->handle=res"));
+    }
+
+    #[test]
+    fn arrow_field_assignment_rejects_member_reads() {
+        // Member READ on / near the handle: contains `->` but no store.
+        // This is the false-negative the fix targets — must NOT be treated
+        // as ownership transfer.
+        assert!(!has_arrow_field_assignment(b"fread(buf->data, 1, n, fp)"));
+        assert!(!has_arrow_field_assignment(b"$result = $conn->query(sql)"));
+        assert!(!has_arrow_field_assignment(b"if (node->len > 0)"));
+        // Comparisons through arrow access are not stores.
+        assert!(!has_arrow_field_assignment(b"if (obj->state == READY)"));
+        assert!(!has_arrow_field_assignment(b"x->y != z"));
+        // No arrow at all.
+        assert!(!has_arrow_field_assignment(b"fclose(fp)"));
     }
 }

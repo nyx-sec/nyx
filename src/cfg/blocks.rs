@@ -16,6 +16,28 @@ fn lang_has_exclusive_cases(lang: &str) -> bool {
     matches!(lang, "rust" | "go")
 }
 
+/// True when *this specific switch* has guaranteed-exclusive (non-fall-through)
+/// cases, so it is safe to reorder the `default` arm to the cascade tail.
+///
+/// Rust `match` and Go `switch` are always exclusive. Java mixes shapes: the
+/// arrow form (`switch_rule` cases, `case x -> ...`) is exclusive, but the
+/// classic colon form (`switch_block_statement_group`, `case x:` with implicit
+/// fall-through) is NOT. C/C++/JS/TS/PHP classic switches fall through and are
+/// never exclusive. Reordering `default` to the tail is only correct for the
+/// exclusive shapes; doing it for fall-through switches connects the wrong
+/// case bodies in the source-order fall-through chain (both missed and phantom
+/// taint flows).
+fn switch_is_exclusive(lang: &str, cases: &[(Node<'_>, bool)]) -> bool {
+    if lang_has_exclusive_cases(lang) {
+        return true;
+    }
+    if lang == "java" {
+        // Arrow-switch when every case is the arrow `switch_rule` shape.
+        return cases.iter().all(|(c, _)| c.kind() == "switch_rule");
+    }
+    false
+}
+
 /// Extract the scrutinee subtree from a switch-like AST node.
 ///
 /// Returns the AST node referenced by the language's scrutinee field. Only
@@ -591,12 +613,21 @@ pub(super) fn build_switch<'a>(
         return exits;
     }
 
+    // Whether this switch's cases are mutually exclusive (no fall-through).
+    // Only exclusive switches may have `default` reordered to the cascade tail.
+    let is_exclusive = switch_is_exclusive(lang, &cases);
+
     // Reorder so the default arm (if any) sits at the tail of the cascade.
-    // Reordering case dispatch is semantically harmless (mutually exclusive
-    // pattern matches), and it keeps the chain a clean Branch(True→case,
-    // False→next). Fall-through chains are a separate Seq layer below.
+    // Reordering case dispatch is semantically harmless ONLY for mutually
+    // exclusive pattern matches (Rust match, Go switch, Java arrow-switch); it
+    // keeps the chain a clean Branch(True→case, False→next). For classic
+    // fall-through switches (C/C++/JS/TS/PHP, Java colon-switch) a mid-chain
+    // `default:` can fall into the following case and a preceding case can fall
+    // into it, so the source order MUST be preserved — reordering there breaks
+    // the fall-through Seq layer and produces both missed and phantom flows.
     let default_pos = cases.iter().position(|(_, d)| *d);
-    if let Some(pos) = default_pos
+    if is_exclusive
+        && let Some(pos) = default_pos
         && pos != cases.len() - 1
     {
         let default_pair = cases.remove(pos);
@@ -648,22 +679,40 @@ pub(super) fn build_switch<'a>(
     let mut fallthrough_exits: Vec<NodeIndex> = Vec::new();
     let mut last_header_false: Option<NodeIndex> = None;
     let mut chain_preds: Vec<NodeIndex> = preds.to_vec();
+    // First node of the `default` body for a fall-through switch where the
+    // default is NOT at the tail. The cumulative no-match path (the last
+    // non-default header's False edge) is wired into it after the loop, so the
+    // default stays in its source position for the fall-through Seq layer while
+    // still being reachable when no case matches.
+    let mut pending_default_no_match: Option<NodeIndex> = None;
 
     for (idx, (case, is_default)) in cases.iter().copied().enumerate() {
         let is_last = idx + 1 == cases.len();
 
+        // A `default` arm carries no discriminant test, so it never gets its
+        // own dispatch If. For exclusive switches it has been reordered to the
+        // tail (`is_last`); for fall-through switches it stays in source
+        // position (`!is_exclusive`) and is wired into the Seq fall-through
+        // chain instead of acting as a conditional branch.
+        let default_no_dispatch = is_default && (is_last || !is_exclusive);
+
         // Default at the chain tail doesn't get its own dispatch If, the
         // previous header's False edge already targets it directly.
-        let case_first_preds: Vec<NodeIndex> = if is_default && is_last {
-            // First node of the default body becomes the False target of the
-            // previous header. Build the case with the previous chain_preds
-            // (the last header's "fall-through" branch) plus any fallthrough
-            // from the preceding case.
-            let mut p = chain_preds.clone();
-            p.append(&mut fallthrough_exits);
-            // `last_header_false` will receive a False edge once we know the
-            // first node of this body.
-            last_header_false = chain_preds.first().copied();
+        let case_first_preds: Vec<NodeIndex> = if default_no_dispatch {
+            // Body entry = fall-through from the preceding case body.
+            let mut p = std::mem::take(&mut fallthrough_exits);
+            if is_last {
+                // Tail default: the previous header's False branch also lands
+                // here directly (legacy behavior preserved for exclusive
+                // switches and tail defaults).
+                p.extend(chain_preds.iter().copied());
+                last_header_false = chain_preds.first().copied();
+            }
+            // For a non-tail (fall-through) default the dispatch chain must
+            // continue PAST it, so `chain_preds` / `last_header_false` are left
+            // untouched and the next case's dispatch header still receives the
+            // previous header's False edge. The cumulative no-match entry is
+            // recorded below once the body's first node is known.
             p
         } else {
             // Normal case: synthesize a per-case dispatch header. We tie it
@@ -741,12 +790,21 @@ pub(super) fn build_switch<'a>(
         // Wire the dispatch True edge from this header (or from the previous
         // header for a tail-default) to the first node of the case body.
         if body_first_idx.index() < g.node_count() {
-            let header_for_true = if is_default && is_last {
-                // The previous header's False already lands here via the
-                // EdgeKind::Seq inside `case_first_preds`; we additionally
-                // emit a False edge directly so SSA labels the branch.
-                if let Some(prev) = last_header_false {
-                    g.add_edge(prev, body_first_idx, EdgeKind::False);
+            let header_for_true = if default_no_dispatch {
+                if is_last {
+                    // Tail default: the previous header's False already lands
+                    // here via the EdgeKind::Seq inside `case_first_preds`; we
+                    // additionally emit a False edge directly so SSA labels the
+                    // branch.
+                    if let Some(prev) = last_header_false {
+                        g.add_edge(prev, body_first_idx, EdgeKind::False);
+                    }
+                } else {
+                    // Non-tail fall-through default: defer wiring the no-match
+                    // entry until the last non-default header's False edge is
+                    // known (after the loop). The body's only in-edge for now
+                    // is the source-order fall-through from the preceding case.
+                    pending_default_no_match = Some(body_first_idx);
                 }
                 None
             } else {
@@ -762,11 +820,22 @@ pub(super) fn build_switch<'a>(
         let _ = is_default;
     }
 
-    // After the chain: the last non-default header (if no default arm) needs
-    // a False edge that escapes to the post-switch frontier.
+    // Resolve the cumulative no-match (the last non-default header's False
+    // edge):
+    //   - If the `default` arm sits mid-chain (fall-through switch), the
+    //     no-match path enters the default body — wire the deferred False edge
+    //     into it. The default stayed in source position for the fall-through
+    //     Seq layer, so this is the only edge making it reachable on no-match.
+    //   - Otherwise, with no reachable default (no default arm, or it was the
+    //     tail and already consumed the False edge), the no-match path escapes
+    //     to the post-switch frontier.
     let mut exits: Vec<NodeIndex> = switch_breaks;
     exits.append(&mut fallthrough_exits);
-    if !has_default {
+    if let Some(default_first) = pending_default_no_match {
+        if let Some(prev) = last_header_false {
+            g.add_edge(prev, default_first, EdgeKind::False);
+        }
+    } else if !has_default {
         if let Some(prev) = last_header_false {
             exits.push(prev);
         }

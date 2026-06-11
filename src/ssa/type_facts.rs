@@ -1339,7 +1339,16 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
     // Peel trailing identity methods (e.g. `.unwrap()`/`.expect("...")` after
     // `.parse()`) so the underlying numeric-producing verb is exposed.
     let base = peel_identity_suffix(callee);
-    let suffix = base.rsplit(['.', ':']).next().unwrap_or(&base);
+    // `peel_identity_suffix` normalizes a turbofish callee by truncating at
+    // `<`, which leaves a trailing `::` (e.g. `s.parse::<u32>()` →
+    // `s.parse::`).  Trim trailing path separators so the method suffix is
+    // recovered (`parse`) instead of an empty segment.
+    // Trim the trailing path separators a turbofish callee leaves behind:
+    // `peel_identity_suffix` truncates at `<`, so `s.parse::<u32>()` →
+    // `s.parse::`.  Trimming recovers the method suffix (`parse`) instead of
+    // an empty segment.
+    let trimmed = base.trim_end_matches([':', '.']);
+    let suffix = trimmed.rsplit(['.', ':']).next().unwrap_or(trimmed);
     matches!(
         suffix,
         "parseInt" | "parseFloat" | "Number"        // JS/TS
@@ -1348,8 +1357,19 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
         | "Atoi" | "ParseInt" | "ParseFloat"         // Go
         | "intval" | "floatval"                       // PHP
         | "to_i" | "to_f"                             // Ruby
-        | "parse" // Rust: `.parse::<N>()` / `.parse().unwrap()`, conservative
-                  // (most Rust .parse() calls target numeric types)
+        | "parse" // Rust: `.parse::<N>()` / `let n: u32 = s.parse()?` ,
+                  // conservative (most `str::parse` targets are numeric).
+                  //
+                  // KNOWN LIMITATION: the callee text alone cannot
+                  // distinguish `parse::<u32>()` from `parse::<PathBuf>()`
+                  // / `let p: PathBuf = s.parse()?`.  Tagging every `parse`
+                  // as `Int` keeps the tested precision behaviour
+                  // (`type_facts_suppress_int_typed_shell_arg`: a u16 port
+                  // into a shell arg is suppressed) at the cost of a rare
+                  // false negative on `let p: PathBuf = s.parse()?;
+                  // fs::read(p)`.  Distinguishing the two soundly requires
+                  // reading the let-binding type annotation into the type
+                  // lattice (tracked as a deep-fix; NOT inferable here).
     )
 }
 
@@ -1372,14 +1392,13 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
 ///   `Byte.toString` / `Boolean.toString` / `Character.toString` ,
 ///   output is `[+-]?\d+(\.\d+)?` / `"true"` / `"false"` / `"NaN"` /
 ///   `"Infinity"`, none of which can carry CRLF or injection metachars.
-/// * `String.valueOf` static factories ,  most overloads (`int`,
-///   `long`, `boolean`, `char`, ...) emit the same digit / boolean /
-///   single-character text as their per-class `toString`.  The
-///   `Object` overload falls back to `Object.toString()` whose output
-///   shape depends on the runtime type, but the dominant safe usage
-///   shape (`String.valueOf(payload.size())`,
-///   `String.valueOf(rendered.length())`) covers the common
-///   header-injection mitigation pattern.
+/// * `String.valueOf` is deliberately **not** covered.  Its `String` /
+///   `Object` overloads return the argument verbatim (or its arbitrary
+///   `toString()`), so `String.valueOf(req.getParameter("x"))` is an
+///   identity passthrough — recognising it as a safe-string producer
+///   silently suppressed real injections.  The callee text alone cannot
+///   distinguish the safe numeric overload from the identity form, so the
+///   whole family is left unrecognised (soundness over precision).
 /// * `Class.getName` / `Class.getSimpleName` / `Class.getCanonicalName`
 ///   ,  the JVM class-name grammar disallows CRLF, quotes, slashes,
 ///   spaces, and shell metacharacters; the dot-separated FQCN is safe
@@ -1402,7 +1421,21 @@ pub fn is_safe_string_producing_callee(callee: &str) -> bool {
                 | "Character",
                 "toString",
             ) => return true,
-            ("String", "valueOf") => return true,
+            // `String.valueOf` is NOT safe-by-construction: while the
+            // primitive overloads (`valueOf(int)` / `valueOf(boolean)` /
+            // `valueOf(char)`) emit digit / boolean / single-char text,
+            // `valueOf(String s)` returns `s` *verbatim* and the
+            // `valueOf(Object o)` overload returns `o.toString()` whose
+            // shape is arbitrary.  The callee text (`String.valueOf`)
+            // carries no argument-type signal, so we cannot tell the safe
+            // numeric form from the identity form here.  Tagging it as a
+            // safe-string producer suppressed real injections like
+            // `stmt.execute(String.valueOf(req.getParameter("x")))`
+            // (the suppression consumer `apply_arg_type_safe_suppression`
+            // drops the tainted arg at the sink).  Erring toward soundness:
+            // `String.valueOf` is left unrecognised, so the numeric
+            // mitigation shape (`String.valueOf(payload.size())`) is no
+            // longer auto-suppressed but no injection is silently dropped.
             ("Class", "getName" | "getSimpleName" | "getCanonicalName") => return true,
             _ => {}
         }
@@ -1552,7 +1585,21 @@ pub fn analyze_types_with_param_types(
                 }
                 SsaOp::SelfParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::CatchParam => TypeFact::from_kind(TypeKind::Object),
-                SsaOp::Call { callee, args, .. } => {
+                SsaOp::Call {
+                    callee,
+                    callee_text,
+                    args,
+                    ..
+                } => {
+                    // For the Rust `.parse()` numeric-turbofish gate (see
+                    // `is_int_producing_callee`) the discriminating
+                    // `::<T>` lives in the *original* callee text, which SSA
+                    // moves into `callee_text` when it decomposes a chained
+                    // receiver (`x.parse::<u32>()` → `callee = "parse"`,
+                    // `callee_text = Some("x.parse::<u32>")`).  Prefer the
+                    // full text so the turbofish survives; `callee` is the
+                    // canonical fallback when no decomposition occurred.
+                    let callee_for_int = callee_text.as_deref().unwrap_or(callee);
                     // CFG marks `Object.create(null)` (and future
                     // null-prototype constructors) at lowering time.
                     // Honour it ahead of generic constructor / arg-aware
@@ -1588,7 +1635,7 @@ pub fn analyze_types_with_param_types(
                         lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))
                     {
                         TypeFact::from_kind(ty)
-                    } else if is_int_producing_callee(callee) {
+                    } else if is_int_producing_callee(callee_for_int) {
                         TypeFact::from_kind(TypeKind::Int)
                     } else if is_safe_string_producing_callee(callee) {
                         // Numeric/boolean to-string converters and class-name
@@ -3438,5 +3485,63 @@ mod tests {
             None,
             "createQuery is overloaded — must not map at constructor_type level"
         );
+    }
+
+    /// Audit #3: `String.valueOf` is an identity passthrough for its
+    /// `String`/`Object` overloads, so it must NOT be recognised as a
+    /// safe-string producer (which would suppress real injections like
+    /// `stmt.execute(String.valueOf(req.getParameter("x")))`).  The
+    /// genuinely-safe numeric to-string converters and class-name
+    /// accessors are still recognised.
+    #[test]
+    fn string_valueof_not_safe_string_producer() {
+        // The defect: must be false now (was unconditionally true).
+        assert!(
+            !is_safe_string_producing_callee("String.valueOf"),
+            "String.valueOf is identity for String/Object overloads — unsound to treat as safe"
+        );
+        assert!(
+            !is_safe_string_producing_callee("java.lang.String.valueOf"),
+            "fully-qualified String.valueOf must also be unrecognised"
+        );
+        // Regression guard: the genuinely safe converters/accessors remain.
+        assert!(is_safe_string_producing_callee("Integer.toString"));
+        assert!(is_safe_string_producing_callee("Long.toString"));
+        assert!(is_safe_string_producing_callee("Boolean.toString"));
+        assert!(is_safe_string_producing_callee("Class.getName"));
+        assert!(is_safe_string_producing_callee("loaded.getClass().getName"));
+    }
+
+    /// Audit #4: bare Rust `.parse()` is generic over `FromStr`, but the
+    /// callee text cannot distinguish `parse::<u32>()` from
+    /// `parse::<PathBuf>()`.  The engine deliberately tags every `parse` as
+    /// `Int` (precision: a u16 port into a shell arg is suppressed — pinned by
+    /// `cfg_analysis::tests::type_facts_suppress_int_typed_shell_arg`), at the
+    /// cost of a rare FN on `let p: PathBuf = s.parse()?`.  Distinguishing the
+    /// two soundly needs let-annotation typing (deep-fix queue), not the
+    /// callee text.  This test pins the chosen behaviour + cross-language
+    /// converters + turbofish-form robustness.
+    #[test]
+    fn rust_parse_is_int_producing_and_turbofish_forms_are_robust() {
+        // Bare parse and its identity-peeled / receiver-qualified forms — Int.
+        assert!(is_int_producing_callee("parse"));
+        assert!(is_int_producing_callee("s.parse"));
+        assert!(is_int_producing_callee("parse().unwrap()"));
+        // Turbofish forms survive `peel_identity_suffix` truncation at `<`
+        // (the trailing `::` is trimmed back to the `parse` suffix).
+        assert!(is_int_producing_callee("s.parse::<u32>()"));
+        assert!(is_int_producing_callee("s.parse::<i64>()"));
+        assert!(is_int_producing_callee(
+            "contents.trim().parse::<u32>().expect(\"invalid pid\")"
+        ));
+        // Other languages' numeric converters remain unconditional.
+        assert!(is_int_producing_callee("parseInt"));
+        assert!(is_int_producing_callee("Number"));
+        assert!(is_int_producing_callee("Atoi"));
+        assert!(is_int_producing_callee("strconv.ParseInt"));
+        assert!(is_int_producing_callee("x.to_i"));
+        // Negative: a non-numeric-producing method must not be Int.
+        assert!(!is_int_producing_callee("toUpperCase"));
+        assert!(!is_int_producing_callee("trim"));
     }
 }

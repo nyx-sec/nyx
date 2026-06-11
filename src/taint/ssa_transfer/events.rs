@@ -156,6 +156,17 @@ pub(super) fn reconstruct_flow_path(
                         current = pick_tainted_operand(&vals, origin, ssa);
                         continue;
                     }
+                    // NOTE: deliberately NOT continuing through
+                    // `SsaOp::FieldProj` in this dedup arm.  Walking the
+                    // receiver chain of a member-access source
+                    // (`req.body.path`) advances the backward walk past the
+                    // meaningful taint-read node (the `.body.path` access) all
+                    // the way to the bare parameter (`req`), regressing the
+                    // reported source line from the member access (line 9) to
+                    // the function signature (line 8).  The recall corpus
+                    // (`tests/recall_gaps.rs` fs_promises_*) and
+                    // `real_world_tests` pin the member-access source line, so
+                    // the FieldProj node terminates the walk here.
                     _ => break,
                 }
             }

@@ -108,9 +108,20 @@ fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> bool {
         return false;
     }
 
-    // Check if any path through the true branch terminates
+    // The join point of the if statement is its immediate post-dominator:
+    // the first node every branch reconverges on.  The true-branch walk
+    // must stop there — reaching the join means the body fell through
+    // *past* the if without terminating, so any `return` in the function
+    // tail past the join must NOT count as the error branch terminating.
+    // Without this bound, a trailing `return nil` (present in essentially
+    // every Go `func(...) error`) makes the walk report "all paths
+    // terminate" and silently suppresses the rule.
+    let join = super::dominators::compute_post_dominators(cfg)
+        .and_then(|pd| pd.immediate_dominator(if_node));
+
+    // Check if any path through the true branch terminates before the join.
     for &start in &true_successors {
-        if terminates_on_all_paths(cfg, start, if_node) {
+        if terminates_on_all_paths(cfg, start, join) {
             return true;
         }
     }
@@ -206,11 +217,18 @@ fn call_never_returns(info: &crate::cfg::NodeInfo) -> bool {
 }
 
 /// Check if all paths from `node` reach a Return/Break/Continue (or a
-/// known never-returning call) before exiting scope.
+/// known never-returning call) before reaching the if's join point.
+///
+/// `join` is the if statement's immediate post-dominator (`None` if it
+/// could not be computed — e.g. no Exit node).  The walk stops at the
+/// join: reaching it means the true branch fell through past the if
+/// without terminating, so that path does NOT terminate and the rule
+/// should fire.  This prevents a `return` in the function tail (after the
+/// join) from being mis-attributed to the error branch.
 fn terminates_on_all_paths(
     cfg: &crate::cfg::Cfg,
     node: NodeIndex,
-    _scope_entry: NodeIndex,
+    join: Option<NodeIndex>,
 ) -> bool {
     use std::collections::HashSet;
 
@@ -220,6 +238,12 @@ fn terminates_on_all_paths(
     while let Some(current) = stack.pop() {
         if !visited.insert(current) {
             continue;
+        }
+
+        // Reaching the if's join point means this path fell through past
+        // the if without terminating inside the branch.
+        if join == Some(current) {
+            return false;
         }
 
         let info = &cfg[current];
@@ -457,6 +481,91 @@ mod err_ident_tests {
         assert!(!is_error_var_ident("user"));
         assert!(!is_error_var_ident("merry"));
         assert!(!is_error_var_ident("perform"));
+    }
+}
+
+#[cfg(test)]
+mod join_boundary_tests {
+    use super::branch_terminates;
+    use crate::cfg::{CallMeta, Cfg, EdgeKind, NodeInfo, StmtKind};
+    use petgraph::graph::NodeIndex;
+
+    fn node(kind: StmtKind) -> NodeInfo {
+        NodeInfo {
+            kind,
+            ..Default::default()
+        }
+    }
+
+    fn call_node(callee: &str) -> NodeInfo {
+        NodeInfo {
+            kind: StmtKind::Call,
+            call: CallMeta {
+                callee: Some(callee.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Build the canonical `if err != nil { <body> } <tail>; return`
+    /// shape and return (cfg, if_node).  `body_terminates` selects whether
+    /// the true branch body itself returns (terminates) or falls through
+    /// to the join.
+    fn build_if_cfg(body_terminates: bool) -> (Cfg, NodeIndex) {
+        let mut cfg = Cfg::new();
+        let entry = cfg.add_node(node(StmtKind::Entry));
+        let if_n = cfg.add_node(node(StmtKind::If));
+        // true-branch body
+        let body = if body_terminates {
+            cfg.add_node(node(StmtKind::Return))
+        } else {
+            cfg.add_node(call_node("log"))
+        };
+        // join point where both branches reconverge: a downstream use
+        let join = cfg.add_node(call_node("use"));
+        // function tail: an explicit `return nil` (present in every Go
+        // value-returning function) followed by exit.
+        let ret = cfg.add_node(node(StmtKind::Return));
+        let exit = cfg.add_node(node(StmtKind::Exit));
+
+        cfg.add_edge(entry, if_n, EdgeKind::Seq);
+        cfg.add_edge(if_n, body, EdgeKind::True);
+        cfg.add_edge(if_n, join, EdgeKind::False);
+        if !body_terminates {
+            cfg.add_edge(body, join, EdgeKind::Seq);
+        } else {
+            cfg.add_edge(body, exit, EdgeKind::Seq);
+        }
+        cfg.add_edge(join, ret, EdgeKind::Seq);
+        cfg.add_edge(ret, exit, EdgeKind::Seq);
+
+        (cfg, if_n)
+    }
+
+    #[test]
+    fn fallthrough_body_does_not_terminate_despite_trailing_return() {
+        // True branch falls through to the join; the function tail has a
+        // `return nil`.  Before the join-boundary fix the walk reached
+        // that trailing return and reported "terminates", suppressing the
+        // rule.  The fix bounds the walk at the join, so this is correctly
+        // reported as NOT terminating.
+        let (cfg, if_n) = build_if_cfg(false);
+        assert!(
+            !branch_terminates(&cfg, if_n),
+            "fall-through error branch must not count as terminating"
+        );
+    }
+
+    #[test]
+    fn returning_body_terminates() {
+        // True branch returns directly: the error is handled, so the rule
+        // must stay suppressed.
+        let (cfg, if_n) = build_if_cfg(true);
+        assert!(
+            branch_terminates(&cfg, if_n),
+            "error branch with an explicit return must count as terminating"
+        );
     }
 }
 

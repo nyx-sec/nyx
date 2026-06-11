@@ -9,7 +9,7 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["fgets", "scanf", "fscanf", "gets", "read"],
+        matchers: &["fgets", "scanf", "fscanf", "sscanf", "gets", "read"],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
@@ -273,6 +273,15 @@ pub static OUTPUT_PARAM_SOURCES: &[(&str, &[usize])] = &[
     ("gets", &[0]),     // gets(buf), buf receives input
     ("recv", &[1]),     // recv(fd, buf, len, flags)
     ("recvfrom", &[1]), // recvfrom(fd, buf, len, flags, ...)
+    ("read", &[1]),     // read(fd, buf, len), buf receives attacker bytes
+    // `scanf`/`fscanf`/`sscanf` return a match count; the attacker-controlled
+    // bytes land in the variadic output pointers after the format string.
+    // OUTPUT_PARAM_SOURCES stores a fixed position list, so we enumerate a
+    // conservative span of trailing argument positions to cover the common
+    // single- and multi-conversion forms.
+    ("scanf", &[1, 2, 3, 4, 5, 6, 7, 8]), // scanf("%s", buf, ...) , outputs start at arg 1
+    ("fscanf", &[2, 3, 4, 5, 6, 7, 8]),   // fscanf(stream, "%s", buf, ...) , outputs at arg 2+
+    ("sscanf", &[2, 3, 4, 5, 6, 7, 8]),   // sscanf(src, "%s", buf, ...) , outputs at arg 2+
 ];
 
 /// Arg-to-arg taint propagation for known C functions.
@@ -288,3 +297,36 @@ pub static ARG_PROPAGATIONS: &[super::ArgPropagation] = &[
         to_args: &[1],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::output_param_source_positions;
+
+    #[test]
+    fn scanf_family_and_read_taint_output_args() {
+        // `scanf("%s", buf)` , buf is at arg 1.
+        assert_eq!(
+            output_param_source_positions("c", "scanf"),
+            Some([1usize, 2, 3, 4, 5, 6, 7, 8].as_slice())
+        );
+        // `fscanf(stream, "%s", buf)` and `sscanf(src, "%s", buf)` , outputs at arg 2+.
+        assert_eq!(
+            output_param_source_positions("c", "fscanf"),
+            Some([2usize, 3, 4, 5, 6, 7, 8].as_slice())
+        );
+        assert_eq!(
+            output_param_source_positions("c", "sscanf"),
+            Some([2usize, 3, 4, 5, 6, 7, 8].as_slice())
+        );
+        // `read(fd, buf, len)` , buf is at arg 1.
+        assert_eq!(
+            output_param_source_positions("c", "read"),
+            Some([1usize].as_slice())
+        );
+        // Namespaced/qualified callees normalize to the last segment.
+        assert_eq!(
+            output_param_source_positions("c", "std::sscanf"),
+            Some([2usize, 3, 4, 5, 6, 7, 8].as_slice())
+        );
+    }
+}

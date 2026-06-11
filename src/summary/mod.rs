@@ -1641,13 +1641,34 @@ impl GlobalSummaries {
             return CalleeResolution::NotFound;
         }
 
-        let arity_filtered: Vec<&FuncKey> = all_candidates
+        let mut arity_filtered: Vec<&FuncKey> = all_candidates
             .iter()
             .copied()
             .filter(|k| arity_matches(k))
             .collect();
         if arity_filtered.is_empty() {
-            return CalleeResolution::NotFound;
+            // Exact-arity match found nothing. Tolerate under-application:
+            // `FuncKey::arity` is the *total* parameter count, so a call
+            // supplying `a` arguments to a function declared with more
+            // parameters (the surplus being default-valued / optional) is a
+            // routine, valid call shape in Python, JS/TS, PHP, and Ruby. Retry
+            // with `param_count >= call_arity` so these calls still resolve.
+            //
+            // This only ever WIDENS the candidate set, and resolution below
+            // still requires a unique candidate, so a genuinely ambiguous name
+            // degrades to `Ambiguous`, never a wrong `Resolved`. Exact-arity
+            // matches always take precedence (this branch runs only when none
+            // exist), so no existing exact-match resolution regresses.
+            if let Some(a) = q.arity {
+                arity_filtered = all_candidates
+                    .iter()
+                    .copied()
+                    .filter(|k| matches!(k.arity, Some(p) if p >= a))
+                    .collect();
+            }
+            if arity_filtered.is_empty() {
+                return CalleeResolution::NotFound;
+            }
         }
 
         let same_ns: Vec<&FuncKey> = arity_filtered
@@ -2033,14 +2054,42 @@ fn synthesize_ssa_disambig(summary: &SsaFuncSummary) -> u32 {
 /// Merging only happens for exact `FuncKey` matches (same lang + namespace +
 /// name + arity).  Functions with the same bare name but different languages
 /// or namespaces are stored separately.
+///
+/// This variant keys summaries via the plain [`FuncSummary::func_key`]
+/// (`normalize_namespace`), so it is only safe for repos with no
+/// package boundaries. The indexed scan path must use
+/// [`merge_summaries_with_resolver`] so the loaded coarse summaries are
+/// keyed with the same package-qualified namespaces that pass-1 SSA
+/// summaries, cross-package import maps, and pass-2 refinements use.
 pub fn merge_summaries(
     per_file: impl IntoIterator<Item = FuncSummary>,
     scan_root: Option<&str>,
 ) -> GlobalSummaries {
+    merge_summaries_with_resolver(per_file, scan_root, None)
+}
+
+/// Module-graph-aware variant of [`merge_summaries`].
+///
+/// Keys each summary via [`FuncSummary::func_key_with_resolver`], so a
+/// file inside a discovered package gets a package-qualified namespace
+/// (`"@scope/name::src/file.ts"`) instead of the plain
+/// `normalize_namespace` form. This must match the keying convention
+/// used by pass-1 SSA summaries (`namespace_with_package`) and pass-2
+/// topo refinements (`func_key_with_resolver`); otherwise exact-key
+/// joins between the coarse FuncSummary tier and the SSA tier miss, and
+/// same-namespace narrowing in [`GlobalSummaries::resolve_callee`] never
+/// matches the package-qualified caller namespace.
+///
+/// Passing `module_graph: None` is equivalent to [`merge_summaries`].
+pub fn merge_summaries_with_resolver(
+    per_file: impl IntoIterator<Item = FuncSummary>,
+    scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
+) -> GlobalSummaries {
     let mut map = GlobalSummaries::new();
 
     for fs in per_file {
-        let key = fs.func_key(scan_root);
+        let key = fs.func_key_with_resolver(scan_root, module_graph);
         map.insert(key, fs);
     }
 
@@ -2049,3 +2098,127 @@ pub fn merge_summaries(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod arity_leniency_tests {
+    use super::*;
+    use crate::symbol::{FuncKey, Lang};
+
+    fn py_func(name: &str, namespace: &str, param_count: usize) -> (FuncKey, FuncSummary) {
+        let key = FuncKey {
+            lang: Lang::Python,
+            namespace: namespace.into(),
+            name: name.into(),
+            arity: Some(param_count),
+            ..Default::default()
+        };
+        let summary = FuncSummary {
+            name: name.into(),
+            file_path: namespace.into(),
+            lang: "python".into(),
+            param_count,
+            ..Default::default()
+        };
+        (key, summary)
+    }
+
+    /// `run_cmd(cmd, opts=None)` (param_count 2) called as `run_cmd(user)`
+    /// (arity 1) must resolve via the under-application tolerance, not fall
+    /// through to NotFound.
+    #[test]
+    fn under_application_resolves_unique_defaulted_callee() {
+        let mut gs = GlobalSummaries::new();
+        let (key, summary) = py_func("run_cmd", "helper.py", 2);
+        gs.insert(key.clone(), summary);
+
+        let resolved = gs.resolve_callee(&CalleeQuery {
+            name: "run_cmd",
+            caller_lang: Lang::Python,
+            caller_namespace: "routes.py",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(1),
+        });
+        assert_eq!(
+            resolved,
+            CalleeResolution::Resolved(key),
+            "under-applied unique callee with default params must resolve"
+        );
+    }
+
+    /// Exact-arity matches still take precedence: when both an exact-arity and
+    /// a higher-arity candidate exist, the exact one wins (no regression).
+    #[test]
+    fn exact_arity_match_preferred_over_lenient() {
+        let mut gs = GlobalSummaries::new();
+        let (exact_key, exact_sum) = py_func("run_cmd", "a.py", 1);
+        let (wide_key, wide_sum) = py_func("run_cmd", "b.py", 3);
+        gs.insert(exact_key.clone(), exact_sum);
+        gs.insert(wide_key, wide_sum);
+
+        let resolved = gs.resolve_callee(&CalleeQuery {
+            name: "run_cmd",
+            caller_lang: Lang::Python,
+            caller_namespace: "routes.py",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(1),
+        });
+        // The exact-arity candidate (a.py, arity 1) is the sole exact match,
+        // so the lenient branch never runs and resolution is unambiguous.
+        assert_eq!(resolved, CalleeResolution::Resolved(exact_key));
+    }
+
+    /// Leniency only widens the candidate set; it never produces a wrong
+    /// Resolved. Two distinct higher-arity callees both tolerating the call
+    /// arity must degrade to Ambiguous, not a silent pick.
+    #[test]
+    fn under_application_ambiguous_when_multiple_candidates() {
+        let mut gs = GlobalSummaries::new();
+        let (k1, s1) = py_func("run_cmd", "a.py", 2);
+        let (k2, s2) = py_func("run_cmd", "b.py", 3);
+        gs.insert(k1, s1);
+        gs.insert(k2, s2);
+
+        let resolved = gs.resolve_callee(&CalleeQuery {
+            name: "run_cmd",
+            caller_lang: Lang::Python,
+            caller_namespace: "routes.py",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(1),
+        });
+        assert!(
+            matches!(resolved, CalleeResolution::Ambiguous(_)),
+            "two under-applied candidates must be Ambiguous, not a wrong Resolved: {resolved:?}"
+        );
+    }
+
+    /// Over-application (more args than params) must NOT be tolerated: the
+    /// lenient predicate is `param_count >= call_arity`, so a 1-param function
+    /// called with 2 args still returns NotFound.
+    #[test]
+    fn over_application_not_tolerated() {
+        let mut gs = GlobalSummaries::new();
+        let (key, summary) = py_func("run_cmd", "helper.py", 1);
+        gs.insert(key, summary);
+
+        let resolved = gs.resolve_callee(&CalleeQuery {
+            name: "run_cmd",
+            caller_lang: Lang::Python,
+            caller_namespace: "routes.py",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(2),
+        });
+        assert_eq!(resolved, CalleeResolution::NotFound);
+    }
+}

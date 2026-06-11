@@ -1069,7 +1069,13 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "block"                        => Kind::Block,
     "class_declaration"            => Kind::Block,
     "class_body"                   => Kind::Block,
+    "interface_declaration"        => Kind::Block,
     "interface_body"               => Kind::Block,
+    "enum_declaration"             => Kind::Block,
+    "enum_body"                    => Kind::Block,
+    "enum_body_declarations"       => Kind::Block,
+    "record_declaration"           => Kind::Block,
+    "synchronized_statement"       => Kind::Block,
     "method_declaration"           => Kind::Function,
     "constructor_declaration"      => Kind::Function,
     "switch_expression"            => Kind::Switch,
@@ -1125,4 +1131,32 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     }
 
     rules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KINDS;
+    use crate::labels::Kind;
+
+    #[test]
+    fn container_declarations_are_walkable_blocks() {
+        // interface_declaration must be mapped so its (already-mapped)
+        // interface_body is reachable; enum/record/synchronized bodies
+        // must be walked instead of collapsing to a leaf Seq node.
+        for kind in [
+            "interface_declaration",
+            "interface_body",
+            "enum_declaration",
+            "enum_body",
+            "enum_body_declarations",
+            "record_declaration",
+            "synchronized_statement",
+        ] {
+            assert_eq!(
+                KINDS.get(kind),
+                Some(&Kind::Block),
+                "{kind} should map to Kind::Block so the CFG builder walks its body"
+            );
+        }
+    }
 }

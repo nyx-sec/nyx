@@ -822,6 +822,51 @@ fn containment_order(bodies: &[BodyCfg]) -> Vec<usize> {
     order
 }
 
+/// Build the lexical-scope seed map for a non-toplevel body.
+///
+/// A body's `global_seed` ancestor lookup
+/// ([`ssa_transfer`] `SsaOp::Param` handling) reads its captured names in
+/// ancestor order: the direct `parent_body_id` first, then `BodyId(0)` to
+/// pick up the JS/TS pass-2 re-keyed top-level globals (see
+/// [`ssa_transfer::filter_seed_to_toplevel`]).  But `body_exit_states`
+/// keys every exit entry under the owning body's id, so a parent's exit
+/// map never contains `BodyId(0)` entries.  For a body nested two or more
+/// levels deep (its parent is itself a non-toplevel body) the `BodyId(0)`
+/// leg of the ancestor lookup would therefore find nothing — a global
+/// written by a sibling top-level function and read inside a nested
+/// closure would be silently missed.
+///
+/// This helper restores that leg: when `parent_id` is a *non*-toplevel
+/// body, it returns a merged map = parent's exit ∪ the `BodyId(0)`
+/// top-level seed (the converged globals, already keyed under
+/// `BodyId(0)`).  When the parent *is* the top level (`BodyId(0)`), the
+/// parent's exit already carries the `BodyId(0)` entries, so the borrowed
+/// parent map is returned unchanged with no clone.
+fn seed_for_nested_body<'a>(
+    parent_id: BodyId,
+    body_exit_states: &'a HashMap<
+        BodyId,
+        HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>,
+    >,
+) -> Option<std::borrow::Cow<'a, HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>>
+{
+    let parent_exit = body_exit_states.get(&parent_id);
+    if parent_id == BodyId(0) {
+        // Depth-1 body: the parent IS the top level, so its exit already
+        // carries the BodyId(0) entries the ancestor lookup wants.
+        return parent_exit.map(std::borrow::Cow::Borrowed);
+    }
+    // Depth ≥ 2 body: merge the direct parent's exit with the converged
+    // top-level seed so the ancestor lookup's BodyId(0) leg is live.
+    let toplevel_seed = body_exit_states.get(&BodyId(0));
+    match (parent_exit, toplevel_seed) {
+        (Some(p), Some(t)) => Some(std::borrow::Cow::Owned(ssa_transfer::join_seed_maps(p, t))),
+        (Some(p), None) => Some(std::borrow::Cow::Borrowed(p)),
+        (None, Some(t)) => Some(std::borrow::Cow::Borrowed(t)),
+        (None, None) => None,
+    }
+}
+
 /// Build a `var_name → TypeKind` map from a body's optimised SSA + type-fact
 /// result.  Used by [`analyse_multi_body`] to forward closure-captured types
 /// from a parent body into its children, so that bound-variable receiver
@@ -1455,11 +1500,16 @@ fn analyse_multi_body(
     // ── Pass 1: lexical containment propagation ──────────────────────
     for &idx in &order {
         let body = &file_cfg.bodies[idx];
-        // Determine seed from parent body's exit state.
-        let parent_seed = body
+        // Determine seed from parent body's exit state.  For bodies nested
+        // two or more levels deep, merge in the top-level (`BodyId(0)`)
+        // seed so the `global_seed` ancestor lookup's `BodyId(0)` leg can
+        // reach globals written by sibling top-level functions (see
+        // [`seed_for_nested_body`]).
+        let parent_seed_owned = body
             .meta
             .parent_body_id
-            .and_then(|pid| body_exit_states.get(&pid));
+            .and_then(|pid| seed_for_nested_body(pid, &body_exit_states));
+        let parent_seed = parent_seed_owned.as_deref();
         let parent_var_types = body
             .meta
             .parent_body_id
@@ -1648,15 +1698,40 @@ fn analyse_multi_body(
                 // changed, so re-analysis would produce byte-identical
                 // output.  The cached findings from the previous
                 // round (or pass-1) remain correct.
-                if let Some(reads) = body_reads.get(&body.meta.id) {
-                    if reads.is_disjoint(&changed_names) {
-                        continue;
+                //
+                // Restricted to depth-1 bodies (direct children of the top
+                // level).  `changed_names` is derived purely from the
+                // *top-level* seed delta, and `body_reads` is the body's
+                // own `info.taint.uses` names.  For a depth-1 body the
+                // entire inbound channel is the top-level seed, so the
+                // disjointness test is sound.  A body nested two or more
+                // levels deep also consumes its parent's exit, which can
+                // carry a parent-local derived from a changed global (e.g.
+                // `reader(){ const local = 'x'+g; child(){ exec(local) } }`):
+                // its read-set `{local, exec}` is disjoint from the
+                // top-level change set `{g}`, so skipping it would miss a
+                // real flow.  These bodies are cheap relative to the
+                // soundness cost, so we always re-run them.
+                let is_depth1 = body.meta.parent_body_id == Some(BodyId(0));
+                if is_depth1 {
+                    if let Some(reads) = body_reads.get(&body.meta.id) {
+                        if reads.is_disjoint(&changed_names) {
+                            continue;
+                        }
                     }
                 }
-                let parent_seed = body
+                // For nested (depth ≥ 2) bodies, merge the top-level
+                // (`BodyId(0)`) seed into the direct parent's exit so the
+                // `global_seed` ancestor lookup's `BodyId(0)` leg can reach
+                // the converged globals (see [`seed_for_nested_body`]).
+                // `body_exit_states[BodyId(0)]` holds the freshest
+                // `current_seed` (updated above, and per-body under
+                // Gauss-Seidel).
+                let parent_seed_owned = body
                     .meta
                     .parent_body_id
-                    .and_then(|pid| body_exit_states.get(&pid));
+                    .and_then(|pid| seed_for_nested_body(pid, &body_exit_states));
+                let parent_seed = parent_seed_owned.as_deref();
                 let parent_var_types = body
                     .meta
                     .parent_body_id
@@ -2955,6 +3030,83 @@ pub(crate) fn build_eligible_bodies(
         }
     }
     eligible_bodies
+}
+
+#[cfg(test)]
+mod seed_threading_tests {
+    use super::*;
+    use crate::labels::Cap;
+    use crate::taint::domain::VarTaint;
+    use ssa_transfer::BindingKey;
+    use std::collections::HashMap;
+
+    fn tainted() -> VarTaint {
+        VarTaint {
+            caps: Cap::all(),
+            origins: smallvec::SmallVec::new(),
+            uses_summary: true,
+        }
+    }
+
+    /// Depth-1 body (parent == top level): the parent's exit already
+    /// carries the `BodyId(0)` entries, so the helper hands it back
+    /// borrowed with no merge.
+    #[test]
+    fn depth1_returns_parent_exit_unchanged() {
+        let mut exits: HashMap<BodyId, HashMap<BindingKey, VarTaint>> = HashMap::new();
+        let mut top = HashMap::new();
+        top.insert(BindingKey::new("g", BodyId(0)), tainted());
+        exits.insert(BodyId(0), top);
+
+        let seed = seed_for_nested_body(BodyId(0), &exits).expect("seed present");
+        // Borrowed, single BodyId(0) entry.
+        assert!(matches!(seed, std::borrow::Cow::Borrowed(_)));
+        assert!(seed.contains_key(&BindingKey::new("g", BodyId(0))));
+        assert_eq!(seed.len(), 1);
+    }
+
+    /// Depth-2 grandchild (parent == BodyId(2), itself non-toplevel):
+    /// the helper merges the direct parent's exit with the converged
+    /// `BodyId(0)` top-level seed so the ancestor lookup's `BodyId(0)`
+    /// leg can reach the sibling-written global.  This is the finding
+    /// #19 regression guard: without the merge, the returned map would
+    /// have no `BodyId(0)` entry and the grandchild would miss `g`.
+    #[test]
+    fn depth2_merges_toplevel_seed() {
+        let mut exits: HashMap<BodyId, HashMap<BindingKey, VarTaint>> = HashMap::new();
+        // Top-level converged seed: global `g` is tainted.
+        let mut top = HashMap::new();
+        top.insert(BindingKey::new("g", BodyId(0)), tainted());
+        exits.insert(BodyId(0), top);
+        // Direct parent (reader, BodyId(2)) exports a parent-local.
+        let mut parent = HashMap::new();
+        parent.insert(BindingKey::new("local", BodyId(2)), tainted());
+        exits.insert(BodyId(2), parent);
+
+        let seed = seed_for_nested_body(BodyId(2), &exits).expect("seed present");
+        // Owned merge of both maps.
+        assert!(matches!(seed, std::borrow::Cow::Owned(_)));
+        // Parent-local survives (parent leg of ancestor lookup).
+        assert!(seed.contains_key(&BindingKey::new("local", BodyId(2))));
+        // Converged global survives under BodyId(0) (the previously-dead
+        // ancestor leg for grandchildren).
+        assert!(seed.contains_key(&BindingKey::new("g", BodyId(0))));
+    }
+
+    /// Depth-2 body whose parent exported nothing still receives the
+    /// `BodyId(0)` top-level seed — borrowed directly, no clone.
+    #[test]
+    fn depth2_empty_parent_falls_back_to_toplevel() {
+        let mut exits: HashMap<BodyId, HashMap<BindingKey, VarTaint>> = HashMap::new();
+        let mut top = HashMap::new();
+        top.insert(BindingKey::new("g", BodyId(0)), tainted());
+        exits.insert(BodyId(0), top);
+        // No entry for BodyId(2) at all (parent produced no exit state).
+
+        let seed = seed_for_nested_body(BodyId(2), &exits).expect("seed present");
+        assert!(matches!(seed, std::borrow::Cow::Borrowed(_)));
+        assert!(seed.contains_key(&BindingKey::new("g", BodyId(0))));
+    }
 }
 
 #[cfg(test)]

@@ -992,14 +992,34 @@ pub(super) fn summarise_return_predicates(state: &SsaTaintState) -> (u64, u8, u8
     let hash = h.finish();
     // Intersect known_true / known_false across all tracked variables:
     // the bits that hold for EVERY predicate-tracked var at this return.
-    let known_true = sorted
-        .iter()
-        .map(|(_, kt, _)| *kt)
-        .fold(u8::MAX, |a, b| a & b);
-    let known_false = sorted
-        .iter()
-        .map(|(_, _, kf)| *kf)
-        .fold(u8::MAX, |a, b| a & b);
+    //
+    // When `sorted` is empty (a return path guarded only by
+    // ValidationCall/AllowlistCheck/TypeCheck, which populate `validated_must`
+    // but never the `predicates` list because `predicate_kind_bit` returns
+    // `None` for those kinds), the fold's `u8::MAX` identity would yield
+    // `0xFF`/`0xFF`, claiming every predicate kind is simultaneously known-true
+    // AND known-false on this path, a contradiction.  The consumer
+    // (`effective_param_sanitizer`) then prunes this validated path from the
+    // compatible set whenever the caller tracks any predicate bit, over-broadly
+    // clearing taint.  No tracked predicate means no bit is known either way,
+    // so the correct identity on the empty list is `0` (matching the Top-state
+    // convention returned above).
+    let known_true = if sorted.is_empty() {
+        0
+    } else {
+        sorted
+            .iter()
+            .map(|(_, kt, _)| *kt)
+            .fold(u8::MAX, |a, b| a & b)
+    };
+    let known_false = if sorted.is_empty() {
+        0
+    } else {
+        sorted
+            .iter()
+            .map(|(_, _, kf)| *kf)
+            .fold(u8::MAX, |a, b| a & b)
+    };
     // Use `1` for the "no predicates but validated_must non-empty" case to
     // avoid colliding with the unguarded sentinel (0).
     let hash = if hash == 0 { 1 } else { hash };
@@ -1405,4 +1425,73 @@ pub(crate) fn extract_container_flow_summary(
     ctr.sort();
     container_store.sort();
     (ctr, container_store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::symbol::SymbolId;
+    use crate::taint::domain::PredicateSummary;
+
+    /// Top state (no predicates, no validated_must) → all-zero sentinel.
+    #[test]
+    fn summarise_return_predicates_top_is_zero() {
+        let state = SsaTaintState::initial();
+        assert_eq!(summarise_return_predicates(&state), (0, 0, 0));
+    }
+
+    /// A return path guarded only by a ValidationCall/AllowlistCheck/TypeCheck
+    /// populates `validated_must` but leaves `predicates` empty.  The
+    /// known-true / known-false fields MUST be 0 (no tracked predicate ⇒ no bit
+    /// known either way), not the `u8::MAX` fold identity, which would claim
+    /// every predicate kind is simultaneously known-true AND known-false and
+    /// cause the consumer to over-prune the validated path.
+    #[test]
+    fn summarise_return_predicates_validated_only_path_has_zero_bits() {
+        let mut state = SsaTaintState::initial();
+        state.validated_must.insert(SymbolId(3));
+        let (hash, kt, kf) = summarise_return_predicates(&state);
+        // Non-zero hash (validated_must is non-empty → distinct from unguarded).
+        assert_ne!(
+            hash, 0,
+            "validated path must hash distinctly from unguarded"
+        );
+        assert_eq!(
+            kt, 0,
+            "no tracked predicate ⇒ known_true must be 0, not 0xFF"
+        );
+        assert_eq!(
+            kf, 0,
+            "no tracked predicate ⇒ known_false must be 0, not 0xFF"
+        );
+        // The result must not be a self-contradiction.
+        assert_eq!(kt & kf, 0, "known_true & known_false contradiction");
+    }
+
+    /// When predicates ARE tracked, the intersection still reflects the
+    /// actual per-var bits (regression guard that the empty-list special case
+    /// did not disturb the populated path).
+    #[test]
+    fn summarise_return_predicates_tracked_bits_intersect() {
+        let mut state = SsaTaintState::initial();
+        state.predicates.push((
+            SymbolId(1),
+            PredicateSummary {
+                known_true: 0b0000_0011,
+                known_false: 0b0000_0100,
+            },
+        ));
+        state.predicates.push((
+            SymbolId(2),
+            PredicateSummary {
+                known_true: 0b0000_0001,
+                known_false: 0b0000_1100,
+            },
+        ));
+        let (_hash, kt, kf) = summarise_return_predicates(&state);
+        // Intersection of known_true: 0b011 & 0b001 = 0b001.
+        assert_eq!(kt, 0b0000_0001);
+        // Intersection of known_false: 0b100 & 0b1100 = 0b100.
+        assert_eq!(kf, 0b0000_0100);
+    }
 }

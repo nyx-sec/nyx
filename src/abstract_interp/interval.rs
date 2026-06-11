@@ -179,30 +179,21 @@ impl IntervalFact {
         }
         match (self.lo, self.hi, other.lo, other.hi) {
             (Some(a_lo), Some(a_hi), Some(b_lo), Some(b_hi)) => {
-                let products = [
-                    a_lo.checked_mul(b_lo),
-                    a_lo.checked_mul(b_hi),
-                    a_hi.checked_mul(b_lo),
-                    a_hi.checked_mul(b_hi),
+                // Compute all four endpoint products in i128 (no i64 overflow
+                // possible) so we know the *true* min/max, then attribute
+                // overflow by which direction escapes the i64 range — not by
+                // which first-operand endpoint produced it.
+                let products: [i128; 4] = [
+                    a_lo as i128 * b_lo as i128,
+                    a_lo as i128 * b_hi as i128,
+                    a_hi as i128 * b_lo as i128,
+                    a_hi as i128 * b_hi as i128,
                 ];
-                let lo = products.iter().filter_map(|p| *p).min();
-                let hi = products.iter().filter_map(|p| *p).max();
-                // If any product overflowed, the corresponding bound is None
-                if products.iter().any(|p| p.is_none()) {
-                    Self {
-                        lo: if lo.is_some() && products[..2].iter().all(|p| p.is_some()) {
-                            lo
-                        } else {
-                            None
-                        },
-                        hi: if hi.is_some() && products[2..].iter().all(|p| p.is_some()) {
-                            hi
-                        } else {
-                            None
-                        },
-                    }
-                } else {
-                    Self { lo, hi }
+                let true_min = *products.iter().min().unwrap();
+                let true_max = *products.iter().max().unwrap();
+                Self {
+                    lo: clamp_lo_i128(true_min),
+                    hi: clamp_hi_i128(true_max),
                 }
             }
             _ => Self::top(),
@@ -220,15 +211,24 @@ impl IntervalFact {
                 if b_lo <= 0 && b_hi >= 0 {
                     return Self::top();
                 }
-                let quotients = [
-                    a_lo.checked_div(b_lo),
-                    a_lo.checked_div(b_hi),
-                    a_hi.checked_div(b_lo),
-                    a_hi.checked_div(b_hi),
+                // Compute the four endpoint quotients in i128. This is exact
+                // for division (the divisor cannot be zero here) and captures
+                // the i64::MIN / -1 = i64::MAX + 1 overflow case, which
+                // checked_div would silently drop, producing a falsely narrow
+                // interval. Attribute the escape by direction: a quotient
+                // above i64::MAX leaves hi unbounded.
+                let quotients: [i128; 4] = [
+                    a_lo as i128 / b_lo as i128,
+                    a_lo as i128 / b_hi as i128,
+                    a_hi as i128 / b_lo as i128,
+                    a_hi as i128 / b_hi as i128,
                 ];
-                let lo = quotients.iter().filter_map(|q| *q).min();
-                let hi = quotients.iter().filter_map(|q| *q).max();
-                Self { lo, hi }
+                let true_min = *quotients.iter().min().unwrap();
+                let true_max = *quotients.iter().max().unwrap();
+                Self {
+                    lo: clamp_lo_i128(true_min),
+                    hi: clamp_hi_i128(true_max),
+                }
             }
             _ => Self::top(),
         }
@@ -520,6 +520,28 @@ fn checked_sub_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     match (a, b) {
         (Some(x), Some(y)) => x.checked_sub(y),
         _ => None,
+    }
+}
+
+/// Clamp an `i128` lower bound to `Option<i64>`. A bound outside the `i64`
+/// range is unrepresentable on this side, so we degrade to `None`
+/// (−∞), which is a sound over-approximation. Mirrors the overflow handling
+/// of `add`/`sub` (overflow → unbounded).
+fn clamp_lo_i128(lo: i128) -> Option<i64> {
+    if (i64::MIN as i128..=i64::MAX as i128).contains(&lo) {
+        Some(lo as i64)
+    } else {
+        None
+    }
+}
+
+/// Clamp an `i128` upper bound to `Option<i64>`. A bound outside the `i64`
+/// range degrades to `None` (+∞), a sound over-approximation.
+fn clamp_hi_i128(hi: i128) -> Option<i64> {
+    if (i64::MIN as i128..=i64::MAX as i128).contains(&hi) {
+        Some(hi as i64)
+    } else {
+        None
     }
 }
 
@@ -822,6 +844,53 @@ mod tests {
         assert!(r.lo.is_none() || r.hi.is_none());
     }
 
+    /// Soundness: on overflow `mul` must attribute the unbounded direction
+    /// by which endpoint product actually escaped the i64 range, not by the
+    /// first operand's endpoint. `[i64::MIN, 0] * [-1, -1]` reaches
+    /// `i64::MAX + 1` (unbounded above), so `hi` must be `None`, never a
+    /// finite value like `0`.
+    #[test]
+    fn mul_overflow_attributes_high_bound_unbounded() {
+        let a = IntervalFact {
+            lo: Some(i64::MIN),
+            hi: Some(0),
+        };
+        let b = IntervalFact::exact(-1);
+        let r = a.mul(&b);
+        // True range is [0, i64::MAX + 1]: lo = 0 finite, hi unbounded.
+        assert_eq!(r.lo, Some(0), "mul lo must stay finite at 0");
+        assert_eq!(
+            r.hi, None,
+            "mul hi must be unbounded: i64::MIN * -1 escapes above i64::MAX"
+        );
+        assert!(
+            !r.is_proven_bounded(),
+            "an overflowing product must not be proven-bounded"
+        );
+    }
+
+    /// Symmetric soundness check on the lower bound:
+    /// `[0, i64::MAX] * [-2, -1]` reaches `-2 * i64::MAX` (unbounded below),
+    /// so `lo` must be `None`, never a finite floor like `-i64::MAX`.
+    #[test]
+    fn mul_overflow_attributes_low_bound_unbounded() {
+        let a = IntervalFact {
+            lo: Some(0),
+            hi: Some(i64::MAX),
+        };
+        let b = IntervalFact {
+            lo: Some(-2),
+            hi: Some(-1),
+        };
+        let r = a.mul(&b);
+        // True range is [-2*i64::MAX, 0]: lo unbounded, hi = 0 finite.
+        assert_eq!(
+            r.lo, None,
+            "mul lo must be unbounded: 0 * -2 .. i64::MAX * -2 escapes below i64::MIN"
+        );
+        assert_eq!(r.hi, Some(0), "mul hi must stay finite at 0");
+    }
+
     // ── Bitwise interval transfer tests ────────────────────────────────
 
     #[test]
@@ -1059,6 +1128,31 @@ mod tests {
         assert!(
             r.lo.is_none() || r.hi.is_none() || (r.lo.is_some() && r.hi.is_some()),
             "div should never panic on i64::MIN / -1"
+        );
+    }
+
+    /// Soundness: `[i64::MIN, 0] / [-1, -1]` truly spans `[0, i64::MAX + 1]`,
+    /// so the result must NOT be proven-bounded. The old `checked_div`
+    /// implementation silently dropped the overflowing `i64::MIN / -1`
+    /// quotient and produced a narrow `[0, 0]`, falsely passing
+    /// `is_proven_bounded()` and defeating SQL/SHELL sink suppression.
+    #[test]
+    fn div_i64_min_overflow_not_proven_bounded() {
+        let a = IntervalFact {
+            lo: Some(i64::MIN),
+            hi: Some(0),
+        };
+        let b = IntervalFact::exact(-1);
+        let r = a.div(&b);
+        // Lower edge: i64::MIN / -1 overflows above i64::MAX → hi unbounded.
+        assert_eq!(r.lo, Some(0), "div lo must stay finite at 0");
+        assert_eq!(
+            r.hi, None,
+            "div hi must be unbounded: i64::MIN / -1 = i64::MAX + 1 escapes i64"
+        );
+        assert!(
+            !r.is_proven_bounded(),
+            "an overflowing quotient must not be reported as proven-bounded"
         );
     }
 

@@ -131,7 +131,7 @@ fn ssa_all_sink_operands_constant(
     };
 
     let operand_const = |v: SsaValue| -> bool {
-        ssa_operand_constant(v, facts, callee_desc, callee_parts, outer_parts)
+        ssa_operand_constant(v, facts, ctx.cfg, callee_desc, callee_parts, outer_parts)
     };
     let args_ok = args
         .iter()
@@ -401,6 +401,7 @@ fn ssa_operand_const_or_param(
 fn ssa_operand_constant(
     root: SsaValue,
     facts: &BodyConstFacts,
+    cfg: &crate::cfg::Cfg,
     callee_desc: &str,
     callee_parts: &[&str],
     outer_parts: &[&str],
@@ -426,6 +427,26 @@ fn ssa_operand_constant(
         let Some(inst) = find_inst(&facts.ssa, v) else {
             return false;
         };
+        // CFG-node-level Source label: a `SsaOp::Call` can be the lowering
+        // of a Source-labeled CFG node (`file_get_contents`, `env::var`,
+        // `readline`, …).  Such a call's result is tainted user input, not a
+        // constant, even when its own arguments are constant (or it is a
+        // zero-arg source).  Mirror the refusal in the sibling
+        // `ssa_operand_const_or_param` so a source-fed sink is never proven
+        // "all args constant" and silently dropped.
+        let cfg_node = inst.cfg_node;
+        if cfg
+            .node_weight(cfg_node)
+            .map(|info| {
+                info.taint
+                    .labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Source(_)))
+            })
+            .unwrap_or(false)
+        {
+            return false;
+        }
         match &inst.op {
             SsaOp::Const(_) => {}
             SsaOp::Assign(vals) => stack.extend(vals.iter().copied()),
@@ -2190,6 +2211,32 @@ fn cond_indirect_validator_callee(
     crate::ssa::type_facts::classify_input_validator_callee(callee).map(|_| callee.to_string())
 }
 
+/// Match a guard suffix matcher against a callee, requiring the suffix to
+/// begin on a *leaf-name boundary* rather than mid-identifier.
+///
+/// A bare `callee_lower.ends_with(suffix)` over-matches: `invalidate` ends
+/// with `validate` (the `Cap::all()` guard) and `unquote` ends with `quote`
+/// (the SHELL_ESCAPE guard), so cache-invalidation and URL-decoding calls
+/// would register as dominating guards and silently suppress every
+/// downstream `cfg-unguarded-sink` in the function.  Require that the
+/// character preceding the matched suffix is a name separator (`.`, `_`, or
+/// `:` from `::`) or that the suffix sits at the start of the callee.  This
+/// mirrors the existing prefix-anchor convention (a trailing `_` on the
+/// matcher anchors at the start).
+pub(super) fn suffix_matches_at_leaf_boundary(callee_lower: &str, suffix: &str) -> bool {
+    if !callee_lower.ends_with(suffix) {
+        return false;
+    }
+    let prefix_len = callee_lower.len() - suffix.len();
+    if prefix_len == 0 {
+        // Suffix is the whole callee (or its leaf with nothing before it).
+        return true;
+    }
+    // The byte immediately before the suffix must be a leaf-name separator.
+    let prev = callee_lower.as_bytes()[prefix_len - 1];
+    matches!(prev, b'.' | b'_' | b':')
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -2300,7 +2347,7 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                     if ml.ends_with('_') {
                         callee_lower.starts_with(&ml)
                     } else {
-                        callee_lower.ends_with(&ml)
+                        suffix_matches_at_leaf_boundary(&callee_lower, &ml)
                     }
                 });
                 if matched {
@@ -3185,5 +3232,51 @@ mod chain_fragments_tests {
         assert!(got.contains(&"exec".to_string()));
         assert!(!got.contains(&"transform".to_string()));
         assert!(!got.contains(&"raw".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod guard_suffix_boundary_tests {
+    use super::suffix_matches_at_leaf_boundary;
+
+    #[test]
+    fn rejects_mid_identifier_suffixes() {
+        // The whole point of the fix: these must NOT register as guards.
+        assert!(!suffix_matches_at_leaf_boundary("invalidate", "validate"));
+        assert!(!suffix_matches_at_leaf_boundary(
+            "cache.invalidate",
+            "validate"
+        ));
+        assert!(!suffix_matches_at_leaf_boundary("unquote", "quote"));
+        assert!(!suffix_matches_at_leaf_boundary(
+            "urllib.parse.unquote",
+            "quote"
+        ));
+    }
+
+    #[test]
+    fn accepts_leaf_boundary_suffixes() {
+        // Suffix at a real leaf-name boundary stays a valid guard match.
+        assert!(suffix_matches_at_leaf_boundary("validate", "validate"));
+        assert!(suffix_matches_at_leaf_boundary("shlex.quote", "quote"));
+        assert!(suffix_matches_at_leaf_boundary(
+            "urllib.parse.quote",
+            "quote"
+        ));
+        // `_` and `::` separators also count as leaf boundaries.
+        assert!(suffix_matches_at_leaf_boundary("my_validate", "validate"));
+        assert!(suffix_matches_at_leaf_boundary(
+            "std::shell_escape",
+            "shell_escape"
+        ));
+    }
+
+    #[test]
+    fn rejects_non_suffix() {
+        assert!(!suffix_matches_at_leaf_boundary(
+            "validate_input",
+            "validate"
+        ));
+        assert!(!suffix_matches_at_leaf_boundary("os.system", "quote"));
     }
 }

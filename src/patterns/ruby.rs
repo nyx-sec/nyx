@@ -119,7 +119,7 @@ pub const PATTERNS: &[Pattern] = &[
         query: r#"(call
                      method: (identifier) @m (#eq? @m "open")
                      arguments: (argument_list
-                       (string) @url (#match? @url "^\"https?://")))
+                       (string) @url (#match? @url "^[\"']https?://")))
                    @vuln"#,
         severity: Severity::Medium,
         tier: PatternTier::A,

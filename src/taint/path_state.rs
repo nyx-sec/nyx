@@ -619,6 +619,95 @@ fn parse_leading_uint(s: &str) -> Option<u64> {
     any.then_some(n)
 }
 
+/// Detect a substring-REJECTION idiom dressed up as a membership method:
+/// `x.includes("..")`, `x.contains("<script>")`, `x.indexOf("..")`, etc., where
+/// the needle is a **string literal**.
+///
+/// Genuine allowlist membership has the form `ALLOWED.includes(value)`, the
+/// argument is the variable under test and the TRUE branch proves membership.
+/// When the argument is a string literal, the receiver is the value under test
+/// and the call asks "does this user string contain a dangerous substring?",
+/// the TRUE branch is the dangerous/reject path, not a validated path.
+///
+/// Returning `true` keeps such conditions out of [`PredicateKind::AllowlistCheck`]
+/// (which marks every condition var validated on the TRUE branch with the wrong
+/// polarity). The shell-metachar form is handled earlier by
+/// [`is_shell_metachar_rejection`]; this covers the broader literal-needle case
+/// (`..`, `<script>`, etc.) that the shell-metachar carve-out deliberately
+/// excludes. Conservative: only fires when the first argument parses as a
+/// string literal, so `ALLOWED.includes(value)` (identifier arg) is untouched.
+fn is_literal_needle_membership(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    for method in [
+        ".includes(",
+        ".include?(",
+        ".contains(",
+        ".indexof(",
+        ".has(",
+    ] {
+        if let Some(idx) = lower.find(method) {
+            let args_start = idx + method.len();
+            // Index into the original (case-preserving) text so quoted needle
+            // characters stay accurate; the byte offset matches because the
+            // method tokens are ASCII.
+            if extract_first_string_arg(&text[args_start..]).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Detect the *negated* `indexOf`/`search`/`find` membership idiom whose TRUE
+/// branch is the NOT-in-list (reject) path:
+///
+/// * `ALLOWED.indexOf(x) === -1` / `== -1` (JS/TS — not found)
+/// * `ALLOWED.indexOf(x) < 0` (not found)
+/// * `s.find(x) == -1` (Python `str.find` / C++ `std::string::find` use
+///   `npos`/`-1` for absent; `< 0` covers the common int form)
+///
+/// Genuine allowlist membership classifies as [`PredicateKind::AllowlistCheck`]
+/// whose generic mechanic marks the receiver/arg validated on the TRUE branch.
+/// That polarity is only correct for the *positive* form
+/// (`indexOf(x) !== -1` / `>= 0` — found ⇒ in list ⇒ validated). For the
+/// `=== -1` / `< 0` form the TRUE branch means NOT-in-list, so marking the var
+/// validated there is inverted: it suppresses a genuine finding on the
+/// reject-then-sink shape and an FP on the correctly-guarded `=== -1; return`
+/// shape. The polarity-inversion machinery in `apply_branch_predicates`
+/// (mod.rs) only flips for Python `not in` / TypeCheck `!=`, not for indexOf
+/// result comparisons, so we conservatively drop these to
+/// [`PredicateKind::Unknown`] — neither branch is over-validated and the sink
+/// finding survives. The positive `!== -1` / `>= 0` form is intentionally left
+/// to fall through to `AllowlistCheck`, where the existing polarity is correct.
+fn is_negated_indexof_membership(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Require an index-of / find-style search method whose result is being
+    // compared.  `.indexof(` covers JS/TS `indexOf` and Java `indexOf`;
+    // `.find(` / `.search(` cover Python/C++/JS string searches.
+    let has_index_search =
+        lower.contains(".indexof(") || lower.contains(".search(") || lower.contains(".find(");
+    if !has_index_search {
+        return false;
+    }
+    // Strip whitespace so spacing variants (`=== -1`, `===-1`, `< 0`) collapse
+    // to a single canonical form.
+    let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+    // Positive (found ⇒ in list) forms keep correct AllowlistCheck polarity —
+    // do NOT claim them here.
+    if compact.contains("!==-1")
+        || compact.contains("!=-1")
+        || compact.contains(">=0")
+        || compact.contains(">-1")
+    {
+        return false;
+    }
+    // Negated (not-found ⇒ reject) forms: inverted polarity, drop to Unknown.
+    compact.contains("===-1")
+        || compact.contains("==-1")
+        || compact.contains("<0")
+        || compact.contains("<=-1")
+}
+
 /// Classify a raw condition text into a [`PredicateKind`].
 ///
 /// # Rules
@@ -708,6 +797,35 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // doesn't classify generically.
     if is_host_allowlist_check(text) {
         return PredicateKind::HostAllowlistValidated;
+    }
+
+    // ── Substring-REJECTION with a literal needle (not an allowlist) ─────
+    //
+    // `x.includes("..")` / `x.contains("<script>")` / `x.indexOf("..")` test
+    // the *receiver* against a fixed literal — a rejection idiom whose TRUE
+    // branch is the dangerous path.  Classifying these as `AllowlistCheck`
+    // (below) would mark the receiver validated on the TRUE branch with the
+    // wrong polarity, silencing a genuine finding.  Drop to `Unknown` so
+    // neither branch is over-validated and the sink finding survives.
+    // (The shell-metachar form was already caught earlier; this covers the
+    // broader literal-needle case.)
+    if is_literal_needle_membership(text) {
+        return PredicateKind::Unknown;
+    }
+
+    // ── Negated indexOf/find membership (inverted polarity) ──────────────
+    //
+    // `ALLOWED.indexOf(x) === -1` / `< 0` means NOT-in-list, so the TRUE
+    // branch is the reject path.  Classifying as `AllowlistCheck` (below)
+    // would mark `x` validated on the TRUE branch with the wrong polarity —
+    // suppressing a genuine finding on `if (!FOUND) sink(x)` and producing an
+    // FP on the correctly-guarded `if (!FOUND) return; sink(x)` shape.  The
+    // polarity-inversion machinery does not cover indexOf result comparisons,
+    // so drop to `Unknown` and let neither branch over-validate.  The positive
+    // `!== -1` / `>= 0` form is excluded by `is_negated_indexof_membership`
+    // and still classifies as `AllowlistCheck` with correct polarity.
+    if is_negated_indexof_membership(text) {
+        return PredicateKind::Unknown;
     }
 
     // ── Allowlist / membership checks ────────────────────────────────────
@@ -909,12 +1027,20 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
 
     match kind {
         PredicateKind::ValidationCall | PredicateKind::SanitizerCall => {
-            if let Some(target) = extract_validation_target(text) {
-                (kind, Some(target))
-            } else if count_call_args(text).map(|n| n > 1).unwrap_or(false) {
-                (PredicateKind::Unknown, None)
-            } else {
-                (kind, None)
+            // A dotted target (`a.field`, `req.body.x`) is a member expression.
+            // `condition_vars` only ever contains bare identifier tokens
+            // (collect_idents pushes single identifiers), so a dotted target
+            // can never match and the consumer falls back to validating EVERY
+            // condition var, the exact over-validation the multi-arg Unknown
+            // guard was written to prevent.  Treat dotted extraction the same
+            // as a failed extraction so multi-arg validators degrade to
+            // Unknown instead of silently validating unrelated arguments.
+            match extract_validation_target(text) {
+                Some(target) if !target.contains('.') => (kind, Some(target)),
+                _ if count_call_args(text).map(|n| n > 1).unwrap_or(false) => {
+                    (PredicateKind::Unknown, None)
+                }
+                _ => (kind, None),
             }
         }
         PredicateKind::AllowlistCheck => {
@@ -1705,6 +1831,47 @@ mod tests {
     }
 
     #[test]
+    fn target_multi_arg_dotted_first_arg_is_unknown() {
+        // `validate(a.field, limit)` extracts the dotted target `a.field`,
+        // which can never match a bare-identifier condition var, so the
+        // consumer would fall back to validating EVERY condition var
+        // (including `limit`, which the validator never inspected).  A dotted
+        // multi-arg target must degrade to Unknown, exactly like a failed
+        // extraction, so no unrelated argument is wrongly validated.
+        let (kind, target) = classify_condition_with_target("validate(a.field, limit)");
+        assert_eq!(kind, PredicateKind::Unknown);
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn target_multi_arg_dotted_receiver_is_unknown() {
+        // `req.session.verify(sig, opts)` resolves to the dotted receiver
+        // `req.session`; same non-matching-target hazard on a multi-arg call.
+        let (kind, target) = classify_condition_with_target("req.session.verify(sig, opts)");
+        assert_eq!(kind, PredicateKind::Unknown);
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn target_single_arg_dotted_preserves_kind_no_dotted_target() {
+        // Single-arg dotted-receiver validator: over-validation of all
+        // condition vars is pre-existing/intentional for single-arg calls, but
+        // the returned target must NOT be a dotted member expression (which
+        // can never match condition_vars).  Preserve the kind with None.
+        let (kind, target) = classify_condition_with_target("req.session.verify(sig)");
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn target_bare_identifier_still_extracted() {
+        // Regression guard: a bare-identifier multi-arg target still narrows.
+        let (kind, target) = classify_condition_with_target("validate(x, limit)");
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target.as_deref(), Some("x"));
+    }
+
+    #[test]
     fn count_call_args_basic() {
         assert_eq!(super::count_call_args("f(a, b, c)"), Some(3));
         assert_eq!(super::count_call_args("f(a)"), Some(1));
@@ -1776,6 +1943,109 @@ mod tests {
         assert_eq!(
             classify_condition("allowedSet.has(key)"),
             PredicateKind::AllowlistCheck
+        );
+    }
+
+    // ── Literal-needle substring rejection is NOT an allowlist ─────────
+    //
+    // `x.includes("..")` / `x.contains("<script>")` test the receiver
+    // against a literal needle (a rejection idiom whose TRUE branch is the
+    // dangerous path), so they must NOT classify as AllowlistCheck (which
+    // would mark `x` validated on the TRUE branch with inverted polarity and
+    // silence the finding).  They drop to Unknown so neither branch is
+    // over-validated.
+    #[test]
+    fn classify_literal_needle_dotdot_not_allowlist() {
+        assert_eq!(
+            classify_condition("p.includes(\"..\")"),
+            PredicateKind::Unknown
+        );
+        assert_eq!(
+            classify_condition("p.contains(\"..\")"),
+            PredicateKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_literal_needle_html_not_allowlist() {
+        assert_eq!(
+            classify_condition("input.includes(\"<script>\")"),
+            PredicateKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_literal_needle_indexof_not_allowlist() {
+        assert_eq!(
+            classify_condition("path.indexOf(\"..\")"),
+            PredicateKind::Unknown
+        );
+    }
+
+    // ── Negated indexOf membership has inverted polarity ──────────────
+    //
+    // `ALLOWED.indexOf(x) === -1` / `< 0` means NOT-in-list, so the TRUE
+    // branch is the reject path.  Must NOT classify as AllowlistCheck (which
+    // would mark `x` validated on the TRUE branch with inverted polarity,
+    // silencing a real reject-then-sink finding and producing an FP on the
+    // correctly-guarded `=== -1; return; sink` shape).  Drop to Unknown.
+    #[test]
+    fn classify_negated_indexof_eq_minus_one_not_allowlist() {
+        assert_eq!(
+            classify_condition("ALLOWED.indexOf(cmd) === -1"),
+            PredicateKind::Unknown
+        );
+        assert_eq!(
+            classify_condition("ALLOWED.indexOf(cmd) == -1"),
+            PredicateKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_negated_indexof_lt_zero_not_allowlist() {
+        assert_eq!(
+            classify_condition("allowed.indexOf(x) < 0"),
+            PredicateKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_positive_indexof_membership_stays_allowlist() {
+        // `!== -1` / `>= 0` mean found ⇒ in list ⇒ TRUE branch is validated.
+        // The existing AllowlistCheck polarity is correct here, so these must
+        // remain AllowlistCheck (NOT dropped to Unknown).
+        assert_eq!(
+            classify_condition("ALLOWED.indexOf(cmd) !== -1"),
+            PredicateKind::AllowlistCheck
+        );
+        assert_eq!(
+            classify_condition("ALLOWED.indexOf(cmd) >= 0"),
+            PredicateKind::AllowlistCheck
+        );
+    }
+
+    #[test]
+    fn classify_genuine_allowlist_identifier_arg_unchanged() {
+        // Identifier argument (the value under test) is a real membership
+        // check and must remain AllowlistCheck.
+        assert_eq!(
+            classify_condition("ALLOWED.includes(cmd)"),
+            PredicateKind::AllowlistCheck
+        );
+        assert_eq!(
+            classify_condition("whitelist.contains(value)"),
+            PredicateKind::AllowlistCheck
+        );
+    }
+
+    #[test]
+    fn classify_literal_needle_shell_metachar_still_inverted() {
+        // A shell-metachar literal needle is caught by the earlier
+        // shell-metachar branch (inverted-polarity SHELL_ESCAPE clear) and
+        // must NOT be swallowed by the literal-needle carve-out.
+        assert_eq!(
+            classify_condition("cmd.includes(\";\")"),
+            PredicateKind::ShellMetaValidated
         );
     }
 
@@ -2067,20 +2337,29 @@ mod tests {
     }
 
     #[test]
-    fn classify_non_metachar_contains_stays_allowlist() {
+    fn classify_non_metachar_contains_is_unknown_not_allowlist() {
         // `x.contains("foo")` must NOT be credited as a shell-metachar
-        // rejection.  It falls back to the existing AllowlistCheck behavior.
+        // rejection, AND must NOT be classified as `AllowlistCheck`: the
+        // argument is a string literal, so this is a substring presence/
+        // rejection test on the receiver, not membership of the receiver in a
+        // collection.  Classifying it as AllowlistCheck would mark the
+        // receiver validated on the TRUE branch with inverted polarity and
+        // silence a genuine finding (e.g. `if (path.contains("..")) sink(path)`).
+        // The classifier degrades to Unknown so neither branch is
+        // over-validated.  (guards.rs already excluded these from structural
+        // `Cap::all()` dominator guards via the missing allowlist target, so
+        // cfg-unguarded-sink suppression is unaffected by this change.)
         assert_eq!(
             classify_condition("input.contains(\"foo\")"),
-            PredicateKind::AllowlistCheck
+            PredicateKind::Unknown
         );
         assert_eq!(
             classify_condition("path.contains(\"..\")"),
-            PredicateKind::AllowlistCheck
+            PredicateKind::Unknown
         );
         assert_eq!(
             classify_condition("name.contains(\"admin\")"),
-            PredicateKind::AllowlistCheck
+            PredicateKind::Unknown
         );
     }
 

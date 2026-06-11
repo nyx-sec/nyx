@@ -160,6 +160,28 @@ pub(crate) fn callee_container_hint(raw: &str) -> &str {
     ""
 }
 
+/// Strip the optional `"<pkg>::"` package prefix from a call-graph
+/// namespace, yielding the plain project-relative path.
+///
+/// `crate::symbol::namespace_with_package` produces package-qualified
+/// namespaces of the form `format!("{pkg}::{rel}")` for any file that
+/// lives inside a resolved [`crate::resolve::PackageEntry`] (e.g. any
+/// repo with a named `package.json`). The package name never contains
+/// `::` and project-relative file paths never contain `::`, so the
+/// **first** `::` is unambiguously the package separator and everything
+/// after it is the plain `normalize_namespace` form.
+///
+/// Used to align two keying conventions that would otherwise never
+/// match: call-graph [`FuncKey::namespace`]s (package-qualified) versus
+/// file paths normalised via plain `normalize_namespace`. Returns the
+/// input unchanged when no `::` is present.
+pub(crate) fn strip_package_prefix(ns: &str) -> &str {
+    match ns.split_once("::") {
+        Some((_pkg, rel)) => rel,
+        None => ns,
+    }
+}
+
 //  Class / container → method index
 
 /// Per-language `(container, method_name)` → candidate [`FuncKey`] index.
@@ -897,12 +919,20 @@ impl FileReachMap {
     /// [`FileReachMap::with_scan_root`] when callers may pass absolute
     /// paths.
     pub fn build(cg: &CallGraph) -> Self {
+        // Call-graph namespaces are package-qualified (`pkg::rel`) for any
+        // file inside a resolved package, but `reaches` normalises its
+        // arguments via plain `normalize_namespace` (`rel`). Strip the
+        // package prefix on both keys and caller-set entries so the stored
+        // form matches the lookup form; otherwise `reaches` always returns
+        // false for package-resident files and chain reach widening /
+        // surface transitive-exposure detection silently never fire.
         let mut by_callee_ns: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         for callee in cg.index.keys() {
-            let entry = by_callee_ns.entry(callee.namespace.clone()).or_default();
-            entry.insert(callee.namespace.clone());
+            let callee_ns = strip_package_prefix(&callee.namespace).to_string();
+            let entry = by_callee_ns.entry(callee_ns.clone()).or_default();
+            entry.insert(callee_ns);
             for caller in callers_transitive(cg, callee) {
-                entry.insert(caller.namespace);
+                entry.insert(strip_package_prefix(&caller.namespace).to_string());
             }
         }
         FileReachMap {
@@ -941,11 +971,17 @@ impl FileReachMap {
     }
 
     fn normalize<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
+        // Reduce both path-normalisation (absolute → project-relative) and
+        // package-qualification (`pkg::rel` → `rel`) so lookups match the
+        // package-stripped keys stored by `build`. Inputs may arrive as
+        // absolute host paths, plain project-relative paths, or
+        // package-qualified call-graph namespaces.
         match self.scan_root.as_deref() {
             Some(root) => {
-                std::borrow::Cow::Owned(crate::symbol::normalize_namespace(path, Some(root)))
+                let normalized = crate::symbol::normalize_namespace(path, Some(root));
+                std::borrow::Cow::Owned(strip_package_prefix(&normalized).to_string())
             }
-            None => std::borrow::Cow::Borrowed(path),
+            None => std::borrow::Cow::Borrowed(strip_package_prefix(path)),
         }
     }
 }
@@ -993,6 +1029,26 @@ pub fn scc_spans_files(cg: &CallGraph, scc: &[NodeIndex]) -> bool {
     iter.any(|n| cg.graph[*n].namespace.as_str() != first_ns)
 }
 
+/// True when an SCC requires the run_topo_batches fixed-point loop.
+///
+/// A multi-node SCC is mutually recursive by definition. A **single**-node
+/// SCC is recursive only when the function calls itself directly: petgraph's
+/// `tarjan_scc` places a directly self-recursive function (`f` calls `f`) in
+/// its own singleton SCC with a self-loop edge, so `scc.len() > 1` alone
+/// misses it. Self-recursion (tree walkers, retry wrappers, recursive-descent
+/// parsers) is far more common than mutual recursion and needs the same
+/// fixed-point treatment so its summary converges against its own refined
+/// summary rather than being analysed exactly once.
+pub fn scc_is_recursive(cg: &CallGraph, scc: &[NodeIndex]) -> bool {
+    if scc.len() > 1 {
+        return true;
+    }
+    match scc.first() {
+        Some(&n) => cg.graph.contains_edge(n, n),
+        None => false,
+    }
+}
+
 /// Map SCC topological order to an ordered sequence of file-path batches
 /// annotated with whether any contributing SCC is mutually recursive
 /// (`len > 1`) or cross-file.
@@ -1022,14 +1078,22 @@ pub fn scc_file_batches_with_metadata<'a>(
     // 2. Build file relative-path → (min topo index, has_mutual_recursion, cross_file).
     //    `cross_file` is set whenever the file participates in an SCC whose
     //    nodes span more than one namespace, the cross-file signal.
+    //
+    //    Call-graph namespaces are package-qualified (`pkg::rel`) for any
+    //    file inside a resolved package, while `rel_to_path` above keys by
+    //    the plain `normalize_namespace` form (`rel`). Strip the package
+    //    prefix here so both conventions agree; otherwise every
+    //    package-resident file misses `file_topo` and lands in `orphans`,
+    //    silently disabling the topo/SCC machinery for exactly the repos it
+    //    was built for (any project with a named package.json).
     let mut file_topo: HashMap<&str, (usize, bool, bool)> = HashMap::new();
     for (topo_pos, &scc_idx) in analysis.topo_scc_callee_first.iter().enumerate() {
-        let scc_recursive = analysis.sccs[scc_idx].len() > 1;
+        let scc_recursive = scc_is_recursive(cg, &analysis.sccs[scc_idx]);
         let scc_cross_file = scc_spans_files(cg, &analysis.sccs[scc_idx]);
         for &node in &analysis.sccs[scc_idx] {
-            let ns = &cg.graph[node].namespace;
+            let ns = strip_package_prefix(&cg.graph[node].namespace);
             file_topo
-                .entry(ns.as_str())
+                .entry(ns)
                 .and_modify(|(min_pos, recursive, cross_file)| {
                     if topo_pos < *min_pos {
                         *min_pos = topo_pos;
@@ -1780,6 +1844,110 @@ mod tests {
                 "batch {i} should not be marked as recursive"
             );
         }
+    }
+
+    // ── package-prefix namespace alignment (finding #35) ──────────────
+
+    #[test]
+    fn strip_package_prefix_handles_qualified_and_plain() {
+        // Package-qualified: prefix stripped at the first "::".
+        assert_eq!(strip_package_prefix("myapp::src/a.js"), "src/a.js");
+        assert_eq!(strip_package_prefix("@scope/name::src/a.ts"), "src/a.ts");
+        // Plain relative path with no package prefix is returned verbatim.
+        assert_eq!(strip_package_prefix("src/a.js"), "src/a.js");
+        assert_eq!(strip_package_prefix("a.rs"), "a.rs");
+        assert_eq!(strip_package_prefix(""), "");
+    }
+
+    /// A call graph whose namespaces are package-qualified (the normal case
+    /// for any repo with a named package.json) must still match the plain
+    /// `normalize_namespace` file paths in `all_files`, so files land in
+    /// topo batches rather than `orphans`.
+    #[test]
+    fn scc_file_batches_with_metadata_matches_package_qualified_ns() {
+        let root = Path::new("/proj");
+        // file_path values are NOT prefixed by root, so func_key keeps them
+        // verbatim → simulates package-qualified call-graph namespaces.
+        let a = make_summary("ping", "myapp::a.rs", "rust", 0, vec!["pong"]);
+        let b = make_summary("pong", "myapp::b.rs", "rust", 0, vec!["ping"]);
+
+        // all_files are absolute paths under root → normalize to "a.rs"/"b.rs".
+        let files: Vec<PathBuf> = vec![PathBuf::from("/proj/a.rs"), PathBuf::from("/proj/b.rs")];
+
+        let (batches, orphans) = build_metadata_batches(vec![a, b], &files, root);
+
+        assert!(
+            orphans.is_empty(),
+            "package-qualified files must not be orphaned: {orphans:?}"
+        );
+        assert_eq!(batches.len(), 1, "mutual recursion → single batch");
+        assert!(batches[0].has_mutual_recursion);
+    }
+
+    /// FileReachMap built from a package-qualified call graph must resolve
+    /// plain-relative `reaches` lookups.
+    #[test]
+    fn file_reach_map_matches_package_qualified_ns() {
+        let handle = make_summary("handle", "myapp::routes.rs", "rust", 0, vec!["sink"]);
+        let sink = make_summary("sink", "myapp::helper.rs", "rust", 0, vec![]);
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+
+        // Plain-relative lookups resolve even though graph keys are qualified.
+        assert!(reach.reaches("routes.rs", "helper.rs"));
+        // A package-qualified caller string also resolves (normalize strips it).
+        assert!(reach.reaches("myapp::routes.rs", "helper.rs"));
+    }
+
+    // ── self-recursion fixed-point flag (finding #39) ─────────────────
+
+    /// A directly self-recursive function forms a singleton SCC with a
+    /// self-loop edge. `scc_is_recursive` must flag it so run_topo_batches
+    /// applies the fixed-point loop, matching the mutual-recursion path.
+    #[test]
+    fn scc_is_recursive_flags_self_loop_singleton() {
+        let root = Path::new("/proj");
+        let f = make_summary("f", "/proj/a.rs", "rust", 0, vec!["f"]);
+        let gs = merge_summaries(vec![f], Some(&root.to_string_lossy()));
+        let cg = build_call_graph(&gs, &[]);
+        let analysis = analyse(&cg);
+
+        // The single SCC is a self-loop singleton.
+        assert_eq!(analysis.sccs.len(), 1);
+        assert!(
+            scc_is_recursive(&cg, &analysis.sccs[0]),
+            "self-recursive singleton must be flagged recursive"
+        );
+        // scc_spans_files correctly stays false for singletons.
+        assert!(!scc_spans_files(&cg, &analysis.sccs[0]));
+    }
+
+    /// A non-recursive singleton (no self-edge) must NOT be flagged.
+    #[test]
+    fn scc_is_recursive_ignores_plain_singleton() {
+        let root = Path::new("/proj");
+        let f = make_summary("f", "/proj/a.rs", "rust", 0, vec![]);
+        let gs = merge_summaries(vec![f], Some(&root.to_string_lossy()));
+        let cg = build_call_graph(&gs, &[]);
+        let analysis = analyse(&cg);
+        assert_eq!(analysis.sccs.len(), 1);
+        assert!(!scc_is_recursive(&cg, &analysis.sccs[0]));
+    }
+
+    /// The self-recursive flag propagates through to the FileBatch metadata.
+    #[test]
+    fn scc_file_batches_with_metadata_marks_self_recursive() {
+        let root = Path::new("/proj");
+        let f = make_summary("f", "/proj/a.rs", "rust", 0, vec!["f"]);
+        let files: Vec<PathBuf> = vec![PathBuf::from("/proj/a.rs")];
+        let (batches, orphans) = build_metadata_batches(vec![f], &files, root);
+        assert!(orphans.is_empty());
+        assert_eq!(batches.len(), 1);
+        assert!(
+            batches[0].has_mutual_recursion,
+            "self-recursive file must be flagged for the fixed-point loop"
+        );
     }
 
     // ── qualified disambiguation resolves ambiguous common names ──────

@@ -387,7 +387,18 @@ pub(crate) fn verify_findings_for_scan(
         // can resolve the enclosing function and callgraph entry context
         // without re-hitting SQLite per finding. Best-effort: a load failure
         // logs and falls through to the substring heuristics.
-        opts.summaries = load_verify_summaries(project_name, db_path, scan_path);
+        // Resolve a module graph so summaries are keyed with the same
+        // package-qualified namespaces the indexed scan path uses. Reuse
+        // the one already on `config` when present; otherwise build it
+        // best-effort for this root.
+        let verify_cfg_with_graph = ensure_module_graph(scan_path, config);
+        let verify_module_graph = config.module_graph.as_deref().or_else(|| {
+            verify_cfg_with_graph
+                .as_ref()
+                .and_then(|c| c.module_graph.as_deref())
+        });
+        opts.summaries =
+            load_verify_summaries(project_name, db_path, scan_path, verify_module_graph);
         if let Some(ref summaries) = opts.summaries {
             opts.callgraph = Some(load_verify_callgraph(summaries));
         }
@@ -589,6 +600,7 @@ fn load_verify_summaries(
     project: &str,
     db_path: &Path,
     scan_root: &Path,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> Option<Arc<crate::summary::GlobalSummaries>> {
     let pool = match Indexer::init(db_path) {
         Ok(p) => p,
@@ -612,9 +624,15 @@ fn load_verify_summaries(
         }
     };
     let root_str = scan_root.to_string_lossy().into_owned();
-    Some(Arc::new(crate::summary::merge_summaries(
+    // Key with package-qualified namespaces (when a module graph is
+    // available) so the verify-path summary index matches the keys the
+    // indexed scan path and pass-1 SSA summaries use. Plain
+    // normalize_namespace keys would diverge for any repo with a named
+    // package.json and silently lose cross-file callee resolution.
+    Some(Arc::new(crate::summary::merge_summaries_with_resolver(
         all,
         Some(&root_str),
+        module_graph,
     )))
 }
 
@@ -1566,6 +1584,12 @@ fn run_topo_batches(
 
                 let batch_results: Vec<(
                     std::path::PathBuf,
+                    // `false` when this file's read or analysis failed this
+                    // iteration. A failed file must NOT overwrite the diags it
+                    // produced in an earlier successful iteration with an empty
+                    // vector, so the result loop below skips the diags cache
+                    // update when this flag is false.
+                    bool,
                     Vec<Diag>,
                     Vec<crate::summary::FuncSummary>,
                     Vec<(
@@ -1597,7 +1621,7 @@ fn run_topo_batches(
                                         None,
                                     );
                                 }
-                                return (path.to_path_buf(), vec![], vec![], vec![], vec![]);
+                                return (path.to_path_buf(), false, vec![], vec![], vec![], vec![]);
                             }
                         };
                         match recover_or_propagate(
@@ -1618,6 +1642,7 @@ fn run_topo_batches(
                                 pb.inc(0); // don't double-count iterations in progress bar
                                 (
                                     path.to_path_buf(),
+                                    true,
                                     r.diags,
                                     r.summaries,
                                     r.ssa_summaries,
@@ -1637,7 +1662,7 @@ fn run_topo_batches(
                                         None,
                                     );
                                 }
-                                (path.to_path_buf(), vec![], vec![], vec![], vec![])
+                                (path.to_path_buf(), false, vec![], vec![], vec![], vec![])
                             }
                         }
                     })
@@ -1645,12 +1670,23 @@ fn run_topo_batches(
 
                 let mut ssa_count: usize = 0;
                 let mg = cfg.module_graph.as_deref();
-                for (path, diags, summaries, ssa_summaries, _ssa_bodies) in batch_results {
+                for (path, analysis_ok, diags, summaries, ssa_summaries, _ssa_bodies) in
+                    batch_results
+                {
                     // Phase-B: replace (not append) this file's diags
                     // so the cache always reflects the latest
                     // iteration's output.  Clean files skipped this
                     // iteration retain their previous diags.
-                    diags_by_file.insert(path, diags);
+                    //
+                    // A file whose read or analysis FAILED this iteration is
+                    // not "clean" but must be treated like one for the diags
+                    // cache: overwriting with the empty vector would erase
+                    // findings the same file produced in an earlier successful
+                    // iteration. Its (empty) summaries are likewise a no-op
+                    // below, leaving the previous iteration's summaries intact.
+                    if analysis_ok {
+                        diags_by_file.insert(path, diags);
+                    }
 
                     for s in summaries {
                         let key = s.func_key_with_resolver(root_str_ref, mg);
@@ -2718,6 +2754,17 @@ pub fn scan_with_index_parallel_observer(
             | crate::utils::config::AnalysisMode::Taint
     );
 
+    // Records the pass-1-time content hash for every file whose summary
+    // extraction succeeded (or was correctly skipped as unchanged). The
+    // post-pass-2 persistence loop stamps the `files` table hash only for
+    // these entries, using the pass-1 hash. Files whose pass-1 extraction
+    // FAILED (recovered panic, hard parse failure, transient read error)
+    // are absent, so their `files` row keeps its previous hash and
+    // `should_scan_with_hash` retries them on the next scan instead of
+    // freezing stale summaries against the new content forever.
+    let pass1_safe_hashes: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     // ── Pass 1: ensure summaries are up‑to‑date ──────────────────────────
     if needs_taint {
         if let Some(p) = progress {
@@ -2744,6 +2791,7 @@ pub fn scan_with_index_parallel_observer(
         let scan_root_ref = scan_root.to_path_buf();
         let persist_errors_ref = Arc::clone(&persist_errors);
         let skipped_files_ref = Arc::clone(&skipped_files);
+        let pass1_safe_hashes_ref = Arc::clone(&pass1_safe_hashes);
         let progress_ref = progress.cloned();
         files.par_iter().for_each_init(
             || Indexer::from_pool(project, &pool).expect("db pool"),
@@ -2822,6 +2870,14 @@ pub fn scan_with_index_parallel_observer(
                                         )
                                     })
                                     .collect();
+                                // Extraction succeeded: this file's `files`
+                                // row may be stamped with the pass-1 hash.
+                                // Pass-1 persist failures abort the scan
+                                // (writer_result? below), so a successful
+                                // enqueue is a sufficient safety signal.
+                                if let Ok(mut m) = pass1_safe_hashes_ref.lock() {
+                                    m.insert(path.clone(), hash.clone());
+                                }
                                 // Single transaction for all four caches:
                                 // one fsync per file instead of four.
                                 let path_for_write = path.clone();
@@ -2854,6 +2910,11 @@ pub fn scan_with_index_parallel_observer(
                         skipped_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if let Some(p) = &progress_ref {
                             p.inc_skipped(1);
+                        }
+                        // Skipped-as-unchanged: the `files` row hash already
+                        // equals `hash`, so re-stamping it is a safe no-op.
+                        if let Ok(mut m) = pass1_safe_hashes_ref.lock() {
+                            m.insert(path.clone(), hash.clone());
                         }
                     }
                 } else {
@@ -2898,7 +2959,16 @@ pub fn scan_with_index_parallel_observer(
         let idx = Indexer::from_pool(project, &pool)?;
         let all = idx.load_all_summaries()?;
         tracing::info!(summaries = all.len(), "loaded cross-file summaries from DB");
-        let mut gs = summary::merge_summaries(all, Some(&root_str));
+        // Key coarse summaries with the SAME package-qualified namespaces that
+        // pass-1 SSA summaries (namespace_with_package) and pass-2 refinements
+        // (func_key_with_resolver) use. Plain merge_summaries here would key
+        // them by normalize_namespace, so cross-file SSA resolution would miss
+        // every package-resident function in any repo with a named package.json.
+        let mut gs = summary::merge_summaries_with_resolver(
+            all,
+            Some(&root_str),
+            cfg.module_graph.as_deref(),
+        );
 
         // Load and insert SSA summaries
         let ssa_rows = idx.load_all_ssa_summaries()?;
@@ -3358,6 +3428,10 @@ pub fn scan_with_index_parallel_observer(
         for d in &topo_diags {
             by_file.entry(&d.path).or_default().push(d);
         }
+        let safe_hashes = pass1_safe_hashes
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default();
         let mut idx = Indexer::from_pool(project, &pool)?;
         for path in &files {
             if !path.exists() {
@@ -3365,7 +3439,21 @@ pub fn scan_with_index_parallel_observer(
                 continue;
             }
 
-            let file_id = idx.upsert_file(path)?;
+            // Only stamp the `files` row when pass-1 extraction for this file
+            // succeeded (or was correctly skipped as unchanged); use the
+            // pass-1-time hash, never a fresh re-read (avoids the TOCTOU where
+            // a mid-scan edit would pair pass-1 artifacts with content that was
+            // never analysed). Files whose pass-1 extraction FAILED are absent
+            // from `safe_hashes`: their `files` row is left untouched so its
+            // previous hash forces a pass-1 retry on the next scan instead of
+            // freezing stale summaries against the new content forever. Their
+            // best-effort pass-2 findings still appear in this scan's in-memory
+            // result; we just do not persist them or advance the hash.
+            let Some(pass1_hash) = safe_hashes.get(path) else {
+                continue;
+            };
+
+            let file_id = idx.upsert_file_with_hash(path, pass1_hash)?;
             let empty: [&Diag; 0] = [];
             let file_diags = by_file
                 .get(path.to_string_lossy().as_ref())

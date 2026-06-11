@@ -64,13 +64,26 @@ pub(super) fn get_boolean_operands<'a>(node: Node<'a>) -> Option<(Node<'a>, Node
     None
 }
 
-/// Create a lightweight `StmtKind::If` node for a sub-condition in a boolean chain.
+/// Create a `StmtKind::If` node for a sub-condition in a boolean chain.
+///
+/// When the operand contains a classifiable call (`if (flag && cp.execSync(x))`),
+/// the node is built via [`push_node`] so the inner source/sink/sanitizer
+/// classification — callee, labels, arg-uses, gated sinks — is preserved, then
+/// the branch-condition metadata is overlaid on top.  Without this, a sink or
+/// source CALL inside a short-circuited operand was dropped entirely (the bare
+/// node only carried `condition_vars`, no callee or labels), so the
+/// `if (flag && sink(x))` form missed flows that the un-decomposed
+/// `if (sink(x))` form catches via the mod.rs condition-call fallback.  This
+/// mirrors `lower_ternary_branch`, which already uses `push_node` for the same
+/// reason.  Non-call operands keep the original lightweight shape.
 pub(super) fn push_condition_node<'a>(
     g: &mut Cfg,
     cond_ast: Node<'a>,
     lang: &str,
     code: &'a [u8],
     enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
 ) -> NodeIndex {
     // Pass cond_ast as both args, sub-conditions are never `unless` nodes
     let (inner, negated) = detect_negation(cond_ast, cond_ast, lang);
@@ -94,6 +107,44 @@ pub(super) fn push_condition_node<'a>(
     // because the per-disjunct cond nodes (built via
     // `build_condition_chain`) didn't populate `taint.uses`.
     let uses_for_taint: Vec<String> = vars.clone();
+
+    // Operand containing a call → route through `push_node` for full
+    // source/sink/sanitizer classification, then overlay branch metadata.
+    if has_call_descendant(inner, lang) {
+        let ord = *call_ordinal;
+        *call_ordinal += 1;
+        let node = push_node(
+            g,
+            StmtKind::If,
+            inner,
+            lang,
+            code,
+            enclosing_func,
+            ord,
+            analysis_rules,
+        );
+        // Overlay the branch-condition metadata that the chain wiring depends
+        // on.  `push_node` set `defines`/`uses`/`labels`/`callee` from the call;
+        // keep those, but ensure the condition fields and the interned
+        // condition vars (for `apply_branch_predicates`) are present, and the
+        // span/enclosing_func point at the operand expression.
+        let info = &mut g[node];
+        info.kind = StmtKind::If;
+        info.ast.span = span;
+        info.ast.enclosing_func = enclosing_func.map(|s| s.to_string());
+        info.condition_text = text;
+        info.condition_vars = vars;
+        info.condition_negated = negated;
+        // Union the condition idents into `taint.uses` so branch-predicate
+        // lookup keeps working without clobbering the call's own arg uses.
+        for v in &uses_for_taint {
+            if !info.taint.uses.contains(v) {
+                info.taint.uses.push(v.clone());
+            }
+        }
+        return node;
+    }
+
     g.add_node(NodeInfo {
         kind: StmtKind::If,
         ast: AstMeta {
@@ -221,7 +272,15 @@ pub(super) fn build_ternary_diamond<'a>(
     // 1. Condition header. `push_condition_node` sets span/text/vars/negated
     //    but leaves `is_eq_with_const` default; stamp it explicitly so the
     //    taint engine's equality-narrowing fires for `x === 'literal' ? …`.
-    let cond_if = push_condition_node(g, cond_ast, lang, code, enclosing_func);
+    let cond_if = push_condition_node(
+        g,
+        cond_ast,
+        lang,
+        code,
+        enclosing_func,
+        call_ordinal,
+        analysis_rules,
+    );
     g[cond_if].is_eq_with_const = detect_eq_with_const(cond_ast, lang);
     // Capture the pure int-arith + comparison tree so `fold_constant_branches`
     // can prune a dead constant-condition arm of the ternary (e.g. Java
@@ -488,6 +547,7 @@ pub(super) fn classify_ternary_lhs(
 ///
 /// Returns `(true_exits, false_exits)`, the sets of nodes from which True/False
 /// edges should connect to the then/else branches.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_condition_chain<'a>(
     cond_ast: Node<'a>,
     preds: &[NodeIndex],
@@ -496,6 +556,8 @@ pub(super) fn build_condition_chain<'a>(
     lang: &str,
     code: &'a [u8],
     enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
 ) -> (Vec<NodeIndex>, Vec<NodeIndex>) {
     let inner = unwrap_parens(cond_ast);
 
@@ -503,8 +565,17 @@ pub(super) fn build_condition_chain<'a>(
         Some(BoolOp::And) => {
             if let Some((left, right)) = get_boolean_operands(inner) {
                 // Left operand with current preds
-                let (left_true, left_false) =
-                    build_condition_chain(left, preds, pred_edge, g, lang, code, enclosing_func);
+                let (left_true, left_false) = build_condition_chain(
+                    left,
+                    preds,
+                    pred_edge,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 // Right operand only evaluated when left is true
                 let (right_true, right_false) = build_condition_chain(
                     right,
@@ -514,6 +585,8 @@ pub(super) fn build_condition_chain<'a>(
                     lang,
                     code,
                     enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
                 );
                 // AND: true only when both true; false when either false
                 let mut false_exits = left_false;
@@ -521,7 +594,15 @@ pub(super) fn build_condition_chain<'a>(
                 (right_true, false_exits)
             } else {
                 // Safety fallback: treat as leaf
-                let node = push_condition_node(g, inner, lang, code, enclosing_func);
+                let node = push_condition_node(
+                    g,
+                    inner,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 connect_all(g, preds, node, pred_edge);
                 (vec![node], vec![node])
             }
@@ -529,8 +610,17 @@ pub(super) fn build_condition_chain<'a>(
         Some(BoolOp::Or) => {
             if let Some((left, right)) = get_boolean_operands(inner) {
                 // Left operand with current preds
-                let (left_true, left_false) =
-                    build_condition_chain(left, preds, pred_edge, g, lang, code, enclosing_func);
+                let (left_true, left_false) = build_condition_chain(
+                    left,
+                    preds,
+                    pred_edge,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 // Right operand only evaluated when left is false
                 let (right_true, right_false) = build_condition_chain(
                     right,
@@ -540,6 +630,8 @@ pub(super) fn build_condition_chain<'a>(
                     lang,
                     code,
                     enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
                 );
                 // OR: true when either true; false only when both false
                 let mut true_exits = left_true;
@@ -547,14 +639,30 @@ pub(super) fn build_condition_chain<'a>(
                 (true_exits, right_false)
             } else {
                 // Safety fallback: treat as leaf
-                let node = push_condition_node(g, inner, lang, code, enclosing_func);
+                let node = push_condition_node(
+                    g,
+                    inner,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 connect_all(g, preds, node, pred_edge);
                 (vec![node], vec![node])
             }
         }
         None => {
             // Leaf: single condition node
-            let node = push_condition_node(g, inner, lang, code, enclosing_func);
+            let node = push_condition_node(
+                g,
+                inner,
+                lang,
+                code,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+            );
             connect_all(g, preds, node, pred_edge);
             (vec![node], vec![node])
         }

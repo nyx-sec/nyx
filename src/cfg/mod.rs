@@ -3541,9 +3541,17 @@ pub(super) fn push_node<'a>(
         None
     };
 
-    // Extract condition metadata for If nodes.
+    // Extract condition metadata for If nodes.  Python `elif_clause` and PHP
+    // `else_if_clause` are lowered as guard nodes by `build_alternative_chain`
+    // (the flat-sibling elif-chain handler) and carry their own `condition`
+    // field, so they must also receive condition-metadata extraction even
+    // though their grammar kind maps to `Kind::Block`.  These two node kinds
+    // only ever reach `push_node` from that handler, so widening the guard
+    // here cannot affect ordinary block lowering.
     let (condition_text, condition_vars, condition_negated, cond_arith) =
-        if matches!(lookup(lang, ast.kind()), Kind::If) {
+        if matches!(lookup(lang, ast.kind()), Kind::If)
+            || matches!(ast.kind(), "elif_clause" | "else_if_clause")
+        {
             extract_condition_raw(ast, lang, code)
         } else {
             (None, Vec::new(), false, None)
@@ -5074,6 +5082,230 @@ fn apply_arg_source_bindings(
     }
 }
 
+/// Lower a flat chain of `alternative` siblings (Python `elif_clause`s / PHP
+/// `else_if_clause`s, optionally trailed by an `else_clause`) into a properly
+/// nested else-if CFG.
+///
+/// tree-sitter exposes these clauses as repeated, FLAT `alternative` fields on
+/// a single `if_statement` rather than nesting each `else if` inside the
+/// previous `else` (as JS/TS/Rust/Go/Java/C do).  The default single-`else`
+/// lowering only consumed the first sibling, silently dropping every 2nd+ elif
+/// and the trailing else — so any source/sink/sanitizer/guard living there was
+/// invisible to the whole pipeline.  This builder restores the missing CFG
+/// nodes by chaining each elif as a guard whose False edge flows into the next
+/// alternative.
+///
+/// `incoming_edge` is the edge label used to enter the chain (the parent `if`'s
+/// false edge — `EdgeKind::False` normally, `EdgeKind::True` for Ruby
+/// `unless`).  Returns the union of all branch exits plus the final
+/// fall-through (when the chain has no terminal `else`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_alternative_chain<'a>(
+    alternatives: &[Node<'a>],
+    preds: &[NodeIndex],
+    incoming_edge: EdgeKind,
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    // Predecessor frontier entering the current alternative, and the edge label
+    // to use when wiring into it.  Updated as we descend the chain: each elif's
+    // False edge becomes the predecessor/edge for the next alternative.
+    let mut chain_preds: Vec<NodeIndex> = preds.to_vec();
+    let mut chain_edge = incoming_edge;
+    let mut exits: Vec<NodeIndex> = Vec::new();
+
+    for &alt in alternatives {
+        let is_elif = matches!(alt.kind(), "elif_clause" | "else_if_clause");
+
+        if is_elif {
+            // Guard node for the elif condition.  `push_node` with `StmtKind::If`
+            // extracts condition metadata and runs label classification on the
+            // clause (its `condition` field), so a source/sink call inside an
+            // elif condition is no longer dropped.
+            let guard = push_node(
+                g,
+                StmtKind::If,
+                alt,
+                lang,
+                code,
+                enclosing_func,
+                0,
+                analysis_rules,
+            );
+            connect_all(g, &chain_preds, guard, chain_edge);
+
+            // True branch: the elif body (`consequence` for Python, `body` for
+            // PHP / colon-block forms).
+            let body = alt
+                .child_by_field_name("consequence")
+                .or_else(|| alt.child_by_field_name("body"));
+            if let Some(b) = body {
+                let body_first = NodeIndex::new(g.node_count());
+                let body_exits = build_sub(
+                    b,
+                    &[guard],
+                    g,
+                    lang,
+                    code,
+                    summaries,
+                    file_path,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                    break_targets,
+                    continue_targets,
+                    throw_targets,
+                    bodies,
+                    next_body_id,
+                    current_body_id,
+                );
+                if body_first.index() < g.node_count() {
+                    connect_all(g, &[guard], body_first, EdgeKind::True);
+                    exits.extend(body_exits);
+                } else if let Some(&first) = body_exits.first() {
+                    connect_all(g, &[guard], first, EdgeKind::True);
+                    exits.extend(body_exits);
+                } else {
+                    // Empty body: the guard's True edge falls through.
+                    exits.push(guard);
+                }
+            } else {
+                exits.push(guard);
+            }
+
+            // False branch descends to the next alternative.
+            chain_preds = vec![guard];
+            chain_edge = EdgeKind::False;
+        } else {
+            // Terminal `else_clause` (or any non-guard block): lower its body and
+            // end the chain.  The else body field is `body` for both Python and
+            // PHP `else_clause`; fall back to the clause node itself.
+            let body = alt.child_by_field_name("body").unwrap_or(alt);
+            let body_first = NodeIndex::new(g.node_count());
+            let body_exits = build_sub(
+                body,
+                &chain_preds,
+                g,
+                lang,
+                code,
+                summaries,
+                file_path,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+                break_targets,
+                continue_targets,
+                throw_targets,
+                bodies,
+                next_body_id,
+                current_body_id,
+            );
+            if body_first.index() < g.node_count() {
+                connect_all(g, &chain_preds, body_first, chain_edge);
+                exits.extend(body_exits);
+            } else if let Some(&first) = body_exits.first() {
+                connect_all(g, &chain_preds, first, chain_edge);
+                exits.extend(body_exits);
+            } else {
+                exits.extend(chain_preds.iter().copied());
+            }
+            // An else clause terminates the chain; nothing follows it.
+            return exits;
+        }
+    }
+
+    // Chain ended with an elif (no terminal else): the last guard's False edge
+    // is the fall-through path out of the whole if/elif construct.  Materialise
+    // it as a synthetic pass-through so the false edge has a concrete target,
+    // mirroring the no-else branch in the `Kind::If` arm.
+    let pass = g.add_node(NodeInfo {
+        kind: StmtKind::Seq,
+        ast: AstMeta {
+            span: chain_preds
+                .first()
+                .map(|&n| g[n].ast.span)
+                .unwrap_or((0, 0)),
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    });
+    connect_all(g, &chain_preds, pass, chain_edge);
+    exits.push(pass);
+    exits
+}
+
+/// Lower a C-style `for` loop's increment/update clause onto the back-edge
+/// path.  `back_sources` are the body/continue exits that would otherwise
+/// back-edge straight to the loop header.  When an `update_subtree` exists it
+/// is lowered from those sources and its exits are returned, so callers
+/// back-edge the update's exits to the header instead — making increment-clause
+/// side effects (assignments, sanitizer calls) visible to taint analysis.
+/// Without an update clause the input sources are returned unchanged, so the
+/// CFG is bit-identical to the pre-fix behaviour.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lower_loop_update<'a>(
+    update_subtree: Option<Node<'a>>,
+    back_sources: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    let Some(update) = update_subtree else {
+        return back_sources.to_vec();
+    };
+    if back_sources.is_empty() {
+        return Vec::new();
+    }
+    let update_exits = build_sub(
+        update,
+        back_sources,
+        g,
+        lang,
+        code,
+        summaries,
+        file_path,
+        enclosing_func,
+        call_ordinal,
+        analysis_rules,
+        break_targets,
+        continue_targets,
+        throw_targets,
+        bodies,
+        next_body_id,
+        current_body_id,
+    );
+    // If the update produced no CFG nodes (e.g. it was pure trivia), preserve
+    // the original back-edge sources so the loop still closes.
+    if update_exits.is_empty() {
+        back_sources.to_vec()
+    } else {
+        update_exits
+    }
+}
+
 //    The recursive *work‑horse* that converts an AST node into a CFG slice.
 //    Returns the set of *exit* nodes that need to be wired further.
 #[allow(clippy::too_many_arguments)]
@@ -5183,6 +5415,8 @@ pub(super) fn build_sub<'a>(
                     lang,
                     code,
                     enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
                 )
             } else {
                 // Single-node path (original behavior)
@@ -5214,14 +5448,27 @@ pub(super) fn build_sub<'a>(
 
             // Locate then & else blocks using field-based lookup first,
             // then positional fallback (Rust uses positional blocks).
-            let (then_block, else_block) = {
+            //
+            // `alternatives` collects *every* `alternative` field, not just the
+            // first.  In tree-sitter-python and tree-sitter-php an
+            // `if/elif/.../else` (Python) or `if/elseif/.../else` (PHP) chain
+            // produces several FLAT sibling `alternative` fields on one
+            // `if_statement` (a list of `elif_clause`/`else_if_clause` nodes
+            // optionally trailed by an `else_clause`).  JS/TS/Rust/Go/Java/C
+            // nest their `else if`, so they expose at most one `alternative`
+            // (the nested if) and the list has length ≤ 1.
+            let (then_block, else_block, alternatives) = {
                 let field_then = ast
                     .child_by_field_name("consequence")
                     .or_else(|| ast.child_by_field_name("body"));
-                let field_else = ast.child_by_field_name("alternative");
+                let mut alt_cursor = ast.walk();
+                let alternatives: Vec<Node> = ast
+                    .children_by_field_name("alternative", &mut alt_cursor)
+                    .collect();
+                let field_else = alternatives.first().copied();
 
                 if field_then.is_some() || field_else.is_some() {
-                    (field_then, field_else)
+                    (field_then, field_else, alternatives)
                 } else {
                     // Fallback: positional block children (Rust `if_expression`)
                     let mut cursor = ast.walk();
@@ -5229,9 +5476,21 @@ pub(super) fn build_sub<'a>(
                         .children(&mut cursor)
                         .filter(|n| lookup(lang, n.kind()) == Kind::Block)
                         .collect();
-                    (blocks.first().copied(), blocks.get(1).copied())
+                    (blocks.first().copied(), blocks.get(1).copied(), Vec::new())
                 }
             };
+
+            // A flat elif/elseif chain has 2+ `alternative` siblings, or a
+            // single `alternative` that is itself an elif/else-if clause (the
+            // `if a: .. elif b: ..` form with no trailing `else`, where the lone
+            // alternative is an `elif_clause` rather than a nested if).  In both
+            // cases the default single-`else_block` lowering below would either
+            // drop later siblings entirely or fail to treat the elif condition
+            // as a branch guard, so route through the dedicated chain builder.
+            let is_flat_elif_chain = alternatives.len() > 1
+                || alternatives
+                    .first()
+                    .is_some_and(|a| matches!(a.kind(), "elif_clause" | "else_if_clause"));
 
             // THEN branch
             let then_first_node = NodeIndex::new(g.node_count());
@@ -5267,7 +5526,30 @@ pub(super) fn build_sub<'a>(
 
             // ELSE branch
             let else_first_node = NodeIndex::new(g.node_count());
-            let else_exits = if let Some(b) = else_block {
+            let else_exits = if is_flat_elif_chain {
+                // Flat elif/elseif chain: lower every alternative sibling as a
+                // proper nested else-if so 2nd+ elif and trailing else clauses
+                // are no longer dropped from the CFG.
+                build_alternative_chain(
+                    &alternatives,
+                    else_preds,
+                    else_edge,
+                    g,
+                    lang,
+                    code,
+                    summaries,
+                    file_path,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                    break_targets,
+                    continue_targets,
+                    throw_targets,
+                    bodies,
+                    next_body_id,
+                    current_body_id,
+                )
+            } else if let Some(b) = else_block {
                 let exits = build_sub(
                     b,
                     else_preds,
@@ -5380,6 +5662,61 @@ pub(super) fn build_sub<'a>(
 
         //  WHILE / FOR: classic loop with a back edge.
         Kind::While | Kind::For => {
+            // C-style `for (init; cond; incr) body` loops (C/C++, JS/TS, Go
+            // three-clause, PHP) attach `initializer`/`update` (or `increment`)
+            // subtrees that the previous loop lowering ignored entirely — so a
+            // taint source bound in the init (`for (cmd = getenv("X"); …)`) or a
+            // side effect in the increment had no CFG node at all and was
+            // invisible to taint analysis.  Tree-sitter exposes these either as
+            // direct fields on the loop node (C/C++/JS/TS/PHP) or nested under a
+            // `for_clause` child (Go's three-clause form).  The init runs once
+            // before the header; its exits become the header's predecessors so
+            // its defs flow into both the condition and the body.
+            let clause_owner = ast
+                .child_by_field_name("body")
+                .is_none()
+                .then(|| {
+                    let mut c = ast.walk();
+                    ast.children(&mut c).find(|n| n.kind() == "for_clause")
+                })
+                .flatten();
+            let init_subtree = ast
+                .child_by_field_name("initializer")
+                .or_else(|| ast.child_by_field_name("initialize"))
+                .or_else(|| clause_owner.and_then(|fc| fc.child_by_field_name("initializer")));
+            let update_subtree = ast
+                .child_by_field_name("update")
+                .or_else(|| ast.child_by_field_name("increment"))
+                .or_else(|| clause_owner.and_then(|fc| fc.child_by_field_name("update")));
+
+            // Lower the initializer (if any) from `preds`; its exits become the
+            // header's predecessors.  Empty / absent inits leave `preds`
+            // bit-identical to the pre-fix behaviour.
+            let init_exits_owned = init_subtree.map(|init| {
+                build_sub(
+                    init,
+                    preds,
+                    g,
+                    lang,
+                    code,
+                    summaries,
+                    file_path,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                    break_targets,
+                    continue_targets,
+                    throw_targets,
+                    bodies,
+                    next_body_id,
+                    current_body_id,
+                )
+            });
+            let header_preds: &[NodeIndex] = match &init_exits_owned {
+                Some(exits) if !exits.is_empty() => exits.as_slice(),
+                _ => preds,
+            };
+
             let header = push_node(
                 g,
                 StmtKind::Loop,
@@ -5390,7 +5727,7 @@ pub(super) fn build_sub<'a>(
                 0,
                 analysis_rules,
             );
-            connect_all(g, preds, header, EdgeKind::Seq);
+            connect_all(g, header_preds, header, EdgeKind::Seq);
 
             // Check for short-circuit condition
             let cond_subtree = ast.child_by_field_name("condition");
@@ -5445,6 +5782,8 @@ pub(super) fn build_sub<'a>(
                     lang,
                     code,
                     enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
                 );
 
                 // Wire body from true_exits
@@ -5472,12 +5811,32 @@ pub(super) fn build_sub<'a>(
                     connect_all(g, &true_exits, body_first, EdgeKind::True);
                 }
 
+                // The increment runs at the end of each iteration before the
+                // condition is re-checked, so it sits on the back-edge path
+                // between the body/continue exits and the header.
+                let mut back_sources: Vec<NodeIndex> = body_exits;
+                back_sources.extend(loop_continues.iter().copied());
+                let back_sources = lower_loop_update(
+                    update_subtree,
+                    &back_sources,
+                    g,
+                    lang,
+                    code,
+                    summaries,
+                    file_path,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                    break_targets,
+                    continue_targets,
+                    throw_targets,
+                    bodies,
+                    next_body_id,
+                    current_body_id,
+                );
                 // Back-edges go to header (not into the condition chain)
-                for &e in &body_exits {
+                for &e in &back_sources {
                     connect_all(g, &[e], header, EdgeKind::Back);
-                }
-                for &c in &loop_continues {
-                    connect_all(g, &[c], header, EdgeKind::Back);
                 }
 
                 // Loop exits = false_exits + breaks
@@ -5504,13 +5863,31 @@ pub(super) fn build_sub<'a>(
                     current_body_id,
                 );
 
+                // The increment runs on the back-edge path (end of each
+                // iteration, before the next condition check).
+                let mut back_sources: Vec<NodeIndex> = body_exits;
+                back_sources.extend(loop_continues.iter().copied());
+                let back_sources = lower_loop_update(
+                    update_subtree,
+                    &back_sources,
+                    g,
+                    lang,
+                    code,
+                    summaries,
+                    file_path,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                    break_targets,
+                    continue_targets,
+                    throw_targets,
+                    bodies,
+                    next_body_id,
+                    current_body_id,
+                );
                 // Back‑edge for every linear exit → header.
-                for &e in &body_exits {
+                for &e in &back_sources {
                     connect_all(g, &[e], header, EdgeKind::Back);
-                }
-                // Wire continue targets as back edges to header
-                for &c in &loop_continues {
-                    connect_all(g, &[c], header, EdgeKind::Back);
                 }
                 // Falling out of the loop = header’s false branch +
                 // any break targets that exit the loop.

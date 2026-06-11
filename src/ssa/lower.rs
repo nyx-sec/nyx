@@ -121,6 +121,64 @@ fn try_lower_field_proj_chain(
     Some((current, method))
 }
 
+/// Remove the *implicit* chain-root argument group that `build_call_args`
+/// appends when decomposing a chained-receiver call (`a.b.m(...)`) into a
+/// FieldProj chain plus a bare-method Call.
+///
+/// `build_call_args` adds any `info.taint.uses` entry not already in
+/// `info.call.arg_uses` (and not the receiver) as a trailing "implicit" arg
+/// group.  For a chained callee `a.b.m`, the chain root `a` lands in that
+/// implicit group; once the FieldProj chain carries it on the typed `receiver`
+/// channel, re-listing it as a positional argument inflates arity and
+/// double-taints, so it must be dropped.
+///
+/// The previous implementation used `retain` to drop *every* group equal to
+/// `[base_v]`, which also deleted a **genuine** positional argument that
+/// happens to be the chain root identifier — e.g. the second `a` in
+/// `a.b.m(p, a)` or `this` in `this.logger.log(this)`.  That silently lost the
+/// taint flowing through that argument into the callee and shifted later arg
+/// positions left.
+///
+/// This helper fixes that by:
+///   1. Skipping the strip entirely when the chain root is a genuine
+///      positional argument (present in `arg_uses`): there is no implicit
+///      group to remove in that case, only the real argument.
+///   2. Otherwise removing at most ONE matching group — the trailing implicit
+///      one appended by `build_call_args` — so a coincidental earlier
+///      `[base_v]` argument still survives.
+fn strip_implicit_chain_root(
+    callee: &str,
+    info: &crate::cfg::NodeInfo,
+    var_stacks: &HashMap<String, Vec<SsaValue>>,
+    args: &mut Vec<SmallVec<[SsaValue; 2]>>,
+) {
+    let Some(base_ident) = callee.split('.').next() else {
+        return;
+    };
+    let Some(&base_v) = var_stacks.get(base_ident).and_then(|s| s.last()) else {
+        return;
+    };
+    // If the chain root is itself a genuine positional argument, the matching
+    // `[base_v]` group is that real argument — `build_call_args` did NOT append
+    // an implicit chain-root group (the root is already in `arg_uses`). Keep it.
+    let root_is_real_arg = info
+        .call
+        .arg_uses
+        .iter()
+        .any(|grp| grp.iter().any(|ident| ident.as_str() == base_ident));
+    if root_is_real_arg {
+        return;
+    }
+    // Remove only the last matching group (the appended implicit chain-root
+    // group), preserving any earlier coincidental `[base_v]` argument.
+    if let Some(pos) = args
+        .iter()
+        .rposition(|grp| grp.len() == 1 && grp.first() == Some(&base_v))
+    {
+        args.remove(pos);
+    }
+}
+
 /// Lower a CFG to SSA form for a single function scope.
 ///
 /// `scope` filters nodes by `enclosing_func`:
@@ -341,8 +399,9 @@ fn lower_to_ssa_inner(
     // listed as an exception target indicates a CFG construction bug. Debug
     // builds panic loudly; release builds warn, record an engine note so
     // downstream findings carry "SSA lowering bailed" provenance, and fall
-    // through to the existing orphan handling above (the "all definitions"
-    // fallback) which remains sound for taint reachability.
+    // through to the existing orphan handling above, which lowers orphan
+    // (catch) subtrees with a locally-built dominator tree and seeds them from
+    // the most entry-dominating reaching definitions.
     check_catch_block_reachability_gated(&body);
 
     Ok(body)
@@ -352,9 +411,11 @@ fn lower_to_ssa_inner(
 /// debug builds and warns + records an engine note in release builds.
 ///
 /// The current lowering's orphan handling (`process_block` fallback in
-/// `rename_variables`) already widens to an "all definitions" conservative
-/// state for blocks without predecessors. That preserves soundness for
-/// taint reachability but masks CFG-builder bugs: this gate surfaces them.
+/// `rename_variables`) lowers orphan (catch) subtrees via a locally-built
+/// dominator tree and seeds them from the most entry-dominating reaching
+/// definitions, so blocks without predecessors are still renamed and
+/// populated. That keeps catch-block analysis usable but masks CFG-builder
+/// bugs: this gate surfaces them.
 fn check_catch_block_reachability_gated(body: &SsaBody) {
     let result = super::invariants::check_catch_block_reachability(body);
     if let Err(err) = result {
@@ -923,6 +984,100 @@ fn build_dom_tree_children(
     children
 }
 
+/// Blocks reachable from the entry block (block 0) over the block-level
+/// successor graph.  Blocks NOT in this set are "orphan domain" — catch blocks
+/// (and everything they dominate) that became unreachable once exception edges
+/// were stripped before SSA lowering.
+fn compute_entry_reachable(num_blocks: usize, block_succs: &[Vec<usize>]) -> Vec<bool> {
+    let mut reachable = vec![false; num_blocks];
+    if num_blocks == 0 {
+        return reachable;
+    }
+    let mut stack = vec![0usize];
+    reachable[0] = true;
+    while let Some(b) = stack.pop() {
+        for &s in &block_succs[b] {
+            if !reachable[s] {
+                reachable[s] = true;
+                stack.push(s);
+            }
+        }
+    }
+    reachable
+}
+
+/// Build a dominator-tree children list restricted to the orphan domain.
+///
+/// The main `simple_fast` walk is rooted at block 0 and never reaches orphan
+/// blocks (catch entries + their internal subtree), so they have no entry in
+/// the global dominator tree and their internal successors are never renamed.
+/// Here we construct a fresh block graph containing a virtual super-root that
+/// reaches every orphan *entry* (an orphan-domain block with no predecessors),
+/// plus the orphan-domain blocks and the edges among them.  Edges that leave
+/// the orphan domain (e.g. a catch arm flowing into the entry-reachable
+/// post-`try` join) are dropped: those target blocks were already processed by
+/// the main walk and act as boundaries.  Running `simple_fast` over this graph
+/// yields a dominator tree whose `children[entry]` lists the catch's internal
+/// dominator-tree successors, letting `process_block` recurse through the whole
+/// handler body.
+///
+/// Returned vector is indexed by real block id (length `num_blocks`); entries
+/// for entry-reachable blocks stay empty.
+fn build_orphan_dom_tree_children(
+    num_blocks: usize,
+    block_succs: &[Vec<usize>],
+    block_preds: &[Vec<usize>],
+    entry_reachable: &[bool],
+) -> Vec<Vec<usize>> {
+    let mut children: Vec<Vec<usize>> = vec![vec![]; num_blocks];
+
+    // Collect orphan-domain blocks (unreachable from entry).
+    let orphan_blocks: Vec<usize> = (0..num_blocks).filter(|&b| !entry_reachable[b]).collect();
+    if orphan_blocks.is_empty() {
+        return children;
+    }
+
+    // Build a graph: virtual root node + one node per orphan-domain block.
+    // Node weight stores the real block id; the virtual root uses a sentinel
+    // (u32::MAX) that maps to no real block.
+    let mut g: Graph<u32, ()> = Graph::new();
+    let root = g.add_node(u32::MAX);
+    let mut node_of_block: HashMap<usize, NodeIndex> = HashMap::new();
+    for &b in &orphan_blocks {
+        node_of_block.insert(b, g.add_node(b as u32));
+    }
+
+    for &b in &orphan_blocks {
+        let bn = node_of_block[&b];
+        // Orphan entries (no real predecessors) hang off the virtual root.
+        if block_preds[b].is_empty() {
+            g.add_edge(root, bn, ());
+        }
+        // Intra-orphan-domain edges.  Targets that escape the orphan domain
+        // are boundaries (already processed) and are not added.
+        for &s in &block_succs[b] {
+            if let Some(&sn) = node_of_block.get(&s) {
+                g.add_edge(bn, sn, ());
+            }
+        }
+    }
+
+    let doms = simple_fast(&g, root);
+    for &b in &orphan_blocks {
+        let bn = node_of_block[&b];
+        if let Some(idom) = doms.immediate_dominator(bn) {
+            // Skip blocks whose immediate dominator is the virtual root: these
+            // are the orphan entries, processed directly by the caller's loop.
+            let idom_w = g[idom];
+            if idom_w != u32::MAX {
+                children[idom_w as usize].push(b);
+            }
+        }
+    }
+
+    children
+}
+
 /// Rename variables: dominator tree preorder walk with per-variable stacks.
 ///
 /// Returns (ssa_blocks, value_defs, cfg_node_map).
@@ -1161,16 +1316,22 @@ fn rename_variables(
                 ) {
                     Some((recv_v, bare_method)) => {
                         receiver = Some(recv_v);
-                        // Strip any positional arg group that exactly matches the
-                        // chain root identifier, it has been replaced by the
-                        // FieldProj chain receiver, and re-listing it as an
+                        // Strip the *implicit* chain-root arg group that
+                        // `build_call_args` appends for `taint.uses` not present
+                        // in `arg_uses`: the chain root has been replaced by the
+                        // FieldProj chain receiver, so re-listing it as an
                         // argument would inflate arity / double-taint.
-                        if let Some(base_ident) = callee.split('.').next() {
-                            if let Some(base_v) = var_stacks.get(base_ident).and_then(|s| s.last())
-                            {
-                                args.retain(|grp| !(grp.len() == 1 && grp.first() == Some(base_v)));
-                            }
-                        }
+                        //
+                        // Only do this when the chain root is NOT a genuine
+                        // positional argument.  For `a.b.m(p, a)` the root `a`
+                        // is a real second argument (present in `arg_uses`); the
+                        // `[a]` group is that argument, not the implicit
+                        // chain-root group, and must be kept — otherwise taint
+                        // flowing through it into the callee is silently lost.
+                        // Also remove at most one matching group (the appended
+                        // implicit one) so a coincidental earlier `[base_v]`
+                        // positional arg survives.
+                        strip_implicit_chain_root(&callee, info, var_stacks, &mut args);
                         (bare_method, Some(callee.clone()))
                     }
                     None => (callee, None),
@@ -1306,12 +1467,10 @@ fn rename_variables(
                 ) {
                     Some((recv_v, bare_method)) => {
                         receiver = Some(recv_v);
-                        if let Some(base_ident) = callee.split('.').next() {
-                            if let Some(base_v) = var_stacks.get(base_ident).and_then(|s| s.last())
-                            {
-                                args.retain(|grp| !(grp.len() == 1 && grp.first() == Some(base_v)));
-                            }
-                        }
+                        // Same implicit-chain-root strip as the primary Call
+                        // branch above; keep a genuine positional arg equal to
+                        // the chain root. See `strip_implicit_chain_root`.
+                        strip_implicit_chain_root(&callee, info, var_stacks, &mut args);
                         (bare_method, Some(callee.clone()))
                     }
                     None => (callee, None),
@@ -2179,24 +2338,71 @@ fn rename_variables(
     // Process orphan blocks (e.g. catch blocks disconnected after exception edge removal).
     // These blocks have no predecessors and weren't reached by the dominator tree walk.
     //
-    // Rebuild var_stacks from already-processed instructions so that catch blocks
-    // can reference variables defined before the try block (e.g. `userInput`).
-    let has_orphans =
-        (1..num_blocks).any(|bid| block_preds[bid].is_empty() && ssa_blocks[bid].body.is_empty());
+    // An "orphan domain" is the set of blocks unreachable from the entry block
+    // after exception-edge stripping — the catch entry plus everything it
+    // dominates (internal `if`/`for`/`while`/`switch`/`try` blocks).  The main
+    // `simple_fast` dominator walk is rooted at block 0 and never reaches these
+    // blocks, so their `immediate_dominator` is `None` and
+    // `build_dom_tree_children` links neither the catch entry nor its internal
+    // subtree.  Processing only the catch *entry* (which has empty preds) via
+    // the global `dom_tree_children` therefore leaves every catch-internal
+    // block body empty — dropping all Source/Sink/Assign instructions past the
+    // catch's first basic block (a soundness false-negative).  To fix this we
+    // build a *local* dominator tree over the orphan domain (rooted at a
+    // virtual super-root that reaches every orphan entry) and recurse through
+    // it, so the whole catch subtree is renamed and populated.
+    let entry_reachable = compute_entry_reachable(num_blocks, block_succs);
+    let has_orphans = (1..num_blocks).any(|bid| !entry_reachable[bid]);
     if has_orphans {
-        // Rebuild var_stacks from all SSA instructions created during the main walk.
-        // This gives orphan blocks access to all variable definitions.
+        // Seed var_stacks with the definitions that actually *reach* the catch.
+        //
+        // The previous implementation rebuilt var_stacks from *all* blocks in
+        // ascending block-id order and took `.last()`, i.e. the highest-block-id
+        // def.  For a variable defined before the `try` (block 0) and re-killed
+        // *after* the `try`/`catch` join (a later, higher-id block — e.g.
+        // `x = "safe"` post-catch), `.last()` picked that post-join kill, which
+        // does NOT reach the handler.  A catch-side `sink(x)` then resolved to
+        // the killed constant instead of the pre-`try` (possibly tainted) value
+        // — a false negative.  (The doc comment further up claiming this is a
+        // sound "all definitions" widening was inaccurate.)
+        //
+        // We restrict the rebuild to *entry-reachable* blocks (orphan-domain
+        // blocks are renamed below, not used as a seed) and iterate them in
+        // DESCENDING block-id order so `.last()` lands on the LOWEST-id — i.e.
+        // most entry-dominating — definition of each variable.  Block 0 (which
+        // dominates every block, including the catch) therefore wins over any
+        // post-join reassignment, fixing the reported false negative, while a
+        // variable defined only inside the `try` body still keeps a `try`-side
+        // definition (rather than being dropped), avoiding a new false negative.
+        // Exact reaching-definition resolution for variables redefined along the
+        // protected region would require the pre-strip exception-edge structure,
+        // which isn't available here; this ordering is the conservative
+        // approximation.
         var_stacks.clear();
-        for block in &ssa_blocks {
-            for inst in block.phis.iter().chain(block.body.iter()) {
+        for bid in (0..num_blocks).rev() {
+            if !entry_reachable[bid] {
+                continue;
+            }
+            for inst in ssa_blocks[bid]
+                .phis
+                .iter()
+                .chain(ssa_blocks[bid].body.iter())
+            {
                 if let Some(ref name) = inst.var_name {
                     var_stacks.entry(name.clone()).or_default().push(inst.value);
                 }
             }
         }
 
+        // Build a local dominator tree over the orphan domain so the catch
+        // entry's internal successors are reached during renaming.
+        let orphan_dom_children =
+            build_orphan_dom_tree_children(num_blocks, block_succs, block_preds, &entry_reachable);
+
         for bid in 1..num_blocks {
-            if block_preds[bid].is_empty() && ssa_blocks[bid].body.is_empty() {
+            // Orphan *entries* are orphan-domain blocks with no predecessors
+            // (their only inbound edges were exception edges, now stripped).
+            if !entry_reachable[bid] && block_preds[bid].is_empty() {
                 process_block(
                     bid,
                     cfg,
@@ -2204,7 +2410,7 @@ fn rename_variables(
                     block_succs,
                     block_preds,
                     phi_placements,
-                    dom_tree_children,
+                    &orphan_dom_children,
                     filtered_edges,
                     &mut var_stacks,
                     &mut ssa_blocks,
@@ -2778,6 +2984,208 @@ mod tests {
         // so it may appear as an orphan. The BFS assertion should skip it.
         let ssa = lower_to_ssa(&cfg, entry, None, true).unwrap();
         assert!(!ssa.blocks.is_empty());
+    }
+
+    #[test]
+    fn orphan_catch_with_internal_branch_populates_subtree() {
+        // Regression for the soundness hole where a catch block containing
+        // internal control flow (`catch(e){ if(cond){ sink(x) } else { y=2 } }`)
+        // dropped every instruction past the catch's first basic block: the
+        // catch-internal arms were orphan-domain (unreachable from entry) AND
+        // absent from the global dominator tree, so their bodies stayed empty
+        // and `sink(x)` was silently lost.
+        //
+        // Layout:
+        //   entry → body(defines x) → exit          (normal flow)
+        //   body --Exception--> catch(e) → if → [True: sink(x)] [False: y=2] → join → exit
+        let mut cfg: Cfg = Graph::new();
+        let entry = cfg.add_node(make_node(StmtKind::Entry));
+        let body = cfg.add_node(NodeInfo {
+            taint: TaintMeta {
+                defines: Some("x".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let catch = cfg.add_node(NodeInfo {
+            catch_param: true,
+            taint: TaintMeta {
+                defines: Some("e".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let if_node = cfg.add_node(make_node(StmtKind::If));
+        let sink = cfg.add_node(NodeInfo {
+            call: crate::cfg::CallMeta {
+                callee: Some("sink".into()),
+                arg_uses: vec![vec!["x".into()]],
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                uses: vec!["x".into()],
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let else_assign = cfg.add_node(NodeInfo {
+            taint: TaintMeta {
+                defines: Some("y".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let join = cfg.add_node(make_node(StmtKind::Seq));
+        let exit = cfg.add_node(make_node(StmtKind::Exit));
+
+        cfg.add_edge(entry, body, EdgeKind::Seq);
+        cfg.add_edge(body, exit, EdgeKind::Seq);
+        cfg.add_edge(body, catch, EdgeKind::Exception);
+        cfg.add_edge(catch, if_node, EdgeKind::Seq);
+        cfg.add_edge(if_node, sink, EdgeKind::True);
+        cfg.add_edge(if_node, else_assign, EdgeKind::False);
+        cfg.add_edge(sink, join, EdgeKind::Seq);
+        cfg.add_edge(else_assign, join, EdgeKind::Seq);
+        cfg.add_edge(join, exit, EdgeKind::Seq);
+
+        let ssa = lower_to_ssa(&cfg, entry, None, true).unwrap();
+
+        // The `sink` Call must survive lowering: before the fix the
+        // catch-internal True arm was an empty `unreachable` block.
+        let has_sink_call = ssa.blocks.iter().any(|b| {
+            b.body
+                .iter()
+                .any(|inst| matches!(&inst.op, SsaOp::Call { callee, .. } if callee == "sink"))
+        });
+        assert!(
+            has_sink_call,
+            "catch-internal sink(x) call was dropped; orphan subtree not populated"
+        );
+    }
+
+    #[test]
+    fn orphan_catch_resolves_pre_try_def_not_post_join_kill() {
+        // Regression for the reaching-definition hole where the orphan
+        // var_stacks rebuild iterated all blocks in ASCENDING block-id order
+        // and took `.last()`, picking the highest-block-id def of each variable
+        // instead of the one that actually reaches the catch.  For `x` sourced
+        // before the try (block 0) and re-killed to a constant AFTER the
+        // try/catch join (a later, higher-id block), `.last()` wrongly resolved
+        // a catch-side `sink(x)` to the post-join constant — masking the
+        // pre-try tainted value (a false negative).
+        //
+        // Layout (mirrors `x = source(); try{..}catch(e){ sink(x) }; x="safe"`,
+        // where the post-try kill lands at a control-flow join in a later
+        // block than the pre-try source):
+        //   entry → src(defines x = Source) → {b1, b2} → kill(x="safe") → exit
+        //   src --Exception--> catch(e) → sink(x)                       (orphan)
+        // `src` branches (b1/b2) so it ends block 0; the `kill` join is a
+        // higher-id block.  The buggy ascending+`.last()` rebuild seeded the
+        // catch with the Const kill; the fixed descending rebuild seeds the
+        // most entry-dominating def (the block-0 Source).  A degenerate
+        // straight-line `src→kill` (single coalesced block) is a separate,
+        // documented limitation — exact within-block reaching defs need the
+        // pre-strip exception-point structure, unavailable post-lowering.
+        let mut cfg: Cfg = Graph::new();
+        let entry = cfg.add_node(make_node(StmtKind::Entry));
+        // Pure source (no callee) so it lowers to `SsaOp::Source` and defines x.
+        let src = cfg.add_node(NodeInfo {
+            taint: TaintMeta {
+                labels: smallvec::smallvec![crate::labels::DataLabel::Source(
+                    crate::labels::Cap::all()
+                )],
+                defines: Some("x".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        // Diamond arms so `src` is a branch point (block boundary) and the
+        // `kill` join below starts a strictly-higher-id block.
+        let b1 = cfg.add_node(make_node(StmtKind::Seq));
+        let b2 = cfg.add_node(make_node(StmtKind::Seq));
+        // Post-join kill: defines x from a literal, no uses, not a source →
+        // lowers to `SsaOp::Const`.  Higher block id than `src`.
+        let kill = cfg.add_node(NodeInfo {
+            taint: TaintMeta {
+                defines: Some("x".into()),
+                const_text: Some("safe".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let catch = cfg.add_node(NodeInfo {
+            catch_param: true,
+            taint: TaintMeta {
+                defines: Some("e".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let sink = cfg.add_node(NodeInfo {
+            call: crate::cfg::CallMeta {
+                callee: Some("sink".into()),
+                arg_uses: vec![vec!["x".into()]],
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                uses: vec!["x".into()],
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let exit = cfg.add_node(make_node(StmtKind::Exit));
+
+        cfg.add_edge(entry, src, EdgeKind::Seq);
+        cfg.add_edge(src, b1, EdgeKind::Seq);
+        cfg.add_edge(src, b2, EdgeKind::Seq);
+        cfg.add_edge(b1, kill, EdgeKind::Seq);
+        cfg.add_edge(b2, kill, EdgeKind::Seq);
+        cfg.add_edge(kill, exit, EdgeKind::Seq);
+        cfg.add_edge(src, catch, EdgeKind::Exception);
+        cfg.add_edge(catch, sink, EdgeKind::Seq);
+        cfg.add_edge(sink, exit, EdgeKind::Seq);
+
+        let ssa = lower_to_ssa(&cfg, entry, None, true).unwrap();
+
+        // SsaValue of the Source def (the pre-try value that reaches the catch)
+        // and of the Const kill (the post-join value that does NOT reach it).
+        let source_v = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.body.iter())
+            .find(|inst| matches!(inst.op, SsaOp::Source))
+            .map(|inst| inst.value)
+            .expect("Source def must be present");
+        let kill_v = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.body.iter())
+            .find(|inst| matches!(inst.op, SsaOp::Const(_)))
+            .map(|inst| inst.value)
+            .expect("Const kill must be present");
+
+        // Find the sink Call and its single argument value.
+        let sink_arg = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.body.iter())
+            .find_map(|inst| match &inst.op {
+                SsaOp::Call { callee, args, .. } if callee == "sink" => {
+                    args.iter().flat_map(|g| g.iter().copied()).next()
+                }
+                _ => None,
+            })
+            .expect("sink(x) Call with an argument must be present");
+
+        assert_eq!(
+            sink_arg, source_v,
+            "catch sink(x) must resolve to the pre-try Source def {source_v:?} \
+             that reaches the handler, not the post-join Const kill {kill_v:?}"
+        );
+        assert_ne!(
+            sink_arg, kill_v,
+            "catch sink(x) wrongly resolved to the post-join Const kill"
+        );
     }
 
     #[test]
@@ -3985,6 +4393,66 @@ mod tests {
             ctext.as_deref(),
             Some("c.writer.header.set"),
             "callee_text should preserve the original textual path"
+        );
+    }
+
+    /// Collect the arg groups of the first Call whose bare callee matches.
+    fn call_args_for(body: &SsaBody, bare_callee: &str) -> Option<Vec<SmallVec<[SsaValue; 2]>>> {
+        for blk in &body.blocks {
+            for inst in blk.body.iter() {
+                if let SsaOp::Call { callee, args, .. } = &inst.op {
+                    if callee == bare_callee {
+                        return Some(args.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn phase2_e2e_chain_root_genuine_positional_arg_is_kept() {
+        // Regression for the soundness hole where decomposing a chained-receiver
+        // call stripped a *genuine* positional argument equal to the chain root.
+        // For `a.b.m(p, a)` the second `a` is a real argument, not the implicit
+        // chain-root group `build_call_args` appends, so it must survive
+        // decomposition.  Previously `retain(... == [base_v])` deleted every
+        // `[a]` group, losing the argument (and shifting later positions left).
+        //
+        // Go: `a` and `p` are parameters so the chain root resolves.
+        let with_arg = parse_to_first_body(
+            b"package p\nfunc f(a *T, p string) { a.b.m(p, a) }\n",
+            "go",
+            tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+            "with.go",
+        );
+        let control = parse_to_first_body(
+            b"package p\nfunc f(a *T, p string) { a.b.m(p) }\n",
+            "go",
+            tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+            "ctrl.go",
+        );
+
+        let with_args = call_args_for(&with_arg, "m").expect("decomposed m() call present");
+        let ctrl_args = call_args_for(&control, "m").expect("decomposed m() call present");
+
+        // The soundness invariant: adding a genuine positional argument `a`
+        // (which equals the chain root) must add EXACTLY one arg group versus
+        // the control.  The buggy `retain(... == [base_v])` deleted the genuine
+        // `a` group, so `with` would have had the SAME count as `control` (the
+        // argument silently vanished).  The fix's `root_is_real_arg` guard keeps
+        // it, so `with` has one more group than `control`.
+        //
+        // We compare the two counts rather than asserting an absolute value:
+        // for Go's multi-segment field receiver the implicit chain-root group
+        // `build_call_args` appends is a multi-value group (`[a, a.b, ...]`),
+        // not a clean single `[base_v]`, so the absolute group count is an
+        // implementation detail — the *delta* is the property under test.
+        assert_eq!(
+            with_args.len(),
+            ctrl_args.len() + 1,
+            "a.b.m(p, a) must keep the genuine `a` argument: expected one more \
+             arg group than the control a.b.m(p).\n  with: {with_args:?}\n  ctrl: {ctrl_args:?}"
         );
     }
 

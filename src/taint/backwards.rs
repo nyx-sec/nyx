@@ -7,20 +7,32 @@
 //!
 //! This module implements the opposite direction: start at each sink value,
 //! walk *reverse* SSA edges and (when needed) cross-file callee bodies on
-//! demand, and emit a [`BackwardFlow`] when a source is reached or an
-//! accumulated path predicate proves the flow infeasible.
+//! demand, and emit a [`BackwardFlow`] when a source is reached.
 //!
 //! The analysis is additive:
 //!
 //! * When a forward finding's sink is confirmed by a backwards walk that
 //!   reaches a matching source, we append `backwards-confirmed` to the
-//!   finding's evidence notes.
-//! * When the backwards walk proves the flow infeasible via accumulated
-//!   path predicates, we append `backwards-infeasible`, consumed by the
-//!   confidence scorer as a cap-to-Low signal.
-//! * Backward flows that reach a source with no matching forward finding
-//!   become standalone `taint-backwards-flow` diags (a separate rule id so
-//!   existing graders can distinguish the two channels).
+//!   finding's evidence notes.  **This is the only channel currently active.**
+//!
+//! ## Reserved / not-yet-implemented channels
+//!
+//! The scaffolding below exists but does not fire in production; it is kept so
+//! the downstream consumers (confidence scorer, [`FindingVerdict`]) have a
+//! stable shape to grow into.  Do not build new behaviour on the assumption
+//! that these signals can be produced by a real walk:
+//!
+//! * **Infeasibility.**  [`DemandState::validated_true`] /
+//!   [`DemandState::validated_false`] are never written by the transfer (no
+//!   reverse predicate accumulation is implemented yet), so
+//!   [`BackwardFlow::infeasible`] is never set, [`aggregate_verdict`] never
+//!   returns [`FindingVerdict::Infeasible`], and the `backwards-infeasible`
+//!   note is never appended.  Implementing this requires reading branch
+//!   [`crate::taint::domain::PredicateSummary`] bits off the reverse-dominating
+//!   conditions, which is future work.
+//! * **Standalone diags.**  Backward flows that reach a source with no matching
+//!   forward finding are *not* yet surfaced as standalone `taint-backwards-flow`
+//!   diags; that rule id is reserved.
 //!
 //! The feature is gated by
 //! [`crate::utils::analysis_options::AnalysisOptions::backwards_analysis`]
@@ -76,8 +88,15 @@ pub struct DemandState {
     /// [`crate::taint::domain::predicate_kind_bit`]; bit `i` set means the
     /// corresponding `PredicateKind` was observed as holding on every
     /// predecessor visited so far.
+    ///
+    /// **Reserved / not yet written.**  The current backward transfer does not
+    /// accumulate reverse path predicates, so this field is always 0 in
+    /// production.  See the module-level "Reserved / not-yet-implemented
+    /// channels" note.
     pub validated_true: u8,
     /// Counterpart to [`Self::validated_true`] for known-false predicates.
+    ///
+    /// **Reserved / not yet written** (always 0 in production).
     pub validated_false: u8,
     /// Number of cross-function inline expansions performed along this walk.
     pub depth: u32,
@@ -111,6 +130,10 @@ pub struct BackwardFlow {
     pub source_node: Option<NodeIndex>,
     /// Set when the accumulated predicates proved the flow infeasible before
     /// reaching any source.
+    ///
+    /// **Reserved / never set in production.**  Reverse predicate accumulation
+    /// is not yet implemented (see [`DemandState::validated_true`] and the
+    /// module-level note), so every production flow leaves this `false`.
     pub infeasible: bool,
     /// Set when the walk hit [`BACKWARDS_VALUE_BUDGET`] without terminating.
     pub budget_exhausted: bool,
@@ -517,11 +540,25 @@ fn walk_dfs(
                 // the key in the matcher, the key is useful for debug
                 // logging in bigger expansions.
                 let _ = callee_key;
-                return;
+                // Intentionally fall through to the conservative arg/receiver
+                // fanout below.  Walking only the callee's return chains is
+                // strictly lossier than not resolving the callee at all: a
+                // passthrough `return param` inside the callee bottoms out at
+                // a `ReachedParam` terminal that is never mapped back to the
+                // caller's argument, so `sink(identity(tainted))` would record
+                // a dead-end param terminal and miss the source, whereas an
+                // unresolvable callee would have taken the fanout and reached
+                // it.  Running the fanout in addition keeps callee expansion
+                // additive (it can only add confirmations, never drop them);
+                // `aggregate_verdict` only needs one confirmation, and the
+                // shared `visited` set prevents re-expanding values the callee
+                // walk already covered in the caller frame.
             }
-            // Fall-through: no resolvable body.  Conservatively fan out to
-            // every operand / receiver so a source reachable through the
-            // call arguments is still observed.
+            // Conservatively fan out to every operand / receiver so a source
+            // reachable through the call arguments is still observed.  Runs
+            // for both the resolvable-callee case (after return-chain
+            // expansion, to recover argument-passthrough flows) and the
+            // unresolvable case (sole channel).
             for (operand, next_demand) in next {
                 chain.push(operand);
                 walk_dfs(
@@ -564,18 +601,55 @@ fn resolve_callee_body<'a>(
         .rsplit('.')
         .next()
         .unwrap_or(callee);
-    if let Some(map) = ctx.intra_file_bodies {
+
+    // Pick the deterministic, language-matched best candidate among same-leaf
+    // entries.  Bare-leaf matching over a `HashMap` is both unsound (a
+    // same-name sibling from another class/file/language can be picked, the
+    // exact hazard the forward inline path refuses bare-name lookup for) and
+    // nondeterministic (HashMap iteration order varies run to run, so the
+    // resolved body, hence the `backwards-confirmed` note and the confidence
+    // score, would differ across identical runs).  We cannot reconstruct the
+    // call-site's container/arity here (only the textual callee is in hand),
+    // but we can at least exclude cross-language siblings and fix a stable
+    // tie-break so resolution is reproducible.
+    fn best_candidate<'b>(
+        map: &'b HashMap<FuncKey, CalleeSsaBody>,
+        leaf: &str,
+        lang: Lang,
+    ) -> Option<(&'b CalleeSsaBody, FuncKey)> {
+        let mut best: Option<(&FuncKey, &CalleeSsaBody)> = None;
         for (key, body) in map.iter() {
-            if key.name == leaf && body.ssa.blocks.len() <= MAX_BACKWARDS_CALLEE_BLOCKS {
-                return Some((body, key.clone()));
+            if key.name != leaf
+                || key.lang != lang
+                || body.ssa.blocks.len() > MAX_BACKWARDS_CALLEE_BLOCKS
+            {
+                continue;
             }
+            let better = match best {
+                None => true,
+                // Deterministic tie-break: smallest by the structural fields
+                // that distinguish same-leaf siblings.  Independent of
+                // HashMap iteration order.
+                Some((bk, _)) => {
+                    (&key.namespace, &key.container, &key.arity, &key.disambig)
+                        < (&bk.namespace, &bk.container, &bk.arity, &bk.disambig)
+                }
+            };
+            if better {
+                best = Some((key, body));
+            }
+        }
+        best.map(|(k, b)| (b, k.clone()))
+    }
+
+    if let Some(map) = ctx.intra_file_bodies {
+        if let Some(found) = best_candidate(map, leaf, ctx.lang) {
+            return Some(found);
         }
     }
     if let Some(map) = ctx.global_summaries.and_then(|gs| gs.bodies_by_key()) {
-        for (key, body) in map.iter() {
-            if key.name == leaf && body.ssa.blocks.len() <= MAX_BACKWARDS_CALLEE_BLOCKS {
-                return Some((body, key.clone()));
-            }
+        if let Some(found) = best_candidate(map, leaf, ctx.lang) {
+            return Some(found);
         }
     }
     None
@@ -1188,5 +1262,212 @@ mod tests {
             chain: SmallVec::new(),
         };
         assert!(!bf.is_confirmation());
+    }
+
+    /// Build a passthrough callee body `fn identity(p0) { return p0 }` wrapped
+    /// in a [`CalleeSsaBody`] ready for [`BackwardsCtx::intra_file_bodies`].
+    fn build_passthrough_callee() -> CalleeSsaBody {
+        let mut cfg: Graph<NodeInfo, EdgeKind> = Graph::new();
+        let p_node = cfg.add_node(NodeInfo::default());
+
+        let mut ssa = SsaBody {
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![SsaInst {
+                    value: SsaValue(0),
+                    op: SsaOp::Param { index: 0 },
+                    cfg_node: p_node,
+                    var_name: None,
+                    span: (0, 0),
+                }],
+                terminator: Terminator::Return(Some(SsaValue(0))),
+                preds: SmallVec::new(),
+                succs: SmallVec::new(),
+            }],
+            entry: BlockId(0),
+            value_defs: vec![make_value_def(BlockId(0), p_node)],
+            cfg_node_map: std::collections::HashMap::new(),
+            exception_edges: Vec::new(),
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
+        };
+        let opt = crate::ssa::optimize_ssa(&mut ssa, &cfg, Some(Lang::JavaScript));
+        CalleeSsaBody {
+            ssa,
+            opt,
+            param_count: 1,
+            node_meta: std::collections::HashMap::new(),
+            body_graph: Some(cfg),
+            cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Resolving a passthrough callee (`sink(identity(tainted))`) must not be
+    /// strictly lossier than leaving it unresolved.  The callee's
+    /// `return param` chain bottoms out at a `ReachedParam` terminal that the
+    /// walk cannot map back to the caller's argument, so without the
+    /// post-expansion conservative arg fanout the source is missed entirely.
+    /// After the fix, the fanout walks the call argument (the `Source`) and the
+    /// flow is confirmed.
+    #[test]
+    fn resolved_passthrough_callee_still_confirms_via_arg_fanout() {
+        // Caller body: v0 = Source; v1 = identity(v0); return v1.
+        let mut cfg: Graph<NodeInfo, EdgeKind> = Graph::new();
+        let src_node = cfg.add_node(NodeInfo::default());
+        let call_node = cfg.add_node(NodeInfo::default());
+
+        let ssa = SsaBody {
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![
+                    SsaInst {
+                        value: SsaValue(0),
+                        op: SsaOp::Source,
+                        cfg_node: src_node,
+                        var_name: None,
+                        span: (0, 0),
+                    },
+                    SsaInst {
+                        value: SsaValue(1),
+                        op: SsaOp::Call {
+                            callee: "identity".to_string(),
+                            callee_text: None,
+                            args: vec![smallvec![SsaValue(0)]],
+                            receiver: None,
+                        },
+                        cfg_node: call_node,
+                        var_name: None,
+                        span: (0, 0),
+                    },
+                ],
+                terminator: Terminator::Return(Some(SsaValue(1))),
+                preds: SmallVec::new(),
+                succs: SmallVec::new(),
+            }],
+            entry: BlockId(0),
+            value_defs: vec![
+                make_value_def(BlockId(0), src_node),
+                make_value_def(BlockId(0), call_node),
+            ],
+            cfg_node_map: std::collections::HashMap::new(),
+            exception_edges: Vec::new(),
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
+        };
+
+        let mut bodies: HashMap<FuncKey, CalleeSsaBody> = HashMap::new();
+        bodies.insert(
+            FuncKey::new_function(Lang::JavaScript, "test.js", "identity", Some(1)),
+            build_passthrough_callee(),
+        );
+
+        let ctx = BackwardsCtx {
+            ssa: &ssa,
+            cfg: &cfg,
+            lang: Lang::JavaScript,
+            global_summaries: None,
+            intra_file_bodies: Some(&bodies),
+            depth_budget: DEFAULT_BACKWARDS_DEPTH,
+        };
+        let flows = analyse_sink_backwards(&ctx, SsaValue(1), call_node, Cap::all());
+        assert!(
+            flows.iter().any(|f| f.is_confirmation()),
+            "argument-passthrough source must still be confirmed after callee expansion"
+        );
+    }
+
+    /// `resolve_callee_body` must only match same-language siblings and pick a
+    /// deterministic candidate, never an arbitrary HashMap-order entry from
+    /// another language.
+    #[test]
+    fn resolve_callee_body_filters_language_and_is_deterministic() {
+        let mut bodies: HashMap<FuncKey, CalleeSsaBody> = HashMap::new();
+        // Two same-leaf siblings: one in the analysed language, one not.
+        bodies.insert(
+            FuncKey::new_function(Lang::Python, "other.py", "process", Some(1)),
+            build_passthrough_callee(),
+        );
+        bodies.insert(
+            FuncKey::new_function(Lang::JavaScript, "a.js", "process", Some(1)),
+            build_passthrough_callee(),
+        );
+        bodies.insert(
+            FuncKey::new_function(Lang::JavaScript, "b.js", "process", Some(1)),
+            build_passthrough_callee(),
+        );
+
+        let dummy_cfg: Graph<NodeInfo, EdgeKind> = Graph::new();
+        let dummy_ssa = SsaBody {
+            blocks: vec![],
+            entry: BlockId(0),
+            value_defs: vec![],
+            cfg_node_map: std::collections::HashMap::new(),
+            exception_edges: Vec::new(),
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
+        };
+        let ctx = BackwardsCtx {
+            ssa: &dummy_ssa,
+            cfg: &dummy_cfg,
+            lang: Lang::JavaScript,
+            global_summaries: None,
+            intra_file_bodies: Some(&bodies),
+            depth_budget: DEFAULT_BACKWARDS_DEPTH,
+        };
+
+        // Deterministic across repeated resolutions, and never the Python body.
+        let first = resolve_callee_body(&ctx, "process", 0)
+            .map(|(_, k)| k)
+            .expect("a JS sibling must resolve");
+        assert_eq!(
+            first.lang,
+            Lang::JavaScript,
+            "must not match cross-language"
+        );
+        // Namespace tie-break is the smallest: "a.js" < "b.js".
+        assert_eq!(first.namespace, "a.js");
+        for _ in 0..32 {
+            let again = resolve_callee_body(&ctx, "process", 0)
+                .map(|(_, k)| k)
+                .expect("stable resolution");
+            assert_eq!(again, first, "resolution must be deterministic across runs");
+        }
+    }
+
+    /// Reserved-channel invariant (documented in the module header): the
+    /// backwards transfer never writes the predicate-accumulation bits, so a
+    /// real walk can never set `infeasible`.  Guards against the dead
+    /// infeasibility channel silently coming alive (or the docs drifting from
+    /// the implementation) without a corresponding transfer change.
+    #[test]
+    fn infeasibility_channel_is_inert() {
+        // backward_transfer leaves the demand's predicate bits untouched.
+        let (ssa, _cfg) = build_trivial_source_body();
+        let demand = DemandState::new(Cap::all());
+        let (_step, next) = backward_transfer(&ssa, SsaValue(1), &demand);
+        for (_v, d) in &next {
+            assert_eq!(d.validated_true, 0, "validated_true must never be written");
+            assert_eq!(
+                d.validated_false, 0,
+                "validated_false must never be written"
+            );
+        }
+
+        // A full driver walk over a source→sink body produces a confirmation,
+        // never an infeasible flow.
+        let ctx = BackwardsCtx::new(&ssa, &_cfg, Lang::JavaScript);
+        let flows = analyse_sink_backwards(&ctx, SsaValue(1), NodeIndex::new(1), Cap::all());
+        assert!(
+            !flows.iter().any(|f| f.infeasible),
+            "no production flow may set infeasible (channel is reserved)"
+        );
     }
 }

@@ -1011,6 +1011,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "communication_case"           => Kind::Block,
     "go_statement"                 => Kind::Block,
     "defer_statement"              => Kind::Block,
+    // `outer: for { ... }` wraps the whole labeled loop in a
+    // labeled_statement; map to Block so the CFG builder recurses into the
+    // inner statement instead of collapsing the loop body into one leaf Seq
+    // node (mirrors c.rs / cpp.rs).
+    "labeled_statement"            => Kind::Block,
 
     // data-flow
     "call_expression"          => Kind::CallFn,
@@ -1032,7 +1037,10 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
 
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
-    param_node_kinds: &["parameter_declaration"],
+    // `variadic_parameter_declaration` covers `func run(args ...string)`;
+    // without it the variadic param is dropped, registering wrong arity and
+    // never seeding caller taint into the variadic position.
+    param_node_kinds: &["parameter_declaration", "variadic_parameter_declaration"],
     self_param_kinds: &[],
     ident_fields: &["name"],
 };
@@ -1093,4 +1101,28 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     }
 
     rules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KINDS, PARAM_CONFIG};
+    use crate::labels::Kind;
+
+    #[test]
+    fn labeled_statement_is_walkable_block() {
+        // `outer: for { ... }` must be a Block so the CFG builder recurses
+        // into the labeled loop body instead of collapsing it to a leaf Seq.
+        assert_eq!(KINDS.get("labeled_statement"), Some(&Kind::Block));
+    }
+
+    #[test]
+    fn variadic_param_is_extracted() {
+        // `func run(args ...string)` emits variadic_parameter_declaration;
+        // it must be a recognised param node so arity registers correctly.
+        assert!(
+            PARAM_CONFIG
+                .param_node_kinds
+                .contains(&"variadic_parameter_declaration")
+        );
+    }
 }

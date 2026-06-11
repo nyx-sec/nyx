@@ -1510,35 +1510,7 @@ fn apply_branch_predicates(
     // (XSS / SQLi / FILE_IO) downstream still fire on residual taint.
     if kind == PredicateKind::RelativeUrlValidated && polarity {
         for var in condition_vars {
-            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
-            for (val, _) in state.values.iter() {
-                if let Some(name) = ssa
-                    .value_defs
-                    .get(val.0 as usize)
-                    .and_then(|vd| vd.var_name.as_deref())
-                {
-                    if name == var {
-                        to_clear.push(*val);
-                    }
-                }
-            }
-            for val in to_clear {
-                if let Some(taint) = state.get(val).cloned() {
-                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
-                    if new_caps.is_empty() {
-                        state.remove(val);
-                    } else {
-                        state.set(
-                            val,
-                            VarTaint {
-                                caps: new_caps,
-                                origins: taint.origins,
-                                uses_summary: taint.uses_summary,
-                            },
-                        );
-                    }
-                }
-            }
+            clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
         }
     }
 
@@ -1551,35 +1523,7 @@ fn apply_branch_predicates(
     // inline leading-slash check).
     if kind == PredicateKind::HostAllowlistValidated && polarity {
         for var in condition_vars {
-            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
-            for (val, _) in state.values.iter() {
-                if let Some(name) = ssa
-                    .value_defs
-                    .get(val.0 as usize)
-                    .and_then(|vd| vd.var_name.as_deref())
-                {
-                    if name == var {
-                        to_clear.push(*val);
-                    }
-                }
-            }
-            for val in to_clear {
-                if let Some(taint) = state.get(val).cloned() {
-                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
-                    if new_caps.is_empty() {
-                        state.remove(val);
-                    } else {
-                        state.set(
-                            val,
-                            VarTaint {
-                                caps: new_caps,
-                                origins: taint.origins,
-                                uses_summary: taint.uses_summary,
-                            },
-                        );
-                    }
-                }
-            }
+            clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
         }
     }
 
@@ -1594,43 +1538,7 @@ fn apply_branch_predicates(
     // taint caps.
     if kind == PredicateKind::ShellMetaValidated && !polarity {
         for var in condition_vars {
-            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
-            let mut names: SmallVec<[&str; 4]> = smallvec::smallvec![var.as_str()];
-            if let Some(aliases) = base_aliases.and_then(|aliases| aliases.aliases_of(var)) {
-                for alias in aliases {
-                    if alias != var {
-                        names.push(alias.as_str());
-                    }
-                }
-            }
-            for &name_to_clear in names.iter() {
-                for (idx, def) in ssa.value_defs.iter().enumerate() {
-                    if def.var_name.as_deref() == Some(name_to_clear) {
-                        let val = SsaValue(idx as u32);
-                        to_clear.push(val);
-                        collect_copy_alias_operands(val, ssa, &mut to_clear);
-                    }
-                }
-            }
-            to_clear.sort_by_key(|v| v.0);
-            to_clear.dedup_by_key(|v| v.0);
-            for val in to_clear {
-                if let Some(taint) = state.get(val).cloned() {
-                    let new_caps = taint.caps & !Cap::SHELL_ESCAPE;
-                    if new_caps.is_empty() {
-                        state.remove(val);
-                    } else {
-                        state.set(
-                            val,
-                            VarTaint {
-                                caps: new_caps,
-                                origins: taint.origins,
-                                uses_summary: taint.uses_summary,
-                            },
-                        );
-                    }
-                }
-            }
+            clear_cap_alias_aware(state, var, Cap::SHELL_ESCAPE, ssa, base_aliases);
         }
     }
 
@@ -1653,6 +1561,71 @@ fn apply_branch_predicates(
                     Ok(idx) => state.predicates[idx].1 = summary,
                     Err(idx) => state.predicates.insert(idx, (sym, summary)),
                 }
+            }
+        }
+    }
+}
+
+/// Clear `cap` from the taint of `var` and every SSA value that aliases it
+/// on a validated branch.
+///
+/// "Aliases" covers three sources, matching the (formerly inline)
+/// `ShellMetaValidated` handler:
+///
+/// 1. SSA values whose `var_name` equals `var`.
+/// 2. Base aliases of `var` from copy propagation
+///    (`base_aliases.aliases_of(var)`), so a value renamed away by
+///    `copy_propagate` (`const t = url;`) is still reached when the
+///    condition or sink references the other name.
+/// 3. Transitive copy-chain operands (`collect_copy_alias_operands`) for
+///    Assign/Phi copies the optimizer did not propagate away.
+///
+/// The two URL arms (`RelativeUrlValidated` / `HostAllowlistValidated`)
+/// previously matched only source 1 against `state.values`, missing the
+/// `const t = url; if (t.startsWith("/")) { res.redirect(url) }` alias shape
+/// the shell arm handled, so they fired false positives on the validated
+/// branch.  Sharing this helper unifies all three.
+fn clear_cap_alias_aware(
+    state: &mut SsaTaintState,
+    var: &str,
+    cap: Cap,
+    ssa: &SsaBody,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
+) {
+    let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+    let mut names: SmallVec<[&str; 4]> = smallvec::smallvec![var];
+    if let Some(aliases) = base_aliases.and_then(|aliases| aliases.aliases_of(var)) {
+        for alias in aliases {
+            if alias.as_str() != var {
+                names.push(alias.as_str());
+            }
+        }
+    }
+    for &name_to_clear in names.iter() {
+        for (idx, def) in ssa.value_defs.iter().enumerate() {
+            if def.var_name.as_deref() == Some(name_to_clear) {
+                let val = SsaValue(idx as u32);
+                to_clear.push(val);
+                collect_copy_alias_operands(val, ssa, &mut to_clear);
+            }
+        }
+    }
+    to_clear.sort_by_key(|v| v.0);
+    to_clear.dedup_by_key(|v| v.0);
+    for val in to_clear {
+        if let Some(taint) = state.get(val).cloned() {
+            let new_caps = taint.caps & !cap;
+            if new_caps.is_empty() {
+                state.remove(val);
+            } else {
+                state.set(
+                    val,
+                    VarTaint {
+                        caps: new_caps,
+                        origins: taint.origins,
+                        uses_summary: taint.uses_summary,
+                    },
+                );
             }
         }
     }
@@ -1683,6 +1656,36 @@ fn collect_copy_alias_operands(root: SsaValue, ssa: &SsaBody, out: &mut SmallVec
             _ => {}
         }
     }
+}
+
+/// Decide whether the "null / none / no-error" outcome is the condition's
+/// TRUE branch from the lowered condition text.
+///
+/// This must distinguish equality (`err == null` → null branch is TRUE)
+/// from strict/loose inequality (`err !== null` / `err != null` → null
+/// branch is the FALSE branch).  A naive `contains("== null")` is wrong
+/// because `"err !== null"` contains `"== null"` as a substring (the `==`
+/// of `!==` followed by ` null`), which would mark validation on the wrong
+/// branch.  We therefore reject any inequality form first.
+fn null_check_true_branch_is_success(lower: &str) -> bool {
+    // Inequality forms put the null/none outcome on the FALSE branch.
+    // Strip them before testing equality so the `==` inside `!==`/`!=`
+    // cannot be mistaken for an equality comparison.
+    if lower.contains("!= nil")
+        || lower.contains("!= none")
+        || lower.contains("is not none")
+        || lower.contains("is_err")
+        || lower.contains("!== null")
+        || lower.contains("!= null")
+    {
+        return false;
+    }
+    lower.contains("== nil")
+        || lower.contains("== none")
+        || lower.contains("is none")
+        || lower.contains("is_ok")
+        || lower.contains("=== null")
+        || lower.contains("== null")
 }
 
 /// Mark the input arguments of a value-producing validator as validated
@@ -1728,12 +1731,7 @@ fn apply_validation_err_check_narrowing(
     // Defaults to FALSE for `err != nil`-style; flips to TRUE for
     // `err == nil`-style and `is_ok()`.
     let lower = cond_text.to_ascii_lowercase();
-    let success_branch_is_true = lower.contains("== nil")
-        || lower.contains("== none")
-        || lower.contains("is none")
-        || lower.contains("is_ok")
-        || lower.contains("=== null")
-        || lower.contains("== null");
+    let success_branch_is_true = null_check_true_branch_is_success(&lower);
 
     // Resolve `err`'s reaching SSA value (last def in this or earlier block).
     // We restrict to single-var conditions to avoid mis-attributing
@@ -1887,12 +1885,7 @@ fn apply_input_validator_branch_narrowing(
     // `apply_validation_err_check_narrowing` uses for the `err == nil`
     // family.
     let lower = cond_text.to_ascii_lowercase();
-    let cond_text_says_null_branch_is_true = lower.contains("== nil")
-        || lower.contains("== none")
-        || lower.contains("is none")
-        || lower.contains("is_ok")
-        || lower.contains("=== null")
-        || lower.contains("== null");
+    let cond_text_says_null_branch_is_true = null_check_true_branch_is_success(&lower);
 
     let success_branch_is_true = match polarity {
         InputValidatorPolarity::ErrorReturning => cond_text_says_null_branch_is_true,
@@ -2388,6 +2381,68 @@ fn inline_analyse_callee(
 /// mechanism would otherwise lose the flow).
 pub(crate) type PromiseCallbackSeeds<'a> = &'a [(usize, VarTaint)];
 
+/// Resolve callback arguments: when a call argument refers to a known
+/// function name (resolvable to a `FuncKey` in `local_summaries` and present
+/// in `callee_bodies`), record the mapping `callee param name → target
+/// FuncKey` so the callee's analysis can resolve calls through the
+/// parameter.
+///
+/// This is consulted by `resolve_callee` step -1.  Because the resolved
+/// bindings shape the callee's return taint but are NOT reflected in the
+/// `(FuncKey, ArgTaintSig)` inline-cache key (function references are
+/// typically untainted, so different callbacks produce identical sigs),
+/// callers MUST skip the inline cache (both lookup and insert) whenever the
+/// returned map is non-empty, otherwise a call site passing `safeCb` could
+/// reuse / poison the cached shape of a call site passing `sourceCb`.
+fn compute_callback_bindings(
+    callee_ssa: &SsaBody,
+    args: &[SmallVec<[SsaValue; 2]>],
+    transfer: &SsaTaintTransfer,
+    caller_ssa: &SsaBody,
+) -> HashMap<String, FuncKey> {
+    let mut callback_bindings: HashMap<String, FuncKey> = HashMap::new();
+    for block in &callee_ssa.blocks {
+        for inst in block.phis.iter().chain(block.body.iter()) {
+            if let SsaOp::Param { index } = &inst.op {
+                if let Some(param_name) = inst.var_name.as_ref() {
+                    if *index < args.len() {
+                        for v in &args[*index] {
+                            if let Some(arg_var_name) = caller_ssa
+                                .value_defs
+                                .get(v.0 as usize)
+                                .and_then(|vd| vd.var_name.as_deref())
+                            {
+                                let norm = callee_leaf_name(arg_var_name);
+                                let hint_raw = callee_container_hint(arg_var_name);
+                                let hint = if hint_raw.is_empty() {
+                                    None
+                                } else {
+                                    Some(hint_raw)
+                                };
+                                if let Some(target_key) = resolve_local_func_key(
+                                    transfer.local_summaries,
+                                    transfer.lang,
+                                    transfer.namespace,
+                                    norm,
+                                    hint,
+                                ) {
+                                    if transfer
+                                        .callee_bodies
+                                        .is_some_and(|cb| cb.contains_key(&target_key))
+                                    {
+                                        callback_bindings.insert(param_name.clone(), target_key);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    callback_bindings
+}
+
 fn inline_analyse_callee_with_seeds(
     callee: &str,
     args: &[SmallVec<[SsaValue; 2]>],
@@ -2463,7 +2518,8 @@ fn inline_analyse_callee_with_seeds(
             receiver_var,
             arity: arity_hint,
         };
-        match gs.resolve_callee(&query) {
+        let res = gs.resolve_callee(&query);
+        match res {
             CalleeResolution::Resolved(key) => {
                 let xfile_bodies = transfer.cross_file_bodies?;
                 let body = xfile_bodies.get(&key)?;
@@ -2510,11 +2566,22 @@ fn inline_analyse_callee_with_seeds(
     // promise-callback seeds into the signature.
     let sig = build_arg_taint_sig_with_seeds(args, receiver, state, promise_callback_seeds);
 
+    // Resolve callback bindings BEFORE consulting the cache.  The cache key
+    // `(FuncKey, ArgTaintSig)` does not capture WHICH function was passed as
+    // a callback argument (function refs are typically untainted, so
+    // `wrap(safeCb)` and `wrap(sourceCb)` produce identical sigs).  Since
+    // the bound function's summary shapes the callee's return taint via
+    // `resolve_callee` step -1, a cached shape is only sound to reuse / store
+    // when there are no callback bindings.  When bindings exist we bypass the
+    // cache entirely (both lookup below and insert later) to avoid poisoning.
+    let callback_bindings = compute_callback_bindings(&callee_body.ssa, args, transfer, caller_ssa);
+    let cacheable = callback_bindings.is_empty();
+
     // Check cache (keyed by FuncKey + arg signature).  The cached value
     // is a structural shape, re-attribute origins to the current call
     // site before returning so two callers with matching caps but
     // different origins see their own source chains.
-    {
+    if cacheable {
         let cache = cache_ref.borrow();
         if let Some(cached) = cache.get(&(callee_key.clone(), sig.clone())) {
             record_engine_note(crate::engine_notes::EngineNote::InlineCacheReused);
@@ -2610,53 +2677,10 @@ fn inline_analyse_callee_with_seeds(
         })
     });
 
-    // Detect callback arguments: when a call argument refers to a known function
-    // name (resolvable to a FuncKey in the local summaries index), record the
-    // mapping so the callee's analysis can resolve calls through the parameter.
-    //
-    // The binding value is a full `FuncKey` rather than a leaf string so the
-    // child transfer can look up `callee_bodies` / `ssa_summaries` / local
-    // summaries by canonical identity.
-    let mut callback_bindings: HashMap<String, FuncKey> = HashMap::new();
-    for block in &callee_body.ssa.blocks {
-        for inst in block.phis.iter().chain(block.body.iter()) {
-            if let SsaOp::Param { index } = &inst.op {
-                if let Some(param_name) = inst.var_name.as_ref() {
-                    if *index < args.len() {
-                        for v in &args[*index] {
-                            if let Some(arg_var_name) = caller_ssa
-                                .value_defs
-                                .get(v.0 as usize)
-                                .and_then(|vd| vd.var_name.as_deref())
-                            {
-                                let norm = callee_leaf_name(arg_var_name);
-                                let hint_raw = callee_container_hint(arg_var_name);
-                                let hint = if hint_raw.is_empty() {
-                                    None
-                                } else {
-                                    Some(hint_raw)
-                                };
-                                if let Some(target_key) = resolve_local_func_key(
-                                    transfer.local_summaries,
-                                    transfer.lang,
-                                    transfer.namespace,
-                                    norm,
-                                    hint,
-                                ) {
-                                    if transfer
-                                        .callee_bodies
-                                        .is_some_and(|cb| cb.contains_key(&target_key))
-                                    {
-                                        callback_bindings.insert(param_name.clone(), target_key);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Callback argument bindings were resolved before the cache lookup
+    // (see `compute_callback_bindings`) so a non-empty map could bypass the
+    // inline cache.  Reuse the same map here to drive the child transfer's
+    // `resolve_callee` step -1.
 
     let cb_ref = if callback_bindings.is_empty() {
         None
@@ -2774,7 +2798,13 @@ fn inline_analyse_callee_with_seeds(
 
     // Cache the structural shape under the canonical FuncKey, then
     // re-attribute to this call site's actual arg/receiver origins.
-    {
+    //
+    // Only cache shapes that do not depend on callback identity.  When
+    // `callback_bindings` is non-empty the resolved return taint is shaped by
+    // step -1 callback resolution, which is invisible to the
+    // `(FuncKey, ArgTaintSig)` key, so caching would poison sibling call
+    // sites that pass a different callback.
+    if cacheable {
         let mut cache = cache_ref.borrow_mut();
         cache.insert((callee_key, sig), shape.clone());
     }
@@ -2916,10 +2946,25 @@ fn extract_inline_return_taint(
     let mut derived_params: u64 = 0;
     let mut derived_receiver: bool = false;
 
+    // Explicit-return param passthrough: return paths whose return value IS
+    // a formal parameter (`return x;`).  This channel is JOINED with the
+    // derived channel below so a mixed-return helper
+    // (`if (c) return src(); return x;`) propagates BOTH the derived source
+    // taint and the parameter passthrough provenance.
     let mut param_caps = Cap::empty();
     let mut param_internal: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
     let mut param_params: u64 = 0;
     let mut param_receiver: bool = false;
+
+    // Return(None) fallback param passthrough: caps swept from ALL live
+    // param-derived values on implicit-return paths.  Kept separate because
+    // it is noisy (it re-adds caps the callee may have sanitized), so it
+    // only acts as a last-resort fallback, never joined into the derived
+    // channel.
+    let mut param_fallback_caps = Cap::empty();
+    let mut param_fallback_internal: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    let mut param_fallback_params: u64 = 0;
+    let mut param_fallback_receiver: bool = false;
 
     // Join of the return value's [`PathFact`] across every return block.
     // Seeded with `None` (no observation) and widened conservatively to
@@ -3120,13 +3165,13 @@ fn extract_inline_return_taint(
                 // Fall back to collecting all live values.
                 for (val, taint) in &exit.values {
                     if param_values.contains(val) {
-                        param_caps |= taint.caps;
+                        param_fallback_caps |= taint.caps;
                         for orig in &taint.origins {
                             classify_and_push(
                                 orig,
-                                &mut param_internal,
-                                &mut param_params,
-                                &mut param_receiver,
+                                &mut param_fallback_internal,
+                                &mut param_fallback_params,
+                                &mut param_fallback_receiver,
                             );
                         }
                     } else {
@@ -3145,17 +3190,35 @@ fn extract_inline_return_taint(
         }
     }
 
-    // Prefer derived caps; fall back to param-return caps for passthrough functions.
-    let (final_caps, final_internal, final_params, final_receiver) = if !derived_caps.is_empty() {
-        (
-            derived_caps,
-            derived_internal,
-            derived_params,
-            derived_receiver,
-        )
-    } else {
-        (param_caps, param_internal, param_params, param_receiver)
-    };
+    // Join the derived channel (taint produced inside the callee) with the
+    // explicit-return param-passthrough channel (return paths whose return
+    // value IS a formal parameter).  A mixed-return helper
+    // (`if (c) return src(); return x;`) has a non-empty derived channel on
+    // one path AND a param passthrough on another; the correct return-value
+    // abstraction across paths is the union of both, not a choose-one.
+    // The noisy Return(None) fallback (`param_fallback_*`) is used only when
+    // BOTH structured channels are empty, so it never re-adds caps the
+    // callee sanitized on an explicit-return path.
+    let (final_caps, final_internal, final_params, final_receiver) =
+        if !derived_caps.is_empty() || !param_caps.is_empty() {
+            let mut internal = derived_internal;
+            for orig in &param_internal {
+                push_internal(&mut internal, orig);
+            }
+            (
+                derived_caps | param_caps,
+                internal,
+                derived_params | param_params,
+                derived_receiver || param_receiver,
+            )
+        } else {
+            (
+                param_fallback_caps,
+                param_fallback_internal,
+                param_fallback_params,
+                param_fallback_receiver,
+            )
+        };
 
     let return_path_fact =
         return_path_fact_acc.unwrap_or_else(crate::abstract_interp::PathFact::top);
@@ -4874,11 +4937,19 @@ pub(super) fn transfer_inst(
                         &resolved.propagating_params
                     };
 
-                    if !resolved.param_return_paths.is_empty() && !effective_params.is_empty() {
+                    if !effective_params.is_empty() {
                         // Per-parameter application: each propagating param
-                        // contributes taint narrowed by its own per-path
-                        // sanitizer.  Origins are still aggregated across
-                        // params, they name source anchors, not transforms.
+                        // contributes taint narrowed by ITS OWN sanitizer
+                        // (`effective_param_sanitizer`, which prefers the
+                        // param's per-return-path strip bits and otherwise
+                        // falls back to its own `param_to_return_strip` —
+                        // never the cross-param aggregate).  This avoids the
+                        // cross-parameter sanitizer bleed of unioning all
+                        // args then stripping the aggregate: for
+                        // `f(a,b){ return a + escape(b) }`, param 1's
+                        // HTML_ESCAPE strip must not clear param 0's taint.
+                        // Origins are still aggregated across params, they
+                        // name source anchors, not transforms.
                         let mut any_origin_added = false;
                         for &param_idx in effective_params {
                             let arg_caps_origins =
@@ -4898,6 +4969,11 @@ pub(super) fn transfer_inst(
                         // Sentinel reference to silence unused on cold paths.
                         let _ = any_origin_added;
                     } else {
+                        // No positional argument info (`arg_uses` empty), so
+                        // per-param attribution is impossible.  Union all
+                        // propagating-arg taint; the aggregate sanitizer is
+                        // applied below.  This is the only path that may
+                        // over-strip, and only when positions are unknown.
                         let (prop_caps, prop_origins) =
                             collect_args_taint(args, receiver, state, effective_params);
                         return_bits |= prop_caps;
@@ -7847,7 +7923,15 @@ fn collect_block_events(
                     .and_then(|vd| vd.var_name.as_deref());
                 if let Some(name) = var_name {
                     if let Some(sym) = transfer.interner.get(name) {
-                        return state.validated_may.contains(sym);
+                        // Require validation on EVERY reaching path
+                        // (intersection-on-join) before suppressing the
+                        // sink.  `validated_may` is the union over
+                        // predecessors (validated on SOME path), so a value
+                        // validated on one branch but bypassable on another
+                        // would be wrongly silenced (`if (valid(x)) {...}
+                        // else {} sink(x)`).  `validated_must` is the sound
+                        // "all paths validated" gate.
+                        return state.validated_must.contains(sym);
                     }
                 }
                 false
@@ -7994,8 +8078,15 @@ fn is_noreturn_call(lang: Lang, callee: &str) -> bool {
     if !matches!(lang, Lang::C | Lang::Cpp) {
         return false;
     }
-    let method = crate::labels::bare_method_name(callee);
-    matches!(method, "exit" | "_Exit" | "quick_exit" | "abort")
+    // Only free-function calls terminate the process.  A receiver-qualified
+    // method whose trailing segment happens to be `exit`/`abort`/etc.
+    // (e.g. `transaction.abort()`, `app.exit()`) is an ordinary call and
+    // must NOT wipe the taint state.  Reject any callee carrying a receiver
+    // (`.` member access or `->` pointer access) and match the full text.
+    if callee.contains('.') || callee.contains("->") {
+        return false;
+    }
+    matches!(callee, "exit" | "_Exit" | "quick_exit" | "abort")
 }
 
 // ── Primary sink-site attribution ───────────────────────────────────────
@@ -10978,8 +11069,24 @@ fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
     // Absolute-path prefix (e.g. "/projects/..."), internal redirect, not open redirect.
     // The leading "/" locks the path to the same origin; the attacker cannot control the scheme
     // or host, so this is not an SSRF vector.
+    //
+    // Exception: a bare "/" lock is NOT safe.  When the only constant is a
+    // single "/" and the attacker-controlled suffix begins with another "/",
+    // the full value is "//evil.com/..." — a protocol-relative URL that
+    // browsers and common HTTP clients fetch from the attacker's host.
+    // Likewise a prefix already starting with "//" is protocol-relative.
+    // Require a fixed non-slash second character so the leading-slash lock
+    // cannot be widened into "//host".
     if prefix.starts_with('/') {
-        return true;
+        let mut chars = prefix.chars();
+        chars.next(); // consume leading '/'
+        match chars.next() {
+            // "/x..." with x != '/': same-origin path lock, safe.
+            Some(c) if c != '/' => return true,
+            // "//..." protocol-relative, or bare "/" that a tainted "/host"
+            // suffix can turn protocol-relative: not safe.
+            _ => return false,
+        }
     }
     if let Some(after_scheme) = prefix.find("://") {
         let host_and_rest = &prefix[after_scheme + 3..];
@@ -11223,6 +11330,19 @@ struct ResolvedSummary {
     param_to_gate_filters: Vec<(usize, Cap)>,
     propagates_taint: bool,
     propagating_params: Vec<usize>,
+    /// Per-parameter sanitizer strip-bits lifted from
+    /// `SsaFuncSummary::param_to_return`.  Each `(param_idx, bits)` entry
+    /// means "taint flowing through THIS parameter to the return value has
+    /// `bits` stripped" (a `StripBits` transform on that param).  Params with
+    /// an `Identity` transform contribute no entry.
+    ///
+    /// Kept per-parameter so the call site can strip a param's sanitizer
+    /// only from that param's own taint contribution, instead of unioning
+    /// every param's StripBits into one aggregate (`sanitizer_caps`) and
+    /// applying it to the union of all propagating args — which bleeds one
+    /// param's sanitizer onto an unsanitized sibling arg
+    /// (`f(a,b){ return a + escape(b) }` would otherwise strip `a`'s caps).
+    param_to_return_strip: Vec<(usize, Cap)>,
     /// Parameter indices whose container identity flows to return value.
     param_container_to_return: Vec<usize>,
     /// (src_param, container_param) pairs: src taint stored into container.
@@ -11418,6 +11538,7 @@ fn resolve_callee_full(
                     param_to_sink_sites: vec![],
                     propagates_taint: !ls.propagating_params.is_empty(),
                     propagating_params: ls.propagating_params.clone(),
+                    param_to_return_strip: vec![],
                     param_container_to_return: vec![],
                     param_to_container_store: vec![],
                     return_type: None,
@@ -11490,6 +11611,7 @@ fn resolve_callee_full(
                     param_to_sink_sites: vec![],
                     propagates_taint: false,
                     propagating_params: vec![],
+                    param_to_return_strip: vec![],
                     param_container_to_return: vec![],
                     param_to_container_store: vec![],
                     return_type: None,
@@ -11694,6 +11816,7 @@ fn resolve_callee_full(
                 param_to_sink_sites: vec![],
                 propagates_taint: !ls.propagating_params.is_empty(),
                 propagating_params: ls.propagating_params.clone(),
+                param_to_return_strip: vec![],
                 param_container_to_return: vec![],
                 param_to_container_store: vec![],
                 return_type: None,
@@ -11748,6 +11871,7 @@ fn resolve_callee_full(
             param_to_sink_sites: fs.param_to_sink.clone(),
             propagates_taint: fs.propagates_any(),
             propagating_params: fs.propagating_params.clone(),
+            param_to_return_strip: vec![],
             param_container_to_return: vec![],
             param_to_container_store: vec![],
             return_type: None,
@@ -11817,6 +11941,7 @@ fn resolve_callee_full(
                 param_to_sink_sites: fs.param_to_sink.clone(),
                 propagates_taint: fs.propagates_any(),
                 propagating_params: fs.propagating_params.clone(),
+                param_to_return_strip: vec![],
                 param_container_to_return: vec![],
                 param_to_container_store: vec![],
                 return_type: None,
@@ -11840,6 +11965,34 @@ fn resolve_callee_full(
     None
 }
 
+/// Strip bits recorded for a single parameter (`param_to_return_strip`),
+/// or `Cap::empty()` when this parameter has no `StripBits` transform.
+///
+/// This is the per-parameter sanitizer.  When per-parameter decomposition
+/// EXISTS (`param_to_return_strip` non-empty) it deliberately does NOT
+/// consult the cross-param aggregate (`resolved.sanitizer_caps`), so one
+/// parameter's sanitizer cannot bleed onto a sibling argument's taint
+/// (`f(a,b){ return a + escape(b) }`).
+///
+/// When `param_to_return_strip` is ENTIRELY empty, the summary carries no
+/// per-param decomposition at all — this is the coarse cross-file tier
+/// (`ResolvedSummary` built from a `FuncSummary`/`LocalFuncSummary` where
+/// only the aggregate `sanitizer_caps` is known, e.g. cross-file resolution
+/// in [`resolve_callee_full`]).  There is no sibling param to bleed from, so
+/// fall back to the aggregate — matching the pre-#37 behaviour and keeping
+/// cross-file sanitizers (`clean(input)` in another file) effective.
+fn param_strip_bits(resolved: &ResolvedSummary, param_idx: usize) -> Cap {
+    if resolved.param_to_return_strip.is_empty() {
+        return resolved.sanitizer_caps;
+    }
+    resolved
+        .param_to_return_strip
+        .iter()
+        .find(|(i, _)| *i == param_idx)
+        .map(|(_, caps)| *caps)
+        .unwrap_or_else(Cap::empty)
+}
+
 /// Compute the effective sanitizer bits that apply at the call site for a
 /// specific parameter, narrowed by the caller's predicate state.
 ///
@@ -11850,10 +12003,11 @@ fn resolve_callee_full(
 /// not know which return path the callee took, so only bits stripped on
 /// EVERY compatible path can be considered cleared.
 ///
-/// Falls back to `resolved.sanitizer_caps` (the aggregate) when:
+/// Falls back to the parameter's own `param_to_return_strip` bits (see
+/// [`param_strip_bits`], NOT the cross-param aggregate) when:
 ///   * the summary has no per-path data for this parameter;
 ///   * every path is predicate-compatible (the narrowing adds no information);
-///   * no path is predicate-compatible (conservative: keep aggregate).
+///   * no path is predicate-compatible (conservative: keep the per-param bits).
 fn effective_param_sanitizer(
     resolved: &ResolvedSummary,
     param_idx: usize,
@@ -11867,7 +12021,14 @@ fn effective_param_sanitizer(
         .find(|(i, _)| *i == param_idx)
     {
         Some((_, p)) => p,
-        None => return resolved.sanitizer_caps,
+        None => {
+            // No per-return-path decomposition for this param: fall back to
+            // THIS parameter's own strip bits, NOT the cross-param aggregate
+            // (`resolved.sanitizer_caps`).  Using the aggregate here bleeds a
+            // sibling param's sanitizer onto this param's taint
+            // (`f(a,b){ return a + escape(b) }`).
+            return param_strip_bits(resolved, param_idx);
+        }
     };
 
     // Caller-side predicate envelope: union of known_true / known_false bits
@@ -11898,9 +12059,10 @@ fn effective_param_sanitizer(
 
     if compatible.is_empty() {
         // No path applies, the caller's predicate state contradicts every
-        // recorded return.  Fall back to the aggregate rather than
-        // synthesise a sanitiser from zero data.
-        return resolved.sanitizer_caps;
+        // recorded return.  Fall back to THIS parameter's own strip bits
+        // rather than the cross-param aggregate (which would bleed a sibling
+        // param's sanitizer onto this param's taint).
+        return param_strip_bits(resolved, param_idx);
     }
 
     // Intersection of strip-bits across compatible paths.  Identity
@@ -11927,7 +12089,7 @@ fn effective_param_sanitizer(
         }
     }
     if !saw_any {
-        resolved.sanitizer_caps
+        param_strip_bits(resolved, param_idx)
     } else {
         common
     }
@@ -11952,11 +12114,19 @@ fn convert_ssa_to_resolved_for_caller(
         .map(|(idx, _)| *idx)
         .collect();
 
-    // Compute effective sanitizer caps: union of StripBits across all params
+    // Compute effective sanitizer caps: union of StripBits across all params.
+    // Retained for the aggregate fallback / non-positional resolution paths,
+    // but the per-parameter `param_to_return_strip` below is what the call
+    // site should prefer so one param's sanitizer does not bleed onto a
+    // sibling arg's taint.
     let mut sanitizer_caps = Cap::empty();
-    for (_, transform) in &ssa_sum.param_to_return {
+    let mut param_to_return_strip: Vec<(usize, Cap)> = Vec::new();
+    for (idx, transform) in &ssa_sum.param_to_return {
         if let TaintTransform::StripBits(bits) = transform {
             sanitizer_caps |= *bits;
+            if !bits.is_empty() {
+                param_to_return_strip.push((*idx, *bits));
+            }
         }
     }
 
@@ -12005,6 +12175,7 @@ fn convert_ssa_to_resolved_for_caller(
         param_to_sink_sites,
         propagates_taint: !propagating_params.is_empty(),
         propagating_params,
+        param_to_return_strip,
         param_container_to_return: ssa_sum.param_container_to_return.clone(),
         param_to_container_store: ssa_sum.param_to_container_store.clone(),
         return_type: ssa_sum.return_type.clone(),
@@ -12128,6 +12299,23 @@ fn merge_resolved_summaries_fanout(
         }
     }
 
+    // param_to_return_strip: intersect per-parameter strip bits, mirroring
+    // the `sanitizer_caps` AND rule.  Only bits stripped by EVERY
+    // implementer for a given parameter can be considered cleared, since the
+    // virtual dispatch could land on an implementer that does not sanitize
+    // that parameter.  A param present in only one side is dropped (the
+    // other implementer strips nothing for it).
+    let mut merged_strip: Vec<(usize, Cap)> = Vec::new();
+    for (idx, caps) in &acc.param_to_return_strip {
+        if let Some((_, other)) = r.param_to_return_strip.iter().find(|(i, _)| i == idx) {
+            let inter = *caps & *other;
+            if !inter.is_empty() {
+                merged_strip.push((*idx, inter));
+            }
+        }
+    }
+    acc.param_to_return_strip = merged_strip;
+
     // SSA-precision fields: drop on any disagreement.
     if acc.return_type != r.return_type {
         acc.return_type = None;
@@ -12149,4 +12337,77 @@ fn merge_resolved_summaries_fanout(
     }
 
     acc
+}
+
+#[cfg(test)]
+mod engine_audit_fixes_tests {
+    use super::*;
+
+    // Finding #9: `!== null` must NOT be read as an equality null-check.
+    #[test]
+    fn null_check_strict_inequality_is_not_success_branch() {
+        // Equality forms: null/none/no-error outcome is the TRUE branch.
+        assert!(null_check_true_branch_is_success("err == null"));
+        assert!(null_check_true_branch_is_success("err === null"));
+        assert!(null_check_true_branch_is_success("err == nil"));
+        assert!(null_check_true_branch_is_success("err == none"));
+        assert!(null_check_true_branch_is_success("err is none"));
+        assert!(null_check_true_branch_is_success("is_ok(err)"));
+
+        // Inequality forms: null outcome is the FALSE branch.  The strict
+        // `!==` form previously matched `== null` as a substring.
+        assert!(!null_check_true_branch_is_success("err !== null"));
+        assert!(!null_check_true_branch_is_success("err != null"));
+        assert!(!null_check_true_branch_is_success("err != nil"));
+        assert!(!null_check_true_branch_is_success("err != none"));
+        assert!(!null_check_true_branch_is_success("is_err(err)"));
+    }
+
+    // Finding #6: only free-function exit/abort wipes taint state; a
+    // receiver-qualified method with the same trailing segment must not.
+    #[test]
+    fn noreturn_only_matches_free_functions() {
+        // Free functions in C/C++ terminate the process.
+        assert!(is_noreturn_call(Lang::C, "exit"));
+        assert!(is_noreturn_call(Lang::Cpp, "abort"));
+        assert!(is_noreturn_call(Lang::C, "_Exit"));
+        assert!(is_noreturn_call(Lang::Cpp, "quick_exit"));
+
+        // Method calls (dot or arrow receiver) are ordinary calls.
+        assert!(!is_noreturn_call(Lang::Cpp, "transaction.abort"));
+        assert!(!is_noreturn_call(Lang::Cpp, "app.exit"));
+        assert!(!is_noreturn_call(Lang::C, "handlers->abort"));
+        assert!(!is_noreturn_call(Lang::Cpp, "state_machine.abort"));
+
+        // Other languages never treat these as noreturn.
+        assert!(!is_noreturn_call(Lang::JavaScript, "exit"));
+    }
+
+    // Finding #7: protocol-relative `//host` bypass of the leading-slash
+    // SSRF origin lock.
+    #[test]
+    fn ssrf_safe_rejects_protocol_relative_prefix() {
+        use crate::abstract_interp::StringFact;
+
+        // A real same-origin path lock is safe.
+        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix("/api/")));
+        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
+            "/projects"
+        )));
+
+        // A bare "/" lock is NOT safe: a tainted "/evil.com" suffix yields
+        // a protocol-relative "//evil.com" URL.
+        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("/")));
+
+        // An already protocol-relative prefix is not safe either.
+        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("//")));
+        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix(
+            "//evil.com"
+        )));
+
+        // Scheme-locked absolute URL with a path separator stays safe.
+        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
+            "https://api.internal/"
+        )));
+    }
 }
