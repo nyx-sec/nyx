@@ -28,21 +28,21 @@ toolchain_id = "python-3.11"
 base = "python:3.11-slim"
 toolchain = "Python 3.11"
 packages = {}
-digest = "sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834"
+digest = "sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534"
 
 [[image]]
 toolchain_id = "python-3.12"
 base = "python:3.12-slim"
 toolchain = "Python 3.12"
 packages = {}
-digest = "sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461"
+digest = "sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 
 [[image]]
 toolchain_id = "python-3.13"
 base = "python:3.13-slim"
 toolchain = "Python 3.13"
 packages = {}
-digest = "sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f"
+digest = "sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
 
 [[image]]
 toolchain_id = "node-18"
@@ -63,21 +63,21 @@ toolchain_id = "node-22"
 base = "node:22-slim"
 toolchain = "Node.js 22"
 packages = {}
-digest = "sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb"
+digest = "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
 
 [[image]]
 toolchain_id = "java-17"
 base = "eclipse-temurin:17-jre-jammy"
 toolchain = "Eclipse Temurin 17 JRE"
 packages = {}
-digest = "sha256:47c73dc23524b031bed0a5030410c722af6a8b49d4b25898ea8f4615895065f0"
+digest = "sha256:e17d77fb030dd4b642dc078d048a5fb9efcb3676ee20305d905949105a6ccd5a"
 
 [[image]]
 toolchain_id = "java-21"
 base = "eclipse-temurin:21-jre-jammy"
 toolchain = "Eclipse Temurin 21 JRE"
 packages = {}
-digest = "sha256:199aebeb3adcde4910695cdebfe782ada38dadb6cc8013159b58d3724451befd"
+digest = "sha256:eebd356ad7358b7094758e5787a6726f332917cfd56feab6457c56dab895cdbf"
 
 [[image]]
 toolchain_id = "php-8.1"
@@ -91,14 +91,14 @@ toolchain_id = "php-8.2"
 base = "php:8.2-cli"
 toolchain = "PHP 8.2 CLI"
 packages = {}
-digest = "sha256:506f27f6416650a7ef41561ebdb4f93ebdcacb48dabda2af029241c956bbd8ff"
+digest = "sha256:0ca296c0ae905940c0a333a15de437f3acaa81743333a9437221f6a44e3f0981"
 
 [[image]]
 toolchain_id = "php-8.3"
 base = "php:8.3-cli"
 toolchain = "PHP 8.3 CLI"
 packages = {}
-digest = "sha256:7e091064b23740d5c154ebcfcf69631dd16770a791409f83e4416d0ae9f660b5"
+digest = "sha256:6cb44388b6ffc8c9a35b4cfdf518d0565e0cf9150e479add338b498874d7e971"
 
 [[image]]
 toolchain_id = "ruby-3.2"
@@ -112,7 +112,7 @@ toolchain_id = "ruby-3.3"
 base = "ruby:3.3-slim"
 toolchain = "Ruby 3.3"
 packages = {}
-digest = "sha256:a26bfb9409c02987e6b7f8649f0d4c71cc8a4a97475f3f1edfc2fc6a490021ae"
+digest = "sha256:79f7a07363931fde1a5b312dee281fd62ddf56c33bdba0c2622af9b4621182fb"
 
 # Native runtime image: compiled Rust + Go binaries are copied into a
 # `debian:bookworm-slim` container.  Kept here so the image-builder workflow
@@ -122,4 +122,4 @@ toolchain_id = "native-binary"
 base = "debian:bookworm-slim"
 toolchain = "Debian 12 slim (native binary runner)"
 packages = {}
-digest = "sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3"
+digest = "sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171"
