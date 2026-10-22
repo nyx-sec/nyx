@@ -378,10 +378,13 @@ pub fn extract_findings(
                     // Only Return nodes can transfer resource ownership to the
                     // caller.  Non-Return predecessors (exception edges, implicit
                     // fallthrough) with OPEN resources represent genuine leaks.
-                    let returns_var = cfg[pred].kind == StmtKind::Return
+                    // The handle must be in an escape position of the returned
+                    // expression (`return f`, `return f, nil`,
+                    // `return &W{f: f}`); `return f.read()` merely mentions it.
+                    let returns_var = (cfg[pred].kind == StmtKind::Return
+                        || cfg[pred].implicit_return)
                         && cfg[pred]
-                            .taint
-                            .uses
+                            .returned_idents
                             .iter()
                             .any(|u| interner.get_scoped(scope, u) == Some(sym));
                     if returns_var {
@@ -950,6 +953,8 @@ mod tests {
                 uses: vec!["f".into()],
                 ..Default::default()
             },
+            // `return f;`: the handle itself is the returned value.
+            returned_idents: vec!["f".into()],
             ast: AstMeta {
                 enclosing_func: Some(func.into()),
                 ..Default::default()
@@ -962,7 +967,16 @@ mod tests {
         cfg.add_edge(open_node, ret, EdgeKind::Seq);
         cfg.add_edge(ret, exit, EdgeKind::Seq);
 
-        let interner = SymbolInterner::from_cfg_scoped(&cfg);
+        let findings = run_factory_cfg(&cfg, entry);
+        assert!(
+            findings.is_empty(),
+            "Resource returned from factory must not produce leak finding.\n  Got: {:?}",
+            findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        );
+    }
+
+    fn run_factory_cfg(cfg: &Cfg, entry: petgraph::graph::NodeIndex) -> Vec<StateFinding> {
+        let interner = SymbolInterner::from_cfg_scoped(cfg);
         let transfer = DefaultTransfer {
             lang: Lang::C,
             resource_pairs: rules::resource_pairs(Lang::C),
@@ -971,23 +985,67 @@ mod tests {
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
         };
-
-        let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
-        let findings = extract_findings(
+        let result = engine::run_forward(cfg, entry, &transfer, ProductState::initial());
+        extract_findings(
             &result,
-            &cfg,
+            cfg,
             &interner,
             Lang::C,
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
             None,
-        );
+        )
+    }
 
-        assert!(
-            findings.is_empty(),
-            "Resource returned from factory must not produce leak finding.\n  Got: {:?}",
-            findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+    #[test]
+    fn per_body_return_mentioning_handle_without_escape_leaks() {
+        // `f = fopen(..); return fgetc(f);`: the Return reads `f` but hands
+        // the caller a character, not the handle.
+        let func = "reader";
+        let mut cfg: Cfg = Graph::new();
+        let entry = cfg.add_node(make_func_node(StmtKind::Entry, func));
+        let open_node = cfg.add_node(NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta {
+                span: (10, 20),
+                enclosing_func: Some(func.into()),
+            },
+            taint: TaintMeta {
+                defines: Some("f".into()),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("fopen".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let ret = cfg.add_node(NodeInfo {
+            kind: StmtKind::Return,
+            taint: TaintMeta {
+                uses: vec!["fgetc".into(), "f".into()],
+                ..Default::default()
+            },
+            returned_call_callees: vec!["fgetc".into()],
+            ast: AstMeta {
+                enclosing_func: Some(func.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let exit = cfg.add_node(make_func_node(StmtKind::Exit, func));
+        cfg.add_edge(entry, open_node, EdgeKind::Seq);
+        cfg.add_edge(open_node, ret, EdgeKind::Seq);
+        cfg.add_edge(ret, exit, EdgeKind::Seq);
+
+        let findings = run_factory_cfg(&cfg, entry);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|f| f.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["state-resource-leak"],
         );
     }
 

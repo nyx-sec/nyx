@@ -2523,3 +2523,106 @@ func h() {
         "new(non-writer-struct) must not type as FileHandle"
     );
 }
+
+// ─── Resource leak: null / err guards and returned handles ─────────────
+
+fn cfg_leaks(src: &[u8], lang: &str, ts_lang: Language) -> usize {
+    parse_and_analyse(&resources::ResourceMisuse, src, lang, ts_lang)
+        .iter()
+        .filter(|f| f.rule_id == "cfg-resource-leak")
+        .count()
+}
+
+fn c_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "c", Language::from(tree_sitter_c::LANGUAGE))
+}
+
+fn go_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "go", Language::from(tree_sitter_go::LANGUAGE))
+}
+
+fn py_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "python", Language::from(tree_sitter_python::LANGUAGE))
+}
+
+#[test]
+fn resource_null_guard_early_return_not_leak_c() {
+    for guard in ["!f", "f == NULL", "NULL == f", "(f) == NULL"] {
+        let src = format!(
+            "int g(const char *p) {{\n    FILE *f = fopen(p, \"r\");\n    if ({guard}) return -1;\n    fgetc(f);\n    fclose(f);\n    return 0;\n}}\n"
+        );
+        assert_eq!(c_leaks(src.as_bytes()), 0, "guard `{guard}`");
+    }
+    let fd = b"int g(const char *p) {\n    int fd = open(p, 0);\n    if (fd < 0) return -1;\n    close(fd);\n    return 0;\n}\n";
+    assert_eq!(c_leaks(fd), 0);
+}
+
+#[test]
+fn resource_null_guard_does_not_hide_later_leak_c() {
+    let src = b"int g(const char *p, int x) {\n    FILE *f = fopen(p, \"r\");\n    if (!f) return -1;\n    if (x) return -2;\n    fclose(f);\n    return 0;\n}\n";
+    assert_eq!(c_leaks(src), 1);
+}
+
+#[test]
+fn resource_returned_handle_not_leak_c() {
+    let src = b"char *dup(const char *s) {\n    char *b = malloc(10);\n    if (b == NULL) return NULL;\n    strcpy(b, s);\n    return b;\n}\n";
+    assert_eq!(c_leaks(src), 0);
+}
+
+#[test]
+fn resource_go_err_guard_factory_not_leak() {
+    let src = b"package m\nfunc open(p string) (*os.File, error) {\n\tf, err := os.Open(p)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn f, nil\n}\n";
+    assert_eq!(go_leaks(src), 0);
+    let direct = b"package m\nfunc open(p string) (*os.File, error) {\n\treturn os.Open(p)\n}\n";
+    assert_eq!(go_leaks(direct), 0);
+    let wrapped =
+        b"package m\nfunc open(p string) *W {\n\tf, _ := os.Open(p)\n\treturn &W{f: f}\n}\n";
+    assert_eq!(go_leaks(wrapped), 0);
+}
+
+#[test]
+fn resource_go_reassigned_err_still_leaks() {
+    // The second `err != nil` tests the Write error, not the Open error, so
+    // its early return leaks `f`.
+    let src = b"package m\nfunc w(p string, d []byte) error {\n\tf, err := os.Create(p)\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = f.Write(d)\n\tif err != nil {\n\t\treturn err\n\t}\n\tf.Close()\n\treturn nil\n}\n";
+    assert_eq!(go_leaks(src), 1);
+}
+
+#[test]
+fn resource_go_handle_passed_to_returned_call_still_leaks() {
+    let src = b"package m\nfunc r(p string) *bufio.Reader {\n\tf, _ := os.Open(p)\n\treturn bufio.NewReader(f)\n}\n";
+    assert_eq!(go_leaks(src), 1);
+}
+
+#[test]
+fn resource_python_return_escape_shapes() {
+    assert_eq!(py_leaks(b"def g(p):\n    f = open(p)\n    return f\n"), 0);
+    assert_eq!(py_leaks(b"def g(p):\n    return open(p)\n"), 0);
+    assert_eq!(
+        py_leaks(b"def g(p):\n    f = open(p)\n    return f, 1\n"),
+        0
+    );
+    assert_eq!(
+        py_leaks(b"def g(p):\n    f = open(p)\n    return f.read()\n"),
+        1
+    );
+    assert_eq!(
+        py_leaks(b"def g(p, x):\n    f = open(p)\n    if x:\n        return None\n    return f\n"),
+        1,
+        "the `return None` path leaks"
+    );
+    assert_eq!(
+        py_leaks(b"def g(p):\n    return json.load(open(p))\n"),
+        1,
+        "the returned value is json.load's, not the handle"
+    );
+}
+
+#[test]
+fn resource_java_returned_wrapper_not_leak() {
+    let src = b"class A {\n  Reader g(String p) throws Exception {\n    return new BufferedReader(new FileReader(p));\n  }\n}\n";
+    assert_eq!(
+        cfg_leaks(src, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        0
+    );
+}

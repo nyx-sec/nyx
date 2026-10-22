@@ -1314,3 +1314,122 @@ fn auth_decorator_cpp_authenticated() {
         "state-unauthed-access",
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Null / failure guards and returned handles
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Every leak finding (state or structural cfg twin) for a fixture.
+fn leak_ids_for(filename: &str) -> Vec<String> {
+    scan_all_fixtures()
+        .iter()
+        .filter(|d| d.path.contains(filename) && d.id.contains("resource-leak"))
+        .map(|d| format!("{}:{}", d.id, d.line))
+        .collect()
+}
+
+fn assert_no_leaks(filename: &str) {
+    let found = leak_ids_for(filename);
+    assert!(
+        found.is_empty(),
+        "Expected no resource-leak findings (state or cfg) in {filename}.\n  Got: {found:?}"
+    );
+}
+
+#[test]
+fn null_guard_early_return_clean() {
+    assert_no_leaks("null_guard_early_return_clean.c");
+}
+
+#[test]
+fn null_guard_fd_sentinel_clean() {
+    assert_no_leaks("null_guard_fd_sentinel_clean.c");
+}
+
+#[test]
+fn null_guard_factory_clean() {
+    assert_no_leaks("null_guard_factory_clean.c");
+}
+
+#[test]
+fn null_guard_later_return_still_leaks() {
+    assert_has(
+        "null_guard_later_return_leaks.c",
+        "state-resource-leak-possible",
+    );
+}
+
+#[test]
+fn cpp_nullptr_guard_clean() {
+    assert_no_leaks("cpp_nullptr_guard_clean.cpp");
+}
+
+#[test]
+fn python_none_guard_clean() {
+    assert_no_leaks("python_none_guard_clean.py");
+}
+
+#[test]
+fn php_fopen_false_guard_clean() {
+    assert_no_leaks("php_fopen_false_guard_clean.php");
+}
+
+#[test]
+fn js_fd_null_guard_clean() {
+    assert_no_leaks("js_fd_null_guard_clean.js");
+}
+
+#[test]
+fn java_finally_null_guard_clean() {
+    assert_no_leaks("java_finally_null_guard_clean.java");
+}
+
+#[test]
+fn go_err_guard_clean() {
+    assert_no_leaks("go_err_guard_clean.go");
+}
+
+#[test]
+fn go_err_reassigned_still_leaks() {
+    // Recall guard: only the acquire's own error proves the handle absent.
+    assert_has("go_err_reassigned_leak.go", "state-resource-leak-possible");
+}
+
+#[test]
+fn return_of_read_result_leaks_handle() {
+    let leaks: Vec<_> = state_diags_for("return_read_leak.py")
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .collect();
+    assert_eq!(
+        leaks.len(),
+        2,
+        "both `return f.read()` and `return len(f.readlines())` leak f.\n  Got: {:?}",
+        leak_ids_for("return_read_leak.py")
+    );
+}
+
+#[test]
+fn go_return_readall_leaks_handle() {
+    assert_has("go_return_readall_leak.go", "state-resource-leak");
+}
+
+#[test]
+fn factory_returns_handle_clean() {
+    assert_no_leaks("factory_returns_handle_clean.py");
+}
+
+#[test]
+fn java_factory_returns_handle_clean() {
+    assert_no_leaks("java_factory_returns_handle_clean.java");
+}
+
+#[test]
+fn ruby_implicit_return_clean() {
+    assert_no_leaks("ruby_implicit_return_clean.rb");
+}
+
+#[test]
+fn ruby_tail_read_still_leaks() {
+    assert_has("ruby_tail_read_leak.rb", "state-resource-leak");
+}

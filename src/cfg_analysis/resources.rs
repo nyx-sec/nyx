@@ -243,16 +243,11 @@ fn release_on_all_exit_paths(
     all_paths_pass_through(ctx, acquire, exit, &release_set, acquire_var, extra_defines)
 }
 
-/// Identify whether a CFG edge is the "null-guard false edge" for the named
-/// acquired variable.  Returns `true` for the edge that, if traversed, means
-/// the resource handle is null/falsy and therefore not actually acquired.
-///
-/// Recognises:
-///   * `if (var)`, false edge means `var` is null
-///   * `if (!var)`, true edge means `var` is null
-///
-/// Rejects comparisons (`if (var != NULL)`), method calls
-/// (`if (var.is_valid())`), and composite conditions (`if (var && cond)`).
+/// Identify whether a CFG edge is the null edge of a null / failure test on
+/// the acquired variable (`if (f)`, `if (!f)`, `f == NULL`, `fd < 0`, ...).
+/// On that edge the resource handle was never produced, so the path owes no
+/// release.  Reads the structured [`crate::cfg::NullCheck`] the CFG builder
+/// attaches to the `If` node.
 fn is_null_guard_false_edge(
     ctx: &AnalysisContext,
     src: NodeIndex,
@@ -260,87 +255,48 @@ fn is_null_guard_false_edge(
     acquire_var: &str,
 ) -> bool {
     let info = &ctx.cfg[src];
-    if info.kind != StmtKind::If {
-        return false;
-    }
-    if info.condition_vars.len() != 1 || info.condition_vars[0] != acquire_var {
-        return false;
-    }
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    let stripped = text
-        .trim()
-        .trim_start_matches('!')
-        .trim()
-        .trim_matches(|c: char| c == '(' || c == ')')
-        .trim();
-    if stripped != acquire_var {
-        return false;
-    }
-    // Choose the null edge: false for plain truth check, true for negated.
-    let null_edge = if info.condition_negated {
-        EdgeKind::True
-    } else {
-        EdgeKind::False
-    };
-    edge_kind == null_edge
+    info.kind == StmtKind::If
+        && info
+            .null_check
+            .as_ref()
+            .is_some_and(|nc| nc.var == acquire_var && nc.null_edge() == edge_kind)
 }
 
 /// Recognise Go's err-companion guard: `if err != nil { return err }` where
 /// `err` is a companion define of the acquire (`f, err := os.Open(...)`).
-/// On the err-true edge the resource was never actually acquired (acquire
-/// returned the zero value), so the path is not a real leak path.
+/// On the err-non-nil edge the resource was never actually acquired (the
+/// acquire returned the zero value), so the path is not a real leak path.
 ///
-/// Returns `true` for the edge that takes the err-non-nil branch.  Match is
-/// strict: condition must reference exactly one var that lives in the
-/// acquire's `extra_defines`, condition_text must compare against `nil`, and
-/// the chosen edge must match the err-non-nil polarity.
+/// Returns `true` for the edge that takes the err-non-nil branch.  The
+/// caller only asks while `err` still holds the acquire's error (see the
+/// redefinition tracking in [`all_paths_pass_through`]).
 fn is_err_companion_guard_edge(
     ctx: &AnalysisContext,
     src: NodeIndex,
     edge_kind: EdgeKind,
     extra_defines: &[String],
 ) -> bool {
-    if extra_defines.is_empty() {
+    if extra_defines.is_empty() || ctx.lang != Lang::Go {
         return false;
     }
     let info = &ctx.cfg[src];
-    if info.kind != StmtKind::If {
-        return false;
-    }
-    if info.condition_vars.len() != 1 {
-        return false;
-    }
-    let cond_var = &info.condition_vars[0];
-    if !extra_defines.iter().any(|e| e == cond_var) {
-        return false;
-    }
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    // Normalise: drop spaces so `err!=nil` and `err != nil` both match.
-    let collapsed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    let var_eq_nil = format!("{cond_var}==nil");
-    let var_neq_nil = format!("{cond_var}!=nil");
-    // Polarity: `err != nil` → err-non-nil branch is the True edge;
-    //           `err == nil` → err-non-nil branch is the False edge.
-    let err_branch = if collapsed.contains(&var_neq_nil) {
-        if info.condition_negated {
-            EdgeKind::False
-        } else {
-            EdgeKind::True
-        }
-    } else if collapsed.contains(&var_eq_nil) {
-        if info.condition_negated {
-            EdgeKind::True
-        } else {
-            EdgeKind::False
-        }
-    } else {
-        return false;
-    };
-    edge_kind == err_branch
+    info.kind == StmtKind::If
+        && info.null_check.as_ref().is_some_and(|nc| {
+            extra_defines.iter().any(|e| *e == nc.var) && nc.non_null_edge() == edge_kind
+        })
+}
+
+/// True when `node` (other than the acquire itself) reassigns one of the
+/// acquire's error companions, after which an `err != nil` test no longer
+/// describes the acquire.
+fn redefines_err_companion(info: &crate::cfg::NodeInfo, extra_defines: &[String]) -> bool {
+    !extra_defines.is_empty()
+        && info
+            .taint
+            .defines
+            .iter()
+            .chain(info.taint.extra_defines.iter())
+            .any(|d| extra_defines.iter().any(|e| e == d))
 }
 
 /// Check if all paths from `from` to `to` pass through at least one node in `through`,
@@ -360,13 +316,15 @@ fn all_paths_pass_through(
         return true;
     }
 
-    // BFS, tracking whether we've passed through a required node
+    // BFS over (node, passed a release, err companion reassigned).  The
+    // third component keeps `_, err = f.Write(b); if err != nil { return err }`
+    // from being mistaken for the acquire's own failure branch.
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
-    queue.push_back((from, false));
-    visited.insert((from, false));
+    queue.push_back((from, false, false));
+    visited.insert((from, false, false));
 
-    while let Some((node, passed)) = queue.pop_front() {
+    while let Some((node, passed, err_redefined)) = queue.pop_front() {
         if node == to {
             if !passed {
                 return false; // Found a path to exit without passing through release
@@ -374,12 +332,17 @@ fn all_paths_pass_through(
             continue;
         }
 
+        let info = &ctx.cfg[node];
+        let err_redefined =
+            err_redefined || (node != from && redefines_err_companion(info, extra_defines));
+
         // Treat a Return-of-err-companion as a passing exit: in Go's
         // `f, err := os.Open(...); if err != nil { return err }` shape the
         // err-return path does not actually own a resource (acquire returned
         // the zero value), so reaching such a Return is not a leak.
-        let info = &ctx.cfg[node];
-        if info.kind == StmtKind::Return
+        if !err_redefined
+            && ctx.lang == Lang::Go
+            && info.kind == StmtKind::Return
             && !extra_defines.is_empty()
             && !info.taint.uses.is_empty()
             && info
@@ -391,7 +354,30 @@ fn all_paths_pass_through(
             continue;
         }
 
+        // Returning the handle (`return f`, `return f, nil`,
+        // `return &W{f: f}`) hands ownership to the caller, so this path owes
+        // no release.  Only escape positions count: `return f.read()` keeps
+        // `f` here and still needs a release.  Twin of the `returns_var`
+        // check in `state::facts`.
+        if (info.kind == StmtKind::Return || info.implicit_return)
+            && acquire_var.is_some_and(|v| info.returned_idents.iter().any(|r| r == v))
+        {
+            continue;
+        }
+
         for edge in ctx.cfg.edges(node) {
+            // The builder can emit a plain Seq edge alongside the True /
+            // False edge into the same branch target (`if (!f) return -1;`).
+            // It carries no branch meaning, so skip it the way the state
+            // engine does; otherwise it would re-open the branch pruned below.
+            if *edge.weight() == EdgeKind::Seq
+                && ctx.cfg.edges(node).any(|e| {
+                    e.target() == edge.target()
+                        && matches!(e.weight(), EdgeKind::True | EdgeKind::False)
+                })
+            {
+                continue;
+            }
             // Prune null-guard-false edges: those represent "var is null",
             // a path on which the resource was never actually acquired.
             if let Some(var) = acquire_var
@@ -402,12 +388,14 @@ fn all_paths_pass_through(
             // Prune Go err-companion guard edges: `if err != nil { return err }`
             // after `f, err := os.Open(...)` takes the err branch on which the
             // resource handle is the zero value and was never acquired.
-            if is_err_companion_guard_edge(ctx, node, *edge.weight(), extra_defines) {
+            if !err_redefined
+                && is_err_companion_guard_edge(ctx, node, *edge.weight(), extra_defines)
+            {
                 continue;
             }
             let succ = edge.target();
             let new_passed = passed || through.contains(&succ);
-            let state = (succ, new_passed);
+            let state = (succ, new_passed, err_redefined);
             if visited.insert(state) {
                 queue.push_back(state);
             }
@@ -415,6 +403,32 @@ fn all_paths_pass_through(
     }
 
     true
+}
+
+/// True when the acquire is the value of a `return` statement
+/// (`return os.Open(p)`, `return new Foo()`, `return open(p)`): the handle is
+/// never bound locally and goes straight to the caller.  The CFG builder
+/// lowers such a return as a Call node followed by a Return node over the
+/// same statement span; the Return records which calls it returns directly.
+fn acquire_is_returned_value(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
+    let info = &ctx.cfg[acquire];
+    if info.taint.defines.is_some() {
+        return false;
+    }
+    let Some(callee) = info.call.callee.as_deref() else {
+        return false;
+    };
+    // Ruby `def open_log(p) File.open(p) end`: the acquire is itself the
+    // method's implicit return value.
+    if info.implicit_return && info.returned_call_callees.iter().any(|c| c == callee) {
+        return true;
+    }
+    ctx.cfg.neighbors(acquire).any(|succ| {
+        let ret = &ctx.cfg[succ];
+        ret.kind == StmtKind::Return
+            && ret.ast.span == info.ast.span
+            && ret.returned_call_callees.iter().any(|c| c == callee)
+    })
 }
 
 /// Check whether the acquired variable is stored into a struct field (ownership
@@ -829,6 +843,11 @@ impl CfgAnalysis for ResourceMisuse {
                         acquired_var,
                     )
                 {
+                    continue;
+                }
+                // A factory that returns the acquire's result directly
+                // (`return os.Open(p)`) hands the handle to its caller.
+                if acquire_is_returned_value(ctx, acquire) {
                     continue;
                 }
                 // Suppress resources with a deferred release (Go `defer f.Close()`).

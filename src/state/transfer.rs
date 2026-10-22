@@ -369,6 +369,14 @@ impl Transfer<ProductState> for DefaultTransfer<'_> {
     ) -> (ProductState, Vec<TransferEvent>) {
         let mut events = Vec::new();
 
+        // A node that reassigns a Go error companion (or its resource)
+        // breaks the pairing: after `_, err = f.Write(b)` an `err != nil`
+        // branch says nothing about whether `f` was acquired.  The acquire
+        // that re-binds a pair runs after this in `apply_call`.
+        if self.lang == Lang::Go {
+            self.kill_redefined_err_companions(info, &mut state);
+        }
+
         match info.kind {
             StmtKind::Call => {
                 self.apply_call(node_idx, info, &mut state, &mut events);
@@ -457,6 +465,21 @@ impl DefaultTransfer<'_> {
         handled
     }
 
+    /// Drop Go error-companion pairs whose error or resource symbol this
+    /// node reassigns.
+    fn kill_redefined_err_companions(&self, info: &NodeInfo, state: &mut ProductState) {
+        for name in info
+            .taint
+            .defines
+            .iter()
+            .chain(info.taint.extra_defines.iter())
+        {
+            if let Some(sym) = self.get_sym(info, name) {
+                state.err_companions.kill(sym);
+            }
+        }
+    }
+
     fn apply_call(
         &self,
         node_idx: NodeIndex,
@@ -533,6 +556,18 @@ impl DefaultTransfer<'_> {
             {
                 state.resource.set(sym, ResourceLifecycle::OPEN);
                 direct_acquire = true;
+                // Go `f, err := os.Open(p)`: pair the handle with the error
+                // result so `if err != nil { return err }` can prune the
+                // failure branch (see `apply_if`).
+                if self.lang == Lang::Go {
+                    for extra in &info.taint.extra_defines {
+                        if let Some(err_sym) = self.get_sym(info, extra)
+                            && err_sym != sym
+                        {
+                            state.err_companions.bind(err_sym, sym);
+                        }
+                    }
+                }
             }
         }
 
@@ -792,35 +827,37 @@ impl DefaultTransfer<'_> {
             matches!(edge, Some(EdgeKind::True))
         };
 
-        // Resource null-check: `if (f)` or `if (!f)` where f is a tracked
-        // resource currently in OPEN state.  The "var is falsy" edge means
-        // the acquisition returned null/zero, no resource was actually
-        // produced, so subsequent close requirements do not apply on that
-        // path.  Clearing OPEN suppresses the spurious may-leak finding for
-        // the canonical NULL-safe close idiom in C / C++ / similar:
+        // Resource null-check: on the branch where a tracked handle is null
+        // (or its failure sentinel), the acquire produced nothing, so no
+        // close is owed on that path.  Covers the NULL-safe close idiom and
+        // the check-and-return idiom in every spelling the CFG builder
+        // recognises (`if (f)`, `if (!f)`, `f == NULL`, `NULL != f`,
+        // `f is None`, `$fh === false`, `fd < 0`):
         //
         //     FILE *f = fopen(path, "r");
-        //     if (f) fclose(f);
+        //     if (f == NULL) return -1;
+        //     ...
+        //     fclose(f);
         //
-        // Without this rule the false edge keeps OPEN, joins with the true
-        // edge's CLOSED at function exit, and produces a may-leak FP even
-        // though the code is correct.
-        //
-        // Heuristic conditions:
-        //   * condition is a single-variable truth check (no comparisons,
-        //     no calls, `condition_vars.len() == 1` and the trimmed text
-        //     equals that variable name).
-        //   * the var has OPEN in its lifecycle bitset.
-        //   * the edge represents "var is falsy" (= !is_positive_edge).
-        if !is_positive_edge && is_simple_truth_check(info) {
-            for var in &info.condition_vars {
-                if let Some(sym) = self.get_sym(info, var) {
-                    let lc = state.resource.get(sym);
-                    if lc.contains(ResourceLifecycle::OPEN) {
-                        state
-                            .resource
-                            .set(sym, lc.difference(ResourceLifecycle::OPEN));
-                    }
+        // Without this the null edge keeps OPEN, joins with the CLOSED of
+        // the success path at function exit, and reports a may-leak on
+        // correct code.
+        if let Some(nc) = &info.null_check {
+            if edge == Some(nc.null_edge())
+                && let Some(sym) = self.get_sym(info, &nc.var)
+            {
+                clear_open(state, sym);
+            }
+            // Go error companion: on the `err != nil` branch the paired
+            // acquire failed and its handle is the zero value.
+            if self.lang == Lang::Go
+                && edge == Some(nc.non_null_edge())
+                && let Some(err_sym) = self.get_sym(info, &nc.var)
+            {
+                let paired: smallvec::SmallVec<[SymbolId; 2]> =
+                    state.err_companions.resources_of(err_sym).collect();
+                for res in paired {
+                    clear_open(state, res);
                 }
             }
         }
@@ -985,27 +1022,15 @@ fn is_guard_like(callee: &str) -> bool {
     GUARD_PREFIXES.iter().any(|p| callee.starts_with(p))
 }
 
-/// True iff the condition is a single-variable truth check (no comparison,
-/// no method call, no boolean composition), the bare `if (f)` or `if (!f)`
-/// shape used as a NULL-safe gate around resource access.
-///
-/// Conservative: requires `condition_vars` to have exactly one entry, and
-/// the de-negated `condition_text` to be exactly that variable name (with
-/// optional parens stripped).  Rejects `if (f != NULL)`, `if (f.method())`,
-/// `if (f && g)`, etc., which are not the simple truth-check idiom and may
-/// have different semantics for the false-branch resource state.
-fn is_simple_truth_check(info: &NodeInfo) -> bool {
-    if info.condition_vars.len() != 1 {
-        return false;
+/// Remove OPEN from a symbol's lifecycle (the path on which the handle was
+/// never produced).
+fn clear_open(state: &mut ProductState, sym: SymbolId) {
+    let lc = state.resource.get(sym);
+    if lc.contains(ResourceLifecycle::OPEN) {
+        state
+            .resource
+            .set(sym, lc.difference(ResourceLifecycle::OPEN));
     }
-    let var = &info.condition_vars[0];
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    let stripped = text.trim();
-    let stripped = stripped.trim_start_matches('!').trim();
-    let stripped = stripped.trim_matches(|c: char| c == '(' || c == ')').trim();
-    stripped == var
 }
 
 /// Detect Go `map[string]bool` allowlist lookups used as boolean guards.
@@ -1583,33 +1608,6 @@ mod tests {
     }
 
     #[test]
-    fn is_simple_truth_check_recognises_bare_identifier() {
-        let make = |text: &str, vars: Vec<&str>| NodeInfo {
-            kind: StmtKind::If,
-            ast: AstMeta::default(),
-            condition_text: Some(text.to_string()),
-            condition_vars: vars.into_iter().map(String::from).collect(),
-            ..Default::default()
-        };
-        // Plain `if (f)` truth check
-        assert!(is_simple_truth_check(&make("f", vec!["f"])));
-        // Negated form `if (!f)`
-        assert!(is_simple_truth_check(&make("!f", vec!["f"])));
-        // Parenthesised form `if ((f))`
-        assert!(is_simple_truth_check(&make("(f)", vec!["f"])));
-        // Negated parenthesised form `if (!(f))`
-        assert!(is_simple_truth_check(&make("!(f)", vec!["f"])));
-        // Negative: comparison
-        assert!(!is_simple_truth_check(&make("f != NULL", vec!["f"])));
-        // Negative: method call
-        assert!(!is_simple_truth_check(&make("f.is_valid()", vec!["f"])));
-        // Negative: composite condition
-        assert!(!is_simple_truth_check(&make("f && g", vec!["f", "g"])));
-        // Negative: empty vars
-        assert!(!is_simple_truth_check(&make("f", vec![])));
-    }
-
-    #[test]
     fn null_check_clears_open_on_false_edge() {
         let mut interner = SymbolInterner::new();
         let sym_f = interner.intern("f");
@@ -1628,9 +1626,13 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::If,
-            condition_text: Some("f".into()),
+            condition_text: Some("(f)".into()),
             condition_vars: vec!["f".into()],
             condition_negated: false,
+            null_check: Some(crate::cfg::NullCheck {
+                var: "f".into(),
+                null_on_true: false,
+            }),
             ..Default::default()
         };
 
@@ -1685,9 +1687,13 @@ mod tests {
         // `if (!f)`, condition_negated=true, true-edge means f is null
         let info = NodeInfo {
             kind: StmtKind::If,
-            condition_text: Some("!f".into()),
+            condition_text: Some("(!f)".into()),
             condition_vars: vec!["f".into()],
             condition_negated: true,
+            null_check: Some(crate::cfg::NullCheck {
+                var: "f".into(),
+                null_on_true: true,
+            }),
             ..Default::default()
         };
 
@@ -1717,6 +1723,150 @@ mod tests {
                 .get(sym_f)
                 .contains(ResourceLifecycle::OPEN),
             "OPEN should be preserved on the non-null edge of `if (!f)` (false edge)"
+        );
+    }
+
+    #[test]
+    fn condition_without_null_check_keeps_open() {
+        // `if (f != g)` carries no null-check fact: neither edge may clear.
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        let transfer = DefaultTransfer {
+            lang: Lang::C,
+            resource_pairs: rules::resource_pairs(Lang::C),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+        let info = NodeInfo {
+            kind: StmtKind::If,
+            condition_text: Some("(f != g)".into()),
+            condition_vars: vec!["f".into(), "g".into()],
+            ..Default::default()
+        };
+        for edge in [EdgeKind::True, EdgeKind::False] {
+            let (out, _) = transfer.apply(NodeIndex::new(1), &info, Some(edge), state.clone());
+            assert_eq!(out.resource.get(sym_f), ResourceLifecycle::OPEN);
+        }
+    }
+
+    fn go_transfer(interner: &SymbolInterner) -> DefaultTransfer<'_> {
+        DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+        }
+    }
+
+    fn go_open_node() -> NodeInfo {
+        // f, err := os.Open(p)
+        NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: Some("f".into()),
+                extra_defines: vec!["err".into()],
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("os.Open".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn go_err_check_node() -> NodeInfo {
+        // if err != nil
+        NodeInfo {
+            kind: StmtKind::If,
+            condition_text: Some("err != nil".into()),
+            condition_vars: vec!["err".into()],
+            null_check: Some(crate::cfg::NullCheck {
+                var: "err".into(),
+                null_on_true: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn go_err_companion_clears_open_on_err_branch() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("err");
+        let transfer = go_transfer(&interner);
+
+        let (state, _) = transfer.apply(
+            NodeIndex::new(0),
+            &go_open_node(),
+            None,
+            ProductState::initial(),
+        );
+        assert_eq!(state.resource.get(sym_f), ResourceLifecycle::OPEN);
+
+        let check = go_err_check_node();
+        let (err_branch, _) = transfer.apply(
+            NodeIndex::new(1),
+            &check,
+            Some(EdgeKind::True),
+            state.clone(),
+        );
+        assert!(
+            !err_branch
+                .resource
+                .get(sym_f)
+                .contains(ResourceLifecycle::OPEN),
+            "err != nil branch: os.Open failed, f holds nothing"
+        );
+        let (ok_branch, _) =
+            transfer.apply(NodeIndex::new(1), &check, Some(EdgeKind::False), state);
+        assert_eq!(ok_branch.resource.get(sym_f), ResourceLifecycle::OPEN);
+    }
+
+    #[test]
+    fn go_err_companion_dropped_when_err_reassigned() {
+        // f, err := os.Open(p); _, err = f.Write(b); if err != nil { ... }
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("err");
+        let transfer = go_transfer(&interner);
+
+        let (state, _) = transfer.apply(
+            NodeIndex::new(0),
+            &go_open_node(),
+            None,
+            ProductState::initial(),
+        );
+        let write = NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: Some("err".into()),
+                uses: vec!["f".into()],
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("f.Write".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (state, _) = transfer.apply(NodeIndex::new(1), &write, None, state);
+        let (err_branch, _) = transfer.apply(
+            NodeIndex::new(2),
+            &go_err_check_node(),
+            Some(EdgeKind::True),
+            state,
+        );
+        assert_eq!(
+            err_branch.resource.get(sym_f),
+            ResourceLifecycle::OPEN,
+            "the Write error says nothing about the open handle"
         );
     }
 

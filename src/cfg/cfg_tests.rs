@@ -4800,3 +4800,198 @@ app.get('/probe', (req, res) => {
         }
     }
 }
+
+// ── NullCheck extraction (resource null / failure guards) ───────────────
+
+/// `(var, null_on_true)` of the single null-check `If` node built from
+/// `src`, or `None` when no `If` node carries one.
+fn null_checks(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(String, bool)> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::If)
+        .filter_map(|n| n.null_check.as_ref())
+        .map(|nc| (nc.var.clone(), nc.null_on_true))
+        .collect()
+}
+
+fn one_null_check(src: &[u8], lang: &str, ts_lang: Language) -> Option<(String, bool)> {
+    let all = null_checks(src, lang, ts_lang);
+    assert!(
+        all.len() <= 1,
+        "expected at most one null check, got {all:?}"
+    );
+    all.into_iter().next()
+}
+
+#[test]
+fn null_check_c_shapes() {
+    let c = || Language::from(tree_sitter_c::LANGUAGE);
+    let case = |cond: &str| {
+        let src = format!("void g(void) {{ if ({cond}) {{ h(); }} }}");
+        one_null_check(src.as_bytes(), "c", c())
+    };
+    assert_eq!(case("f"), Some(("f".into(), false)));
+    assert_eq!(case("!f"), Some(("f".into(), true)));
+    assert_eq!(case("!(f)"), Some(("f".into(), true)));
+    assert_eq!(case("f == NULL"), Some(("f".into(), true)));
+    assert_eq!(case("NULL == f"), Some(("f".into(), true)));
+    assert_eq!(case("f != NULL"), Some(("f".into(), false)));
+    assert_eq!(case("NULL != f"), Some(("f".into(), false)));
+    assert_eq!(case("!(f == NULL)"), Some(("f".into(), false)));
+    assert_eq!(case("fd < 0"), Some(("fd".into(), true)));
+    assert_eq!(case("fd == -1"), Some(("fd".into(), true)));
+    assert_eq!(case("fd >= 0"), Some(("fd".into(), false)));
+    assert_eq!(case("0 > fd"), Some(("fd".into(), true)));
+    // Not a failure test: descriptor 0 is valid, and these are not
+    // single-variable null tests at all.
+    assert_eq!(case("fd == 0"), None);
+    assert_eq!(case("f == g"), None);
+    assert_eq!(case("x == 1"), None);
+    assert_eq!(case("f->ok"), None);
+    assert_eq!(case("valid(f)"), None);
+}
+
+#[test]
+fn null_check_cpp_nullptr() {
+    let src = b"int g() { FILE* fp = fopen(p, \"r\"); if (fp == nullptr) return -1; return 0; }";
+    assert_eq!(
+        one_null_check(src, "cpp", Language::from(tree_sitter_cpp::LANGUAGE)),
+        Some(("fp".into(), true))
+    );
+}
+
+#[test]
+fn null_check_short_circuit_operand() {
+    // `if (f && g)` is decomposed into one If node per operand; each bare
+    // operand carries its own null check.
+    let src = b"void g(void) { if (f && g) { h(); } }";
+    let mut got = null_checks(src, "c", Language::from(tree_sitter_c::LANGUAGE));
+    got.sort();
+    assert_eq!(got, vec![("f".into(), false), ("g".into(), false)]);
+}
+
+#[test]
+fn null_check_python_shapes() {
+    let py = || Language::from(tree_sitter_python::LANGUAGE);
+    let case = |cond: &str| {
+        let src = format!("def g(f):\n    if {cond}:\n        h()\n");
+        one_null_check(src.as_bytes(), "python", py())
+    };
+    assert_eq!(case("not f"), Some(("f".into(), true)));
+    assert_eq!(case("f is None"), Some(("f".into(), true)));
+    assert_eq!(case("f is not None"), Some(("f".into(), false)));
+    assert_eq!(case("f"), Some(("f".into(), false)));
+    assert_eq!(case("f.closed"), None);
+}
+
+#[test]
+fn null_check_php_js_java_go_shapes() {
+    let php = b"<?php function g($p) { $fh = fopen($p, 'r'); if ($fh === false) { return null; } }";
+    assert_eq!(
+        one_null_check(php, "php", Language::from(tree_sitter_php::LANGUAGE_PHP)),
+        Some(("fh".into(), true))
+    );
+    let php_not = b"<?php function g($p) { $fh = fopen($p, 'r'); if (!$fh) { return null; } }";
+    assert_eq!(
+        one_null_check(
+            php_not,
+            "php",
+            Language::from(tree_sitter_php::LANGUAGE_PHP)
+        ),
+        Some(("fh".into(), true))
+    );
+    let js = b"function g(p) { const fd = open(p); if (fd === null) { return -1; } }";
+    assert_eq!(
+        one_null_check(
+            js,
+            "javascript",
+            Language::from(tree_sitter_javascript::LANGUAGE)
+        ),
+        Some(("fd".into(), true))
+    );
+    let java = b"class A { void g() { if (s != null) { s.close(); } } }";
+    assert_eq!(
+        one_null_check(java, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        Some(("s".into(), false))
+    );
+    let go = b"package m\nfunc g() error { f, err := os.Open(p)\n if err != nil { return err }\n return f.Close() }";
+    assert_eq!(
+        one_null_check(go, "go", Language::from(tree_sitter_go::LANGUAGE)),
+        Some(("err".into(), false))
+    );
+}
+
+// ── Return escapes (ownership handed to the caller) ─────────────────────
+
+fn return_escapes(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(Vec<String>, Vec<String>)> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::Return)
+        .map(|n| (n.returned_idents.clone(), n.returned_call_callees.clone()))
+        .collect()
+}
+
+#[test]
+fn return_escapes_go_shapes() {
+    let go = |body: &str| {
+        let src = format!("package m\nfunc g() {{ {body} }}");
+        return_escapes(
+            src.as_bytes(),
+            "go",
+            Language::from(tree_sitter_go::LANGUAGE),
+        )
+    };
+    assert_eq!(go("return f, nil"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(go("return &W{f: f}"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(go("return W{f}"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(
+        go("return os.Open(p)"),
+        vec![(vec![], vec!["os.Open".to_string()])]
+    );
+    // The handle is an argument of a plain call: it does not escape.
+    assert_eq!(
+        go("return io.ReadAll(f)"),
+        vec![(vec![], vec!["io.ReadAll".to_string()])]
+    );
+    let (idents, _) = &go("return f.Name()")[0];
+    assert!(
+        idents.is_empty(),
+        "method receiver does not escape: {idents:?}"
+    );
+}
+
+#[test]
+fn return_escapes_python_java_c_shapes() {
+    let py = |body: &str| {
+        let src = format!("def g(p):\n    {body}\n");
+        return_escapes(
+            src.as_bytes(),
+            "python",
+            Language::from(tree_sitter_python::LANGUAGE),
+        )
+    };
+    assert_eq!(py("return f")[0].0, vec!["f".to_string()]);
+    assert_eq!(py("return f, 1")[0].0, vec!["f".to_string()]);
+    assert_eq!(py("return {'h': f}")[0].0, vec!["f".to_string()]);
+    assert!(py("return f.read()")[0].0.is_empty());
+    assert_eq!(py("return open(p)")[0].1, vec!["open".to_string()]);
+    assert_eq!(py("return self.conn")[0].0, vec!["self.conn".to_string()]);
+
+    let java = b"class A { Reader g(InputStream in) { return new BufferedReader(new InputStreamReader(in)); } }";
+    let got = return_escapes(java, "java", Language::from(tree_sitter_java::LANGUAGE));
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        got[0].0,
+        vec!["in".to_string()],
+        "a wrapped stream escapes with its wrapper"
+    );
+    assert!(got[0].1.iter().any(|c| c.contains("BufferedReader")));
+
+    let c = b"char *g(void) { char *b = malloc(4); return (char *)b; }";
+    let got = return_escapes(c, "c", Language::from(tree_sitter_c::LANGUAGE));
+    assert_eq!(got[0].0, vec!["b".to_string()]);
+}
