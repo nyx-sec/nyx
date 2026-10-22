@@ -910,6 +910,7 @@ mod primary_sink_location_tests {
             /* guard_kind   */ None,
             /* uses_summary */ true,
             primary_sites,
+            /* inline_source */ false,
         );
         assert_eq!(events.len(), 1, "single site → single event");
         let event_site = events[0]

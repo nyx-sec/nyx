@@ -19,6 +19,7 @@
 
 mod events;
 mod inline;
+mod operands;
 mod state;
 mod summary_extract;
 
@@ -5093,6 +5094,62 @@ pub(super) fn transfer_inst(
                 }
             }
 
+            // Sibling operands.  When this op stands for a larger expression
+            // (`"<p>" + escapeHtml(name) + bio`, `siteHeader() + bio`), the
+            // operands outside the anchor call are not the callee's
+            // arguments: the callee semantics below (label sanitizer,
+            // summary, inline analysis) see only the operands inside it, and
+            // the siblings are added to the result afterwards through the
+            // calls that wrap them.  Their taint and validation are read
+            // here, before the callee path touches any argument value.
+            // Source calls nested in the expression (`siteHeader() +
+            // getCmd()`, `foo(getenv("X"))`) have no SSA value of their own,
+            // so they join the siblings here.
+            let mut operand_split = operands::split_call_operands(info, ssa, args, *receiver);
+            let nested_ops = (operand_split.is_some() || operands::may_hold_nested_sources(info))
+                .then(|| operands::NestedOperands::new(info, transfer))
+                .flatten();
+            if !nested_ops
+                .as_ref()
+                .is_some_and(|ops| ops.anchor_separable(info, transfer.lang))
+            {
+                operand_split = None;
+            }
+            let sibling = nested_ops.and_then(|ops| {
+                let mut sib = match &operand_split {
+                    Some(split) => {
+                        operands::sibling_taint(&ops, &split.siblings, ssa, transfer, state)
+                    }
+                    None => operands::SiblingTaint::default(),
+                };
+                let (src_caps, src_origins) =
+                    ops.expression_sources(info, inst.cfg_node, state, transfer.lang);
+                if !src_caps.is_empty() {
+                    sib.caps |= src_caps;
+                    for o in src_origins {
+                        push_origin_bounded(&mut sib.origins, o);
+                    }
+                    sib.all_validated = false;
+                }
+                (!sib.caps.is_empty()).then_some(sib)
+            });
+            let result_sym = sibling.as_ref().and_then(|_| {
+                ssa.value_defs
+                    .get(inst.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                    .and_then(|n| transfer.interner.get(n))
+            });
+            let result_was_validated =
+                result_sym.is_some_and(|sym| state.validated_must.contains(sym));
+            let split_receiver: Option<SsaValue>;
+            let (args, receiver) = match &operand_split {
+                Some(split) => {
+                    split_receiver = split.callee_receiver;
+                    (&split.callee_args, &split_receiver)
+                }
+                None => (args, receiver),
+            };
+
             // Chain-wrapper sanitiser detection.  Computed up-front so
             // both the container-element-write hook and the outer-
             // callee taint suppression block below can consult it.
@@ -5966,11 +6023,21 @@ pub(super) fn transfer_inst(
                         // (e.g. `cmd := arr.shift()`) whose taint comes
                         // from the cell rather than an inline source.
                         apply_container_elem_read_w4(inst, ssa, transfer, state);
+                        if let Some(sib) = &sibling
+                            && !sib.caps.is_empty()
+                        {
+                            merge_taint_into(state, inst.value, sib.caps, &sib.origins);
+                        }
                         return;
                     }
                 } else {
                     // Curl special case: propagate URL taint to handle
                     if try_curl_url_propagation(inst, info, args, state) {
+                        if let Some(sib) = &sibling
+                            && !sib.caps.is_empty()
+                        {
+                            merge_taint_into(state, inst.value, sib.caps, &sib.origins);
+                        }
                         return;
                     }
 
@@ -6440,7 +6507,37 @@ pub(super) fn transfer_inst(
                             return_bits = Cap::empty();
                             return_origins.clear();
                         } else if !oc_sum.sanitizer_caps.is_empty() {
-                            return_bits &= !oc_sum.sanitizer_caps;
+                            // The aggregate strip would let a wrapper that
+                            // escapes one parameter clean a source passed in
+                            // another (`card(req.query.t, req.query.b)`).
+                            // When the inline sources are bound to argument
+                            // positions, each keeps what its own parameter
+                            // lets through.
+                            let src_positions: SmallVec<[usize; 2]> = info
+                                .call
+                                .arg_uses
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, g)| g.iter().any(|u| u.starts_with("__nyx_src_")))
+                                .map(|(i, _)| i)
+                                .collect();
+                            if src_positions.is_empty() {
+                                return_bits &= !oc_sum.sanitizer_caps;
+                            } else {
+                                let bits = return_bits;
+                                return_bits = Cap::empty();
+                                for p in src_positions {
+                                    if oc_sum.propagating_params.is_empty()
+                                        || oc_sum.propagating_params.contains(&p)
+                                    {
+                                        return_bits |=
+                                            bits & !effective_param_sanitizer(oc_sum, p, state);
+                                    }
+                                }
+                            }
+                            if return_bits.is_empty() {
+                                return_origins.clear();
+                            }
                         }
                     }
                 }
@@ -6560,6 +6657,36 @@ pub(super) fn transfer_inst(
                     if return_bits.is_empty() {
                         return_origins.clear();
                     }
+                }
+            }
+
+            // Sibling operands flow into the expression value directly; none
+            // of the callee handling above applies to them.  Validation
+            // follows the operands: siblings alone keep the unresolved-call
+            // rule (validated when every tainted one is), and an unvalidated
+            // sibling withdraws a validation this call just granted.
+            if let Some(sib) = &sibling
+                && !sib.caps.is_empty()
+            {
+                let callee_contributed = !return_bits.is_empty();
+                return_bits |= sib.caps;
+                for o in &sib.origins {
+                    push_origin_bounded(&mut return_origins, *o);
+                }
+                if let Some(sym) = result_sym {
+                    if !sib.all_validated {
+                        if !result_was_validated {
+                            state.validated_must.remove(sym);
+                        }
+                    } else if !callee_contributed {
+                        state.validated_must.insert(sym);
+                        state.validated_may.insert(sym);
+                    }
+                }
+                if let Some(aliases) = transfer.base_aliases
+                    && !aliases.is_empty()
+                {
+                    propagate_taint_to_aliases(inst, state, sib.caps, &sib.origins, aliases, ssa);
                 }
             }
 
@@ -8456,6 +8583,7 @@ fn collect_block_events(
                                     None,
                                     true,
                                     cb_sites,
+                                    false,
                                 );
                             }
                         }
@@ -8664,11 +8792,12 @@ fn collect_block_events(
         // If an argument is wrapped in a call to a known sanitizer (e.g.
         // `os.system(sanitize(cmd))`), the sanitizer's caps reduce the effective
         // sink sensitivity so tainted data stripped by the inner call isn't flagged.
+        let mut arg_callee_strip = Cap::empty();
         for maybe_callee in &info.arg_callees {
             if let Some(inner_callee) = maybe_callee {
                 let caller_func = info.ast.enclosing_func.as_deref().unwrap_or("");
                 if let Some(resolved) = resolve_callee(transfer, inner_callee, caller_func, 0) {
-                    sink_caps &= !resolved.sanitizer_caps;
+                    arg_callee_strip |= resolved.sanitizer_caps;
                 } else {
                     // Fallback: check label classification (built-in + custom rules).
                     // This handles sanitizers that have no function summary (e.g.
@@ -8678,11 +8807,22 @@ fn collect_block_events(
                         crate::labels::classify_all(lang_str, inner_callee, transfer.extra_labels);
                     for lbl in &labels {
                         if let DataLabel::Sanitizer(bits) = lbl {
-                            sink_caps &= !*bits;
+                            arg_callee_strip |= *bits;
                         }
                     }
                 }
             }
+        }
+        // That strip is node-wide: one sanitizing wrapper anywhere in the
+        // arguments clears its caps for every argument, including operands it
+        // does not wrap (`res.send(escapeHtml(t) + bio)`,
+        // `Fprintf(w, f, html.EscapeString(a), b)`).  When the node records
+        // its call nesting, defer to a per-value pass after the tainted values
+        // are collected: each value then keeps the caps that survive the calls
+        // actually wrapping it, sanitizers and callee summaries alike.
+        let nested_operands = operands::NestedOperands::for_sink(info, transfer);
+        if nested_operands.is_none() {
+            sink_caps &= !arg_callee_strip;
         }
         if sink_caps.is_empty() {
             continue;
@@ -8919,6 +9059,60 @@ fn collect_block_events(
                 destination_override,
             );
             refine_exec_argv_array_shell_taint(inst, transfer.lang, &state, ssa, &mut tainted);
+            if let Some(ops) = &nested_operands {
+                operands::refine_sink_values(
+                    ops,
+                    info,
+                    transfer,
+                    &mut tainted,
+                    ssa,
+                    &state,
+                    arg_callee_strip,
+                    filter_caps,
+                );
+                // Source calls nested in the payload (`exec(getCmd(r))`) are
+                // reported as their own event: they carry no SSA value, so
+                // they must not join (or break) the validation verdict of
+                // the values above.
+                if destination_override
+                    .or(info.call.destination_uses.as_deref())
+                    .is_none()
+                {
+                    let lang = transfer.lang;
+                    let mut inline_tainted = Vec::new();
+                    let via_summary = operands::add_nested_source_values(
+                        ops,
+                        inst.value,
+                        inst.cfg_node,
+                        info,
+                        ssa,
+                        &state,
+                        filter_caps,
+                        positions_override.or(info.call.sink_payload_args.as_deref()),
+                        &sink_info.param_to_sink,
+                        sink_fully_type_suppressible(filter_caps),
+                        |c: &str| {
+                            crate::ssa::type_facts::is_safe_string_producing_callee(c)
+                                || crate::ssa::type_facts::is_int_producing_callee(Some(lang), c)
+                        },
+                        &tainted,
+                        &mut inline_tainted,
+                    );
+                    if !inline_tainted.is_empty() {
+                        emit_ssa_taint_events(
+                            events,
+                            inst.cfg_node,
+                            inline_tainted,
+                            filter_caps,
+                            false,
+                            None,
+                            via_summary,
+                            Vec::new(),
+                            true,
+                        );
+                    }
+                }
+            }
             if tainted.is_empty() {
                 continue;
             }
@@ -8998,6 +9192,7 @@ fn collect_block_events(
                 guard_kind,
                 any_uses_summary,
                 primary_sites,
+                false,
             );
         }
     }
@@ -9356,6 +9551,7 @@ fn pick_primary_sink_sites_from_resolved(
 /// [`SinkSite`] only requires that the *sink* itself was resolved via a
 /// callee summary, an intra-file source can still reach a cross-file
 /// sink, producing `uses_summary == false` alongside a populated primary.
+#[allow(clippy::too_many_arguments)]
 fn emit_ssa_taint_events(
     events: &mut Vec<SsaTaintEvent>,
     sink_node: NodeIndex,
@@ -9365,6 +9561,7 @@ fn emit_ssa_taint_events(
     guard_kind: Option<PredicateKind>,
     uses_summary: bool,
     primary_sites: Vec<SinkSite>,
+    inline_source: bool,
 ) {
     // Data-integrity invariant: every surviving primary site carries
     // resolved coordinates and a cap that intersects `sink_caps`.  This is
@@ -9386,6 +9583,7 @@ fn emit_ssa_taint_events(
             guard_kind,
             uses_summary,
             primary_sink_site: None,
+            inline_source,
         });
         return;
     }
@@ -9399,6 +9597,7 @@ fn emit_ssa_taint_events(
             guard_kind,
             uses_summary,
             primary_sink_site: Some(site),
+            inline_source,
         });
     }
 }
@@ -10512,6 +10711,26 @@ fn retain_inner_sink_reaching_uses(
     }
 }
 
+/// Whether every cap of `sink_caps` is one a numeric or safe-string value
+/// cannot carry.  An arg whose enclosing call is a "safe string" producer
+/// (numeric/boolean to-string conversion or a class-name accessor) emits a
+/// string provably free of the metacharacters that drive these injection
+/// classes.  The same mask the shared
+/// [`crate::ssa::type_facts::is_type_safe_for_sink`] gate uses for `Int` /
+/// `Bool` values, applied at Call sinks against the arg-level callee text
+/// instead of the value-level type kind.
+fn sink_fully_type_suppressible(sink_caps: Cap) -> bool {
+    let type_suppressible = Cap::SQL_QUERY
+        | Cap::FILE_IO
+        | Cap::SHELL_ESCAPE
+        | Cap::HTML_ESCAPE
+        | Cap::SSRF
+        | Cap::DATA_EXFIL
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT;
+    !sink_caps.is_empty() && (sink_caps & !type_suppressible).is_empty()
+}
+
 /// Drop tainted argument SSA values from the per-call sink-emission set
 /// when their inferred [`crate::ssa::type_facts::TypeKind`] proves the
 /// value is payload-incompatible with `sink_caps` (e.g. an `Int`-tagged
@@ -10541,25 +10760,7 @@ fn apply_arg_type_safe_suppression(
     if result.is_empty() {
         return;
     }
-    // Type-suppression mask. An arg whose enclosing call is a "safe
-    // string" producer (numeric/boolean to-string conversion or a
-    // class-name accessor) emits a string provably free of the
-    // metacharacters that drive these injection classes.  The same
-    // mask the shared
-    // [`crate::ssa::type_facts::is_type_safe_for_sink`] gate uses for
-    // `Int` / `Bool` values, applied here at Call sinks against the
-    // arg-level callee text instead of the value-level type kind.
-    let type_suppressible = Cap::SQL_QUERY
-        | Cap::FILE_IO
-        | Cap::SHELL_ESCAPE
-        | Cap::HTML_ESCAPE
-        | Cap::SSRF
-        | Cap::DATA_EXFIL
-        | Cap::HEADER_INJECTION
-        | Cap::OPEN_REDIRECT;
-    let sink_fully_type_suppressible =
-        !sink_caps.is_empty() && (sink_caps & !type_suppressible).is_empty();
-    if !sink_fully_type_suppressible {
+    if !sink_fully_type_suppressible(sink_caps) {
         return;
     }
     // Numeric-confinement drop: an inline numeric call-chain argument
@@ -10629,10 +10830,19 @@ fn apply_arg_type_safe_suppression(
             }
         }
     }
-    if safe_string_values.is_empty() {
-        return;
-    }
-    result.retain(|(v, _, _)| !safe_string_values.contains(v));
+    // `arg_callees` names the first call of a composite argument, so for
+    // `"... " + Integer.toString(n) + name` it would vouch for `name` too.
+    // When the node records its call nesting, decide per value instead: a
+    // value is dropped only when every occurrence of it sits in an argument
+    // that IS a producer call.
+    let producer =
+        |c: &str| is_safe_string_producing_callee(c) || is_int_producing_callee(Some(lang), c);
+    result.retain(
+        |(v, _, _)| match operands::value_confined_by(info, *v, ssa, producer) {
+            Some(confined) => !confined,
+            None => !safe_string_values.contains(v),
+        },
+    );
 }
 
 /// Suppress plain-ident taint when a dotted-path field value used by the same

@@ -1,0 +1,19 @@
+{
+  "description": "fmt.Fprintf with one escaped argument and one raw argument. The escaper covers its own argument position only.",
+  "tags": ["taint", "sanitizer", "fprintf", "argument-position"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "bio in argument 3 is not escaped"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [18, 18],
+      "notes": "both arguments are escaped"
+    }
+  ]
+}

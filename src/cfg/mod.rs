@@ -38,6 +38,7 @@ mod helpers;
 mod hierarchy;
 mod imports;
 mod literals;
+mod nested_calls;
 mod params;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try};
@@ -47,6 +48,7 @@ use helpers::{
     first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
     is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
+pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
 // helpers that physically live in `helpers.rs`.
 use conditions::{
@@ -702,6 +704,12 @@ pub struct CallMeta {
     /// hoisted label did not come from inside a callback body).
     #[serde(default)]
     pub hoisted_sink: Option<Box<HoistedSink>>,
+    /// How the calls inside this node's expression nest and which operands
+    /// each one wraps (see [`NestedCallTree`]).  `None` when the node holds a
+    /// single call with every operand inside it, the shape the flat
+    /// `arg_uses` / `taint.uses` view already describes exactly.
+    #[serde(default)]
+    pub nested_calls: Option<Box<NestedCallTree>>,
 }
 
 /// Recorded provenance of a callback-nested inner sink call whose `Sink` label
@@ -3077,6 +3085,7 @@ pub(super) fn push_node<'a>(
     //
     // This covers both direct `Kind::Assignment` nodes and `Kind::CallWrapper`
     // nodes (expression_statement) that wrap an assignment.
+    let unlabelled_before_target_check = labels.is_empty();
     if labels.is_empty() {
         let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
             Some(ast)
@@ -3136,6 +3145,9 @@ pub(super) fn push_node<'a>(
             }
         }
     }
+    // The label now belongs to the assignment target, not to the call `text`
+    // names, so that call cannot anchor the node's call nesting.
+    let labelled_by_assign_target = unlabelled_before_target_check && !labels.is_empty();
 
     // Provenance for a Sink label hoisted onto a wrapper from a callback body
     // (populated in the hoist block below).  Consumed by the CFG node's
@@ -3886,6 +3898,38 @@ pub(super) fn push_node<'a>(
         None
     };
 
+    // Call nesting for statement-level nodes that lower to an SSA `Call`.
+    // The anchor is the call `text` was taken from: the classified inner
+    // call, the first call of a wrapper statement, or the node's own call.
+    // It must still name that call (a member-source rewrite of `text` or a
+    // label taken from the assignment target leaves no anchor).
+    let nested_calls = if callee.is_some()
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::CallWrapper
+                | Kind::Assignment
+                | Kind::Return
+                | Kind::Throw
+                | Kind::CallFn
+                | Kind::CallMethod
+        ) {
+        let anchor_span = inner_callee_span.or(inner_text_span).or_else(|| {
+            if matches!(lookup(lang, ast.kind()), Kind::CallFn | Kind::CallMethod) {
+                Some((ast.start_byte(), ast.end_byte()))
+            } else {
+                call_ast.map(|c| (c.start_byte(), c.end_byte()))
+            }
+        });
+        let anchor = if labelled_by_assign_target {
+            None
+        } else {
+            anchor_span.map(|s| (s, text.as_str()))
+        };
+        nested_calls::build_nested_call_tree(ast, lang, code, anchor, extra)
+    } else {
+        None
+    };
+
     // Extract condition metadata for If nodes.  Python `elif_clause` and PHP
     // `else_if_clause` are lowered as guard nodes by `build_alternative_chain`
     // (the flat-sibling elif-chain handler) and carry their own `condition`
@@ -4170,6 +4214,7 @@ pub(super) fn push_node<'a>(
             is_constructor,
             produces_null_proto,
             hoisted_sink,
+            nested_calls,
         },
         taint: TaintMeta {
             labels,

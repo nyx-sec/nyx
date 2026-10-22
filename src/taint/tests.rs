@@ -8280,6 +8280,16 @@ fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
             "test.go",
             tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
         ),
+        Lang::Java => (
+            "java",
+            "test.java",
+            tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+        ),
+        Lang::Php => (
+            "php",
+            "test.php",
+            tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
+        ),
         other => panic!("analyse_src: no grammar wired for {other:?}"),
     };
     let file_cfg = parse_lang(src, slug, ts_lang);
@@ -8442,5 +8452,448 @@ fn field_read_validated_on_all_paths_matches_let_bound_twin() {
         unvalidated(analyse_src(inline, Lang::JavaScript)),
         0,
         "inline field read validated on every path is not reported as unvalidated"
+    );
+}
+
+// ── Per-operand sanitizers, sibling operands, nested helper calls ────────
+
+fn unvalidated_count(fs: &[Finding]) -> usize {
+    fs.iter().filter(|f| !f.path_validated).count()
+}
+
+const JS_APP: &str = "var escapeHtml = require('escape-html');\nvar cp = require('child_process');\nvar app = require('express')();\n";
+
+fn js_app(body: &str) -> Vec<u8> {
+    format!("{JS_APP}{body}").into_bytes()
+}
+
+#[test]
+fn concat_label_sanitizer_does_not_cover_sibling_operand_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var name = req.query.name;\n    var bio = req.query.bio;\n    var html = '<p>' + escapeHtml(name) + '</p>' + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "escapeHtml wraps `name` only; the raw `bio` operand must reach res.send"
+    );
+}
+
+#[test]
+fn concat_with_every_operand_escaped_is_clean_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var a = req.query.a;\n    var b = req.query.b;\n    var html = escapeHtml(a) + '<br>' + escapeHtml(b);\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "every operand is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn concat_operand_escaped_once_and_raw_once_fires_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var name = req.query.name;\n    var html = `<p>${escapeHtml(name)}</p><div>${name}</div>`;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "the second, unescaped use of `name` must reach the sink"
+    );
+}
+
+#[test]
+fn inline_sink_sanitizer_does_not_cover_sibling_operand_js() {
+    let vuln = js_app(
+        "app.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    res.send('<h1>' + escapeHtml('Profile') + '</h1>' + bio);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "escapeHtml wraps a constant; `bio` is raw in the same argument"
+    );
+    let safe = js_app(
+        "app.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    res.send('<h1>' + escapeHtml(bio) + '</h1>');\n});\n",
+    );
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only operand is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn shell_quote_covers_only_its_operand_py() {
+    let vuln = br#"
+import os, shlex
+from flask import request
+def a():
+    f = request.args["f"]
+    opts = request.args["o"]
+    os.system("ls " + shlex.quote(f) + " " + opts)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Python)) > 0,
+        "`opts` is not quoted"
+    );
+    let safe = br#"
+import os, shlex
+from flask import request
+def a():
+    f = request.args["f"]
+    os.system("ls " + shlex.quote(f))
+"#;
+    let fs = analyse_src(safe, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only operand is quoted: {fs:?}"
+    );
+}
+
+#[test]
+fn shell_quote_assignment_keeps_sibling_taint_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def h():
+    a = request.args["a"]
+    b = request.args["b"]
+    s = shlex.quote(a) + " " + b
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "shlex.quote(a) must not quote the sibling `b`"
+    );
+}
+
+#[test]
+fn fprintf_escape_covers_only_its_argument_go() {
+    let vuln = b"package main\nimport (\"fmt\"; \"html\"; \"net/http\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"name\")\n\tbio := r.URL.Query().Get(\"bio\")\n\tfmt.Fprintf(w, \"<h1>%s</h1><p>%s</p>\", html.EscapeString(name), bio)\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Go)) > 0,
+        "html.EscapeString wraps argument 2 only; `bio` in argument 3 is raw"
+    );
+    let safe = b"package main\nimport (\"fmt\"; \"html\"; \"net/http\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"name\")\n\tbio := r.URL.Query().Get(\"bio\")\n\tfmt.Fprintf(w, \"<h1>%s</h1><p>%s</p>\", html.EscapeString(name), html.EscapeString(bio))\n}\n";
+    let fs = analyse_src(safe, Lang::Go);
+    assert_eq!(unvalidated_count(&fs), 0, "both arguments escaped: {fs:?}");
+}
+
+#[test]
+fn zero_arg_helper_keeps_sibling_operand_taint_js() {
+    let src = js_app(
+        "function siteHeader() { return '<h1>Site</h1>'; }\napp.get('/a', function(req, res) {\n    var bio = req.query.bio;\n    var html = siteHeader() + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "the helper returns a constant, but `bio` is concatenated raw"
+    );
+}
+
+#[test]
+fn constant_returning_helper_with_argument_keeps_sibling_taint_js() {
+    let src = js_app(
+        "function roleLabel(u) { if (u === 'admin') { return 'Administrator'; } return 'User'; }\napp.get('/f', function(req, res) {\n    var name = req.query.name;\n    var bio = req.query.bio;\n    var html = roleLabel(name) + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "`bio` is not an argument of roleLabel"
+    );
+}
+
+#[test]
+fn sibling_wrapped_by_escaping_helper_stays_clean_js() {
+    let src = js_app(
+        "function siteHeader() { return '<h1>Site</h1>'; }\nfunction myEscape(s) { return escapeHtml(s); }\napp.get('/a', function(req, res) {\n    var bio = req.query.bio;\n    var html = siteHeader() + myEscape(bio);\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`bio` reaches the result only through an escaping helper: {fs:?}"
+    );
+}
+
+#[test]
+fn validated_sibling_beside_helper_stays_validated_js() {
+    let src = js_app(
+        "var ALLOWED = ['a', 'b'];\nfunction siteHeader() { return '<h1>Site</h1>'; }\napp.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    if (!ALLOWED.includes(bio)) { return res.status(400).end(); }\n    var html = siteHeader() + bio;\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`bio` is allowlisted before use, like the `Date.now() + bio` twin: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_constant_helper_in_sink_arg_matches_temp_form_js() {
+    let nested = js_app(
+        "function constant(x) { return 'ls'; }\napp.get('/b', function(req, res) {\n    var c = req.query.c;\n    cp.exec(constant(c));\n});\n",
+    );
+    let fs = analyse_src(&nested, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "constant() never returns its argument, as in `t = constant(c); cp.exec(t)`: {fs:?}"
+    );
+    let propagating = js_app(
+        "function wrap(x) { return 'ls ' + x; }\napp.get('/b', function(req, res) {\n    var c = req.query.c;\n    cp.exec(wrap(c));\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&propagating, Lang::JavaScript)) > 0,
+        "wrap() returns its argument"
+    );
+}
+
+#[test]
+fn nested_allowlist_helper_in_concat_sink_arg_is_clean_py() {
+    let src = br#"
+import os
+from flask import request
+def sort_column(s):
+    if s == "name":
+        return "name"
+    return "id"
+def h():
+    c = request.args["c"]
+    os.system("ls " + sort_column(c))
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "sort_column returns constants only: {fs:?}"
+    );
+}
+
+#[test]
+fn wrapper_param_sanitizer_applies_per_argument_js() {
+    let card = "function card(title, body) { return '<h2>' + escapeHtml(title) + '</h2><div>' + body + '</div>'; }\n";
+    let vuln = js_app(&format!(
+        "{card}app.get('/e', function(req, res) {{\n    var b = req.query.b;\n    res.send(card('static', b));\n}});\n"
+    ));
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "card() escapes its first parameter only; `b` is the second"
+    );
+    let safe = js_app(&format!(
+        "{card}app.get('/e', function(req, res) {{\n    var t = req.query.t;\n    res.send(card(t, 'static'));\n}});\n"
+    ));
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`t` goes through the escaped parameter: {fs:?}"
+    );
+}
+
+#[test]
+fn helper_summary_keeps_unquoted_parameter_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def q2(a, b):
+    return shlex.quote(a) + " " + b
+def h():
+    c = request.args["c"]
+    s = q2("x", c)
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "q2 quotes its first parameter only; its summary must keep the second"
+    );
+}
+
+#[test]
+fn safe_string_producer_does_not_cover_sibling_operand_java() {
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String name = req.getParameter(\"n\");\n    st.executeQuery(\"SELECT * FROM t WHERE c = \" + Integer.toString(5) + \" AND n = '\" + name + \"'\");\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "Integer.toString(5) is numeric; the concatenated `name` is not"
+    );
+}
+
+#[test]
+fn numeric_call_in_concat_does_not_type_the_whole_string_java() {
+    let vuln = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String id = req.getParameter(\"id\");\n    String name = req.getParameter(\"n\");\n    String sql = \"SELECT * FROM t WHERE id = \" + Integer.parseInt(id) + \" AND n = '\" + name + \"'\";\n    st.executeQuery(sql);\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Java)) > 0,
+        "the concatenation is a string carrying `name`, not an Int"
+    );
+    let safe = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String n = req.getParameter(\"n\");\n    String sql = \"SELECT * FROM t LIMIT \" + Integer.parseInt(n);\n    st.executeQuery(sql);\n  }\n}\n";
+    let fs = analyse_src(safe, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "only a parsed number is concatenated: {fs:?}"
+    );
+}
+
+#[test]
+fn numeric_call_in_fstring_does_not_cover_sibling_py() {
+    let vuln = br#"
+import sqlite3
+from flask import request
+conn = sqlite3.connect("x")
+def h():
+    name = request.args["n"]
+    limit = request.args["l"]
+    q = f"SELECT * FROM t WHERE n = '{name}' LIMIT {int(limit)}"
+    conn.execute(q)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Python)) > 0,
+        "int(limit) does not cover `name`"
+    );
+    let safe = br#"
+import sqlite3
+from flask import request
+conn = sqlite3.connect("x")
+def h():
+    limit = request.args["l"]
+    q = f"SELECT * FROM t LIMIT {int(limit)}"
+    conn.execute(q)
+"#;
+    let fs = analyse_src(safe, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "only the int conversion is interpolated: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_source_helper_in_sink_arg_matches_temp_form_py() {
+    let src = br#"
+import os
+from flask import request
+def get_cmd():
+    v = request.args['c']
+    return v
+def nested():
+    os.system(get_cmd())
+def nested_concat():
+    os.system("ls " + get_cmd())
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert!(
+        unvalidated_count(&fs) >= 2,
+        "both inline uses of the source helper reach os.system: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_label_source_in_sink_arg_fires_java() {
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    Runtime.getRuntime().exec(req.getParameter(\"c\"));\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "a request parameter passed inline to exec is the same flow as its let-bound twin"
+    );
+    let escaped = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    Runtime.getRuntime().exec(Integer.toString(Integer.parseInt(req.getParameter(\"c\"))));\n  }\n}\n";
+    let fs = analyse_src(escaped, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the inline source is reduced to a number: {fs:?}"
+    );
+}
+
+#[test]
+fn inline_member_sources_are_judged_per_read_js() {
+    let vuln = js_app(
+        "app.get('/a', function(req, res) {\n    res.send('<p>' + escapeHtml(req.query.name) + '</p>' + req.query.bio);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "`req.query.bio` is concatenated raw beside the escaped `req.query.name`"
+    );
+    let safe = js_app(
+        "app.get('/a', function(req, res) {\n    res.send('<p>' + escapeHtml(req.query.name) + '</p><p>' + escapeHtml(req.query.bio) + '</p>');\n});\n",
+    );
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "every inline read is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn wrapper_with_inline_sources_keeps_unescaped_parameter_js() {
+    let card = "function card(title, body) { return '<h2>' + escapeHtml(title) + '</h2><div>' + body + '</div>'; }\n";
+    let assigned = js_app(&format!(
+        "{card}app.get('/b', function(req, res) {{\n    var html = card(req.query.t, req.query.b);\n    res.send(html);\n}});\n"
+    ));
+    assert!(
+        unvalidated_count(&analyse_src(&assigned, Lang::JavaScript)) > 0,
+        "card() escapes only its first parameter; `req.query.b` is the second"
+    );
+    let escaped_only = js_app(&format!(
+        "{card}app.get('/b', function(req, res) {{\n    var html = card(req.query.t, 'static');\n    res.send(html);\n}});\n"
+    ));
+    let fs = analyse_src(&escaped_only, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only inline source goes through the escaped parameter: {fs:?}"
+    );
+}
+
+#[test]
+fn escape_inside_pass_through_formatter_covers_only_its_argument_java() {
+    let vuln = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    String bio = req.getParameter(\"bio\");\n    String html = String.format(\"<p>%s</p><p>%s</p>\", HtmlUtils.htmlEscape(name), bio);\n    resp.getWriter().println(html);\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Java)) > 0,
+        "String.format passes `bio` through unescaped"
+    );
+    let safe = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    String bio = req.getParameter(\"bio\");\n    String html = String.format(\"<p>%s</p><p>%s</p>\", HtmlUtils.htmlEscape(name), HtmlUtils.htmlEscape(bio));\n    resp.getWriter().println(html);\n  }\n}\n";
+    let fs = analyse_src(safe, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "both formatted values are escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn container_write_around_inline_source_keeps_container_taint_java() {
+    // `parts.add(req.getParameter("x"))` is modelled as one op whose callee
+    // is the inline source and whose outer call is the container write; the
+    // receiver must stay with that op so the element taint lands in `parts`.
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    java.util.List<String> parts = new java.util.ArrayList<>();\n    parts.add(req.getParameter(\"x\"));\n    Runtime.getRuntime().exec(parts.get(0));\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "the request parameter stored in `parts` reaches exec"
+    );
+}
+
+#[test]
+fn nested_source_beside_sanitized_operand_reaches_sink_py() {
+    // `input()` is a labelled source nested beside the sanitizer call; it has
+    // no SSA value of its own, so the expression must carry its taint.
+    let src = br#"
+import os, shlex
+from flask import request
+def h():
+    a = request.args["a"]
+    s = shlex.quote(a) + " " + input()
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "the unquoted input() operand reaches os.system"
+    );
+}
+
+#[test]
+fn nested_source_in_chained_sink_call_fires_go() {
+    let src = b"package main\nimport (\"net/http\"; \"os/exec\")\nfunc getCmd(r *http.Request) string {\n\tv := r.URL.Query().Get(\"c\")\n\treturn v\n}\nfunc h(w http.ResponseWriter, r *http.Request) {\n\texec.Command(\"sh\", \"-c\", getCmd(r)).Run()\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Go)) > 0,
+        "getCmd(r) is the payload of exec.Command even when .Run() is chained on"
     );
 }

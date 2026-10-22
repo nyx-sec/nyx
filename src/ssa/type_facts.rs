@@ -1697,6 +1697,41 @@ pub fn classify_input_validator_callee(callee: &str) -> Option<InputValidatorPol
 /// Uses constant propagation results to seed types from known constants,
 /// then propagates through copies and phi nodes. Constructor/factory calls
 /// are mapped to security-relevant types when `lang` is provided.
+/// True when a numeric / safe-string producing Call op stands for a larger
+/// expression with another variable operand beside the call: the op's value
+/// is then that expression (typically a string concatenation), not the
+/// producer's number.  Operands wrapped by a producer of their own, and
+/// operands already typed numeric, keep the expression numeric.
+fn operand_beside_numeric_call(
+    cfg: &Cfg,
+    inst: &SsaInst,
+    body: &SsaBody,
+    facts: &HashMap<SsaValue, TypeFact>,
+    lang: Option<Lang>,
+) -> bool {
+    let SsaOp::Call { args, receiver, .. } = &inst.op else {
+        return false;
+    };
+    let Some(tree) = cfg
+        .node_weight(inst.cfg_node)
+        .and_then(|ni| ni.call.nested_calls.as_deref())
+    else {
+        return false;
+    };
+    let producer = |c: &str| is_int_producing_callee(lang, c) || is_safe_string_producing_callee(c);
+    args.iter().flatten().chain(receiver.iter()).any(|v| {
+        let numeric = facts
+            .get(v)
+            .is_some_and(|f| matches!(f.kind, TypeKind::Int | TypeKind::Bool));
+        !numeric
+            && body
+                .value_defs
+                .get(v.0 as usize)
+                .and_then(|d| d.var_name.as_deref())
+                .is_some_and(|n| tree.occurs_beside_anchor(n, producer))
+    })
+}
+
 pub fn analyze_types(
     body: &SsaBody,
     cfg: &Cfg,
@@ -1823,6 +1858,15 @@ pub fn analyze_types_with_param_types(
                         // constructors (`Client::new()` → `HttpClient`) still
                         // win the type-qualified resolution.
                         TypeFact::from_kind(dt)
+                    } else if (is_int_producing_callee(lang, callee_for_int)
+                        || is_safe_string_producing_callee(callee))
+                        && operand_beside_numeric_call(cfg, inst, body, &facts, lang)
+                    {
+                        // `"... id=" + Integer.parseInt(id) + " AND name='" + name`:
+                        // the op stands for the whole concatenation, whose
+                        // value is a string carrying `name`, not the number
+                        // the anchor call returns.
+                        TypeFact::unknown()
                     } else if is_int_producing_callee(lang, callee_for_int) {
                         TypeFact::from_kind(TypeKind::Int)
                     } else if is_safe_string_producing_callee(callee) {

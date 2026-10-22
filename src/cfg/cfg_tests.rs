@@ -1253,6 +1253,26 @@ fn clone_preserves_all_sub_structs() {
                 payload_args: Some(vec![0]),
                 arg_string_literals: vec![Some("SELECT 1".into())],
             })),
+            nested_calls: Some(Box::new(NestedCallTree {
+                calls: vec![NestedCall {
+                    callee: "foo".into(),
+                    span: (7, 17),
+                    parent: None,
+                    slot: CallSlot::Other,
+                    arity: Some(1),
+                    exact_arg: false,
+                    label_source: crate::labels::Cap::empty(),
+                    label_strip: crate::labels::Cap::HTML_ESCAPE,
+                    label_sink: false,
+                    labelled: true,
+                }],
+                anchor: Some(0),
+                uses: vec![NestedUse {
+                    text: "a".into(),
+                    call: None,
+                    slot: CallSlot::Other,
+                }],
+            })),
         },
         taint: TaintMeta {
             labels: {
@@ -4925,4 +4945,185 @@ app.get('/probe', (req, res) => {
             );
         }
     }
+}
+
+// ── nested_calls (per-operand call nesting) ──────────────────────────────
+
+/// The nested-call record of the first node whose callee is `callee`.
+fn nested_calls_of<'a>(cfg: &'a Cfg, callee: &str) -> Option<&'a NestedCallTree> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.call.callee.as_deref() == Some(callee))
+        .and_then(|n| n.call.nested_calls.as_deref())
+}
+
+fn occ<'a>(tree: &'a NestedCallTree, text: &'a str) -> Vec<&'a NestedUse> {
+    tree.uses_of(text).collect()
+}
+
+#[test]
+fn nested_calls_separates_sanitized_and_sibling_operands() {
+    let src =
+        b"function f(name, bio) { const html = \"<p>\" + escapeHtml(name) + \"</p>\" + bio; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record for a call beside an operand");
+    assert_eq!(tree.calls.len(), 1);
+    assert_eq!(tree.anchor, Some(0));
+    let name = occ(tree, "name");
+    assert_eq!(name.len(), 1);
+    assert_eq!((name[0].call, name[0].slot), (Some(0), CallSlot::Arg(0)));
+    let bio = occ(tree, "bio");
+    assert_eq!(bio.len(), 1);
+    assert_eq!(bio[0].call, None, "`bio` sits outside every call");
+    assert!(
+        occ(tree, "html").is_empty(),
+        "the declared name is written, not read"
+    );
+}
+
+#[test]
+fn nested_calls_absent_for_a_single_call_statement() {
+    let src = b"function f(x) { const y = g(x); h(y.a, y); return k(x); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    for i in cfg.node_indices() {
+        assert!(
+            cfg[i].call.nested_calls.is_none(),
+            "single-call node {:?} must not carry a record",
+            cfg[i].call.callee
+        );
+    }
+}
+
+#[test]
+fn nested_calls_records_wrapper_argument_positions_go() {
+    let src = b"package main\nfunc h(w W, f string, a string, b string) { fmt.Fprintf(w, f, html.EscapeString(a), b) }\n";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "go", ts_lang);
+    let tree = nested_calls_of(&cfg, "fmt.Fprintf").expect("record for a nested call");
+    let anchor = tree.anchor.expect("anchor is the Fprintf call") as usize;
+    assert_eq!(tree.calls[anchor].callee, "fmt.Fprintf");
+    assert_eq!(tree.calls[anchor].arity, Some(4));
+    let esc = tree
+        .calls
+        .iter()
+        .position(|c| c.callee == "html.EscapeString")
+        .expect("inner call recorded");
+    assert_eq!(tree.calls[esc].parent, Some(anchor as u16));
+    assert_eq!(tree.calls[esc].slot, CallSlot::Arg(2));
+    let a = occ(tree, "a");
+    assert_eq!((a[0].call, a[0].slot), (Some(esc as u16), CallSlot::Arg(0)));
+    let b = occ(tree, "b");
+    assert_eq!(
+        (b[0].call, b[0].slot),
+        (Some(anchor as u16), CallSlot::Arg(3))
+    );
+}
+
+#[test]
+fn nested_calls_template_substitution_operand_is_a_sibling() {
+    let src = b"function f(n, bio) { const h = `<p>${escapeHtml(n)}</p>${bio}`; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    assert_eq!(occ(tree, "bio")[0].call, None);
+    assert_eq!(occ(tree, "n")[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_compound_assignment_reads_its_target() {
+    let src = b"function f(html, n) { html += escapeHtml(n); return html; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    let html = occ(tree, "html");
+    assert_eq!(html.len(), 1, "`+=` reads the target");
+    assert_eq!(html[0].call, None);
+}
+
+#[test]
+fn nested_calls_plain_assignment_skips_member_target() {
+    // `alias.data = sanitize(alias.data)`: the written target must not count
+    // as an operand beside the sanitizer call.
+    let src = b"function f(alias) { alias.data = DOMPurify.sanitize(alias.data) + x; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "DOMPurify.sanitize").expect("record");
+    let data = occ(tree, "alias.data");
+    assert_eq!(data.len(), 1, "only the read inside the call: {data:?}");
+    assert_eq!(data[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_receiver_and_member_path() {
+    let src = b"function f(req, y) { const s = req.query.name.trim() + escape(y); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "req.trim").or_else(|| {
+        cfg.node_indices()
+            .find_map(|i| cfg[i].call.nested_calls.as_deref())
+    });
+    let tree = tree.expect("record");
+    let path = occ(tree, "req.query.name");
+    assert_eq!(path.len(), 1);
+    assert_eq!(path[0].slot, CallSlot::Receiver);
+    let trim = path[0].call.expect("inside the trim call") as usize;
+    assert!(tree.calls[trim].callee.ends_with("trim"));
+}
+
+#[test]
+fn nested_calls_python_keyword_value_and_positions() {
+    let src = b"def f(a, b):\n    subprocess.run(quote(a), shell=b)\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "python", ts_lang);
+    let tree = nested_calls_of(&cfg, "subprocess.run").expect("record");
+    let anchor = tree.anchor.expect("anchor");
+    assert_eq!(
+        tree.calls[anchor as usize].arity,
+        Some(1),
+        "keyword args are not positional"
+    );
+    let b = occ(tree, "b");
+    assert_eq!((b[0].call, b[0].slot), (Some(anchor), CallSlot::Other));
+    assert!(occ(tree, "shell").is_empty(), "keyword names are not reads");
+}
+
+#[test]
+fn nested_calls_rust_macro_has_no_record() {
+    let src = b"fn f(a: String, b: String) { let s = format!(\"{}{}\", esc(&a), b); run(s); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "rust", ts_lang);
+    for i in cfg.node_indices() {
+        if cfg[i]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("format"))
+        {
+            assert!(cfg[i].call.nested_calls.is_none());
+        }
+    }
+}
+
+#[test]
+fn nested_calls_marks_whole_argument_calls() {
+    let src =
+        b"function f(res, n, x) { res.setHeader('X', String(n)); res.send('a' + String(x)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let exact = nested_calls_of(&cfg, "res.setHeader").expect("record");
+    let inner = exact
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(inner.exact_arg, "String(n) is the whole argument");
+    let concat = nested_calls_of(&cfg, "res.send").expect("record");
+    let inner = concat
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(!inner.exact_arg, "String(x) is one operand of the argument");
 }

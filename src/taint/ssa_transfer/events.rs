@@ -48,6 +48,11 @@ pub struct SsaTaintEvent {
     ///   [`SinkSite`]s (no source coordinates, e.g. pass-2 transient
     ///   summaries or local `LocalFuncSummary`-only callees).
     pub primary_sink_site: Option<SinkSite>,
+    /// The tainted entries stand for source calls nested in the sink call's
+    /// own arguments (`exec(getCmd())`).  They ride on the sink op's value,
+    /// which has no def chain back to the source, so no flow path is
+    /// reconstructed and the finding is located at the origin's span.
+    pub inline_source: bool,
 }
 
 pub(super) fn block_distance(ssa: &SsaBody, source_node: NodeIndex, sink_node: NodeIndex) -> u16 {
@@ -373,7 +378,11 @@ pub fn ssa_events_to_findings(
                     effective_caps.bits(),
                 )) {
                     let hop_count = block_distance(ssa, origin.node, event.sink_node);
-                    let flow_steps = reconstruct_flow_path(*val, origin, event.sink_node, ssa, cfg);
+                    let flow_steps = if event.inline_source {
+                        Vec::new()
+                    } else {
+                        reconstruct_flow_path(*val, origin, event.sink_node, ssa, cfg)
+                    };
                     let path_hash = compute_path_hash(&flow_steps);
                     findings.push(crate::taint::Finding {
                         body_id: crate::cfg::BodyId(0), // set by caller

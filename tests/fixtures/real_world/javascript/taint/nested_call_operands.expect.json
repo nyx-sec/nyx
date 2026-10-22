@@ -1,0 +1,55 @@
+{
+  "description": "One statement nests calls around some operands and not others. A sanitizer or helper call applies to the operands it wraps; the other operands, and source calls nested in a sink argument, keep their own taint.",
+  "tags": ["taint", "sanitizer", "nested-call", "concat"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "escapeHtml wraps req.query.name only; req.query.bio is concatenated raw"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [18, 18],
+      "notes": "both request reads are escaped"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [23, 23],
+      "notes": "the escaper wraps a constant; bio is raw in the same argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [29, 29],
+      "notes": "siteHeader() returns a constant, bio is concatenated beside it"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [33, 33],
+      "notes": "sortColumn returns constants only"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [37, 37],
+      "notes": "getCmd returns a request parameter"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [42, 42],
+      "notes": "card escapes its first parameter only; b is the second"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [47, 47],
+      "notes": "t goes through the escaped parameter"
+    }
+  ]
+}

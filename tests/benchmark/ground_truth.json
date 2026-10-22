@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 680
+    "corpus_size": 692
   },
   "cases": [
     {
@@ -21607,6 +21607,423 @@
       ],
       "disabled": false,
       "notes": "query = req.query; res.send(`<h1>Hello ${query.name}</h1>`). A field read off a copied whole-object source keeps the source taint"
+    },
+    {
+      "case_id": "js-xss-concat-partial-escape-001",
+      "file": "javascript/xss/xss_concat_partial_escape.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          7
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "'<h1>' + escapeHtml(name) + '</h1><p>' + bio: the sanitizer wraps `name` only, so the raw `bio` operand reaches res.send"
+    },
+    {
+      "case_id": "js-safe-concat-all-escaped-001",
+      "file": "javascript/safe/safe_concat_all_escaped.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "concat",
+        "escape",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with js-xss-concat-partial-escape-001: every operand of the concatenation is escaped"
+    },
+    {
+      "case_id": "js-xss-inline-sink-partial-escape-001",
+      "file": "javascript/xss/xss_inline_sink_partial_escape.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "inline-source",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "res.send(... escapeHtml(req.query.title) ... + req.query.body ...): the escaper covers its own argument, not the sibling inline read"
+    },
+    {
+      "case_id": "js-xss-helper-concat-sibling-001",
+      "file": "javascript/xss/xss_helper_concat_sibling.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "helper",
+        "constant-return",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "siteHeader() + bio: the helper's summary governs its own result, not the operand concatenated beside it"
+    },
+    {
+      "case_id": "js-cmdi-nested-source-helper-001",
+      "file": "javascript/cmdi/cmdi_nested_source_helper.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "nested-call",
+        "source-helper"
+      ],
+      "disabled": false,
+      "notes": "cp.exec(getCmd(req)): the helper returns a request parameter; the inline call is the same flow as `c = getCmd(req); cp.exec(c)`"
+    },
+    {
+      "case_id": "py-cmdi-partial-shlex-quote-001",
+      "file": "python/cmdi/cmdi_partial_shlex_quote.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          12
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "shlex",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "os.system('ls ' + shlex.quote(path) + ' ' + opts): `opts` is not quoted"
+    },
+    {
+      "case_id": "go-xss-fprintf-partial-escape-001",
+      "file": "go/xss/xss_fprintf_partial_escape.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          11
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "fprintf",
+        "argument-position"
+      ],
+      "disabled": false,
+      "notes": "fmt.Fprintf(w, f, html.EscapeString(name), bio): the escaper covers argument 2 only"
+    },
+    {
+      "case_id": "java-sqli-parseint-concat-name-001",
+      "file": "java/sqli/SqliParseIntConcatName.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          11
+        ]
+      ],
+      "tags": [
+        "numeric-conversion",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "\"... id = \" + Integer.parseInt(id) + \" AND name = '\" + name: the concatenation is a string carrying `name`, not an Int"
+    },
+    {
+      "case_id": "java-safe-parseint-only-query-001",
+      "file": "java/safe/SafeParseIntOnlyQuery.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "numeric-conversion",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with java-sqli-parseint-concat-name-001: only the parsed number is concatenated"
+    },
+    {
+      "case_id": "java-cmdi-inline-request-param-001",
+      "file": "java/cmdi/CmdiInlineRequestParam.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "nested-call",
+        "inline-source"
+      ],
+      "disabled": false,
+      "notes": "Runtime.getRuntime().exec(req.getParameter(\"cmd\")): a source call passed inline to the sink"
+    },
+    {
+      "case_id": "php-sqli-intval-concat-name-001",
+      "file": "php/sqli/sqli_intval_concat_name.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          4
+        ]
+      ],
+      "tags": [
+        "numeric-conversion",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "intval($id) does not cover the raw $name concatenated into the same query"
+    },
+    {
+      "case_id": "php-safe-intval-only-query-001",
+      "file": "php/safe/safe_intval_only_query.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "numeric-conversion",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with php-sqli-intval-concat-name-001: only intval($id) is concatenated"
     }
   ]
 }

@@ -72,6 +72,13 @@ impl SmallBitSet {
         }
     }
 
+    pub fn remove(&mut self, id: crate::state::symbol::SymbolId) {
+        let idx = id.0;
+        if idx < 64 {
+            self.0 &= !(1u64 << idx);
+        }
+    }
+
     /// Union: self | other
     pub fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
