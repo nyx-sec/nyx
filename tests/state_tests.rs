@@ -1669,3 +1669,66 @@ fn fd_reset_after_close_is_not_double_close() {
 fn double_close_without_reset_still_fires() {
     assert_has("double_close_without_reset.c", "state-double-close");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Use after close: only the handle itself counts as a use
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn closed_handle_name_in_args_is_not_a_use() {
+    for file in [
+        "uac_handle_name_args.py",
+        "uac_handle_name_args.go",
+        "uac_handle_name_args.rb",
+        "uac_handle_name_args.java",
+        "uac_handle_name_args.js",
+    ] {
+        assert_absent(file, "state-use-after-close");
+    }
+}
+
+#[test]
+fn closed_handle_read_by_nested_call_fires() {
+    assert_has("uac_nested_use_arg.py", "state-use-after-close");
+}
+
+#[test]
+fn closed_handle_passed_whole_fires() {
+    assert_has("uac_whole_handle_arg.go", "state-use-after-close");
+}
+
+#[test]
+fn freed_pointer_field_read_fires() {
+    assert_has("uac_freed_field_read.c", "state-use-after-close");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Resource-method proxies: only methods that open / close their receiver
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn local_handle_function_is_not_a_receiver_proxy() {
+    for file in [
+        "proxy_local_handle_same_name.go",
+        "proxy_sibling_buffer_write.go",
+        "proxy_static_local_stream.java",
+    ] {
+        assert_absent(file, "state-use-after-close");
+        assert_absent(file, "state-double-close");
+    }
+}
+
+#[test]
+fn receiver_field_proxy_leak_still_fires() {
+    assert_message_contains("proxy_receiver_field_leak.py", "state-resource-leak", "`s`");
+    assert_message_contains(
+        "proxy_receiver_field_leak.java",
+        "state-resource-leak",
+        "`h`",
+    );
+}
+
+#[test]
+fn receiver_field_proxy_released_by_sibling_method() {
+    assert_no_leaks("proxy_receiver_field_balanced.py");
+}

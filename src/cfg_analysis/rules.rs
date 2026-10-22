@@ -721,7 +721,10 @@ static RUBY_RESOURCES: &[ResourcePair] = &[
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "temp file",
-        use_patterns: &[".write", ".read", ".path"],
+        // No `.path`: a closed Tempfile keeps its path until `unlink` /
+        // `close!`, and `File.read(tmp.path)` after `close` is the usual
+        // idiom.
+        use_patterns: &[".write", ".read"],
     },
 ];
 

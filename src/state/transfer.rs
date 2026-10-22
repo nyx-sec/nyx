@@ -613,7 +613,7 @@ impl DefaultTransfer<'_> {
         }
         let mut handled = false;
         for summary in self.resource_method_summaries {
-            if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+            if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                 continue;
             }
             handled = true;
@@ -640,6 +640,90 @@ impl DefaultTransfer<'_> {
             }
         }
         handled
+    }
+
+    /// Whether a resource method summary named `summary_name` is the method
+    /// the call in `info` invokes (`method_lower` is its lowercased name).
+    /// Method names are case-sensitive except in PHP: Go `buf.Write` is not
+    /// a call to `func write`.
+    fn proxy_name_matches(&self, summary_name: &str, info: &NodeInfo, method_lower: &str) -> bool {
+        if self.lang == Lang::Php {
+            return summary_name.eq_ignore_ascii_case(method_lower);
+        }
+        info.call
+            .callee
+            .as_deref()
+            .and_then(try_chain_decompose)
+            .is_some_and(|(_, method)| method == summary_name)
+    }
+
+    /// Whether `callee_lower` operates on a resource handle: a use pattern of
+    /// any resource pair, or the global fallback list.
+    fn is_use_callee(&self, callee_lower: &str) -> bool {
+        self.resource_pairs
+            .iter()
+            .flat_map(|pair| pair.use_patterns.iter())
+            .chain(RESOURCE_USE_PATTERNS.iter())
+            .any(|p| use_callee_matches(self.lang, callee_lower, p))
+    }
+
+    /// Report a use-after-close for every CLOSED handle this use call
+    /// operates on.
+    ///
+    /// C, C++ and Rust count any mention: reading through a freed pointer
+    /// (`strcpy(buf, n->name)` after `free(n)`) is itself the bug.  In the
+    /// handle languages a closed object stays alive, so reading its name or
+    /// path (`f.name`, `f.Name()`, `tmp.path`) is fine.  There only the
+    /// handle the call works on counts: the receiver of the matched method,
+    /// a handle passed whole as an argument (`fwrite($fh, ..)`,
+    /// `fmt.Fprintf(f, ..)`), or the receiver of a nested use call
+    /// (`out.write(f.read())`).
+    fn emit_use_after_close(
+        &self,
+        node_idx: NodeIndex,
+        info: &NodeInfo,
+        state: &ProductState,
+        events: &mut Vec<TransferEvent>,
+    ) {
+        let any_mention = matches!(self.lang, Lang::C | Lang::Cpp | Lang::Rust);
+        let mut operands: smallvec::SmallVec<[&str; 4]> = smallvec::SmallVec::new();
+        if !any_mention {
+            if let Some(r) = info.call.receiver.as_deref() {
+                operands.push(r);
+            }
+            if let Some((r, _)) = info.call.callee.as_deref().and_then(try_chain_decompose) {
+                operands.push(r);
+            }
+            for arg in &info.call.arg_uses {
+                if let [whole] = arg.as_slice() {
+                    operands.push(whole);
+                }
+            }
+            for inner in info.arg_callees.iter().flatten() {
+                if let Some((r, _)) = try_chain_decompose(inner)
+                    && self.is_use_callee(&inner.to_ascii_lowercase())
+                {
+                    operands.push(r);
+                }
+            }
+        }
+        let mut reported: smallvec::SmallVec<[SymbolId; 2]> = smallvec::SmallVec::new();
+        for used in &info.taint.uses {
+            if !any_mention && !operands.contains(&used.as_str()) {
+                continue;
+            }
+            if let Some(sym) = self.get_sym(info, used)
+                && !reported.contains(&sym)
+                && state.resource.get(sym) == ResourceLifecycle::CLOSED
+            {
+                reported.push(sym);
+                events.push(TransferEvent {
+                    kind: TransferEventKind::UseAfterClose,
+                    node: node_idx,
+                    var: sym,
+                });
+            }
+        }
     }
 
     /// Drop Go error-companion pairs whose error or resource symbol this
@@ -926,7 +1010,7 @@ impl DefaultTransfer<'_> {
             let receiver_is_chain = receiver_text.contains('.');
             if receiver_is_chain {
                 for summary in self.resource_method_summaries {
-                    if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+                    if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                         continue;
                     }
                     match summary.effect {
@@ -963,7 +1047,7 @@ impl DefaultTransfer<'_> {
                     _ => receiver_text,
                 };
                 for summary in self.resource_method_summaries {
-                    if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+                    if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                         continue;
                     }
                     let Some(sym) = self.get_sym(info, recv_name) else {
@@ -988,41 +1072,9 @@ impl DefaultTransfer<'_> {
             }
         }
 
-        // ── Resource use (pair-specific patterns first, then global fallback)
-        let mut use_checked = false;
-        for pair in self.resource_pairs {
-            if pair.use_patterns.iter().any(|p| callee_matches(&callee, p)) {
-                use_checked = true;
-                for used in &info.taint.uses {
-                    if let Some(sym) = self.get_sym(info, used) {
-                        if state.resource.get(sym) == ResourceLifecycle::CLOSED {
-                            events.push(TransferEvent {
-                                kind: TransferEventKind::UseAfterClose,
-                                node: node_idx,
-                                var: sym,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        if !use_checked {
-            let is_use = RESOURCE_USE_PATTERNS
-                .iter()
-                .any(|p| callee_matches(&callee, p));
-            if is_use {
-                for used in &info.taint.uses {
-                    if let Some(sym) = self.get_sym(info, used) {
-                        if state.resource.get(sym) == ResourceLifecycle::CLOSED {
-                            events.push(TransferEvent {
-                                kind: TransferEventKind::UseAfterClose,
-                                node: node_idx,
-                                var: sym,
-                            });
-                        }
-                    }
-                }
-            }
+        // ── Resource use (pair-specific patterns, then the global fallback)
+        if self.is_use_callee(&callee) {
+            self.emit_use_after_close(node_idx, info, state, events);
         }
 
         // ── Auth call ────────────────────────────────────────────────────
@@ -1282,6 +1334,27 @@ pub(crate) fn acquire_callee_matches(lang: Lang, callee_lower: &str, pattern: &s
         Lang::C | Lang::Cpp => callee_matches(callee_lower, pattern),
         _ => rules::callee_matches_at_boundary(callee_lower, &pattern.to_ascii_lowercase()),
     }
+}
+
+/// Whether `callee_lower` is a use of a resource handle for `pattern`.
+///
+/// Outside C/C++ a bare pattern must start at a word boundary: `read` does
+/// not match `spawn_thread` or `threading.Thread`, and `write` does not
+/// match `overwrite`.  An underscore still counts as a boundary, so
+/// snake_case wrappers (`safe_write(f, ..)`) keep matching.  C/C++ keep the
+/// plain suffix match, like their acquires.
+fn use_callee_matches(lang: Lang, callee_lower: &str, pattern: &str) -> bool {
+    if matches!(lang, Lang::C | Lang::Cpp) || pattern.starts_with('.') {
+        return callee_matches(callee_lower, pattern);
+    }
+    let pattern_lower = pattern.to_ascii_lowercase();
+    let Some(prefix) = callee_lower.strip_suffix(pattern_lower.as_str()) else {
+        return false;
+    };
+    prefix
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_ascii_alphanumeric())
 }
 
 /// Check if a callee matches a pattern.
@@ -1981,6 +2054,96 @@ mod tests {
         let (_state, events) = transfer.apply(NodeIndex::new(3), &info, None, state);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, TransferEventKind::UseAfterClose);
+    }
+
+    /// Count use-after-close events `info` raises with `name` CLOSED.
+    fn uac_events(lang: Lang, name: &str, info: &NodeInfo) -> usize {
+        let mut interner = SymbolInterner::new();
+        let sym = interner.intern(name);
+        let transfer = DefaultTransfer {
+            lang,
+            resource_pairs: rules::resource_pairs(lang),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym, ResourceLifecycle::CLOSED);
+        let (_state, events) = transfer.apply(NodeIndex::new(1), info, None, state);
+        events
+            .iter()
+            .filter(|e| e.kind == TransferEventKind::UseAfterClose)
+            .count()
+    }
+
+    #[test]
+    fn use_after_close_needs_the_handle_itself_outside_raw_memory_langs() {
+        // `sys.stdout.write("%s" % f.name)`: `f` is only reached through an
+        // attribute of an argument.
+        let attr = call_node("sys.stdout.write", None, vec![vec!["f.name", "f", "name"]]);
+        assert_eq!(uac_events(Lang::Python, "f", &attr), 0);
+        // `fmt.Fprintf(os.Stderr, "%s", f.Name())`.
+        let go_attr = call_node(
+            "fmt.Fprintf",
+            None,
+            vec![
+                vec!["os.Stderr", "os", "Stderr"],
+                vec![],
+                vec!["f.Name", "f"],
+            ],
+        );
+        assert_eq!(uac_events(Lang::Go, "f", &go_attr), 0);
+
+        // Receiver of the matched method: `f.write("x")`.
+        let mut recv = call_node("f.write", None, vec![vec![]]);
+        recv.taint.uses.push("f".into());
+        assert_eq!(uac_events(Lang::Python, "f", &recv), 1);
+        // The handle passed whole: `fmt.Fprintf(f, "x")`.
+        let whole = call_node("fmt.Fprintf", None, vec![vec!["f"], vec![]]);
+        assert_eq!(uac_events(Lang::Go, "f", &whole), 1);
+        // A nested use call on the handle: `sys.stdout.write(f.read())`.
+        let mut nested = call_node("sys.stdout.write", None, vec![vec!["f.read", "f"]]);
+        nested.arg_callees = vec![Some("f.read".into())];
+        assert_eq!(uac_events(Lang::Python, "f", &nested), 1);
+    }
+
+    #[test]
+    fn use_after_close_counts_any_mention_in_c() {
+        // `strcpy(buf, n->name)` after `free(n)` reads freed memory.
+        let info = call_node(
+            "strcpy",
+            None,
+            vec![vec!["buf"], vec!["n->name", "n", "name"]],
+        );
+        assert_eq!(uac_events(Lang::C, "n", &info), 1);
+    }
+
+    #[test]
+    fn use_patterns_match_at_word_boundary_outside_c() {
+        assert!(use_callee_matches(Lang::Python, "os.read", "read"));
+        assert!(use_callee_matches(Lang::Python, "read", "read"));
+        assert!(use_callee_matches(Lang::Python, "safe_write", "write"));
+        assert!(use_callee_matches(
+            Lang::JavaScript,
+            "fs.readsync",
+            "readSync"
+        ));
+        assert!(use_callee_matches(Lang::Go, "f.write", ".write"));
+        assert!(!use_callee_matches(
+            Lang::Python,
+            "pool.spawn_thread",
+            "read"
+        ));
+        assert!(!use_callee_matches(
+            Lang::Python,
+            "threading.thread",
+            "read"
+        ));
+        assert!(!use_callee_matches(Lang::Python, "overwrite", "write"));
+        // C keeps the suffix match (`my_fread`, `xfread`).
+        assert!(use_callee_matches(Lang::C, "xfread", "fread"));
     }
 
     #[test]
