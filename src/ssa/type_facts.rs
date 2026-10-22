@@ -1470,7 +1470,17 @@ fn parse_turbofish_arg(callee: &str) -> Option<&str> {
     Some(after.trim())
 }
 
-pub fn is_int_producing_callee(callee: &str) -> bool {
+/// True when `callee` is a call whose result is numeric in `lang`.
+///
+/// `lang` gates the one ambiguous suffix, bare `parse`.  Rust `str::parse` is
+/// numeric in most real code, so it keeps the `Int` default there (and on the
+/// lang-less `None` path).  Everywhere else a `.parse` method is a parser
+/// that returns an object or markup built from its input (`JSON.parse`,
+/// `url.parse`, `qs.parse`, `yaml.parse`, `marked.parse`, `Jsoup.parse`), so
+/// tagging it `Int` would hide every sink fed by the parsed value.  The one
+/// numeric exception outside Rust is JS `Date.parse`, which returns
+/// milliseconds since the epoch.
+pub fn is_int_producing_callee(lang: Option<Lang>, callee: &str) -> bool {
     // Rust `s.parse::<T>()` turbofish: an explicit `FromStr` target is ground
     // truth, so trust it over the conservative bare-`parse` → `Int` default.
     // A recognised numeric `T` → `Int`; a recognised non-numeric `T`
@@ -1509,6 +1519,22 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
     if crate::cfg::is_numeric_length_property(suffix) {
         return true;
     }
+    if suffix == "parse" {
+        // Rust: `.parse::<N>()` / `let n: u32 = s.parse()?` is conservative
+        // (most `str::parse` targets are numeric).  The callee text alone
+        // cannot tell `s.parse()` into a `u32` from one into a `PathBuf`;
+        // the turbofish branch above and the `let p: PathBuf` annotation in
+        // `analyze_types` override this default when the target is spelled
+        // out (`type_facts_suppress_int_typed_shell_arg` pins the u16 port
+        // case).
+        return match lang {
+            None | Some(Lang::Rust) => true,
+            Some(Lang::JavaScript | Lang::TypeScript) => {
+                trimmed == "Date.parse" || trimmed.ends_with(".Date.parse")
+            }
+            Some(_) => false,
+        };
+    }
     matches!(
         suffix,
         "parseInt" | "parseFloat" | "Number"        // JS/TS
@@ -1516,20 +1542,7 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
         | "parseLong" | "parseDouble" | "parseShort" // Java
         | "Atoi" | "ParseInt" | "ParseFloat"         // Go
         | "intval" | "floatval"                       // PHP
-        | "to_i" | "to_f"                             // Ruby
-        | "parse" // Rust: `.parse::<N>()` / `let n: u32 = s.parse()?` ,
-                  // conservative (most `str::parse` targets are numeric).
-                  //
-                  // KNOWN LIMITATION: the callee text alone cannot
-                  // distinguish `parse::<u32>()` from `parse::<PathBuf>()`
-                  // / `let p: PathBuf = s.parse()?`.  Tagging every `parse`
-                  // as `Int` keeps the tested precision behaviour
-                  // (`type_facts_suppress_int_typed_shell_arg`: a u16 port
-                  // into a shell arg is suppressed) at the cost of a rare
-                  // false negative on `let p: PathBuf = s.parse()?;
-                  // fs::read(p)`.  Distinguishing the two soundly requires
-                  // reading the let-binding type annotation into the type
-                  // lattice (tracked as a deep-fix; NOT inferable here).
+        | "to_i" | "to_f" // Ruby
     )
 }
 
@@ -1810,7 +1823,7 @@ pub fn analyze_types_with_param_types(
                         // constructors (`Client::new()` → `HttpClient`) still
                         // win the type-qualified resolution.
                         TypeFact::from_kind(dt)
-                    } else if is_int_producing_callee(callee_for_int) {
+                    } else if is_int_producing_callee(lang, callee_for_int) {
                         TypeFact::from_kind(TypeKind::Int)
                     } else if is_safe_string_producing_callee(callee) {
                         // Numeric/boolean to-string converters and class-name
@@ -3741,34 +3754,109 @@ mod tests {
     #[test]
     fn rust_parse_is_int_producing_and_turbofish_forms_are_robust() {
         // Bare parse and its identity-peeled / receiver-qualified forms — Int.
-        assert!(is_int_producing_callee("parse"));
-        assert!(is_int_producing_callee("s.parse"));
-        assert!(is_int_producing_callee("parse().unwrap()"));
-        // Numeric turbofish forms — Int.
-        assert!(is_int_producing_callee("s.parse::<u32>()"));
-        assert!(is_int_producing_callee("s.parse::<i64>()"));
+        assert!(is_int_producing_callee(Some(Lang::Rust), "parse"));
+        assert!(is_int_producing_callee(Some(Lang::Rust), "s.parse"));
         assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "parse().unwrap()"
+        ));
+        // Numeric turbofish forms — Int.
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<u32>()"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<i64>()"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
             "contents.trim().parse::<u32>().expect(\"invalid pid\")"
         ));
         // Non-numeric turbofish forms — NOT Int (recall: the parsed value can
         // carry path / host metacharacters).
-        assert!(!is_int_producing_callee("s.parse::<PathBuf>()"));
-        assert!(!is_int_producing_callee("addr.parse::<IpAddr>().unwrap()"));
-        assert!(!is_int_producing_callee("u.parse::<Url>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<PathBuf>()"
+        ));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "addr.parse::<IpAddr>().unwrap()"
+        ));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "u.parse::<Url>()"
+        ));
         // Unrecognised explicit turbofish target — conservatively NOT Int.
-        assert!(!is_int_producing_callee("x.parse::<MyNewtype>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "x.parse::<MyNewtype>()"
+        ));
         // Boundary: a method that merely ends in `parse` must not match the
         // turbofish needle (`reparse::<u32>` is not `parse::<u32>`).
-        assert!(!is_int_producing_callee("v.reparse::<Foo>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "v.reparse::<Foo>()"
+        ));
+        // The lang-less path keeps the Rust default.
+        assert!(is_int_producing_callee(None, "s.parse"));
         // Other languages' numeric converters remain unconditional.
-        assert!(is_int_producing_callee("parseInt"));
-        assert!(is_int_producing_callee("Number"));
-        assert!(is_int_producing_callee("Atoi"));
-        assert!(is_int_producing_callee("strconv.ParseInt"));
-        assert!(is_int_producing_callee("x.to_i"));
+        assert!(is_int_producing_callee(Some(Lang::JavaScript), "parseInt"));
+        assert!(is_int_producing_callee(Some(Lang::JavaScript), "Number"));
+        assert!(is_int_producing_callee(Some(Lang::Go), "Atoi"));
+        assert!(is_int_producing_callee(Some(Lang::Go), "strconv.ParseInt"));
+        assert!(is_int_producing_callee(Some(Lang::Ruby), "x.to_i"));
         // Negative: a non-numeric-producing method must not be Int.
-        assert!(!is_int_producing_callee("toUpperCase"));
-        assert!(!is_int_producing_callee("trim"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::JavaScript),
+            "toUpperCase"
+        ));
+        assert!(!is_int_producing_callee(Some(Lang::Rust), "trim"));
+    }
+
+    /// Outside Rust a `.parse` method is a parser that returns an object or
+    /// markup built from its input, not a number.  Tagging it `Int` hid every
+    /// sink fed by `JSON.parse` / `url.parse` / `yaml.parse` / `marked.parse`
+    /// / fastjson `JSON.parse` / `Jsoup.parse`.  JS `Date.parse` is the one
+    /// numeric exception (milliseconds since the epoch).
+    #[test]
+    fn bare_parse_is_int_only_for_rust_and_js_date_parse() {
+        for (lang, callee) in [
+            (Lang::JavaScript, "JSON.parse"),
+            (Lang::JavaScript, "url.parse"),
+            (Lang::JavaScript, "qs.parse"),
+            (Lang::TypeScript, "yaml.parse"),
+            (Lang::TypeScript, "marked.parse"),
+            (Lang::Python, "parser.parse"),
+            (Lang::Java, "JSON.parse"),
+            (Lang::Java, "Jsoup.parse"),
+            (Lang::Java, "LocalDate.parse"),
+            (Lang::Php, "Yaml::parse"),
+            (Lang::Ruby, "JSON.parse"),
+            (Lang::Cpp, "json::parse"),
+            (Lang::Go, "tmpl.parse"),
+        ] {
+            assert!(
+                !is_int_producing_callee(Some(lang), callee),
+                "{lang:?} `{callee}` must not be Int"
+            );
+        }
+        assert!(is_int_producing_callee(
+            Some(Lang::JavaScript),
+            "Date.parse"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::TypeScript),
+            "globalThis.Date.parse"
+        ));
+        assert!(!is_int_producing_callee(Some(Lang::Java), "Date.parse"));
+        // Rust keeps the bare-`parse` default (dropping it regressed the
+        // u16-port-into-shell precision case).
+        assert!(is_int_producing_callee(Some(Lang::Rust), "s.parse"));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "port_str.parse().unwrap()"
+        ));
     }
 
     /// `rust_annotation_type_kind` maps `let x: T` / `parse::<T>` annotation

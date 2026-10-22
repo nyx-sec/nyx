@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 674
+    "corpus_size": 678
   },
   "cases": [
     {
@@ -21384,6 +21384,154 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "js-path_traversal-url-parse-001",
+      "file": "javascript/path_traversal/path_traversal_url_parse.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "url.parse",
+        "readFile",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "url.parse(req.url).pathname into fs.readFile; a non-Rust .parse result is an object, not a number, so it must not be typed Int and suppressed"
+    },
+    {
+      "case_id": "js-xss-marked-parse-001",
+      "file": "javascript/xss/xss_marked_parse.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "marked.parse",
+        "res.send",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "marked.parse renders attacker markdown to HTML without sanitising; the parse result must keep its taint into res.send"
+    },
+    {
+      "case_id": "ts-cmdi-json-parse-001",
+      "file": "typescript/cmdi/cmdi_json_parse_concat.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "JSON.parse",
+        "exec",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "JSON.parse of request data concatenated into exec; JSON.parse is not a sanitizer and its result is not numeric"
+    },
+    {
+      "case_id": "java-xss-jsoup-parse-001",
+      "file": "java/xss/XssJsoupParseEcho.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "Jsoup.parse",
+        "getWriter-write",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "Jsoup.parse keeps script tags, so echoing doc.html() is reflected XSS; the parse result must not be typed Int"
     }
   ]
 }

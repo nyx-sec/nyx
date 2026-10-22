@@ -1547,6 +1547,7 @@ fn compute_succ_states(
                         ssa,
                         block.id,
                         transfer.interner,
+                        transfer.lang,
                     );
                 }
 
@@ -2002,6 +2003,7 @@ fn apply_validation_err_check_narrowing(
     ssa: &SsaBody,
     block: BlockId,
     interner: &SymbolInterner,
+    lang: Lang,
 ) {
     if condition_vars.is_empty() {
         return;
@@ -2042,7 +2044,7 @@ fn apply_validation_err_check_narrowing(
     else {
         return;
     };
-    if !crate::ssa::type_facts::is_int_producing_callee(callee) {
+    if !crate::ssa::type_facts::is_int_producing_callee(Some(lang), callee) {
         return;
     }
     // Collect candidate input arg variable names: every SSA value across
@@ -7613,7 +7615,9 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // Known integer-producing calls get a bounded interval so downstream
         // arithmetic transfer produces useful facts (e.g. parseInt(x) * 10).
         // Unknown calls: implicit Top (don't store).
-        SsaOp::Call { callee, .. } if is_int_producing_callee(callee) => {
+        SsaOp::Call { callee, .. }
+            if crate::ssa::type_facts::is_int_producing_callee(lang, callee) =>
+        {
             abs.set(
                 inst.value,
                 AbstractValue {
@@ -7785,11 +7789,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
 
         _ => {}
     }
-}
-
-/// Re-export from type_facts for use in transfer_abstract.
-fn is_int_producing_callee(callee: &str) -> bool {
-    crate::ssa::type_facts::is_int_producing_callee(callee)
 }
 
 /// Structural check: does `callee` look like a Rust scoped identifier
@@ -8737,6 +8736,7 @@ fn collect_block_events(
                 &state,
                 ssa,
                 cfg,
+                transfer.lang,
             ) {
                 continue;
             }
@@ -8754,6 +8754,7 @@ fn collect_block_events(
                     &state,
                     ssa,
                     cfg,
+                    transfer.lang,
                 ) {
                     continue;
                 }
@@ -10398,6 +10399,7 @@ fn collect_tainted_sink_values(
                 inst,
                 info,
                 ssa,
+                transfer.lang,
             );
             return result;
         }
@@ -10436,6 +10438,7 @@ fn collect_tainted_sink_values(
                 inst,
                 info,
                 ssa,
+                transfer.lang,
             );
             return result;
         }
@@ -10454,7 +10457,15 @@ fn collect_tainted_sink_values(
     retain_inner_sink_reaching_uses(&mut result, info, ssa);
 
     apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
-    apply_arg_type_safe_suppression(&mut result, sink_caps, transfer.type_facts, inst, info, ssa);
+    apply_arg_type_safe_suppression(
+        &mut result,
+        sink_caps,
+        transfer.type_facts,
+        inst,
+        info,
+        ssa,
+        transfer.lang,
+    );
     result
 }
 
@@ -10522,6 +10533,7 @@ fn apply_arg_type_safe_suppression(
     inst: &SsaInst,
     info: &NodeInfo,
     ssa: &SsaBody,
+    lang: Lang,
 ) {
     use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
     if result.is_empty() {
@@ -10607,7 +10619,7 @@ fn apply_arg_type_safe_suppression(
         //      already suppressed because `n` materialises as an `Int`-typed
         //      SSA value.
         let safe = arg_callee
-            .map(|c| is_safe_string_producing_callee(c) || is_int_producing_callee(c))
+            .map(|c| is_safe_string_producing_callee(c) || is_int_producing_callee(Some(lang), c))
             .unwrap_or(false);
         if safe {
             for &v in arg_vals {
@@ -11651,6 +11663,7 @@ fn is_abstract_safe_for_sink(
     state: &SsaTaintState,
     ssa: &SsaBody,
     cfg: &Cfg,
+    lang: Lang,
 ) -> bool {
     let used = inst_use_values(inst);
     if used.is_empty() {
@@ -11712,7 +11725,7 @@ fn is_abstract_safe_for_sink(
     // value being unambiguously typed as a numeric uid.
     if sink_caps.intersects(Cap::HTML_ESCAPE | Cap::FILE_IO) {
         if let Some(tf) = type_facts {
-            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
+            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg, lang);
             if !leaves.is_empty() && leaves.iter().all(|v| tf.is_int(*v)) {
                 return true;
             }
@@ -11729,7 +11742,7 @@ fn is_abstract_safe_for_sink(
     // multi-line decimal can still trip newline-sensitive shell parsing.
     if sink_caps.intersects(Cap::SQL_QUERY | Cap::SHELL_ESCAPE) {
         if let Some(tf) = type_facts {
-            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
+            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg, lang);
             if !leaves.is_empty()
                 && leaves
                     .iter()
@@ -11746,7 +11759,8 @@ fn is_abstract_safe_for_sink(
     // + `starts_with` guard, `Component::Normal` iterator filter) flow
     // through to the leaf values via PathFact; this check is the single
     // point at which the axis conjunction suppresses the sink.
-    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs) {
+    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
+    {
         return true;
     }
 
@@ -11766,8 +11780,9 @@ fn is_path_safe_for_sink(
     ssa: &SsaBody,
     cfg: &Cfg,
     abs: &AbstractState,
+    lang: Lang,
 ) -> bool {
-    let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
+    let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg, lang);
     if leaves.is_empty() {
         return false;
     }
@@ -11797,6 +11812,7 @@ fn is_call_abstract_safe(
     state: &SsaTaintState,
     ssa: &SsaBody,
     cfg: &Cfg,
+    lang: Lang,
 ) -> bool {
     // SSRF, check if the URL argument (first arg) has a safe prefix.
     if sink_caps.intersects(Cap::SSRF) {
@@ -11848,7 +11864,7 @@ fn is_call_abstract_safe(
     // path sinks like `open_for_user(uid)`.
     if sink_caps.intersects(Cap::HTML_ESCAPE | Cap::FILE_IO) {
         if let Some(tf) = type_facts {
-            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
+            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg, lang);
             if !leaves.is_empty() && leaves.iter().all(|v| tf.is_int(*v)) {
                 return true;
             }
@@ -11860,7 +11876,7 @@ fn is_call_abstract_safe(
     // rationale).
     if sink_caps.intersects(Cap::SQL_QUERY | Cap::SHELL_ESCAPE) {
         if let Some(tf) = type_facts {
-            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
+            let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg, lang);
             if !leaves.is_empty()
                 && leaves
                     .iter()
@@ -11873,7 +11889,8 @@ fn is_call_abstract_safe(
 
     // PathFact gate (Call path): mirrors non-Call suppression so the gate
     // fires regardless of which sink-detection branch produces the event.
-    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs) {
+    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
+    {
         return true;
     }
 
@@ -11894,12 +11911,13 @@ fn trace_tainted_leaf_values(
     state: &SsaTaintState,
     ssa: &SsaBody,
     cfg: &Cfg,
+    lang: Lang,
 ) -> SmallVec<[SsaValue; 4]> {
     let mut leaves = SmallVec::new();
     let used = inst_use_values(inst);
     for &v in &used {
         if state.get(v).is_some() {
-            trace_single_leaf(v, state, ssa, cfg, &mut leaves, 0);
+            trace_single_leaf(v, state, ssa, cfg, lang, &mut leaves, 0);
         }
     }
     leaves
@@ -11910,6 +11928,7 @@ fn trace_single_leaf(
     state: &SsaTaintState,
     ssa: &SsaBody,
     cfg: &Cfg,
+    lang: Lang,
     leaves: &mut SmallVec<[SsaValue; 4]>,
     depth: usize,
 ) {
@@ -11976,7 +11995,7 @@ fn trace_single_leaf(
             let mut found = false;
             for &u in uses {
                 if state.get(u).is_some() {
-                    trace_single_leaf(u, state, ssa, cfg, leaves, depth + 1);
+                    trace_single_leaf(u, state, ssa, cfg, lang, leaves, depth + 1);
                     found = true;
                 }
             }
@@ -11992,7 +12011,7 @@ fn trace_single_leaf(
             for arg in args {
                 for &u in arg {
                     if state.get(u).is_some() {
-                        trace_single_leaf(u, state, ssa, cfg, leaves, depth + 1);
+                        trace_single_leaf(u, state, ssa, cfg, lang, leaves, depth + 1);
                         found = true;
                     }
                 }
@@ -12001,7 +12020,9 @@ fn trace_single_leaf(
                 leaves.push(v);
             }
         }
-        SsaOp::Call { callee, .. } if crate::ssa::type_facts::is_int_producing_callee(callee) => {
+        SsaOp::Call { callee, .. }
+            if crate::ssa::type_facts::is_int_producing_callee(Some(lang), callee) =>
+        {
             // Int-producing conversion (`str.parse::<u32>()`, `Atoi`,
             // `parseInt`, ...).  Tracing past the Call would land on the
             // String-typed source and defeat the type-only HTML/FILE_IO
@@ -12051,7 +12072,7 @@ fn trace_single_leaf(
                 for arg in args {
                     for &u in arg {
                         if state.get(u).is_some() {
-                            trace_single_leaf(u, state, ssa, cfg, leaves, depth + 1);
+                            trace_single_leaf(u, state, ssa, cfg, lang, leaves, depth + 1);
                             found = true;
                         }
                     }
@@ -12071,7 +12092,7 @@ fn trace_single_leaf(
             // the Call's args.
             let u = uses[0];
             if state.get(u).is_some() {
-                trace_single_leaf(u, state, ssa, cfg, leaves, depth + 1);
+                trace_single_leaf(u, state, ssa, cfg, lang, leaves, depth + 1);
             } else {
                 leaves.push(v);
             }

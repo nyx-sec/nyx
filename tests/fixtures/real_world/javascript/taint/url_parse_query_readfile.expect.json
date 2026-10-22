@@ -1,0 +1,13 @@
+{
+  "description": "url.parse returns an object built from the request URL. Outside Rust a `.parse` call is not numeric, so its result must not be typed Int and the FILE_IO sink must fire.",
+  "tags": ["taint", "path-traversal", "type-facts"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "url.parse(req.url) result flows into fs.readFile"
+    }
+  ]
+}

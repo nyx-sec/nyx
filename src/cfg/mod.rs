@@ -4609,6 +4609,7 @@ type ConfinedCounts = std::collections::HashMap<String, (u32, u32)>;
 /// single-raw-occurrence-blocks soundness across the whole sink node).
 fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut ConfinedCounts) {
     use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
+    let lang_enum = crate::symbol::Lang::from_slug(lang);
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         // Rust `format!`/`write!`/… macros model their arguments as a flat
@@ -4653,7 +4654,7 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         };
         let confined = nearest_enclosing_call(n, lang).is_some_and(|c| {
             call_ident_of(c, lang, code).is_some_and(|ci| {
-                is_int_producing_callee(&ci) || is_safe_string_producing_callee(&ci)
+                is_int_producing_callee(lang_enum, &ci) || is_safe_string_producing_callee(&ci)
             })
         });
         let entry = counts.entry(text).or_insert((0, 0));

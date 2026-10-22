@@ -8256,3 +8256,80 @@ def login():
         "a non-validating wrapper must not confine the redirect; got {findings:?}"
     );
 }
+
+/// Parse `src` in `lang` and run the per-file taint analysis.
+fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
+    let (slug, path, ts_lang) = match lang {
+        Lang::JavaScript => (
+            "javascript",
+            "test.js",
+            tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+        ),
+        Lang::TypeScript => (
+            "typescript",
+            "test.ts",
+            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        ),
+        Lang::Python => (
+            "python",
+            "test.py",
+            tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        ),
+        Lang::Go => (
+            "go",
+            "test.go",
+            tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+        ),
+        other => panic!("analyse_src: no grammar wired for {other:?}"),
+    };
+    let file_cfg = parse_lang(src, slug, ts_lang);
+    analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
+}
+
+// ── Bare `.parse` is numeric only in Rust (and JS `Date.parse`) ──────────
+
+#[test]
+fn js_url_parse_result_reaching_readfile_fires() {
+    let src = b"var fs = require('fs');\nvar url = require('url');\nrequire('http').createServer(function(req, res) {\n    var q = url.parse(req.url, true);\n    fs.readFile('/srv/' + q, function() {});\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        !findings.is_empty(),
+        "url.parse result is an object, not Int; the FILE_IO sink must fire"
+    );
+}
+
+#[test]
+fn js_yaml_parse_inline_exec_arg_fires() {
+    let src = b"var exec = require('child_process').exec;\nvar yaml = require('yaml');\nrequire('express')().post('/x', function(req, res) {\n    exec(yaml.parse(req.body.payload));\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        !findings.is_empty(),
+        "an inline yaml.parse(...) sink arg must not be dropped as a numeric producer"
+    );
+}
+
+#[test]
+fn python_user_parser_result_into_os_system_fires() {
+    let src = br#"
+import os
+from flask import request
+def run():
+    p = parser.parse(request.args.get("x"))
+    os.system("ls " + p)
+"#;
+    let findings = analyse_src(src, Lang::Python);
+    assert!(
+        !findings.is_empty(),
+        "a Python `.parse` result is not numeric; the shell sink must fire"
+    );
+}
+
+#[test]
+fn js_date_parse_result_stays_numeric() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/t', function(req, res) {\n    var ts = Date.parse(req.body.when);\n    exec('touch -d @' + ts + ' stamp');\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "Date.parse returns a number; the shell sink must stay suppressed, got {findings:?}"
+    );
+}

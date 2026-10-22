@@ -4442,6 +4442,30 @@ fn numeric_confined_only_on_sink_nodes() {
 }
 
 #[test]
+fn numeric_confined_js_parse_method_is_not_numeric() {
+    // Outside Rust a `.parse` method returns an object (`url.parse`,
+    // `JSON.parse`), so `x` inside `url.parse(x)` must not be confined, while
+    // `parseInt(y)` still confines `y`.
+    let src = b"var fs = require('fs'); function h(req) { var x = req.query.a; \
+                var y = req.query.b; fs.readFile(url.parse(x).pathname); \
+                fs.readFile('/d/' + parseInt(y)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined: Vec<&String> = cfg
+        .node_indices()
+        .flat_map(|i| cfg[i].numeric_confined_uses.iter())
+        .collect();
+    assert!(
+        !confined.iter().any(|u| *u == "x"),
+        "`url.parse(x)` must not numeric-confine `x`; got {confined:?}"
+    );
+    assert!(
+        confined.iter().any(|u| *u == "y"),
+        "`parseInt(y)` must numeric-confine `y`; got {confined:?}"
+    );
+}
+
+#[test]
 fn numeric_confined_format_macro_parse_chain() {
     // `fs::read(format!("/d/{}", g.parse::<u32>().unwrap()))` — tree-sitter
     // flattens the macro body to a token_tree, so `g` is recovered as confined
