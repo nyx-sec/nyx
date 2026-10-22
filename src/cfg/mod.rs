@@ -3538,12 +3538,16 @@ pub(super) fn push_node<'a>(
     // is checked against the SSA lowering's fallback argument group, which
     // lumps the receiver and the chain links' own arguments together, and
     // the structural pass reports the call as an unguarded sink.
-    // Only applies when the classified callee is the call's own function
-    // (no nested call in `text`): for `http.request(url, cb).end()` the gate
-    // matched the chain head, whose arguments live in that fallback group.
-    // Also skipped when a spread argument hides the real arity.
+    // Only applies when the classified callee is the call's own function:
+    // not when `text` holds a nested call (`http.request(url, cb).end()`,
+    // where the gate matched the chain head, whose arguments live in that
+    // fallback group), and not when an inner call's callee replaced the
+    // node's own (`require('child_process').execSync(cmd).toString()`, where
+    // `call_ast` is still the outer zero-arg call).  Also skipped when a
+    // spread argument hides the real arity.
     if matches!(lang, "javascript" | "typescript" | "tsx")
         && !text.contains('(')
+        && outer_callee.is_none()
         && let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4))
         && let Some(arity) = js_positional_arity(cn)
         && let Some(payload) = sink_payload_args.as_mut()

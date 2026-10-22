@@ -2011,6 +2011,24 @@ fn js_timer_string_arg_is_code_exec_but_callbacks_are_not() {
 }
 
 #[test]
+fn js_inner_sink_under_zero_arg_chain_keeps_its_sink() {
+    // The inner `child_process.execSync(cmd)` call supplies the node's sink;
+    // the outer zero-arg `.toString().trim()` call must not empty its
+    // payload set.
+    let src = b"function f(hash) {\n\
+                  return require('child_process').execSync('git show ' + hash).toString().trim();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "child_process.execSync");
+    assert!(
+        !nodes.is_empty(),
+        "the inner execSync call classifies the node"
+    );
+    assert!(nodes.iter().all(|n| has_sink(n, Cap::SHELL_ESCAPE)));
+}
+
+#[test]
 fn js_fluent_response_chain_classifies_by_final_method() {
     let src = b"function h(req, res) {\n\
                   res.status(200).send(req.query.q);\n\
