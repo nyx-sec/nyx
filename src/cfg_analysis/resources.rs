@@ -403,7 +403,11 @@ fn acquire_is_returned_value(ctx: &AnalysisContext, acquire: NodeIndex) -> bool 
 ///
 /// If the variable is transferred, there is no leak, the receiving struct is
 /// responsible for the lifetime.
-fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
+fn is_ownership_transferred(
+    ctx: &AnalysisContext,
+    acquire: NodeIndex,
+    closeable_wrappers: &HashSet<String>,
+) -> bool {
     let acquired_var = match &ctx.cfg[acquire].taint.defines {
         Some(v) => v.clone(),
         None => return false,
@@ -432,6 +436,39 @@ fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
                 .defines
                 .as_ref()
                 .is_some_and(|d| d == &acquired_var);
+
+        // `*out = var`, `g_cache = var`, `slots[i] = var`: the handle now
+        // lives in storage this function does not own.
+        if info.escaping_store && info.taint.uses.iter().any(|u| u == &acquired_var) {
+            return true;
+        }
+        // Handed to a collection (`list.add(s)`, `v.push_back(f)`), to a
+        // C++ smart pointer (`std::unique_ptr<T> p(raw)`, `p.reset(raw)`),
+        // or to a Java wrapper whose own lifetime is accounted for
+        // (`new BufferedInputStream(in)` later closed / returned / managed).
+        // Twin of the state-engine handoffs in `DefaultTransfer`.
+        if crate::state::transfer::container_insert_arg_positions(ctx.lang, info)
+            .iter()
+            .any(|&i| info.call.arg_uses[i][0] == acquired_var)
+        {
+            return true;
+        }
+        if info.call.ctor_owned_args.iter().any(|a| *a == acquired_var) {
+            match ctx.lang {
+                Lang::Cpp => return true,
+                Lang::Java => {
+                    if info
+                        .taint
+                        .defines
+                        .as_deref()
+                        .is_some_and(|w| closeable_wrappers.contains(w))
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
 
         if references_var && start < end && end <= ctx.source_bytes.len() {
             let span_text = &ctx.source_bytes[start..end];
@@ -705,6 +742,9 @@ impl CfgAnalysis for ResourceMisuse {
         // Empty (no-op) for non-C/C++.
         let nonescaping_field_containers =
             crate::state::transfer::nonescaping_local_field_containers(ctx.cfg, ctx.lang);
+        // Java wrappers whose lifetime this body accounts for (see
+        // `state::transfer::closeable_wrapper_names`).
+        let closeable_wrappers = crate::state::transfer::closeable_wrapper_names(ctx.cfg, ctx.lang);
 
         for pair in pairs {
             let acquire_nodes = find_acquire_nodes(ctx, pair.acquire, pair.exclude_acquire);
@@ -809,6 +849,12 @@ impl CfgAnalysis for ResourceMisuse {
                 {
                     continue;
                 }
+                // Acquire stored straight into a global, unqualified field,
+                // pointer target or container element (`g_buf = malloc(n)`,
+                // `*out = calloc(..)`).  Twin of the state-engine gate.
+                if ctx.cfg[acquire].escaping_store {
+                    continue;
+                }
                 // A factory that returns the acquire's result directly
                 // (`return os.Open(p)`) hands the handle to its caller.
                 if acquire_is_returned_value(ctx, acquire) {
@@ -831,7 +877,7 @@ impl CfgAnalysis for ResourceMisuse {
                     &release_nodes,
                     exit,
                     post_doms.as_ref(),
-                ) && !is_ownership_transferred(ctx, acquire)
+                ) && !is_ownership_transferred(ctx, acquire, &closeable_wrappers)
                     && !is_consumed_by_owner(ctx, acquire)
                 {
                     // For mutex pairs, require an explicit .acquire()/.lock() call

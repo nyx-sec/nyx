@@ -153,6 +153,9 @@ pub fn run_state_analysis(
     // (a non-escaping stack struct) — lift the ownership-transfer
     // suppression for those.  Empty for other languages.
     let nonescaping_field_containers = transfer::nonescaping_local_field_containers(cfg, lang);
+    // Java wrapper objects whose lifetime this body accounts for; a stream
+    // handed to one of their constructors is owned by the wrapper.
+    let closeable_wrappers = transfer::closeable_wrapper_names(cfg, lang);
     let transfer = DefaultTransfer {
         lang,
         resource_pairs,
@@ -160,6 +163,7 @@ pub fn run_state_analysis(
         resource_method_summaries,
         ptr_proxy_hints,
         nonescaping_field_containers: Some(&nonescaping_field_containers),
+        closeable_wrappers: Some(&closeable_wrappers),
     };
 
     // Seed initial auth level from decorator-based authorization markers.

@@ -172,6 +172,134 @@ pub(crate) fn field_container_is_nonescaping(
     single_ident_dot_container(def).is_some_and(|base| nonescaping.contains(base))
 }
 
+/// Method names that store their argument in the receiving collection, so a
+/// handle passed to them now belongs to that collection: `list.add(s)`,
+/// `map.put(k, s)`, `v.push_back(f)`, `xs.append(f)`, `arr.push(fd)`,
+/// `cache.set(k, fd)`, and the synthetic `__index_set__` of `m[k] = f`.
+/// Compared case-insensitively against the callee's last segment.
+static CONTAINER_INSERT_LEAVES: &[&str] = &[
+    "add",
+    "addfirst",
+    "addlast",
+    "append",
+    "emplace",
+    "emplace_back",
+    "emplace_front",
+    "insert",
+    "offer",
+    "push",
+    "push_back",
+    "push_front",
+    "put",
+    "putifabsent",
+    "set",
+    "unshift",
+];
+
+/// Argument positions whose bare-variable value a call hands over to a
+/// container (or, for C++ `ptr.reset(raw)`, to an owning smart pointer).
+/// Empty for every other call.  Only bare identifiers qualify: a nested call
+/// or expression argument (`v.push_back(f->next)`) moves nothing.
+///
+/// Recall trade-off, matching the field-store rule: a handle put into a
+/// local collection that then dies unreleased is no longer reported.
+pub(crate) fn container_insert_arg_positions(
+    lang: Lang,
+    info: &NodeInfo,
+) -> smallvec::SmallVec<[usize; 2]> {
+    let mut out = smallvec::SmallVec::new();
+    let Some(callee) = info.call.callee.as_deref() else {
+        return out;
+    };
+    let is_method = callee.contains(['.', ':', '>']);
+    let leaf = callee
+        .rsplit(['.', ':', '>'])
+        .next()
+        .unwrap_or(callee)
+        .to_ascii_lowercase();
+    let first = match (lang, leaf.as_str()) {
+        (_, "__index_set__") => 1,
+        (Lang::Go, "append") if !is_method => 1,
+        (Lang::Php, "array_push" | "array_unshift") if !is_method => 1,
+        (Lang::Cpp, "reset") if is_method => 0,
+        (_, l) if is_method && CONTAINER_INSERT_LEAVES.contains(&l) => 0,
+        _ => return out,
+    };
+    let args = &info.call.arg_uses;
+    if leaf == "set" && args.len() < 2 {
+        return out;
+    }
+    for i in first..args.len() {
+        let bare = info.arg_callees.get(i).is_none_or(|c| c.is_none()) && args[i].len() == 1;
+        if bare {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// Java: names of local wrapper objects whose lifetime is accounted for in
+/// this body: closed (`w.close()`, including a release in argument
+/// position), returned, bound by try-with-resources, or stored somewhere
+/// the function does not own (a field, global, or collection).  A stream
+/// passed to the constructor of such a wrapper is owned by the wrapper.
+/// Empty for other languages.
+pub(crate) fn closeable_wrapper_names(
+    cfg: &crate::cfg::Cfg,
+    lang: Lang,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if lang != Lang::Java {
+        return out;
+    }
+    let pairs = rules::resource_pairs(lang);
+    let is_release = |callee: &str| {
+        let c = callee.to_ascii_lowercase();
+        pairs
+            .iter()
+            .any(|p| p.release.iter().any(|r| callee_matches(&c, r)))
+    };
+    for info in cfg.node_weights() {
+        if info.kind == StmtKind::Call
+            && let Some(callee) = info.call.callee.as_deref()
+            && is_release(callee)
+            && let Some((recv, _)) = try_chain_decompose(callee)
+            && !recv.contains('.')
+        {
+            out.insert(recv.to_string());
+        }
+        for arg_callee in info.arg_callees.iter().flatten() {
+            if is_release(arg_callee)
+                && let Some((recv, _)) = try_chain_decompose(arg_callee)
+                && !recv.contains('.')
+            {
+                out.insert(recv.to_string());
+            }
+        }
+        if info.kind == StmtKind::Return || info.implicit_return {
+            out.extend(info.returned_idents.iter().cloned());
+        }
+        if info.managed_resource
+            && let Some(d) = info.taint.defines.as_deref()
+        {
+            out.insert(d.to_string());
+        }
+        let stores_away = info.escaping_store
+            || info
+                .taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.contains('.'));
+        if stores_away && info.kind == StmtKind::Seq {
+            out.extend(info.taint.uses.iter().cloned());
+        }
+        for i in container_insert_arg_positions(lang, info) {
+            out.insert(info.call.arg_uses[i][0].clone());
+        }
+    }
+    out
+}
+
 /// Decompose a textual callee like `"c.mu.Lock"` into
 /// `(chain_receiver_text, method_suffix)`.  Returns `None` when the
 /// callee isn't a clean dotted member chain (parens, brackets, `::`,
@@ -355,6 +483,12 @@ pub struct DefaultTransfer<'a> {
     /// `nonescaping_local_field_containers` in `run_state_analysis`.
     /// Strict-additive: when `None`, the blanket suppression stands.
     pub nonescaping_field_containers: Option<&'a std::collections::HashSet<String>>,
+    /// Java only: names of wrapper objects that this body closes, returns,
+    /// manages with try-with-resources, or stores away (see
+    /// [`closeable_wrapper_names`]).  A stream handed to the constructor of
+    /// one of these (`new BufferedInputStream(in)`) is owned by the wrapper
+    /// from then on.  `None` disables the handoff.
+    pub closeable_wrappers: Option<&'a std::collections::HashSet<String>>,
 }
 
 impl Transfer<ProductState> for DefaultTransfer<'_> {
@@ -375,6 +509,19 @@ impl Transfer<ProductState> for DefaultTransfer<'_> {
         // that re-binds a pair runs after this in `apply_call`.
         if self.lang == Lang::Go {
             self.kill_redefined_err_companions(info, &mut state);
+        }
+
+        // C++ smart pointer adopting a raw pointer (`std::unique_ptr<T>
+        // p(raw)`): RAII now owns `raw`.  Runs before the assignment
+        // transfer so `raw`'s OPEN state is not copied onto `p`.
+        if self.lang == Lang::Cpp {
+            for u in &info.call.ctor_owned_args {
+                if let Some(sym) = self.get_sym(info, u)
+                    && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
+                {
+                    state.resource.set(sym, ResourceLifecycle::MOVED);
+                }
+            }
         }
 
         match info.kind {
@@ -537,6 +684,10 @@ impl DefaultTransfer<'_> {
                     .nonescaping_field_containers
                     .is_some_and(|set| field_container_is_nonescaping(set, d))
         });
+        // Acquires stored straight into a global, an unqualified field, a
+        // pointer target (`*out = malloc(n)`) or a container element are
+        // owned by whatever holds that storage, exactly like the field case.
+        let define_is_field_lhs = define_is_field_lhs || info.escaping_store;
         let resource_pairs_iter: &[ResourcePair] = if define_is_field_lhs {
             &[]
         } else {
@@ -608,6 +759,53 @@ impl DefaultTransfer<'_> {
                         released.push(sym);
                     }
                 }
+            }
+        }
+
+        // ── Ownership handed to a container or wrapper ───────────────────
+        if !direct_acquire && !direct_release {
+            for i in container_insert_arg_positions(self.lang, info) {
+                let u = &info.call.arg_uses[i][0];
+                if info.call.receiver.as_deref() == Some(u.as_str()) {
+                    continue;
+                }
+                if let Some(sym) = self.get_sym(info, u)
+                    && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
+                {
+                    state.resource.set(sym, ResourceLifecycle::MOVED);
+                }
+            }
+        }
+        // Java decorator streams: `BufferedInputStream b = new
+        // BufferedInputStream(in)` makes `b` the owner of `in` (closing `b`
+        // closes `in`).  Only when `b` itself is closed, returned, managed
+        // or stored away; `new InputSource(in)` followed by `in.close()`
+        // must keep `in` as the tracked handle.
+        if self.lang == Lang::Java
+            && info.call.is_constructor
+            && !define_is_field_lhs
+            && let Some(w) = info.taint.defines.as_deref()
+            && self.closeable_wrappers.is_some_and(|s| s.contains(w))
+            && let Some(w_sym) = self.get_sym(info, w)
+        {
+            for u in &info.call.ctor_owned_args {
+                if u == w {
+                    continue;
+                }
+                let Some(u_sym) = self.get_sym(info, u) else {
+                    continue;
+                };
+                let u_lc = state.resource.get(u_sym);
+                if !u_lc.contains(ResourceLifecycle::OPEN) {
+                    continue;
+                }
+                let w_lc = if direct_acquire {
+                    state.resource.get(w_sym)
+                } else {
+                    u_lc
+                };
+                state.resource.set(w_sym, w_lc);
+                state.resource.set(u_sym, ResourceLifecycle::MOVED);
             }
         }
 
@@ -973,7 +1171,10 @@ impl DefaultTransfer<'_> {
             // in tests/fixtures/.../typescript/state/resource_class.ts —
             // that path remains untouched here because RHS-is-a-call
             // routes through `apply_call`, not `apply_assignment`).
-            if def.contains('.') || def.contains("->") {
+            // The same holds for an `escaping_store`: `*out = buf`,
+            // `g_cache = buf`, `this.in = s` written as `in = s` in Java,
+            // `handles[i] = f`.
+            if def.contains('.') || def.contains("->") || info.escaping_store {
                 for used in &info.taint.uses {
                     if let Some(use_sym) = self.get_sym(info, used) {
                         let lc = state.resource.get(use_sym);
@@ -1374,6 +1575,150 @@ mod tests {
         assert!(!callee_matches("send", ".send"));
     }
 
+    fn call_node(callee: &str, defines: Option<&str>, arg_uses: Vec<Vec<&str>>) -> NodeInfo {
+        NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: defines.map(String::from),
+                uses: arg_uses.iter().flatten().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some(callee.into()),
+                arg_uses: arg_uses
+                    .into_iter()
+                    .map(|a| a.into_iter().map(String::from).collect())
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn container_insert_positions_by_language() {
+        let pos = |lang, info: &NodeInfo| container_insert_arg_positions(lang, info).to_vec();
+        assert_eq!(
+            pos(Lang::Cpp, &call_node("v.push_back", None, vec![vec!["f"]])),
+            vec![0]
+        );
+        assert_eq!(
+            pos(
+                Lang::Cpp,
+                &call_node("v.push_back", None, vec![vec!["f->next", "f"]])
+            ),
+            Vec::<usize>::new(),
+            "an expression argument moves nothing"
+        );
+        assert_eq!(
+            pos(
+                Lang::Java,
+                &call_node("m.put", None, vec![vec!["k"], vec!["s"]])
+            ),
+            vec![0, 1]
+        );
+        assert_eq!(
+            pos(
+                Lang::JavaScript,
+                &call_node("cache.set", None, vec![vec!["fd"]])
+            ),
+            Vec::<usize>::new(),
+            "single-argument `set` is a setter, not a map insert"
+        );
+        assert_eq!(
+            pos(
+                Lang::Go,
+                &call_node("append", Some("fs"), vec![vec!["fs"], vec!["f"]])
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            pos(
+                Lang::Php,
+                &call_node("array_push", None, vec![vec!["a"], vec!["f"]])
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            pos(Lang::Cpp, &call_node("p.reset", None, vec![vec!["raw"]])),
+            vec![0]
+        );
+        assert_eq!(
+            pos(Lang::Python, &call_node("reset", None, vec![vec!["raw"]])),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            pos(Lang::Python, &call_node("send", None, vec![vec!["f"]])),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn container_insert_moves_open_handle() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("v");
+        let transfer = DefaultTransfer {
+            lang: Lang::Cpp,
+            resource_pairs: rules::resource_pairs(Lang::Cpp),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+        let (out, _) = transfer.apply(
+            NodeIndex::new(1),
+            &call_node("v.push_back", None, vec![vec!["f"]]),
+            None,
+            state,
+        );
+        assert_eq!(out.resource.get(sym_f), ResourceLifecycle::MOVED);
+    }
+
+    fn java_wrapper_node() -> NodeInfo {
+        // BufferedInputStream b = new BufferedInputStream(in);
+        let mut n = call_node("BufferedInputStream", Some("b"), vec![vec!["in"]]);
+        n.call.is_constructor = true;
+        n.call.ctor_owned_args = vec!["in".into()];
+        n
+    }
+
+    #[test]
+    fn java_wrapper_takes_ownership_only_when_closeable() {
+        let mut interner = SymbolInterner::new();
+        let sym_in = interner.intern("in");
+        let sym_b = interner.intern("b");
+        let closeable: std::collections::HashSet<String> = ["b".to_string()].into_iter().collect();
+        let empty = std::collections::HashSet::new();
+        let gated = DefaultTransfer {
+            lang: Lang::Java,
+            resource_pairs: rules::resource_pairs(Lang::Java),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: Some(&closeable),
+        };
+        let ungated = DefaultTransfer {
+            closeable_wrappers: Some(&empty),
+            ..gated
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_in, ResourceLifecycle::OPEN);
+
+        let (handed, _) = gated.apply(NodeIndex::new(1), &java_wrapper_node(), None, state.clone());
+        assert_eq!(handed.resource.get(sym_in), ResourceLifecycle::MOVED);
+        assert_eq!(handed.resource.get(sym_b), ResourceLifecycle::OPEN);
+
+        // `new InputSource(in)` that is never closed: `in` stays the handle.
+        let (kept, _) = ungated.apply(NodeIndex::new(1), &java_wrapper_node(), None, state);
+        assert_eq!(kept.resource.get(sym_in), ResourceLifecycle::OPEN);
+        assert_eq!(kept.resource.get(sym_b), ResourceLifecycle::empty());
+    }
+
     #[test]
     fn acquire_matcher_requires_identifier_boundary_outside_c() {
         let py = |c: &str, p: &str| acquire_callee_matches(Lang::Python, c, p);
@@ -1432,6 +1777,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -1469,6 +1815,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1508,6 +1855,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1548,6 +1896,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1601,6 +1950,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1652,6 +2002,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1690,6 +2041,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1750,6 +2102,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1809,6 +2162,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let mut state = ProductState::initial();
         state.resource.set(sym_f, ResourceLifecycle::OPEN);
@@ -1832,6 +2186,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         }
     }
 
@@ -2259,6 +2614,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2329,6 +2685,7 @@ mod tests {
             resource_method_summaries: &summaries,
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let lock_info = NodeInfo {
@@ -2391,6 +2748,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mk_call = |callee: &str| NodeInfo {
@@ -2447,6 +2805,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2499,6 +2858,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         for callee in ["c.writer.header().Lock", "Foo::bar::Lock", "c[i].mu.Lock"] {
             let info = NodeInfo {
@@ -2620,6 +2980,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2688,6 +3049,7 @@ mod tests {
             resource_method_summaries: &summaries,
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let lock_info = NodeInfo {
@@ -2742,6 +3104,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2785,6 +3148,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2812,6 +3176,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2852,6 +3217,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2891,6 +3257,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2930,6 +3297,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2965,6 +3333,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {

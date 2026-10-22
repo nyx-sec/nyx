@@ -775,6 +775,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -837,6 +838,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -984,6 +986,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let result = engine::run_forward(cfg, entry, &transfer, ProductState::initial());
         extract_findings(
@@ -1095,6 +1098,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());

@@ -1248,6 +1248,7 @@ fn clone_preserves_all_sub_structs() {
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
+            ctor_owned_args: vec!["in".into()],
             produces_null_proto: false,
             hoisted_sink: Some(Box::new(crate::cfg::HoistedSink {
                 payload_args: Some(vec![0]),
@@ -4994,4 +4995,100 @@ fn return_escapes_python_java_c_shapes() {
     let c = b"char *g(void) { char *b = malloc(4); return (char *)b; }";
     let got = return_escapes(c, "c", Language::from(tree_sitter_c::LANGUAGE));
     assert_eq!(got[0].0, vec!["b".to_string()]);
+}
+
+// ── Stores that leave the body, constructor ownership ───────────────────
+
+fn all_nodes(src: &[u8], lang: &str, ts_lang: Language) -> Vec<NodeInfo> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| b.graph[i].clone()))
+        .collect()
+}
+
+fn escaping_defines(src: &[u8], lang: &str, ts_lang: Language) -> Vec<String> {
+    let mut out: Vec<String> = all_nodes(src, lang, ts_lang)
+        .into_iter()
+        .filter(|n| n.escaping_store)
+        .filter_map(|n| n.taint.defines.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn escaping_store_c_deref_global_and_static() {
+    let c = || Language::from(tree_sitter_c::LANGUAGE);
+    let src = b"static char *g;\n\
+        int out_param(char **out) { char *b = malloc(4); *out = b; return 0; }\n\
+        void global(void) { g = malloc(4); }\n\
+        void keep(void) { static char *s; s = malloc(4); }\n\
+        void late_local(void) { char *p; p = malloc(4); }\n";
+    assert_eq!(
+        escaping_defines(src, "c", c()),
+        vec!["g".to_string(), "out".to_string(), "s".to_string()],
+        "`p` is a plain local and must stay tracked"
+    );
+}
+
+#[test]
+fn escaping_store_java_unqualified_field_only() {
+    let src = b"class A {\n  java.io.InputStream in;\n\
+        void field(String p) throws Exception { in = new java.io.FileInputStream(p); }\n\
+        void local(String p) throws Exception { java.io.InputStream s; s = new java.io.FileInputStream(p); }\n}\n";
+    assert_eq!(
+        escaping_defines(src, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        vec!["in".to_string()]
+    );
+}
+
+#[test]
+fn escaping_store_go_package_var() {
+    let src = b"package m\nvar logFile *os.File\nfunc init() {\n\tvar err error\n\tlogFile, err = os.Create(\"x\")\n\t_ = err\n}\nfunc local() {\n\tf, err := os.Create(\"y\")\n\t_, _ = f, err\n}\n";
+    assert_eq!(
+        escaping_defines(src, "go", Language::from(tree_sitter_go::LANGUAGE)),
+        vec!["logFile".to_string()]
+    );
+}
+
+#[test]
+fn ctor_owned_args_java_wrappers() {
+    let src = b"class A { void m(java.io.InputStream in) throws Exception {\n\
+        java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(in));\n\
+        Object o = new Object();\n} }\n";
+    let owned: Vec<Vec<String>> =
+        all_nodes(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+            .into_iter()
+            .map(|n| n.call.ctor_owned_args)
+            .filter(|a| !a.is_empty())
+            .collect();
+    assert_eq!(owned, vec![vec!["in".to_string()]]);
+}
+
+#[test]
+fn cpp_smart_pointer_declarations() {
+    let cpp = || Language::from(tree_sitter_cpp::LANGUAGE);
+    let src = b"struct Foo { int x; };\n\
+        void a() { std::unique_ptr<Foo> p(new Foo()); }\n\
+        void b(Foo *raw) { std::unique_ptr<Foo> q(raw); }\n\
+        void c() { Foo *plain = new Foo(); }\n";
+    let nodes = all_nodes(src, "cpp", cpp());
+    let news: Vec<bool> = nodes
+        .iter()
+        .filter(|n| n.call.callee.as_deref() == Some("new"))
+        .map(|n| n.managed_resource)
+        .collect();
+    assert_eq!(
+        news,
+        vec![true, false],
+        "only the smart-pointer `new` is managed"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.call.ctor_owned_args == vec!["raw".to_string()]),
+        "`std::unique_ptr<Foo> q(raw)` adopts raw"
+    );
 }

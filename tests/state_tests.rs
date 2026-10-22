@@ -1488,3 +1488,98 @@ fn c_prefixed_allocators_still_acquire() {
         leak_ids_for("c_wrapper_allocator_leak.c")
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handles stored outside the body
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn c_outparam_store_clean() {
+    assert_no_leaks("c_outparam_store_clean.c");
+}
+
+#[test]
+fn c_global_store_clean() {
+    assert_no_leaks("c_global_store_clean.c");
+}
+
+#[test]
+fn c_late_init_local_still_leaks() {
+    // Recall guard for the local-declaration scan: `FILE *f; f = fopen(..)`.
+    assert_has("c_late_init_local_leak.c", "state-resource-leak");
+}
+
+#[test]
+fn go_package_var_init_clean() {
+    assert_no_leaks("go_package_var_init_clean.go");
+}
+
+#[test]
+fn java_field_store_clean() {
+    assert_no_leaks("java_field_store_clean.java");
+}
+
+#[test]
+fn java_local_declared_late_still_leaks() {
+    assert_has("java_local_declared_late_leak.java", "state-resource-leak");
+}
+
+#[test]
+fn cpp_member_store_clean() {
+    assert_no_leaks("cpp_member_store_clean.cpp");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Ownership handed to wrappers, smart pointers and containers
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn java_wrapper_stream_closed() {
+    assert_no_leaks("java_wrapper_stream_closed.java");
+}
+
+#[test]
+fn java_wrapper_stream_leak_still_fires() {
+    assert_has_prefix("java_wrapper_stream_leak.java", "state-resource-leak");
+}
+
+#[test]
+fn java_noncloseable_ctor_keeps_inner_stream() {
+    // `new InputSource(in)` does not own `in`; closing `in` is the release.
+    assert_no_leaks("java_noncloseable_ctor_inner_closed.java");
+}
+
+#[test]
+fn cpp_smart_ptr_adopts_raw() {
+    assert_no_leaks("cpp_smart_ptr_adopts_raw.cpp");
+}
+
+#[test]
+fn java_container_add_escape() {
+    assert_no_leaks("java_container_add_escape.java");
+}
+
+#[test]
+fn cpp_vector_push_back_escape() {
+    assert_no_leaks("cpp_vector_push_back_escape.cpp");
+}
+
+#[test]
+fn python_container_store_escape() {
+    assert_no_leaks("python_container_store_escape.py");
+}
+
+#[test]
+fn js_container_store_escape() {
+    assert_no_leaks("js_container_store_escape.js");
+}
+
+#[test]
+fn go_container_store_escape() {
+    assert_no_leaks("go_container_store_escape.go");
+}
+
+#[test]
+fn php_container_store_escape() {
+    assert_no_leaks("php_container_store_escape.php");
+}
