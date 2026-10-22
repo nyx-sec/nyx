@@ -52,6 +52,14 @@ public class UploadServlet extends HttpServlet {
         new FileOutputStream(dest).close();
     }
 
+    protected void writeReport(HttpServletRequest req) throws IOException {
+        String name = req.getParameter("f");
+        File out = new File("/var/reports", name);
+        try (Writer w = Files.newBufferedWriter(out.toPath())) {
+            w.write("report");
+        }
+    }
+
     static String sanitizePath(String s) {
         if (s.contains("..") || s.startsWith("/") || s.startsWith("\\")) {
             return "";

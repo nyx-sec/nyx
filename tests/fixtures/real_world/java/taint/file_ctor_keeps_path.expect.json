@@ -50,6 +50,12 @@
       "line_range": [52, 52],
       "must_match": true,
       "notes": "the multipart part's file name reaches the upload destination"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [58, 58],
+      "must_match": true,
+      "notes": "Files.newBufferedWriter opens the user-chosen path"
     }
   ]
 }
