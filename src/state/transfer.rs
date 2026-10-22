@@ -1176,6 +1176,17 @@ impl DefaultTransfer<'_> {
         if let Some(ref def) = info.taint.defines
             && let Some(def_sym) = self.get_sym(info, def)
         {
+            // `close(fd); fd = -1;` / `free(p); p = NULL;`: once a released
+            // handle's variable is overwritten with a constant it no longer
+            // names that handle, so a later guarded release
+            // (`if (fd >= 0) close(fd);`) is not a second close.  An OPEN
+            // handle keeps its state: overwriting it is a leak, not a reset.
+            let lc = state.resource.get(def_sym);
+            if info.taint.uses.is_empty() && !lc.is_empty() && !lc.contains(ResourceLifecycle::OPEN)
+            {
+                state.resource.set(def_sym, ResourceLifecycle::empty());
+                return;
+            }
             // SAFE-FOR-FIELD-LHS: when the LHS is a member expression
             // (struct field / object property), do NOT track the field as
             // a separate resource — the parent struct/object owns the

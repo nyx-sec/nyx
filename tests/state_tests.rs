@@ -1655,3 +1655,17 @@ fn python_cursor_connection_leak_reports_connection() {
         leak_ids_for(file)
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handle variables reset after release
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fd_reset_after_close_is_not_double_close() {
+    assert_no_state_findings("fd_reset_after_close_clean.c");
+}
+
+#[test]
+fn double_close_without_reset_still_fires() {
+    assert_has("double_close_without_reset.c", "state-double-close");
+}
