@@ -2523,3 +2523,120 @@ func h() {
         "new(non-writer-struct) must not type as FileHandle"
     );
 }
+
+/// `cfg-unguarded-sink` findings for a JS snippet.
+fn js_unguarded_sinks(src: &[u8]) -> Vec<CfgFinding> {
+    parse_and_analyse(
+        &guards::UnguardedSink,
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    )
+    .into_iter()
+    .filter(|f| f.rule_id == "cfg-unguarded-sink")
+    .collect()
+}
+
+#[test]
+fn equality_pin_guards_only_the_pinned_edge() {
+    // Both clauses pin `dir`, so the body only runs with a literal.
+    let pinned = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    if (dir === 'asc' || dir === 'desc') {
+        eval(dir);
+    }
+}
+"#;
+    assert!(js_unguarded_sinks(pinned).is_empty());
+
+    // After the join `dir` is anything again.
+    let after_join = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    if (dir === 'asc') {
+        console.log('ascending');
+    }
+    eval(dir);
+}
+"#;
+    assert_eq!(js_unguarded_sinks(after_join).len(), 1);
+
+    // The second disjunct does not pin `dir`.
+    let mixed = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    const flag = req.query.flag;
+    if (dir === 'asc' || flag) {
+        eval(dir);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(mixed).len(), 1);
+
+    // A pin on another variable does not guard this sink.
+    let unrelated = br#"
+async function handler(req) {
+    const cmd = req.query.cmd;
+    const mode = req.query.mode;
+    if (mode === 'debug') {
+        eval(cmd);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(unrelated).len(), 1);
+}
+
+#[test]
+fn relative_url_guard_covers_only_the_passing_edge() {
+    let safe = br#"
+function login(req, res) {
+    const next = req.query.next;
+    if (!next.startsWith('/') || next.startsWith('//')) {
+        return res.redirect('/');
+    }
+    res.redirect(next);
+}
+"#;
+    assert!(js_unguarded_sinks(safe).is_empty());
+
+    let reject_branch = br#"
+function login(req, res) {
+    const next = req.query.next;
+    if (!next.startsWith('/') || next.startsWith('//')) {
+        res.redirect(next);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(reject_branch).len(), 1);
+}
+
+#[test]
+fn error_fallthrough_skips_conditional_expression_conditions() {
+    let fallthrough = |src: &[u8], lang: &str, ts: Language| {
+        parse_and_analyse(&error_handling::IncompleteErrorHandling, src, lang, ts)
+            .into_iter()
+            .filter(|f| f.rule_id == "cfg-error-fallthrough")
+            .count()
+    };
+    // The ternary picks a message on both arms; nothing should return.
+    let js = br#"
+function show(db, error, version) {
+  const message = error > 0 ? 'too old' : 'ok';
+  db.query('INSERT INTO log VALUES (' + version + ')');
+  return message;
+}
+"#;
+    let ts = || Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(fallthrough(js, "javascript", ts()), 0);
+    // The statement form still reports an error check that falls through.
+    let js_if = br#"
+function show(db, error, version) {
+  if (error) {
+    console.log('too old');
+  }
+  db.query('INSERT INTO log VALUES (' + version + ')');
+}
+"#;
+    assert_eq!(fallthrough(js_if, "javascript", ts()), 1);
+}

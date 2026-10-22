@@ -4909,4 +4909,11 @@ fn conditional_expression_assignments_lower_to_a_diamond() {
     let short = b"<?php\nfunction h() {\n  $sort = $_GET['s'] ?: 'name';\n  run($sort);\n}\n";
     let conds = if_condition_texts(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
     assert!(conds.is_empty(), "php short ternary: {conds:?}");
+    let fc = parse_to_file_cfg(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    let defines_sort = fc
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .any(|n| n.taint.defines.as_deref() == Some("sort"));
+    assert!(defines_sort, "php short ternary assignment was dropped");
 }

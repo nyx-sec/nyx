@@ -2701,32 +2701,91 @@ pub(super) fn suffix_matches_at_leaf_boundary(callee_lower: &str, suffix: &str) 
 ///
 /// Unlike [`find_guard_nodes`] these only guard a sink that reads one of the
 /// pinned variables, so an unrelated `if (mode === 'debug')` above a sink
-/// does not hide it.
+/// does not hide it.  The returned node is the first node on the pinning
+/// edge (the equal / present side), and only when every way into it is a
+/// pinning edge for the same variable: the body of `a === 'x' || a === 'y'`
+/// qualifies, the body of `a === 'x' || flag` and the code after
+/// `if (a === 'x') log()` do not.
 fn find_value_pinning_guards(ctx: &AnalysisContext) -> Vec<(NodeIndex, SmallVec<[String; 2]>)> {
+    use petgraph::Direction;
+    use petgraph::visit::EdgeRef;
+
+    let pins: Vec<(NodeIndex, SmallVec<[String; 2]>, NodeIndex)> = ctx
+        .cfg
+        .node_indices()
+        .filter_map(|idx| {
+            let (vars, on_true) = pinned_edge(idx, ctx)?;
+            Some((idx, vars, branch_successor(idx, on_true, ctx)?))
+        })
+        .collect();
     let mut out = Vec::new();
-    for idx in ctx.cfg.node_indices() {
-        let info = &ctx.cfg[idx];
-        if info.kind != StmtKind::If {
-            continue;
-        }
-        let Some(cond_text) = info.condition_text.as_deref() else {
-            continue;
-        };
-        if classify_condition(cond_text) == PredicateKind::Comparison
-            && let Some((target, _)) = crate::taint::path_state::equality_literal_guard(cond_text)
-            && info.condition_vars.iter().any(|v| *v == target)
-        {
-            out.push((idx, SmallVec::from_elem(target, 1)));
-            continue;
-        }
-        if let Some(lookup) = cond_membership_lookup(idx, ctx) {
-            let mut vars: SmallVec<[String; 2]> = SmallVec::new();
-            vars.push(lookup.key.clone());
-            vars.extend(lookup.value_var.clone());
-            out.push((idx, vars));
+    for (_, vars, succ) in &pins {
+        let only_pinned_entries = ctx.cfg.edges_directed(*succ, Direction::Incoming).all(|e| {
+            pins.iter().any(|(p, pv, ps)| {
+                *p == e.source() && ps == succ && pv.iter().any(|v| vars.contains(v))
+            })
+        });
+        if only_pinned_entries && !out.iter().any(|(n, _)| n == succ) {
+            out.push((*succ, vars.clone()));
         }
     }
     out
+}
+
+/// The node an `If` node's TRUE (or FALSE) branch starts at.  The builder
+/// marks the then-branch with an explicit TRUE edge; the other side is a
+/// FALSE edge or, for an `if` without `else`, the plain fall-through to the
+/// next statement.  `None` when the other side is ambiguous.
+fn branch_successor(cond: NodeIndex, on_true: bool, ctx: &AnalysisContext) -> Option<NodeIndex> {
+    use crate::cfg::EdgeKind;
+    use petgraph::visit::EdgeRef;
+    let target_of = |kind: EdgeKind| {
+        ctx.cfg
+            .edges(cond)
+            .find(|e| *e.weight() == kind)
+            .map(|e| e.target())
+    };
+    let true_succ = target_of(EdgeKind::True);
+    if on_true {
+        return true_succ;
+    }
+    if let Some(f) = target_of(EdgeKind::False) {
+        return Some(f);
+    }
+    let mut others = ctx
+        .cfg
+        .edges(cond)
+        .filter(|e| *e.weight() == EdgeKind::Seq)
+        .map(|e| e.target())
+        .filter(|t| Some(*t) != true_succ);
+    let first = others.next()?;
+    others.all(|t| t == first).then_some(first)
+}
+
+/// The variables an `If` node pins and whether they are pinned on its TRUE
+/// branch: the equal side of `x == 'lit'`, the present side of a Go
+/// comma-ok lookup.
+fn pinned_edge(idx: NodeIndex, ctx: &AnalysisContext) -> Option<(SmallVec<[String; 2]>, bool)> {
+    let info = &ctx.cfg[idx];
+    if info.kind != StmtKind::If {
+        return None;
+    }
+    let cond_text = info.condition_text.as_deref()?;
+    if classify_condition(cond_text) == PredicateKind::Comparison
+        && let Some((target, op_is_eq)) =
+            crate::taint::path_state::equality_literal_guard(cond_text)
+        && info.condition_vars.iter().any(|v| *v == target)
+    {
+        return Some((
+            SmallVec::from_elem(target, 1),
+            op_is_eq != info.condition_negated,
+        ));
+    }
+    let lookup = cond_membership_lookup(idx, ctx)?;
+    let mut vars: SmallVec<[String; 2]> = SmallVec::new();
+    vars.push(lookup.key.clone());
+    vars.extend(lookup.value_var.clone());
+    Some((vars, !info.condition_negated))
 }
 
 /// The map lookup whose presence result is this condition's single
@@ -2761,6 +2820,22 @@ fn cond_membership_lookup<'c>(
         }
     }
     best.map(|(_, l)| l)
+}
+
+/// The node `cond`'s TRUE (or FALSE) branch starts at, when `cond` is its
+/// only way in.
+fn sole_successor_on_edge(
+    cond: NodeIndex,
+    on_true: bool,
+    ctx: &AnalysisContext,
+) -> Option<NodeIndex> {
+    use petgraph::Direction;
+    use petgraph::visit::EdgeRef;
+    let succ = branch_successor(cond, on_true, ctx)?;
+    ctx.cfg
+        .edges_directed(succ, Direction::Incoming)
+        .all(|e| e.source() == cond)
+        .then_some(succ)
 }
 
 /// True when the `//` test at `cond` has a leading-`/` test on the same
@@ -2885,8 +2960,15 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                     // rejection of protocol-relative `//host` keeps a
                     // redirect on-site.  The split form registers on the
                     // `//` test when the same function also tests the same
-                    // value for a leading `/`.
-                    result.push((idx, Cap::OPEN_REDIRECT));
+                    // value for a leading `/`.  The guard is the first node
+                    // on the passing edge (TRUE for the conjunction, FALSE
+                    // for a `//` test), so a redirect inside the reject
+                    // branch stays unguarded.
+                    let passes_on_true =
+                        (kind == PredicateKind::RelativeUrlValidated) != info.condition_negated;
+                    if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
+                        result.push((succ, Cap::OPEN_REDIRECT));
+                    }
                 } else if matches!(
                     kind,
                     PredicateKind::ShellMetaValidated | PredicateKind::BoundedLength
@@ -3403,8 +3485,8 @@ fn chain_callee_fragments_with_text<'a>(
     frags
 }
 
-/// True when a redirect-style sink's URL argument starts with a constant
-/// prefix that pins the origin (`res.redirect(`/users/${id}`)`,
+/// True when a redirect-style sink's target is a literal, or starts with a
+/// constant prefix that pins the origin (`res.redirect(`/users/${id}`)`,
 /// `redirect_to "/users/#{id}"`, `redirect("https://app.example/" + p)`).
 /// The prefix is the AST-derived [`crate::cfg::NodeInfo::string_prefix`],
 /// so a bare `"/" + next` (which `next = "/evil.com"` turns into
@@ -3415,10 +3497,26 @@ pub(crate) fn redirect_target_origin_locked(info: &crate::cfg::NodeInfo) -> bool
     info.call.callee.as_deref().is_some_and(|c| {
         let c = c.to_ascii_lowercase();
         c.ends_with("redirect") || c.ends_with("redirect_to")
-    }) && info
-        .string_prefix
-        .as_deref()
-        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
+    }) && (redirect_url_arg_is_literal(info)
+        || info
+            .string_prefix
+            .as_deref()
+            .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin))
+}
+
+/// The URL argument of a redirect call is a string literal: the first
+/// positional argument, or the second after a numeric status
+/// (`res.redirect(301, '/home')`).  A literal target is chosen by the
+/// developer, whatever taint the receiver carries.
+fn redirect_url_arg_is_literal(info: &crate::cfg::NodeInfo) -> bool {
+    let lits = &info.call.arg_string_literals;
+    let status_first = info.call.arg_uses.first().is_some_and(|u| u.is_empty());
+    let url = match lits.as_slice() {
+        [None, second] if status_first => second,
+        [first, ..] => first,
+        [] => return false,
+    };
+    url.is_some()
 }
 
 /// Check if this sink is an internal redirect: a redirect call (SSRF or

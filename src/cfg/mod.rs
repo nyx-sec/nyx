@@ -52,7 +52,7 @@ use helpers::{
 use conditions::{
     build_condition_chain, build_ternary_diamond, classify_ternary_lhs,
     detect_rust_let_match_guard, emit_rust_match_guard_if, find_ternary_rhs_wrapper,
-    is_boolean_operator, is_ternary_node, unwrap_parens,
+    is_boolean_operator, ternary_parts, unwrap_parens,
 };
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
@@ -1022,6 +1022,13 @@ pub struct NodeInfo {
     /// inline `if !m[k] { return }`.  `None` everywhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership_lookup: Option<MembershipLookup>,
+
+    /// True for the `If` node `build_ternary_diamond` creates for the
+    /// condition of `x = c ? a : b` / `x = a if c else b`.  Both arms yield
+    /// a value, so rules about a branch that should have returned
+    /// (`cfg-error-fallthrough`) do not apply to it.
+    #[serde(default)]
+    pub is_ternary_condition: bool,
 }
 
 /// A `map[key]` read whose presence result lands in `result_var`.  See
@@ -4209,6 +4216,7 @@ pub(super) fn push_node<'a>(
         } else {
             None
         },
+        is_ternary_condition: false,
     });
 
     debug!(
@@ -8000,7 +8008,7 @@ pub(super) fn build_sub<'a>(
                 )
             {
                 let rhs = unwrap_parens(right);
-                if is_ternary_node(rhs) {
+                if ternary_parts(rhs).is_some() {
                     let (lhs_text, lhs_labels) =
                         classify_ternary_lhs(left, lang, code, analysis_rules);
                     return build_ternary_diamond(

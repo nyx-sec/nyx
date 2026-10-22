@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 718
+    "corpus_size": 719
   },
   "cases": [
     {
@@ -22760,6 +22760,42 @@
       ],
       "disabled": false,
       "notes": "f-string with a fixed `/users/` prefix keeps the redirect on this origin."
+    },
+    {
+      "case_id": "php-cmdi-short-ternary-default-001",
+      "file": "php/cmdi/cmdi_short_ternary_default.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "short-ternary"
+      ],
+      "disabled": false,
+      "notes": "The PHP `a ?: b` short form has no separate consequence and stays a plain assignment, so the request value still reaches system()."
     }
   ]
 }

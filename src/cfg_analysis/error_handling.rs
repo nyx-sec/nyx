@@ -421,7 +421,10 @@ impl CfgAnalysis for IncompleteErrorHandling {
             // mention `err` even though the condition doesn't.  Use
             // `info.condition_vars`, which is populated strictly from the
             // condition subtree (`extract_condition_raw`).
-            if info.kind != StmtKind::If {
+            // A conditional expression (`msg = error > 0 ? ko : ok`) picks a
+            // value on both arms; there is no branch that should have
+            // returned.
+            if info.kind != StmtKind::If || info.is_ternary_condition {
                 continue;
             }
 
