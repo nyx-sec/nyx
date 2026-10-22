@@ -635,6 +635,24 @@ pub(crate) fn is_url_identity_field(field_name: &str) -> bool {
     )
 }
 
+/// Classes whose instance is the string or path value of its constructor
+/// arguments rather than an opaque wrapper object: `java.io.File` is the
+/// path, and `String` / `StringBuilder` / `StringBuffer` are the text.  The
+/// constructor cap narrowing in the SSA call transfer keeps string-shaped
+/// caps (FILE_IO, ...) on these, so `new File(base, name)` still carries the
+/// traversal into `new FileInputStream(f)`.  Stream classes such as
+/// `FileInputStream` are not values and are not listed.
+pub(crate) fn constructor_is_value_wrapper(lang: Lang, class: &str) -> bool {
+    let leaf = class.rsplit("::").next().unwrap_or(class);
+    let leaf = leaf.split('<').next().unwrap_or(leaf);
+    let leaf = leaf.rsplit('.').next().unwrap_or(leaf).trim();
+    match lang {
+        Lang::Java => matches!(leaf, "File" | "String" | "StringBuilder" | "StringBuffer"),
+        Lang::JavaScript | Lang::TypeScript => leaf == "String",
+        _ => false,
+    }
+}
+
 /// Infer a type from a constructor, factory, or allocator call.
 ///
 /// Maps known constructor/factory/allocator patterns to security-relevant
@@ -662,14 +680,23 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "OkHttpClient" | "WebClient" | "RestTemplate" => Some(TypeKind::HttpClient),
             "getConnection" => Some(TypeKind::DatabaseConnection),
             "MongoClient" => Some(TypeKind::DatabaseConnection),
-            // JDBC `conn.createStatement()` / `conn.prepareCall()` produce a
-            // `Statement` / `CallableStatement` whose `.execute(sql)` is a
-            // first-class SQL sink.  Mapped to `DatabaseConnection` so the
-            // type-qualified label `DatabaseConnection.execute` (in
-            // `labels/java.rs`) fires for `s.execute(query)` calls without
-            // widening the bare `execute` matcher.  Surfaced by
-            // GHSA-h8cj-hpmg-636v (Appsmith FilterDataServiceCE.dropTable).
-            "createStatement" | "prepareCall" => Some(TypeKind::DatabaseConnection),
+            // JDBC `conn.createStatement()` / `conn.prepareStatement(sql)` /
+            // `conn.prepareCall(sql)` produce a `Statement` /
+            // `PreparedStatement` / `CallableStatement` whose `.execute*`
+            // calls are first-class SQL sinks.  Mapped to
+            // `DatabaseConnection` so the type-qualified label
+            // `DatabaseConnection.execute` (in `labels/java.rs`) fires for
+            // `s.execute(query)` calls without widening the bare `execute`
+            // matcher.  A prepared statement carries the taint of the SQL
+            // text it was prepared from, so `conn.prepareStatement("..'" + p
+            // + "'")` followed by `ps.execute()` is reported; bind values set
+            // with `ps.setString(..)` never reach the SQL text, and a literal
+            // template carries no taint.  Surfaced by GHSA-h8cj-hpmg-636v
+            // (Appsmith FilterDataServiceCE.dropTable) and the OWASP
+            // Benchmark prepareStatement SQLi cases.
+            "createStatement" | "prepareStatement" | "prepareCall" => {
+                Some(TypeKind::DatabaseConnection)
+            }
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
             // Phase 13 — `java.nio.file.Paths.get(...)` returns a `Path`,
@@ -3297,6 +3324,50 @@ mod tests {
             TypeKind::HibernateSession.label_prefix(),
             Some("HibernateSession")
         );
+    }
+
+    #[test]
+    fn constructor_type_java_jdbc_statements() {
+        for callee in [
+            "conn.createStatement",
+            "conn.prepareStatement",
+            "this.connection.prepareStatement",
+            "conn.prepareCall",
+        ] {
+            assert_eq!(
+                constructor_type(Lang::Java, callee),
+                Some(TypeKind::DatabaseConnection),
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_wrapper_constructors() {
+        for class in [
+            "File",
+            "java.io.File",
+            "String",
+            "StringBuilder",
+            "java.lang.StringBuffer",
+        ] {
+            assert!(constructor_is_value_wrapper(Lang::Java, class), "{class}");
+        }
+        // Stream and reader objects wrap a handle, not the path text, and
+        // unknown classes keep the SDK-wrapper narrowing.
+        for class in [
+            "FileInputStream",
+            "BufferedReader",
+            "Scanner",
+            "Stripe",
+            "ArrayList<String>",
+        ] {
+            assert!(!constructor_is_value_wrapper(Lang::Java, class), "{class}");
+        }
+        assert!(constructor_is_value_wrapper(Lang::JavaScript, "String"));
+        assert!(!constructor_is_value_wrapper(Lang::JavaScript, "Stripe"));
+        assert!(!constructor_is_value_wrapper(Lang::Python, "File"));
+        assert!(!constructor_is_value_wrapper(Lang::Go, "String"));
     }
 
     #[test]

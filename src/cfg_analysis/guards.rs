@@ -949,10 +949,11 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
     if sink_caps != Cap::SQL_QUERY {
         return false;
     }
-    // Restrict to PHP.  Java / Kotlin / JVM langs already cover the
-    // safe prepared-statement shape via the `prepareStatement` Sanitizer
-    // rule that dominates `pstmt.executeUpdate()` / `pstmt.executeQuery()`
-    // at the structural finding site.  PHP's Doctrine DBAL `QueryBuilder`
+    // Restrict to PHP.  On Java the zero-arg `pstmt.executeUpdate()` /
+    // `pstmt.executeQuery()` has only its receiver as an operand, which
+    // `is_all_args_constant` already treats as part of the callee, and
+    // the chained literal shape gets a synthesized sanitizer at CFG
+    // build.  PHP's Doctrine DBAL `QueryBuilder`
     // and Drupal `Connection::prepareStatement` shapes need explicit
     // structural support because the receiver isn't always sanitized in
     // a way the dominator-Sanitizer scan recognises (chain receiver,

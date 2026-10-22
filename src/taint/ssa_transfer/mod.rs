@@ -6601,7 +6601,19 @@ pub(super) fn transfer_inst(
             //   - FMT_STRING: printf-style format args only.
             //   - URL_ENCODE: URL components only.
             //   - JSON_PARSE: parser inputs only.
-            if info.call.is_constructor && !return_bits.is_empty() {
+            //
+            // Classes whose instance IS the path or string value (Java
+            // `File`, `String`, `StringBuilder`; see
+            // `constructor_is_value_wrapper`) keep every cap.  When the CFG
+            // moved an inline source argument into the callee
+            // (`new File(req.getParameter("f"))`), the class name is in
+            // `outer_callee`.
+            let ctor_is_value =
+                crate::ssa::type_facts::constructor_is_value_wrapper(transfer.lang, callee)
+                    || info.call.outer_callee.as_deref().is_some_and(|oc| {
+                        crate::ssa::type_facts::constructor_is_value_wrapper(transfer.lang, oc)
+                    });
+            if info.call.is_constructor && !ctor_is_value && !return_bits.is_empty() {
                 let strip = Cap::FILE_IO | Cap::FMT_STRING | Cap::URL_ENCODE | Cap::JSON_PARSE;
                 return_bits &= !strip;
                 if return_bits.is_empty() {
@@ -9904,6 +9916,26 @@ fn resolve_op_slot(
     HeapSlot::Elements
 }
 
+/// True when `v` is the synthetic Param scoped lowering made for a free
+/// Java name that is a class (`Paths`, `java.nio.file.Files`): a free name
+/// whose last segment is UpperCamelCase.  Free fields are lowerCamelCase and
+/// constants UPPER_SNAKE_CASE, so neither matches.
+fn is_java_class_receiver(ssa: &SsaBody, v: SsaValue) -> bool {
+    if !ssa.synthetic_externals.contains(&v) {
+        return false;
+    }
+    let Some(name) = ssa
+        .value_defs
+        .get(v.0 as usize)
+        .and_then(|d| d.var_name.as_deref())
+    else {
+        return false;
+    };
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    leaf.starts_with(|c: char| c.is_ascii_uppercase())
+        && leaf.chars().any(|c| c.is_ascii_lowercase())
+}
+
 /// Handle container operations: propagate taint between receiver and arguments.
 ///
 /// **Store** operations (push, append, set, add, insert, etc.):
@@ -9931,6 +9963,13 @@ fn try_container_propagation(
         Some(op) => op,
         None => return false,
     };
+
+    // A static call on a Java class (`Paths.get(p)`) is not a container
+    // operation.  Scoped lowering gives the free class name a synthetic
+    // Param, so it would read as a load from a container named `Paths` and
+    // drop the argument taint.  Plain lowering leaves that receiver unset;
+    // treat the class receiver the same way.
+    let receiver = &receiver.filter(|&r| !(lang == Lang::Java && is_java_class_receiver(ssa, r)));
 
     // Resolve the container SSA value.
     // Languages with `Kind::CallMethod` (Java, Ruby, PHP, Rust, etc.) set

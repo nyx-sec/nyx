@@ -121,12 +121,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::URL_ENCODE),
         case_sensitive: false,
     },
-    // Parameterized queries prevent SQL injection
-    LabelRule {
-        matchers: &["prepareStatement"],
-        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
-        case_sensitive: false,
-    },
     // Phase 15 — JPA / Hibernate `Query.setParameter(name, value)` /
     // `Query.setParameterList(...)` bind a positional / named parameter
     // and return the same query object.  The bind step does NOT inject
@@ -1231,5 +1225,11 @@ mod tests {
                 "{callee}"
             );
         }
+    }
+
+    #[test]
+    fn prepare_statement_is_not_a_sanitizer() {
+        use crate::labels::classify;
+        assert_eq!(classify("java", "conn.prepareStatement", None), None);
     }
 }

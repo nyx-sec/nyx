@@ -4932,7 +4932,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "prepareStatement sanitizes SQL input \u2014 should produce no SQL taint finding"
+      "notes": "literal prepareStatement template with the value bound through setString; the SQL text carries no taint, so no SQL taint finding"
     },
     {
       "case_id": "java-sqli-stmt-execute-002",
@@ -20900,6 +20900,185 @@
       ],
       "disabled": false,
       "notes": "Precision guard for JDBC Statement-from-Connection ownership (interior-node sibling of the ResultSet and borrowed-connection rules). A PreparedStatement opened on a Connection acquired locally in the same body (here borrowed from a managed Session via session.getConnection() and released with a static closeQuietly helper the release detector does not recognise) is transitively closed by that connection's lifecycle, so the standalone statement leak is a false positive. Suppressed at both the state and cfg passes via the derivation edge ps -> con. Distilled from sonarqube server/sonar-db-dao/.../FileSourceDao.java:66 and the Ce*Dao connection-per-statement shape. A statement on a long-lived field/parameter connection this body does not track is unaffected and still leaks (recall: tests/fixtures/state/java_statement_from_field_connection_leaks.java)."
+    },
+    {
+      "case_id": "java-sqli-prepared-concat-001",
+      "file": "java/sqli/SqliPreparedStatementConcat.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "prepareStatement",
+        "string-concat",
+        "owasp-shape"
+      ],
+      "disabled": false,
+      "notes": "SQL text concatenated before prepareStatement is executed by statement.execute(); setString binds a constant"
+    },
+    {
+      "case_id": "java-path_traversal-003",
+      "file": "java/path_traversal/FileHandleVarTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "file-constructor",
+        "upload"
+      ],
+      "disabled": false,
+      "notes": "new File(base, name) keeps the user-chosen path into FileOutputStream"
+    },
+    {
+      "case_id": "java-path_traversal-004",
+      "file": "java/path_traversal/StringCtorPassthroughTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "string-constructor"
+      ],
+      "disabled": false,
+      "notes": "new String(param.getBytes()) is the same text as the parameter"
+    },
+    {
+      "case_id": "java-path_traversal-005",
+      "file": "java/path_traversal/PathsGetSpringTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "paths-get",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "Paths.get(base, file) in a Spring handler is a static factory, not a container load"
+    },
+    {
+      "case_id": "java-safe-file-ctor-001",
+      "file": "java/safe/SafeFileCtorSanitized.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "file-constructor",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "the path sanitizer clears FILE_IO before the File constructor"
     },
     {
       "case_id": "java-safe-spring-infra-001",
