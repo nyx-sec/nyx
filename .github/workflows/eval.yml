@@ -158,7 +158,7 @@ jobs:
       # The dynamic verifier's Node build pool (Phase 23) compiles its
       # harnesses with a real node/npm toolchain.
       - name: Set up Node 20
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
 
