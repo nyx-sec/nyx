@@ -1,6 +1,6 @@
 use super::{
-    AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, StmtKind, TaintMeta, collect_idents,
-    connect_all, is_anon_fn_name, text_of,
+    AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, PYTHON_NORETURN_IMPORTS, StmtKind, TaintMeta,
+    collect_idents, connect_all, is_anon_fn_name, text_of,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify, param_config};
 use crate::ssa::type_facts::TypeKind;
@@ -1163,12 +1163,30 @@ pub(super) fn python_primitive_to_kind(t: &str) -> Option<TypeKind> {
 ///    friends are excluded — they are conditional.
 ///  * Bare `Exit` / `exit` on an arbitrary receiver (`session.exit()`) is
 ///    *not* matched; only the qualified std forms are.
+///  * Framework request-abort helpers are included when they cannot return
+///    by contract and the name is specific to the framework: WordPress
+///    `wp_die` / `wp_send_json*`, the Laravel `abort` helper (not the
+///    conditional `abort_if` / `abort_unless`), Koa `ctx.throw`, Sinatra
+///    `halt`, and the module-qualified Flask / Werkzeug / Bottle `abort`.
+///    A bare Python `abort` is a terminator only when the file imports it
+///    from one of those modules; see [`is_terminator_call`].
 fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
     // Receiver-qualified std terminators are matched on the full callee text,
     // never on the trailing segment, so a user-defined `server.Exit()` or
     // `session.exit()` is not mistaken for `os.Exit` / `sys.exit`.
     match lang {
-        "php" => matches!(callee, "die" | "exit"),
+        // A leading `\` is the global-namespace qualifier (`\abort(403)`
+        // inside a namespaced Laravel controller).
+        "php" => matches!(
+            callee.strip_prefix('\\').unwrap_or(callee),
+            "die"
+                | "exit"
+                | "wp_die"
+                | "wp_send_json"
+                | "wp_send_json_success"
+                | "wp_send_json_error"
+                | "abort"
+        ),
         // `_Exit` / `quick_exit` are C11; `err`/`errx` are BSD and exit(3)
         // internally.  `abort` raises SIGABRT and never returns.
         "c" | "cpp" => matches!(
@@ -1188,7 +1206,15 @@ fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
                 | "std::process::exit"
                 | "std::process::abort"
         ),
-        "python" => matches!(callee, "sys.exit" | "os._exit" | "os.abort"),
+        "python" => matches!(
+            callee,
+            "sys.exit"
+                | "os._exit"
+                | "os.abort"
+                | "flask.abort"
+                | "werkzeug.exceptions.abort"
+                | "bottle.abort"
+        ),
         "go" => matches!(
             callee,
             "panic"
@@ -1203,11 +1229,15 @@ fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
                 | "log.Panicln"
         ),
         "java" => matches!(callee, "System.exit"),
-        "javascript" | "typescript" | "tsx" => matches!(callee, "process.exit"),
-        // Ruby `exit`/`exit!`/`abort` raise SystemExit / terminate.  `raise`
-        // is deliberately absent: it is modelled as `Kind::Throw`, which the
-        // CFG already routes to handlers rather than to a dead end.
-        "ruby" => matches!(callee, "exit" | "exit!" | "abort" | "Kernel.exit"),
+        // Koa / Egg `ctx.throw` always throws an HttpError.  Matched on the
+        // conventional context parameter name only, like the `ctx.query`
+        // source rules.
+        "javascript" | "typescript" | "tsx" => matches!(callee, "process.exit" | "ctx.throw"),
+        // Ruby `exit`/`exit!`/`abort` raise SystemExit / terminate, and
+        // Sinatra / Roda `halt` throws `:halt`.  `raise` is deliberately
+        // absent: it is modelled as `Kind::Throw`, which the CFG already
+        // routes to handlers rather than to a dead end.
+        "ruby" => matches!(callee, "exit" | "exit!" | "abort" | "Kernel.exit" | "halt"),
         _ => false,
     }
 }
@@ -1228,6 +1258,11 @@ pub(super) fn is_terminator_call(
     if is_builtin_terminator(lang, callee) {
         return true;
     }
+    // Bare `abort(400)` is Flask's / Werkzeug's only when the file imported
+    // it from there.  A local `def abort(...)` keeps its fall-through edge.
+    if lang == "python" && PYTHON_NORETURN_IMPORTS.with(|s| s.borrow().contains(callee)) {
+        return true;
+    }
     if let Some(rules) = analysis_rules {
         let callee_lower = callee.to_ascii_lowercase();
         rules
@@ -1236,6 +1271,50 @@ pub(super) fn is_terminator_call(
             .any(|t| callee_lower == t.to_ascii_lowercase())
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod terminator_tests {
+    use super::is_builtin_terminator;
+
+    #[test]
+    fn framework_abort_helpers_are_terminators() {
+        for (lang, callee) in [
+            ("php", "wp_die"),
+            ("php", "\\wp_die"),
+            ("php", "abort"),
+            ("php", "\\abort"),
+            ("php", "wp_send_json_error"),
+            ("javascript", "ctx.throw"),
+            ("typescript", "ctx.throw"),
+            ("ruby", "halt"),
+            ("python", "flask.abort"),
+            ("python", "werkzeug.exceptions.abort"),
+        ] {
+            assert!(is_builtin_terminator(lang, callee), "{lang} {callee}");
+        }
+    }
+
+    #[test]
+    fn conditional_or_receiver_abort_forms_are_not_terminators() {
+        for (lang, callee) in [
+            // conditional Laravel helpers
+            ("php", "abort_if"),
+            ("php", "abort_unless"),
+            // method on an arbitrary receiver
+            ("php", "$this->abort"),
+            // redirects return
+            ("php", "wp_safe_redirect"),
+            ("javascript", "res.throw"),
+            ("javascript", "throw"),
+            // bare Python `abort` needs the flask/werkzeug import binding
+            ("python", "abort"),
+            ("python", "self.abort"),
+            ("ruby", "r.halt"),
+        ] {
+            assert!(!is_builtin_terminator(lang, callee), "{lang} {callee}");
+        }
     }
 }
 

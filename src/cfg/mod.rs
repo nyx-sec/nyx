@@ -61,8 +61,8 @@ pub(crate) use helpers::{
     slice_str, text_of,
 };
 use imports::{
-    extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
-    rust_bare_join_crate_prefix,
+    collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
+    extract_promisify_aliases, rust_bare_join_crate_prefix,
 };
 #[cfg(test)]
 use literals::has_sql_placeholders;
@@ -170,6 +170,12 @@ thread_local! {
     pub(crate) static LOCAL_RECEIVER_TYPES:
         RefCell<HashMap<(usize, String), crate::ssa::type_facts::TypeKind>>
         = RefCell::new(HashMap::new());
+    /// Per-file set of local names bound to a never-returning Python
+    /// framework helper (`from flask import abort`, `... import abort as
+    /// deny`).  Populated at the top of [`build_cfg`] for Python and read
+    /// by `params::is_terminator_call`.
+    pub(crate) static PYTHON_NORETURN_IMPORTS: RefCell<std::collections::HashSet<String>>
+        = RefCell::new(std::collections::HashSet::new());
 }
 
 /// Walk every function-kind node in the tree.  Within each function
@@ -8089,6 +8095,13 @@ pub(crate) fn build_cfg<'a>(
     // misses.  Java-only today; the helper is lang-agnostic, gated on
     // `constructor_type` recognising the RHS callee.
     populate_local_receiver_types(tree, lang, code);
+    // bind the local names of `from flask import abort` (and friends) so
+    // the builder dead-ends those calls like `sys.exit`.
+    if lang == "python" {
+        PYTHON_NORETURN_IMPORTS.with(|cell| {
+            *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
+        });
+    }
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -8235,6 +8248,7 @@ pub(crate) fn build_cfg<'a>(
     DTO_CLASSES.with(|cell| cell.borrow_mut().clear());
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+    PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
 
     // collect every
     // declared inheritance / impl / implements relationship in the

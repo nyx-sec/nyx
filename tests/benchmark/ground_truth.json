@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 688
+    "corpus_size": 695
   },
   "cases": [
     {
@@ -21892,6 +21892,205 @@
       ],
       "disabled": false,
       "notes": "The `..` check covers the first value of `name`; the reassigned value only passes the leading-`/` check. Path narrowing must apply to the definition that reaches each check, not the latest definition of the same name."
+    },
+    {
+      "case_id": "py-safe-flask-abort-allowlist-001",
+      "file": "python/safe/safe_flask_abort_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "flask-abort"
+      ],
+      "disabled": false,
+      "notes": "`abort()` imported from flask never returns, so the shell sink is reachable only after the allowlist check held."
+    },
+    {
+      "case_id": "py-cmdi-flask-abort-presence-only-001",
+      "file": "python/cmdi/cmdi_flask_abort_presence_only.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "terminator",
+        "flask-abort",
+        "presence-check"
+      ],
+      "disabled": false,
+      "notes": "`if not cmd: abort(400)` only rejects an empty value; the terminator must not turn a presence check into validation."
+    },
+    {
+      "case_id": "py-cmdi-local-abort-helper-001",
+      "file": "python/cmdi/cmdi_local_abort_helper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "terminator",
+        "local-helper"
+      ],
+      "disabled": false,
+      "notes": "A locally defined `abort` that only logs returns normally; without a flask/werkzeug import it is not a terminator and the rejected value reaches the shell."
+    },
+    {
+      "case_id": "php-safe-wp-die-is-numeric-001",
+      "file": "php/safe/safe_wp_die_is_numeric.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "type-check",
+        "terminator",
+        "wp-die"
+      ],
+      "disabled": false,
+      "notes": "WordPress `wp_die()` exits, so the query runs only on the `is_numeric` path."
+    },
+    {
+      "case_id": "php-safe-laravel-abort-allowlist-001",
+      "file": "php/safe/safe_laravel_abort_allowlist.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "laravel-abort",
+        "namespaced"
+      ],
+      "disabled": false,
+      "notes": "Laravel `\\abort(403)` in a namespaced controller throws an HttpException; the command runs only after the strict `in_array` allowlist held."
+    },
+    {
+      "case_id": "js-safe-koa-ctx-throw-allowlist-001",
+      "file": "javascript/safe/safe_koa_ctx_throw_allowlist.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "koa"
+      ],
+      "disabled": false,
+      "notes": "Koa `ctx.throw()` always throws an HttpError, so execSync only sees allowlisted commands."
+    },
+    {
+      "case_id": "rb-safe-sinatra-halt-allowlist-001",
+      "file": "ruby/safe/safe_sinatra_halt_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "sinatra-halt"
+      ],
+      "disabled": false,
+      "notes": "Sinatra `halt` throws :halt and ends the request; the backtick command runs only for allowlisted values."
     }
   ]
 }

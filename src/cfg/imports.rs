@@ -1,7 +1,7 @@
 use super::{
     ImportBinding, ImportBindings, PromisifyAlias, PromisifyAliases, member_expr_text, text_of,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Tree};
 
 /// File-local view of every JS/TS import binding: local-name → source-module
@@ -614,3 +614,70 @@ fn scoped_identifier_matches(node: Node, code: &[u8], crate_prefix: &str, leaf: 
 }
 
 //  === PUBLIC ENTRY POINT =================================================
+
+/// Python modules whose `abort` helper always raises an `HTTPException`.
+const PYTHON_ABORT_MODULES: &[&str] = &[
+    "flask",
+    "quart",
+    "werkzeug",
+    "werkzeug.exceptions",
+    "bottle",
+    "flask_restful",
+    "flask_restx",
+];
+
+/// Local names bound to a never-returning Python framework `abort` helper:
+/// `from flask import abort` binds `abort`, `from werkzeug.exceptions import
+/// abort as deny` binds `deny`.  Function-level imports count too, since the
+/// binding is what the call site resolves against.  Wildcard and relative
+/// imports are ignored.
+pub(super) fn collect_python_noreturn_imports(root: Node, code: &[u8]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if !code.windows(5).any(|w| w == b"abort") {
+        return out;
+    }
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "import_from_statement" {
+            let from_abort_module = node
+                .child_by_field_name("module_name")
+                .filter(|m| m.kind() == "dotted_name")
+                .and_then(|m| text_of(m, code))
+                .is_some_and(|m| PYTHON_ABORT_MODULES.contains(&m.as_str()));
+            if from_abort_module {
+                let mut c = node.walk();
+                for name in node.children_by_field_name("name", &mut c) {
+                    match name.kind() {
+                        "dotted_name" if text_of(name, code).as_deref() == Some("abort") => {
+                            out.insert("abort".to_string());
+                        }
+                        "aliased_import" => {
+                            let original = name
+                                .child_by_field_name("name")
+                                .and_then(|n| text_of(n, code));
+                            let alias = name
+                                .child_by_field_name("alias")
+                                .and_then(|a| text_of(a, code));
+                            if original.as_deref() == Some("abort")
+                                && let Some(alias) = alias
+                            {
+                                out.insert(alias);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+        // Imports are statements; expressions never contain one.
+        if node.kind().ends_with("expression") || node.kind() == "call" {
+            continue;
+        }
+        let mut c = node.walk();
+        for ch in node.named_children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    out
+}
