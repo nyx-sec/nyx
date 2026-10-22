@@ -58,7 +58,7 @@ jobs:
           npm run build
 
       - name: Restore fuzz corpus
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
