@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 687
+    "corpus_size": 688
   },
   "cases": [
     {
@@ -21856,6 +21856,42 @@
       ],
       "disabled": false,
       "notes": "Vulnerable counterpart of rs-safe-004: only `..` is rejected, so an absolute FILE_PATH still reads."
+    },
+    {
+      "case_id": "js-path_traversal-reassigned-between-checks-001",
+      "file": "javascript/path_traversal/path_traversal_reassigned_between_checks.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "The `..` check covers the first value of `name`; the reassigned value only passes the leading-`/` check. Path narrowing must apply to the definition that reaches each check, not the latest definition of the same name."
     }
   ]
 }

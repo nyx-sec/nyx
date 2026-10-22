@@ -1555,6 +1555,7 @@ fn compute_succ_states(
                     &class.path,
                     &effective_vars,
                     ssa,
+                    block.id,
                     transfer.base_aliases,
                     effective_negated,
                 );
@@ -2988,6 +2989,36 @@ fn resolve_var_to_ssa_value(var_name: &str, ssa: &SsaBody, block: BlockId) -> Op
     best_in_block.or(best_outside)
 }
 
+/// The SSA value of `var_name` that is live at the end of `block`: the last
+/// definition in the block (body, then phis), else the first one found
+/// walking predecessors breadth-first.  SSA places a phi wherever two
+/// definitions meet, so every backward path from `block` hits the same
+/// reaching definition first and the walk order does not matter.
+/// Returns `None` when no definition is reachable (an orphan catch block,
+/// a free variable), in which case callers narrow nothing.
+fn reaching_def_at_block_end(var_name: &str, ssa: &SsaBody, block: BlockId) -> Option<SsaValue> {
+    let mut queue: VecDeque<BlockId> = VecDeque::new();
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    queue.push_back(block);
+    while let Some(b) = queue.pop_front() {
+        if !seen.insert(b) {
+            continue;
+        }
+        let Some(blk) = ssa.blocks.get(b.0 as usize) else {
+            continue;
+        };
+        let defines = |inst: &&SsaInst| inst.var_name.as_deref() == Some(var_name);
+        if let Some(inst) = blk.body.iter().rev().find(defines) {
+            return Some(inst.value);
+        }
+        if let Some(inst) = blk.phis.iter().rev().find(defines) {
+            return Some(inst.value);
+        }
+        queue.extend(blk.preds.iter().copied());
+    }
+    None
+}
+
 /// Apply Rust path-rejection / path-assertion branch narrowing to the
 /// true/false branch states produced by `compute_succ_states`.
 ///
@@ -3017,6 +3048,7 @@ fn apply_path_fact_branch_narrowing(
         &classify_path_branch(cond_text),
         effective_vars,
         ssa,
+        BlockId(0),
         None,
         false,
     );
@@ -3028,6 +3060,7 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     class: &PathBranchClass,
     effective_vars: &[String],
     ssa: &SsaBody,
+    block: BlockId,
     base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
     negated: bool,
 ) {
@@ -3093,20 +3126,12 @@ fn apply_path_fact_branch_narrowing_with_aliases(
         );
     }
 
-    // Collect SSA values whose `var_name` appears in `effective_vars`.  We
-    // pick the *highest-index* matching value (latest definition by SSA
-    // ordering, closest to the current program point).  Absent an
-    // explicit name table, iterating `ssa.value_defs` is the only way to
-    // recover the mapping from name → SsaValue.
+    // Narrow the SSA value of each condition variable that reaches the
+    // branch.  A later redefinition (`p = req.query.b` after the check) is
+    // a different value and must not inherit the narrowed fact.
     let mut targets: smallvec::SmallVec<[SsaValue; 2]> = smallvec::SmallVec::new();
     for var_name in effective_vars {
-        let mut latest: Option<SsaValue> = None;
-        for (idx, vd) in ssa.value_defs.iter().enumerate() {
-            if vd.var_name.as_deref() == Some(var_name.as_str()) {
-                latest = Some(SsaValue(idx as u32));
-            }
-        }
-        if let Some(v) = latest {
+        if let Some(v) = reaching_def_at_block_end(var_name, ssa, block) {
             targets.push(v);
         }
     }

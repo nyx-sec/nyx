@@ -1321,6 +1321,7 @@ mod goto_succ_propagation_tests {
             &super::super::classify_path_branch("!path.contains(\"..\")"),
             &["path".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1355,6 +1356,7 @@ mod goto_succ_propagation_tests {
             &super::super::classify_path_branch("!filepath.IsLocal(p)"),
             &["p".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1435,6 +1437,7 @@ mod goto_succ_propagation_tests {
                 &super::super::classify_path_branch(text),
                 &["name".to_string()],
                 &ssa,
+                BlockId(0),
                 None,
                 false,
             );
@@ -1463,6 +1466,7 @@ mod goto_succ_propagation_tests {
             ),
             &["name".to_string()],
             &ssa,
+            BlockId(0),
             None,
             false,
         );
@@ -1487,6 +1491,7 @@ mod goto_succ_propagation_tests {
             ),
             &["name".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1505,10 +1510,78 @@ mod goto_succ_propagation_tests {
             &super::super::classify_path_branch("(name.includes(\"..\") || dir.startsWith(\"/\"))"),
             &["dir".to_string(), "name".to_string()],
             &ssa,
+            BlockId(0),
             None,
             false,
         );
         assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+    }
+
+    #[test]
+    fn path_rejection_narrows_the_definition_reaching_the_branch() {
+        // block 0: p = source;  -> block 1: if (p.includes("..") || p.startsWith("/")) ...
+        // block 2 (false arm): p = req.query.b
+        // The check proves nothing about the new value, so only the
+        // definition live at the branch (v0) may be narrowed.
+        let inst = |v: u32| SsaInst {
+            value: SsaValue(v),
+            op: SsaOp::Source,
+            cfg_node: NodeIndex::new(v as usize),
+            var_name: Some("p".into()),
+            span: (0, 1),
+        };
+        let def = |b: u32| crate::ssa::ir::ValueDef {
+            var_name: Some("p".into()),
+            cfg_node: NodeIndex::new(0),
+            block: BlockId(b),
+        };
+        let mut ssa = ssa_body_with_named_value("p");
+        ssa.blocks = vec![
+            SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![inst(0)],
+                terminator: Terminator::Goto(BlockId(1)),
+                preds: smallvec![],
+                succs: smallvec![BlockId(1)],
+            },
+            SsaBlock {
+                id: BlockId(1),
+                phis: vec![],
+                body: vec![],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(0)],
+                succs: smallvec![BlockId(2)],
+            },
+            SsaBlock {
+                id: BlockId(2),
+                phis: vec![],
+                body: vec![inst(1)],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(1)],
+                succs: smallvec![],
+            },
+        ];
+        ssa.value_defs = vec![def(0), def(2)];
+
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(p.includes(\"..\") || p.startsWith(\"/\"))"),
+            &["p".to_string()],
+            &ssa,
+            BlockId(1),
+            None,
+            false,
+        );
+        let abs = false_state.abstract_state.as_ref().unwrap();
+        assert!(abs.get(SsaValue(0)).path.is_path_safe());
+        assert!(
+            abs.get(SsaValue(1)).path.is_top(),
+            "a redefinition after the check must not inherit the narrowed fact"
+        );
     }
 
     #[test]
