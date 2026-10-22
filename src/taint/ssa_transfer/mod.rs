@@ -8912,6 +8912,7 @@ fn collect_block_events(
                 &state,
                 filter_caps,
                 ssa,
+                cfg,
                 transfer,
                 &sink_info.param_to_sink,
                 positions_override,
@@ -10330,6 +10331,7 @@ fn collect_tainted_sink_values(
     state: &SsaTaintState,
     sink_caps: Cap,
     ssa: &SsaBody,
+    cfg: &Cfg,
     transfer: &SsaTaintTransfer,
     param_to_sink: &[(usize, Cap)],
     positions_override: Option<&[usize]>,
@@ -10391,7 +10393,7 @@ fn collect_tainted_sink_values(
                 }
             }
             retain_inner_sink_reaching_uses(&mut result, info, ssa);
-            apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa, cfg);
             apply_arg_type_safe_suppression(
                 &mut result,
                 sink_caps,
@@ -10430,7 +10432,7 @@ fn collect_tainted_sink_values(
                 }
             }
             retain_inner_sink_reaching_uses(&mut result, info, ssa);
-            apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa, cfg);
             apply_arg_type_safe_suppression(
                 &mut result,
                 sink_caps,
@@ -10456,7 +10458,7 @@ fn collect_tainted_sink_values(
 
     retain_inner_sink_reaching_uses(&mut result, info, ssa);
 
-    apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+    apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa, cfg);
     apply_arg_type_safe_suppression(
         &mut result,
         sink_caps,
@@ -10636,6 +10638,14 @@ fn apply_arg_type_safe_suppression(
 /// Suppress plain-ident taint when a dotted-path field value used by the same
 /// instruction is untainted. Prevents false positives from base-ident bleed
 /// (e.g. `obj.safe = "const"; sink(obj.safe)` where `obj` is tainted).
+///
+/// A field value only counts as clean evidence when it is backed by
+/// something.  A real def (`obj.safe = "const"`) carries its own taint.  A
+/// read of a property the body never writes (`body.dir` after `const body =
+/// req.body`) lowers to an unbacked phantom `Param` with no taint at all, so
+/// on its own it says nothing about the field: it is clean only when the
+/// object's defining literal proves it (see
+/// [`phantom_field_provably_clean`]).
 fn apply_field_aware_suppression(
     result: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
     inst: &SsaInst,
@@ -10643,6 +10653,7 @@ fn apply_field_aware_suppression(
     state: &SsaTaintState,
     sink_caps: Cap,
     ssa: &SsaBody,
+    cfg: &Cfg,
 ) {
     if result.is_empty() {
         return;
@@ -10673,15 +10684,10 @@ fn apply_field_aware_suppression(
         // CVE-2023-3188 hit this: `http.DefaultClient.Get(u.String())`
         // includes both `u` (tainted) and `u.String` (untainted phantom)
         // as uses; treating `u.String` as a clean field of `u` suppressed
-        // the SSRF.  But JS object-field FP guards (e.g.
-        // `db.query(obj.safeField)` with `obj.unsafeField` tainted) need
-        // the opposite, `obj.safeField` is a real field access and SHOULD
-        // count as a clean field.  The CFG distinguishes the two via
+        // the SSRF.  The CFG distinguishes method refs from field reads via
         // `arg_callees`: when an argument expression is itself a call, its
         // callee text is recorded; pure member-access args leave the slot
-        // `None`.  Skip phantoms whose var_name appears as an arg_callee
-        // (the Go case), keep phantoms representing field reads (the JS
-        // case) so suppression still fires.
+        // `None`.  Skip phantoms whose var_name appears as an arg_callee.
         let field_values: SmallVec<[SsaValue; 4]> = all_used
             .iter()
             .copied()
@@ -10711,14 +10717,160 @@ fn apply_field_aware_suppression(
             })
             .collect();
         // Suppress base only if there ARE field values AND ALL of them
-        // are untainted for the relevant sink caps.
+        // are clean for the relevant sink caps.
         let all_fields_clean = !field_values.is_empty()
-            && field_values.iter().all(|&u| match state.get(u) {
-                None => true,
-                Some(t) => (t.caps & sink_caps).is_empty(),
+            && field_values.iter().all(|&u| {
+                let untainted = match state.get(u) {
+                    None => true,
+                    Some(t) => (t.caps & sink_caps).is_empty(),
+                };
+                if !untainted {
+                    return false;
+                }
+                if !is_phantom_param_value(u, ssa) {
+                    return true;
+                }
+                let path = ssa
+                    .def_of(u)
+                    .var_name
+                    .as_deref()
+                    .and_then(|n| n.strip_prefix(&prefix))
+                    .unwrap_or("");
+                phantom_field_provably_clean(*v, path, sink_caps, state, ssa, cfg)
             });
         !all_fields_clean
     });
+}
+
+/// True when reading the dotted property `path` (e.g. `auth.template`) off
+/// the object held by `base` provably yields no taint for `sink_caps`.
+///
+/// The read is a phantom: the body never writes that property, so the only
+/// evidence is how the object was built.  Walks synthetic `obj.f = rhs`
+/// updates back to the object's root def, which must be a single-binding
+/// object literal ([`crate::cfg::TaintMeta::rhs_object_literal`]).  Any other
+/// root (a source, a call result, a parameter, a copy, a phi) is opaque and
+/// the read is treated as carrying the object's own taint.
+fn phantom_field_provably_clean(
+    base: SsaValue,
+    path: &str,
+    sink_caps: Cap,
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+) -> bool {
+    let segments: SmallVec<[&str; 4]> = path.split('.').collect();
+    let Some(&first) = segments.first() else {
+        return false;
+    };
+    if first.is_empty() {
+        return false;
+    }
+    let mut root = base;
+    let mut hops = 0usize;
+    while let Some(&(recv, field)) = ssa.field_writes.get(&root) {
+        // A write to the read property would have given it a real def.
+        if ssa.field_name(field) == first || hops >= 64 {
+            return false;
+        }
+        root = recv;
+        hops += 1;
+    }
+    let def = ssa.def_of(root);
+    let Some(def_inst) = ssa.blocks[def.block.0 as usize]
+        .body
+        .iter()
+        .find(|i| i.value == root)
+    else {
+        return false;
+    };
+    let Some(info) = cfg.node_weight(def.cfg_node) else {
+        return false;
+    };
+    if def.var_name.is_none() || info.taint.defines != def.var_name {
+        return false;
+    }
+    let Some(lit) = info.taint.rhs_object_literal.as_deref() else {
+        return false;
+    };
+    let ident_clean = |name: &str| -> bool {
+        let Some(u) = object_literal_ident_value(name, def_inst, ssa) else {
+            return false;
+        };
+        match state.get(u) {
+            None => true,
+            Some(t) => (t.caps & sink_caps).is_empty(),
+        }
+    };
+    object_literal_path_clean(lit, &segments, &ident_clean)
+}
+
+/// The SSA value an identifier inside an object literal reads.  Prefers the
+/// operand of the literal's own `Assign`; otherwise accepts the name only
+/// when the body defines it exactly once.
+fn object_literal_ident_value(name: &str, def_inst: &SsaInst, ssa: &SsaBody) -> Option<SsaValue> {
+    if let SsaOp::Assign(uses) = &def_inst.op {
+        if let Some(&u) = uses
+            .iter()
+            .find(|&&u| ssa.def_of(u).var_name.as_deref() == Some(name))
+        {
+            return Some(u);
+        }
+    }
+    let mut defs = ssa
+        .value_defs
+        .iter()
+        .enumerate()
+        .filter(|(_, vd)| vd.var_name.as_deref() == Some(name));
+    let (idx, _) = defs.next()?;
+    if defs.next().is_some() {
+        return None;
+    }
+    Some(SsaValue(idx as u32))
+}
+
+fn object_literal_path_clean(
+    lit: &crate::cfg::RhsObjectLiteral,
+    path: &[&str],
+    ident_clean: &dyn Fn(&str) -> bool,
+) -> bool {
+    let Some((&seg, rest)) = path.split_first() else {
+        return object_literal_all_clean(lit, ident_clean);
+    };
+    if lit.open {
+        return false;
+    }
+    match lit.fields.iter().rev().find(|(k, _)| k == seg) {
+        // Absent from a closed literal: the read is `undefined`.
+        None => true,
+        Some((_, slot)) => object_slot_clean(slot, rest, ident_clean),
+    }
+}
+
+fn object_slot_clean(
+    slot: &crate::cfg::RhsObjectSlot,
+    rest: &[&str],
+    ident_clean: &dyn Fn(&str) -> bool,
+) -> bool {
+    use crate::cfg::RhsObjectSlot;
+    match slot {
+        // A literal, or a property of one (`"abc".length`).
+        RhsObjectSlot::Literal => true,
+        RhsObjectSlot::Ident(name) => ident_clean(name),
+        RhsObjectSlot::Object(inner) => object_literal_path_clean(inner, rest, ident_clean),
+        RhsObjectSlot::Complex => false,
+    }
+}
+
+fn object_literal_all_clean(
+    lit: &crate::cfg::RhsObjectLiteral,
+    ident_clean: &dyn Fn(&str) -> bool,
+) -> bool {
+    !lit.open
+        && lit
+            .fields
+            .iter()
+            .all(|(_, slot)| object_slot_clean(slot, &[], ident_clean))
 }
 
 /// Check whether an SSA value is defined by a phantom `Param` op (a free

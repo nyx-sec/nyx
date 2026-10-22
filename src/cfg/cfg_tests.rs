@@ -1266,6 +1266,10 @@ fn clone_preserves_all_sub_structs() {
             extra_defines: vec!["c".into()],
             array_pattern_indices: smallvec::SmallVec::new(),
             rhs_array_elements: smallvec::SmallVec::new(),
+            rhs_object_literal: Some(Box::new(crate::cfg::RhsObjectLiteral {
+                fields: smallvec::smallvec![("k".into(), crate::cfg::RhsObjectSlot::Literal)],
+                open: false,
+            })),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -1295,6 +1299,10 @@ fn clone_preserves_all_sub_structs() {
     assert_eq!(cloned.taint.defines, original.taint.defines);
     assert_eq!(cloned.taint.uses, original.taint.uses);
     assert_eq!(cloned.taint.extra_defines, original.taint.extra_defines);
+    assert_eq!(
+        cloned.taint.rhs_object_literal,
+        original.taint.rhs_object_literal
+    );
     assert_eq!(cloned.ast.span, original.ast.span);
     assert_eq!(cloned.ast.enclosing_func, original.ast.enclosing_func);
     assert_eq!(cloned.all_args_literal, original.all_args_literal);
@@ -4363,6 +4371,100 @@ class C {
     // It folds to a definite bool once `num` is known constant.
     let r = |name: &str| if name == "num" { Some(86) } else { None };
     assert_eq!(arith[0].eval_bool(&r), Some(true));
+}
+
+// ── rhs_object_literal (JS/TS object-literal property shape) ──────────────
+
+fn object_literal_of<'a>(cfg: &'a Cfg, name: &str) -> Option<&'a crate::cfg::RhsObjectLiteral> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.taint.defines.as_deref() == Some(name))
+        .and_then(|n| n.taint.rhs_object_literal.as_deref())
+}
+
+#[test]
+fn rhs_object_literal_records_property_shape() {
+    use crate::cfg::RhsObjectSlot;
+    let src = b"function f(req) {\n\
+        const a = { k: 'v', \"q\": 1, n: null, t: `x`, i: req.query.x, s, id: other, o: { p: 'c' } };\n\
+        const b = { ...req.body, safe: 'x' };\n\
+        const c = { [req.query.k]: 1 };\n\
+        const d = ({ m() { return 1; } });\n\
+        const e = req.body;\n\
+        const g = { u: `a${req.query.x}` }, h = { v: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+
+    let a = object_literal_of(&cfg, "a").expect("`a` binds an object literal");
+    assert!(!a.open);
+    let slot = |k: &str| {
+        a.fields
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, s)| s.clone())
+    };
+    assert_eq!(slot("k"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("q"),
+        Some(RhsObjectSlot::Literal),
+        "quoted key is unquoted"
+    );
+    assert_eq!(slot("n"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("t"),
+        Some(RhsObjectSlot::Literal),
+        "template without substitutions"
+    );
+    assert_eq!(slot("i"), Some(RhsObjectSlot::Complex));
+    assert_eq!(
+        slot("s"),
+        Some(RhsObjectSlot::Ident("s".into())),
+        "shorthand"
+    );
+    assert_eq!(slot("id"), Some(RhsObjectSlot::Ident("other".into())));
+    match slot("o") {
+        Some(RhsObjectSlot::Object(inner)) => {
+            assert_eq!(inner.fields.len(), 1);
+            assert_eq!(inner.fields[0], ("p".into(), RhsObjectSlot::Literal));
+        }
+        other => panic!("nested literal expected, got {other:?}"),
+    }
+
+    assert!(object_literal_of(&cfg, "b").expect("spread literal").open);
+    assert!(
+        object_literal_of(&cfg, "c")
+            .expect("computed key literal")
+            .open
+    );
+    assert!(
+        object_literal_of(&cfg, "d")
+            .expect("parenthesised literal")
+            .open
+    );
+    assert!(object_literal_of(&cfg, "e").is_none(), "non-literal RHS");
+    assert!(
+        object_literal_of(&cfg, "g").is_none() && object_literal_of(&cfg, "h").is_none(),
+        "multi-declarator statements are not single bindings"
+    );
+}
+
+#[test]
+fn rhs_object_literal_unwraps_ts_assertions() {
+    let src = b"function f(req: any) {\n\
+        const a = { k: 'v' } as const;\n\
+        const b = { k: req.query.x } satisfies Record<string, unknown>;\n\
+        let c: any;\n\
+        c = { k: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let (cfg, _entry) = parse_and_build(src, "typescript", ts_lang);
+    assert!(object_literal_of(&cfg, "a").is_some(), "`as const` literal");
+    assert!(
+        object_literal_of(&cfg, "b").is_some(),
+        "`satisfies` literal"
+    );
+    assert!(object_literal_of(&cfg, "c").is_some(), "plain assignment");
 }
 
 // ── numeric_confined_uses (inline numeric-chain confinement) ──────────────

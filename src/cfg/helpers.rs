@@ -1269,6 +1269,173 @@ pub(crate) fn collect_rhs_array_literal_elements(
     out
 }
 
+/// Property shape of the object literal that `ast` binds to `defines`.
+///
+/// Recognised bindings (JS/TS only): `const o = {..}` / `let` / `var` with a
+/// single declarator, `export const o = {..}`, and the plain assignment
+/// `o = {..}`.  The RHS may be wrapped in parentheses or a TS `as` /
+/// `satisfies` / `!` / `<T>` assertion.  Returns `None` when the node binds
+/// something else, binds more than one name, or the bound name differs from
+/// `defines`.
+pub(crate) fn collect_rhs_object_literal(
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+    defines: &str,
+) -> Option<Box<crate::cfg::RhsObjectLiteral>> {
+    if !matches!(lang, "javascript" | "typescript") {
+        return None;
+    }
+    let (name, value) = single_binding_name_value(ast)?;
+    if name.kind() != "identifier" || text_of(name, code).as_deref() != Some(defines) {
+        return None;
+    }
+    let value = unwrap_ts_expression_wrappers(value);
+    if value.kind() != "object" {
+        return None;
+    }
+    Some(Box::new(object_literal_shape(value, code, 0)))
+}
+
+/// `(binding name, value)` of a single-binding JS/TS declaration or
+/// assignment node.
+fn single_binding_name_value(ast: Node) -> Option<(Node, Node)> {
+    match ast.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = ast.walk();
+            let mut declarators = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "variable_declarator");
+            let only = declarators.next()?;
+            if declarators.next().is_some() {
+                return None;
+            }
+            single_binding_name_value(only)
+        }
+        "variable_declarator" => Some((
+            ast.child_by_field_name("name")?,
+            ast.child_by_field_name("value")?,
+        )),
+        "assignment_expression" => Some((
+            ast.child_by_field_name("left")?,
+            ast.child_by_field_name("right")?,
+        )),
+        "export_statement" => single_binding_name_value(ast.child_by_field_name("declaration")?),
+        "expression_statement" => {
+            let mut cursor = ast.walk();
+            let mut inner = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() != "comment");
+            let only = inner.next()?;
+            if inner.next().is_some() {
+                return None;
+            }
+            single_binding_name_value(only)
+        }
+        _ => None,
+    }
+}
+
+/// Strip parentheses and TS type-only wrappers (`x as T`, `x satisfies T`,
+/// `x!`, `<T>x`) that do not change the runtime value.
+fn unwrap_ts_expression_wrappers(mut n: Node) -> Node {
+    loop {
+        let inner = match n.kind() {
+            "parenthesized_expression"
+            | "as_expression"
+            | "satisfies_expression"
+            | "non_null_expression" => n.named_child(0),
+            // `<T>expr`: the type comes first, the expression last.
+            "type_assertion" => n.named_child(n.named_child_count().saturating_sub(1) as u32),
+            _ => None,
+        };
+        match inner {
+            Some(i) => n = i,
+            None => return n,
+        }
+    }
+}
+
+/// Nested object literals deeper than this are recorded as `Complex`.
+const MAX_OBJECT_LITERAL_DEPTH: usize = 4;
+
+fn object_literal_shape(obj: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectLiteral {
+    use crate::cfg::{RhsObjectLiteral, RhsObjectSlot};
+    let mut out = RhsObjectLiteral {
+        fields: SmallVec::new(),
+        open: false,
+    };
+    let mut cursor = obj.walk();
+    for child in obj.named_children(&mut cursor) {
+        match child.kind() {
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    out.open = true;
+                    continue;
+                };
+                let key_text = match key.kind() {
+                    "property_identifier" | "number" => text_of(key, code),
+                    "string" => text_of(key, code).map(|t| {
+                        t.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                            .to_string()
+                    }),
+                    // `[k]: v` can name any key.
+                    _ => None,
+                };
+                let Some(key_text) = key_text else {
+                    out.open = true;
+                    continue;
+                };
+                let slot = match child.child_by_field_name("value") {
+                    Some(v) => object_slot(v, code, depth),
+                    None => RhsObjectSlot::Complex,
+                };
+                out.fields.push((key_text, slot));
+            }
+            "shorthand_property_identifier" => {
+                if let Some(t) = text_of(child, code) {
+                    out.fields.push((t.clone(), RhsObjectSlot::Ident(t)));
+                }
+            }
+            "comment" => {}
+            // `...rest`, methods, getters / setters, and anything this
+            // walker does not model.
+            _ => out.open = true,
+        }
+    }
+    out
+}
+
+fn object_slot(value: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectSlot {
+    use crate::cfg::RhsObjectSlot;
+    let value = unwrap_ts_expression_wrappers(value);
+    match value.kind() {
+        "string" | "number" | "true" | "false" | "null" | "undefined" | "regex" => {
+            RhsObjectSlot::Literal
+        }
+        "template_string" => {
+            let mut cursor = value.walk();
+            let interpolated = value
+                .named_children(&mut cursor)
+                .any(|c| c.kind() == "template_substitution");
+            if interpolated {
+                RhsObjectSlot::Complex
+            } else {
+                RhsObjectSlot::Literal
+            }
+        }
+        "identifier" => match text_of(value, code) {
+            Some(t) if t == "undefined" => RhsObjectSlot::Literal,
+            Some(t) => RhsObjectSlot::Ident(t),
+            None => RhsObjectSlot::Complex,
+        },
+        "object" if depth < MAX_OBJECT_LITERAL_DEPTH => {
+            RhsObjectSlot::Object(Box::new(object_literal_shape(value, code, depth + 1)))
+        }
+        _ => RhsObjectSlot::Complex,
+    }
+}
+
 /// Recursively collect every identifier that occurs inside `n`.
 ///
 /// Recognises `identifier` (most languages), `variable_name` (PHP),

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 678
+    "corpus_size": 680
   },
   "cases": [
     {
@@ -21532,6 +21532,81 @@
       ],
       "disabled": false,
       "notes": "Jsoup.parse keeps script tags, so echoing doc.html() is reflected XSS; the parse result must not be typed Int"
+    },
+    {
+      "case_id": "js-cmdi-body-alias-field-001",
+      "file": "javascript/cmdi/cmdi_body_alias_field.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          6
+        ]
+      ],
+      "tags": [
+        "field-read",
+        "req.body",
+        "alias"
+      ],
+      "disabled": false,
+      "notes": "body = req.body; exec('ls ' + body.dir). The property is never written, so its phantom value must not count as a clean field of the tainted base"
+    },
+    {
+      "case_id": "ts-xss-query-copy-field-001",
+      "file": "typescript/xss/xss_query_copy_field.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          6
+        ]
+      ],
+      "tags": [
+        "field-read",
+        "req.query",
+        "alias",
+        "template-literal"
+      ],
+      "disabled": false,
+      "notes": "query = req.query; res.send(`<h1>Hello ${query.name}</h1>`). A field read off a copied whole-object source keeps the source taint"
     }
   ]
 }

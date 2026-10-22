@@ -42,10 +42,10 @@ mod params;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try};
 use helpers::{
-    collect_nested_function_nodes, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, first_call_ident_with_span, first_callback_sink_call, first_member_label,
-    first_member_text, is_raii_factory, is_subscript_kind, root_member_receiver,
-    subscript_components, subscript_lhs_node,
+    collect_nested_function_nodes, collect_rhs_object_literal, derive_anon_fn_name_from_context,
+    find_classifiable_inner_call, find_inner_sink_call, first_call_ident_with_span,
+    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
+    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
 // Re-exports so sibling submodules can keep using `super::name` for
 // helpers that physically live in `helpers.rs`.
@@ -788,6 +788,46 @@ pub struct TaintMeta {
     /// (Complex shape) where the legacy union painted `d` with `req.x`.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub rhs_array_elements: SmallVec<[RhsArraySlot; 4]>,
+    /// Property shape of a JS/TS object-literal RHS when this node binds the
+    /// single variable in `defines` to one (`const cfg = { bin: "ls", arg:
+    /// req.query.a }`).  `None` for every other RHS.
+    ///
+    /// Lowering gives the whole literal one SSA value, so a read of a
+    /// property the body never writes (`cfg.bin`) only exists as an unbacked
+    /// phantom value with no taint of its own.  Field-aware sink suppression
+    /// uses this shape to tell a property that is provably clean (a literal,
+    /// or absent from a closed literal) from a read of an object that is
+    /// tainted as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rhs_object_literal: Option<Box<RhsObjectLiteral>>,
+}
+
+/// Property shape of a JS/TS object literal.  See
+/// [`TaintMeta::rhs_object_literal`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RhsObjectLiteral {
+    /// Properties in source order.  A key written twice keeps both entries;
+    /// readers take the last one, as JS does.
+    pub fields: SmallVec<[(String, RhsObjectSlot); 4]>,
+    /// True when the literal can hold keys that `fields` does not list or
+    /// can overwrite listed ones: a spread (`...rest`), a computed key
+    /// (`[k]: v`), or a method / accessor.
+    pub open: bool,
+}
+
+/// Value of one property in an [`RhsObjectLiteral`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsObjectSlot {
+    /// Syntactic literal: string or template without substitutions, number,
+    /// boolean, `null`, `undefined`, regex.
+    Literal,
+    /// Bare identifier value, including shorthand properties (`{ name }`).
+    Ident(String),
+    /// Nested object literal.
+    Object(Box<RhsObjectLiteral>),
+    /// Any other expression (call, member access, binary, interpolated
+    /// template, ...).
+    Complex,
 }
 
 /// Source-order slot for an RHS array-literal element in a destructure
@@ -3820,6 +3860,10 @@ pub(super) fn push_node<'a>(
 
     let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
         def_use(ast, lang, code, extra);
+    let rhs_object_literal = match defines.as_deref() {
+        Some(name) if extra_defines.is_empty() => collect_rhs_object_literal(ast, lang, code, name),
+        _ => None,
+    };
 
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
@@ -4135,6 +4179,7 @@ pub(super) fn push_node<'a>(
             extra_defines,
             array_pattern_indices,
             rhs_array_elements,
+            rhs_object_literal,
         },
         ast: AstMeta {
             span,

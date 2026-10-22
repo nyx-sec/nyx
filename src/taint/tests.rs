@@ -8333,3 +8333,114 @@ fn js_date_parse_result_stays_numeric() {
         "Date.parse returns a number; the shell sink must stay suppressed, got {findings:?}"
     );
 }
+
+// ── Field reads of a locally bound object ───────────────────────────────
+//
+// `body.dir` after `const body = req.body` is never written in the body, so
+// lowering gives it an unbacked phantom value.  That phantom must not count
+// as proof that the field is clean: only a closed object literal whose
+// property is a literal (or absent) can show that.
+
+#[test]
+fn field_read_of_source_copy_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    exec('ls ' + body.dir);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a field read off a whole-object source copy carries the source taint"
+    );
+}
+
+#[test]
+fn field_read_of_json_parse_result_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var data = JSON.parse(req.body.payload);\n    exec(data.cmd);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a field read off a parsed request payload carries the payload taint"
+    );
+}
+
+#[test]
+fn field_read_of_query_copy_xss_fires_ts() {
+    let src = b"import express from 'express';\nconst app = express();\napp.get('/h', (req, res) => {\n    const q = req.query;\n    res.send('<h1>' + q.name + '</h1>');\n});\n";
+    assert!(
+        !analyse_src(src, Lang::TypeScript).is_empty(),
+        "TS: a field read off a copied req.query reaches res.send"
+    );
+}
+
+#[test]
+fn object_literal_tainted_field_read_fires() {
+    let src = b"function q(req, db) {\n    const obj = { safeField: 'SELECT 1', unsafeField: req.query.cmd };\n    return db.query(obj.unsafeField);\n}\nmodule.exports = { q };\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "the literal's tainted property must keep its taint"
+    );
+}
+
+#[test]
+fn object_literal_const_field_read_no_finding() {
+    let src = b"function q(req, db) {\n    const obj = { safeField: 'SELECT 1', unsafeField: req.query.cmd };\n    return db.query(obj.safeField);\n}\nmodule.exports = { q };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "the literal's constant property is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn object_literal_nested_const_field_read_no_finding() {
+    let src = b"var exec = require('child_process').exec;\nfunction t(req) {\n    const cfg = { auth: { userName: req.query.name, template: '/usr/bin/whoami' } };\n    exec(cfg.auth.template);\n}\nmodule.exports = { t };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "a constant nested property is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn object_literal_nested_tainted_field_read_fires() {
+    let src = b"var exec = require('child_process').exec;\nfunction t(req) {\n    const cfg = { auth: { userName: req.query.name, template: '/usr/bin/whoami' } };\n    exec(cfg.auth.userName);\n}\nmodule.exports = { t };\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a tainted nested property keeps its taint"
+    );
+}
+
+#[test]
+fn object_literal_spread_field_read_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    const o = { ...req.body, safe: 'x' };\n    exec(o.cmd);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a spread can supply any property, so the read is not provably clean"
+    );
+}
+
+#[test]
+fn object_literal_ident_bound_to_constant_no_finding() {
+    let src = b"var exec = require('child_process').exec;\nvar BIN = '/usr/bin/uptime';\nfunction t(req) {\n    const job = { bin: BIN, arg: req.query.a };\n    exec(job.bin);\n}\nmodule.exports = { t };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "a property bound to an untainted identifier is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn field_read_validated_on_all_paths_matches_let_bound_twin() {
+    // A property validated on every path before the sink is judged like its
+    // let-bound twin: the object reaches the sink only through that
+    // property, so the base object's taint must not bypass the validation.
+    let inline = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    if (!isValidDir(body.dir)) { return; }\n    exec('ls ' + body.dir);\n});\n";
+    let let_bound = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    var d = body.dir;\n    if (!isValidDir(d)) { return; }\n    exec('ls ' + d);\n});\n";
+    let unvalidated = |fs: Vec<Finding>| fs.into_iter().filter(|f| !f.path_validated).count();
+    assert_eq!(
+        unvalidated(analyse_src(let_bound, Lang::JavaScript)),
+        0,
+        "let-bound twin: the validated flow is not reported as unvalidated"
+    );
+    assert_eq!(
+        unvalidated(analyse_src(inline, Lang::JavaScript)),
+        0,
+        "inline field read validated on every path is not reported as unvalidated"
+    );
+}

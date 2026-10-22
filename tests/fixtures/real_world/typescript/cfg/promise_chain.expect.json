@@ -19,6 +19,17 @@
       "severity": null,
       "must_match": true,
       "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "second-order injection: step1.stdout is the output of `echo <input>`, so the attacker string reaches the second execAsync command inside a double-quoted here-string. Listed before the broader pipeline expectation so each one consumes its own finding"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
         5,
         10
       ],
