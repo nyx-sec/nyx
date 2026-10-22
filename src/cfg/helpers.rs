@@ -1004,6 +1004,127 @@ pub(crate) fn has_call_descendant(n: Node, lang: &str) -> bool {
     false
 }
 
+/// Read-modify-write view of an assignment-like node.
+///
+/// Covers compound assignment (`x += y`, PHP `$x .= $y`, `x ??= y`, Ruby
+/// `x ||= y`, Java/C/Go `x <<= y`) and increment / decrement (`i++`, `--i`,
+/// Go `i++` statements).  The new value of `target` depends on its old value,
+/// so the node both reads and writes `target`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RmwAssign<'a> {
+    /// The assigned place (`x`, `obj.f`, `arr[i]`, `*p`).
+    pub target: Node<'a>,
+    /// Right-hand operand; `None` for `++` / `--`.
+    pub value: Option<Node<'a>>,
+    /// Operator token (`"+="`, `".="`, `"||="`, `"++"`, ...).
+    pub op: &'static str,
+}
+
+impl RmwAssign<'_> {
+    /// `||=`, `&&=`, `??=`: the result is either the old value or the
+    /// right-hand side, never a combination of the two.
+    pub(crate) fn is_logical(&self) -> bool {
+        matches!(self.op, "||=" | "&&=" | "??=")
+    }
+}
+
+/// Recognise `n` as a read-modify-write assignment.  Purely structural:
+/// keyed on the grammar's node kind plus its operator token, so a plain
+/// `x = y` (no operator field, or operator `=`) and Go's `x := y`
+/// (`short_var_declaration`) never match.
+pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
+    match n.kind() {
+        "update_expression" | "inc_statement" | "dec_statement" => {
+            let target = n
+                .child_by_field_name("argument")
+                .or_else(|| n.named_child(0))?;
+            let op = match n.kind() {
+                "inc_statement" => "++",
+                "dec_statement" => "--",
+                _ => {
+                    let mut cursor = n.walk();
+                    n.children(&mut cursor)
+                        .map(|c| c.kind())
+                        .find(|k| matches!(*k, "++" | "--"))?
+                }
+            };
+            Some(RmwAssign {
+                target,
+                value: None,
+                op,
+            })
+        }
+        "augmented_assignment_expression"
+        | "augmented_assignment"
+        | "compound_assignment_expr"
+        | "operator_assignment"
+        | "assignment_expression"
+        | "assignment_statement" => {
+            let op = n.child_by_field_name("operator")?.kind();
+            if matches!(op, "=" | ":=") {
+                return None;
+            }
+            Some(RmwAssign {
+                target: n.child_by_field_name("left")?,
+                value: n.child_by_field_name("right"),
+                op,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The read-modify-write assignment a CFG statement node stands for: `n`
+/// itself (Go / Ruby statements, `for` update clauses) or the single named
+/// child of a statement wrapper (`expression_statement`), which is how JS,
+/// TS, Python, PHP, Rust, Java and C/C++ wrap a statement-level `x += y`.
+/// Only nodes the language's KINDS table maps to `Kind::Assignment` count,
+/// matching what `def_use` treats as a definition.
+pub(crate) fn rmw_statement<'a>(n: Node<'a>, lang: &str) -> Option<RmwAssign<'a>> {
+    let node = match lookup(lang, n.kind()) {
+        Kind::Assignment => n,
+        Kind::CallWrapper if n.named_child_count() == 1 => n.named_child(0)?,
+        _ => return None,
+    };
+    if lookup(lang, node.kind()) != Kind::Assignment {
+        return None;
+    }
+    rmw_assignment(node)
+}
+
+/// Names a read-modify-write node reads from its own target, in the order
+/// `def_use` places them at the front of `uses`.  A member target reads its
+/// dotted path only (`el.innerHTML`), never the bare receiver idents it
+/// decomposes into: `el.innerHTML += "<b>"` does not read `el` as a value.
+/// Other targets (`x`, `arr[i]`, `*p`) read every identifier they mention.
+pub(crate) fn rmw_target_reads(target: Node, code: &[u8]) -> Vec<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    match paths.pop() {
+        Some(path) => vec![path],
+        None => idents,
+    }
+}
+
+/// The variable a read-modify-write node defines: the dotted path of a
+/// member target, otherwise the first identifier (the container of
+/// `arr[i] += x`, never the index).
+pub(crate) fn rmw_target_define(target: Node, code: &[u8]) -> Option<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    paths.pop().or_else(|| idents.into_iter().next())
+}
+
+/// True when `n` is itself a call or contains one.
+pub(crate) fn subtree_has_call(n: Node, lang: &str) -> bool {
+    matches!(
+        lookup(lang, n.kind()),
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+    ) || has_call_descendant(n, lang)
+}
+
 /// Recursively collect identifiers AND full dotted member-expression paths.
 ///
 /// For `member_expression` / `attribute` / `selector_expression` / `field_expression`

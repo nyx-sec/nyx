@@ -182,6 +182,28 @@ fn c_struct_field_nonescaping_local_leaks_but_escaping_stays_suppressed() {
 }
 
 #[test]
+fn c_pointer_bump_keeps_resource_open() {
+    // `cursor += 1` reads and writes `cursor`.  The read must not count as
+    // handing the allocation to another owner, or the leak disappears.
+    let leak_msgs: Vec<String> = state_diags_for("c_pointer_bump_leak.c")
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.message.clone().unwrap_or_default())
+        .collect();
+    assert!(
+        leak_msgs.iter().any(|m| m.contains("cursor")),
+        "bumped pointer `cursor` is never freed and must still leak.\n  Got: {leak_msgs:?}"
+    );
+}
+
+#[test]
+fn c_list_walk_cursor_does_not_leak() {
+    // `cur = cur->next` is a plain reassignment of the walker; the list
+    // itself is returned, so no leak is reported.
+    assert_no_state_findings("c_list_walk_no_leak.c");
+}
+
+#[test]
 fn state_analysis_disabled_via_flag() {
     let mut cfg = common::test_config(AnalysisMode::Full);
     cfg.scanner.enable_state_analysis = false;

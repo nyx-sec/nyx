@@ -933,8 +933,11 @@ impl DefaultTransfer<'_> {
             // in tests/fixtures/.../typescript/state/resource_class.ts —
             // that path remains untouched here because RHS-is-a-call
             // routes through `apply_call`, not `apply_assignment`).
+            // A read-modify-write (`p += n`, `p++`) lists its own target as
+            // a use: the handle stays where it is, it does not move to itself.
+            let not_rmw_self = |u: &&String| !(info.rmw_assign && *u == def);
             if def.contains('.') || def.contains("->") {
-                for used in &info.taint.uses {
+                for used in info.taint.uses.iter().filter(not_rmw_self) {
                     if let Some(use_sym) = self.get_sym(info, used) {
                         let lc = state.resource.get(use_sym);
                         if lc.contains(ResourceLifecycle::OPEN) {
@@ -946,7 +949,7 @@ impl DefaultTransfer<'_> {
                 return;
             }
             // If the RHS is a tracked resource, transfer its state
-            for used in &info.taint.uses {
+            for used in info.taint.uses.iter().filter(not_rmw_self) {
                 if let Some(use_sym) = self.get_sym(info, used) {
                     let lc = state.resource.get(use_sym);
                     if lc.contains(ResourceLifecycle::OPEN) {

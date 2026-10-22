@@ -5981,6 +5981,261 @@ fn ssa_compound_preserves_taint_java() {
     );
 }
 
+// ── Read-modify-write assignments (`x += y`, `$x .= $y`, `x ||= y`) ──────
+
+/// Taint findings for `src`, analysed as `slug`.
+fn rmw_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
+    let (ts_lang, lang, path) = match slug {
+        "javascript" => (
+            tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+            Lang::JavaScript,
+            "test.js",
+        ),
+        "typescript" => (
+            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+            Lang::TypeScript,
+            "test.ts",
+        ),
+        "python" => (
+            tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+            Lang::Python,
+            "test.py",
+        ),
+        "php" => (
+            tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
+            Lang::Php,
+            "test.php",
+        ),
+        "rust" => (
+            tree_sitter::Language::from(tree_sitter_rust::LANGUAGE),
+            Lang::Rust,
+            "test.rs",
+        ),
+        "go" => (
+            tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+            Lang::Go,
+            "test.go",
+        ),
+        "java" => (
+            tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+            Lang::Java,
+            "test.java",
+        ),
+        "c" => (
+            tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+            Lang::C,
+            "test.c",
+        ),
+        "cpp" => (
+            tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE),
+            Lang::Cpp,
+            "test.cpp",
+        ),
+        "ruby" => (
+            tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
+            Lang::Ruby,
+            "test.rb",
+        ),
+        other => panic!("unsupported test language {other}"),
+    };
+    let file_cfg = parse_lang(src.as_bytes(), slug, ts_lang);
+    analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
+}
+
+fn assert_rmw_fires(slug: &str, src: &str) {
+    let findings = rmw_taint_findings(src, slug);
+    assert!(
+        !findings.is_empty(),
+        "{slug}: expected a taint finding through the compound assignment:\n{src}"
+    );
+}
+
+fn assert_rmw_clean(slug: &str, src: &str) {
+    let findings = rmw_taint_findings(src, slug);
+    assert!(
+        findings.is_empty(),
+        "{slug}: expected no taint finding, got {findings:#?}\n{src}"
+    );
+}
+
+// `x = "lit"; x op= SOURCE; sink(x)`: the right-hand side taints the target.
+
+#[test]
+fn compound_assign_rhs_taints_target_javascript() {
+    assert_rmw_fires(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  let cmd = 'ls ';\n  cmd += req.query.dir;\n  cp.exec(cmd);\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_rhs_taints_target_typescript() {
+    assert_rmw_fires(
+        "typescript",
+        "import * as cp from 'child_process';\nfunction h(req: any, res: any) {\n  let cmd: string = 'ls ';\n  cmd += req.query.dir;\n  cp.exec(cmd);\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_rhs_taints_target_python() {
+    assert_rmw_fires(
+        "python",
+        "import os\ndef main():\n    cmd = 'ls '\n    cmd += os.getenv('DIR')\n    os.system(cmd)\n",
+    );
+}
+
+#[test]
+fn compound_assign_rhs_taints_target_php() {
+    assert_rmw_fires(
+        "php",
+        "<?php\nfunction h($conn) {\n    $sql = 'SELECT * FROM t WHERE id = ';\n    $sql .= $_GET['id'];\n    mysqli_query($conn, $sql);\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_rhs_taints_target_rust() {
+    assert_rmw_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\nfn main() {\n    let mut cmd = String::from(\"ls \");\n    let e = env::var(\"X\").unwrap();\n    cmd += &e;\n    Command::new(\"sh\").arg(&cmd).status().unwrap();\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_rhs_taints_target_go() {
+    assert_rmw_fires(
+        "go",
+        "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\tcmd := \"ls \"\n\tcmd += os.Getenv(\"DIR\")\n\texec.Command(cmd)\n}\n",
+    );
+}
+
+// `x = SOURCE; x op= "lit"; sink(x)`: the old value survives the update.
+
+#[test]
+fn compound_assign_keeps_target_taint_java() {
+    assert_rmw_fires(
+        "java",
+        "class Main {\n  void main() {\n    String cmd = System.getenv(\"CMD\");\n    cmd += \" --safe\";\n    Runtime.exec(cmd);\n  }\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_keeps_target_taint_go() {
+    assert_rmw_fires(
+        "go",
+        "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\tcmd := os.Getenv(\"CMD\")\n\tcmd += \" --safe\"\n\texec.Command(cmd)\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_keeps_target_taint_ruby() {
+    assert_rmw_fires(
+        "ruby",
+        "def h\n  cmd = ENV['CMD']\n  cmd += ' --safe'\n  system(cmd)\nend\n",
+    );
+}
+
+#[test]
+fn logical_assign_keeps_target_taint_ruby() {
+    assert_rmw_fires(
+        "ruby",
+        "def h\n  cmd = ENV['CMD']\n  cmd ||= 'ls'\n  system(cmd)\nend\n",
+    );
+}
+
+#[test]
+fn compound_assign_keeps_target_taint_c() {
+    assert_rmw_fires(
+        "c",
+        "#include <stdlib.h>\nint main() {\n    char *p = getenv(\"X\");\n    p += 1;\n    system(p);\n    return 0;\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_keeps_target_taint_cpp() {
+    assert_rmw_fires(
+        "cpp",
+        "#include <cstdlib>\n#include <string>\nint main() {\n    std::string cmd = getenv(\"X\");\n    cmd += \" --flag\";\n    return system(cmd.c_str());\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_keeps_target_taint_python() {
+    assert_rmw_fires(
+        "python",
+        "import os\ndef main():\n    cmd = os.getenv('CMD')\n    cmd += ' -l'\n    os.system(cmd)\n",
+    );
+}
+
+/// A sanitizer call on the right-hand side cleans only what it is given:
+/// the target's earlier taint still reaches the sink.
+#[test]
+fn compound_assign_sanitized_rhs_keeps_target_taint_php() {
+    assert_rmw_fires(
+        "php",
+        "<?php\nfunction h() {\n    $out = '<p>' . $_GET['a'];\n    $out .= htmlspecialchars($_GET['b']);\n    echo $out;\n}\n",
+    );
+}
+
+#[test]
+fn compound_assign_sanitized_rhs_clean_target_php() {
+    assert_rmw_clean(
+        "php",
+        "<?php\nfunction h() {\n    $out = '<p>';\n    $out .= htmlspecialchars($_GET['b']);\n    echo $out;\n}\n",
+    );
+}
+
+/// A sink call on the right-hand side receives only its own arguments, not
+/// the tainted target it is appended to.
+#[test]
+fn compound_assign_sink_call_rhs_does_not_receive_target() {
+    assert_rmw_clean(
+        "javascript",
+        "const { execSync } = require('child_process');\nfunction h(req, res) {\n  let out = req.query.a;\n  out += execSync('ls');\n  console.log(out.length);\n}\n",
+    );
+}
+
+/// After a literal overwrite, appending another literal stays clean.
+#[test]
+fn compound_assign_literal_after_kill_is_clean() {
+    assert_rmw_clean(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  let q = req.query.x;\n  q = 'ls';\n  q += ' -l';\n  cp.exec(q);\n}\n",
+    );
+    assert_rmw_clean(
+        "ruby",
+        "def h\n  cmd = ENV['CMD']\n  cmd = 'ls'\n  cmd += ' -l'\n  system(cmd)\nend\n",
+    );
+}
+
+/// `n += 1` is `n + 1`, not the constant `1`: the branch on the updated
+/// counter stays feasible.
+#[test]
+fn compound_assign_literal_does_not_fold_to_rhs_constant_java() {
+    assert_rmw_fires(
+        "java",
+        "class Main {\n  void main() {\n    String cmd = System.getenv(\"CMD\");\n    int n = 5;\n    n += 1;\n    if (n > 5) {\n      Runtime.exec(cmd);\n    }\n  }\n}\n",
+    );
+}
+
+/// `n -= 1` on a parsed integer stays an integer, so the numeric SQL
+/// fragment remains suppressed.
+#[test]
+fn compound_assign_int_update_stays_numeric_java() {
+    assert_rmw_clean(
+        "java",
+        "class Main {\n  void main(HttpServletRequest req, Statement st) throws Exception {\n    int n = Integer.parseInt(req.getParameter(\"n\"));\n    n -= 1;\n    st.executeQuery(\"SELECT * FROM t WHERE id = \" + n);\n  }\n}\n",
+    );
+}
+
+/// `n += 2` from `n = 0` must not keep the stale constant `0`.
+#[test]
+fn compound_assign_does_not_keep_stale_constant_python() {
+    assert_rmw_fires(
+        "python",
+        "import os\ndef main():\n    cmd = os.getenv('CMD')\n    n = 0\n    n += 2\n    if n == 2:\n        os.system(cmd)\n",
+    );
+}
+
 // ── PHI merge preserves taint on non-reassigned path ────────────────────
 
 #[test]

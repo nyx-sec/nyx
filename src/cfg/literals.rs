@@ -7,8 +7,9 @@
 use super::conditions::unwrap_parens;
 use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
 use super::{
-    anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
-    first_call_ident, root_receiver_text, text_of,
+    RmwAssign, anon_fn_name, collect_idents, collect_idents_with_paths,
+    find_constructor_type_child, first_call_ident, rmw_assignment, rmw_target_define,
+    rmw_target_reads, root_receiver_text, text_of,
 };
 use crate::labels::{Cap, Kind, lookup};
 use smallvec::SmallVec;
@@ -2448,6 +2449,25 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
+/// `(defines, uses)` of a read-modify-write assignment (`x += y`, `x ||= y`,
+/// `i++`).  The target is both the define and a use, and its reads come first
+/// in `uses` so SSA lowering sees `x' = op(x, y)` with the old value as the
+/// left operand.  A plain `x = y` takes the other `def_use` paths and never
+/// lists its target as a use.
+fn rmw_def_use(rmw: &RmwAssign, code: &[u8]) -> (Option<String>, Vec<String>) {
+    let defs = rmw_target_define(rmw.target, code);
+    let mut uses = rmw_target_reads(rmw.target, code);
+    if let Some(rhs) = rmw.value {
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        collect_idents_with_paths(rhs, code, &mut idents, &mut paths);
+        uses.extend(paths);
+        uses.extend(idents);
+        uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
+    }
+    (defs, uses)
+}
+
 /// Return `(defines, uses, extra_defines, array_pattern_indices,
 /// rhs_array_elements)` for the AST fragment `ast`.
 ///
@@ -2558,6 +2578,16 @@ pub(super) fn def_use(
                     // Only use left/right fields for actual assignment nodes, binary
                     // expressions also have left/right but are not definitions.
                     let is_assign = matches!(lookup(lang, child.kind()), Kind::Assignment);
+                    // `x += y;` / `x++;` wrapped in an expression statement.
+                    if is_assign
+                        && defs.is_none()
+                        && let Some(rmw) = rmw_assignment(child)
+                    {
+                        let (d, u) = rmw_def_use(&rmw, code);
+                        defs = d;
+                        uses.extend(u);
+                        continue;
+                    }
                     let child_name = child
                         .child_by_field_name("name")
                         .or_else(|| child.child_by_field_name("declarator"))
@@ -2649,6 +2679,10 @@ pub(super) fn def_use(
         // SSA lowering's destructure-promise rewrite can paint each
         // binding from the matching combinator argument.
         Kind::Assignment => {
+            if let Some(rmw) = rmw_assignment(ast) {
+                let (defs, uses) = rmw_def_use(&rmw, code);
+                return (defs, uses, Vec::new(), SmallVec::new(), SmallVec::new());
+            }
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();

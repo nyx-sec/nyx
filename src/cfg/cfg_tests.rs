@@ -4800,3 +4800,288 @@ app.get('/probe', (req, res) => {
         }
     }
 }
+
+// ── Read-modify-write assignments (`x += y`, `x ||= y`) ─────────────────
+
+fn rmw_all_nodes(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<NodeInfo> {
+    let fc = parse_to_file_cfg(src, lang_str, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// The single node that defines `var` from a read-modify-write.
+fn rmw_def_node(nodes: &[NodeInfo], var: &str) -> NodeInfo {
+    let defs: Vec<&NodeInfo> = nodes
+        .iter()
+        .filter(|n| n.rmw_assign && n.taint.defines.as_deref() == Some(var))
+        .collect();
+    assert_eq!(
+        defs.len(),
+        1,
+        "expected one read-modify-write def of `{var}`, got {defs:#?}"
+    );
+    defs[0].clone()
+}
+
+fn assert_compound_reads_target(src: &[u8], lang_str: &str, ts_lang: Language) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(
+        n.taint.uses.first().map(String::as_str),
+        Some("x"),
+        "{lang_str}: the target must be the first use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.uses.iter().any(|u| u == "y"),
+        "{lang_str}: the right-hand side must stay a use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.const_text.is_none(),
+        "{lang_str}: a compound assignment is not a literal def"
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_javascript() {
+    assert_compound_reads_target(
+        b"function f(y) { let x = 'a'; x += y; return x; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_typescript() {
+    assert_compound_reads_target(
+        b"function f(y: string) { let x = 'a'; x ??= y; return x; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_python() {
+    assert_compound_reads_target(
+        b"def f(y):\n    x = 'a'\n    x += y\n    return x\n",
+        "python",
+        Language::from(tree_sitter_python::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_php() {
+    assert_compound_reads_target(
+        b"<?php function f($y) { $x = 'a'; $x .= $y; return $x; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_rust() {
+    assert_compound_reads_target(
+        b"fn f(y: &str) -> String { let mut x = String::new(); x += y; x }",
+        "rust",
+        Language::from(tree_sitter_rust::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_java() {
+    assert_compound_reads_target(
+        b"class A { String f(String y) { String x = \"a\"; x += y; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_go() {
+    assert_compound_reads_target(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx += y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_c() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x += y; return x; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_cpp() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x <<= y; return x; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_ruby() {
+    assert_compound_reads_target(
+        b"def f(y)\n  x = 'a'\n  x ||= y\n  x\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+}
+
+/// A plain `x = y` must not start reading its own target.
+#[test]
+fn plain_assign_does_not_read_target() {
+    let nodes = rmw_all_nodes(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx = y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+    let n = nodes
+        .iter()
+        .find(|n| n.taint.defines.as_deref() == Some("x") && n.taint.uses == ["y"])
+        .expect("`x = y` should define x from y alone");
+    assert!(!n.rmw_assign);
+}
+
+/// `n += 1` keeps its literal operand as an Add, so SSA lowering builds
+/// `n' = n + 1` instead of a stale copy or the constant `1`.
+#[test]
+fn compound_assign_literal_operand_is_bin_op() {
+    let nodes = rmw_all_nodes(
+        b"class A { void f(int n) { n += 1; g(n); } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "n");
+    assert_eq!(n.taint.uses, vec!["n".to_string()]);
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+    assert_eq!(n.bin_op_const, Some(1));
+    assert!(n.taint.const_text.is_none());
+}
+
+/// The operator comes from the compound token, not from a binary
+/// expression inside the right-hand side.
+#[test]
+fn compound_assign_bin_op_ignores_rhs_operator() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String s, int a, int b) { s += a - b; return s; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(rmw_def_node(&nodes, "s").bin_op, Some(BinOp::Add));
+}
+
+/// Python `*=` / `%=` / `/=` work on strings and paths, so they must not
+/// type the result as an integer.
+#[test]
+fn compound_assign_python_overloaded_ops_have_no_bin_op() {
+    for op in ["*=", "%=", "/=", "|="] {
+        let src = format!("def f(s, y):\n    s {op} y\n    return s\n");
+        let nodes = rmw_all_nodes(
+            src.as_bytes(),
+            "python",
+            Language::from(tree_sitter_python::LANGUAGE),
+        );
+        assert_eq!(rmw_def_node(&nodes, "s").bin_op, None, "python `{op}`");
+    }
+}
+
+/// A member target reads its own dotted path only, never the receiver:
+/// `el.innerHTML += "<b>"` does not read `el` as a value.
+#[test]
+fn compound_assign_member_target_reads_path_only() {
+    let nodes = rmw_all_nodes(
+        b"function f(el) { el.innerHTML += '<b>x</b>'; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "el.innerHTML");
+    assert_eq!(n.taint.uses, vec!["el.innerHTML".to_string()]);
+}
+
+/// `q += fmt(x)` splits into the call (which neither reads nor defines
+/// `q`) and an unlabelled combine node `q = q + <call>` fed by the call.
+#[test]
+fn compound_assign_call_rhs_splits_off_combine_node() {
+    let src = b"function f(x) { let q = 'a'; q += fmt(x); return q; }";
+    let fc = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let body = &fc.bodies[1];
+    let g = &body.graph;
+    let call = g
+        .node_indices()
+        .find(|&i| g[i].call.callee.as_deref() == Some("fmt"))
+        .expect("call node for fmt");
+    assert!(g[call].taint.defines.is_none());
+    assert!(!g[call].taint.uses.iter().any(|u| u == "q"));
+    let succs: Vec<_> = g.neighbors(call).collect();
+    assert_eq!(
+        succs.len(),
+        1,
+        "call should flow only into the combine node"
+    );
+    let combine = &g[succs[0]];
+    assert!(combine.rmw_assign && combine.rmw_rhs_from_pred);
+    assert_eq!(combine.taint.defines.as_deref(), Some("q"));
+    assert_eq!(combine.taint.uses, vec!["q".to_string()]);
+    assert!(combine.taint.labels.is_empty());
+    assert_eq!(combine.bin_op, Some(BinOp::Add));
+}
+
+/// `conn ||= Conn.new(..)` stays a single node that defines the target, so
+/// the memoised-acquire idiom keeps its type and resource tracking.
+#[test]
+fn logical_assign_call_rhs_is_not_split() {
+    let nodes = rmw_all_nodes(
+        b"def f(dsn)\n  conn ||= PG::Connection.new(dsn)\n  conn\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "conn");
+    assert_eq!(n.kind, StmtKind::Call);
+    assert!(!n.rmw_rhs_from_pred);
+}
+
+/// Java `x += c ? a : b` must not take the ternary diamond, which rebinds
+/// the target as a plain overwrite.
+#[test]
+fn compound_assign_ternary_rhs_keeps_target() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String x, boolean c, String a, String b) { x += c ? a : b; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(n.taint.uses.first().map(String::as_str), Some("x"));
+    assert!(n.taint.uses.iter().any(|u| u == "a"));
+    assert!(n.taint.uses.iter().any(|u| u == "b"));
+}
+
+/// `counts[k] += 1` updates an existing slot; it is not a
+/// prototype-pollution write even with an attacker-chosen key.
+#[test]
+fn compound_subscript_write_is_not_prototype_pollution_sink() {
+    let nodes = rmw_all_nodes(
+        b"function f(req) { const counts = {}; counts[req.query.k] += 1; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !nodes.iter().any(|n| n
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::PROTOTYPE_POLLUTION)))),
+        "compound subscript store must not carry a PROTOTYPE_POLLUTION sink"
+    );
+}

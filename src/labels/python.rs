@@ -1614,6 +1614,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // data-flow
     "call"                  => Kind::CallFn,
     "assignment"            => Kind::Assignment,
+    // `x += y`: read-modify-write, see `cfg::rmw_assignment`.
+    "augmented_assignment"  => Kind::Assignment,
     "expression_statement"  => Kind::CallWrapper,
     // tree-sitter-python emits `await x` as a named `await` node (no
     // `_expression` suffix, unlike JS/TS).  Map it to `AwaitForward` so

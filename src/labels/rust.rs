@@ -491,6 +491,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "let_declaration"        => Kind::CallWrapper,
     "expression_statement"   => Kind::CallWrapper,
     "assignment_expression"  => Kind::Assignment,
+    // `x += y`: read-modify-write, see `cfg::rmw_assignment`.
+    "compound_assignment_expr" => Kind::Assignment,
     // `x.await` postfix.  Documented per-language so the contract does
     // not depend on the raw-string fallback in `cfg::push_node`; SSA
     // lowering emits `Assign(operand)` for these nodes.

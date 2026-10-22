@@ -56,9 +56,10 @@ use conditions::{
 };
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
-    ValidSourceGuard, collect_idents, collect_idents_with_paths, find_constructor_type_child,
-    first_call_ident, has_call_descendant, member_expr_text, node_str, root_receiver_text,
-    slice_str, text_of,
+    RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
+    find_constructor_type_child, first_call_ident, has_call_descendant, member_expr_text, node_str,
+    rmw_assignment, rmw_statement, rmw_target_define, rmw_target_reads, root_receiver_text,
+    slice_str, subtree_has_call, text_of,
 };
 use imports::{
     extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
@@ -884,6 +885,19 @@ pub struct NodeInfo {
     /// Enables abstract-domain transfer even when the SSA instruction has
     /// only one use (the literal isn't an identifier and isn't in `uses`).
     pub bin_op_const: Option<i64>,
+    /// Read-modify-write assignment (`x += y`, `$x .= $y`, `x ||= y`): the
+    /// node defines its target and `taint.uses` starts with the target's own
+    /// reads, so the new value depends on the old one.  SSA lowering uses
+    /// this to keep the node from collapsing into a copy of its first
+    /// operand when the right-hand side contributes no SSA value.
+    #[serde(default)]
+    pub rmw_assign: bool,
+    /// Set on the combine node `x = x <op> <call result>` that
+    /// `split_rmw_call` splits off a read-modify-write assignment whose
+    /// right-hand side is a call.  The call result is the SSA value of the
+    /// node's single CFG predecessor (the call node).
+    #[serde(default)]
+    pub rmw_rhs_from_pred: bool,
     /// True when this acquisition node is inside a language-managed cleanup
     /// scope (Python `with`, Java try-with-resources, C# `using`).
     /// Only meaningful on Call nodes that define a resource variable.
@@ -1498,6 +1512,51 @@ fn extract_bin_op(ast: Node, lang: &str) -> Option<BinOp> {
         };
     }
     None
+}
+
+/// Arithmetic operator of a read-modify-write assignment, taken from its
+/// operator token and never from a binary expression inside the right-hand
+/// side (`s += a - b` is an `Add`, not a `Sub`).
+///
+/// `None` for operators without an integer `BinOp` (`.=`, `||=`, `??=`,
+/// `**=`, `>>>=`, `//=`) and for operators Python and Ruby overload on
+/// strings, paths and collections: `*=` (repetition), `%=` (formatting),
+/// `/=` (`pathlib` join), `|=` / `&=` / `^=` (set and dict merge) and Ruby
+/// `<<=` (append).  A `BinOp` other than `Add` types the result `Int`,
+/// which would hide a string payload from type-suppressible sinks.
+fn rmw_bin_op(op: &str, lang: &str) -> Option<BinOp> {
+    let overloaded = matches!(lang, "python" | "ruby");
+    match op {
+        "+=" | "++" => Some(BinOp::Add),
+        "-=" | "--" => Some(BinOp::Sub),
+        ">>=" => Some(BinOp::RightShift),
+        "<<=" if lang != "ruby" => Some(BinOp::LeftShift),
+        _ if overloaded => None,
+        "*=" => Some(BinOp::Mul),
+        "/=" => Some(BinOp::Div),
+        "%=" => Some(BinOp::Mod),
+        "&=" => Some(BinOp::BitAnd),
+        "|=" => Some(BinOp::BitOr),
+        "^=" => Some(BinOp::BitXor),
+        _ => None,
+    }
+}
+
+/// Integer operand of a read-modify-write assignment: `1` for `++` / `--`,
+/// otherwise an integer-literal right-hand side.  Only meaningful when
+/// [`rmw_bin_op`] yields an operator.
+fn rmw_bin_op_const(rmw: &RmwAssign, code: &[u8]) -> Option<i64> {
+    let rhs = match rmw.value {
+        None => return Some(1),
+        Some(rhs) => rhs,
+    };
+    // Go wraps both sides of `x += 1` in a one-element `expression_list`.
+    let rhs = if rhs.kind() == "expression_list" && rhs.named_child_count() == 1 {
+        rhs.named_child(0)?
+    } else {
+        rhs
+    };
+    parse_int_literal(unwrap_parens(rhs), code)
 }
 
 /// Parse an integer literal node to its `i64` value, honouring hex / octal /
@@ -3821,6 +3880,12 @@ pub(super) fn push_node<'a>(
     let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
         def_use(ast, lang, code, extra);
 
+    // `x += y` / `x ||= y`: the right-hand side is an operand, not the
+    // value of the target, so facts derived from the RHS alone (literal
+    // text, template prefix, member-field type, `.length` Int) do not
+    // describe the result.
+    let rmw = rmw_statement(ast, lang);
+
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
     // extract the raw literal text from the AST.  Also capture the
@@ -3828,7 +3893,9 @@ pub(super) fn push_node<'a>(
     // synthesis can emit `Const(Some(text))` instead of `Const(None)`,
     // surfacing the literal text to downstream container-literal
     // detection.
-    let const_text = if (defines.is_some() && uses.is_empty())
+    let const_text = if rmw.is_some() {
+        None
+    } else if (defines.is_some() && uses.is_empty())
         || (kind == StmtKind::Return && uses.is_empty())
     {
         extract_literal_rhs(ast, lang, code)
@@ -4067,8 +4134,25 @@ pub(super) fn push_node<'a>(
                 .any(|ch| ch.kind() == "do_block" || ch.kind() == "block")
         });
 
-    let string_prefix = extract_template_prefix(ast, lang, code)
-        .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code)));
+    // A read-modify-write keeps the target's own prefix (`url += "/x"`), so
+    // only a call argument's prefix is recorded for it.
+    let string_prefix = if rmw.is_some() {
+        None
+    } else {
+        extract_template_prefix(ast, lang, code)
+    }
+    .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code)));
+
+    let (bin_op, bin_op_const) = match &rmw {
+        Some(r) => {
+            let op = rmw_bin_op(r.op, lang);
+            (op, op.and_then(|_| rmw_bin_op_const(r, code)))
+        }
+        None => (
+            extract_bin_op(ast, lang),
+            extract_bin_op_const(ast, lang, code),
+        ),
+    };
 
     // Prefer the span of the call found by `find_classifiable_inner_call`
     // (deeper, classification-driven) over the one from `first_call_ident`
@@ -4148,8 +4232,10 @@ pub(super) fn push_node<'a>(
         catch_param: false,
         arg_callees,
         cast_target_type,
-        bin_op: extract_bin_op(ast, lang),
-        bin_op_const: extract_bin_op_const(ast, lang, code),
+        bin_op,
+        bin_op_const,
+        rmw_assign: rmw.is_some(),
+        rmw_rhs_from_pred: false,
         managed_resource: is_raii_managed || is_ruby_block_managed,
         borrowed_resource: lang == "java"
             && code
@@ -4159,9 +4245,13 @@ pub(super) fn push_node<'a>(
         in_defer: false,
         parameterized_query,
         string_prefix,
-        is_eq_with_const: detect_eq_with_const(ast, lang),
-        is_numeric_length_access: detect_numeric_length_access(ast, lang, code),
-        member_field: detect_member_field_assignment(ast, code),
+        is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
+        is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
+        member_field: if rmw.is_none() {
+            detect_member_field_assignment(ast, code)
+        } else {
+            None
+        },
         rhs_is_function_literal: rhs_is_function_literal(ast, lang),
         is_await_forward: lookup(lang, ast.kind()) == Kind::AwaitForward,
         decl_type: extract_decl_type(ast, lang, code),
@@ -4937,6 +5027,72 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
     false
 }
 
+/// Split a read-modify-write assignment whose right-hand side contains a
+/// call (`q += fmt(x)`, `$h .= htmlspecialchars($y)`) into two nodes.
+/// `call_node` keeps every label the statement classified with and
+/// evaluates the right-hand side, but no longer defines or reads the
+/// target.  A new unlabelled combine node then computes
+/// `q = q <op> <call result>`; SSA lowering takes the call result from the
+/// combine node's single predecessor (see [`NodeInfo::rmw_rhs_from_pred`]).
+///
+/// Kept as one node, the old `q` would sit in the call's implicit argument
+/// group: a sink callee would report it as if it were passed in, and a
+/// sanitizer callee would clear taint on `q` that the call never touched.
+///
+/// Logical forms (`x ||= f()`, `x ??= f()`) stay one node: the result is
+/// either the old value or the call result, never a combination, and the
+/// memoised-acquire idiom (`conn ||= PG::Connection.new(..)`) relies on the
+/// call node defining the target for type and resource tracking.
+///
+/// Returns the node later statements continue from: the combine node when
+/// the statement was split, otherwise `call_node`.
+fn split_rmw_call(
+    g: &mut Cfg,
+    call_node: NodeIndex,
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+) -> NodeIndex {
+    let Some(rmw) = rmw_statement(ast, lang) else {
+        return call_node;
+    };
+    if rmw.is_logical()
+        || g[call_node].kind != StmtKind::Call
+        || g[call_node].taint.defines.is_none()
+        || !rmw.value.is_some_and(|v| subtree_has_call(v, lang))
+    {
+        return call_node;
+    }
+    let reads = rmw_target_reads(rmw.target, code);
+    if !g[call_node].taint.uses.starts_with(&reads) {
+        return call_node;
+    }
+
+    let info = &mut g[call_node];
+    let target = info.taint.defines.take();
+    info.taint.uses.drain(..reads.len());
+    info.rmw_assign = false;
+    let bin_op = info.bin_op.take();
+    info.bin_op_const = None;
+    let ast_meta = info.ast.clone();
+
+    let combine = g.add_node(NodeInfo {
+        kind: StmtKind::Seq,
+        taint: TaintMeta {
+            defines: target,
+            uses: reads,
+            ..Default::default()
+        },
+        ast: ast_meta,
+        bin_op,
+        rmw_assign: true,
+        rmw_rhs_from_pred: true,
+        ..Default::default()
+    });
+    connect_all(g, &[call_node], combine, EdgeKind::Seq);
+    combine
+}
+
 /// when `ast` is (or wraps) an assignment whose
 /// LHS is a single subscript / index expression with a plain-identifier
 /// receiver, emit a synthetic `__index_set__` Call node and return its
@@ -4995,9 +5151,16 @@ fn try_lower_subscript_write(
     //   * the assignment is dominated by an `if` whose condition rejects
     //     dangerous keys with an early `return` / `throw` / `break`, or
     //     that allowlists the key against safe constants on its true arm.
+    //
+    // A read-modify-write store (`counts[k] += 1`, `cache[k] ??= {}`) is not a
+    // pollution channel: with `k == "__proto__"` it reads the existing
+    // prototype object and writes back either that object or a primitive
+    // (`"[object Object]1"`), and assigning a primitive to `__proto__` is a
+    // no-op.  It still lowers to `__index_set__` for the container write.
     let mut pp_labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
     let mut pp_payload_args: Option<Vec<usize>> = None;
     if matches!(lang, "javascript" | "typescript" | "js" | "ts")
+        && rmw_assignment(assign_ast).is_none()
         && !pp_should_suppress_index_set(assign_ast, subscript_node, &arr_text, &idx_text, code)
     {
         pp_labels.push(DataLabel::Sink(Cap::PROTOTYPE_POLLUTION));
@@ -7728,6 +7891,23 @@ pub(super) fn build_sub<'a>(
 
             connect_all(g, &effective_preds, node, EdgeKind::Seq);
 
+            // If the callee never returns, treat as a dead end: no
+            // fall-through edge, so a guard whose failing arm aborts stays
+            // dominating.  See `is_terminator_call`.
+            let never_returns = kind == StmtKind::Call
+                && g[node]
+                    .call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|callee| is_terminator_call(lang, callee, analysis_rules));
+
+            // `q += fmt(x)`: evaluate the call, then combine with the old `q`.
+            let tail = if never_returns {
+                node
+            } else {
+                split_rmw_call(g, node, ast, lang, code)
+            };
+
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
             // (Phase 06): chained after the wrapper Call/Seq for cases like
             // `<div .../>;` (expression_statement) where the JSX appears as
@@ -7735,7 +7915,7 @@ pub(super) fn build_sub<'a>(
             // no matching JSX descendant.
             let post_jsx_frontier = try_lower_jsx_dangerous_html(
                 ast,
-                &[node],
+                &[tail],
                 g,
                 lang,
                 code,
@@ -7744,13 +7924,7 @@ pub(super) fn build_sub<'a>(
                 analysis_rules,
             );
 
-            // If the callee never returns, treat as a dead end: no
-            // fall-through edge, so a guard whose failing arm aborts stays
-            // dominating.  See `is_terminator_call`.
-            if kind == StmtKind::Call
-                && let Some(callee) = &g[node].call.callee
-                && is_terminator_call(lang, callee, analysis_rules)
-            {
+            if never_returns {
                 return Vec::new();
             }
 
@@ -7913,8 +8087,10 @@ pub(super) fn build_sub<'a>(
 
         // Assignment that may contain a call (Python `x = os.getenv(...)`, Ruby `x = gets()`)
         Kind::Assignment => {
-            // JS/TS/Java ternary-RHS split, same rationale as the CallWrapper branch.
+            // JS/TS/Java ternary-RHS split, same rationale as the CallWrapper
+            // branch.  Not for `x += c ? a : b`, which reads `x`.
             if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
+                && rmw_assignment(ast).is_none()
                 && let (Some(left), Some(right)) = (
                     ast.child_by_field_name("left"),
                     ast.child_by_field_name("right"),
@@ -7981,6 +8157,8 @@ pub(super) fn build_sub<'a>(
                 analysis_rules,
             );
             connect_all(g, preds, n, EdgeKind::Seq);
+            // `q += fmt(x)`: evaluate the call, then combine with the old `q`.
+            let n = split_rmw_call(g, n, ast, lang, code);
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
             // (Phase 06): chained after the assignment for shapes like
             // `const el = <div .../>`. No-op when no matching JSX descendant

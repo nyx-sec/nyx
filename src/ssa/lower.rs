@@ -888,6 +888,26 @@ fn reorder_external_vars(external: Vec<String>, formal_params: &[String]) -> Vec
     result
 }
 
+/// Right-hand operand of the combine node of a split read-modify-write
+/// assignment (`q += fmt(x)`, see `cfg::split_rmw_call`): the SSA value of
+/// the call node that is the combine node's only non-exception predecessor.
+/// The call node dominates the combine node, so it is already lowered.
+fn rmw_call_operand(
+    cfg: &Cfg,
+    node: NodeIndex,
+    cfg_node_map: &crate::ssa::ir::CfgNodeMap,
+) -> Option<SsaValue> {
+    let mut preds = cfg
+        .edges_directed(node, Direction::Incoming)
+        .filter(|e| !matches!(e.weight(), EdgeKind::Exception))
+        .map(|e| e.source());
+    let pred = preds.next()?;
+    if preds.next().is_some() {
+        return None;
+    }
+    cfg_node_map.get(&pred).copied()
+}
+
 /// Collect variable definitions per block: var_name → set of block indices.
 /// Nodes in `nop_nodes` are skipped (they won't define variables in SSA).
 fn collect_var_defs(
@@ -1381,6 +1401,23 @@ fn rename_variables(
                     .iter()
                     .filter_map(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
                     .collect();
+                // Combine node of a split `q += fmt(x)`: the right-hand
+                // operand is the value of the call node feeding it.
+                if info.rmw_rhs_from_pred
+                    && let Some(rhs_v) = rmw_call_operand(cfg, node, cfg_node_map)
+                {
+                    uses.push(rhs_v);
+                }
+                // Value of a read-modify-write target before this node
+                // (`x` in `x += " -l"`), `None` when it has no reaching def.
+                let rmw_target_v = if info.rmw_assign {
+                    info.taint
+                        .uses
+                        .first()
+                        .and_then(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
+                } else {
+                    None
+                };
                 // Inject Const for binary expression literal operand.
                 // When a binary expression has one identifier and one numeric literal
                 // (e.g., `flags & 0x07`), the literal isn't in `uses`. Inject a
@@ -1398,6 +1435,30 @@ fn rename_variables(
                         span: info.ast.span,
                     };
                     ssa_blocks[block_idx].body.push(const_inst);
+                    value_defs.push(ValueDef {
+                        var_name: None,
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    uses.push(const_v);
+                }
+                // A read-modify-write whose right-hand side resolved to no
+                // value (`s += " -l"`, `x ||= "dflt"`, `n += 1.5`) would be a
+                // one-operand Assign, which const-prop and copy-prop read as
+                // a plain copy of the old value: `s = "a"; s += "b"` would
+                // fold to "a" and `n = 0; n += 2` to 0.  Add an opaque
+                // operand so the result is a fresh value that still carries
+                // the old value's taint.
+                if rmw_target_v.is_some_and(|t| uses.as_slice() == [t]) {
+                    let const_v = SsaValue(*next_value);
+                    *next_value += 1;
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: const_v,
+                        op: SsaOp::Const(None),
+                        cfg_node: node,
+                        var_name: None,
+                        span: info.ast.span,
+                    });
                     value_defs.push(ValueDef {
                         var_name: None,
                         cfg_node: node,
