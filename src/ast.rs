@@ -2052,6 +2052,7 @@ impl<'a> ParsedFile<'a> {
         let closure_released_per_body =
             state::collect_closure_released_var_names(&self.file_cfg.bodies, caller_lang);
         let empty_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let module_constants = cfg_analysis::module_constant_names(&self.file_cfg.bodies);
         for body in &self.file_cfg.bodies {
             let body_taint: Vec<_> = taint_results
                 .iter()
@@ -2059,6 +2060,18 @@ impl<'a> ParsedFile<'a> {
                 .cloned()
                 .collect();
             let body_const_facts = self.body_const_facts(body);
+            // Parameters a closure or nested function can read from the
+            // functions around it (the top-level body has none).
+            let mut captured_params: Vec<String> = Vec::new();
+            let mut parent = body.meta.parent_body_id;
+            while let Some(pid) = parent {
+                let outer = self.file_cfg.body(pid);
+                if outer.meta.kind == crate::cfg::BodyKind::TopLevel {
+                    break;
+                }
+                captured_params.extend(outer.meta.params.iter().cloned());
+                parent = outer.meta.parent_body_id;
+            }
             let cfg_ctx = cfg_analysis::AnalysisContext {
                 cfg: &body.graph,
                 entry: body.entry,
@@ -2079,6 +2092,9 @@ impl<'a> ParsedFile<'a> {
                         .unwrap_or(&empty_set),
                 ),
                 class_constant_scalars: Some(&self.file_cfg.class_constant_scalars),
+                body_params: &body.meta.params,
+                captured_params: &captured_params,
+                module_constants: Some(&module_constants),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
                 // Layer C4 mirror at the CFG-emission point: Python
