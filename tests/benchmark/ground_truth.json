@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 695
+    "corpus_size": 712
   },
   "cases": [
     {
@@ -22091,6 +22091,503 @@
       ],
       "disabled": false,
       "notes": "Sinatra `halt` throws :halt and ends the request; the backtick command runs only for allowlisted values."
+    },
+    {
+      "case_id": "js-safe-equality-literal-allowlist-001",
+      "file": "javascript/safe/safe_equality_literal_allowlist.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`dir !== 'asc' && dir !== 'desc'` returns early, so the ORDER BY value is one of two literals."
+    },
+    {
+      "case_id": "js-sqli-equality-not-equal-edge-001",
+      "file": "javascript/sqli/sqli_equality_not_equal_edge.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "equality",
+        "wrong-edge"
+      ],
+      "disabled": false,
+      "notes": "The query runs on the `dir !== 'asc'` edge, where dir is anything but the literal."
+    },
+    {
+      "case_id": "py-safe-equality-literal-allowlist-001",
+      "file": "python/safe/safe_equality_literal_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`order != 'asc' and order != 'desc'` returns early, so the ORDER BY value is a literal."
+    },
+    {
+      "case_id": "go-safe-equality-literal-allowlist-001",
+      "file": "go/safe/safe_equality_literal_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`dir != \"asc\" && dir != \"desc\"` returns early, so the ORDER BY value is a literal."
+    },
+    {
+      "case_id": "php-safe-equality-literal-allowlist-001",
+      "file": "php/safe/safe_equality_literal_allowlist.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "strict-equality"
+      ],
+      "disabled": false,
+      "notes": "Strict `!==` comparisons against two literals with `exit` pin $dir before the query."
+    },
+    {
+      "case_id": "php-sqli-loose-numeric-equality-001",
+      "file": "php/sqli/sqli_loose_numeric_equality.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "equality",
+        "php-loose-comparison"
+      ],
+      "disabled": false,
+      "notes": "Loose `$n == 0` is not a literal pin: before PHP 8 a string such as \"0 OR 1=1\" compares equal to 0."
+    },
+    {
+      "case_id": "go-safe-commaok-allowlist-001",
+      "file": "go/safe/safe_commaok_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "comma-ok",
+        "map-lookup"
+      ],
+      "disabled": false,
+      "notes": "Comma-ok map lookups (`_, ok := m[k]`, `ok := m[k]`, `v, ok := m[k]`) gate the sinks the same way the inline `!m[k]` form does; the mapped value is read from a constant map."
+    },
+    {
+      "case_id": "go-cmdi-commaok-inverted-001",
+      "file": "go/cmdi/cmdi_commaok_inverted.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "comma-ok",
+        "wrong-edge"
+      ],
+      "disabled": false,
+      "notes": "The command runs only when the key is NOT in the allowlist."
+    },
+    {
+      "case_id": "go-cmdi-commaok-request-map-001",
+      "file": "go/cmdi/cmdi_commaok_request_map.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "comma-ok",
+        "request-map"
+      ],
+      "disabled": false,
+      "notes": "Presence in the request's own query map is not an allowlist."
+    },
+    {
+      "case_id": "go-safe-slices-contains-allowlist-001",
+      "file": "go/safe/safe_slices_contains_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "slices-contains"
+      ],
+      "disabled": false,
+      "notes": "`slices.Contains(allowed, cmd)` tests cmd (argument 1) against the fixed list."
+    },
+    {
+      "case_id": "go-cmdi-slices-contains-inverted-001",
+      "file": "go/cmdi/cmdi_slices_contains_inverted.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "slices-contains",
+        "denylist"
+      ],
+      "disabled": false,
+      "notes": "A denylist membership test that returns on a match lets every other command through."
+    },
+    {
+      "case_id": "rs-safe-allowlist-contains-borrow-001",
+      "file": "rust/safe/safe_allowlist_contains_borrow.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "borrow"
+      ],
+      "disabled": false,
+      "notes": "`ALLOWED.contains(&cmd.as_str())` tests cmd itself; the borrow and view are peeled for the guard target."
+    },
+    {
+      "case_id": "py-safe-conditional-expression-allowlist-001",
+      "file": "python/safe/safe_conditional_expression_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "`sort = s if s in SORTABLE else 'name'`: the conditional expression is a branch, so the request value reaches ORDER BY only on the allowlisted arm."
+    },
+    {
+      "case_id": "py-sqli-conditional-expression-inverted-001",
+      "file": "python/sqli/sqli_conditional_expression_inverted.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "wrong-arm"
+      ],
+      "disabled": false,
+      "notes": "`s if s not in SORTABLE else 'name'` picks the request value exactly when it is not allowlisted."
+    },
+    {
+      "case_id": "rb-safe-ternary-order-allowlist-001",
+      "file": "ruby/safe/safe_ternary_order_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "Ruby `cond ? requested : 'created_at'` is lowered as a branch, so `Post.order(sort)` sees an allowlisted column."
+    },
+    {
+      "case_id": "rb-sqli-ternary-inverted-allowlist-001",
+      "file": "ruby/sqli/sqli_ternary_inverted_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "wrong-arm"
+      ],
+      "disabled": false,
+      "notes": "The ternary picks the request value on the not-allowlisted arm."
+    },
+    {
+      "case_id": "php-safe-ternary-in-array-sort-001",
+      "file": "php/safe/safe_ternary_in_array_sort.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "PHP `in_array(..., true) ? $requested : 'name'` is lowered as a branch, so the query sees an allowlisted column."
     }
   ]
 }

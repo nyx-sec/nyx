@@ -1,0 +1,32 @@
+{
+  "description": "Python `x != 'a' and x != 'b': return` pins x to a literal on the surviving path; an equality guard around an unrelated branch does not.",
+  "tags": [
+    "taint",
+    "allowlist",
+    "equality",
+    "sqli"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        14
+      ],
+      "notes": "order is 'asc' or 'desc' at the query"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "the equality guard only covers the print branch"
+    }
+  ]
+}

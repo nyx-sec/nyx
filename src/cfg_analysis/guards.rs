@@ -2691,6 +2691,78 @@ pub(super) fn suffix_matches_at_leaf_boundary(callee_lower: &str, suffix: &str) 
     matches!(prev, b'.' | b'_' | b':')
 }
 
+/// Branch conditions that pin one variable to a fixed set of values, with
+/// the variables they pin:
+///
+/// * an equality test against a literal (`dir === 'asc'`, part of a
+///   `dir === 'asc' || dir === 'desc'` chain);
+/// * the presence result of a Go map lookup (`_, ok := allowed[cmd]; if
+///   !ok`), which pins the key and the value binding.
+///
+/// Unlike [`find_guard_nodes`] these only guard a sink that reads one of the
+/// pinned variables, so an unrelated `if (mode === 'debug')` above a sink
+/// does not hide it.
+fn find_value_pinning_guards(ctx: &AnalysisContext) -> Vec<(NodeIndex, SmallVec<[String; 2]>)> {
+    let mut out = Vec::new();
+    for idx in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[idx];
+        if info.kind != StmtKind::If {
+            continue;
+        }
+        let Some(cond_text) = info.condition_text.as_deref() else {
+            continue;
+        };
+        if classify_condition(cond_text) == PredicateKind::Comparison
+            && let Some((target, _)) = crate::taint::path_state::equality_literal_guard(cond_text)
+            && info.condition_vars.iter().any(|v| *v == target)
+        {
+            out.push((idx, SmallVec::from_elem(target, 1)));
+            continue;
+        }
+        if let Some(lookup) = cond_membership_lookup(idx, ctx) {
+            let mut vars: SmallVec<[String; 2]> = SmallVec::new();
+            vars.push(lookup.key.clone());
+            vars.extend(lookup.value_var.clone());
+            out.push((idx, vars));
+        }
+    }
+    out
+}
+
+/// The map lookup whose presence result is this condition's single
+/// variable (`ok` in `_, ok := allowed[cmd]; if !ok`).  Same-function
+/// definitions textually before the condition, or the `if` statement's own
+/// initializer (a direct CFG predecessor inside its span), taking the last
+/// one, like [`cond_indirect_validator_callee`].
+fn cond_membership_lookup<'c>(
+    cond: NodeIndex,
+    ctx: &'c AnalysisContext,
+) -> Option<&'c crate::cfg::MembershipLookup> {
+    let info = &ctx.cfg[cond];
+    let [var_name] = info.condition_vars.as_slice() else {
+        return None;
+    };
+    let cond_func = info.ast.enclosing_func.as_deref();
+    let mut best: Option<(usize, &crate::cfg::MembershipLookup)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        let Some(lookup) = n.membership_lookup.as_ref() else {
+            continue;
+        };
+        let before_cond = n.ast.span.0 < info.ast.span.0 || ctx.cfg.find_edge(nidx, cond).is_some();
+        if lookup.result_var != *var_name
+            || n.ast.enclosing_func.as_deref() != cond_func
+            || !before_cond
+        {
+            continue;
+        }
+        if best.is_none_or(|(s, _)| n.ast.span.0 > s) {
+            best = Some((n.ast.span.0, lookup));
+        }
+    }
+    best.map(|(_, l)| l)
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -3361,6 +3433,7 @@ impl CfgAnalysis for UnguardedSink {
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
         let sink_nodes = dominators::find_sink_nodes(ctx.cfg);
         let guard_nodes = find_guard_nodes(ctx);
+        let pinning_guards = find_value_pinning_guards(ctx);
 
         let mut findings = Vec::new();
 
@@ -3385,6 +3458,12 @@ impl CfgAnalysis for UnguardedSink {
                 let guard_func = ctx.cfg[*guard_idx].ast.enclosing_func.as_deref();
                 (*guard_caps & sink_caps) != Cap::empty()
                     && guard_func == sink_func
+                    && dominates(&doms, *guard_idx, *sink)
+            }) || pinning_guards.iter().any(|(guard_idx, vars)| {
+                ctx.cfg[*guard_idx].ast.enclosing_func.as_deref() == sink_func
+                    && vars
+                        .iter()
+                        .any(|v| sink_info.taint.uses.iter().any(|u| u == v))
                     && dominates(&doms, *guard_idx, *sink)
             });
 

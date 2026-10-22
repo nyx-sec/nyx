@@ -1,0 +1,33 @@
+{
+  "description": "An allowlisted value copied into a new variable on one arm of an if or a conditional expression, with a literal on the other arm, stays validated through the join. A literal definition of the copy target must not pick up the source's taint through the copy alias.",
+  "tags": [
+    "taint",
+    "allowlist",
+    "conditional-expression",
+    "alias",
+    "sqli"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        24
+      ],
+      "notes": "the request value only reaches ORDER BY on the allowlisted arm"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "the request value is chosen when it is not in the allowlist"
+    }
+  ]
+}

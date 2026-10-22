@@ -4870,3 +4870,43 @@ fn koa_ctx_throw_dead_ends_the_call() {
         0
     );
 }
+
+/// Condition texts of every `If` node in `src`, across all bodies.
+fn if_condition_texts(src: &[u8], lang: &str, ts_lang: Language) -> Vec<String> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::If)
+        .filter_map(|n| n.condition_text.clone())
+        .collect()
+}
+
+#[test]
+fn conditional_expression_assignments_lower_to_a_diamond() {
+    let py = b"def h(s):\n    sort = s if s in SORTABLE else 'name'\n    run(sort)\n";
+    let conds = if_condition_texts(py, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c == "s in SORTABLE"),
+        "python: {conds:?}"
+    );
+
+    let rb = b"def h\n  sort = SORTABLE.include?(params[:sort]) ? params[:sort] : 'created_at'\n  run(sort)\nend\n";
+    let conds = if_condition_texts(rb, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c.starts_with("SORTABLE.include?")),
+        "ruby: {conds:?}"
+    );
+
+    let php = b"<?php\nfunction h($a) {\n  $sort = in_array($_GET['s'], $a, true) ? $_GET['s'] : 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(php, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(
+        conds.iter().any(|c| c.starts_with("in_array(")),
+        "php: {conds:?}"
+    );
+
+    // PHP `a ?: b` has no separate consequence and stays a plain assignment.
+    let short = b"<?php\nfunction h() {\n  $sort = $_GET['s'] ?: 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(conds.is_empty(), "php short ternary: {conds:?}");
+}

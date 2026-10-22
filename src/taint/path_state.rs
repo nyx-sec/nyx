@@ -1776,8 +1776,9 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
         PredicateKind::Comparison => {
             // `x === '/login'`, `x == 5`, `null != obj`, when exactly one
             // side is a literal, extract the identifier side as the target.
-            // Downstream `apply_branch_predicates` uses this to mark the
-            // variable as `validated_may` on the true (equal) branch.
+            // This only narrows which condition vars the branch touches;
+            // the equal-edge validation itself comes from
+            // [`equality_literal_guard`].
             let target = extract_comparison_target(text);
             (kind, target)
         }
@@ -1794,7 +1795,8 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
 /// - `null != obj` → `Some("obj")`
 /// - `x === y` → `None` (neither side is a literal)
 /// - `'a' == 'b'` → `None` (both sides are literals)
-/// - `obj.field == 3` → `None` (not a bare identifier)
+/// - `obj.field == 3` → `Some("obj.field")` ([`is_identifier`] accepts
+///   dots; the consumer only uses it when it names a condition var)
 ///
 /// Best-effort text analysis, kept conservative to avoid false validation.
 fn extract_comparison_target(text: &str) -> Option<String> {
@@ -1844,23 +1846,96 @@ fn is_comparison_literal(s: &str) -> bool {
         return true;
     }
 
-    // Numeric literal: optional sign + digits, optional decimal point.
-    let mut chars = s.chars();
-    let first = chars.next().unwrap();
-    let rest_start = if first == '-' || first == '+' {
-        match chars.next() {
-            Some(c) => c,
-            None => return false,
-        }
-    } else {
-        first
-    };
-    if !rest_start.is_ascii_digit() {
-        return false;
+    is_numeric_literal(s)
+}
+
+/// A single equality test of a bare variable against a constant literal:
+/// `dir === 'asc'`, `order != "desc"`, `$n === 5`, `'asc' == dir`.
+///
+/// Returns `(variable, op_is_eq)`.  On the edge where the values are equal
+/// the variable holds the literal, so an `a == 'x' || a == 'y'` chain (which
+/// the CFG splits into one branch per clause) is an inline allowlist.
+///
+/// Conservative on purpose:
+/// * the variable must be a plain identifier (an optional PHP `$` is
+///   stripped), not a member path like `x.length`;
+/// * the literal must be a plain string (no `${..}` / `#{..}` / PHP `"$x"`
+///   interpolation) or a number; `null` / `true` / `false` and friends are
+///   other idioms;
+/// * PHP loose `==` against a number is rejected, since before PHP 8
+///   `"1 OR 1=1" == 1` holds;
+/// * a whole-condition `!` / `not` returns `None` rather than guessing.
+pub fn equality_literal_guard(text: &str) -> Option<(String, bool)> {
+    use crate::abstract_interp::path_domain::{strip_leading_not, strip_outer_parens};
+
+    let t = strip_outer_parens(text.trim());
+    if strip_leading_not(t).is_some() {
+        return None;
     }
-    s.chars()
-        .skip(if first == '-' || first == '+' { 1 } else { 0 })
-        .all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+    let (lhs, op, rhs) = split_single_comparison(t)?;
+    let op_is_eq = match op {
+        "==" | "===" => true,
+        "!=" | "!==" => false,
+        _ => return None,
+    };
+    let strict = op.len() == 3;
+    let (ident, literal) = match (equality_literal(lhs), equality_literal(rhs)) {
+        (None, Some(lit)) => (lhs.trim(), lit),
+        (Some(lit), None) => (rhs.trim(), lit),
+        _ => return None,
+    };
+    let (ident, php_var) = match ident.strip_prefix('$') {
+        Some(rest) => (rest, true),
+        None => (ident, false),
+    };
+    if !is_identifier(ident) || ident.contains('.') {
+        return None;
+    }
+    if php_var && !strict && literal == EqLiteral::Number {
+        return None;
+    }
+    Some((ident.to_string(), op_is_eq))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EqLiteral {
+    String,
+    Number,
+}
+
+/// A constant string or numeric literal operand of an equality test.
+fn equality_literal(operand: &str) -> Option<EqLiteral> {
+    let s = operand.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let q = bytes[0];
+        if matches!(q, b'"' | b'\'' | b'`') && bytes[bytes.len() - 1] == q {
+            let inner = &s[1..s.len() - 1];
+            if inner.contains(q as char) || inner.contains("${") || inner.contains("#{") {
+                return None;
+            }
+            // PHP / shell style `"$name"` interpolation.
+            let dollar_var = q == b'"'
+                && inner
+                    .split('$')
+                    .skip(1)
+                    .any(|rest| rest.starts_with(|c: char| c.is_alphabetic() || c == '_'));
+            if dollar_var {
+                return None;
+            }
+            return Some(EqLiteral::String);
+        }
+    }
+    is_numeric_literal(s).then_some(EqLiteral::Number)
+}
+
+/// Optional sign, then digits with optional `.` / `_` separators.
+fn is_numeric_literal(s: &str) -> bool {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    digits.starts_with(|c: char| c.is_ascii_digit())
+        && digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
 /// Count positional arguments in a call-shaped condition text.
@@ -1909,10 +1984,17 @@ fn count_call_args(text: &str) -> Option<usize> {
 /// `(!ALLOWED.includes(cmd))` where naïve `strip_suffix(')')` would leave
 /// `cmd)` and lose the argument.
 fn first_call_arg(args_part: &str) -> Option<&str> {
+    call_arg(args_part, 0)
+}
+
+/// The `n`th top-level argument of the call whose argument list starts at
+/// `args_part` (just after the opening paren).  Same scan as
+/// [`first_call_arg`].
+fn call_arg(args_part: &str, n: usize) -> Option<&str> {
     let bytes = args_part.as_bytes();
     let mut depth: usize = 1;
     let mut end: Option<usize> = None;
-    let mut first_comma: Option<usize> = None;
+    let mut commas: smallvec::SmallVec<[usize; 4]> = smallvec::SmallVec::new();
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -1925,7 +2007,7 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
                     break;
                 }
             }
-            b',' if depth == 1 && first_comma.is_none() => first_comma = Some(i),
+            b',' if depth == 1 => commas.push(i),
             b'"' | b'\'' => {
                 let quote = b;
                 i += 1;
@@ -1945,8 +2027,9 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
         i += 1;
     }
     let end = end?;
-    let cut = first_comma.unwrap_or(end);
-    Some(args_part[..cut].trim())
+    let from = if n == 0 { 0 } else { *commas.get(n - 1)? + 1 };
+    let to = commas.get(n).copied().unwrap_or(end);
+    Some(args_part[from..to].trim())
 }
 
 /// Extract the validated variable from a condition text.
@@ -2051,10 +2134,18 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
         if let Some(pos) = lower.find(method) {
             let args_start = pos + method.len();
             let args_part = &trimmed[args_start..];
-            if let Some(first_arg) = first_call_arg(args_part) {
-                let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
-                if !first_arg.is_empty() && is_identifier(first_arg) {
-                    return Some(first_arg.to_string());
+            // Go's generic `slices.Contains(list, v)` (and the samber/lo and
+            // go-funk equivalents) is a package function: the collection is
+            // argument 0 and the value under test argument 1.
+            let pkg_second = (*method == ".contains(" && is_go_collection_pkg(&lower[..pos]))
+                .then(|| call_arg(args_part, 1))
+                .flatten();
+            let value_arg = pkg_second.or_else(|| first_call_arg(args_part));
+            if let Some(arg) = value_arg {
+                let arg = strip_borrow_and_view(arg);
+                let arg = arg.strip_prefix('$').unwrap_or(arg);
+                if !arg.is_empty() && is_identifier(arg) {
+                    return Some(arg.to_string());
                 }
             }
         }
@@ -2122,6 +2213,43 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
     }
 
     None
+}
+
+/// True when `before` (the text up to a `.contains(` call) ends in a bare Go
+/// collection-helper package name rather than a receiver value.
+fn is_go_collection_pkg(before: &str) -> bool {
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .map_or(0, |i| i + 1);
+    matches!(&before[start..], "slices" | "lo" | "funk")
+}
+
+/// Peel borrows and identity views off a membership argument so the value
+/// under test lines up with its variable name: Rust `&x`, `&mut x`, `*x`,
+/// `&x.as_str()`, `x.as_ref()`, `x.to_string()`.  Conversions that change
+/// the value (`trim`, `to_lowercase`) are left alone, so the argument is no
+/// longer a bare identifier and no target is extracted.
+fn strip_borrow_and_view(arg: &str) -> &str {
+    let mut a = arg.trim();
+    loop {
+        let before = a;
+        a = a.strip_prefix("&mut ").unwrap_or(a).trim_start();
+        a = a.trim_start_matches(['&', '*']).trim_start();
+        for view in [
+            ".as_str()",
+            ".as_ref()",
+            ".to_string()",
+            ".as_slice()",
+            ".as_bytes()",
+        ] {
+            if let Some(rest) = a.strip_suffix(view) {
+                a = rest.trim_end();
+            }
+        }
+        if a == before {
+            return a;
+        }
+    }
 }
 
 /// Detect map-membership style indexing such as `allowed[cmd]` without
@@ -2842,6 +2970,40 @@ mod tests {
         let (k2, t2) = classify_condition_with_target("!stringInSlice(host, allowed)");
         assert_eq!(k2, PredicateKind::AllowlistCheck);
         assert_eq!(t2.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn membership_target_go_package_contains_and_rust_borrows() {
+        // Go `slices.Contains(list, v)`: the value is the second argument.
+        for text in [
+            "!slices.Contains(allowed, x)",
+            "slices.Contains(allowed, x)",
+            "!lo.Contains(allowed, x)",
+        ] {
+            let (k, t) = classify_condition_with_target(text);
+            assert_eq!(k, PredicateKind::AllowlistCheck, "{text}");
+            assert_eq!(t.as_deref(), Some("x"), "{text}");
+        }
+        // A method on a receiver keeps its first argument.
+        let (_, t) = classify_condition_with_target("allowed.contains(x)");
+        assert_eq!(t.as_deref(), Some("x"));
+        let (_, t) = classify_condition_with_target("myslices.Contains(x)");
+        assert_eq!(t.as_deref(), Some("x"));
+        // Rust borrows and identity views resolve to the variable.
+        for text in [
+            "!ALLOWED.contains(&x)",
+            "!ALLOWED.contains(&x.as_str())",
+            "ALLOWED.contains(&mut x)",
+            "ALLOWED.contains(*x)",
+            "ALLOWED.contains(x.as_ref())",
+        ] {
+            let (k, t) = classify_condition_with_target(text);
+            assert_eq!(k, PredicateKind::AllowlistCheck, "{text}");
+            assert_eq!(t.as_deref(), Some("x"), "{text}");
+        }
+        // A value-changing conversion is not the variable itself.
+        let (_, t) = classify_condition_with_target("ALLOWED.contains(&x.trim())");
+        assert_eq!(t, None);
     }
 
     #[test]
@@ -3617,6 +3779,37 @@ mod ghsa_h8cj_hpmg_636v_tests {
     }
 
     // ── Sentinel comparison polarity ─────────────────────────────────────
+
+    #[test]
+    fn equality_literal_guard_table() {
+        let some = |v: &str, eq: bool| Some((v.to_string(), eq));
+        // (text, expected)
+        let cases: &[(&str, Option<(String, bool)>)] = &[
+            ("(dir === 'asc')", some("dir", true)),
+            ("dir !== 'asc'", some("dir", false)),
+            ("order != \"desc\"", some("order", false)),
+            ("'asc' == dir", some("dir", true)),
+            ("$dir !== 'asc'", some("dir", false)),
+            ("$n === 5", some("n", true)),
+            ("x == 5", some("x", true)),
+            // PHP loose `==` against a number: "1 OR 1=1" == 1 before PHP 8
+            ("$n == 5", None),
+            ("x.length === 5", None),
+            ("x === `${y}`", None),
+            ("x == \"#{y}\"", None),
+            ("$x == \"a$y\"", None),
+            ("x === true", None),
+            ("x == null", None),
+            ("x === y", None),
+            ("!(x === 'a')", None),
+            ("x === 'a' || y === 'b'", None),
+            ("x >= 5", None),
+            ("x is 'a'", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(&equality_literal_guard(text), want, "{text}");
+        }
+    }
 
     #[test]
     fn sentinel_comparison_polarity_table() {

@@ -1296,6 +1296,11 @@ struct BranchCondClass {
     /// Computed for the predicate kinds above and for `Comparison`, where
     /// `ok === false` on an indirect validator result needs it.
     sentinel: crate::taint::path_state::SentinelPolarity,
+    /// `x == 'lit'` / `x != 5` on a bare variable: the variable and whether
+    /// the operator is `==` (see
+    /// [`crate::taint::path_state::equality_literal_guard`]).  Only set for
+    /// [`PredicateKind::Comparison`].
+    eq_guard: Option<(String, bool)>,
     path: PathBranchClass,
 }
 
@@ -1345,11 +1350,17 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
     };
     let has_semantic_negation =
         base_negation ^ (predicate_kind && sentinel == SentinelPolarity::Flip);
+    let eq_guard = if kind == PredicateKind::Comparison {
+        crate::taint::path_state::equality_literal_guard(cond_text)
+    } else {
+        None
+    };
     BranchCondClass {
         kind,
         target_var,
         has_semantic_negation,
         sentinel,
+        eq_guard,
         path: classify_path_branch(cond_text),
     }
 }
@@ -1530,6 +1541,21 @@ fn compute_succ_states(
                     transfer.base_aliases,
                 );
 
+                // `dir === 'asc'`: on the equal edge `dir` holds the literal.
+                // A `dir === 'asc' || dir === 'desc'` chain is split into one
+                // branch per clause, so the validated_must intersection at
+                // the join gives exactly the allowlist semantics.
+                if let Some((target, op_is_eq)) = &class.eq_guard {
+                    apply_equality_literal_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        target,
+                        *op_is_eq,
+                        cond_info,
+                        transfer.interner,
+                    );
+                }
+
                 // PathFact branch narrowing, language-agnostic.  The
                 // text-level rejection patterns recognised by
                 // `classify_path_rejection_atom` cover the common idioms
@@ -1617,6 +1643,20 @@ fn compute_succ_states(
                         cond_info.condition_negated
                             ^ (class.sentinel == crate::taint::path_state::SentinelPolarity::Flip),
                         ssa,
+                        block.id,
+                        transfer.interner,
+                    );
+                }
+                // Go comma-ok allowlist: `_, ok := allowed[cmd]; if !ok`.
+                if matches!(kind, PredicateKind::Unknown | PredicateKind::NullCheck) {
+                    apply_membership_result_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        exit_state,
+                        cond_info,
+                        condition.as_deref(),
+                        ssa,
+                        cfg,
                         block.id,
                         transfer.interner,
                     );
@@ -1901,6 +1941,100 @@ fn apply_branch_predicates(
             }
         }
     }
+
+}
+
+/// Branch on the presence result of a map lookup (`_, ok := allowed[cmd];
+/// if !ok { return }`): on the edge where `ok` holds, the key is in the map,
+/// which is the same allowlist fact the inline `if !allowed[cmd]` gives.
+/// The value binding of `v, ok := allowed[cmd]` is validated too, since it
+/// was read out of that map.
+///
+/// The `ok` definition is the one reaching the branch (the pre-lowered
+/// `BoolTest` operand when present), and it must be a CFG node stamped with
+/// [`crate::cfg::MembershipLookup`].  A map that carries taint itself
+/// (`q := r.URL.Query(); _, ok := q[k]`) is a presence check on request
+/// data, not an allowlist, and narrows nothing.
+#[allow(clippy::too_many_arguments)]
+fn apply_membership_result_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    exit_state: &SsaTaintState,
+    cond_info: &NodeInfo,
+    condition: Option<&constraint::ConditionExpr>,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    block: BlockId,
+    interner: &SymbolInterner,
+) {
+    let [result_name] = cond_info.condition_vars.as_slice() else {
+        return;
+    };
+    let result_val = match condition {
+        Some(constraint::ConditionExpr::BoolTest { var }) => Some(*var),
+        _ => reaching_def_at_block_end(result_name, ssa, block),
+    };
+    let Some(def) = result_val.and_then(|v| ssa.value_defs.get(v.0 as usize)) else {
+        return;
+    };
+    if def.var_name.as_deref() != Some(result_name.as_str()) {
+        return;
+    }
+    let Some(lookup) = cfg
+        .node_weight(def.cfg_node)
+        .and_then(|n| n.membership_lookup.as_ref())
+    else {
+        return;
+    };
+    if lookup.result_var != *result_name {
+        return;
+    }
+    if reaching_def_at_block_end(&lookup.base, ssa, block)
+        .is_some_and(|b| exit_state.get(b).is_some())
+    {
+        return;
+    }
+    let present = if cond_info.condition_negated {
+        false_state
+    } else {
+        true_state
+    };
+    for name in std::iter::once(&lookup.key).chain(lookup.value_var.as_ref()) {
+        if let Some(sym) = interner.get(name) {
+            present.validated_must.insert(sym);
+            present.validated_may.insert(sym);
+        }
+    }
+}
+
+/// Mark `target` validated on the edge where `target == <literal>` holds.
+///
+/// `target` must be one of the condition's own variables; there is no
+/// all-vars fallback, so a comparison on something else (`x.length === 5`)
+/// validates nothing.  `condition_negated` covers `!(x === 'a')` forms the
+/// CFG has already unwrapped.
+fn apply_equality_literal_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    target: &str,
+    op_is_eq: bool,
+    cond_info: &NodeInfo,
+    interner: &SymbolInterner,
+) {
+    if !cond_info.condition_vars.iter().any(|v| v == target) {
+        return;
+    }
+    let Some(sym) = interner.get(target) else {
+        return;
+    };
+    let equal_on_true = op_is_eq != cond_info.condition_negated;
+    let st = if equal_on_true {
+        true_state
+    } else {
+        false_state
+    };
+    st.validated_must.insert(sym);
+    st.validated_may.insert(sym);
 }
 
 /// Clear `cap` from the taint of `var` and every SSA value that aliases it
@@ -11275,6 +11409,10 @@ fn propagate_taint_to_aliases(
             }
             None
         })
+        // A literal or declaration-only definition of an alias name (the
+        // `'name'` arm of `order = ok ? s : 'name'`) holds no data from the
+        // tainted value, so it is never a copy target.
+        .filter(|v| !matches!(op_for_value(ssa, *v), Some(SsaOp::Const(_) | SsaOp::Nop)))
         .collect();
 
     for v in to_taint {
