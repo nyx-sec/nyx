@@ -1283,6 +1283,35 @@ fn cli_main_no_auth_gap() {
 }
 
 #[test]
+fn auth_gap_web_params_come_from_the_function_itself() {
+    // `process_jobs` takes a job queue, not a request.  A `(req, res)`
+    // handler elsewhere in the file must not make it a web entry point.
+    let js = || Language::from(tree_sitter_javascript::LANGUAGE);
+    let batch = b"const cp = require('child_process');
+function process_jobs(queue) {
+  cp.exec(queue.cmd);
+}
+function handle(req, res) {
+  res.send('ok');
+}
+";
+    let gaps = |src: &[u8]| {
+        parse_and_analyse(&auth::AuthGap, src, "javascript", js())
+            .into_iter()
+            .filter(|f| f.rule_id == "cfg-auth-gap")
+            .count()
+    };
+    assert_eq!(gaps(batch), 0);
+
+    let web = b"const cp = require('child_process');
+function process_upload(req, res) {
+  cp.exec(req.query.cmd);
+}
+";
+    assert_eq!(gaps(web), 1);
+}
+
+#[test]
 fn handler_with_source_still_gets_auth_gap() {
     // handler-style function (handle_*) with a sink → should still flag auth-gap
     // because it has a strong handler name even without explicit web params
