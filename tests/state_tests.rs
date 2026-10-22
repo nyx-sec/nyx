@@ -1632,3 +1632,26 @@ fn php_receiver_field_closed_by_sibling() {
     // close() releases the field.
     assert_no_leaks("php_receiver_field_closed_clean.php");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Python DB-API cursors derived from a local connection
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn python_cursor_from_local_connection_clean() {
+    assert_no_leaks("python_cursor_from_local_connection.py");
+}
+
+#[test]
+fn python_cursor_connection_leak_reports_connection() {
+    let file = "python_cursor_connection_leak.py";
+    assert_message_contains(file, "state-resource-leak", "`conn`");
+    let on_cursor = state_diags_for(file)
+        .iter()
+        .any(|d| d.message.as_deref().unwrap_or("").contains("`cur`"));
+    assert!(
+        !on_cursor,
+        "the connection leak is the root, not the cursor: {:?}",
+        leak_ids_for(file)
+    );
+}

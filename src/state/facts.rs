@@ -295,12 +295,14 @@ pub fn extract_findings(
             // confirmed to be a locally-acquired `Connection` via its own
             // acquire node.  A statement on a long-lived / field / parameter
             // connection this body does not track is KEPT (it genuinely
-            // accumulates).  Java-only; twin of the suppression in
+            // accumulates).  Twin of the suppression in
             // `cfg_analysis::resources`.  Interior-node sibling of the
-            // `ResultSet` leaf suppression above.
-            if lang == Lang::Java
-                && let Some(acq) = acquire_node
-                && let Some(owner) = crate::cfg_analysis::rules::jdbc_statement_owning_connection(
+            // `ResultSet` leaf suppression above.  The same holds for a
+            // Python DB-API cursor opened on a connection this body acquired
+            // (`with sqlite3.connect(p) as conn: cur = conn.cursor()`).
+            if let Some(acq) = acquire_node
+                && let Some(owner) = crate::cfg_analysis::rules::derived_resource_owner(
+                    lang,
                     cfg[acq].call.callee.as_deref(),
                 )
             {
@@ -308,7 +310,8 @@ pub fn extract_findings(
                 if let Some(owner_sym) = interner.get_scoped(owner_scope, owner)
                     && let Some(owner_acq) =
                         find_acquire_node(cfg, owner_sym, interner, owner_scope)
-                    && crate::cfg_analysis::rules::is_jdbc_connection_acquire(
+                    && crate::cfg_analysis::rules::is_owning_connection_acquire(
+                        lang,
                         cfg[owner_acq].call.callee.as_deref(),
                     )
                 {

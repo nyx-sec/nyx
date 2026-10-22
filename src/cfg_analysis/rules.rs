@@ -896,9 +896,82 @@ pub(crate) fn jdbc_statement_owning_connection(callee: Option<&str>) -> Option<&
     None
 }
 
+/// Python DB-API: if `callee` opens a cursor on a connection
+/// (`conn.cursor()`), return the receiver connection variable (`conn`).
+/// Same contract as [`jdbc_statement_owning_connection`]: only a simple
+/// identifier receiver names a locally trackable connection.
+pub(crate) fn python_cursor_owning_connection(callee: Option<&str>) -> Option<&str> {
+    let c = callee?;
+    let (recv, leaf) = c.rsplit_once('.')?;
+    if leaf.eq_ignore_ascii_case("cursor")
+        && !recv.is_empty()
+        && !recv.contains('.')
+        && !recv.contains('(')
+    {
+        return Some(recv);
+    }
+    None
+}
+
+/// Python DB-API connection acquire: any `connect` call
+/// (`sqlite3.connect`, `psycopg2.connect`, `pymysql.connect`,
+/// `engine.connect`).
+pub(crate) fn is_python_connection_acquire(callee: Option<&str>) -> bool {
+    callee.is_some_and(|c| {
+        c.rsplit('.')
+            .next()
+            .is_some_and(|leaf| leaf.eq_ignore_ascii_case("connect"))
+    })
+}
+
+/// A handle derived from a connection whose lifetime it shares: a JDBC
+/// `Statement` (`con.prepareStatement`) or a Python DB-API cursor
+/// (`conn.cursor()`).  Returns the owning connection variable.  Closing the
+/// connection releases what was derived from it, so when that connection is
+/// itself tracked in the same body (closed, managed, or leaking on its own)
+/// the derived handle is never a unique leak.
+pub(crate) fn derived_resource_owner(lang: Lang, callee: Option<&str>) -> Option<&str> {
+    match lang {
+        Lang::Java => jdbc_statement_owning_connection(callee),
+        Lang::Python => python_cursor_owning_connection(callee),
+        _ => None,
+    }
+}
+
+/// Whether `callee` acquires the connection kind [`derived_resource_owner`]
+/// derives from in `lang`.
+pub(crate) fn is_owning_connection_acquire(lang: Lang, callee: Option<&str>) -> bool {
+    match lang {
+        Lang::Java => is_jdbc_connection_acquire(callee),
+        Lang::Python => is_python_connection_acquire(callee),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod jdbc_derivation_tests {
-    use super::{is_jdbc_connection_acquire, jdbc_statement_owning_connection};
+    use super::{
+        is_jdbc_connection_acquire, is_python_connection_acquire, jdbc_statement_owning_connection,
+        python_cursor_owning_connection,
+    };
+
+    #[test]
+    fn python_cursor_derivation() {
+        assert_eq!(
+            python_cursor_owning_connection(Some("conn.cursor")),
+            Some("conn")
+        );
+        assert_eq!(
+            python_cursor_owning_connection(Some("self.conn.cursor")),
+            None
+        );
+        assert_eq!(python_cursor_owning_connection(Some("cursor")), None);
+        assert_eq!(python_cursor_owning_connection(Some("conn.execute")), None);
+        assert!(is_python_connection_acquire(Some("sqlite3.connect")));
+        assert!(is_python_connection_acquire(Some("psycopg2.connect")));
+        assert!(!is_python_connection_acquire(Some("client.disconnect")));
+        assert!(!is_python_connection_acquire(None));
+    }
 
     #[test]
     fn connection_acquire_recognises_getconnection_forms() {
