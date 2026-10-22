@@ -828,14 +828,34 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().filter(|b| **b == 0).count() * 100 / bytes.len().max(1) > 1
 }
 
+/// The part of `path` that names the file inside the scan, for the
+/// path-shape classifiers ([`is_test_file`], [`is_nonprod_path`],
+/// [`is_vendored_asset_path`]).  Directories above the scan root say
+/// nothing about the code: a checkout under `/opt/build/repo` or
+/// `~/test/app` is not build or test code.
+///
+/// * `path` under `scan_root`: the remainder after the root.
+/// * `path` equal to `scan_root` (single-file scan), or no scan root
+///   (single-file API): the file name alone.
+/// * `path` outside `scan_root`: `path` unchanged.
+fn scan_relative_path<'p>(path: &'p Path, scan_root: Option<&Path>) -> &'p Path {
+    let file_name_only = || path.file_name().map(Path::new).unwrap_or(path);
+    match scan_root.map(|root| path.strip_prefix(root)) {
+        Some(Ok(rel)) if !rel.as_os_str().is_empty() => rel,
+        Some(Ok(_)) | None => file_name_only(),
+        Some(Err(_)) => path,
+    }
+}
+
 /// Check if a file path indicates a test file. Matches filename-based
 /// conventions across the languages the engine supports, plus the
 /// `__tests__` directory convention used by JS/TS tooling.
 ///
-/// Directory-only checks (`test/`, `tests/`, `fixtures/`) are
-/// intentionally excluded because they are too broad when scanning
-/// absolute paths.  Severity-downgrade for those directories lives in
-/// [`is_nonprod_path`].
+/// Directory-only checks (`test/`, `tests/`, `fixtures/`, `spec/`) are
+/// intentionally excluded: some real codebases ship production modules
+/// under such directories (django apps with a `tests` submodule next to
+/// production code in the same package).  Severity downgrade for those
+/// directories lives in [`is_nonprod_path`].
 pub(crate) fn is_test_file(path: &Path) -> bool {
     // Filename-suffix conventions that are unambiguous markers of a test
     // module.  Each entry must end with a `.<ext>` suffix so PHP
@@ -1020,9 +1040,91 @@ fn is_test_suppressible_pattern(id: &str) -> bool {
         || id.ends_with(".transport.fetch_http")
 }
 
+/// Directory components of `path` (the file name itself excluded).
+fn dir_components(path: &Path) -> impl Iterator<Item = &str> {
+    path.parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+}
+
+/// RSpec / Jasmine and Cucumber test trees.
+///
+/// * `spec/` holds RSpec specs and their `spec/support` helpers in Ruby,
+///   and Jasmine specs in JS/TS.  Other languages ship production
+///   packages named `spec` (Go OCI and OpenAPI spec code), so the
+///   directory only counts for Ruby and JS/TS files.
+/// * Cucumber keeps Ruby step definitions and hooks under
+///   `features/step_definitions` and `features/support`.  A bare
+///   `features/` is a common production layout in JS/TS
+///   (`app/javascript/mastodon/features/`), so only those two
+///   subdirectories count.
+fn is_spec_tree_path(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ruby = ext == "rb";
+    let js_ts = matches!(
+        ext.as_str(),
+        "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts"
+    );
+    if !(ruby || js_ts) {
+        return false;
+    }
+    let dirs: Vec<&str> = dir_components(path).collect();
+    if dirs.contains(&"spec") {
+        return true;
+    }
+    ruby && dirs
+        .windows(2)
+        .any(|w| w[0] == "features" && matches!(w[1], "step_definitions" | "support"))
+}
+
+/// Test-support code that is not itself a test module: helpers under
+/// test directories and PHPUnit base classes, traits and helpers
+/// (`FieldTestBase.php`, `TestFileCreationTrait.php`, `GLPITestCase.php`).
+///
+/// Only used to skip [`is_test_suppressible_pattern`] rules, which are
+/// informational in test code.  Severity downgrade goes through
+/// [`is_nonprod_path`].
+fn is_test_support_path(path: &Path) -> bool {
+    static TEST_SUPPORT_DIRS: &[&str] = &[
+        "tests",
+        "test",
+        "__tests__",
+        "testing",
+        "fixtures",
+        "__fixtures__",
+        "js_tests",
+    ];
+    static PHP_TEST_SUPPORT_SUFFIXES: &[&str] = &[
+        "TestBase.php",
+        "TestCase.php",
+        "TestTrait.php",
+        "TestHelper.php",
+    ];
+
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && PHP_TEST_SUPPORT_SUFFIXES.iter().any(|s| name.ends_with(s))
+    {
+        return true;
+    }
+    dir_components(path).any(|d| TEST_SUPPORT_DIRS.contains(&d)) || is_spec_tree_path(path)
+}
+
 /// Check if a file path belongs to a non-production context (tests, vendor,
 /// benchmarks, etc.).  Used to downgrade severity for findings in paths that
-/// are unlikely to represent attack surface.
+/// are unlikely to represent attack surface.  `path` must be relative to the
+/// scan root (see [`scan_relative_path`]).
+///
+/// Test modules count by file name ([`is_test_file`]: `_test.go`,
+/// `_spec.rb`, `*.test.ts`, ...) as well as by directory, so the policy
+/// does not depend on where a project keeps its tests.
 fn is_nonprod_path(path: &Path) -> bool {
     static NONPROD_DIRS: &[&str] = &[
         "tests",
@@ -1055,7 +1157,7 @@ fn is_nonprod_path(path: &Path) -> bool {
         }
     }
 
-    false
+    is_test_file(path) || is_spec_tree_path(path)
 }
 
 /// Normalize a callee description for display.
@@ -1096,6 +1198,10 @@ struct ParsedSource<'a> {
     lang_slug: &'static str,
     bytes: &'a [u8],
     path: &'a Path,
+    /// `path` relative to the scan root (see [`scan_relative_path`]).  The
+    /// path-shape classifiers (test file, non-production, vendored asset)
+    /// read this one.
+    rel_path: &'a Path,
     file_path_str: Cow<'a, str>,
     /// Registers `bytes` as this thread's validated source (once, on parse) so
     /// node-text extraction can slice the pre-validated bytes as `&str` instead
@@ -1112,12 +1218,17 @@ impl<'a> ParsedSource<'a> {
     /// [`ScannerConfig::max_file_size_mb`]; the timeout check here defends
     /// against hostile inputs (pathological grammar ambiguities) that could
     /// tie up a worker indefinitely even for files within the size cap.
-    fn try_new(bytes: &'a [u8], path: &'a Path) -> NyxResult<Option<Self>> {
+    fn try_new(
+        bytes: &'a [u8],
+        path: &'a Path,
+        scan_root: Option<&Path>,
+    ) -> NyxResult<Option<Self>> {
         // Clear any stale parse-timeout signal from a prior `try_new` on
         // this thread that the caller did not consume.  Ensures the slot
         // always reflects "this parse" by the time we return.
         LAST_PARSE_TIMEOUT_MS.with(|c| c.set(None));
-        if is_vendored_asset_path(path) {
+        let rel_path = scan_relative_path(path, scan_root);
+        if is_vendored_asset_path(rel_path) {
             return Ok(None);
         }
         if is_binary(bytes) {
@@ -1173,6 +1284,7 @@ impl<'a> ParsedSource<'a> {
             lang_slug,
             bytes,
             path,
+            rel_path,
             file_path_str,
             _valid_source,
         }))
@@ -1183,7 +1295,7 @@ impl<'a> ParsedSource<'a> {
         let root = self.tree.root_node();
         let mut cursor = QueryCursor::new();
         let mut out = Vec::new();
-        let in_test_file = is_test_file(self.path);
+        let in_test_file = is_test_file(self.rel_path) || is_test_support_path(self.rel_path);
 
         // Fast path: one combined multi-pattern query walks the AST ONCE for
         // all rules, instead of the legacy loop's one full tree walk per rule
@@ -1543,6 +1655,15 @@ impl<'a> ParsedSource<'a> {
         })
     }
 
+    /// Whether auth-analysis findings are reported for this file.  Go
+    /// never links `_test.go` files into a non-test build, so no request
+    /// can reach a function defined in one and the auth rules (a handler
+    /// missing an authorization step) have nothing to report there.
+    /// `--keep-nonprod-severity` keeps them.
+    fn reports_auth_findings(&self, cfg: &Config) -> bool {
+        cfg.scanner.include_nonprod || !(self.lang_slug == "go" && is_test_file(self.rel_path))
+    }
+
     /// Sort, dedup, and optionally downgrade severity for non-production paths.
     ///
     /// Dedup key matches the `issues` table PRIMARY KEY `(file_id, rule_id,
@@ -1558,7 +1679,11 @@ impl<'a> ParsedSource<'a> {
         });
         out.dedup_by(|a, b| a.line == b.line && a.col == b.col && a.id == b.id);
 
-        if !cfg.scanner.include_nonprod && is_nonprod_path(self.path) {
+        // Classified on the file under analysis, not on each diag's own
+        // path: a flow that starts in a test file keeps this file's
+        // downgrade even when its primary location was promoted to the
+        // callee's sink in a production file.
+        if !cfg.scanner.include_nonprod && is_nonprod_path(self.rel_path) {
             for d in out.iter_mut() {
                 d.severity = downgrade_severity(d.severity);
             }
@@ -2313,6 +2438,9 @@ impl<'a> ParsedFile<'a> {
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
     ) -> Vec<Diag> {
+        if !self.source.reports_auth_findings(cfg) {
+            return Vec::new();
+        }
         // Harvest SSA-derived variable types across every body in the
         // file so `run_auth_analysis` can refine sink classification by
         // receiver type (e.g. `HttpClient::send` → `OutboundNetwork`,
@@ -2388,7 +2516,7 @@ pub fn extract_summaries_from_bytes(
     cfg: &Config,
 ) -> NyxResult<Vec<FuncSummary>> {
     let _span = tracing::debug_span!("extract_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, None)? else {
         return Ok(vec![]);
     };
     let parsed = ParsedFile::from_source(source, cfg);
@@ -2404,7 +2532,7 @@ pub fn extract_summaries_from_bytes_with_root(
     scan_root: Option<&Path>,
 ) -> NyxResult<Vec<FuncSummary>> {
     let _span = tracing::debug_span!("extract_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         return Ok(vec![]);
     };
     let parsed = ParsedFile::from_source(source, cfg);
@@ -2426,7 +2554,7 @@ pub fn extract_summaries_from_file(path: &Path, cfg: &Config) -> NyxResult<Vec<F
 /// Intended for benchmarks and isolated testing of state analysis.
 pub fn build_cfg_for_file(path: &Path, cfg: &Config) -> NyxResult<Option<(FileCfg, Lang)>> {
     let bytes = std::fs::read(path)?;
-    let Some(source) = ParsedSource::try_new(&bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(&bytes, path, None)? else {
         return Ok(None);
     };
     let lang = Lang::from_slug(source.lang_slug).unwrap_or(Lang::C);
@@ -2443,7 +2571,7 @@ pub fn build_cfg_for_file(path: &Path, cfg: &Config) -> NyxResult<Option<(FileCf
 /// files / unsupported languages.
 #[doc(hidden)]
 pub fn bench_run_ast_queries(bytes: &[u8], path: &Path, cfg: &Config) -> Vec<Diag> {
-    match ParsedSource::try_new(bytes, path) {
+    match ParsedSource::try_new(bytes, path, None) {
         Ok(Some(source)) => source.run_ast_queries(cfg),
         _ => Vec::new(),
     }
@@ -2458,7 +2586,7 @@ pub fn bench_run_ast_queries(bytes: &[u8], path: &Path, cfg: &Config) -> Vec<Dia
 /// unsupported files.
 #[doc(hidden)]
 pub fn bench_node_text_walk(bytes: &[u8], path: &Path) -> usize {
-    let Ok(Some(source)) = ParsedSource::try_new(bytes, path) else {
+    let Ok(Some(source)) = ParsedSource::try_new(bytes, path, None) else {
         return 0;
     };
     fn walk(n: tree_sitter::Node, code: &[u8], total: &mut usize) {
@@ -2486,7 +2614,7 @@ pub fn extract_auth_model_for_debug(
     cfg: &Config,
 ) -> NyxResult<Option<auth_analysis::model::AuthorizationModel>> {
     let bytes = std::fs::read(path)?;
-    let Some(source) = ParsedSource::try_new(&bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(&bytes, path, None)? else {
         return Ok(None);
     };
     let rules = auth_analysis::config::build_auth_rules(cfg, source.lang_slug);
@@ -2526,7 +2654,7 @@ pub fn perf_stage_breakdown_fused(
 ) -> Option<([u128; 8], [u128; 7])> {
     use std::time::Instant;
     let s_parse = Instant::now();
-    let source = ParsedSource::try_new(bytes, path).ok()??;
+    let source = ParsedSource::try_new(bytes, path, scan_root).ok()??;
     let parsed = ParsedFile::from_source(source, cfg);
     let t_parse_cfg = s_parse.elapsed().as_micros();
 
@@ -2609,7 +2737,7 @@ pub fn perf_stage_breakdown(
 ) -> Option<[u128; 6]> {
     use std::time::Instant;
     let s_parse = Instant::now();
-    let source = ParsedSource::try_new(bytes, path).ok()??;
+    let source = ParsedSource::try_new(bytes, path, scan_root).ok()??;
     let parsed = ParsedFile::from_source(source, cfg);
     let t_parse_cfg = s_parse.elapsed().as_micros();
 
@@ -2665,7 +2793,7 @@ pub fn extract_all_summaries_from_bytes(
     Option<(String, auth_analysis::router_facts::PerFileRouterFacts)>,
 )> {
     let _span = tracing::debug_span!("extract_all_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         return Ok((vec![], vec![], vec![], vec![], None, vec![], None));
     };
     let lang_slug = source.lang_slug;
@@ -6350,7 +6478,7 @@ pub fn run_rules_on_bytes(
     let _span = tracing::debug_span!("run_rules", file = %path.display()).entered();
     maybe_inject_test_panic(path);
 
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         // Not a recognized tree-sitter language, try text-based patterns,
         // but first surface a parse-timeout synthetic diag if that's what
         // caused try_new to return None.
@@ -6491,7 +6619,7 @@ pub fn analyse_file_fused(
     let _span = tracing::debug_span!("analyse_fused", file = %path.display()).entered();
     maybe_inject_test_panic(path);
 
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         // Not a recognized tree-sitter language, try text-based patterns,
         // and surface a parse-timeout synthetic diag if that's what caused
         // try_new to return None.
@@ -6653,17 +6781,19 @@ pub fn analyse_file_fused(
                     parsed.source.bytes,
                 );
             }
-            let var_types = parsed.collect_file_var_types();
-            out.extend(auth_analysis::run_auth_analysis_with_model(
-                auth_model,
-                &parsed.source.tree,
-                parsed.source.lang_slug,
-                parsed.source.path,
-                &auth_rules,
-                var_types.as_ref(),
-                global_summaries,
-                scan_root,
-            ));
+            if parsed.source.reports_auth_findings(cfg) {
+                let var_types = parsed.collect_file_var_types();
+                out.extend(auth_analysis::run_auth_analysis_with_model(
+                    auth_model,
+                    &parsed.source.tree,
+                    parsed.source.lang_slug,
+                    parsed.source.path,
+                    &auth_rules,
+                    var_types.as_ref(),
+                    global_summaries,
+                    scan_root,
+                ));
+            }
         }
     }
     parsed.source.finalize_diags(&mut out, cfg);
@@ -6764,6 +6894,77 @@ fn nonprod_path_detection() {
     assert!(!is_nonprod_path(Path::new("src/main.rs")));
     assert!(!is_nonprod_path(Path::new("lib/handler.py")));
     assert!(!is_nonprod_path(Path::new("app/views.py")));
+
+    // Test modules count by file name, wherever they live.
+    assert!(is_nonprod_path(Path::new("pkg/api/conan_test.go")));
+    assert!(is_nonprod_path(Path::new("app/models/user_spec.rb")));
+    assert!(is_nonprod_path(Path::new("src/widget.test.ts")));
+
+    // RSpec and Jasmine `spec/` trees, Cucumber step definitions and hooks.
+    assert!(is_nonprod_path(Path::new("spec/models/user_spec.rb")));
+    assert!(is_nonprod_path(Path::new("spec/support/helper.rb")));
+    assert!(is_nonprod_path(Path::new("spec/helpers/render.js")));
+    assert!(is_nonprod_path(Path::new(
+        "features/step_definitions/login_steps.rb"
+    )));
+    assert!(is_nonprod_path(Path::new("features/support/env.rb")));
+
+    // `spec` is production code outside Ruby and JS/TS, and `features/` is a
+    // common JS/TS layout.
+    assert!(!is_nonprod_path(Path::new("pkg/spec/manifest.go")));
+    assert!(!is_nonprod_path(Path::new("web_src/js/features/repo.ts")));
+    assert!(!is_nonprod_path(Path::new(
+        "app/javascript/mastodon/features/status/index.tsx"
+    )));
+    assert!(!is_nonprod_path(Path::new("features/support/env.ts")));
+    assert!(!is_nonprod_path(Path::new("app/models/spec.rb")));
+}
+
+#[test]
+fn path_classification_is_relative_to_the_scan_root() {
+    let root = Path::new("/opt/build/repo");
+    let file = Path::new("/opt/build/repo/app/server.py");
+    assert_eq!(
+        scan_relative_path(file, Some(root)),
+        Path::new("app/server.py")
+    );
+    // Directories above the scan root do not make the file non-production.
+    assert!(is_nonprod_path(file));
+    assert!(!is_nonprod_path(scan_relative_path(file, Some(root))));
+
+    // A single-file scan (root is the file) and the single-file API (no
+    // root) classify on the file name.
+    assert_eq!(scan_relative_path(file, Some(file)), Path::new("server.py"));
+    assert_eq!(scan_relative_path(file, None), Path::new("server.py"));
+    let go_test = Path::new("/home/u/test/pkg/conan_test.go");
+    assert!(is_nonprod_path(scan_relative_path(go_test, None)));
+
+    // A path outside the root is classified as given.
+    assert_eq!(
+        scan_relative_path(Path::new("/elsewhere/tests/x.py"), Some(root)),
+        Path::new("/elsewhere/tests/x.py")
+    );
+}
+
+#[test]
+fn test_support_paths_cover_helpers_outside_test_modules() {
+    assert!(is_test_support_path(Path::new(
+        "core/tests/src/FieldTestBase.php"
+    )));
+    assert!(is_test_support_path(Path::new("src/FieldTestBase.php")));
+    assert!(is_test_support_path(Path::new("inc/GLPITestCase.php")));
+    assert!(is_test_support_path(Path::new("src/UploadTestTrait.php")));
+    assert!(is_test_support_path(Path::new("src/ApiTestHelper.php")));
+    assert!(is_test_support_path(Path::new(
+        "lib/sqlalchemy/testing/util.py"
+    )));
+    assert!(is_test_support_path(Path::new("spec/support/helper.rb")));
+    assert!(is_test_support_path(Path::new("src/__fixtures__/seed.ts")));
+
+    assert!(!is_test_support_path(Path::new("src/Field.php")));
+    assert!(!is_test_support_path(Path::new("src/Contest.php")));
+    assert!(!is_test_support_path(Path::new("app/views.py")));
+    assert!(!is_test_support_path(Path::new("pkg/spec/manifest.go")));
 }
 
 #[test]
@@ -6937,6 +7138,121 @@ fn nonprod_path_downgrades_findings() {
     // Not all diagnostics are necessarily high, but include_nonprod should not downgrade
     // Just verify that if there are findings, they weren't downgraded by the nonprod logic
     let _ = diags_prod;
+}
+
+/// Write `rel` under `root` and return its path.
+#[cfg(test)]
+fn write_under(root: &Path, rel: &str, body: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn nonprod_downgrade_ignores_directories_above_the_scan_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "import os\nfrom flask import Flask, request\napp = Flask(__name__)\n\n\
+               @app.route('/run')\ndef run():\n    os.system(request.args.get('cmd'))\n";
+    let file = write_under(dir.path(), "build/app/server.py", src);
+    let cfg = Config::default();
+
+    // Scanning the checkout that lives under `build/`: the file is
+    // production code and keeps its severity.
+    let root = dir.path().join("build/app");
+    let diags = run_rules_on_file(&file, &cfg, None, Some(&root)).unwrap();
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::High),
+        "expected a High finding under an unrelated build/ ancestor: {diags:?}"
+    );
+
+    // Scanning the parent: `build/` is inside the scan and downgrades.
+    let diags = run_rules_on_file(&file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(!diags.is_empty());
+    assert!(
+        diags.iter().all(|d| d.severity != Severity::High),
+        "build/ inside the scan root must downgrade: {diags:?}"
+    );
+}
+
+#[test]
+fn vendored_skip_ignores_directories_above_the_scan_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "const express = require('express');\n\
+               const { exec } = require('child_process');\n\
+               const app = express();\n\
+               app.get('/run', (req, res) => {\n  exec(req.query.cmd);\n  res.send('ok');\n});\n";
+    let file = write_under(dir.path(), "vendor/app/server.js", src);
+    let cfg = Config::default();
+
+    let root = dir.path().join("vendor/app");
+    let diags = run_rules_on_file(&file, &cfg, None, Some(&root)).unwrap();
+    assert!(
+        diags.iter().any(|d| d.id.starts_with("taint-")),
+        "a project checked out under vendor/ must still be analysed: {diags:?}"
+    );
+
+    let diags = run_rules_on_file(&file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(
+        diags.is_empty(),
+        "vendor/ inside the scan is skipped: {diags:?}"
+    );
+}
+
+#[test]
+fn go_test_files_report_no_auth_findings_and_are_downgraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "package integration\n\nimport (\n\t\"testing\"\n\n\t\"example.com/models/packages\"\n)\n\n\
+               func TestPackageConan(t *testing.T) {\n\
+               \tresp := MakeRequest(t, nil, 200)\n\
+               \tloc := resp.Header().Get(\"Location\")\n\
+               \t_ = loc\n\
+               \tpvs, _ := packages.GetVersionsByPackageType(t.Context(), 1, packages.TypeConan)\n\
+               \tpfs, _ := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)\n\
+               \t_ = pfs\n}\n";
+    let test_file = write_under(dir.path(), "pkg_test.go", src);
+    let prod_file = write_under(dir.path(), "pkg.go", src);
+
+    let cfg = Config::default();
+    let auth = |diags: &[Diag]| {
+        diags
+            .iter()
+            .filter(|d| d.id.starts_with("go.auth."))
+            .count()
+    };
+    let in_test = run_rules_on_file(&test_file, &cfg, None, Some(dir.path())).unwrap();
+    assert_eq!(auth(&in_test), 0, "{in_test:?}");
+    assert!(in_test.iter().all(|d| d.severity != Severity::High));
+
+    // The same code outside a `_test.go` file keeps its auth finding.
+    let in_prod = run_rules_on_file(&prod_file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(auth(&in_prod) > 0, "{in_prod:?}");
+
+    // `--keep-nonprod-severity` keeps test-file findings as they are.
+    let mut keep = Config::default();
+    keep.scanner.include_nonprod = true;
+    let kept = run_rules_on_file(&test_file, &keep, None, Some(dir.path())).unwrap();
+    assert_eq!(auth(&kept), auth(&in_prod), "{kept:?}");
+}
+
+#[test]
+fn test_suppressible_patterns_skip_php_test_support_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "<?php\nabstract class FieldTestBase {\n    protected function randomValue() { return mt_rand(1, 127); }\n}\n";
+    let base = write_under(dir.path(), "core/tests/src/FieldTestBase.php", src);
+    let helper = write_under(dir.path(), "core/tests/src/Helpers.php", src);
+    let prod = write_under(dir.path(), "core/src/FieldBase.php", src);
+    let cfg = Config::default();
+    let rand = |p: &Path| {
+        run_rules_on_file(p, &cfg, None, Some(dir.path()))
+            .unwrap()
+            .iter()
+            .filter(|d| d.id == "php.crypto.rand")
+            .count()
+    };
+    assert_eq!(rand(&base), 0);
+    assert_eq!(rand(&helper), 0);
+    assert_eq!(rand(&prod), 1, "production code keeps the pattern");
 }
 
 #[test]

@@ -4413,6 +4413,48 @@ fn scan_with_index_parallel_discovers_new_files_after_index_build() {
 }
 
 #[test]
+fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    std::fs::write(
+        root.join("helper.go"),
+        "package app\n\nimport \"net/http\"\n\n\
+         func Echo(w http.ResponseWriter, v string) {\n\tw.Header().Set(\"X-Echo\", v)\n}\n",
+    )
+    .unwrap();
+    let test_src = "package app\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"testing\"\n)\n\n\
+         func TestEcho(t *testing.T) {\n\
+         \tr := httptest.NewRequest(\"GET\", \"/?q=x\", nil)\n\
+         \tw := httptest.NewRecorder()\n\
+         \tEcho(w, r.URL.Query().Get(\"q\"))\n}\n";
+    std::fs::write(root.join("helper_test.go"), test_src).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    let in_helper: Vec<&Diag> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
+        .collect();
+    assert!(!in_helper.is_empty(), "{diags:?}");
+    assert!(
+        in_helper.iter().all(|d| d.severity == Severity::Medium),
+        "test-origin flows keep the test file's downgrade: {in_helper:?}"
+    );
+
+    // The same caller in a production file reports at full severity.
+    std::fs::remove_file(root.join("helper_test.go")).unwrap();
+    std::fs::write(root.join("caller.go"), test_src).unwrap();
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.id.starts_with("taint-") && d.severity == Severity::High),
+        "{diags:?}"
+    );
+}
+
+#[test]
 fn scan_with_index_parallel_clears_stale_issues_when_file_becomes_clean() {
     let mut cfg = Config::default();
     cfg.performance.worker_threads = Some(1);
