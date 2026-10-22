@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 685
+    "corpus_size": 694
   },
   "cases": [
     {
@@ -21706,6 +21706,260 @@
       ],
       "disabled": false,
       "notes": "Positive control for the field-store define change: the tainted field itself reaches the sink."
+    },
+    {
+      "case_id": "go-safe-errfall-const-001",
+      "file": "go/safe/safe_error_log_then_const_sink.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Logged-and-ignored error followed by sinks with literal arguments only (`db.Exec(\"CREATE INDEX ..\")`, `exec.Command(\"sync\")`). Fix: cfg-error-fallthrough skips sinks whose payload is provably constant."
+    },
+    {
+      "case_id": "js-safe-errfall-const-001",
+      "file": "javascript/safe/safe_err_log_then_const_response.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Express callback logs the error and still sends a literal body. Fix: cfg-error-fallthrough skips constant-payload sinks."
+    },
+    {
+      "case_id": "js-safe-pg-named-query-001",
+      "file": "javascript/safe/safe_pg_named_query_const.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "pg query text in a module-level / handler-local constant, request value only in the bind array. Fix: cfg-unguarded-sink reads only the payload positions for source derivation and resolves payload identifiers bound to literals (file scope included)."
+    },
+    {
+      "case_id": "js-sqli-pg-text-001",
+      "file": "javascript/sqli/vuln_pg_query_text_from_request.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "positive",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "Counterpart to js-safe-pg-named-query-001: the request value is concatenated into the query text (payload position 0)."
+    },
+    {
+      "case_id": "py-safe-module-query-001",
+      "file": "python/safe/safe_module_query_params.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "cursor.execute(QUERY, {..request..}) with QUERY a module-level triple-quoted constant. Fix: payload-position source derivation plus file-scope constant resolution."
+    },
+    {
+      "case_id": "js-safe-escape-wrapped-001",
+      "file": "javascript/safe/safe_escape_html_wrapped_arg.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "xss"
+      ],
+      "disabled": false,
+      "notes": "res.send(escapeHtml(..)) and a concatenation around escapeHtml(..). Fix: cfg-unguarded-sink honours label sanitizers on argument callees, as the taint engine does."
+    },
+    {
+      "case_id": "js-cmdi-wrong-escaper-001",
+      "file": "javascript/cmdi/vuln_html_escaper_on_shell_sink.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "An HTML escaper around a shell command argument does not cover SHELL_ESCAPE; the injection must still be reported."
+    },
+    {
+      "case_id": "php-safe-escapeshellarg-001",
+      "file": "php/safe/safe_escapeshellarg_concat.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "shell_exec('wc -l ' . escapeshellarg($file)). Fix: label sanitizers on argument callees."
+    },
+    {
+      "case_id": "rb-safe-no-params-sibling-001",
+      "file": "ruby/safe/safe_no_params_sibling_helper.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A parameterless method with no sources next to an unrelated method that takes a parameter. Fix: the no-params-no-sources check reads the sink function's own parameters instead of any summary in the file."
     }
   ]
 }
