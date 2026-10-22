@@ -194,7 +194,8 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::URL_ENCODE),
         case_sensitive: false,
     },
-    // Express response sinks
+    // Express response sinks.  The matching `GATED_SINKS` entries keep the
+    // `res` receiver out of the payload; see javascript.rs.
     LabelRule {
         matchers: &["res.send", "res.json"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
@@ -1384,6 +1385,42 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // ── Express / Node `http` response payload positions ─────────────────
+    // See javascript.rs: keeps the `res` receiver out of the payload.
+    SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions(
+        "res.redirect",
+        DataLabel::Sink(Cap::OPEN_REDIRECT),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.set",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.header",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.append",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "setHeader",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions("res.sendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("res.download", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
     // ── String-evaluating timers ─────────────────────────────────────────
     //
     // `setTimeout(code, ms)` / `setInterval(code, ms)` compile a string

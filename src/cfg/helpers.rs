@@ -228,10 +228,21 @@ pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option
 }
 
 /// Canonical callee text for a JS/TS member call whose raw source text hides
-/// the API being called from the label rules: `require('child_process').exec`
-/// becomes `child_process.exec` (and `require('node:fs').readFileSync` becomes
-/// `fs.readFileSync`).  Only bare identifier-shaped module names are
-/// rewritten, never relative paths.  `None` when the shape does not apply.
+/// the API being called from the label rules:
+///
+/// * `require('child_process').exec` becomes `child_process.exec` (and
+///   `require('node:fs').readFileSync` becomes `fs.readFileSync`).  Only bare
+///   identifier-shaped module names are rewritten, never relative paths.
+/// * A fluent response chain `res.status(404).type('html').send` becomes
+///   `res.send` when every intermediate link is a method in
+///   [`crate::labels::javascript::FLUENT_RESPONSE_METHODS`] (methods that
+///   return the response object) and the chain is rooted at a plain
+///   identifier or member path.  This is the JS counterpart of the
+///   `{root_receiver}.{method}` text the method-call languages already build.
+///   The intermediate links' own arguments are not part of the rewritten
+///   call.
+///
+/// `None` when neither shape applies.
 pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     let func = unwrap_parens(func);
     if func.kind() != "member_expression" {
@@ -246,7 +257,38 @@ pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     if object.kind() != "call_expression" {
         return None;
     }
-    js_required_module_name(object, code).map(|module| format!("{module}.{method}"))
+    if let Some(module) = js_required_module_name(object, code) {
+        return Some(format!("{module}.{method}"));
+    }
+
+    let fluent = crate::labels::javascript::FLUENT_RESPONSE_METHODS;
+    let mut link = object;
+    // Bounded walk down the chain's receivers.
+    for _ in 0..16 {
+        let link_func = unwrap_parens(link.child_by_field_name("function")?);
+        if link_func.kind() != "member_expression" {
+            return None;
+        }
+        let link_method = link_func
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))?;
+        if !fluent.contains(&link_method.as_str()) {
+            return None;
+        }
+        let receiver = unwrap_parens(link_func.child_by_field_name("object")?);
+        match receiver.kind() {
+            "call_expression" => link = receiver,
+            "identifier" | "this" | "member_expression" if is_plain_member_path(receiver) => {
+                let root: String = text_of(receiver, code)?
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                return Some(format!("{root}.{method}"));
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Module name of a `require('<name>')` call, with any `node:` scheme
@@ -276,6 +318,24 @@ fn js_required_module_name(call: Node, code: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// True when `n` is an identifier, `this`, or a member access chain built
+/// only from those (`res`, `this.res`, `ctx.res`), with no calls or
+/// subscripts along the way.
+fn is_plain_member_path(n: Node) -> bool {
+    let mut cur = n;
+    for _ in 0..16 {
+        match cur.kind() {
+            "identifier" | "this" => return true,
+            "member_expression" => match cur.child_by_field_name("object") {
+                Some(obj) => cur = obj,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Check if a callee represents an RAII-managed factory whose resources are

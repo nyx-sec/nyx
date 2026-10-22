@@ -3010,6 +3010,24 @@ fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>>
     shell_payload_idents(&elems[2..], code)
 }
 
+/// Number of positional arguments a JS/TS call passes, counted the way
+/// [`extract_arg_uses`] indexes them, or `None` when a spread argument
+/// (`f(...args)`) hides the real arity.
+pub(super) fn js_positional_arity(call_node: Node) -> Option<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Some(0);
+    };
+    let mut cursor = args.walk();
+    let mut arity = 0;
+    for arg in args.named_children(&mut cursor) {
+        if arg.kind() == "spread_element" {
+            return None;
+        }
+        arity += 1;
+    }
+    Some(arity)
+}
+
 /// True when the positional argument at `index` of a JS/TS call is a
 /// string by construction, the shape a string-evaluating timer
 /// (`setTimeout(code, ms)`) compiles:

@@ -232,7 +232,13 @@ pub static RULES: &[LabelRule] = &[
     // Taint flowing only to body / data / json / headers is captured by a
     // *separate* gate class (`Cap::DATA_EXFIL`) so the two can coexist on
     // the same callee without one over-flagging the other.
-    // Express response sinks
+    // Express response sinks.  Each response method has a matching
+    // `GATED_SINKS` entry that restricts the payload to the body / header /
+    // path args, so taint on the `res` object itself (a `res.locals.x = ...`
+    // field write, a fetch `Response` named `res`) never counts as the
+    // written value.  Fluent chains such as `res.status(404).send(body)`
+    // reach these rules through the CFG callee canonicaliser, which rewrites
+    // them to `res.send`.
     LabelRule {
         matchers: &["res.send", "res.json"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
@@ -637,6 +643,29 @@ pub static EXCLUDES: &[&str] = &[
     // [analysis.languages.javascript] custom rules.
     "container.exec",
     "exec.start",
+];
+
+/// Express / Fastify response methods that return the response object, so
+/// `res.status(404).send(body)` sends through `res.send`.  The CFG callee
+/// canonicaliser (`cfg::helpers::js_canonical_callee`) collapses a chain to
+/// `{root}.{last method}` only when every intermediate link is listed here;
+/// any other link keeps the chain's own text.
+pub(crate) const FLUENT_RESPONSE_METHODS: &[&str] = &[
+    "status",
+    "type",
+    "contentType",
+    "set",
+    "header",
+    "headers",
+    "append",
+    "cookie",
+    "clearCookie",
+    "vary",
+    "location",
+    "links",
+    "attachment",
+    "code",
+    "removeHeader",
 ];
 
 /// Timers that compile a string first argument (`setTimeout('run()', 10)`).
@@ -1761,6 +1790,49 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // ── Express / Node `http` response payload positions ─────────────────
+    //
+    // The flat response rules in RULES would otherwise fall back to every
+    // operand of the call, receiver included.  `res` picks up taint from a
+    // field write (`res.locals.q = req.query.q`) and client code often names
+    // a fetch `Response` `res`, so a constant `res.json({ ok: true })` or a
+    // zero-arg `res.json()` was reported as XSS.  Body writers take the body
+    // at arg 0; `res.redirect([status,] url)` and the header setters
+    // (`res.set(name, value)`, `setHeader(name, value)`) take theirs at 0..1.
+    SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions(
+        "res.redirect",
+        DataLabel::Sink(Cap::OPEN_REDIRECT),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.set",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.header",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.append",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "setHeader",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions("res.sendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("res.download", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
     // ── String-evaluating timers ─────────────────────────────────────────
     //
     // `setTimeout(code, ms)` / `setInterval(code, ms)` compile a string
@@ -2126,6 +2198,26 @@ mod tests {
             // global constructor.
             assert!(!code_exec(&classify_all(lang, "obj.Function", None)));
             assert_eq!(gated_payload(lang, "vm.runInNewContext"), Some(vec![0]));
+        }
+    }
+
+    #[test]
+    fn response_sinks_exclude_the_receiver() {
+        for lang in ["javascript", "typescript"] {
+            for (callee, payload) in [
+                ("res.send", vec![0]),
+                ("res.json", vec![0]),
+                ("res.redirect", vec![0, 1]),
+                ("res.set", vec![0, 1]),
+                ("res.setHeader", vec![0, 1]),
+                ("res.sendFile", vec![0]),
+            ] {
+                assert_eq!(
+                    gated_payload(lang, callee),
+                    Some(payload),
+                    "{lang}: {callee}"
+                );
+            }
         }
     }
 }

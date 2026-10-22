@@ -78,7 +78,8 @@ use literals::{
     has_string_interpolation, is_object_create_null_call, is_parameterized_query_call,
     is_rust_format_style_macro, java_chain_arg0_kind_for_method, js_arg_is_string_valued,
     js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    js_shell_option_argv_positions, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
+    js_positional_arity, js_shell_option_argv_positions, ruby_chain_arg0_for_method,
+    walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -3528,6 +3529,36 @@ pub(super) fn push_node<'a>(
                         f.payload_args.push(p);
                     }
                 }
+            }
+        }
+    }
+
+    // A JS/TS payload position the call does not pass carries no payload.
+    // Without this trim, a zero-arg `res.json()` / `res.status(code).json()`
+    // is checked against the SSA lowering's fallback argument group, which
+    // lumps the receiver and the chain links' own arguments together, and
+    // the structural pass reports the call as an unguarded sink.
+    // Only applies when the classified callee is the call's own function
+    // (no nested call in `text`): for `http.request(url, cb).end()` the gate
+    // matched the chain head, whose arguments live in that fallback group.
+    // Also skipped when a spread argument hides the real arity.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && !text.contains('(')
+        && let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4))
+        && let Some(arity) = js_positional_arity(cn)
+        && let Some(payload) = sink_payload_args.as_mut()
+    {
+        payload.retain(|&p| p < arity);
+        if payload.is_empty() {
+            // Every payload position is absent, so the call writes nothing
+            // a sink could receive and is not a sink at this site.
+            labels.retain(|l| !matches!(l, DataLabel::Sink(_)));
+            sink_payload_args = None;
+            destination_uses = None;
+            gate_filters.clear();
+        } else {
+            for f in &mut gate_filters {
+                f.payload_args.retain(|&p| p < arity);
             }
         }
     }

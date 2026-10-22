@@ -2011,6 +2011,39 @@ fn js_timer_string_arg_is_code_exec_but_callbacks_are_not() {
 }
 
 #[test]
+fn js_fluent_response_chain_classifies_by_final_method() {
+    let src = b"function h(req, res) {\n\
+                  res.status(200).send(req.query.q);\n\
+                  res.set('Content-Type', 'text/html').send(req.query.q);\n\
+                  res.status(204).json();\n\
+                  return res.status(302).redirect(req.query.next);\n\
+                }\n\
+                function g(db, q) { db.collection('users').find(q); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let sends = js_call_nodes(&file_cfg, "res.send");
+    assert_eq!(sends.len(), 2, "both chains end in res.send");
+    for n in &sends {
+        assert!(has_sink(n, Cap::HTML_ESCAPE));
+        assert!(
+            !has_sink(n, Cap::HEADER_INJECTION),
+            "the res.set chain head must not label the send call"
+        );
+        assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+    }
+    // The `return` wrapper and its call both carry the callee.
+    let redirects = js_call_nodes(&file_cfg, "res.redirect");
+    assert!(!redirects.is_empty());
+    assert!(redirects.iter().all(|n| has_sink(n, Cap::OPEN_REDIRECT)));
+    // `res.status(204).json()` passes no body, so it is not a sink.
+    let empty_bodies: Vec<_> = js_call_nodes(&file_cfg, "res.json");
+    assert_eq!(empty_bodies.len(), 1);
+    assert!(!has_sink(empty_bodies[0], Cap::HTML_ESCAPE));
+    // `collection` is not a fluent response method: the chain keeps its text.
+    assert!(js_call_nodes(&file_cfg, "db.find").is_empty());
+}
+
+#[test]
 fn sql_placeholder_detection() {
     // Positive cases
     assert!(has_sql_placeholders("SELECT * FROM users WHERE id = $1"));
