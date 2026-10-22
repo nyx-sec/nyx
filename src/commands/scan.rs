@@ -2706,6 +2706,16 @@ pub fn scan_with_index_parallel_observer(
     let walk_start = std::time::Instant::now();
     let indexed_files = {
         let idx = Indexer::from_pool(project, &pool)?;
+        // Cached summaries depend on the settings as well as the file bytes;
+        // drop them when the settings changed since they were written.
+        if idx.reconcile_analysis_cache_key(&cfg.analysis_cache_key())?
+            && let Some(l) = logs
+        {
+            l.info(
+                "Analysis settings changed since the last scan; re-analysing every file",
+                None,
+            );
+        }
         idx.get_files(project)?
     };
     let (rx, handle) = spawn_file_walker(scan_root, cfg);
@@ -3245,7 +3255,7 @@ pub fn scan_with_index_parallel_observer(
     };
 
     if !needs_taint {
-        // ── AST-only: existing parallel scan with caching ────────────────
+        // ── AST-only: parallel scan, index tracks changed files ──────────
         if let Some(p) = progress {
             p.set_stage(ScanStage::Analyzing);
         }
@@ -3261,12 +3271,12 @@ pub fn scan_with_index_parallel_observer(
         );
         let diag_map: DashMap<String, Vec<Diag>> = DashMap::new();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
-        let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let unchanged_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
         let write_tx = writer.sender();
 
         let persist_errors_ref = Arc::clone(&persist_errors);
-        let skipped_files_ref = Arc::clone(&skipped_files);
+        let unchanged_files_ref = Arc::clone(&unchanged_files);
         let progress_ref = progress.cloned();
         files.into_par_iter().for_each_init(
             || Indexer::from_pool(project, &pool).expect("db pool"),
@@ -3277,30 +3287,34 @@ pub fn scan_with_index_parallel_observer(
                 let bytes_opt = std::fs::read(&path).ok();
                 let hash = bytes_opt.as_ref().map(|b| Indexer::digest_bytes(b));
 
-                let needs_scan = match (&hash, &bytes_opt) {
+                let changed = match (&hash, &bytes_opt) {
                     (Some(h), _) => idx.should_scan_with_hash(&path, h).unwrap_or(true),
                     _ => true,
                 };
 
-                let mut diags = if needs_scan {
-                    if let Some(p) = &progress_ref {
-                        p.inc_parsed(1);
-                        p.inc_analyzed(1);
-                    }
-                    let d = recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        &path,
-                        logs,
-                        || match &bytes_opt {
+                // Every file is analysed, changed or not.  The `issues` rows
+                // keep only (rule, severity, line, col), so a Diag rebuilt
+                // from them has no message, evidence or confidence; AST rules
+                // are cheap next to the taint passes the index exists to
+                // skip.  The index records which files changed and which
+                // were removed.
+                if let Some(p) = &progress_ref {
+                    p.inc_parsed(1);
+                    p.inc_analyzed(1);
+                }
+                let mut diags =
+                    recover_or_propagate(cfg.scanner.enable_panic_recovery, &path, logs, || {
+                        match &bytes_opt {
                             Some(bytes) => {
                                 run_rules_on_bytes(bytes, &path, cfg, None, Some(scan_root))
                             }
                             None => run_rules_on_file(&path, cfg, None, Some(scan_root)),
-                        },
-                    )
+                        }
+                    })
                     .unwrap_or_default();
 
-                    let issue_rows: Vec<(String, String, i64, i64)> = d
+                if changed {
+                    let issue_rows: Vec<(String, String, i64, i64)> = diags
                         .iter()
                         .map(|d| {
                             (
@@ -3337,14 +3351,9 @@ pub fn scan_with_index_parallel_observer(
                             format!("queue issues {path_label}: {e}"),
                         );
                     }
-                    d
                 } else {
-                    skipped_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if let Some(p) = &progress_ref {
-                        p.inc_skipped(1);
-                    }
-                    idx.get_issues_from_file(&path).unwrap_or_default()
-                };
+                    unchanged_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
 
                 // AST-only: drop taint/cfg findings
                 diags.retain(|d| !d.id.starts_with("taint") && !d.id.starts_with("cfg-"));
@@ -3361,15 +3370,10 @@ pub fn scan_with_index_parallel_observer(
         drop(write_tx);
         let writer_result = writer.finish("AST-only pass 2");
         pb2.finish_and_clear();
-        let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
+        let unchanged = unchanged_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
-            p.set_files_skipped(skipped);
             p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
             p.set_stage(ScanStage::PostProcessing);
-        }
-        if let Some(m) = metrics {
-            m.summaries_reused
-                .store(skipped, std::sync::atomic::Ordering::Relaxed);
         }
         fail_if_persist_errors("AST-only pass 2", persist_errors)?;
         writer_result?;
@@ -3384,10 +3388,10 @@ pub fn scan_with_index_parallel_observer(
         if let Some(l) = logs {
             l.info(
                 format!(
-                    "AST-only indexed scan complete in {}ms: {} findings, {} reused files",
+                    "AST-only indexed scan complete in {}ms: {} findings, {} unchanged files",
                     pass2_start.elapsed().as_millis(),
                     diags.len(),
-                    skipped
+                    unchanged
                 ),
                 None,
             );
@@ -4431,6 +4435,65 @@ fn scan_with_index_parallel_discovers_new_files_after_index_build() {
 }
 
 #[test]
+fn indexed_scan_drops_cached_summaries_when_rules_change() {
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(project_dir.join("util.py"), "def run(x):\n    my_exec(x)\n").unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "from flask import Flask, request\nfrom util import run\napp = Flask(__name__)\n\n\
+         @app.route('/a')\ndef a():\n    run(request.args.get('v'))\n    return 'ok'\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let taint = |diags: &[Diag]| diags.iter().filter(|d| d.id.starts_with("taint-")).count();
+    let before =
+        scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+            .unwrap();
+    assert_eq!(taint(&before), 0, "my_exec is not a sink yet: {before:?}");
+
+    // Declaring `my_exec` a sink changes util.py's summary although its
+    // bytes did not change.
+    let mut with_sink = cfg.clone();
+    with_sink.analysis.languages.insert(
+        "python".into(),
+        crate::utils::config::LanguageAnalysisConfig {
+            rules: vec![crate::utils::config::ConfigLabelRule {
+                matchers: vec!["my_exec".into()],
+                kind: crate::utils::config::RuleKind::Sink,
+                cap: crate::utils::config::CapName::ShellEscape,
+                case_sensitive: false,
+            }],
+            ..Default::default()
+        },
+    );
+    let after = scan_with_index_parallel(
+        &project_name,
+        Arc::clone(&pool),
+        &with_sink,
+        false,
+        &project_dir,
+    )
+    .unwrap();
+    let off = crate::scan_no_index(&project_dir, &with_sink).unwrap();
+    assert!(taint(&off) > 0, "{off:?}");
+    assert_eq!(
+        taint(&after),
+        taint(&off),
+        "indexed: {after:?}\noff: {off:?}"
+    );
+}
+
+#[test]
 fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
@@ -4470,6 +4533,42 @@ fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
             .any(|d| d.id.starts_with("taint-") && d.severity == Severity::High),
         "{diags:?}"
     );
+}
+
+#[test]
+fn ast_only_indexed_scan_keeps_messages_on_unchanged_files() {
+    let mut cfg = Config::default();
+    cfg.scanner.mode = crate::utils::config::AnalysisMode::Ast;
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "import os\ndef run(cmd):\n    os.system(cmd)\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let off = crate::scan_no_index(&project_dir, &cfg).unwrap();
+    assert!(!off.is_empty());
+    for _ in 0..2 {
+        let indexed =
+            scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+                .unwrap();
+        let view = |ds: &[Diag]| {
+            ds.iter()
+                .map(|d| (d.id.clone(), d.line, d.message.clone(), d.confidence))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(view(&indexed), view(&off));
+        assert!(indexed.iter().all(|d| d.message.is_some()), "{indexed:?}");
+    }
 }
 
 #[test]
