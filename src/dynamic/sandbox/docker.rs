@@ -16,7 +16,7 @@
 //!    - mounts each `StubHarness` filesystem root at a fixed `/nyx/stubs/<n>`
 //!      path so harness-side shims can find them without hard-coding host
 //!      tempdir layouts,
-//!    - honours the [`NetworkPolicy`](crate::dynamic::sandbox::NetworkPolicy) (none / OOB / stubs-only / open)
+//!    - honours the [`NetworkPolicy`] (none / OOB / stubs-only / open)
 //!      using the same flag set as the legacy `start_container`.
 //!
 //! All helpers are infallible w.r.t. docker availability — they return arg
