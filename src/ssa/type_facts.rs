@@ -1564,6 +1564,11 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
 ///   spaces, and shell metacharacters; the dot-separated FQCN is safe
 ///   for header / shell / SQL / file / HTML / SSRF sinks.
 ///
+/// * Go `strconv.Itoa` / `FormatInt` / `FormatUint` / `FormatBool` /
+///   `FormatFloat`, statically typed numeric / boolean formatters whose
+///   output is digits, a sign, `.`, an exponent, `true` / `false`, `NaN`
+///   or `Inf`.  Matched on the bare `strconv` package qualifier only.
+///
 /// Receiver shape match: also accepts the chained form
 /// `<expr>.getClass().getName()` whose collapsed callee text contains
 /// `.getClass()` followed by the class-name accessor.
@@ -1574,6 +1579,14 @@ pub fn is_safe_string_producing_callee(callee: &str) -> bool {
     // input.
     let after_colons = base.rsplit("::").next().unwrap_or(&base);
     if let Some((prefix, method)) = after_colons.rsplit_once('.') {
+        if prefix == "strconv"
+            && matches!(
+                method,
+                "Itoa" | "FormatInt" | "FormatUint" | "FormatBool" | "FormatFloat"
+            )
+        {
+            return true;
+        }
         let class_name = prefix.rsplit(['.', ' ']).next().unwrap_or(prefix);
         match (class_name, method) {
             (
@@ -3726,6 +3739,24 @@ mod tests {
         assert!(is_safe_string_producing_callee("Boolean.toString"));
         assert!(is_safe_string_producing_callee("Class.getName"));
         assert!(is_safe_string_producing_callee("loaded.getClass().getName"));
+    }
+
+    #[test]
+    fn go_strconv_formatters_are_safe_string_producers() {
+        for callee in [
+            "strconv.Itoa",
+            "strconv.FormatInt",
+            "strconv.FormatUint",
+            "strconv.FormatBool",
+            "strconv.FormatFloat",
+        ] {
+            assert!(is_safe_string_producing_callee(callee), "{callee}");
+        }
+        // `Quote` keeps arbitrary input text, and a non-stdlib package that
+        // happens to export `Itoa` is not the stdlib formatter.
+        assert!(!is_safe_string_producing_callee("strconv.Quote"));
+        assert!(!is_safe_string_producing_callee("util.strconv.Itoa"));
+        assert!(!is_safe_string_producing_callee("conv.Itoa"));
     }
 
     /// Bare Rust `.parse()` is generic over `FromStr` and the callee text

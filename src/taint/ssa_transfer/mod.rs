@@ -10552,14 +10552,31 @@ fn retain_inner_sink_reaching_uses(
 fn apply_arg_type_safe_suppression(
     result: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
     sink_caps: Cap,
-    _type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     inst: &SsaInst,
     info: &NodeInfo,
     ssa: &SsaBody,
 ) {
-    use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
+    use crate::ssa::type_facts::{
+        TypeKind, is_int_producing_callee, is_safe_string_producing_callee,
+    };
     if result.is_empty() {
         return;
+    }
+    // Value-level drop for header and redirect sinks: a tainted operand
+    // whose SSA type fact is `Int` / `Bool` (`n := len(q)`,
+    // `s := strconv.Itoa(n)`) cannot carry CRLF, a header-meaningful token
+    // or a redirect target.  Limited to these two classes; SQL / FILE_IO /
+    // shell sinks keep their stricter rules (a bounded integer alone does
+    // not clear them).
+    if let Some(tf) = type_facts
+        && !sink_caps.is_empty()
+        && (sink_caps & !(Cap::HEADER_INJECTION | Cap::OPEN_REDIRECT)).is_empty()
+    {
+        result.retain(|(v, _, _)| !matches!(tf.get_type(*v), Some(TypeKind::Int | TypeKind::Bool)));
+        if result.is_empty() {
+            return;
+        }
     }
     // Type-suppression mask. An arg whose enclosing call is a "safe
     // string" producer (numeric/boolean to-string conversion or a

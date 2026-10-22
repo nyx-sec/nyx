@@ -360,20 +360,9 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
         case_sensitive: true,
     },
-    // ─── Header / CRLF injection sinks ───
+    // Header injection sinks (`w.Header().Set(name, val)`) are argument-role
+    // aware and live in `GATED_SINKS`.
     //
-    // `net/http` `ResponseWriter.Header()` returns a `Header` map; calls to
-    // `Set(name, val)` / `Add(name, val)` write a single header value.
-    // After paren-group stripping the chain text becomes
-    // `w.Header.Set` / `w.Header.Add`, so suffix matchers on `Header.Set` /
-    // `Header.Add` cover both the bound-receiver form (`w.Header().Set(...)`)
-    // and the documentation-style class-qualified form (`Header.Set`).
-    // Tainted strings without `\r\n` stripping enable response splitting.
-    LabelRule {
-        matchers: &["Header.Set", "Header.Add"],
-        label: DataLabel::Sink(Cap::HEADER_INJECTION),
-        case_sensitive: true,
-    },
     // ─── Header / CRLF sanitizers ───
     //
     // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
@@ -751,6 +740,51 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Response header writes (HEADER_INJECTION) ────────────────────────
+    //
+    // `http.ResponseWriter` exposes its header map through the `Header()`
+    // METHOD, while `*http.Request` and `*http.Response` expose `Header` as a
+    // struct FIELD.  Matching the call form `Header().Set` keeps the sink on
+    // the response the server sends (`w.Header().Set`,
+    // `c.Writer.Header().Set`, `c.Response().Header().Set`) and leaves
+    // inbound-request rewrites (`r.Header.Set`) and outbound client requests
+    // (`req.Header.Set`) alone.  The matcher sees the raw callee text, where
+    // the call's parentheses are still present.
+    //
+    // Only the value (arg 1) is a payload, so a receiver that merely carries
+    // taint does not fire.  net/http replaces CR and LF in header values with
+    // spaces when it writes the response, so the risk here is an
+    // attacker-chosen value in a header with meaning (`Location`,
+    // `Set-Cookie`, `Access-Control-Allow-Origin`, `Content-Type`), not
+    // response splitting.
+    SinkGate {
+        callee_matcher: "Header().Set",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Header().Add",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+        payload_args: &[1],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
@@ -1491,6 +1525,29 @@ mod tests {
             PARAM_CONFIG
                 .param_node_kinds
                 .contains(&"variadic_parameter_declaration")
+        );
+    }
+
+    #[test]
+    fn header_sink_is_response_side_and_value_only() {
+        use crate::labels::{Cap, DataLabel, classify_all, classify_gated_sink};
+        let header = |callee: &str| {
+            classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                .into_iter()
+                .filter(|g| g.label == DataLabel::Sink(Cap::HEADER_INJECTION))
+                .map(|g| g.payload_args.to_vec())
+                .collect::<Vec<_>>()
+        };
+        // `Header()` is a ResponseWriter method; only the value is a payload.
+        assert_eq!(header("w.Header().Set"), vec![vec![1]]);
+        assert_eq!(header("w.Header().Add"), vec![vec![1]]);
+        assert_eq!(header("c.Writer.Header().Set"), vec![vec![1]]);
+        // `Header` as a field belongs to *http.Request / *http.Response.
+        assert!(header("r.Header.Set").is_empty());
+        assert!(header("req.Header.Add").is_empty());
+        assert!(
+            !classify_all("go", "r.Header.Set", None)
+                .contains(&DataLabel::Sink(Cap::HEADER_INJECTION))
         );
     }
 }
