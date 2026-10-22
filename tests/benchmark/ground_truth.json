@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 674
+    "corpus_size": 687
   },
   "cases": [
     {
@@ -6238,7 +6238,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fopen"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fopen; a `..` check alone would still allow absolute paths (see c-path_traversal-dotdot-only-001)"
     },
     {
       "case_id": "c-safe-007",
@@ -7034,7 +7034,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fopen"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fopen; a `..` check alone would still allow absolute paths (see c-path_traversal-dotdot-only-001)"
     },
     {
       "case_id": "cpp-safe-007",
@@ -7676,7 +7676,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fs::read_to_string"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fs::read_to_string; a `..` check alone would still allow absolute paths (see rs-path-dotdot-only-001)"
     },
     {
       "case_id": "rs-safe-005",
@@ -21384,6 +21384,478 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "js-sqli-dotdot-guard-001",
+      "file": "javascript/sqli/sqli_dotdot_guard_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "A `name.includes('..')` early return is a path-shape check. It must not validate `name` for the SQL sink; before the fix it marked `name` validated for every cap."
+    },
+    {
+      "case_id": "js-xss-slash-guard-001",
+      "file": "javascript/xss/xss_leading_slash_guard_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "leading-slash",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "Rejecting a leading `/` proves nothing about HTML metacharacters; the reflected value must still fire."
+    },
+    {
+      "case_id": "js-path_traversal-dotdot-only-001",
+      "file": "javascript/path_traversal/path_traversal_dotdot_only_absolute.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Only `..` is rejected, so `?name=/etc/passwd` still reads an arbitrary file. FILE_IO needs both the `..` and the absolute-path axis."
+    },
+    {
+      "case_id": "js-safe-path-reject-both-axes-001",
+      "file": "javascript/safe/safe_path_reject_dotdot_and_absolute.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Rejecting both `..` and a leading `/` leaves a relative, `..`-free path; the read must stay silent."
+    },
+    {
+      "case_id": "js-cmdi-typeof-string-guard-001",
+      "file": "javascript/cmdi/cmdi_typeof_string_guard.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "typeof",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`typeof cmd !== 'string'` only rejects query-string arrays; every shell payload is a string."
+    },
+    {
+      "case_id": "js-safe-typeof-and-digit-regex-001",
+      "file": "javascript/safe/safe_typeof_string_and_digit_regex.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "type-check",
+        "regex-literal",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The anchored digit regex literal `/^[0-9]+$/.test(id)` is the validator; the typeof string check alone is not."
+    },
+    {
+      "case_id": "py-cmdi-dotdot-guard-001",
+      "file": "python/cmdi/cmdi_dotdot_guard_only.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "`\"..\" in name` early return does not remove shell metacharacters. Before the fix the check validated `name` for every cap and also hid the AST pattern."
+    },
+    {
+      "case_id": "py-cmdi-isinstance-str-guard-001",
+      "file": "python/cmdi/cmdi_isinstance_str_guard.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "isinstance",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`isinstance(cmd, str)` is true for every payload; only scalar types (int, float, bool, UUID) validate."
+    },
+    {
+      "case_id": "php-cmdi-is-string-guard-001",
+      "file": "php/cmdi/cmdi_is_string_guard.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "php.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "is_string",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`is_string($cmd)` is true for every query-string payload."
+    },
+    {
+      "case_id": "rb-cmdi-is-a-string-guard-001",
+      "file": "ruby/cmdi/cmdi_is_a_string_guard.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "is_a",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`cmd.is_a?(String)` is true for every param payload; the sink inside the branch must fire."
+    },
+    {
+      "case_id": "go-cmdi-contains-dotdot-guard-001",
+      "file": "go/cmdi/cmdi_contains_dotdot_guard.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "go.cmdi.exec_command"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "`strings.Contains(name, \"..\")` tests the subject against a literal needle; it is neither an allowlist nor shell validation."
+    },
+    {
+      "case_id": "c-path_traversal-dotdot-only-001",
+      "file": "c/path_traversal/path_traversal_dotdot_only_getenv.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart of c-safe-006: only `..` is rejected, so FILE_PATH=/etc/shadow still opens."
+    },
+    {
+      "case_id": "rs-path-dotdot-only-001",
+      "file": "rust/path_traversal/path_traversal_dotdot_only_env.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart of rs-safe-004: only `..` is rejected, so an absolute FILE_PATH still reads."
     }
   ]
 }

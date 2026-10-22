@@ -1141,7 +1141,7 @@ mod goto_succ_propagation_tests {
             "err != nil",
             "x == null",
             "scheme not in allowed",
-            "typeof x !== 'string'",
+            "typeof x !== 'number'",
             "isInvalidUrl(u)",
             "p.contains(\"..\")",
             "user.isAdmin",
@@ -1164,7 +1164,20 @@ mod goto_succ_propagation_tests {
     /// Used to drive `apply_path_fact_branch_narrowing` without a full CFG.
     fn ssa_body_with_named_value(var_name: &str) -> SsaBody {
         SsaBody {
-            blocks: vec![],
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![SsaInst {
+                    value: SsaValue(0),
+                    op: SsaOp::Source,
+                    cfg_node: NodeIndex::new(0),
+                    var_name: Some(var_name.into()),
+                    span: (0, 1),
+                }],
+                terminator: Terminator::Return(None),
+                preds: smallvec![],
+                succs: smallvec![],
+            }],
             entry: BlockId(0),
             value_defs: vec![crate::ssa::ir::ValueDef {
                 var_name: Some(var_name.into()),
@@ -1298,7 +1311,7 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!path.contains(\"..\")"),
@@ -1332,7 +1345,7 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!filepath.IsLocal(p)"),
@@ -1380,6 +1393,118 @@ mod goto_succ_propagation_tests {
         let fabs = false_state.abstract_state.as_ref().unwrap();
         assert!(tabs.get(SsaValue(0)).path.is_top());
         assert!(fabs.get(SsaValue(0)).path.is_top());
+    }
+
+    fn tainted_state_with_abstract(caps: crate::labels::Cap) -> SsaTaintState {
+        let mut s = initial_state_with_abstract();
+        s.set(
+            SsaValue(0),
+            crate::taint::domain::VarTaint {
+                caps,
+                origins: smallvec![],
+                uses_summary: false,
+            },
+        );
+        s
+    }
+
+    #[test]
+    fn path_rejection_single_axis_validates_nothing() {
+        // `if (name.includes("..")) return; db.query("..." + name)`: a path
+        // shape check says nothing about SQL / shell / HTML and, on one axis
+        // alone, nothing about FILE_IO either (`/etc/passwd` passes a `..`
+        // check).  No validation bit and no cap change on either arm.
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        for text in [
+            "name.includes(\"..\")",
+            "name.startsWith(\"/\")",
+            "\"..\" in name",
+            "strings.Contains(name, \"..\")",
+        ] {
+            let ssa = ssa_body_with_named_value("name");
+            let mut true_state = tainted_state_with_abstract(caps);
+            let mut false_state = tainted_state_with_abstract(caps);
+            super::super::apply_path_fact_branch_narrowing_with_aliases(
+                &mut true_state,
+                &mut false_state,
+                &super::super::classify_path_branch(text),
+                &["name".to_string()],
+                &ssa,
+                None,
+                false,
+            );
+            for st in [&true_state, &false_state] {
+                assert!(st.validated_must.is_empty(), "{text}: validated_must set");
+                assert!(st.validated_may.is_empty(), "{text}: validated_may set");
+                assert_eq!(st.get(SsaValue(0)).map(|t| t.caps), Some(caps), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn path_rejection_both_axes_clears_only_file_io() {
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        let ssa = ssa_body_with_named_value("name");
+
+        // `if (name.includes("..") || name.startsWith("/")) return;`
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            None,
+            false,
+        );
+        assert_eq!(
+            false_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY),
+            "surviving arm keeps every non-FILE_IO cap"
+        );
+        assert!(false_state.validated_must.is_empty());
+        assert_eq!(true_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // `if (!(name.includes("..") || name.startsWith("/"))) { sink }`:
+        // the CFG reports the leading `!` as condition_negated, so the
+        // relative `..`-free arm is TRUE.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "!(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            None,
+            true,
+        );
+        assert_eq!(
+            true_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY)
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // Two different subjects: neither is proven on both axes.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(name.includes(\"..\") || dir.startsWith(\"/\"))"),
+            &["dir".to_string(), "name".to_string()],
+            &ssa,
+            None,
+            false,
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
     }
 
     #[test]

@@ -458,10 +458,30 @@ pub fn classify_path_rejection(text: &str) -> PathRejection {
 ///
 /// The false branch of the whole condition implies all clauses are false,
 /// so every recognised axis narrows on the false branch.
+///
+/// Clauses that do not prove their atom false on the FALSE branch are
+/// skipped:
+///
+/// * a clause with a top-level `&&` / `and` (`".." in p and strict` is
+///   false whenever `strict` is false, so `p` may still contain `..`);
+/// * a locally negated clause inside a multi-clause disjunction
+///   (`!p.includes("..") || p.startsWith("/")`), whose FALSE branch
+///   proves the opposite of the atom.  A single negated clause is fine:
+///   its negation is the whole condition's AST-level negation, which the
+///   caller folds into the safe-arm choice.
+///
+/// Redundant wrapping parens (JS/Java/C condition text keeps the `if`
+/// parens) and a whole-condition `!( ... )` are peeled first so the
+/// disjunction inside is still split.
 pub fn classify_path_rejection_axes(text: &str) -> smallvec::SmallVec<[PathRejection; 3]> {
     let mut out: smallvec::SmallVec<[PathRejection; 3]> = smallvec::SmallVec::new();
-    for clause in split_top_level_or(text) {
-        let clause = clause.trim();
+    let clauses = split_top_level_or(peel_condition_wrappers(text));
+    let multi_clause = clauses.len() > 1;
+    for clause in clauses {
+        let clause = strip_outer_parens(clause.trim());
+        if has_top_level_and(clause) {
+            continue;
+        }
         // Multi-axis special case: `!filepath.IsLocal(p)` (Go).
         // `filepath.IsLocal` returns true iff the path stays within the
         // current directory, no leading `/`, no `..` segments, no Windows
@@ -479,12 +499,143 @@ pub fn classify_path_rejection_axes(text: &str) -> smallvec::SmallVec<[PathRejec
             }
             continue;
         }
+        if multi_clause && strip_leading_not(clause).is_some() {
+            continue;
+        }
         let cls = classify_path_rejection_atom(clause);
         if !matches!(cls, PathRejection::None) && !out.contains(&cls) {
             out.push(cls);
         }
     }
     out
+}
+
+/// Peel redundant outer parens and a whole-condition `!( ... )` /
+/// `not ( ... )` so the disjunction inside can be split into clauses.
+/// The peeled negation is the one AST-level `condition_negated` already
+/// reports, so dropping it here does not change polarity for callers.
+fn peel_condition_wrappers(text: &str) -> &str {
+    let mut cur = strip_outer_parens(text.trim());
+    if let Some(rest) = strip_leading_not(cur) {
+        let rest = rest.trim_start();
+        if rest.starts_with('(') {
+            let inner = strip_outer_parens(rest);
+            if inner.len() < rest.len() {
+                cur = inner;
+            }
+        }
+    }
+    cur
+}
+
+/// Strip a leading boolean negation (`!x`, `not x`), returning the rest.
+/// `!=` is a comparison, not a negation, and is left alone.
+fn strip_leading_not(text: &str) -> Option<&str> {
+    let t = text.trim_start();
+    if let Some(rest) = t.strip_prefix('!') {
+        if rest.starts_with('=') {
+            return None;
+        }
+        return Some(rest);
+    }
+    let lower_prefix = t.get(..4).map(|p| p.to_ascii_lowercase());
+    if lower_prefix.as_deref() == Some("not ") {
+        return Some(&t[4..]);
+    }
+    None
+}
+
+/// Repeatedly strip one pair of parens that wraps the whole text.  A
+/// leading `(` whose matching `)` closes before the end (`(a) || (b)`)
+/// is not a wrapper and stops the strip.
+fn strip_outer_parens(text: &str) -> &str {
+    let mut cur = text.trim();
+    while cur.starts_with('(') && cur.ends_with(')') {
+        match matching_close_paren(cur) {
+            Some(close) if close == cur.len() - 1 => cur = cur[1..close].trim(),
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// Byte index of the `)` matching the `(` at index 0, skipping string
+/// literals.
+fn matching_close_paren(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' | b'`' => in_quote = Some(b),
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// True when `text` has a conjunction (`&&`, or the Python / Ruby / PHP
+/// keyword `and`) outside parens and string literals.
+fn has_top_level_and(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' | b'`' => in_quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'&' if depth == 0 && bytes.get(i + 1) == Some(&b'&') => return true,
+            b'a' | b'A'
+                if depth == 0
+                    && i > 0
+                    && bytes[i - 1].is_ascii_whitespace()
+                    && bytes
+                        .get(i..i + 3)
+                        .is_some_and(|w| w.eq_ignore_ascii_case(b"and"))
+                    && bytes.get(i + 3).is_some_and(|c| c.is_ascii_whitespace()) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// True iff any top-level OR clause of `text` is the pre-negated
@@ -495,7 +646,7 @@ pub fn classify_path_rejection_axes(text: &str) -> smallvec::SmallVec<[PathRejec
 /// (returns `true`) or still needs to flip the safe-arm polarity for
 /// polarity-blind atoms like `!path.contains("..")` (returns `false`).
 pub(crate) fn cond_has_pre_negated_islocal_clause(text: &str) -> bool {
-    for clause in split_top_level_or(text) {
+    for clause in split_top_level_or(peel_condition_wrappers(text)) {
         if has_negated_filepath_is_local(clause.trim()) {
             return true;
         }
@@ -2169,5 +2320,50 @@ mod tests {
         // b ⊑ a because b is strictly more informative.
         assert!(b.leq(&a));
         assert_eq!(b.join(&a), a);
+    }
+
+    #[test]
+    fn rejection_axes_peel_wrapping_parens_and_whole_negation() {
+        let both = [PathRejection::DotDot, PathRejection::AbsoluteSlash];
+        for text in [
+            "(p.includes(\"..\") || p.startsWith(\"/\"))",
+            "!(p.includes(\"..\") || p.startsWith(\"/\"))",
+            "not (\"..\" in p or p.startswith(\"/\"))",
+        ] {
+            let axes = classify_path_rejection_axes(text);
+            assert_eq!(axes.as_slice(), both.as_slice(), "{text}");
+        }
+    }
+
+    #[test]
+    fn rejection_axes_skip_conjunction_clauses() {
+        // FALSE of `A and B` says nothing about A.
+        assert!(classify_path_rejection_axes("\"..\" in name and strict").is_empty());
+        assert!(classify_path_rejection_axes("(p.includes(\"..\") && strict)").is_empty());
+        assert_eq!(
+            classify_path_rejection_axes("p.startsWith(\"/\") || (p.includes(\"..\") && strict)")
+                .as_slice(),
+            [PathRejection::AbsoluteSlash].as_slice()
+        );
+    }
+
+    #[test]
+    fn rejection_axes_skip_locally_negated_clause_in_disjunction() {
+        // The FALSE branch of `!a || b` proves `a`, the opposite of the
+        // rejection atom.  A lone negated clause is the whole condition's
+        // negation, which the caller folds in.
+        assert_eq!(
+            classify_path_rejection_axes("!p.includes(\"..\") || p.startsWith(\"/\")").as_slice(),
+            [PathRejection::AbsoluteSlash].as_slice()
+        );
+        assert_eq!(
+            classify_path_rejection_axes("!path.contains(\"..\")").as_slice(),
+            [PathRejection::DotDot].as_slice()
+        );
+        // The pre-negated Go idiom keeps its axes inside a disjunction.
+        let axes =
+            classify_path_rejection_axes("!filepath.IsLocal(p) || strings.HasPrefix(p, \"/\")");
+        assert!(axes.contains(&PathRejection::DotDot));
+        assert!(axes.contains(&PathRejection::IsAbsolute));
     }
 }

@@ -191,9 +191,10 @@ fn extract_first_string_arg(after_open: &str) -> Option<String> {
 /// that is an allowlist check, not a rejection.
 fn extract_python_in_needle(text: &str) -> Option<String> {
     let pos = text.find(" in ")?;
-    let left = text[..pos].trim();
+    let left = text[..pos].trim().trim_start_matches('(').trim();
     // Strip leading `!` / `not` for rejection contexts
     let left = left.strip_prefix('!').unwrap_or(left).trim();
+    let left = left.strip_prefix("not ").unwrap_or(left).trim();
     let bytes = left.as_bytes();
     let quote = *bytes.first()?;
     if quote != b'"' && quote != b'\'' {
@@ -772,6 +773,11 @@ fn parse_leading_uint(s: &str) -> Option<u64> {
 /// (`..`, `<script>`, etc.) that the shell-metachar carve-out deliberately
 /// excludes. Conservative: only fires when the first argument parses as a
 /// string literal, so `ALLOWED.includes(value)` (identifier arg) is untouched.
+///
+/// Two spellings put the needle somewhere other than the first method
+/// argument and are matched separately: the Python operator form
+/// `"<lit>" in x` and the Go free functions `strings.Contains(x, "<lit>")` /
+/// `bytes.Contains(x, "<lit>")`.
 fn is_literal_needle_membership(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     for method in [
@@ -787,6 +793,25 @@ fn is_literal_needle_membership(text: &str) -> bool {
             // characters stay accurate; the byte offset matches because the
             // method tokens are ASCII.
             if extract_first_string_arg(&text[args_start..]).is_some() {
+                return true;
+            }
+        }
+    }
+    if extract_python_in_needle(text).is_some() {
+        return true;
+    }
+    // `"<lit>" not in x` asks the same question with the opposite polarity;
+    // it is still a test on `x`, not an allowlist that validates it.
+    if let Some(pos) = text.find(" not in ") {
+        let left = text[..pos].trim().trim_start_matches('(').trim();
+        if extract_first_string_arg(left).is_some_and(|lit| lit.len() + 2 == left.len()) {
+            return true;
+        }
+    }
+    for func in ["strings.contains(", "bytes.contains("] {
+        if let Some(idx) = lower.find(func) {
+            let args = split_top_level_args(&text[idx + func.len()..]);
+            if args.len() == 2 && extract_first_string_arg(args[1]).is_some() {
                 return true;
             }
         }
@@ -888,6 +913,231 @@ fn membership_fn_leaf_normalised(text: &str) -> Option<String> {
 fn is_value_first_membership_fn(text: &str) -> bool {
     membership_fn_leaf_normalised(text)
         .is_some_and(|leaf| VALUE_FIRST_MEMBERSHIP_FNS.contains(&leaf.as_str()))
+}
+
+/// PHP `ctype_*` checks whose accepted alphabet excludes shell, SQL and
+/// path metacharacters.  `ctype_punct` / `ctype_print` / `ctype_graph`
+/// accept `;`, `'`, `/` and friends, so they are not validators.
+const SAFE_CTYPE_FNS: &[&str] = &[
+    "ctype_digit(",
+    "ctype_alnum(",
+    "ctype_alpha(",
+    "ctype_xdigit(",
+    "ctype_upper(",
+    "ctype_lower(",
+];
+
+/// `typeof` results that pin a JS value to something that cannot carry a
+/// string payload: a non-string scalar, or a function (request data, JSON
+/// and query strings never produce one).
+const SAFE_TYPEOF_RESULTS: &[&str] = &["number", "bigint", "boolean", "function"];
+
+/// Python classes (last dotted segment, lowercased) whose instances render
+/// as plain numbers / booleans / UUIDs.
+const SCALAR_PY_CLASSES: &[&str] = &[
+    "int", "float", "bool", "complex", "decimal", "uuid", "number", "integral", "real", "rational",
+    "fraction",
+];
+
+/// Java / JS classes (last dotted segment, lowercased) for `instanceof`.
+/// `Character` is left out: a single quote is enough to break SQL.
+const SCALAR_INSTANCEOF_CLASSES: &[&str] = &[
+    "number",
+    "integer",
+    "long",
+    "short",
+    "byte",
+    "double",
+    "float",
+    "boolean",
+    "biginteger",
+    "bigdecimal",
+    "uuid",
+    "atomicinteger",
+    "atomiclong",
+];
+
+/// Ruby classes (last `::` segment, lowercased) for `is_a?` / `kind_of?`.
+const SCALAR_RUBY_CLASSES: &[&str] = &[
+    "integer",
+    "numeric",
+    "float",
+    "fixnum",
+    "bignum",
+    "rational",
+    "bigdecimal",
+    "complex",
+    "trueclass",
+    "falseclass",
+];
+
+/// True when every runtime type test in `lower` (already lowercased) pins
+/// the value to one of the types listed above.  A condition mixing such a
+/// test with any other type test, or a type test whose type cannot be
+/// read, does not qualify.
+fn type_check_proves_scalar(lower: &str) -> bool {
+    let mut saw_test = false;
+
+    if lower.contains("is_string(") {
+        return false;
+    }
+
+    if lower.contains("typeof ") {
+        // Every quoted literal in the condition must be a safe `typeof`
+        // result; this also covers the reversed `'number' === typeof x`.
+        let literals = quoted_literals(lower);
+        if literals.is_empty() || !literals.iter().all(|lit| SAFE_TYPEOF_RESULTS.contains(lit)) {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for (idx, _) in lower.match_indices("isinstance(") {
+        let args = split_top_level_args(&lower[idx + "isinstance(".len()..]);
+        let Some(classes) = args.get(1) else {
+            return false;
+        };
+        let classes = classes.trim().trim_start_matches('(').trim_end_matches(')');
+        let all_scalar = classes
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .all(|c| SCALAR_PY_CLASSES.contains(&c.rsplit('.').next().unwrap_or(c)));
+        if classes.trim().is_empty() || !all_scalar {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for (idx, _) in lower.match_indices(" instanceof ") {
+        let after = lower[idx + " instanceof ".len()..].trim_start();
+        let class: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let leaf = class.rsplit('.').next().unwrap_or("");
+        if !SCALAR_INSTANCEOF_CLASSES.contains(&leaf) {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for method in [".is_a?(", ".kind_of?("] {
+        for (idx, _) in lower.match_indices(method) {
+            let Some(class) = first_call_arg(&lower[idx + method.len()..]) else {
+                return false;
+            };
+            let leaf = class.rsplit("::").next().unwrap_or(class).trim();
+            if !SCALAR_RUBY_CLASSES.contains(&leaf) {
+                return false;
+            }
+            saw_test = true;
+        }
+    }
+
+    saw_test
+}
+
+/// For a JS/TS regex-literal allowlist test, `/^[0-9]+$/.test(x)` (with an
+/// optional leading `!` / wrapping parens), return the tested argument `x`.
+///
+/// The literal must be anchored at both ends and its body must restrict the
+/// alphabet: no `.` wildcard outside a class, no negated class `[^...]` and
+/// no `\S` / `\W` / `\D`.  `/^.*$/` or an unanchored `/[0-9]/` proves nothing
+/// about the rest of the value.  The receiver-name rule in
+/// [`classify_condition`] (`SAFE_REGEX.test(x)`) covers named patterns;
+/// this covers inline literals, whose body is visible.
+fn anchored_regex_literal_test_arg(text: &str) -> Option<String> {
+    let t = text.trim().trim_start_matches(['(', '!', ' ', '\t']);
+    let bytes = t.as_bytes();
+    if bytes.first() != Some(&b'/') {
+        return None;
+    }
+    // Find the closing `/` of the literal: skip escapes and `/` inside a
+    // character class.
+    let mut i = 1usize;
+    let mut in_class = false;
+    let close = loop {
+        let b = *bytes.get(i)?;
+        match b {
+            b'\\' => i += 1,
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'/' if !in_class => break i,
+            _ => {}
+        }
+        i += 1;
+    };
+    let body = &t[1..close];
+    let rest = t[close + 1..].trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let args = rest.strip_prefix(".test(")?;
+    let anchored = body.len() >= 2
+        && body.starts_with('^')
+        && body.ends_with('$')
+        && !body[..body.len() - 1].ends_with('\\');
+    if !anchored || !regex_body_restricts_alphabet(body) {
+        return None;
+    }
+    let arg = first_call_arg(args)?.trim();
+    is_identifier(arg).then(|| arg.to_string())
+}
+
+/// True when a regex body has no construct that matches an open-ended
+/// alphabet (see [`anchored_regex_literal_test_arg`]).
+fn regex_body_restricts_alphabet(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    let mut in_class = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if matches!(bytes.get(i + 1), Some(b'S' | b'W' | b'D')) {
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+            b'[' if !in_class => {
+                if bytes.get(i + 1) == Some(&b'^') {
+                    return false;
+                }
+                in_class = true;
+            }
+            b']' => in_class = false,
+            b'.' if !in_class => return false,
+            _ => {}
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Contents of every `'...'`, `"..."` and `` `...` `` literal in `text`.
+fn quoted_literals(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q == b'"' || q == b'\'' || q == b'`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != q {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            out.push(&text[start..j]);
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Classify a raw condition text into a [`PredicateKind`].
@@ -1053,17 +1303,13 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     }
 
     // ── Type-check guards ──────────────────────────────────────────────
-    if lower.contains("typeof ")
-        || lower.contains("isinstance(")
-        || lower.contains(" instanceof ")
-        || lower.contains(".matches(")
+    //
+    // Value-shape checks that pin the value to a digit / alnum alphabet.
+    if lower.contains(".matches(")
         || lower.contains("is_numeric(")
         || lower.contains("is_int(")
-        || lower.contains("is_string(")
         || lower.contains("is_float(")
-        || lower.contains("ctype_")
-        || lower.contains(".is_a?(")
-        || lower.contains(".kind_of?(")
+        || SAFE_CTYPE_FNS.iter().any(|f| lower.contains(f))
         // Rust character-class validation: `.chars().all(|c| c.is_ascii_*())`
         // and similar per-character validations.  Presence of `is_ascii_`
         // inside an `.all(…)` / `.iter().all(…)` call is a strong validation
@@ -1073,6 +1319,25 @@ pub fn classify_condition(text: &str) -> PredicateKind {
         || (lower.contains(".all(") && lower.contains("is_numeric("))
     {
         return PredicateKind::TypeCheck;
+    }
+    // Runtime type tests validate only when the tested type cannot carry
+    // an injection payload (a non-string scalar, or a JS function).  `typeof x === 'string'` /
+    // `isinstance(x, str)` / `x instanceof String` / `is_string($x)` /
+    // `x.is_a?(String)` describe the type every payload already has; in
+    // Express they mostly reject `qs` arrays.  Those return Unknown here
+    // (not Comparison) so neither branch is validated.
+    if lower.contains("typeof ")
+        || lower.contains("isinstance(")
+        || lower.contains(" instanceof ")
+        || lower.contains("is_string(")
+        || lower.contains(".is_a?(")
+        || lower.contains(".kind_of?(")
+    {
+        return if type_check_proves_scalar(&lower) {
+            PredicateKind::TypeCheck
+        } else {
+            PredicateKind::Unknown
+        };
     }
 
     // ── Bounded-length rejection ─────────────────────────────────────────
@@ -1090,6 +1355,13 @@ pub fn classify_condition(text: &str) -> PredicateKind {
 
     // ── Call-based kinds (require `(` to be present) ─────────────────────
     if lower.contains('(') {
+        // Inline anchored regex literal: `/^[0-9]+$/.test(x)`.  Checked on
+        // the case-preserved text (`\S` and `\s` differ) and before the
+        // callee split below, which stops at the first `(` and would cut
+        // a regex containing a group.
+        if anchored_regex_literal_test_arg(text).is_some() {
+            return PredicateKind::ValidationCall;
+        }
         // Strip leading wrappers (parens, `!`, whitespace) before locating
         // the callee token.  Without this, idiomatic forms like
         // `(!validate(x))` (TypeScript / JS) or `not validate(x)` (Python)
@@ -1454,6 +1726,9 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
 /// - Function call: `validate(x, ...)` → `"x"`
 /// - Method call: `x.validate(...)` → `"x"`
 fn extract_validation_target(text: &str) -> Option<String> {
+    if let Some(arg) = anchored_regex_literal_test_arg(text) {
+        return Some(arg);
+    }
     let trimmed = text.trim();
 
     // Strip leading wrappers (parens, `!`, `not `) so idiomatic forms like
@@ -2490,16 +2765,22 @@ mod tests {
     #[test]
     fn classify_instanceof_is_type_check() {
         assert_eq!(
-            classify_condition("x instanceof String"),
+            classify_condition("x instanceof Integer"),
             PredicateKind::TypeCheck
+        );
+        // A String instance is exactly what an injection payload is, so the
+        // check validates nothing.
+        assert_eq!(
+            classify_condition("x instanceof String"),
+            PredicateKind::Unknown
         );
     }
 
     #[test]
     fn target_instanceof_x_string() {
         let (kind, target) = classify_condition_with_target("x instanceof String");
-        assert_eq!(kind, PredicateKind::TypeCheck);
-        assert_eq!(target.as_deref(), Some("x"));
+        assert_eq!(kind, PredicateKind::Unknown);
+        assert_eq!(target, None);
     }
 
     #[test]
@@ -2979,5 +3260,107 @@ mod ghsa_h8cj_hpmg_636v_tests {
             classify_condition_with_target("strncmp(buf[0], home, strlen(home))").1,
             None
         );
+    }
+
+    // ── Runtime type tests: only scalar types validate ───────────────────
+
+    #[test]
+    fn type_tests_validate_only_scalar_types() {
+        let scalar = [
+            "typeof x !== 'number'",
+            "'number' === typeof x",
+            "typeof flag === \"boolean\"",
+            "typeof cb === 'function'",
+            "isinstance(x, (int, float))",
+            "not isinstance(u, uuid.UUID)",
+            "x instanceof Integer",
+            "x instanceof java.lang.Long",
+            "x.is_a?(Integer)",
+            "!x.kind_of?(Numeric)",
+            "is_numeric($x)",
+            "ctype_digit($x)",
+        ];
+        for text in scalar {
+            assert_eq!(classify_condition(text), PredicateKind::TypeCheck, "{text}");
+        }
+        let non_scalar = [
+            "typeof x !== 'string'",
+            "typeof x === 'object'",
+            "typeof x === 'number' || typeof x === 'string'",
+            "isinstance(x, str)",
+            "isinstance(x, (int, str))",
+            "x instanceof String",
+            "is_string($x)",
+            "!is_string($cmd)",
+            "x.is_a?(String)",
+            "x.kind_of?(Hash)",
+        ];
+        for text in non_scalar {
+            assert_eq!(classify_condition(text), PredicateKind::Unknown, "{text}");
+        }
+        // `ctype_punct` / `ctype_print` accept metacharacters.
+        assert_ne!(
+            classify_condition("ctype_punct($x)"),
+            PredicateKind::TypeCheck
+        );
+        assert_ne!(
+            classify_condition("ctype_print($x)"),
+            PredicateKind::TypeCheck
+        );
+    }
+
+    // ── Literal-needle tests are not allowlists ──────────────────────────
+
+    #[test]
+    fn literal_needle_operator_and_go_forms_are_not_allowlists() {
+        for text in [
+            "\"..\" in name",
+            "'x' in host",
+            "\"admin\" not in name",
+            "strings.Contains(name, \"..\")",
+            "bytes.Contains(body, \"<script\")",
+        ] {
+            assert_eq!(classify_condition(text), PredicateKind::Unknown, "{text}");
+        }
+        // Genuine membership keeps its classification.
+        assert_eq!(
+            classify_condition_with_target("cmd in ALLOWED"),
+            (PredicateKind::AllowlistCheck, Some("cmd".to_string()))
+        );
+        assert_eq!(
+            classify_condition_with_target("cmd not in ALLOWED"),
+            (PredicateKind::AllowlistCheck, Some("cmd".to_string()))
+        );
+    }
+
+    // ── Inline anchored regex literal validators ─────────────────────────
+
+    #[test]
+    fn anchored_regex_literal_test_is_validation_call() {
+        for (text, target) in [
+            ("!/^[0-9]+$/.test(id)", "id"),
+            ("/^[a-z_]+$/i.test(name)", "name"),
+            ("(!/^(ls|pwd)$/.test(cmd))", "cmd"),
+            ("/^\\d{1,6}$/.test(n)", "n"),
+        ] {
+            assert_eq!(
+                classify_condition_with_target(text),
+                (PredicateKind::ValidationCall, Some(target.to_string())),
+                "{text}"
+            );
+        }
+        for text in [
+            "/[0-9]/.test(id)",
+            "/^[0-9]+/.test(id)",
+            "/^.*$/.test(id)",
+            "/^[^;]+$/.test(id)",
+            "/^\\S+$/.test(id)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::ValidationCall,
+                "{text}"
+            );
+        }
     }
 }

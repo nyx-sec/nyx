@@ -1240,7 +1240,7 @@ pub(super) fn transfer_block(
 
 /// Text-only PathFact classification of a branch condition.
 ///
-/// Split out of [`apply_path_fact_branch_narrowing_with_interner`] so the
+/// Split out of [`apply_path_fact_branch_narrowing_with_aliases`] so the
 /// state-independent text classification (`classify_path_rejection_axes` /
 /// `classify_path_assertion` / `cond_has_pre_negated_islocal_clause`, all
 /// pure `&str -> _`) can be computed once per branch node and reused across
@@ -1516,13 +1516,13 @@ fn compute_succ_states(
                 // Rust positive-assertion `prefix_lock` recognition still
                 // fires regardless of language; for non-Rust languages the
                 // assertion classifier returns `None` for unfamiliar shapes.
-                apply_path_fact_branch_narrowing_with_interner(
+                apply_path_fact_branch_narrowing_with_aliases(
                     &mut true_state,
                     &mut false_state,
                     &class.path,
                     &effective_vars,
                     ssa,
-                    Some(transfer.interner),
+                    transfer.base_aliases,
                     effective_negated,
                 );
 
@@ -2941,7 +2941,7 @@ fn apply_path_fact_branch_narrowing(
     effective_vars: &[String],
     ssa: &SsaBody,
 ) {
-    apply_path_fact_branch_narrowing_with_interner(
+    apply_path_fact_branch_narrowing_with_aliases(
         true_state,
         false_state,
         &classify_path_branch(cond_text),
@@ -2952,13 +2952,13 @@ fn apply_path_fact_branch_narrowing(
     );
 }
 
-fn apply_path_fact_branch_narrowing_with_interner(
+fn apply_path_fact_branch_narrowing_with_aliases(
     true_state: &mut SsaTaintState,
     false_state: &mut SsaTaintState,
     class: &PathBranchClass,
     effective_vars: &[String],
     ssa: &SsaBody,
-    interner: Option<&SymbolInterner>,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
     negated: bool,
 ) {
     use crate::abstract_interp::PathFact;
@@ -2992,28 +2992,35 @@ fn apply_path_fact_branch_narrowing_with_interner(
     let rejection_pre_negated = class.rejection_pre_negated;
     let rejection_safe_is_true = negated && !rejection_pre_negated;
 
-    // Mark validated_may on the safe arm when a path-rejection
-    // pattern fires.  Mirrors the AllowlistCheck quirk that already
-    // marks validated on the rejection-arm via `apply_branch_predicates`
-    // for languages whose `.contains(...)` / membership idiom hits the
-    // AllowlistCheck classifier, but normalises behaviour for shapes
-    // like C `strstr(path, "..") != NULL` that hit the NullCheck arm
-    // first and never get a chance to mark validation through the
-    // allowlist path.
-    if !rejection_axes.is_empty()
-        && let Some(intern) = interner
-    {
+    // A path-shape rejection says nothing about SQL, shell, HTML or any
+    // other sink class, so it never marks the variable validated.  When
+    // the condition rejects both `..` segments and absolute paths, the
+    // surviving value is a relative, `..`-free path, which is the same
+    // two-axis test `PathFact::is_path_traversal_safe` applies at the
+    // sink.  Clear `Cap::FILE_IO` from the taint in that case so the
+    // proof survives shapes the abstract state cannot follow (C
+    // out-param copies such as `strncpy(buf, path, n)`).  A single axis
+    // (`..` only, or `/` only) leaves taint untouched and FILE_IO is
+    // decided by the PathFact narrowing below.  Restricted to a single
+    // condition variable: with `a.includes("..") || b.startsWith("/")`
+    // neither variable is proven safe on both axes.
+    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot);
+    let rejects_absolute = rejection_axes
+        .iter()
+        .any(|a| matches!(a, PathRejection::AbsoluteSlash | PathRejection::IsAbsolute));
+    if rejects_dotdot && rejects_absolute && effective_vars.len() == 1 {
         let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
             &mut *true_state
         } else {
             &mut *false_state
         };
-        for var in effective_vars {
-            if let Some(sym) = intern.get(var) {
-                safe_state.validated_may.insert(sym);
-                safe_state.validated_must.insert(sym);
-            }
-        }
+        clear_cap_alias_aware(
+            safe_state,
+            &effective_vars[0],
+            Cap::FILE_IO,
+            ssa,
+            base_aliases,
+        );
     }
 
     // Collect SSA values whose `var_name` appears in `effective_vars`.  We
@@ -3075,7 +3082,7 @@ fn apply_path_fact_branch_narrowing_with_interner(
     // For polarity-blind atoms like `!path.contains("..")` the classifier
     // ignores the leading `!` but AST-level negation flips the safe arm
     // to TRUE.  Use the same `rejection_safe_is_true` resolution as the
-    // validated-marker block above so soundness is consistent.
+    // FILE_IO clear above so soundness is consistent.
     let rejection_state: &mut SsaTaintState = if rejection_safe_is_true {
         &mut *true_state
     } else {
