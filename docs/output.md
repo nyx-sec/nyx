@@ -344,6 +344,10 @@ Suppress specific findings in source with `nyx:ignore` comments. Suppressed find
 | Python, Ruby | `# nyx:ignore ...` |
 | PHP | `// nyx:ignore ...`, `# nyx:ignore ...`, or `/* nyx:ignore ... */` |
 
+Directives work in every file extension Nyx scans for the language (`.jsx`, `.tsx`, `.cc`, `.cxx`, `.hpp`, `.hh`, and so on). Rust lifetimes (`&'static str`) on the same line do not hide a directive.
+
+Inline suppressions apply to every scan front end: `nyx scan` (indexed or not) and `nyx serve`, where suppressed findings show with the `suppressed` status.
+
 ### Directive forms
 
 ```python

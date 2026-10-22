@@ -801,8 +801,7 @@ pub fn handle(
         retain_converged_findings(&mut diags);
     }
 
-    // ── Apply inline suppressions ───────────────────────────────────
-    apply_suppressions(&mut diags);
+    // Inline suppressions were applied in `post_process_diags`.
     if !show_suppressed {
         let triage_summary =
             crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
@@ -1033,12 +1032,24 @@ pub fn handle(
 
 // Shared post-processing helpers
 
-/// Assign confidence, rank, and truncate diagnostics.
+/// Apply inline suppressions, assign confidence, rank, and truncate
+/// diagnostics.  Shared by every front end (CLI, `serve`, library API).
 pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
+    // Put findings in a fixed order first.  Pass 2 emits them in call-graph
+    // batch order, which varies between runs; the tie-breaks below
+    // (duplicate-flow survivor, unranked output order, `max_results`
+    // truncation) must not depend on it.
+    diags.sort_by(canonical_diag_order);
+
     // 0. Collapse duplicate taint-unsanitised-flow findings at the same
     //    primary location. Runs first so subsequent confidence / ranking
     //    sees a single representative per (sink, rule_base, severity).
     deduplicate_taint_flows(diags);
+
+    // Inline `nyx:ignore` directives flag (not drop) the findings they
+    // cover, so the server can show them as suppressed and the CLI can
+    // decide whether to print them.
+    apply_suppressions(diags);
 
     // 1. Compute confidence first (needed by ranking).
     for d in diags.iter_mut() {
@@ -1053,6 +1064,13 @@ pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
     if let Some(max) = cfg.output.max_results {
         diags.truncate(max as usize);
     }
+}
+
+/// Total order over findings by location, rule and message, independent of
+/// the order the analysis produced them in.
+fn canonical_diag_order(a: &Diag, b: &Diag) -> std::cmp::Ordering {
+    (&a.path, a.line, a.col, &a.id, a.severity, &a.message)
+        .cmp(&(&b.path, b.line, b.col, &b.id, b.severity, &b.message))
 }
 
 /// Drop diagnostics whose engine provenance notes indicate the analysis
@@ -4452,6 +4470,64 @@ fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
             .any(|d| d.id.starts_with("taint-") && d.severity == Severity::High),
         "{diags:?}"
     );
+}
+
+#[test]
+fn unranked_output_order_is_by_location() {
+    let mut cfg = Config::default();
+    cfg.output.attack_surface_ranking = false;
+    let diag = |path: &str, line: usize, id: &str| Diag {
+        path: path.into(),
+        line,
+        col: 1,
+        id: id.into(),
+        ..Default::default()
+    };
+    let mut a = vec![
+        diag("b.py", 3, "r1"),
+        diag("a.py", 9, "r2"),
+        diag("a.py", 2, "r2"),
+        diag("a.py", 2, "r1"),
+    ];
+    let mut b: Vec<Diag> = a.iter().rev().cloned().collect();
+    post_process_diags(&mut a, &cfg);
+    post_process_diags(&mut b, &cfg);
+    let key = |ds: &[Diag]| {
+        ds.iter()
+            .map(|d| (d.path.clone(), d.line, d.id.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(key(&a), key(&b));
+    assert_eq!(
+        key(&a),
+        vec![
+            ("a.py".to_string(), 2, "r1".to_string()),
+            ("a.py".to_string(), 2, "r2".to_string()),
+            ("a.py".to_string(), 9, "r2".to_string()),
+            ("b.py".to_string(), 3, "r1".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn post_processing_flags_inline_suppressions() {
+    let td = tempfile::tempdir().unwrap();
+    let file = td.path().join("server.jsx");
+    std::fs::write(&file, "exec(cmd); // nyx:ignore js.cmdi.exec\nexec(cmd);\n").unwrap();
+    let path = file.to_string_lossy().into_owned();
+    let mut diags: Vec<Diag> = [1, 2]
+        .into_iter()
+        .map(|line| Diag {
+            path: path.clone(),
+            line,
+            col: 1,
+            id: "js.cmdi.exec".into(),
+            ..Default::default()
+        })
+        .collect();
+    post_process_diags(&mut diags, &Config::default());
+    let flagged: Vec<(usize, bool)> = diags.iter().map(|d| (d.line, d.suppressed)).collect();
+    assert_eq!(flagged, vec![(1, true), (2, false)]);
 }
 
 #[test]

@@ -112,36 +112,63 @@ pub fn canonical_rule_id(id: &str) -> &str {
 
 #[derive(Clone, Copy)]
 enum CommentStyle {
-    /// `//` and `/* */`, Rust, C, C++, Java, Go, JS, TS
+    /// `//` and `/* */`, C, C++, Java, Go, JS, TS
     CStyle,
+    /// `//` and `/* */` with Rust literals: `'` opens a char literal only
+    /// when one follows (`'x'`, `'\n'`), not for a lifetime (`&'static`).
+    Rust,
     /// `#` only, Python, Ruby
     Hash,
     /// `//`, `#`, and `/* */`, PHP
     PhpStyle,
 }
 
-/// Map a file extension to the comment style for that language.
-fn comment_style_for_ext(ext: &str) -> Option<CommentStyle> {
-    match ext {
-        "rs" | "c" | "cpp" | "java" | "go" | "ts" | "js" => Some(CommentStyle::CStyle),
-        "py" | "rb" => Some(CommentStyle::Hash),
+impl CommentStyle {
+    fn has_slash_comments(self) -> bool {
+        matches!(
+            self,
+            CommentStyle::CStyle | CommentStyle::Rust | CommentStyle::PhpStyle
+        )
+    }
+
+    fn has_hash_comments(self) -> bool {
+        matches!(self, CommentStyle::Hash | CommentStyle::PhpStyle)
+    }
+}
+
+/// Map a file path to the comment style of its language.  Uses the same
+/// extension table as the parser ([`crate::ast::lang_slug_for_path`]) so
+/// every file the scanner analyses (`.jsx`, `.cc`, `.hpp`, ...) honours its
+/// directives.
+fn comment_style_for_path(path: &std::path::Path) -> Option<CommentStyle> {
+    match crate::ast::lang_slug_for_path(path)? {
+        "rust" => Some(CommentStyle::Rust),
+        "c" | "cpp" | "java" | "go" | "javascript" | "typescript" => Some(CommentStyle::CStyle),
+        "python" | "ruby" => Some(CommentStyle::Hash),
         "php" => Some(CommentStyle::PhpStyle),
         _ => None,
     }
 }
 
-/// Map a file path to its comment style by inspecting the extension.
-fn comment_style_for_path(path: &std::path::Path) -> Option<CommentStyle> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
-    // Normalise common variant extensions
-    let norm = match ext {
-        "RS" => "rs",
-        "c++" => "cpp",
-        "PY" => "py",
-        "TSX" | "tsx" => "ts",
-        other => other,
+/// Length in bytes of the Rust char or byte literal that starts at the `'`
+/// at `bytes[i]`, or `None` when the quote starts a lifetime or loop label
+/// (`'a`, `'static`, `'outer:`).
+fn rust_char_literal_len(bytes: &[u8], i: usize) -> Option<usize> {
+    let body = bytes.get(i + 1..)?;
+    if body.first() == Some(&b'\\') {
+        // Escapes: `'\n'`, `'\''`, `'\x7f'`, `'\u{1F600}'`.
+        let close = body.iter().skip(2).take(10).position(|&b| b == b'\'')?;
+        return Some(close + 4);
+    }
+    // One (possibly multi-byte) character, then the closing quote.
+    let first = *body.first()?;
+    let char_len = match first {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
     };
-    comment_style_for_ext(norm)
+    (body.get(char_len) == Some(&b'\'')).then_some(char_len + 2)
 }
 
 //  Parser
@@ -334,9 +361,20 @@ fn scan_line_for_directive(
         }
 
         // Python triple quotes: """ or '''
-        if (ch == b'"' || ch == b'\'') && i + 2 < len && bytes[i + 1] == ch && bytes[i + 2] == ch {
+        if (ch == b'"' || ch == b'\'')
+            && !matches!(style, CommentStyle::Rust)
+            && i + 2 < len
+            && bytes[i + 1] == ch
+            && bytes[i + 2] == ch
+        {
             in_string = Some(ch);
             i += 3;
+            continue;
+        }
+
+        // Rust: `'` is a char literal or a lifetime, never a string.
+        if ch == b'\'' && matches!(style, CommentStyle::Rust) {
+            i += rust_char_literal_len(bytes, i).unwrap_or(1);
             continue;
         }
 
@@ -350,14 +388,14 @@ fn scan_line_for_directive(
         // ── Comment detection ───────────────────────────────────────────
 
         // C-style line comment: //
-        let has_slash_slash = matches!(style, CommentStyle::CStyle | CommentStyle::PhpStyle);
+        let has_slash_slash = style.has_slash_comments();
         if has_slash_slash && ch == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
             let comment_body = &line[i + 2..];
             return try_parse_directive(comment_body, line_num);
         }
 
         // Block comment: /*
-        let has_block = matches!(style, CommentStyle::CStyle | CommentStyle::PhpStyle);
+        let has_block = style.has_slash_comments();
         if has_block && ch == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
             // Look for closing */ on the same line
             let rest = &line[i + 2..];
@@ -379,7 +417,7 @@ fn scan_line_for_directive(
         }
 
         // Hash comment: #
-        let has_hash = matches!(style, CommentStyle::Hash | CommentStyle::PhpStyle);
+        let has_hash = style.has_hash_comments();
         if has_hash && ch == b'#' {
             let comment_body = &line[i + 1..];
             return try_parse_directive(comment_body, line_num);
@@ -699,5 +737,67 @@ mod tests {
         let idx = parse_inline_suppressions(rust_path(), src);
         // The directive is on line 2, same-line → targets line 2
         assert!(idx.check(2, "rule.a").is_some());
+    }
+
+    // ── Every scanned extension honours its directives ──────────────────
+
+    #[test]
+    fn variant_extensions_use_their_language_comment_style() {
+        let slash = "exec(req.query.cmd); // nyx:ignore rule.a\n";
+        for file in [
+            "server.jsx",
+            "page.tsx",
+            "main.cc",
+            "main.cxx",
+            "util.hpp",
+            "util.hh",
+            "util.hxx",
+            "util.h++",
+            "main.c++",
+            "lib.RS",
+        ] {
+            let idx = parse_inline_suppressions(Path::new(file), slash);
+            assert!(idx.check(1, "rule.a").is_some(), "{file}");
+        }
+        let hash = "os.system(cmd)  # nyx:ignore rule.a\n";
+        for file in ["app.PY", "app.rb"] {
+            let idx = parse_inline_suppressions(Path::new(file), hash);
+            assert!(idx.check(1, "rule.a").is_some(), "{file}");
+        }
+        // Files the scanner does not parse have no comment style.
+        let idx = parse_inline_suppressions(Path::new("notes.txt"), slash);
+        assert!(idx.is_empty());
+    }
+
+    // ── Rust lifetimes and char literals ────────────────────────────────
+
+    #[test]
+    fn rust_lifetime_does_not_open_a_string() {
+        let src = "fn f(x: &'static str) -> String { x.parse().unwrap() } // nyx:ignore rule.a\n\
+                   fn g<'a>(x: &'a str) {} // nyx:ignore rule.b\n\
+                   'outer: loop { break 'outer; } // nyx:ignore rule.c\n";
+        let idx = parse_inline_suppressions(rust_path(), src);
+        assert!(idx.check(1, "rule.a").is_some());
+        assert!(idx.check(2, "rule.b").is_some());
+        assert!(idx.check(3, "rule.c").is_some());
+    }
+
+    #[test]
+    fn rust_char_literals_are_still_skipped() {
+        // A quote or comment opener inside a char literal is not a string or
+        // a comment.
+        let src = "let q = '\"'; // nyx:ignore rule.a\n\
+                   let s = '/'; let t = '/'; // nyx:ignore rule.b\n\
+                   let e = '\\''; let u = '\\u{1F600}'; // nyx:ignore rule.c\n\
+                   let b = b'x'; let m = 'é'; // nyx:ignore rule.d\n";
+        let idx = parse_inline_suppressions(rust_path(), src);
+        assert!(idx.check(1, "rule.a").is_some());
+        assert!(idx.check(2, "rule.b").is_some());
+        assert!(idx.check(3, "rule.c").is_some());
+        assert!(idx.check(4, "rule.d").is_some());
+        // A directive inside a string after a lifetime is still a string.
+        let src = "fn f(x: &'a str) { let s = \"// nyx:ignore rule.a\"; }\n";
+        let idx = parse_inline_suppressions(rust_path(), src);
+        assert!(idx.check(1, "rule.a").is_none());
     }
 }
