@@ -592,6 +592,33 @@ pub(crate) fn member_expr_text(n: Node, code: &[u8]) -> Option<String> {
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
     match n.kind() {
+        // Java `field_access` (`object` / `field`) and PHP
+        // `member_access_expression` (`object` / `name`).  PHP's `$this` is
+        // spelled without the sigil, like every other PHP variable name.
+        // Java `this.x` stays the bare `x`: an unqualified read of the same
+        // field in the class body spells it that way, so both forms must
+        // name one variable.
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            let obj = n.child_by_field_name("object");
+            let prop = n
+                .child_by_field_name("field")
+                .or_else(|| n.child_by_field_name("name"))
+                .and_then(|p| text_of(p, code))
+                .map(|p| p.trim_start_matches('$').to_string());
+            if obj.is_some_and(|o| o.kind() == "this") {
+                return prop;
+            }
+            let obj_text = obj.and_then(|o| match o.kind() {
+                "variable_name" => text_of(o, code).map(|t| t.trim_start_matches('$').to_string()),
+                _ => member_expr_text_inner(o, code),
+            });
+            match (obj_text, prop) {
+                (Some(o), Some(p)) => Some(format!("{o}.{p}")),
+                (_, Some(p)) => Some(p),
+                (Some(o), _) => Some(o),
+                _ => text_of(n, code),
+            }
+        }
         "member_expression" | "attribute" | "selector_expression" => {
             // Tree-sitter exposes the receiver under `object` (JS/TS, Python),
             // `value` (Rust field_expression, handled in the matching arm
@@ -1041,6 +1068,47 @@ pub(crate) fn collect_idents_with_paths(
             let mut c = n.walk();
             for ch in n.children(&mut c) {
                 collect_idents_with_paths(ch, code, idents, paths);
+            }
+        }
+    }
+}
+
+/// Assignment targets of a Java / PHP LHS in source order: each plain
+/// variable, and each member path (`o.cmd`, `this.fh`) as one name.  The
+/// pieces a member path is built from are not targets: `o.cmd = x` assigns
+/// `o.cmd`, never a local `cmd`, and `$this->fh = ..` assigns `this.fh`,
+/// not `this`.  For a subscript only the container is a target
+/// (`arr[i] = v` does not assign `i`).
+pub(crate) fn collect_assign_targets(n: Node, code: &[u8], out: &mut Vec<String>) {
+    match n.kind() {
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            if let Some(path) = member_expr_text(n, code) {
+                out.push(path);
+            }
+        }
+        "array_access" | "subscript_expression" => {
+            let base = n
+                .child_by_field_name("array")
+                .or_else(|| n.child_by_field_name("object"))
+                .or_else(|| n.named_child(0));
+            if let Some(base) = base {
+                collect_assign_targets(base, code, out);
+            }
+        }
+        "identifier" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t);
+            }
+        }
+        "variable_name" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t.trim_start_matches('$').to_string());
+            }
+        }
+        _ => {
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                collect_assign_targets(ch, code, out);
             }
         }
     }

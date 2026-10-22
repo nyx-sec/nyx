@@ -5,7 +5,10 @@
 //! const propagation.
 
 use super::conditions::unwrap_parens;
-use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
+use super::helpers::{
+    collect_array_pattern_bindings_indexed, collect_assign_targets,
+    collect_rhs_array_literal_elements,
+};
 use super::{
     anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
     first_call_ident, root_receiver_text, text_of,
@@ -2448,6 +2451,15 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
+/// Primary define and extra defines of a Java / PHP assignment LHS (see
+/// [`collect_assign_targets`]).
+fn assign_targets(lhs: Node, code: &[u8]) -> (Option<String>, Vec<String>) {
+    let mut targets = Vec::new();
+    collect_assign_targets(lhs, code, &mut targets);
+    let mut it = targets.into_iter();
+    (it.next(), it.collect())
+}
+
 /// Return `(defines, uses, extra_defines, array_pattern_indices,
 /// rhs_array_elements)` for the AST fragment `ast`.
 ///
@@ -2477,6 +2489,12 @@ pub(super) fn def_use(
     SmallVec<[usize; 4]>,
     SmallVec<[crate::cfg::RhsArraySlot; 4]>,
 ) {
+    // Java / PHP member and subscript LHS are split into whole targets
+    // (`o.cmd`, `this.fh`, `arr`) instead of being flattened into their
+    // component identifiers, which made `o.cmd = x` also redefine a local
+    // `cmd` and `$this->fh = ..` define `this`.  Other languages keep their
+    // existing split.
+    let java_or_php = matches!(lang, "java" | "php");
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
         Kind::CallWrapper => {
@@ -2514,6 +2532,10 @@ pub(super) fn def_use(
                             extra_defs.push(name);
                             pattern_indices.push(idx);
                         }
+                    } else if java_or_php {
+                        let (d, extra) = assign_targets(pat, code);
+                        defs = d;
+                        extra_defs.extend(extra);
                     } else {
                         let mut idents = Vec::new();
                         let mut paths = Vec::new();
@@ -2594,6 +2616,10 @@ pub(super) fn def_use(
                                     extra_defs.push(name);
                                     pattern_indices.push(idx);
                                 }
+                            } else if java_or_php {
+                                let (d, extra) = assign_targets(name_node, code);
+                                defs = d;
+                                extra_defs.extend(extra);
                             } else {
                                 let mut idents = Vec::new();
                                 let mut paths = Vec::new();
@@ -2666,6 +2692,10 @@ pub(super) fn def_use(
                         extra_defs.push(name);
                         pattern_indices.push(idx);
                     }
+                } else if java_or_php {
+                    let (d, extra) = assign_targets(lhs, code);
+                    defs = d;
+                    extra_defs.extend(extra);
                 } else {
                     let mut idents = Vec::new();
                     let mut paths = Vec::new();

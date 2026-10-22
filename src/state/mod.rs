@@ -254,6 +254,61 @@ pub fn collect_closure_released_var_names(
         }
     }
 
+    // Step 1b: receiver fields released by a sibling method.  A handle
+    // stored on the object (`self.fh = open(p)`) belongs to the object, and
+    // a method of the same class that releases that field
+    // (`def close(self): self.fh.close()`) is where it is closed.  Unlike
+    // plain locals, receiver fields are shared between sibling methods, so
+    // the release counts for every method of the class.  A class with no
+    // such method keeps the leak.  JS / TS are left out: their class-field
+    // acquire is reported on purpose (see
+    // `transfer::acquire_into_field_transfers_ownership`).
+    let mut sibling_field_releases: std::collections::HashMap<
+        BodyId,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
+    if matches!(lang, Lang::Python | Lang::Php | Lang::Ruby) {
+        for body in bodies {
+            let Some(class_id) = body.meta.parent_body_id else {
+                continue;
+            };
+            for (_idx, info) in body.graph.node_references() {
+                if info.kind != StmtKind::Call {
+                    continue;
+                }
+                let Some(callee) = info.call.callee.as_deref() else {
+                    continue;
+                };
+                let cl = callee.to_ascii_lowercase();
+                let is_release = pairs.iter().any(|p| {
+                    p.release
+                        .iter()
+                        .any(|r| transfer::callee_matches_pub(&cl, r))
+                });
+                if !is_release {
+                    continue;
+                }
+                // Method form `self.fh.close()` / `$this->conn->close()`:
+                // the receiver chain.  Function form `os.close(self.fd)`:
+                // the first argument.
+                let mut candidates: Vec<&str> = Vec::new();
+                if let Some((rcv, _)) = callee.rsplit_once('.') {
+                    candidates.push(rcv);
+                } else if let Some(first) = info.call.arg_uses.first() {
+                    candidates.extend(first.iter().map(String::as_str));
+                }
+                for c in candidates {
+                    if let Some(field) = receiver_field_name(c) {
+                        sibling_field_releases
+                            .entry(class_id)
+                            .or_default()
+                            .insert(field);
+                    }
+                }
+            }
+        }
+    }
+
     // Step 2: roll up into ancestor bodies.  Walk each non-top body's
     // parent chain and union its release set into every ancestor's
     // entry.  Class methods at the same nesting level (siblings under a
@@ -273,7 +328,36 @@ pub fn collect_closure_released_var_names(
             cur = by_id.get(&pid).and_then(|b| b.meta.parent_body_id);
         }
     }
+    for body in bodies {
+        if let Some(class_id) = body.meta.parent_body_id
+            && let Some(fields) = sibling_field_releases.get(&class_id)
+        {
+            rollup
+                .entry(body.meta.id)
+                .or_default()
+                .extend(fields.iter().cloned());
+        }
+    }
     rollup
+}
+
+/// A field on the method's own receiver (`self.x`, `this.x`, `@x`, PHP
+/// `$this->x`), spelled the way the CFG names its define (`this.x` for
+/// PHP).  `None` for anything else.
+fn receiver_field_name(name: &str) -> Option<String> {
+    let (prefix, rest) = if let Some(r) = name.strip_prefix("self.") {
+        ("self.", r)
+    } else if let Some(r) = name.strip_prefix("this.") {
+        ("this.", r)
+    } else if let Some(r) = name.strip_prefix("$this->") {
+        ("this.", r)
+    } else if let Some(r) = name.strip_prefix('@') {
+        ("@", r)
+    } else {
+        return None;
+    };
+    let plain = !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    plain.then(|| format!("{prefix}{rest}"))
 }
 
 /// Build resource method summaries by pre-scanning all method bodies for known

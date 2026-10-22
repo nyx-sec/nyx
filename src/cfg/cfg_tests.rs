@@ -5092,3 +5092,48 @@ fn cpp_smart_pointer_declarations() {
         "`std::unique_ptr<Foo> q(raw)` adopts raw"
     );
 }
+
+// ── Assignment targets for Java / PHP member LHS ────────────────────────
+
+fn defines_of(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(Option<String>, Vec<String>)> {
+    all_nodes(src, lang, ts_lang)
+        .into_iter()
+        .filter(|n| n.taint.defines.is_some())
+        .map(|n| (n.taint.defines.clone(), n.taint.extra_defines.clone()))
+        .collect()
+}
+
+#[test]
+fn java_php_member_lhs_defines_whole_path() {
+    let java = defines_of(
+        b"class A { String cmd; void f(A o, String x) { o.cmd = x; this.cmd = x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(
+        java,
+        vec![
+            (Some("o.cmd".to_string()), vec![]),
+            (Some("cmd".to_string()), vec![])
+        ],
+        "Java `this.f` keeps the bare field name, and `cmd` is not an extra define"
+    );
+
+    let php = defines_of(
+        b"<?php class A { function f($p) { $this->fh = fopen($p, 'r'); } }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+    );
+    assert_eq!(php, vec![(Some("this.fh".to_string()), vec![])]);
+
+    let java_arr = defines_of(
+        b"class A { void f(String[] arr, int i, String v) { arr[i] = v; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(
+        java_arr,
+        vec![(Some("arr".to_string()), vec![])],
+        "the index is read, not assigned"
+    );
+}

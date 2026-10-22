@@ -1608,3 +1608,27 @@ fn python_attribute_read_does_not_alias_handle() {
 fn go_lock_method_result_is_not_a_held_lock() {
     assert_no_leaks("go_lock_method_returns_value.go");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handles kept on the receiver object
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn python_receiver_field_closed_by_sibling() {
+    assert_no_leaks("python_receiver_field_closed_clean.py");
+}
+
+#[test]
+fn python_receiver_field_never_closed_still_leaks() {
+    assert_has(
+        "python_receiver_field_never_closed.py",
+        "state-resource-leak",
+    );
+}
+
+#[test]
+fn php_receiver_field_closed_by_sibling() {
+    // `$this->conn = new mysqli(..)` used to define the bare `this`;
+    // close() releases the field.
+    assert_no_leaks("php_receiver_field_closed_clean.php");
+}
