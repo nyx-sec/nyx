@@ -345,17 +345,14 @@ pub fn collect_closure_released_var_names(
 /// `$this->x`), spelled the way the CFG names its define (`this.x` for
 /// PHP).  `None` for anything else.
 fn receiver_field_name(name: &str) -> Option<String> {
-    let (prefix, rest) = if let Some(r) = name.strip_prefix("self.") {
-        ("self.", r)
-    } else if let Some(r) = name.strip_prefix("this.") {
-        ("this.", r)
-    } else if let Some(r) = name.strip_prefix("$this->") {
-        ("this.", r)
-    } else if let Some(r) = name.strip_prefix('@') {
-        ("@", r)
-    } else {
-        return None;
-    };
+    let (prefix, rest) = [
+        ("self.", "self."),
+        ("this.", "this."),
+        ("$this->", "this."),
+        ("@", "@"),
+    ]
+    .into_iter()
+    .find_map(|(spelled, canonical)| name.strip_prefix(spelled).map(|r| (canonical, r)))?;
     let plain = !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
     plain.then(|| format!("{prefix}{rest}"))
 }

@@ -250,8 +250,8 @@ pub(crate) fn container_insert_arg_positions(
     if leaf == "set" && args.len() < 2 {
         return out;
     }
-    for i in first..args.len() {
-        let bare = info.arg_callees.get(i).is_none_or(|c| c.is_none()) && args[i].len() == 1;
+    for (i, arg) in args.iter().enumerate().skip(first) {
+        let bare = info.arg_callees.get(i).is_none_or(|c| c.is_none()) && arg.len() == 1;
         if bare {
             out.push(i);
         }

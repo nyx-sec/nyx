@@ -245,9 +245,10 @@ fn is_err_companion_guard_edge(
     }
     let info = &ctx.cfg[src];
     info.kind == StmtKind::If
-        && info.null_check.as_ref().is_some_and(|nc| {
-            extra_defines.iter().any(|e| *e == nc.var) && nc.non_null_edge() == edge_kind
-        })
+        && info
+            .null_check
+            .as_ref()
+            .is_some_and(|nc| extra_defines.contains(&nc.var) && nc.non_null_edge() == edge_kind)
 }
 
 /// True when `node` (other than the acquire itself) reassigns one of the
@@ -456,18 +457,17 @@ fn is_ownership_transferred(
         {
             return true;
         }
-        if info.call.ctor_owned_args.iter().any(|a| *a == acquired_var) {
+        if info.call.ctor_owned_args.contains(&acquired_var) {
             match ctx.lang {
                 Lang::Cpp => return true,
-                Lang::Java => {
+                Lang::Java
                     if info
                         .taint
                         .defines
                         .as_deref()
-                        .is_some_and(|w| closeable_wrappers.names.contains(w))
-                    {
-                        return true;
-                    }
+                        .is_some_and(|w| closeable_wrappers.names.contains(w)) =>
+                {
+                    return true;
                 }
                 _ => {}
             }
