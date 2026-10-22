@@ -1433,3 +1433,58 @@ fn ruby_implicit_return_clean() {
 fn ruby_tail_read_still_leaks() {
     assert_has("ruby_tail_read_leak.rb", "state-resource-leak");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Acquire matching at identifier boundaries
+// ═══════════════════════════════════════════════════════════════════════
+
+fn leak_lines(filename: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = state_diags_for(filename)
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.line)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn python_suffix_callees_are_not_acquires() {
+    // pipe_leak (os.popen) and real_leak (open) only.
+    assert_eq!(
+        leak_lines("python_non_acquire_suffix_callees.py"),
+        vec![41, 46],
+        "Got: {:?}",
+        leak_ids_for("python_non_acquire_suffix_callees.py")
+    );
+}
+
+#[test]
+fn ruby_suffix_callees_are_not_acquires() {
+    assert_eq!(
+        leak_lines("ruby_non_acquire_suffix_callees.rb"),
+        vec![15],
+        "Got: {:?}",
+        leak_ids_for("ruby_non_acquire_suffix_callees.rb")
+    );
+}
+
+#[test]
+fn java_suffix_callees_are_not_acquires() {
+    assert_eq!(
+        leak_lines("java_non_acquire_suffix_callees.java"),
+        vec![13],
+        "Got: {:?}",
+        leak_ids_for("java_non_acquire_suffix_callees.java")
+    );
+}
+
+#[test]
+fn c_prefixed_allocators_still_acquire() {
+    assert_eq!(
+        leak_lines("c_wrapper_allocator_leak.c"),
+        vec![9, 14],
+        "Got: {:?}",
+        leak_ids_for("c_wrapper_allocator_leak.c")
+    );
+}

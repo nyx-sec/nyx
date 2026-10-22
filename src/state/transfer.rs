@@ -543,11 +543,14 @@ impl DefaultTransfer<'_> {
             self.resource_pairs
         };
         for pair in resource_pairs_iter {
-            let is_acquire = pair.acquire.iter().any(|a| callee_matches(&callee, a));
+            let is_acquire = pair
+                .acquire
+                .iter()
+                .any(|a| acquire_callee_matches(self.lang, &callee, a));
             let is_excluded = pair
                 .exclude_acquire
                 .iter()
-                .any(|e| callee_matches(&callee, e));
+                .any(|e| acquire_callee_matches(self.lang, &callee, e));
 
             if is_acquire
                 && !is_excluded
@@ -1002,6 +1005,28 @@ pub fn callee_matches_pub(callee: &str, pattern: &str) -> bool {
     callee_matches(callee, pattern)
 }
 
+/// Whether `callee_lower` is an acquire for `pattern`.
+///
+/// Outside C/C++ an acquire must match at an identifier boundary, the same
+/// rule the cfg twin uses: `disconnect` / `reconnect` are not `connect`,
+/// `is_open` / `_ensure_open` / `subprocess.Popen` / `mock_open` are not
+/// `open`, `websocket` is not `socket`, `decode_cursor` is not `cursor`.
+/// A raw suffix match turned every one of those results into an OPEN
+/// handle that was "never closed".
+///
+/// C/C++ keep the suffix match on purpose: prefixed allocators and
+/// `*_open` / `*_close` families are the house style there (`xmalloc`,
+/// `zmalloc`, `curlx_calloc`, `pg_malloc`, `table_open`, `iconv_open`,
+/// `dlopen`), and the matching suffix release pairs them up.  Release
+/// matching stays lenient everywhere: it only ever clears OPEN, so it cannot
+/// produce a leak.
+pub(crate) fn acquire_callee_matches(lang: Lang, callee_lower: &str, pattern: &str) -> bool {
+    match lang {
+        Lang::C | Lang::Cpp => callee_matches(callee_lower, pattern),
+        _ => rules::callee_matches_at_boundary(callee_lower, &pattern.to_ascii_lowercase()),
+    }
+}
+
 /// Check if a callee matches a pattern.
 /// Supports suffix matching (e.g., "fclose" matches callee "my_fclose")
 /// and dot-prefix matching (e.g., ".close" matches "file.close").
@@ -1347,6 +1372,52 @@ mod tests {
         assert!(!callee_matches("fread", ".read"));
         assert!(!callee_matches("fwrite", ".write"));
         assert!(!callee_matches("send", ".send"));
+    }
+
+    #[test]
+    fn acquire_matcher_requires_identifier_boundary_outside_c() {
+        let py = |c: &str, p: &str| acquire_callee_matches(Lang::Python, c, p);
+        assert!(!py("client.disconnect", "connect"));
+        assert!(!py("client.reconnect", "connect"));
+        assert!(!py("door.is_open", "open"));
+        assert!(!py("store._ensure_open", "open"));
+        assert!(!py("subprocess.popen", "open"));
+        assert!(!py("mock_open", "open"));
+        assert!(!py("factory.websocket", "socket"));
+        assert!(!py("decode_cursor", "cursor"));
+        assert!(py("open", "open"));
+        assert!(py("io.open", "open"));
+        assert!(py("psycopg2.connect", "connect"));
+        assert!(py("conn.cursor", "cursor"));
+        assert!(py("socket.socket", "socket.socket"));
+        assert!(py("os.fdopen", "fdopen"));
+
+        let java = |c: &str, p: &str| acquire_callee_matches(Lang::Java, c, p);
+        assert!(!java("h.closesocket", "Socket"));
+        assert!(java("sf.createsocket", "createSocket"));
+        assert!(java("conn.preparestatement", "prepareStatement"));
+
+        let rb = |c: &str, p: &str| acquire_callee_matches(Lang::Ruby, c, p);
+        assert!(!rb("file.reopen", "open"));
+        assert!(rb("io.popen", "IO.popen"));
+
+        assert!(!acquire_callee_matches(Lang::Rust, "dealloc", "alloc"));
+    }
+
+    #[test]
+    fn acquire_matcher_stays_lenient_for_c_family() {
+        for (callee, pattern) in [
+            ("xmalloc", "malloc"),
+            ("hi_malloc", "malloc"),
+            ("curlx_calloc", "calloc"),
+            ("table_open", "open"),
+        ] {
+            assert!(acquire_callee_matches(Lang::C, callee, pattern), "{callee}");
+            assert!(
+                acquire_callee_matches(Lang::Cpp, callee, pattern),
+                "{callee}"
+            );
+        }
     }
 
     #[test]

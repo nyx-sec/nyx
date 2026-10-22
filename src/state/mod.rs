@@ -321,7 +321,7 @@ pub fn build_resource_method_summaries(
                 if pair
                     .acquire
                     .iter()
-                    .any(|a| transfer::callee_matches_pub(&callee, a))
+                    .any(|a| transfer::acquire_callee_matches(lang, &callee, a))
                 {
                     // The receiver-proxy mechanism (state/transfer.rs)
                     // matches a method-name summary against `recv.method()`

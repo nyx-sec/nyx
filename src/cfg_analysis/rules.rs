@@ -356,6 +356,42 @@ pub fn entry_point_rules(lang: Lang) -> &'static [EntryPointRule] {
 
 // ── Resource pairs ──────────────────────────────────────────────────────
 
+/// Match a callee against a resource acquire/release pattern at an identifier
+/// boundary.
+///
+/// A bare-identifier pattern (`connect`, `open`, `alloc`) matches only when the
+/// character immediately preceding the matched suffix in the callee is a name
+/// separator (not an identifier char).  So `disconnect` / `reconnect` do NOT
+/// match `connect`, `register_open` / `_ensure_open` do NOT match `open`, and
+/// Rust's release `dealloc` does NOT match acquire `alloc`, all of which the
+/// old raw `ends_with` conflated.  Patterns that already carry a leading
+/// separator (`.close`, `os.Open`) keep matching by plain suffix.
+pub(crate) fn callee_matches_at_boundary(callee_lower: &str, pattern_lower: &str) -> bool {
+    if callee_lower == pattern_lower {
+        return true;
+    }
+    if !callee_lower.ends_with(pattern_lower) {
+        return false;
+    }
+    // A pattern whose first char is a separator (`.`, `:`) carries its own
+    // left boundary, so no preceding-char check is needed (`f.Close` matches
+    // `.Close`).
+    if pattern_lower
+        .chars()
+        .next()
+        .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // Bare-identifier pattern: require an identifier boundary before the match.
+    let prefix = &callee_lower[..callee_lower.len() - pattern_lower.len()];
+    match prefix.chars().next_back() {
+        Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
+        None => true,
+    }
+}
+
 static C_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
         acquire: &["malloc", "calloc", "realloc"],
@@ -496,7 +532,8 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
         ],
     },
     ResourcePair {
-        acquire: &["Socket"],
+        // `SocketFactory.createSocket` / `SSLSocketFactory.createSocket`.
+        acquire: &["Socket", "createSocket"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "socket",
@@ -518,7 +555,7 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
         use_patterns: &[".next", ".getString", ".getInt", ".getBoolean"],
     },
     ResourcePair {
-        acquire: &["ServerSocket"],
+        acquire: &["ServerSocket", "createServerSocket"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "server socket",
@@ -549,7 +586,10 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
 
 static PYTHON_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &["open"],
+        // `fdopen` / `os.popen` return file objects with `.close()`; they
+        // were only caught by the old raw suffix match.  `subprocess.Popen`
+        // is deliberately absent: it has no `close()`.
+        acquire: &["open", "fdopen", "os.popen"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "file handle",
@@ -620,7 +660,7 @@ static PYTHON_RESOURCES: &[ResourcePair] = &[
 
 static RUBY_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &["File.open", "File.new", "open"],
+        acquire: &["File.open", "File.new", "open", "IO.popen"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "file handle",

@@ -48,42 +48,6 @@ fn is_event_handler_register_shape(info: &crate::cfg::NodeInfo) -> bool {
     !second_uses.is_empty()
 }
 
-/// Match a callee against a resource acquire/release pattern at an identifier
-/// boundary.
-///
-/// A bare-identifier pattern (`connect`, `open`, `alloc`) matches only when the
-/// character immediately preceding the matched suffix in the callee is a name
-/// separator (not an identifier char).  So `disconnect` / `reconnect` do NOT
-/// match `connect`, `register_open` / `_ensure_open` do NOT match `open`, and
-/// Rust's release `dealloc` does NOT match acquire `alloc` — all of which the
-/// old raw `ends_with` conflated.  Patterns that already carry a leading
-/// separator (`.close`, `os.Open`) keep matching by plain suffix.
-fn callee_matches_pattern(callee_lower: &str, pattern_lower: &str) -> bool {
-    if callee_lower == pattern_lower {
-        return true;
-    }
-    if !callee_lower.ends_with(pattern_lower) {
-        return false;
-    }
-    // A pattern whose first char is a separator (`.`, `:`) carries its own
-    // left boundary — no preceding-char check needed (e.g. `f.Close` matches
-    // `.Close`).
-    if pattern_lower
-        .chars()
-        .next()
-        .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    // Bare-identifier pattern: require an identifier boundary before the match.
-    let prefix = &callee_lower[..callee_lower.len() - pattern_lower.len()];
-    match prefix.chars().next_back() {
-        Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
-        None => true,
-    }
-}
-
 /// Recognises Django / blinker / PyDispatcher signal registration —
 /// `post_save.connect(receiver, sender=Model, dispatch_uid="...")` — which
 /// shares the `connect` callee leaf with real DB acquires but registers an
@@ -160,15 +124,15 @@ fn find_acquire_nodes(
                 // Check exclusions first, if the callee matches an exclude
                 // pattern, it is NOT an acquire even if it also matches an
                 // acquire pattern (e.g. `freopen` ends with `fopen`).
-                let excluded = exclude_patterns
-                    .iter()
-                    .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()));
+                let excluded = exclude_patterns.iter().any(|p| {
+                    rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase())
+                });
                 if excluded {
                     return false;
                 }
-                acquire_patterns
-                    .iter()
-                    .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()))
+                acquire_patterns.iter().any(|p| {
+                    rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase())
+                })
             } else {
                 false
             }
@@ -187,7 +151,7 @@ fn find_release_nodes(ctx: &AnalysisContext, release_patterns: &[&str]) -> Vec<N
         let callee_lower = callee.to_ascii_lowercase();
         release_patterns
             .iter()
-            .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()))
+            .any(|p| rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase()))
     };
     ctx.cfg
         .node_indices()
@@ -1024,28 +988,46 @@ mod tests {
     fn callee_boundary_rejects_disconnect_as_connect_acquire() {
         // `post_delete.disconnect(...)` shares the `connect` suffix but is a
         // teardown verb — must NOT match the `connect` acquire pattern.
-        assert!(!callee_matches_pattern("post_delete.disconnect", "connect"));
-        assert!(!callee_matches_pattern("client.reconnect", "connect"));
+        assert!(!rules::callee_matches_at_boundary(
+            "post_delete.disconnect",
+            "connect"
+        ));
+        assert!(!rules::callee_matches_at_boundary(
+            "client.reconnect",
+            "connect"
+        ));
         // Real Django signal / DB connects still match at the `.` boundary.
-        assert!(callee_matches_pattern("post_save.connect", "connect"));
-        assert!(callee_matches_pattern("engine.connect", "connect"));
-        assert!(callee_matches_pattern("connect", "connect"));
+        assert!(rules::callee_matches_at_boundary(
+            "post_save.connect",
+            "connect"
+        ));
+        assert!(rules::callee_matches_at_boundary(
+            "engine.connect",
+            "connect"
+        ));
+        assert!(rules::callee_matches_at_boundary("connect", "connect"));
     }
 
     #[test]
     fn callee_boundary_rejects_within_identifier_open_and_alloc() {
         // PIL `Image.register_open` and paperless `_ensure_open` end with
         // `open` but are single identifiers, not the `open` builtin.
-        assert!(!callee_matches_pattern("image.register_open", "open"));
-        assert!(!callee_matches_pattern("obj._ensure_open", "open"));
+        assert!(!rules::callee_matches_at_boundary(
+            "image.register_open",
+            "open"
+        ));
+        assert!(!rules::callee_matches_at_boundary(
+            "obj._ensure_open",
+            "open"
+        ));
         // Rust release `dealloc` must not match acquire `alloc`.
-        assert!(!callee_matches_pattern("dealloc", "alloc"));
+        assert!(!rules::callee_matches_at_boundary("dealloc", "alloc"));
         // Genuine `.open` acquires still match.
-        assert!(callee_matches_pattern("codecs.open", "open"));
-        assert!(callee_matches_pattern("open", "open"));
+        assert!(rules::callee_matches_at_boundary("codecs.open", "open"));
+        assert!(rules::callee_matches_at_boundary("open", "open"));
         // Separator-led patterns keep matching by plain suffix.
-        assert!(callee_matches_pattern("f.close", ".close"));
-        assert!(callee_matches_pattern("os.open", "os.open"));
+        assert!(rules::callee_matches_at_boundary("f.close", ".close"));
+        assert!(rules::callee_matches_at_boundary("os.open", "os.open"));
     }
 
     #[test]
