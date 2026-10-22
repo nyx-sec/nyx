@@ -1060,6 +1060,26 @@ fn go_self_method_receiver_does_not_flag() {
     );
 }
 
+/// A net/http handler's `r *http.Request` formal is user-input evidence by
+/// its declared type; the name `r` is not on the Go request-name allow-list.
+#[test]
+fn go_request_typed_param_opens_ownership_rule() {
+    assert_has(
+        "go_nethttp_request_typed_idor.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+/// The type, not the name, carries the evidence: an `r *bufio.Reader`
+/// helper stays closed.
+#[test]
+fn go_non_request_param_named_r_does_not_flag() {
+    assert_absent(
+        "go_reader_named_r_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
 #[test]
 fn auth_analysis_does_not_run_in_taint_mode() {
     let cfg = common::test_config(AnalysisMode::Taint);

@@ -5392,24 +5392,50 @@ pub(super) fn transfer_inst(
                 }
             }
 
-            // Output-parameter source tainting (C/C++): for known APIs that
-            // write to a buffer argument (fgets, getline, recv, etc.), taint
-            // the argument SSA values at the registered output positions.
+            // Output-parameter source tainting: for known APIs that write
+            // input into an argument (C `fgets` / `recv` buffers, Go request
+            // binders such as `c.ShouldBindJSON(&in)`), taint the argument
+            // SSA values at the registered output positions.
+            //
+            // A Go binder's only return value is the `error`, which carries
+            // no request data; `binder_error_return` keeps it clean even
+            // though the default arg-to-return propagation below would copy
+            // the now-tainted destination pointer into it.
+            let mut binder_error_return = false;
             if !return_bits.is_empty() {
                 if let Some(positions) =
                     crate::labels::output_param_source_positions(transfer.lang.as_str(), callee)
                 {
-                    for &pos in positions {
-                        if let Some(arg_group) = args.get(pos) {
-                            for &arg_v in arg_group {
-                                state.set(
-                                    arg_v,
-                                    VarTaint {
-                                        caps: return_bits,
-                                        origins: return_origins.clone(),
-                                        uses_summary: false,
-                                    },
-                                );
+                    if transfer.lang == Lang::Go {
+                        // A Go binder decodes into a struct pointer, so the
+                        // taint has to reach `in.Field` reads through the
+                        // heap and field-cell channels as well.
+                        let bound = VarTaint {
+                            caps: return_bits,
+                            origins: return_origins.clone(),
+                            uses_summary: false,
+                        };
+                        for &pos in positions {
+                            if let Some(arg_group) = args.get(pos) {
+                                taint_writeback_dest(state, transfer, arg_group, &bound);
+                            }
+                        }
+                        return_bits = Cap::empty();
+                        return_origins.clear();
+                        binder_error_return = true;
+                    } else {
+                        for &pos in positions {
+                            if let Some(arg_group) = args.get(pos) {
+                                for &arg_v in arg_group {
+                                    state.set(
+                                        arg_v,
+                                        VarTaint {
+                                            caps: return_bits,
+                                            origins: return_origins.clone(),
+                                            uses_summary: false,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -6562,7 +6588,7 @@ pub(super) fn transfer_inst(
             }
 
             // Write result
-            if return_bits.is_empty() {
+            if return_bits.is_empty() || binder_error_return {
                 state.remove(inst.value);
             } else {
                 state.set(
@@ -10094,47 +10120,55 @@ fn try_container_propagation(
                 return false;
             };
             // For method-call form, the receiver is implicit in the callee
-            // string and `args` holds positional args starting at 0.  Taint
-            // the destination at three layers: (1) the SSA-value level so
-            // downstream uses of the pointer itself see taint; (2) the
-            // heap-Elements slot via the simpler-tier `lookup_pts` channel;
-            // and (3) the field-cell channel via `pointer_facts.pt(v)` with
-            // [`FieldId::ELEM`] as a tainted-at-all-fields wildcard so
-            // subsequent `dest.Field` projections (which read through the
-            // higher-tier `pointer_facts.pt(receiver)` channel, see the
-            // `SsaOp::FieldProj` arm) inherit the taint.  Without (3), CVE
-            // shapes like `json.NewDecoder(r.Body).Decode(&dest)` followed
-            // by `os.Remove(filepath.Join(_, dest.Name))` left the dest
-            // field channel empty even though the heap was tainted; the
-            // [`FieldId::ELEM`] wildcard bridges the two channels and is
-            // read back by the `FieldProj` arm's ELEM fallback.
+            // string and `args` holds positional args starting at 0.
             if let Some(arg_vals) = args.get(dest_arg) {
-                for &v in arg_vals {
-                    merge_taint_into(state, v, recv_taint.caps, &recv_taint.origins);
-                    if let Some(pts) = lookup_pts(transfer, v) {
-                        state.heap.store_set(
-                            &pts,
-                            crate::ssa::heap::HeapSlot::Elements,
-                            recv_taint.caps,
-                            &recv_taint.origins,
-                        );
-                    }
-                    if let Some(pf) = transfer.pointer_facts {
-                        let pt_arg = pf.pt(v);
-                        if !pt_arg.is_empty() && !pt_arg.is_top() {
-                            let cell_taint = recv_taint.clone();
-                            for loc in pt_arg.iter() {
-                                let key = crate::taint::ssa_transfer::state::FieldTaintKey {
-                                    loc,
-                                    field: crate::ssa::ir::FieldId::ANY_FIELD,
-                                };
-                                state.add_field(key, cell_taint.clone(), false, false);
-                            }
-                        }
-                    }
-                }
+                taint_writeback_dest(state, transfer, arg_vals, &recv_taint);
             }
             true
+        }
+    }
+}
+
+/// Taint the destination pointer of a decode-into call
+/// (`dec.Decode(&dest)`, `c.ShouldBindJSON(&dest)`) at three layers:
+/// (1) the SSA-value level so downstream uses of the pointer itself see
+/// taint; (2) the heap-Elements slot via the simpler-tier `lookup_pts`
+/// channel; and (3) the field-cell channel via `pointer_facts.pt(v)` with
+/// [`FieldId::ANY_FIELD`] as a tainted-at-all-fields wildcard so subsequent
+/// `dest.Field` projections (which read through the higher-tier
+/// `pointer_facts.pt(receiver)` channel, see the `SsaOp::FieldProj` arm)
+/// inherit the taint.  Without (3), CVE shapes like
+/// `json.NewDecoder(r.Body).Decode(&dest)` followed by
+/// `os.Remove(filepath.Join(_, dest.Name))` left the dest field channel empty
+/// even though the heap was tainted; the wildcard bridges the two channels
+/// and is read back by the `FieldProj` arm's fallback.
+fn taint_writeback_dest(
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    dest_vals: &[SsaValue],
+    taint: &VarTaint,
+) {
+    for &v in dest_vals {
+        merge_taint_into(state, v, taint.caps, &taint.origins);
+        if let Some(pts) = lookup_pts(transfer, v) {
+            state.heap.store_set(
+                &pts,
+                crate::ssa::heap::HeapSlot::Elements,
+                taint.caps,
+                &taint.origins,
+            );
+        }
+        if let Some(pf) = transfer.pointer_facts {
+            let pt_arg = pf.pt(v);
+            if !pt_arg.is_empty() && !pt_arg.is_top() {
+                for loc in pt_arg.iter() {
+                    let key = crate::taint::ssa_transfer::state::FieldTaintKey {
+                        loc,
+                        field: crate::ssa::ir::FieldId::ANY_FIELD,
+                    };
+                    state.add_field(key, taint.clone(), false, false);
+                }
+            }
         }
     }
 }

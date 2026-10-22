@@ -30,6 +30,87 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // `*http.Request` accessors keyed on the canonical `Request` receiver.
+    // A formal declared `*http.Request` is classified with its root
+    // identifier rewritten to `Request` whatever the binding is named
+    // (`req.FormValue` → `Request.FormValue`, see
+    // `request_receiver_prefix`), and a struct field named `Request` (gin's
+    // `c.Request.Header.Get`) suffix-matches directly.  Case-sensitive so a
+    // local that merely happens to be named `request` does not match.
+    LabelRule {
+        matchers: &[
+            "Request.Body",
+            "Request.Header",
+            "Request.Header.Get",
+            "Request.Header.Values",
+            "Request.URL.Query",
+            "Request.URL.Query.Get",
+            "Request.Cookie",
+            "Request.Cookies",
+            "Request.PathValue",
+            "Request.PostFormValue",
+            "Request.Form",
+            "Request.Form.Get",
+            "Request.PostForm",
+            "Request.PostForm.Get",
+            "Request.FormFile",
+            "Request.MultipartForm",
+            "Request.Referer",
+            "Request.UserAgent",
+            "Request.RequestURI",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
+    // Framework request contexts keyed on their declared type: a formal
+    // `ctx *gin.Context` is classified as `GinContext.<method>` and a formal
+    // `c echo.Context` as `EchoContext.<method>`.  The declared type is the
+    // framework witness, so these do not wait on manifest detection the way
+    // the receiver-name rules in `framework_rules` do.  The bind helpers
+    // write the request body into their pointer argument; see
+    // `OUTPUT_PARAM_SOURCES`.
+    LabelRule {
+        matchers: &[
+            "GinContext.Param",
+            "GinContext.Query",
+            "GinContext.GetQuery",
+            "GinContext.DefaultQuery",
+            "GinContext.QueryArray",
+            "GinContext.GetQueryArray",
+            "GinContext.PostForm",
+            "GinContext.GetPostForm",
+            "GinContext.DefaultPostForm",
+            "GinContext.PostFormArray",
+            "GinContext.GetPostFormArray",
+            "GinContext.GetHeader",
+            "GinContext.Cookie",
+            "GinContext.FormFile",
+            "GinContext.GetRawData",
+            "GinContext.Bind",
+            "GinContext.BindJSON",
+            "GinContext.BindQuery",
+            "GinContext.BindUri",
+            "GinContext.BindHeader",
+            "GinContext.BindXML",
+            "GinContext.BindYAML",
+            "GinContext.BindWith",
+            "GinContext.ShouldBind",
+            "GinContext.ShouldBindJSON",
+            "GinContext.ShouldBindQuery",
+            "GinContext.ShouldBindUri",
+            "GinContext.ShouldBindHeader",
+            "GinContext.ShouldBindXML",
+            "GinContext.ShouldBindYAML",
+            "GinContext.ShouldBindWith",
+            "GinContext.ShouldBindBodyWith",
+            "EchoContext.Param",
+            "EchoContext.QueryParam",
+            "EchoContext.FormValue",
+            "EchoContext.Bind",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &[
@@ -1292,6 +1373,45 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     self_param_kinds: &[],
     ident_fields: &["name"],
 };
+
+/// Canonical receiver prefix for a request-carrying formal parameter type.
+/// The prefix keys the type-qualified source rules above (`Request.*`,
+/// `GinContext.*`, `EchoContext.*`).  Strips one pointer marker; everything
+/// else, including unqualified or differently qualified `Context` types,
+/// returns `None`.
+pub fn request_receiver_prefix(type_text: &str) -> Option<&'static str> {
+    match type_text.trim().trim_start_matches('*').trim() {
+        "http.Request" => Some("Request"),
+        "gin.Context" => Some("GinContext"),
+        "echo.Context" => Some("EchoContext"),
+        _ => None,
+    }
+}
+
+/// Request binders that decode the request into the pointer passed at the
+/// listed argument positions and return only an `error`
+/// (`c.ShouldBindJSON(&in)`, `c.Bind(&in)`).  Consulted only when the call
+/// already carries a `Source` label, so a same-named method on an unrelated
+/// receiver is never treated as a binder.
+pub static OUTPUT_PARAM_SOURCES: &[(&str, &[usize])] = &[
+    ("Bind", &[0]),
+    ("BindJSON", &[0]),
+    ("BindQuery", &[0]),
+    ("BindUri", &[0]),
+    ("BindHeader", &[0]),
+    ("BindXML", &[0]),
+    ("BindYAML", &[0]),
+    ("BindWith", &[0]),
+    ("ShouldBind", &[0]),
+    ("ShouldBindJSON", &[0]),
+    ("ShouldBindQuery", &[0]),
+    ("ShouldBindUri", &[0]),
+    ("ShouldBindHeader", &[0]),
+    ("ShouldBindXML", &[0]),
+    ("ShouldBindYAML", &[0]),
+    ("ShouldBindWith", &[0]),
+    ("ShouldBindBodyWith", &[0]),
+];
 
 /// Framework-conditional rules for Go.
 pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {

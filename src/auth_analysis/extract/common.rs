@@ -715,7 +715,7 @@ pub fn build_function_unit_with_meta(
     }
     collect_unit_state(node, bytes, rules, &mut state);
     dedup_value_refs(&mut state.value_refs);
-    let context_inputs: Vec<ValueRef> = state
+    let mut context_inputs: Vec<ValueRef> = state
         .value_refs
         .iter()
         .filter(|value| {
@@ -729,6 +729,9 @@ pub fn build_function_unit_with_meta(
         })
         .cloned()
         .collect();
+    // A request-typed formal is itself a request-shaped input, whatever the
+    // binding is called (`func(w http.ResponseWriter, r *http.Request)`).
+    context_inputs.extend(go_request_typed_param_refs(definition, bytes));
 
     // `body_returns_nextauth_options` recognises a NextAuth options factory by
     // scanning the whole body for `object` / `object_expression` literal nodes,
@@ -4085,6 +4088,46 @@ fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
         (pkg.as_str(), name.as_str()),
         ("context", "Context") | ("context", "CancelFunc")
     )
+}
+
+/// Go formals whose declared type is a framework request object
+/// (`r *http.Request`, `ctx *gin.Context`, `c echo.Context`), as
+/// `RequestParam` value refs.  The declared type, not the binding name, is
+/// the evidence that the function handles an HTTP request: net/http
+/// handlers conventionally name the request `r`, which the name allow-list
+/// in `is_external_input_param_name_for_lang` cannot accept without opening
+/// every Go function with an `r` parameter.  Only Go's
+/// `parameter_declaration` carries both a `name` and a `type` field, so
+/// other languages yield nothing.
+fn go_request_typed_param_refs(definition: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
+    let Some(params) = definition.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter_declaration" {
+            continue;
+        }
+        let Some(type_node) = param.child_by_field_name("type") else {
+            continue;
+        };
+        if crate::labels::go_request_receiver_prefix(&text(type_node, bytes)).is_none() {
+            continue;
+        }
+        let mut name_cursor = param.walk();
+        for name in param.children_by_field_name("name", &mut name_cursor) {
+            out.push(ValueRef {
+                source_kind: ValueSourceKind::RequestParam,
+                name: text(name, bytes),
+                base: None,
+                field: None,
+                index: None,
+                span: span(name),
+            });
+        }
+    }
+    out
 }
 
 /// Ascii-lowered id-shape predicate used by the Python typed-param

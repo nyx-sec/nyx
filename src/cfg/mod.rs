@@ -7352,6 +7352,13 @@ pub(super) fn build_sub<'a>(
                 Some(&fn_name),
             );
 
+            // Go request-typed formals (`req *http.Request`, `ctx
+            // *gin.Context`) classify under their canonical receiver prefix
+            // while this body (and any closure nested in it) is built.
+            let receiver_aliases = (lang == "go").then(|| {
+                crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
+            });
+
             let mut fn_call_ordinal: u32 = 0;
             let mut fn_breaks = Vec::new();
             let mut fn_continues = Vec::new();
@@ -7374,6 +7381,7 @@ pub(super) fn build_sub<'a>(
                 next_body_id,
                 fn_body_id,
             );
+            drop(receiver_aliases);
 
             // ── 3) Wire exits to Exit node ────────────────────────────────────
             for &b in &body_exits {
@@ -8089,6 +8097,9 @@ pub(crate) fn build_cfg<'a>(
     // misses.  Java-only today; the helper is lang-agnostic, gated on
     // `constructor_type` recognising the RHS callee.
     populate_local_receiver_types(tree, lang, code);
+    // Receiver-alias frames are scoped to function bodies by guards in
+    // `build_sub`; start from an empty stack regardless.
+    crate::labels::clear_receiver_aliases();
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -8235,6 +8246,7 @@ pub(crate) fn build_cfg<'a>(
     DTO_CLASSES.with(|cell| cell.borrow_mut().clear());
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+    crate::labels::clear_receiver_aliases();
 
     // collect every
     // declared inheritance / impl / implements relationship in the

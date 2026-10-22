@@ -4800,3 +4800,56 @@ app.get('/probe', (req, res) => {
         }
     }
 }
+
+/// Go request formals are classified by declared type: `req *http.Request`
+/// reads are sources under any binding name, an inner closure formal of an
+/// unrelated type shadows the outer one, and the alias stack is empty again
+/// once the CFG is built.
+#[test]
+fn go_request_typed_formal_classifies_as_source() {
+    fn source_callees(cfg: &Cfg) -> Vec<String> {
+        cfg.node_indices()
+            .filter(|&n| {
+                cfg[n]
+                    .taint
+                    .labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Source(_)))
+            })
+            .filter_map(|n| cfg[n].call.callee.clone())
+            .collect()
+    }
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+
+    let src = b"package main\nfunc h(w http.ResponseWriter, req *http.Request) {\n\tx := req.Header.Get(\"a\")\n\t_ = x\n}\n";
+    let (cfg, _) = parse_and_build(src, "go", ts_lang.clone());
+    assert!(
+        source_callees(&cfg).iter().any(|c| c == "req.Header.Get"),
+        "req.Header.Get on a *http.Request formal must be a Source; got {:?}",
+        source_callees(&cfg)
+    );
+
+    let src = b"package main\nfunc h(c *gin.Context) {\n\tx := c.ShouldBindJSON(&in)\n\t_ = x\n}\n";
+    let (cfg, _) = parse_and_build(src, "go", ts_lang.clone());
+    assert!(
+        source_callees(&cfg).iter().any(|c| c == "c.ShouldBindJSON"),
+        "gin binder on a *gin.Context formal must be a Source; got {:?}",
+        source_callees(&cfg)
+    );
+
+    let src = b"package main\nfunc h(w http.ResponseWriter, req *http.Request) {\n\tf := func(req *Spec) {\n\t\tx := req.Header.Get(\"a\")\n\t\t_ = x\n\t}\n\t_ = f\n}\n";
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let inner_sources: Vec<String> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| source_callees(&b.graph))
+        .collect();
+    assert!(
+        inner_sources.is_empty(),
+        "the closure's own `req *Spec` formal shadows the request; got {inner_sources:?}"
+    );
+    assert!(
+        crate::labels::classify("go", "req.Header.Get", None).is_none(),
+        "receiver aliases must not outlive build_cfg"
+    );
+}

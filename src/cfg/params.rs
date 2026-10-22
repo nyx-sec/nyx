@@ -598,6 +598,45 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
     go_writer_type_to_kind(&type_text)
 }
 
+/// Receiver-alias frame for a Go function / method / func literal: every
+/// formal name paired with the canonical request prefix of its declared type
+/// (`req *http.Request` → `("req", Some("Request"))`), or `None` for any
+/// other type so the formal shadows a same-named binding of an enclosing
+/// function.  Pushed via [`crate::labels::push_receiver_aliases`] while the
+/// body is built.  `a, b *http.Request` binds both names.
+pub(super) fn go_receiver_alias_frame(
+    func_node: Node<'_>,
+    code: &[u8],
+) -> Vec<(String, Option<&'static str>)> {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut frame = Vec::new();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter_declaration"
+            && param.kind() != "variadic_parameter_declaration"
+        {
+            continue;
+        }
+        let prefix = if param.kind() == "parameter_declaration" {
+            param
+                .child_by_field_name("type")
+                .and_then(|t| text_of(t, code))
+                .and_then(|t| crate::labels::go_request_receiver_prefix(&t))
+        } else {
+            None
+        };
+        let mut name_cursor = param.walk();
+        for name in param.children_by_field_name("name", &mut name_cursor) {
+            if let Some(n) = text_of(name, code) {
+                frame.push((n, prefix));
+            }
+        }
+    }
+    frame
+}
+
 /// Map a Go parameter / local type-text to [`TypeKind::FileHandle`] when the
 /// head names a generic byte writer that is provably not an
 /// `http.ResponseWriter`.  Strips a leading pointer marker (`*`) and
