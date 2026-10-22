@@ -372,3 +372,85 @@ fn scc_cap_hit_records_classified_reason() {
         );
     }
 }
+
+/// Pass 2 runs every recursive file of one level of the file dependency
+/// DAG in a single fixed-point batch, so a batch can hold several
+/// unrelated fixed-point groups.  A cap hit must only tag the group that
+/// was still changing.  `walker.py` is self-recursive and shares a level
+/// with the `step_*` cycle but no SCC; with the cap forced below what the
+/// cycle needs, the cycle's findings are tagged and `walker.py`'s are not.
+#[test]
+fn scc_cap_hit_tags_only_the_unconverged_group() {
+    let _guard = SCC_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = fixture_path("cross_file_scc_cap_hit_group_scope");
+
+    set_scc_fixpoint_cap_override(3);
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    set_scc_fixpoint_cap_override(0);
+
+    validate_expectations(&diags, &dir);
+    assert_eq!(
+        last_scc_max_iterations(),
+        3,
+        "cap override must bind the step_* cycle's fixed-point loop"
+    );
+
+    let is_tagged = |d: &nyx_scanner::commands::scan::Diag| {
+        d.evidence.as_ref().is_some_and(|e| {
+            e.notes
+                .iter()
+                .any(|n| n.starts_with(SCC_UNCONVERGED_NOTE_PREFIX))
+        })
+    };
+    let in_file = |d: &nyx_scanner::commands::scan::Diag, name: &str| {
+        Path::new(&d.path).file_name().is_some_and(|f| f == name)
+    };
+    let listing = || {
+        diags
+            .iter()
+            .map(|d| {
+                format!(
+                    "{}:{} {} conf={:?} tagged={}",
+                    d.path,
+                    d.line,
+                    d.id,
+                    d.confidence,
+                    is_tagged(d)
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Recall pin: the walker's own command injection is still reported.
+    let walker: Vec<_> = diags.iter().filter(|d| in_file(d, "walker.py")).collect();
+    assert!(
+        walker
+            .iter()
+            .any(|d| d.id.starts_with("taint-unsanitised-flow")),
+        "walker.py must keep its taint finding; got {:#?}",
+        listing()
+    );
+    for d in &walker {
+        assert!(
+            !is_tagged(d),
+            "walker.py converged; its findings must not carry the \
+             scc_unconverged tag: {:#?}",
+            listing()
+        );
+    }
+
+    // The cycle itself did not converge and must still be tagged.
+    let step_tagged = diags
+        .iter()
+        .filter(|d| {
+            ["step_a.py", "step_b.py", "step_c.py", "step_d.py"]
+                .iter()
+                .any(|f| in_file(d, f))
+        })
+        .any(is_tagged);
+    assert!(
+        step_tagged,
+        "the unconverged step_* cycle must keep the scc_unconverged tag: {:#?}",
+        listing()
+    );
+}

@@ -786,9 +786,15 @@ pub fn analyse(cg: &CallGraph) -> CallGraphAnalysis {
 
 //  File-level batch ordering
 
-/// A batch of files at a single topological position, annotated with whether
-/// any contributing SCC contains mutual recursion (len > 1) and whether any
-/// such SCC has nodes in more than one file (`cross_file`).
+/// A batch of files that pass 2 analyses in parallel against the same
+/// `global_summaries` state, annotated with whether its files take part in
+/// a recursive SCC and whether any such SCC has nodes in more than one file
+/// (`cross_file`).
+///
+/// Every file in a batch sits at the same level of the file dependency
+/// DAG (see [`scc_file_batches_with_metadata`]), so no file in a batch
+/// calls into a file of a later batch, and files of the same batch only
+/// call each other when they are part of one file-level cycle.
 ///
 /// `has_mutual_recursion` triggers the SCC fixed-point loop in
 /// `run_topo_batches`.  `cross_file` is a tighter
@@ -808,6 +814,35 @@ pub struct FileBatch<'a> {
     /// recursive (else it would topo-sort linearly across files and not
     /// be batched together).
     pub cross_file: bool,
+    /// Fixed-point group of each file, parallel to `files`.  Files whose
+    /// functions share a recursive SCC (directly, or through a chain of
+    /// such SCCs) get the same group.  A recursive batch holds every
+    /// recursive file of its level, so one batch can carry many unrelated
+    /// groups; when the fixed-point cap is hit, only the groups that were
+    /// still changing get the unconverged tag.  Empty for non-recursive
+    /// batches.
+    pub fixpoint_group: Vec<usize>,
+    /// Per fixed-point group (indexed by the values in `fixpoint_group`):
+    /// true when any SCC in the group spans more than one file.
+    pub group_cross_file: Vec<bool>,
+}
+
+impl FileBatch<'_> {
+    /// Fixed-point group of `files[i]`.  A batch without group data
+    /// (non-recursive, or built by hand) is treated as a single group.
+    pub fn group_of(&self, i: usize) -> usize {
+        self.fixpoint_group.get(i).copied().unwrap_or(0)
+    }
+
+    /// Whether fixed-point group `group` contains an SCC that spans files.
+    /// Falls back to the batch-wide `cross_file` flag when the batch has
+    /// no group data.
+    pub fn group_is_cross_file(&self, group: usize) -> bool {
+        self.group_cross_file
+            .get(group)
+            .copied()
+            .unwrap_or(self.cross_file)
+    }
 }
 
 /// Returns `true` when the given SCC has nodes belonging to more than one
@@ -1049,13 +1084,37 @@ pub fn scc_is_recursive(cg: &CallGraph, scc: &[NodeIndex]) -> bool {
     }
 }
 
-/// Map SCC topological order to an ordered sequence of file-path batches
-/// annotated with whether any contributing SCC is mutually recursive
-/// (`len > 1`) or cross-file.
+/// Order the files of a scan into pass-2 batches, callee files first.
 ///
-/// A file is placed in the earliest batch where any of its functions appear
-/// (min topo index), so leaf callees become available before the callers
-/// that depend on them.
+/// Batches follow the file dependency DAG, not the function-level SCC
+/// order.  File `f` depends on file `g` when any function in `f` calls a
+/// function in `g`.  The file graph is condensed into its SCCs (file-level
+/// cycles, which are common: `a` calls a helper in `b` that calls back into
+/// a leaf in `a`) and every file gets the level of its file SCC, where
+/// leaves are level 0 and every other SCC sits one above the highest file
+/// SCC it calls into.  All files of a level go into the same batch, so:
+///
+/// * a file is analysed after every file it calls into, unless the two
+///   are part of one file-level cycle, in which case they share a level;
+/// * files on the same level never call each other outside such a cycle,
+///   so they can run in parallel against the same `global_summaries`
+///   state without losing callee-first refinement;
+/// * every file of a cross-file recursive SCC lands in the same level, so
+///   the fixed-point loop iterates the whole SCC jointly.
+///
+/// Each level is split into a recursive batch (files with a function in a
+/// recursive SCC, see [`scc_is_recursive`]), which runs the fixed-point
+/// loop, followed by a non-recursive batch, which runs a single refining
+/// pass.  Recursive files are grouped by the recursive SCCs they share
+/// (`FileBatch::fixpoint_group`) so a cap hit is reported against the
+/// group that was still changing.
+///
+/// Batch membership and order depend only on the shape of the call graph,
+/// never on node insertion order or on the order of `all_files` (the
+/// parallel file walker yields paths in a different order on every run).
+/// Files inside a batch are sorted by path, which is also the order their
+/// refinements are merged back into `global_summaries`, so the schedule is
+/// reproducible across runs and thread counts.
 ///
 /// Returns `(ordered_batches, orphan_files)`. Orphans are paths from
 /// `all_files` that have no functions in the call graph.
@@ -1067,86 +1126,184 @@ pub fn scc_file_batches_with_metadata<'a>(
 ) -> (Vec<FileBatch<'a>>, Vec<&'a PathBuf>) {
     let root_str = root.to_string_lossy();
 
-    // 1. Map relative-path → &PathBuf for each file in all_files.
-    let mut rel_to_path: HashMap<String, &'a PathBuf> = HashMap::with_capacity(all_files.len());
-    for p in all_files {
-        let abs = p.to_string_lossy();
-        let rel = crate::symbol::normalize_namespace(&abs, Some(&root_str));
-        rel_to_path.insert(rel, p);
-    }
-
-    // 2. Build file relative-path → (min topo index, has_mutual_recursion, cross_file).
-    //    `cross_file` is set whenever the file participates in an SCC whose
-    //    nodes span more than one namespace, the cross-file signal.
+    // 1. One file id per distinct namespace.
     //
     //    Call-graph namespaces are package-qualified (`pkg::rel`) for any
-    //    file inside a resolved package, while `rel_to_path` above keys by
+    //    file inside a resolved package, while `all_files` below is keyed by
     //    the plain `normalize_namespace` form (`rel`). Strip the package
     //    prefix here so both conventions agree; otherwise every
-    //    package-resident file misses `file_topo` and lands in `orphans`,
+    //    package-resident file misses the lookup and lands in `orphans`,
     //    silently disabling the topo/SCC machinery for exactly the repos it
     //    was built for (any project with a named package.json).
-    let mut file_topo: HashMap<&str, (usize, bool, bool)> = HashMap::new();
-    for (topo_pos, &scc_idx) in analysis.topo_scc_callee_first.iter().enumerate() {
-        let scc_recursive = scc_is_recursive(cg, &analysis.sccs[scc_idx]);
-        let scc_cross_file = scc_spans_files(cg, &analysis.sccs[scc_idx]);
-        for &node in &analysis.sccs[scc_idx] {
-            let ns = strip_package_prefix(&cg.graph[node].namespace);
-            file_topo
-                .entry(ns)
-                .and_modify(|(min_pos, recursive, cross_file)| {
-                    if topo_pos < *min_pos {
-                        *min_pos = topo_pos;
-                    }
-                    *recursive |= scc_recursive;
-                    *cross_file |= scc_cross_file;
-                })
-                .or_insert((topo_pos, scc_recursive, scc_cross_file));
+    let mut file_id: HashMap<&str, usize> = HashMap::new();
+    let mut node_file: Vec<usize> = Vec::with_capacity(cg.graph.node_count());
+    for node in cg.graph.node_indices() {
+        let ns = strip_package_prefix(&cg.graph[node].namespace);
+        let next = file_id.len();
+        node_file.push(*file_id.entry(ns).or_insert(next));
+    }
+    let n_files = file_id.len();
+
+    // 2. File dependency graph: `f -> g` when a function in `f` calls a
+    //    function in `g`.  Self edges are dropped; recursion inside a file
+    //    is handled by the function-level SCC metadata below.
+    let mut file_graph: DiGraph<(), ()> = DiGraph::with_capacity(n_files, 0);
+    for _ in 0..n_files {
+        file_graph.add_node(());
+    }
+    let mut seen_edges: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::new();
+    for edge in cg.graph.edge_references() {
+        let from = node_file[edge.source().index()];
+        let to = node_file[edge.target().index()];
+        if from != to && seen_edges.insert((from, to)) {
+            file_graph.add_edge(NodeIndex::new(from), NodeIndex::new(to), ());
         }
     }
 
-    // 3. Group files by min topo index, preserving order via BTreeMap.
-    //    Track mutual-recursion and cross-file flags per group.
-    let mut topo_groups: BTreeMap<usize, (Vec<&'a PathBuf>, bool, bool)> = BTreeMap::new();
-    let mut orphans: Vec<&'a PathBuf> = Vec::new();
+    // 3. Level of each file SCC.  `tarjan_scc` emits SCCs in reverse
+    //    topological order, so every callee SCC already has its level when
+    //    a caller SCC is visited.
+    let file_sccs = petgraph::algo::tarjan_scc(&file_graph);
+    let mut file_scc_of = vec![0usize; n_files];
+    for (i, scc) in file_sccs.iter().enumerate() {
+        for &n in scc {
+            file_scc_of[n.index()] = i;
+        }
+    }
+    let mut scc_level = vec![0usize; file_sccs.len()];
+    for (i, scc) in file_sccs.iter().enumerate() {
+        let mut level = 0;
+        for &n in scc {
+            for callee in file_graph.neighbors(n) {
+                let j = file_scc_of[callee.index()];
+                if j != i {
+                    debug_assert!(j < i, "tarjan_scc must emit callee SCCs first");
+                    level = level.max(scc_level[j] + 1);
+                }
+            }
+        }
+        scc_level[i] = level;
+    }
 
-    for p in all_files {
+    // 4. Recursion metadata.  A file is recursive when one of its
+    //    functions sits in a recursive SCC.  Files that share a recursive
+    //    SCC are unioned into one fixed-point group; a group is cross-file
+    //    when any of its SCCs spans files.
+    let mut recursive = vec![false; n_files];
+    let mut group_parent: Vec<usize> = (0..n_files).collect();
+    let mut cross_file_members: Vec<usize> = Vec::new();
+    for scc in &analysis.sccs {
+        if !scc_is_recursive(cg, scc) {
+            continue;
+        }
+        let first = node_file[scc[0].index()];
+        let mut spans_files = false;
+        for &n in scc {
+            let f = node_file[n.index()];
+            recursive[f] = true;
+            if f != first {
+                spans_files = true;
+                union_files(&mut group_parent, first, f);
+            }
+        }
+        if spans_files {
+            cross_file_members.push(first);
+        }
+    }
+    let mut group_is_cross_file = vec![false; n_files];
+    for f in cross_file_members {
+        let r = find_file_group(&mut group_parent, f);
+        group_is_cross_file[r] = true;
+    }
+
+    // 5. Bucket the files by level, in path order so merges after the
+    //    parallel section do not depend on the walker's output order.
+    let mut sorted_files: Vec<&'a PathBuf> = all_files.iter().collect();
+    sorted_files.sort();
+    #[allow(clippy::type_complexity)]
+    let mut levels: BTreeMap<usize, (Vec<(&'a PathBuf, usize)>, Vec<&'a PathBuf>)> =
+        BTreeMap::new();
+    let mut orphans: Vec<&'a PathBuf> = Vec::new();
+    for p in sorted_files {
         let abs = p.to_string_lossy();
         let rel = crate::symbol::normalize_namespace(&abs, Some(&root_str));
-        if let Some(&(topo_pos, recursive, cross_file)) = file_topo.get(rel.as_str()) {
-            let entry = topo_groups
-                .entry(topo_pos)
-                .or_insert_with(|| (Vec::new(), false, false));
-            entry.0.push(p);
-            entry.1 |= recursive;
-            entry.2 |= cross_file;
-        } else {
-            orphans.push(p);
+        match file_id.get(rel.as_str()) {
+            Some(&f) => {
+                let entry = levels.entry(scc_level[file_scc_of[f]]).or_default();
+                if recursive[f] {
+                    entry.0.push((p, f));
+                } else {
+                    entry.1.push(p);
+                }
+            }
+            None => orphans.push(p),
         }
     }
 
-    let batches: Vec<FileBatch<'a>> = topo_groups
-        .into_values()
-        .map(|(files, has_mutual_recursion, cross_file)| FileBatch {
-            files,
-            has_mutual_recursion,
-            cross_file,
-        })
-        .collect();
+    // 6. Emit the recursive batch of each level before its non-recursive
+    //    batch.  Within a level the two only interact through a file-level
+    //    cycle; recursive helpers are more often callees than callers, so
+    //    letting the non-recursive files see their converged summaries is
+    //    the better default.
+    let mut batches: Vec<FileBatch<'a>> = Vec::new();
+    for (recursive_files, plain_files) in levels.into_values() {
+        if !recursive_files.is_empty() {
+            let mut files = Vec::with_capacity(recursive_files.len());
+            let mut fixpoint_group = Vec::with_capacity(recursive_files.len());
+            let mut group_cross_file: Vec<bool> = Vec::new();
+            let mut dense: HashMap<usize, usize> = HashMap::new();
+            for (p, f) in recursive_files {
+                let r = find_file_group(&mut group_parent, f);
+                let g = *dense.entry(r).or_insert_with(|| {
+                    group_cross_file.push(group_is_cross_file[r]);
+                    group_cross_file.len() - 1
+                });
+                files.push(p);
+                fixpoint_group.push(g);
+            }
+            let cross_file = group_cross_file.iter().any(|&c| c);
+            batches.push(FileBatch {
+                files,
+                has_mutual_recursion: true,
+                cross_file,
+                fixpoint_group,
+                group_cross_file,
+            });
+        }
+        if !plain_files.is_empty() {
+            batches.push(FileBatch {
+                files: plain_files,
+                has_mutual_recursion: false,
+                cross_file: false,
+                fixpoint_group: Vec::new(),
+                group_cross_file: Vec::new(),
+            });
+        }
+    }
     (batches, orphans)
 }
 
-/// Map SCC topological order to an ordered sequence of file-path batches.
-///
-/// Uses **min** topo index: a file is placed in the earliest batch where any
-/// of its functions appear. This ensures leaf callees are available as early
-/// as possible for files that depend on them. Caller functions in the same
-/// file that happen to be in a later SCC are no worse off than the current
-/// fully-parallel approach, they simply don't yet benefit from ordering,
-/// but nothing is lost.
-///
-/// Returns `(ordered_batches, orphan_files)` where orphan_files are paths
-/// from `all_files` that have no functions in the call graph.
+/// Union-find lookup with path halving, used to group files that share a
+/// recursive SCC in [`scc_file_batches_with_metadata`].
+fn find_file_group(parent: &mut [usize], mut f: usize) -> usize {
+    while parent[f] != f {
+        parent[f] = parent[parent[f]];
+        f = parent[f];
+    }
+    f
+}
+
+fn union_files(parent: &mut [usize], a: usize, b: usize) {
+    let ra = find_file_group(parent, a);
+    let rb = find_file_group(parent, b);
+    if ra != rb {
+        parent[rb.max(ra)] = ra.min(rb);
+    }
+}
+
+/// File lists of [`scc_file_batches_with_metadata`], without the
+/// recursion metadata.  Test-only convenience for ordering assertions.
 #[cfg(test)]
 pub(super) fn scc_file_batches<'a>(
     cg: &CallGraph,
@@ -1154,41 +1311,8 @@ pub(super) fn scc_file_batches<'a>(
     all_files: &'a [PathBuf],
     root: &Path,
 ) -> (Vec<Vec<&'a PathBuf>>, Vec<&'a PathBuf>) {
-    let root_str = root.to_string_lossy();
-
-    // 1. Map relative-path → &PathBuf for each file in all_files.
-    let mut rel_to_path: HashMap<String, &'a PathBuf> = HashMap::with_capacity(all_files.len());
-    for p in all_files {
-        let abs = p.to_string_lossy();
-        let rel = crate::symbol::normalize_namespace(&abs, Some(&root_str));
-        rel_to_path.insert(rel, p);
-    }
-
-    // 2. Build file relative-path → min topo index.
-    let mut file_min_topo: HashMap<&str, usize> = HashMap::new();
-    for (topo_pos, &scc_idx) in analysis.topo_scc_callee_first.iter().enumerate() {
-        for &node in &analysis.sccs[scc_idx] {
-            let ns = &cg.graph[node].namespace;
-            file_min_topo.entry(ns.as_str()).or_insert(topo_pos);
-        }
-    }
-
-    // 3. Group files by min topo index, preserving order via BTreeMap.
-    let mut topo_groups: BTreeMap<usize, Vec<&'a PathBuf>> = BTreeMap::new();
-    let mut orphans: Vec<&'a PathBuf> = Vec::new();
-
-    for p in all_files {
-        let abs = p.to_string_lossy();
-        let rel = crate::symbol::normalize_namespace(&abs, Some(&root_str));
-        if let Some(&topo_pos) = file_min_topo.get(rel.as_str()) {
-            topo_groups.entry(topo_pos).or_default().push(p);
-        } else {
-            orphans.push(p);
-        }
-    }
-
-    let batches: Vec<Vec<&'a PathBuf>> = topo_groups.into_values().collect();
-    (batches, orphans)
+    let (batches, orphans) = scc_file_batches_with_metadata(cg, analysis, all_files, root);
+    (batches.into_iter().map(|b| b.files).collect(), orphans)
 }
 
 //  Tests
@@ -1697,10 +1821,15 @@ mod tests {
 
     #[test]
     fn scc_file_batches_multi_scc_same_file() {
-        // File has a leaf fn (SCC 0) and a caller fn (SCC 2) that calls
-        // through a middle function in another file.
-        // leaf (a.rs) ← mid (b.rs) ← caller (a.rs)
-        // With min-topo, a.rs placed at earliest SCC (leaf's position).
+        // File has a leaf fn and a caller fn that calls through a middle
+        // function in another file:
+        //   leaf (a.rs) <- mid (b.rs) <- caller (a.rs)
+        // No function is recursive, but a.rs and b.rs call each other, so
+        // the two files form a file-level cycle.  Neither order is
+        // callee-first for every function, so they share one batch and
+        // run in parallel.  (The old min-topo rule put a.rs first because
+        // of its leaf, which left `caller` reading b.rs's pass-1 summary
+        // anyway.)
         let root = Path::new("/proj");
         let leaf = make_summary("leaf", "/proj/a.rs", "rust", 0, vec![]);
         let mid = make_summary("mid", "/proj/b.rs", "rust", 0, vec!["leaf"]);
@@ -1711,6 +1840,101 @@ mod tests {
         let (batches, orphans) = build_batches(vec![leaf, mid, caller], &files, root);
 
         assert!(orphans.is_empty());
+        assert_eq!(batches.len(), 1, "file-level cycle -> one batch");
+        assert_eq!(batches[0].len(), 2);
+    }
+
+    /// Files with no call edges between them are all on level 0 and must
+    /// share one batch, in path order.  Before level batching every
+    /// file got its own batch and pass 2 ran one file at a time.
+    #[test]
+    fn scc_file_batches_independent_files_share_one_batch() {
+        let root = Path::new("/proj");
+        let names = ["a", "b", "c", "d"];
+        let summaries: Vec<FuncSummary> = names
+            .iter()
+            .map(|n| {
+                make_summary(
+                    &format!("{n}_fn"),
+                    &format!("/proj/{n}.rs"),
+                    "rust",
+                    0,
+                    vec![],
+                )
+            })
+            .collect();
+        let files: Vec<PathBuf> = names
+            .iter()
+            .map(|n| PathBuf::from(format!("/proj/{n}.rs")))
+            .collect();
+
+        let (batches, orphans) = build_metadata_batches(summaries, &files, root);
+
+        assert!(orphans.is_empty());
+        assert_eq!(batches.len(), 1, "independent files -> one parallel batch");
+        let got: Vec<&PathBuf> = batches[0].files.clone();
+        let want: Vec<&PathBuf> = files.iter().collect();
+        assert_eq!(got, want, "batch files are in path order");
+        assert!(!batches[0].has_mutual_recursion);
+    }
+
+    /// Files are levelled by the longest callee chain below them:
+    /// d.rs and the unrelated e.rs are leaves, b.rs and c.rs both call
+    /// d.rs, and a.rs calls b.rs and c.rs.
+    #[test]
+    fn scc_file_batches_diamond_levels() {
+        let root = Path::new("/proj");
+        let d = make_summary("d_fn", "/proj/d.rs", "rust", 0, vec![]);
+        let e = make_summary("e_fn", "/proj/e.rs", "rust", 0, vec![]);
+        let b = make_summary("b_fn", "/proj/b.rs", "rust", 0, vec!["d_fn"]);
+        let c = make_summary("c_fn", "/proj/c.rs", "rust", 0, vec!["d_fn"]);
+        let a = make_summary("a_fn", "/proj/a.rs", "rust", 0, vec!["b_fn", "c_fn"]);
+        let files: Vec<PathBuf> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| PathBuf::from(format!("/proj/{n}.rs")))
+            .collect();
+
+        let (batches, orphans) = build_batches(vec![a, b, c, d, e], &files, root);
+
+        assert!(orphans.is_empty());
+        let names: Vec<Vec<String>> = batches
+            .iter()
+            .map(|batch| {
+                batch
+                    .iter()
+                    .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                vec!["d.rs".to_string(), "e.rs".to_string()],
+                vec!["b.rs".to_string(), "c.rs".to_string()],
+                vec!["a.rs".to_string()],
+            ]
+        );
+    }
+
+    /// A file runs after every file it calls into, even when it also owns
+    /// a leaf function.  `a_main -> b_fn -> c_fn` plus a standalone
+    /// `a_leaf`: the old min-topo rule placed a.rs at its leaf's position,
+    /// ahead of b.rs, so `a_main` never saw b.rs's refined summary.
+    #[test]
+    fn scc_file_batches_caller_file_waits_for_all_callee_files() {
+        let root = Path::new("/proj");
+        let a_leaf = make_summary("a_leaf", "/proj/a.rs", "rust", 0, vec![]);
+        let a_main = make_summary("a_main", "/proj/a.rs", "rust", 0, vec!["b_fn"]);
+        let b = make_summary("b_fn", "/proj/b.rs", "rust", 0, vec!["c_fn"]);
+        let c = make_summary("c_fn", "/proj/c.rs", "rust", 0, vec![]);
+        let files: Vec<PathBuf> = ["a", "b", "c"]
+            .iter()
+            .map(|n| PathBuf::from(format!("/proj/{n}.rs")))
+            .collect();
+
+        let (batches, orphans) = build_batches(vec![a_leaf, a_main, b, c], &files, root);
+
+        assert!(orphans.is_empty());
         let batch_of = |name: &str| {
             batches
                 .iter()
@@ -1719,11 +1943,8 @@ mod tests {
                 })
                 .unwrap()
         };
-        // a.rs should be in the earliest batch (min topo from leaf)
-        assert!(
-            batch_of("a.rs") < batch_of("b.rs"),
-            "a.rs has leaf fn so should be in earlier batch than b.rs"
-        );
+        assert!(batch_of("c.rs") < batch_of("b.rs"));
+        assert!(batch_of("b.rs") < batch_of("a.rs"));
     }
 
     #[test]
@@ -1976,6 +2197,140 @@ mod tests {
             batches[0].has_mutual_recursion,
             "self-recursive file must be flagged for the fixed-point loop"
         );
+    }
+
+    /// Every file of a cross-file recursive SCC must land in the same
+    /// batch so the fixed-point loop iterates the SCC jointly, even when
+    /// one of the files also owns an unrelated leaf function.  The old
+    /// min-topo rule split them: a.rs went to its leaf's position and the
+    /// SCC's fixed point ran over b.rs alone.
+    #[test]
+    fn scc_file_batches_with_metadata_keeps_cross_file_scc_joint() {
+        let root = Path::new("/proj");
+        let leaf = make_summary("a_leaf", "/proj/a.rs", "rust", 0, vec![]);
+        let ping = make_summary("ping", "/proj/a.rs", "rust", 0, vec!["pong"]);
+        let pong = make_summary("pong", "/proj/b.rs", "rust", 0, vec!["ping"]);
+        let files: Vec<PathBuf> = vec![PathBuf::from("/proj/a.rs"), PathBuf::from("/proj/b.rs")];
+
+        let (batches, orphans) = build_metadata_batches(vec![leaf, ping, pong], &files, root);
+
+        assert!(orphans.is_empty());
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].files.len(), 2);
+        assert!(batches[0].has_mutual_recursion);
+        assert!(batches[0].cross_file);
+        assert_eq!(batches[0].group_of(0), batches[0].group_of(1));
+        assert!(batches[0].group_is_cross_file(batches[0].group_of(0)));
+    }
+
+    /// Recursive and non-recursive files of one level go into separate
+    /// batches, recursive first.  Unrelated recursive files keep separate
+    /// fixed-point groups so a cap hit in one does not tag the other.
+    #[test]
+    fn scc_file_batches_with_metadata_splits_level_and_groups_recursive_files() {
+        let root = Path::new("/proj");
+        let ping = make_summary("ping", "/proj/a.rs", "rust", 0, vec!["pong"]);
+        let pong = make_summary("pong", "/proj/b.rs", "rust", 0, vec!["ping"]);
+        let walk = make_summary("walk", "/proj/c.rs", "rust", 0, vec!["walk"]);
+        let plain = make_summary("plain", "/proj/d.rs", "rust", 0, vec![]);
+        let files: Vec<PathBuf> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|n| PathBuf::from(format!("/proj/{n}.rs")))
+            .collect();
+
+        let (batches, orphans) =
+            build_metadata_batches(vec![ping, pong, walk, plain], &files, root);
+
+        assert!(orphans.is_empty());
+        assert_eq!(batches.len(), 2, "one level -> recursive + plain batch");
+
+        let rec = &batches[0];
+        assert!(rec.has_mutual_recursion);
+        assert!(rec.cross_file);
+        let rec_names: Vec<&str> = rec
+            .files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(rec_names, vec!["a.rs", "b.rs", "c.rs"]);
+        assert_eq!(rec.fixpoint_group.len(), 3);
+        assert_eq!(rec.group_of(0), rec.group_of(1), "ping/pong share a group");
+        assert_ne!(rec.group_of(0), rec.group_of(2), "walk is its own group");
+        assert!(rec.group_is_cross_file(rec.group_of(0)));
+        assert!(!rec.group_is_cross_file(rec.group_of(2)));
+
+        let plain_batch = &batches[1];
+        assert!(!plain_batch.has_mutual_recursion);
+        assert!(!plain_batch.cross_file);
+        assert_eq!(plain_batch.files.len(), 1);
+        assert!(plain_batch.files[0].ends_with("d.rs"));
+    }
+
+    /// Batch membership, order and metadata depend only on the call-graph
+    /// shape: not on the order summaries were merged in (which decides
+    /// node insertion order and hence tarjan's output), and not on the
+    /// order of `all_files` (the parallel walker's order varies by run).
+    #[test]
+    fn scc_file_batches_with_metadata_independent_of_summary_order() {
+        let root = Path::new("/proj");
+        let make_all = || {
+            vec![
+                make_summary("ping", "/proj/a.rs", "rust", 0, vec!["pong"]),
+                make_summary("pong", "/proj/b.rs", "rust", 0, vec!["ping", "util"]),
+                make_summary("util", "/proj/c.rs", "rust", 0, vec![]),
+                make_summary("walk", "/proj/d.rs", "rust", 0, vec!["walk", "util"]),
+                make_summary("main", "/proj/e.rs", "rust", 0, vec!["ping", "walk"]),
+                make_summary("solo", "/proj/f.rs", "rust", 0, vec![]),
+            ]
+        };
+        let files: Vec<PathBuf> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|n| PathBuf::from(format!("/proj/{n}.rs")))
+            .collect();
+
+        type Shape = Vec<(Vec<String>, bool, bool, Vec<usize>, Vec<bool>)>;
+        let shape_with = |summaries: Vec<FuncSummary>, files: &[PathBuf]| -> Shape {
+            let (batches, orphans) = build_metadata_batches(summaries, files, root);
+            assert!(orphans.is_empty());
+            batches
+                .into_iter()
+                .map(|b| {
+                    (
+                        b.files
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                        b.has_mutual_recursion,
+                        b.cross_file,
+                        b.fixpoint_group,
+                        b.group_cross_file,
+                    )
+                })
+                .collect()
+        };
+
+        let shape = |summaries: Vec<FuncSummary>| shape_with(summaries, &files);
+
+        let forward = shape(make_all());
+        let mut reversed = make_all();
+        reversed.reverse();
+        assert_eq!(forward, shape(reversed));
+        let mut rotated = make_all();
+        rotated.rotate_left(2);
+        assert_eq!(forward, shape(rotated));
+        let mut walker_order = files.clone();
+        walker_order.reverse();
+        walker_order.rotate_left(1);
+        assert_eq!(forward, shape_with(make_all(), &walker_order));
+
+        // Level 0: c.rs (leaf util) and f.rs; level 1: the ping/pong
+        // cycle (a.rs, b.rs) and self-recursive d.rs; level 2: e.rs.
+        let files_of = |i: usize| forward[i].0.clone();
+        assert_eq!(files_of(0), vec!["/proj/c.rs", "/proj/f.rs"]);
+        assert_eq!(files_of(1), vec!["/proj/a.rs", "/proj/b.rs", "/proj/d.rs"]);
+        assert!(forward[1].1, "level-1 recursive batch");
+        assert_eq!(files_of(2), vec!["/proj/e.rs"]);
+        assert_eq!(forward.len(), 3);
     }
 
     // ── qualified disambiguation resolves ambiguous common names ──────

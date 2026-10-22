@@ -1307,11 +1307,12 @@ fn changed_ssa_keys_of(
 }
 
 /// Attach a low-confidence tag and a diagnostic note to every finding
-/// produced by an SCC batch that did not converge within the safety cap.
+/// produced by an SCC fixed-point group that did not converge within the
+/// safety cap.
 ///
-/// Called once per unconverged batch (after the pass-2 rayon parallelism
-/// has collected `iteration_diags`) so the cost is O(n) over the batch's
-/// findings, much cheaper than a per-finding `warn!`.
+/// Called once per file of an unconverged group (after the pass-2 rayon
+/// parallelism has collected the per-file diags) so the cost is O(n) over
+/// the group's findings, much cheaper than a per-finding `warn!`.
 ///
 /// Confidence is **capped** at `Low` rather than unconditionally set:
 /// upstream analysis may have proven something particularly strong about
@@ -1474,9 +1475,13 @@ fn topo_refine_enabled() -> bool {
 
 /// Run pass 2 analysis on a sequence of topo-ordered file batches.
 ///
-/// For batches with mutual recursion, iterates until summaries converge
-/// (bounded by [`SCC_FIXPOINT_SAFETY_CAP`]).  Updates `global_summaries`
-/// between batches so later callers see refined callee context.
+/// Batches come from [`crate::callgraph::scc_file_batches_with_metadata`],
+/// one level of the file dependency DAG each, so the files of a batch run
+/// in parallel against the same `global_summaries` state and their
+/// refinements are merged back in batch order after the parallel section.
+/// For batches with recursion, iterates until summaries converge (bounded
+/// by [`SCC_FIXPOINT_SAFETY_CAP`]).  Updates `global_summaries` between
+/// batches so later callers see refined callee context.
 ///
 /// `call_graph` is required by the Phase-B worklist: after each
 /// iteration we compute the set of FuncKeys whose summary changed,
@@ -1561,6 +1566,11 @@ fn run_topo_batches(
             // still in this map, preserving final-iteration
             // completeness.
             let mut diags_by_file: HashMap<std::path::PathBuf, Vec<Diag>> = HashMap::new();
+
+            // Namespaces that own a key whose summary changed in the most
+            // recent iteration.  Read after a cap hit to find the
+            // fixed-point groups that were still moving.
+            let mut last_changed_namespaces: HashSet<String> = HashSet::new();
 
             for iter in 0..scc_cap {
                 iters_used = iter + 1;
@@ -1713,6 +1723,10 @@ fn run_topo_batches(
                     changed_ssa_keys_of(&ssa_snap_before, global_summaries.snapshot_ssa());
                 let all_changed_keys: HashSet<crate::symbol::FuncKey> =
                     changed_cap_keys.union(&changed_ssa_keys).cloned().collect();
+                last_changed_namespaces = all_changed_keys
+                    .iter()
+                    .map(|k| k.namespace.clone())
+                    .collect();
                 let changed_caps_count = changed_cap_keys.len();
                 let changed_ssa_count = changed_ssa_keys.len();
                 let iter_delta = changed_caps_count + changed_ssa_count;
@@ -1781,17 +1795,6 @@ fn run_topo_batches(
                     break;
                 }
             }
-            // After the loop, flatten per-file diags into the
-            // iteration_diags vector in batch order for deterministic
-            // output.  Files that were in the batch but never made
-            // dirty (shouldn't happen, iter 0 runs all of them) are
-            // skipped silently.
-            let mut iteration_diags: Vec<Diag> = Vec::new();
-            for p in &batch.files {
-                if let Some(v) = diags_by_file.remove(*p) {
-                    iteration_diags.extend(v);
-                }
-            }
             LAST_SCC_MAX_ITERATIONS.fetch_max(iters_used, Ordering::Relaxed);
 
             // Emit per-batch telemetry record (no-op unless
@@ -1813,11 +1816,42 @@ fn run_topo_batches(
                 ),
             );
 
-            if !converged {
+            // A recursive batch holds every recursive file of one level,
+            // so it can mix unrelated fixed-point groups.  On a cap hit,
+            // only a group whose own summaries still changed in the last
+            // iteration is unconverged.  A group that settled earlier keeps
+            // its findings untagged, even when one of its files was
+            // re-analysed because it calls into a group that kept moving;
+            // that matches how callers outside the SCC were always
+            // treated.  If no changed key maps to a file of the batch,
+            // fall back to tagging every group.
+            let cap_hit = if converged {
+                None
+            } else {
                 let reason = crate::engine_notes::CapHitReason::classify(&delta_trajectory);
+                let mg = cfg.module_graph.as_deref();
+                let mut unconverged_groups: HashSet<usize> = batch
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| {
+                        let abs = p.to_string_lossy();
+                        let ns = crate::symbol::namespace_with_package(&abs, root_str_ref, mg);
+                        last_changed_namespaces.contains(&ns)
+                    })
+                    .map(|(i, _)| batch.group_of(i))
+                    .collect();
+                if unconverged_groups.is_empty() {
+                    unconverged_groups =
+                        (0..batch.files.len()).map(|i| batch.group_of(i)).collect();
+                }
+                let unconverged_files = (0..batch.files.len())
+                    .filter(|&i| unconverged_groups.contains(&batch.group_of(i)))
+                    .count();
                 tracing::warn!(
                     batch = batch_idx,
                     files = batch.files.len(),
+                    unconverged_files,
                     iterations = iters_used,
                     cap = scc_cap,
                     cross_file = cross_file_scc,
@@ -1830,8 +1864,9 @@ fn run_topo_batches(
                 if let Some(l) = logs {
                     l.warn(
                         format!(
-                            "SCC batch {batch_idx} ({} files, cross_file={cross_file_scc}) \
-                             did not converge within {scc_cap} iterations (reason={})",
+                            "SCC batch {batch_idx} ({unconverged_files} of {} files, \
+                             cross_file={cross_file_scc}) did not converge within \
+                             {scc_cap} iterations (reason={})",
                             batch.files.len(),
                             reason.tag()
                         ),
@@ -1839,20 +1874,38 @@ fn run_topo_batches(
                         None,
                     );
                 }
+                Some((reason, unconverged_groups))
+            };
 
-                // Tag findings from an unconverged batch so operators know
-                // the results are potentially imprecise. Cap confidence at
-                // Low (overriding any higher pre-set) and append a note to
-                // the evidence so downstream UIs / reviewers can surface
-                // the degradation.  Cross-file SCCs get a
-                // tighter note prefix so the precision cause is explicit.
-                tag_unconverged_findings(
-                    &mut iteration_diags,
-                    iters_used,
-                    scc_cap,
-                    cross_file_scc,
-                    reason,
-                );
+            // Flatten per-file diags in batch order for deterministic
+            // output.  Files that were in the batch but never made dirty
+            // (shouldn't happen, iter 0 runs all of them) are skipped
+            // silently.
+            //
+            // Findings of an unconverged group are tagged so operators
+            // know the results are potentially imprecise. Cap confidence
+            // at Low (overriding any higher pre-set) and append a note to
+            // the evidence so downstream UIs / reviewers can surface the
+            // degradation.  Cross-file groups get a tighter note prefix
+            // so the precision cause is explicit.
+            let mut iteration_diags: Vec<Diag> = Vec::new();
+            for (i, p) in batch.files.iter().enumerate() {
+                let Some(mut v) = diags_by_file.remove(*p) else {
+                    continue;
+                };
+                if let Some((reason, unconverged_groups)) = &cap_hit {
+                    let group = batch.group_of(i);
+                    if unconverged_groups.contains(&group) {
+                        tag_unconverged_findings(
+                            &mut v,
+                            iters_used,
+                            scc_cap,
+                            batch.group_is_cross_file(group),
+                            reason.clone(),
+                        );
+                    }
+                }
+                iteration_diags.extend(v);
             }
             // Count progress for these files once.
             pb.inc(batch.files.len() as u64);
@@ -2533,6 +2586,7 @@ pub(crate) fn scan_filesystem_with_observer(
         );
         tracing::info!(
             batches = batches.len(),
+            largest_batch = batches.iter().map(|b| b.files.len()).max().unwrap_or(0),
             orphan_files = orphans.len(),
             "topo-ordered file batches computed"
         );
@@ -3440,6 +3494,7 @@ pub fn scan_with_index_parallel_observer(
     );
     tracing::info!(
         batches = batches.len(),
+        largest_batch = batches.iter().map(|b| b.files.len()).max().unwrap_or(0),
         orphan_files = orphans.len(),
         "topo-ordered file batches computed (indexed)"
     );
