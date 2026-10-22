@@ -2629,3 +2629,98 @@ func h(w http.ResponseWriter, c *http.Client, n int) {
         ]
     );
 }
+
+fn go_error_fallthrough_lines(src: &[u8]) -> usize {
+    parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    )
+    .iter()
+    .filter(|f| f.rule_id == "cfg-error-fallthrough")
+    .count()
+}
+
+#[test]
+fn go_err_nil_success_check_without_else_does_not_fire() {
+    let src = br#"
+        package main
+        import ("os/exec"; "strconv")
+        func h(id string, x string) {
+            if n, err := strconv.Atoi(id); err == nil {
+                _ = n
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    let src = br#"
+        package main
+        import ("os"; "os/exec")
+        func h(x string) {
+            f, err := os.Open("/tmp/x")
+            if nil == err {
+                defer f.Close()
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+}
+
+#[test]
+fn go_err_nil_success_check_reads_else_as_error_branch() {
+    // The else branch returns: the error is handled.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                return
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    // The else branch only logs and falls through into the sink.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                fmt.Println("warn")
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 1);
+}
+
+#[test]
+fn js_err_null_success_check_without_else_does_not_fire() {
+    let src = br#"
+        const child_process = require('child_process');
+        function h(err, cmd) {
+            if (err === null) {
+                console.log("ok");
+            }
+            child_process.exec(cmd);
+        }"#;
+    let findings = parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.rule_id == "cfg-error-fallthrough"),
+        "success-polarity `err === null` must not fire; got {findings:?}"
+    );
+}

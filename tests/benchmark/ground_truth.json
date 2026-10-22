@@ -20487,6 +20487,33 @@
       "notes": "`var sb strings.Builder` / `var buf bytes.Buffer` passed as `&sb` / `&buf` are in-memory buffers, not the response."
     },
     {
+      "case_id": "go-safe-errpolarity-001",
+      "file": "go/safe/safe_err_nil_success_check.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "error-handling"
+      ],
+      "disabled": false,
+      "notes": "`if err == nil { ... }` without an else is a success check; `cfg-error-fallthrough` must not read its TRUE branch as the error handler."
+    },
+    {
       "case_id": "go-auth-realrepo-004",
       "file": "go/auth/vuln_gitea_group_feature_gate.go",
       "language": "go",
@@ -21239,6 +21266,33 @@
       ],
       "disabled": false,
       "notes": "outline migration: constant DDL via sequelize.query inside a sequelize.transaction(async (t)=>{...}) callback. first_member_label hoists the inner query SQL_QUERY Sink onto the outer .transaction node; the recorded HoistedSink provenance (inner payload arg0 const) lets sink_payload_args_syntactic_const suppress the phantom cfg-unguarded-sink on the wrapper. No source => taint must stay silent."
+    },
+    {
+      "case_id": "js-safe-errpolarity-001",
+      "file": "javascript/safe/safe_err_null_success_check.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "error-handling"
+      ],
+      "disabled": false,
+      "notes": "`if (err === null) { ... }` is a success check; the code after it is not an error check falling through."
     },
     {
       "case_id": "js-sqli-realrepo-sequelize-transaction-001",
