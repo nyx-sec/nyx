@@ -1268,6 +1268,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // data-flow
     "call_expression"          => Kind::CallFn,
     "assignment_statement"     => Kind::Assignment,
+    // `i++` / `i--` statements: read-modify-write, see `cfg::rmw_assignment`.
+    "inc_statement"            => Kind::Assignment,
+    "dec_statement"            => Kind::Assignment,
     "short_var_declaration"    => Kind::CallWrapper,
     "expression_statement"     => Kind::CallWrapper,
     "var_declaration"          => Kind::CallWrapper,

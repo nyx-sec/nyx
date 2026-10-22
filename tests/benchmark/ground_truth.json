@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 693
+    "corpus_size": 699
   },
   "cases": [
     {
@@ -22042,6 +22042,216 @@
       ],
       "disabled": false,
       "notes": "`cmd += \" --verbose\"` on a std::string keeps the environment value."
+    },
+    {
+      "case_id": "js-cmdi-update-expr-001",
+      "file": "javascript/cmdi/vuln_counter_increment_branch.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "const-fold"
+      ],
+      "disabled": false,
+      "notes": "`i++` used to leave i at its initial constant 0, so `i === 1` folded false and the exec branch was pruned."
+    },
+    {
+      "case_id": "js-cmdi-update-expr-002",
+      "file": "javascript/cmdi/vuln_for_loop_accumulate.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "for-loop",
+        "loop-carried"
+      ],
+      "disabled": false,
+      "notes": "Counted for loop accumulating request values. The `i++` update clause used to be a non-def, which left a self-referential loop phi that dropped the loop-carried taint."
+    },
+    {
+      "case_id": "js-safe-update-expr-001",
+      "file": "javascript/safe/safe_for_loop_accumulate_constants.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "update-expression",
+        "increment",
+        "for-loop"
+      ],
+      "disabled": false,
+      "notes": "Twin of js-cmdi-update-expr-002 accumulating constant names only."
+    },
+    {
+      "case_id": "java-cmdi-update-expr-001",
+      "file": "java/cmdi/CmdiIncrementBranch.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "const-fold"
+      ],
+      "disabled": false,
+      "notes": "`i++` used to leave i at 0, so `i == 1` folded false and the exec branch was pruned."
+    },
+    {
+      "case_id": "go-cmdi-update-expr-001",
+      "file": "go/cmdi/vuln_increment_branch.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "inc-statement"
+      ],
+      "disabled": false,
+      "notes": "Go `i++` statement as a real definition; the branch on `i == 1` stays reachable."
+    },
+    {
+      "case_id": "c-cmdi-update-expr-001",
+      "file": "c/cmdi/cmdi_pointer_increment.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "pointer"
+      ],
+      "disabled": false,
+      "notes": "`p++` keeps p pointing into the environment value."
     }
   ]
 }

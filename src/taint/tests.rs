@@ -6236,6 +6236,61 @@ fn compound_assign_does_not_keep_stale_constant_python() {
     );
 }
 
+// ── Increment / decrement (`i++`, `--i`, Go `i++`) ───────────────────────
+
+/// `i++` from 0 makes `i == 1` true; leaving `i` at its initial constant
+/// folded the branch away.
+#[test]
+fn increment_does_not_keep_initial_constant_javascript() {
+    assert_rmw_fires(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  let i = 0;\n  i++;\n  if (i === 1) {\n    cp.exec(req.query.x);\n  }\n}\n",
+    );
+}
+
+#[test]
+fn increment_does_not_keep_initial_constant_go() {
+    assert_rmw_fires(
+        "go",
+        "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\ti := 0\n\ti++\n\tif i == 1 {\n\t\texec.Command(os.Getenv(\"CMD\"))\n\t}\n}\n",
+    );
+}
+
+/// A counter tested inside the loop body changes across iterations, so the
+/// guarded sink is reachable.
+#[test]
+fn increment_in_loop_keeps_guarded_sink_reachable_javascript() {
+    assert_rmw_fires(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  let i = 0;\n  while (more()) {\n    if (i == 2) {\n      cp.exec(req.query.x);\n    }\n    i++;\n  }\n}\n",
+    );
+}
+
+/// Taint accumulated across a counted `for` loop reaches the sink after it.
+#[test]
+fn counted_for_loop_accumulates_taint_javascript() {
+    assert_rmw_fires(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  const names = req.query.names;\n  let cmd = 'ls';\n  for (let i = 0; i < names.length; i++) {\n    cmd = cmd + ' ' + names[i];\n  }\n  cp.exec(cmd);\n}\n",
+    );
+}
+
+#[test]
+fn counted_while_loop_accumulates_taint_python() {
+    assert_rmw_fires(
+        "python",
+        "import os\ndef main(names):\n    cmd = os.getenv('CMD')\n    out = 'ls'\n    i = 0\n    while i < len(names):\n        out = out + ' ' + cmd\n        i += 1\n    os.system(out)\n",
+    );
+}
+
+#[test]
+fn increment_keeps_pointer_taint_c() {
+    assert_rmw_fires(
+        "c",
+        "#include <stdlib.h>\nint main() {\n    char *p = getenv(\"X\");\n    p++;\n    system(p);\n    return 0;\n}\n",
+    );
+}
+
 // ── PHI merge preserves taint on non-reassigned path ────────────────────
 
 #[test]

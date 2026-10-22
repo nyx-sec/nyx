@@ -1123,6 +1123,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "method_invocation"            => Kind::CallMethod,
     "object_creation_expression"   => Kind::CallFn,
     "assignment_expression"        => Kind::Assignment,
+    // `i++` / `--i`: read-modify-write, see `cfg::rmw_assignment`.
+    "update_expression"            => Kind::Assignment,
     "local_variable_declaration"   => Kind::CallWrapper,
     "expression_statement"         => Kind::CallWrapper,
     "cast_expression"              => Kind::Seq,

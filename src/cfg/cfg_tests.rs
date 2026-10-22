@@ -5085,3 +5085,113 @@ fn compound_subscript_write_is_not_prototype_pollution_sink() {
         "compound subscript store must not carry a PROTOTYPE_POLLUTION sink"
     );
 }
+
+/// `i++` / `--i` define their operand from its old value plus one, so SSA
+/// lowering builds `i' = i + 1` instead of leaving `i` unchanged.
+fn assert_update_defines_operand(
+    src: &[u8],
+    lang_str: &str,
+    ts_lang: Language,
+    var: &str,
+    op: BinOp,
+) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, var);
+    assert_eq!(n.taint.uses, vec![var.to_string()], "{lang_str}");
+    assert_eq!(n.bin_op, Some(op), "{lang_str}");
+    assert_eq!(n.bin_op_const, Some(1), "{lang_str}");
+    assert!(n.taint.const_text.is_none(), "{lang_str}");
+}
+
+#[test]
+fn update_expr_defines_operand_javascript() {
+    assert_update_defines_operand(
+        b"function f() { let i = 0; i++; return i; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_typescript() {
+    assert_update_defines_operand(
+        b"function f(): number { let i = 0; --i; return i; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        "i",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_java() {
+    assert_update_defines_operand(
+        b"class A { int f() { int i = 0; i++; return i; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_c() {
+    assert_update_defines_operand(
+        b"char *f(char *p) { ++p; return p; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+        "p",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_cpp() {
+    assert_update_defines_operand(
+        b"int f() { int n = 3; n--; return n; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+        "n",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_php() {
+    assert_update_defines_operand(
+        b"<?php function f() { $i = 0; $i++; return $i; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_go() {
+    for (stmt, op) in [("i++", BinOp::Add), ("i--", BinOp::Sub)] {
+        let src = format!("package main\nfunc f() int {{\n\ti := 0\n\t{stmt}\n\treturn i\n}}\n");
+        assert_update_defines_operand(
+            src.as_bytes(),
+            "go",
+            Language::from(tree_sitter_go::LANGUAGE),
+            "i",
+            op,
+        );
+    }
+}
+
+/// The `for` update clause is a real definition, so the loop header gets a
+/// phi joining the initial value and the incremented one.
+#[test]
+fn for_update_clause_defines_counter() {
+    let nodes = rmw_all_nodes(
+        b"function f(xs) { for (let i = 0; i < xs.length; i++) { g(xs[i]); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "i");
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+}

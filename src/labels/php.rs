@@ -685,6 +685,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "assignment_expression"         => Kind::Assignment,
     // `$x .= $y`, `$x ??= $y`: read-modify-write, see `cfg::rmw_assignment`.
     "augmented_assignment_expression" => Kind::Assignment,
+    // `$i++` / `--i`: read-modify-write, see `cfg::rmw_assignment`.
+    "update_expression"             => Kind::Assignment,
     "expression_statement"          => Kind::CallWrapper,
     "echo_statement"                => Kind::CallWrapper,
 
