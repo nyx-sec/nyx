@@ -30,7 +30,7 @@ jobs:
       matrix:
         target: [scan_bytes, extract_summaries, cross_file_taint]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # cargo-fuzz needs nightly for the libFuzzer codegen flags.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -169,7 +169,7 @@ jobs:
           - cap: html_escape
             harness: tests/dynamic_fixtures/python/xss_positive.py
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
