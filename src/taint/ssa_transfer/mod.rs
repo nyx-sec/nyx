@@ -8946,6 +8946,21 @@ fn collect_block_events(
             if tainted.is_empty() {
                 continue;
             }
+            // A summary-resolved call reports the caps of the parameters the
+            // tainted arguments reach, not the union over every parameter of
+            // the callee.  Without this a helper such as
+            // `writeResponse(w, code, body, mime)` (body → HTML_ESCAPE,
+            // mime → HEADER_INJECTION) turns a tainted `body` into a
+            // header-injection finding, and that wrong cap is recorded in the
+            // caller's own summary and repeated at each of its call sites.
+            if positions_override.is_none()
+                && let Some(reached) =
+                    summary_caps_reached(inst, &tainted, &sink_info.param_to_sink)
+            {
+                filter_caps &= reached;
+                if filter_caps.is_empty() {
+                    continue;
+                }
             // Compute all_validated: check if all tainted vars are validated
             let all_validated = tainted.iter().all(|(val, _, _)| {
                 let var_name = ssa
@@ -9025,6 +9040,37 @@ fn collect_block_events(
             );
         }
     }
+}
+
+/// Union of the summary sink caps of the parameters whose argument carries
+/// one of the `tainted` values, or `None` when the call has no per-parameter
+/// summary detail or a tainted value is not a positional argument of a
+/// summarised parameter (the event's caps are then left alone).
+fn summary_caps_reached(
+    inst: &SsaInst,
+    tainted: &[(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)],
+    param_to_sink: &[(usize, Cap)],
+) -> Option<Cap> {
+    if param_to_sink.is_empty() {
+        return None;
+    }
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return None;
+    };
+    let mut reached = Cap::empty();
+    for (value, _, _) in tainted {
+        let mut found = false;
+        for &(idx, caps) in param_to_sink {
+            if args.get(idx).is_some_and(|group| group.contains(value)) {
+                reached |= caps;
+                found = true;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(reached)
 }
 
 fn refine_exec_argv_array_shell_taint(
