@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 674
+    "corpus_size": 685
   },
   "cases": [
     {
@@ -21384,6 +21384,328 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "c-safe-nullguard-001",
+      "file": "c/safe/safe_null_guard_early_return.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "fopen/malloc checked with `== NULL` / `!b` and an early return. The failure branch holds no handle, the success branch closes or returns it. Fix: structured NullCheck on If nodes consumed by the state engine and the cfg twin."
+    },
+    {
+      "case_id": "c-safe-outparam-001",
+      "file": "c/safe/safe_outparam_store.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "calloc result handed to the caller with `*out = b`. Fix: escaping_store on deref / container / non-local assignment targets."
+    },
+    {
+      "case_id": "go-safe-errguard-factory-001",
+      "file": "go/safe/safe_err_guard_factory.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`f, err := os.OpenFile(..); if err != nil { return nil, err }; return f, nil`. Fix: Go (err, resource) companions in the state engine and return escapes."
+    },
+    {
+      "case_id": "py-safe-factory-001",
+      "file": "python/safe/safe_factory_returns_handle.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Factories that return the handle (`return f`, `return conn`, `return open(p)`). Fix: return escapes treated as ownership transfer in the cfg twin."
+    },
+    {
+      "case_id": "py-safe-suffix-callee-001",
+      "file": "python/safe/safe_suffix_callees_not_acquire.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "disconnect / reconnect / subprocess.Popen only end in an acquire name. Fix: identifier-boundary acquire matching in the state engine outside C/C++."
+    },
+    {
+      "case_id": "py-vuln-return-read-001",
+      "file": "python/safe/vuln_return_read_without_close.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-772",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive"
+      ],
+      "disabled": false,
+      "notes": "`f = open(p); return f.read()` returns the contents, not the file: f leaks. The state engine used to count any mention of f in the return as a transfer."
+    },
+    {
+      "case_id": "java-safe-factory-001",
+      "file": "java/safe/SafeFactoryReturnsHandle.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Connection and wrapped reader returned to the caller. Fix: return escapes, including constructor arguments of a returned wrapper."
+    },
+    {
+      "case_id": "java-safe-same-name-field-001",
+      "file": "java/safe/SafeSameNameFieldStore.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "field-store",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A local `path` shares its name with a field that receives user input (`o.path`). The field store used to emit the member name as an extra define, so the untouched local looked tainted at the FileInputStream sink. Fix: Java / PHP assignment targets keep the member path whole (`cfg::helpers::collect_assign_targets`)."
+    },
+    {
+      "case_id": "java-cmdi-field-store-001",
+      "file": "java/cmdi/CmdiFieldStore.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "java.cmdi.runtime_exec"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "field-store"
+      ],
+      "disabled": false,
+      "notes": "Positive control for the field-store define change: the tainted field itself reaches the sink."
+    },
+    {
+      "case_id": "php-safe-same-name-field-001",
+      "file": "php/safe/safe_same_name_field_store.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "field-store",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Guard for the PHP member define change: `$this->path = $_GET[..]` now defines `this.path`, which must not reach the local `$path` read by file_get_contents."
+    },
+    {
+      "case_id": "php-cmdi-field-store-001",
+      "file": "php/cmdi/cmdi_field_store.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "php.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "field-store"
+      ],
+      "disabled": false,
+      "notes": "Positive control for the field-store define change: the tainted field itself reaches the sink."
     }
   ]
 }
