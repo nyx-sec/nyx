@@ -381,12 +381,10 @@ pub fn extract_findings(
                     // The handle must be in an escape position of the returned
                     // expression (`return f`, `return f, nil`,
                     // `return &W{f: f}`); `return f.read()` merely mentions it.
-                    let returns_var = (cfg[pred].kind == StmtKind::Return
-                        || cfg[pred].implicit_return)
-                        && cfg[pred]
-                            .returned_idents
-                            .iter()
-                            .any(|u| interner.get_scoped(scope, u) == Some(sym));
+                    // C / C++ keep the mention rule, see `return_hands_off`.
+                    let returns_var = super::transfer::return_hands_off(lang, &cfg[pred], |u| {
+                        interner.get_scoped(scope, u) == Some(sym)
+                    });
                     if returns_var {
                         returned_open += 1;
                     } else {
@@ -978,10 +976,18 @@ mod tests {
     }
 
     fn run_factory_cfg(cfg: &Cfg, entry: petgraph::graph::NodeIndex) -> Vec<StateFinding> {
+        run_factory_cfg_in(Lang::C, cfg, entry)
+    }
+
+    fn run_factory_cfg_in(
+        lang: Lang,
+        cfg: &Cfg,
+        entry: petgraph::graph::NodeIndex,
+    ) -> Vec<StateFinding> {
         let interner = SymbolInterner::from_cfg_scoped(cfg);
         let transfer = DefaultTransfer {
-            lang: Lang::C,
-            resource_pairs: rules::resource_pairs(Lang::C),
+            lang,
+            resource_pairs: rules::resource_pairs(lang),
             interner: &interner,
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
@@ -993,7 +999,7 @@ mod tests {
             &result,
             cfg,
             &interner,
-            Lang::C,
+            lang,
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
@@ -1001,10 +1007,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn per_body_return_mentioning_handle_without_escape_leaks() {
-        // `f = fopen(..); return fgetc(f);`: the Return reads `f` but hands
-        // the caller a character, not the handle.
+    /// `<handle> = <acquire>(..); return <reader>(<handle>);` in `lang`.
+    fn return_mentions_handle_cfg(
+        acquire: &str,
+        reader: &str,
+    ) -> (Cfg, petgraph::graph::NodeIndex) {
         let func = "reader";
         let mut cfg: Cfg = Graph::new();
         let entry = cfg.add_node(make_func_node(StmtKind::Entry, func));
@@ -1019,7 +1026,7 @@ mod tests {
                 ..Default::default()
             },
             call: CallMeta {
-                callee: Some("fopen".into()),
+                callee: Some(acquire.into()),
                 ..Default::default()
             },
             ..Default::default()
@@ -1027,10 +1034,10 @@ mod tests {
         let ret = cfg.add_node(NodeInfo {
             kind: StmtKind::Return,
             taint: TaintMeta {
-                uses: vec!["fgetc".into(), "f".into()],
+                uses: vec![reader.into(), "f".into()],
                 ..Default::default()
             },
-            returned_call_callees: vec!["fgetc".into()],
+            returned_call_callees: vec![reader.into()],
             ast: AstMeta {
                 enclosing_func: Some(func.into()),
                 ..Default::default()
@@ -1041,8 +1048,15 @@ mod tests {
         cfg.add_edge(entry, open_node, EdgeKind::Seq);
         cfg.add_edge(open_node, ret, EdgeKind::Seq);
         cfg.add_edge(ret, exit, EdgeKind::Seq);
+        (cfg, entry)
+    }
 
-        let findings = run_factory_cfg(&cfg, entry);
+    #[test]
+    fn per_body_return_mentioning_handle_without_escape_leaks() {
+        // Python `f = open(p); return json.load(f)`: the caller gets the
+        // parsed value, not the file.
+        let (cfg, entry) = return_mentions_handle_cfg("open", "json.load");
+        let findings = run_factory_cfg_in(Lang::Python, &cfg, entry);
         assert_eq!(
             findings
                 .iter()
@@ -1050,6 +1064,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["state-resource-leak"],
         );
+    }
+
+    #[test]
+    fn per_body_c_return_mentioning_pointer_hands_it_off() {
+        // C `b = malloc(n); return insert(t, b);`: ownership commonly moves
+        // into the callee, and there is no model of what it keeps.
+        let (cfg, entry) = return_mentions_handle_cfg("malloc", "insert");
+        assert!(run_factory_cfg_in(Lang::C, &cfg, entry).is_empty());
     }
 
     #[test]

@@ -172,6 +172,27 @@ pub(crate) fn field_container_is_nonescaping(
     single_ident_dot_container(def).is_some_and(|base| nonescaping.contains(base))
 }
 
+/// Whether a Return node (or a Ruby tail expression) hands the variable
+/// picked out by `is_var` to the caller.
+///
+/// The structural answer is [`NodeInfo::returned_idents`]: the variable sits
+/// in an escape position of the returned value (`return f`, `return f, nil`,
+/// `return &W{f: f}`, `return new Wrapper(r)`), while `return f.read()` or
+/// `return io.ReadAll(f)` keeps the handle here.
+///
+/// C / C++ also count any mention in the returned expression.  There, a
+/// pointer passed to the call whose result is returned is usually handed on
+/// (`return insert(t, node)`, `return register_graft(r, graft)`,
+/// `return read_header_fd(fd, ..)` which returns `fd`, `return &x->base`),
+/// and the leak passes have no model of what the callee keeps.
+pub(crate) fn return_hands_off(lang: Lang, info: &NodeInfo, is_var: impl Fn(&str) -> bool) -> bool {
+    if !(info.kind == StmtKind::Return || info.implicit_return) {
+        return false;
+    }
+    info.returned_idents.iter().any(|n| is_var(n))
+        || (matches!(lang, Lang::C | Lang::Cpp) && info.taint.uses.iter().any(|n| is_var(n)))
+}
+
 /// Method names that store their argument in the receiving collection, so a
 /// handle passed to them now belongs to that collection: `list.add(s)`,
 /// `map.put(k, s)`, `v.push_back(f)`, `xs.append(f)`, `arr.push(fd)`,
@@ -238,20 +259,28 @@ pub(crate) fn container_insert_arg_positions(
     out
 }
 
+/// Java wrapper-handoff facts for one body (see [`closeable_wrapper_names`]).
+#[derive(Debug, Default)]
+pub struct CloseableWrappers {
+    /// Wrapper objects whose lifetime the body accounts for.
+    pub names: std::collections::HashSet<String>,
+    /// Names bound by a try-with-resources acquire.  That scope already
+    /// closes the stream, so a wrapper built on it does not take it over.
+    pub managed: std::collections::HashSet<String>,
+}
+
 /// Java: names of local wrapper objects whose lifetime is accounted for in
 /// this body: closed (`w.close()`, including a release in argument
 /// position), returned, bound by try-with-resources, or stored somewhere
 /// the function does not own (a field, global, or collection).  A stream
 /// passed to the constructor of such a wrapper is owned by the wrapper.
 /// Empty for other languages.
-pub(crate) fn closeable_wrapper_names(
-    cfg: &crate::cfg::Cfg,
-    lang: Lang,
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
+pub(crate) fn closeable_wrapper_names(cfg: &crate::cfg::Cfg, lang: Lang) -> CloseableWrappers {
+    let mut facts = CloseableWrappers::default();
     if lang != Lang::Java {
-        return out;
+        return facts;
     }
+    let out = &mut facts.names;
     let pairs = rules::resource_pairs(lang);
     let is_release = |callee: &str| {
         let c = callee.to_ascii_lowercase();
@@ -283,6 +312,7 @@ pub(crate) fn closeable_wrapper_names(
             && let Some(d) = info.taint.defines.as_deref()
         {
             out.insert(d.to_string());
+            facts.managed.insert(d.to_string());
         }
         let stores_away = info.escaping_store
             || info
@@ -297,7 +327,7 @@ pub(crate) fn closeable_wrapper_names(
             out.insert(info.call.arg_uses[i][0].clone());
         }
     }
-    out
+    facts
 }
 
 /// Decompose a textual callee like `"c.mu.Lock"` into
@@ -488,7 +518,7 @@ pub struct DefaultTransfer<'a> {
     /// [`closeable_wrapper_names`]).  A stream handed to the constructor of
     /// one of these (`new BufferedInputStream(in)`) is owned by the wrapper
     /// from then on.  `None` disables the handoff.
-    pub closeable_wrappers: Option<&'a std::collections::HashSet<String>>,
+    pub closeable_wrappers: Option<&'a CloseableWrappers>,
 }
 
 impl Transfer<ProductState> for DefaultTransfer<'_> {
@@ -694,6 +724,14 @@ impl DefaultTransfer<'_> {
             self.resource_pairs
         };
         for pair in resource_pairs_iter {
+            // Go `sync.Mutex` / `RWMutex` `Lock` returns nothing, and this
+            // pass only tracks an acquire through the value it binds.  So a
+            // bound `.Lock()` result (`cache := store.lock()`,
+            // `ok := l.Lock(ctx)`) is a user method that shares the name,
+            // not a held lock.  Go locks are checked by the cfg twin.
+            if self.lang == Lang::Go && pair.resource_name == "mutex" {
+                continue;
+            }
             let is_acquire = pair
                 .acquire
                 .iter()
@@ -785,11 +823,12 @@ impl DefaultTransfer<'_> {
             && info.call.is_constructor
             && !define_is_field_lhs
             && let Some(w) = info.taint.defines.as_deref()
-            && self.closeable_wrappers.is_some_and(|s| s.contains(w))
+            && let Some(wrappers) = self.closeable_wrappers
+            && wrappers.names.contains(w)
             && let Some(w_sym) = self.get_sym(info, w)
         {
             for u in &info.call.ctor_owned_args {
-                if u == w {
+                if u == w || wrappers.managed.contains(u) {
                     continue;
                 }
                 let Some(u_sym) = self.get_sym(info, u) else {
@@ -1184,6 +1223,12 @@ impl DefaultTransfer<'_> {
                         }
                     }
                 }
+                return;
+            }
+            // Reading a field of a handle (`desc = cursor.description`,
+            // `n = node->next`) yields a different value; the handle itself
+            // stays put.  Only a plain alias (`g = f`) moves it.
+            if info.member_field.is_some() {
                 return;
             }
             // If the RHS is a tracked resource, transfer its state
@@ -1691,8 +1736,11 @@ mod tests {
         let mut interner = SymbolInterner::new();
         let sym_in = interner.intern("in");
         let sym_b = interner.intern("b");
-        let closeable: std::collections::HashSet<String> = ["b".to_string()].into_iter().collect();
-        let empty = std::collections::HashSet::new();
+        let closeable = CloseableWrappers {
+            names: ["b".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let empty = CloseableWrappers::default();
         let gated = DefaultTransfer {
             lang: Lang::Java,
             resource_pairs: rules::resource_pairs(Lang::Java),

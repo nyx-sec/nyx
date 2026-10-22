@@ -1583,3 +1583,28 @@ fn go_container_store_escape() {
 fn php_container_store_escape() {
     assert_no_leaks("php_container_store_escape.php");
 }
+
+#[test]
+fn java_wrapper_over_managed_stream_clean() {
+    // try-with-resources already closes `out`; `sink` must not inherit it.
+    assert_no_leaks("java_wrapper_over_managed_stream.java");
+}
+
+#[test]
+fn python_attribute_read_does_not_alias_handle() {
+    let file = "python_attribute_read_keeps_handle.py";
+    assert_message_contains(file, "state-resource-leak", "`cursor`");
+    let on_desc = state_diags_for(file)
+        .iter()
+        .any(|d| d.message.as_deref().unwrap_or("").contains("`desc`"));
+    assert!(
+        !on_desc,
+        "`desc = cursor.description` is a read, not an alias: {:?}",
+        leak_ids_for(file)
+    );
+}
+
+#[test]
+fn go_lock_method_result_is_not_a_held_lock() {
+    assert_no_leaks("go_lock_method_returns_value.go");
+}

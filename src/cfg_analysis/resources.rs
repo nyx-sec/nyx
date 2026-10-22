@@ -321,8 +321,11 @@ fn all_paths_pass_through(
         // Returning the handle (`return f`, `return f, nil`,
         // `return &W{f: f}`) hands ownership to the caller, so this path owes
         // no release.  Only escape positions count: `return f.read()` keeps
-        // `f` here and still needs a release.  Twin of the `returns_var`
-        // check in `state::facts`.
+        // `f` here and still needs a release.  The state engine's
+        // `returns_var` also counts any mention for C / C++ (see
+        // `state::transfer::return_hands_off`); this pass keeps to escape
+        // positions in every language, so C `return fgetc(f)` stays
+        // reported here as it was before returns were modelled.
         if (info.kind == StmtKind::Return || info.implicit_return)
             && acquire_var.is_some_and(|v| info.returned_idents.iter().any(|r| r == v))
         {
@@ -406,7 +409,7 @@ fn acquire_is_returned_value(ctx: &AnalysisContext, acquire: NodeIndex) -> bool 
 fn is_ownership_transferred(
     ctx: &AnalysisContext,
     acquire: NodeIndex,
-    closeable_wrappers: &HashSet<String>,
+    closeable_wrappers: &crate::state::transfer::CloseableWrappers,
 ) -> bool {
     let acquired_var = match &ctx.cfg[acquire].taint.defines {
         Some(v) => v.clone(),
@@ -461,7 +464,7 @@ fn is_ownership_transferred(
                         .taint
                         .defines
                         .as_deref()
-                        .is_some_and(|w| closeable_wrappers.contains(w))
+                        .is_some_and(|w| closeable_wrappers.names.contains(w))
                     {
                         return true;
                     }
