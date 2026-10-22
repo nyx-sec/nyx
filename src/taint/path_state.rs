@@ -819,42 +819,29 @@ fn is_literal_needle_membership(text: &str) -> bool {
     false
 }
 
-/// Detect the *negated* `indexOf`/`search`/`find` membership idiom whose TRUE
-/// branch is the NOT-in-list (reject) path:
+/// Detect the *negated* `search` / `find` membership idiom whose TRUE branch is
+/// the NOT-found (reject) path:
 ///
-/// * `ALLOWED.indexOf(x) === -1` / `== -1` (JS/TS — not found)
-/// * `ALLOWED.indexOf(x) < 0` (not found)
 /// * `s.find(x) == -1` (Python `str.find` / C++ `std::string::find` use
 ///   `npos`/`-1` for absent; `< 0` covers the common int form)
+/// * `s.search(x) < 0` (JS string search)
 ///
-/// Genuine allowlist membership classifies as [`PredicateKind::AllowlistCheck`]
-/// whose generic mechanic marks the receiver/arg validated on the TRUE branch.
-/// That polarity is only correct for the *positive* form
-/// (`indexOf(x) !== -1` / `>= 0` — found ⇒ in list ⇒ validated). For the
-/// `=== -1` / `< 0` form the TRUE branch means NOT-in-list, so marking the var
-/// validated there is inverted: it suppresses a genuine finding on the
-/// reject-then-sink shape and an FP on the correctly-guarded `=== -1; return`
-/// shape. The polarity-inversion machinery in `apply_branch_predicates`
-/// (mod.rs) only flips for Python `not in` / TypeCheck `!=`, not for indexOf
-/// result comparisons, so we conservatively drop these to
-/// [`PredicateKind::Unknown`] — neither branch is over-validated and the sink
-/// finding survives. The positive `!== -1` / `>= 0` form is intentionally left
-/// to fall through to `AllowlistCheck`, where the existing polarity is correct.
+/// These search a string, not a collection, so even the positive form proves
+/// little; the negated form is dropped to [`PredicateKind::Unknown`] so
+/// neither branch is validated.  `ALLOWED.indexOf(x) === -1` is a genuine
+/// collection membership test and is not claimed here: it classifies as
+/// [`PredicateKind::AllowlistCheck`] and [`sentinel_comparison_polarity`]
+/// puts the validation on the found branch.
 fn is_negated_indexof_membership(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    // Require an index-of / find-style search method whose result is being
-    // compared.  `.indexof(` covers JS/TS `indexOf` and Java `indexOf`;
-    // `.find(` / `.search(` cover Python/C++/JS string searches.
-    let has_index_search =
-        lower.contains(".indexof(") || lower.contains(".search(") || lower.contains(".find(");
+    let has_index_search = lower.contains(".search(") || lower.contains(".find(");
     if !has_index_search {
         return false;
     }
     // Strip whitespace so spacing variants (`=== -1`, `===-1`, `< 0`) collapse
     // to a single canonical form.
     let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-    // Positive (found ⇒ in list) forms keep correct AllowlistCheck polarity —
-    // do NOT claim them here.
+    // Positive (found) forms keep the AllowlistCheck classification.
     if compact.contains("!==-1")
         || compact.contains("!=-1")
         || compact.contains(">=0")
@@ -862,11 +849,253 @@ fn is_negated_indexof_membership(text: &str) -> bool {
     {
         return false;
     }
-    // Negated (not-found ⇒ reject) forms: inverted polarity, drop to Unknown.
     compact.contains("===-1")
         || compact.contains("==-1")
         || compact.contains("<0")
         || compact.contains("<=-1")
+}
+
+/// How a trailing comparison against a sentinel literal changes the polarity
+/// of the predicate atom it wraps.  See [`sentinel_comparison_polarity`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SentinelPolarity {
+    /// No single top-level comparison against a sentinel literal.
+    NoComparison,
+    /// The comparison keeps the atom's polarity (`f(x) === true`,
+    /// `A.indexOf(x) !== -1`, `M[x] !== undefined`).
+    Same,
+    /// The comparison inverts it (`f(x) === false`, `f(x) is not True`,
+    /// `A.indexOf(x) === -1`, `M[x] === undefined`).
+    Flip,
+    /// A sentinel whose meaning is ambiguous for this atom
+    /// (`M[x] === false` cannot tell a missing key from a `false` value,
+    /// `A.indexOf(x) === 0`).  Callers should validate neither branch.
+    Opaque,
+}
+
+/// Classify a branch condition of the form `<atom> <op> <sentinel>` (or the
+/// Yoda form `<sentinel> <op> <atom>`), where the atom is the predicate the
+/// rest of the classifier recognises: a call (`isValid(x)`,
+/// `ALLOWED.includes(x)`, `in_array($x, $a)`), an `indexOf` result, a map
+/// lookup (`ALLOWED[x]`), or a bare identifier.
+///
+/// [`classify_condition`] classifies such text by the inner atom, so without
+/// this the TRUE edge of `ALLOWED.includes(cmd) === false` would be treated
+/// as the validated one.  A whole-condition `!( ... )` / `not ...` is
+/// peeled first because the CFG already reports it as `condition_negated`;
+/// a `!` bound to the atom alone (`!isValid(x) === true`) is folded in here.
+///
+/// Sentinels are `true`, `false`, `undefined`, `-1` and `0`, matched case
+/// insensitively (Python `True` / `False`).  `null` / `None` / `nil` are left
+/// to the null-check classifier.  Conditions with a top-level `&&` / `||`,
+/// or with more than one comparison, return
+/// [`SentinelPolarity::NoComparison`].
+pub fn sentinel_comparison_polarity(text: &str) -> SentinelPolarity {
+    use crate::abstract_interp::path_domain::{strip_leading_not, strip_outer_parens};
+
+    let mut t = strip_outer_parens(text.trim());
+    if let Some(rest) = strip_leading_not(t) {
+        let rest = rest.trim_start();
+        let python_not = !t.trim_start().starts_with('!');
+        let inner = strip_outer_parens(rest);
+        if python_not || inner.len() < rest.len() {
+            t = inner;
+        }
+    }
+
+    let Some((lhs, op, rhs)) = split_single_comparison(t) else {
+        return SentinelPolarity::NoComparison;
+    };
+    let (atom, sentinel, op) = match (sentinel_literal(rhs), sentinel_literal(lhs)) {
+        (Some(s), None) => (lhs, s, op),
+        (None, Some(s)) => (rhs, s, mirror_comparison(op)),
+        _ => return SentinelPolarity::NoComparison,
+    };
+
+    let (atom, local_not) = match atom.strip_prefix('!') {
+        Some(rest) if !rest.starts_with('=') => (rest.trim(), true),
+        _ => (atom, false),
+    };
+
+    let eq = matches!(op, "==" | "===" | "is");
+    let ne = matches!(op, "!=" | "!==" | "is not");
+    let lower_atom = atom.to_ascii_lowercase();
+
+    let base = if lower_atom.contains(".indexof(") {
+        match (op, sentinel) {
+            ("==" | "===", "-1") | ("<", "0") | ("<=", "-1") => SentinelPolarity::Flip,
+            ("!=" | "!==", "-1") | (">=", "0") | (">", "-1") => SentinelPolarity::Same,
+            _ => SentinelPolarity::Opaque,
+        }
+    } else if is_index_lookup_atom(atom) {
+        match sentinel {
+            "undefined" if eq => SentinelPolarity::Flip,
+            "undefined" if ne => SentinelPolarity::Same,
+            "true" if eq => SentinelPolarity::Same,
+            "true" if ne => SentinelPolarity::Flip,
+            _ => SentinelPolarity::Opaque,
+        }
+    } else if atom.contains('(') || is_identifier(atom) {
+        // Boolean predicate result: a call or a variable holding one.
+        // Numeric sentinels on a call (`strpos($x, "/") === 0`) belong to
+        // other idioms and are left alone.
+        match sentinel {
+            "true" if eq => SentinelPolarity::Same,
+            "true" if ne => SentinelPolarity::Flip,
+            "false" if eq => SentinelPolarity::Flip,
+            "false" if ne => SentinelPolarity::Same,
+            "undefined" if atom.contains('(') => SentinelPolarity::Opaque,
+            _ => SentinelPolarity::NoComparison,
+        }
+    } else {
+        SentinelPolarity::NoComparison
+    };
+
+    match (base, local_not) {
+        (SentinelPolarity::Flip, true) => SentinelPolarity::Same,
+        (SentinelPolarity::Same, true) => SentinelPolarity::Flip,
+        (other, _) => other,
+    }
+}
+
+/// Normalise a sentinel operand: `true` / `false` / `undefined` / `-1` /
+/// `0`, case-insensitive.  Returns `None` for anything else.
+fn sentinel_literal(operand: &str) -> Option<&'static str> {
+    let compact: String = operand.chars().filter(|c| !c.is_whitespace()).collect();
+    match compact.to_ascii_lowercase().as_str() {
+        "true" => Some("true"),
+        "false" => Some("false"),
+        "undefined" => Some("undefined"),
+        "-1" => Some("-1"),
+        "0" => Some("0"),
+        _ => None,
+    }
+}
+
+/// Swap the operand order of a comparison operator (`a < b` == `b > a`).
+fn mirror_comparison(op: &'static str) -> &'static str {
+    match op {
+        "<" => ">",
+        ">" => "<",
+        "<=" => ">=",
+        ">=" => "<=",
+        other => other,
+    }
+}
+
+/// `IDENT[IDENT]`, the map-lookup atom also accepted by
+/// [`is_index_membership_check`].
+fn is_index_lookup_atom(atom: &str) -> bool {
+    let Some(open) = atom.find('[') else {
+        return false;
+    };
+    let Some(inner) = atom[open + 1..].strip_suffix(']') else {
+        return false;
+    };
+    is_identifier(atom[..open].trim()) && is_identifier(inner.trim())
+}
+
+/// Split `text` into `(lhs, op, rhs)` when it holds exactly one comparison
+/// operator outside parens, brackets and string literals, and no top-level
+/// `&&` / `||` / `and` / `or`.  `->` and `=>` are not comparisons.
+fn split_single_comparison(text: &str) -> Option<(&str, &'static str, &str)> {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote: Option<u8> = None;
+    let mut found: Option<(usize, usize, &'static str)> = None;
+    let mut i = 0usize;
+    let word_at = |i: usize, w: &[u8]| -> bool {
+        i > 0
+            && bytes[i - 1] == b' '
+            && bytes.len() > i + w.len()
+            && bytes[i..i + w.len()].eq_ignore_ascii_case(w)
+            && bytes[i + w.len()] == b' '
+    };
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if depth == 0 {
+            if word_at(i, b"and") || word_at(i, b"or") {
+                return None;
+            }
+            let two = bytes.get(i..i + 2);
+            if two == Some(b"&&") || two == Some(b"||") {
+                return None;
+            }
+        }
+        let op: Option<(&'static str, usize)> = match b {
+            b'"' | b'\'' | b'`' => {
+                in_quote = Some(b);
+                None
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                None
+            }
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                None
+            }
+            _ if depth != 0 => None,
+            b'=' | b'!' if bytes.get(i + 1) == Some(&b'=') => {
+                let strict = bytes.get(i + 2) == Some(&b'=');
+                match (b, strict) {
+                    (b'=', true) => Some(("===", 3)),
+                    (b'=', false) => Some(("==", 2)),
+                    (_, true) => Some(("!==", 3)),
+                    (_, false) => Some(("!=", 2)),
+                }
+            }
+            b'<' | b'>' => {
+                let prev = if i > 0 { bytes[i - 1] } else { b' ' };
+                if b == b'>' && (prev == b'-' || prev == b'=') {
+                    None
+                } else if bytes.get(i + 1) == Some(&b'=') {
+                    Some((if b == b'<' { "<=" } else { ">=" }, 2))
+                } else if bytes.get(i + 1) == Some(&b) {
+                    // `<<` / `>>` shifts are not comparisons; skip both bytes.
+                    i += 1;
+                    None
+                } else {
+                    Some((if b == b'<' { "<" } else { ">" }, 1))
+                }
+            }
+            b'i' | b'I' if depth == 0 && word_at(i, b"is") => {
+                if word_at(i + 3, b"not") {
+                    Some(("is not", 6))
+                } else {
+                    Some(("is", 2))
+                }
+            }
+            _ => None,
+        };
+        if let Some((op, len)) = op {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((i, len, op));
+            i += len;
+            continue;
+        }
+        i += 1;
+    }
+    let (pos, len, op) = found?;
+    let lhs = text[..pos].trim();
+    let rhs = text[pos + len..].trim();
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    Some((lhs, op, rhs))
 }
 
 /// Value-first membership predicate free functions: `f(value, collection)`
@@ -2483,21 +2712,44 @@ mod tests {
     // silencing a real reject-then-sink finding and producing an FP on the
     // correctly-guarded `=== -1; return; sink` shape).  Drop to Unknown.
     #[test]
-    fn classify_negated_indexof_eq_minus_one_not_allowlist() {
+    fn classify_negated_indexof_eq_minus_one_is_flipped_allowlist() {
+        // Membership is still the atom; the `=== -1` comparison puts it on
+        // the FALSE edge (see `sentinel_comparison_polarity`).
+        for text in ["ALLOWED.indexOf(cmd) === -1", "ALLOWED.indexOf(cmd) == -1"] {
+            assert_eq!(
+                classify_condition_with_target(text),
+                (PredicateKind::AllowlistCheck, Some("cmd".to_string())),
+                "{text}"
+            );
+            assert_eq!(
+                sentinel_comparison_polarity(text),
+                SentinelPolarity::Flip,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_negated_indexof_lt_zero_is_flipped_allowlist() {
         assert_eq!(
-            classify_condition("ALLOWED.indexOf(cmd) === -1"),
-            PredicateKind::Unknown
+            classify_condition("allowed.indexOf(x) < 0"),
+            PredicateKind::AllowlistCheck
         );
         assert_eq!(
-            classify_condition("ALLOWED.indexOf(cmd) == -1"),
-            PredicateKind::Unknown
+            sentinel_comparison_polarity("allowed.indexOf(x) < 0"),
+            SentinelPolarity::Flip
         );
     }
 
     #[test]
-    fn classify_negated_indexof_lt_zero_not_allowlist() {
+    fn classify_negated_string_find_stays_unknown() {
+        // String search, not collection membership.
         assert_eq!(
-            classify_condition("allowed.indexOf(x) < 0"),
+            classify_condition("s.find(x) == -1"),
+            PredicateKind::Unknown
+        );
+        assert_eq!(
+            classify_condition("s.search(x) < 0"),
             PredicateKind::Unknown
         );
     }
@@ -3361,6 +3613,50 @@ mod ghsa_h8cj_hpmg_636v_tests {
                 PredicateKind::ValidationCall,
                 "{text}"
             );
+        }
+    }
+
+    // ── Sentinel comparison polarity ─────────────────────────────────────
+
+    #[test]
+    fn sentinel_comparison_polarity_table() {
+        use SentinelPolarity::*;
+        let cases = [
+            ("(ALLOWED.includes(cmd) === false)", Flip),
+            ("(isValidName(cmd) === false)", Flip),
+            ("is_valid_name(name) == False", Flip),
+            ("is_valid_name(name) is False", Flip),
+            ("is_valid(x) is not True", Flip),
+            ("(false === in_array($cmd, $allowed, true))", Flip),
+            ("(ALLOWED[cmd] === undefined)", Flip),
+            ("(ALLOWED[cmd] !== true)", Flip),
+            ("(ALLOWED.indexOf(cmd) === -1)", Flip),
+            ("ALLOWED.indexOf(cmd) < 0", Flip),
+            ("-1 === ALLOWED.indexOf(cmd)", Flip),
+            ("(!isValidName(cmd) === true)", Flip),
+            ("!(isValidName(cmd) === false)", Flip),
+            ("not is_valid(x) == False", Flip),
+            ("ok === false", Flip),
+            ("ALLOWED.includes(cmd) !== false", Same),
+            ("(ALLOWED[cmd] !== undefined)", Same),
+            ("ALLOWED.indexOf(cmd) >= 0", Same),
+            ("ALLOWED.indexOf(cmd) > -1", Same),
+            ("(!isValidName(cmd) === false)", Same),
+            ("isinstance(x, int) == True", Same),
+            ("(ALLOWED[cmd] === false)", Opaque),
+            ("ALLOWED.indexOf(cmd) === 0", Opaque),
+            ("typeof x !== 'string'", NoComparison),
+            ("isValid(x === false)", NoComparison),
+            ("a && isValid(x) === false", NoComparison),
+            ("isValid(x) === false || other", NoComparison),
+            ("ALLOWED.includes(cmd)", NoComparison),
+            ("strpos($x, '/') === 0", NoComparison),
+            ("$obj->isValid() === false", Flip),
+            ("count === 0", NoComparison),
+            ("x == null", NoComparison),
+        ];
+        for (text, want) in cases {
+            assert_eq!(sentinel_comparison_polarity(text), want, "{text}");
         }
     }
 }

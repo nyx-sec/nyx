@@ -1143,6 +1143,10 @@ mod goto_succ_propagation_tests {
             "scheme not in allowed",
             "typeof x !== 'number'",
             "isInvalidUrl(u)",
+            "(ALLOWED.includes(cmd) === false)",
+            "ALLOWED.indexOf(cmd) < 0",
+            "is_valid(x) is not True",
+            "ok === false",
             "p.contains(\"..\")",
             "user.isAdmin",
         ];
@@ -1505,6 +1509,79 @@ mod goto_succ_propagation_tests {
             false,
         );
         assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+    }
+
+    #[test]
+    fn branch_cond_sentinel_comparisons_set_semantic_negation() {
+        use crate::taint::path_state::PredicateKind;
+        // (text, expected kind, expected has_semantic_negation)
+        let cases = [
+            (
+                "(ALLOWED.includes(cmd) === false)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.includes(cmd) !== false",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED.indexOf(cmd) === -1)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.indexOf(cmd) !== -1",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED[cmd] === undefined)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(false === in_array($cmd, $allowed, true))",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(isValidName(cmd) === false)",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "is_valid_name(name) is False",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "isInvalidUrl(u) === false",
+                PredicateKind::ValidationCall,
+                false,
+            ),
+            // The `!=` belongs to the sentinel, not to a `typeof` test.
+            ("isinstance(x, int) != True", PredicateKind::TypeCheck, true),
+            (
+                "isinstance(x, int) == True",
+                PredicateKind::TypeCheck,
+                false,
+            ),
+            ("typeof x !== 'number'", PredicateKind::TypeCheck, true),
+            // A missing key and a `false` value look the same: validate
+            // neither edge.
+            ("(ALLOWED[cmd] === false)", PredicateKind::Unknown, false),
+        ];
+        for (text, kind, negated) in cases {
+            let class = super::super::classify_branch_cond(text);
+            assert_eq!(class.kind, kind, "{text}");
+            assert_eq!(class.has_semantic_negation, negated, "{text}");
+        }
+        assert_eq!(
+            super::super::classify_branch_cond("(ALLOWED[cmd] === false)").target_var,
+            None
+        );
     }
 
     #[test]

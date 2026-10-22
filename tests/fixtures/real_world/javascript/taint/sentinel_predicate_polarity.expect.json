@@ -1,0 +1,42 @@
+{
+  "description": "Predicate results compared against sentinels: `indexOf(x) === -1`, `includes(x) === false` and `MAP[x] === undefined` put membership on the FALSE edge, so the guarded-return shapes are safe and the sink-in-reject-branch shape is not. `MAP[x] === false` cannot tell a missing key from a false value and validates neither edge.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "allowlist",
+    "sentinel",
+    "cmdi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        32
+      ],
+      "notes": "indexOf === -1, includes === false and MAP[x] === undefined reject before the sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        37,
+        38
+      ],
+      "notes": "sink runs on the not-in-list branch of `includes(cmd) === false`"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        50,
+        50
+      ],
+      "notes": "`MAP[x] === false` lets a missing key through to the sink"
+    }
+  ]
+}

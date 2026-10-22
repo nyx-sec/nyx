@@ -1289,22 +1289,52 @@ struct BranchCondClass {
     kind: PredicateKind,
     target_var: Option<String>,
     /// Semantic negation not captured by AST-level `condition_negated`
-    /// (Python `not in`, TypeCheck `!==`/`!=`, negative-polarity validator).
+    /// (Python `not in`, TypeCheck `!==`/`!=`, negative-polarity validator,
+    /// a predicate compared against a falsy sentinel).
     has_semantic_negation: bool,
+    /// Boolean / index sentinel comparison wrapping the condition's atom.
+    /// Computed for the predicate kinds above and for `Comparison`, where
+    /// `ok === false` on an indirect validator result needs it.
+    sentinel: crate::taint::path_state::SentinelPolarity,
     path: PathBranchClass,
 }
 
 /// Compute the (state-independent) classification of a branch condition.
 /// Result is memoized per condition node — see [`BranchCondClass`].
 fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
-    let (kind, target_var) = classify_condition_with_target(cond_text);
+    use crate::taint::path_state::{SentinelPolarity, sentinel_comparison_polarity};
+
+    let (mut kind, mut target_var) = classify_condition_with_target(cond_text);
+    // A predicate compared against a sentinel (`ALLOWED.includes(x) ===
+    // false`, `isValid(x) == False`, `A.indexOf(x) === -1`,
+    // `M[x] === undefined`) is classified by its inner atom; the comparison
+    // decides which edge the atom holds on.
+    let predicate_kind = matches!(
+        kind,
+        PredicateKind::ValidationCall
+            | PredicateKind::AllowlistCheck
+            | PredicateKind::TypeCheck
+            | PredicateKind::RelativeUrlValidated
+            | PredicateKind::ShellMetaValidated
+    );
+    let sentinel = if predicate_kind || kind == PredicateKind::Comparison {
+        sentinel_comparison_polarity(cond_text)
+    } else {
+        SentinelPolarity::NoComparison
+    };
+    if predicate_kind && sentinel == SentinelPolarity::Opaque {
+        kind = PredicateKind::Unknown;
+        target_var = None;
+    }
     // `has_semantic_negation` only consults the lowercased text for the
     // AllowlistCheck / TypeCheck kinds, so compute the (allocating) lowercase
-    // lazily — most conditions are neither and skip it entirely.  The boolean
-    // result is identical to the prior unconditional-lowercase `||` chain.
-    let has_semantic_negation = match kind {
+    // lazily: most conditions are neither and skip it entirely.
+    let base_negation = match kind {
         PredicateKind::AllowlistCheck => cond_text.to_ascii_lowercase().contains(" not in "),
-        PredicateKind::TypeCheck => {
+        // The `!=` scan stands in for `typeof x !== 'number'`.  When the
+        // `!=` belongs to a sentinel comparison (`isinstance(x, int) !=
+        // True`) the sentinel already accounts for it.
+        PredicateKind::TypeCheck if sentinel == SentinelPolarity::NoComparison => {
             let lower = cond_text.to_ascii_lowercase();
             lower.contains("!==") || lower.contains("!=")
         }
@@ -1313,10 +1343,13 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         }
         _ => false,
     };
+    let has_semantic_negation =
+        base_negation ^ (predicate_kind && sentinel == SentinelPolarity::Flip);
     BranchCondClass {
         kind,
         target_var,
         has_semantic_negation,
+        sentinel,
         path: classify_path_branch(cond_text),
     }
 }
@@ -1544,6 +1577,7 @@ fn compute_succ_states(
                         &mut false_state,
                         cond_text,
                         &cond_info.condition_vars,
+                        cond_info.condition_negated,
                         ssa,
                         block.id,
                         transfer.interner,
@@ -1564,6 +1598,28 @@ fn compute_succ_states(
                 // Motivated by Novu CVE GHSA-4x48-cgf9-q33f
                 // (`const ssrfError = await validateUrlSsrf(child.webhookUrl);
                 //   if (ssrfError) throw …;`).
+                //
+                // `ok === false` / `ok == True` classify as Comparison; the
+                // boolean sentinel says which edge holds the truthy result.
+                let bool_sentinel = kind == PredicateKind::Comparison
+                    && matches!(
+                        class.sentinel,
+                        crate::taint::path_state::SentinelPolarity::Flip
+                            | crate::taint::path_state::SentinelPolarity::Same
+                    );
+                if bool_sentinel {
+                    apply_input_validator_branch_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        cond_text,
+                        &cond_info.condition_vars,
+                        cond_info.condition_negated
+                            ^ (class.sentinel == crate::taint::path_state::SentinelPolarity::Flip),
+                        ssa,
+                        block.id,
+                        transfer.interner,
+                    );
+                }
                 if matches!(
                     kind,
                     PredicateKind::Unknown | PredicateKind::NullCheck | PredicateKind::ErrorCheck
@@ -1573,6 +1629,7 @@ fn compute_succ_states(
                         &mut false_state,
                         cond_text,
                         &cond_info.condition_vars,
+                        cond_info.condition_negated,
                         ssa,
                         block.id,
                         transfer.interner,
@@ -1990,6 +2047,9 @@ fn null_check_true_branch_is_success(lower: &str) -> bool {
 /// * `err == nil` / `err == None` / `error == nil` / `is_ok()` → TRUE branch
 /// * `err != nil` / `error != nil` / `is_err()`               → FALSE branch
 ///
+/// and swapped when `condition_negated` reports a leading `!` / `not`
+/// (`!r.is_ok()`).
+///
 /// Strict-additive: when the condition does not match the err-check shape,
 /// the defining op is not a Call, the callee is not recognised as a
 /// validator, or the arg has no SSA-level var_name to mark, the function
@@ -1999,6 +2059,7 @@ fn apply_validation_err_check_narrowing(
     false_state: &mut SsaTaintState,
     cond_text: &str,
     condition_vars: &[String],
+    condition_negated: bool,
     ssa: &SsaBody,
     block: BlockId,
     interner: &SymbolInterner,
@@ -2008,9 +2069,12 @@ fn apply_validation_err_check_narrowing(
     }
     // Determine which branch corresponds to "err is null / Ok / no error".
     // Defaults to FALSE for `err != nil`-style; flips to TRUE for
-    // `err == nil`-style and `is_ok()`.
+    // `err == nil`-style and `is_ok()`.  The text test reads the condition
+    // under any leading `!` / `not`, which the CFG strips into
+    // `condition_negated` without changing which edge is TRUE, so a
+    // negated condition (`!(err == nil)`, `!r.is_ok()`) swaps the edge.
     let lower = cond_text.to_ascii_lowercase();
-    let success_branch_is_true = null_check_true_branch_is_success(&lower);
+    let success_branch_is_true = null_check_true_branch_is_success(&lower) ^ condition_negated;
 
     // Resolve `err`'s reaching SSA value (last def in this or earlier block).
     // We restrict to single-var conditions to avoid mis-attributing
@@ -2095,7 +2159,7 @@ fn apply_validation_err_check_narrowing(
 /// // BooleanTrueIsValid
 /// const ok = isValidPath(p);
 /// if (!ok) throw …;
-/// // → p is validated on the !ok==false (true value of ok) branch
+/// // → p is validated on the FALSE edge of `!ok` (ok truthy)
 /// ```
 ///
 /// Resolves `condition_vars[0]` to its reaching SSA def, checks that
@@ -2108,7 +2172,9 @@ fn apply_validation_err_check_narrowing(
 /// `success_branch_is_true` heuristics as
 /// [`apply_validation_err_check_narrowing`]) and is then flipped for
 /// `BooleanTrueIsValid` validators (a truthy result means "valid", so
-/// the *true* branch carries the validation).
+/// the *true* branch carries the validation).  `condition_negated` (a
+/// leading `!` / `not`, or an `ok === false` sentinel folded in by the
+/// caller) swaps the result once more.
 ///
 /// Strict-additive: when no condition var matches, the def isn't a
 /// Call, the callee isn't a recognised validator, or no arg has an
@@ -2118,6 +2184,7 @@ fn apply_input_validator_branch_narrowing(
     false_state: &mut SsaTaintState,
     cond_text: &str,
     condition_vars: &[String],
+    condition_negated: bool,
     ssa: &SsaBody,
     block: BlockId,
     interner: &SymbolInterner,
@@ -2170,6 +2237,9 @@ fn apply_input_validator_branch_narrowing(
         InputValidatorPolarity::ErrorReturning => cond_text_says_null_branch_is_true,
         InputValidatorPolarity::BooleanTrueIsValid => !cond_text_says_null_branch_is_true,
     };
+    // The text heuristic describes the condition under any leading `!` /
+    // `not`; `if (!ok) throw` holds `ok` truthy on the FALSE edge.
+    let success_branch_is_true = success_branch_is_true ^ condition_negated;
 
     // Collect candidate input-arg variable names.  Conservative, every
     // SSA value across every positional arg group, looked up by

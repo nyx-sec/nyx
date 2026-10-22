@@ -530,7 +530,7 @@ fn peel_condition_wrappers(text: &str) -> &str {
 
 /// Strip a leading boolean negation (`!x`, `not x`), returning the rest.
 /// `!=` is a comparison, not a negation, and is left alone.
-fn strip_leading_not(text: &str) -> Option<&str> {
+pub(crate) fn strip_leading_not(text: &str) -> Option<&str> {
     let t = text.trim_start();
     if let Some(rest) = t.strip_prefix('!') {
         if rest.starts_with('=') {
@@ -548,7 +548,7 @@ fn strip_leading_not(text: &str) -> Option<&str> {
 /// Repeatedly strip one pair of parens that wraps the whole text.  A
 /// leading `(` whose matching `)` closes before the end (`(a) || (b)`)
 /// is not a wrapper and stops the strip.
-fn strip_outer_parens(text: &str) -> &str {
+pub(crate) fn strip_outer_parens(text: &str) -> &str {
     let mut cur = text.trim();
     while cur.starts_with('(') && cur.ends_with(')') {
         match matching_close_paren(cur) {

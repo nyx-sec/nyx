@@ -1,0 +1,33 @@
+{
+  "description": "Java `ALLOWED.contains(cmd) == false` puts membership on the FALSE edge.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "sentinel",
+    "allowlist",
+    "cmdi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        10,
+        16
+      ],
+      "notes": "`== false` returns before the sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        20,
+        21
+      ],
+      "notes": "sink runs on the not-in-list branch"
+    }
+  ]
+}
