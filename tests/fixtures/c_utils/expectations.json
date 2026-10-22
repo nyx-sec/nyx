@@ -6,13 +6,14 @@
     { "id_prefix": "c.memory.sprintf", "min_count": 4 },
     { "id_prefix": "c.memory.gets", "min_count": 1 },
     { "id_prefix": "c.memory.scanf_percent_s", "min_count": 1 },
-    { "id_prefix": "c.cmdi.system", "min_count": 3 },
+    { "id_prefix": "c.cmdi.system", "min_count": 4 },
+    { "id_prefix": "c.cmdi.popen", "min_count": 1 },
     { "id_prefix": "cfg-unguarded-sink", "min_count": 1 }
   ],
   "forbidden_findings": [],
   "noise_budget": {
     "max_total_findings": 50,
-    "max_high_findings": 22
+    "max_high_findings": 23
   },
   "performance_expectations": {
     "max_ms_no_index": 1000,

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 694
+    "corpus_size": 697
   },
   "cases": [
     {
@@ -21960,6 +21960,104 @@
       ],
       "disabled": false,
       "notes": "A parameterless method with no sources next to an unrelated method that takes a parameter. Fix: the no-params-no-sources check reads the sink function's own parameters instead of any summary in the file."
+    },
+    {
+      "case_id": "py-cmdi-layerb-escape-001",
+      "file": "python/cmdi/vuln_dict_key_cmd_unrelated_escape.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Request value reaches os.system through dict-key iteration, which taint does not track. An html.escape on another value in the same function is not evidence that the engine evaluated the shell sink, so the AST pattern must not be suppressed."
+    },
+    {
+      "case_id": "py-cmdi-layerb-same-name-001",
+      "file": "python/cmdi/vuln_same_name_method_other_class.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Two class-based views each define get(). Taint tracks the flow in RunView.get but loses the dict-key flow in OtherView.get; evidence from one get() must not suppress the AST pattern in the other."
+    },
+    {
+      "case_id": "py-safe-shell-quote-helper-001",
+      "file": "python/safe/safe_shell_quote_helper.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.cmdi.os_system",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "negative",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Request value passes through a same-file helper wrapping shlex.quote before os.system. The helper's SHELL_ESCAPE sanitizer is evidence that the engine cleared the flow, so the AST pattern stays suppressed."
     }
   ]
 }
