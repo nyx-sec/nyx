@@ -1799,10 +1799,16 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
             .or_else(|| ast.child_by_field_name("argument_list"));
         if let Some(args_node) = args {
             let mut w = args_node.walk();
-            if let Some(first) = args_node.named_children(&mut w).next() {
-                if let Some(p) = prefix_of_expression(first, code) {
-                    return Some(p);
-                }
+            let positional: Vec<Node> = args_node.named_children(&mut w).collect();
+            // Express `res.redirect(301, url)`: skip a leading numeric
+            // status so the URL argument's prefix is read.
+            let url_arg = match positional.as_slice() {
+                [status, url] if matches!(status.kind(), "number" | "integer") => Some(*url),
+                [first, ..] => Some(*first),
+                [] => None,
+            };
+            if let Some(p) = url_arg.and_then(|a| prefix_of_expression(a, code)) {
+                return Some(p);
             }
         }
     }
@@ -1987,7 +1993,11 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
     let is_interp_string = cur.kind() == "string" && has_string_interpolation(cur);
     if is_fstring || is_interp_string {
         let mut w = cur.walk();
-        let first = cur.named_children(&mut w).next()?;
+        // tree-sitter-python wraps the literal in `string_start` /
+        // `string_end` tokens; skip the opening one.
+        let first = cur
+            .named_children(&mut w)
+            .find(|c| c.kind() != "string_start")?;
         if matches!(first.kind(), "string_content" | "string_fragment") {
             let raw = text_of(first, code)?;
             let trimmed = strip_string_quotes_loose(&raw);

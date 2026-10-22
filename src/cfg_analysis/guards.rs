@@ -2763,6 +2763,31 @@ fn cond_membership_lookup<'c>(
     best.map(|(_, l)| l)
 }
 
+/// True when the `//` test at `cond` has a leading-`/` test on the same
+/// value elsewhere in the same function (the other half of the inline
+/// relative-URL check).
+fn has_leading_slash_partner(cond: NodeIndex, ctx: &AnalysisContext) -> bool {
+    use crate::taint::path_state::classify_condition_with_target;
+    let info = &ctx.cfg[cond];
+    let Some((_, Some(target))) = info
+        .condition_text
+        .as_deref()
+        .map(classify_condition_with_target)
+    else {
+        return false;
+    };
+    let func = info.ast.enclosing_func.as_deref();
+    ctx.cfg.node_indices().any(|i| {
+        let n = &ctx.cfg[i];
+        n.kind == StmtKind::If
+            && n.ast.enclosing_func.as_deref() == func
+            && n.condition_text.as_deref().is_some_and(|t| {
+                classify_condition_with_target(t)
+                    == (PredicateKind::LeadingSlashCheck, Some(target.clone()))
+            })
+    })
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -2851,6 +2876,16 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                     // confinement (rejects `//` + `scheme:`), so a redirect
                     // gated on its non-null result is same-origin.  Scope to
                     // OPEN_REDIRECT.  Motivated by CVE-2026-42259 (Saltcorn).
+                    result.push((idx, Cap::OPEN_REDIRECT));
+                } else if kind == PredicateKind::RelativeUrlValidated
+                    || (kind == PredicateKind::ProtocolRelativeCheck
+                        && has_leading_slash_partner(idx, ctx))
+                {
+                    // Inline relative-URL check: a leading `/` plus a
+                    // rejection of protocol-relative `//host` keeps a
+                    // redirect on-site.  The split form registers on the
+                    // `//` test when the same function also tests the same
+                    // value for a leading `/`.
                     result.push((idx, Cap::OPEN_REDIRECT));
                 } else if matches!(
                     kind,
@@ -3368,54 +3403,67 @@ fn chain_callee_fragments_with_text<'a>(
     frags
 }
 
-/// Check if the source bytes at a given span contain a redirect call whose
-/// argument starts with a path prefix (`/...`), indicating a server-relative
-/// path rather than an attacker-controlled URL.
+/// True when a redirect-style sink's URL argument starts with a constant
+/// prefix that pins the origin (`res.redirect(`/users/${id}`)`,
+/// `redirect_to "/users/#{id}"`, `redirect("https://app.example/" + p)`).
+/// The prefix is the AST-derived [`crate::cfg::NodeInfo::string_prefix`],
+/// so a bare `"/" + next` (which `next = "/evil.com"` turns into
+/// `//evil.com`) does not count.
 ///
 /// Reused by both `cfg-unguarded-sink` suppression and taint finding filtering.
-pub(crate) fn has_redirect_path_prefix(source_bytes: &[u8], span: (usize, usize)) -> bool {
-    let (start, end) = span;
-    if start >= source_bytes.len() || end > source_bytes.len() {
-        return false;
-    }
-    let text = &source_bytes[start..end];
-    // Search for the argument portion after the first '('
-    if let Some(paren_pos) = text.iter().position(|&b| b == b'(') {
-        let after_paren = &text[paren_pos + 1..];
-        let trimmed = after_paren
-            .iter()
-            .skip_while(|&&b| b == b' ' || b == b'\n' || b == b'\t')
-            .copied()
-            .collect::<Vec<_>>();
-        // Template literal: `/ ...
-        if trimmed.starts_with(b"`/") {
-            return true;
-        }
-        // String literal: "/ ... or '/ ...
-        if trimmed.starts_with(b"\"/") || trimmed.starts_with(b"'/") {
-            return true;
-        }
-    }
-    false
+pub(crate) fn redirect_target_origin_locked(info: &crate::cfg::NodeInfo) -> bool {
+    info.call.callee.as_deref().is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.ends_with("redirect") || c.ends_with("redirect_to")
+    }) && info
+        .string_prefix
+        .as_deref()
+        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
 }
 
-/// Check if this sink is an internal redirect, a `res.redirect` (SSRF sink)
-/// whose argument is a template literal or string starting with `/`, indicating
-/// a server-relative path rather than an attacker-controlled URL.
+/// Check if this sink is an internal redirect: a redirect call (SSRF or
+/// OPEN_REDIRECT sink) whose URL is server-relative or pinned to a fixed
+/// origin, not an attacker-controlled URL.  The URL may be inline or a
+/// variable whose every same-function definition before the sink carries
+/// such a prefix (`const target = `/users/${id}`; res.redirect(target)`).
 fn is_internal_redirect(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
-    if !sink_caps.contains(Cap::SSRF) {
+    if !sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
         return false;
     }
-    let sink_info = &ctx.cfg[sink];
-    let callee = match &sink_info.call.callee {
-        Some(c) => c.as_str(),
-        None => return false,
+    let info = &ctx.cfg[sink];
+    if redirect_target_origin_locked(info) {
+        return true;
+    }
+    let is_redirect = info.call.callee.as_deref().is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.ends_with("redirect") || c.ends_with("redirect_to")
+    });
+    let Some([url_var]) = info
+        .call
+        .arg_uses
+        .iter()
+        .find(|uses| !uses.is_empty())
+        .map(|uses| uses.as_slice())
+    else {
+        return false;
     };
-    // Only applies to redirect calls
-    if !callee.ends_with("redirect") && !callee.ends_with("Redirect") {
+    if !is_redirect {
         return false;
     }
-    has_redirect_path_prefix(ctx.source_bytes, sink_info.ast.span)
+    let sink_func = info.ast.enclosing_func.as_deref();
+    let mut defs = ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).filter(|n| {
+        n.taint.defines.as_deref() == Some(url_var.as_str())
+            && n.ast.enclosing_func.as_deref() == sink_func
+            && n.ast.span.0 < info.ast.span.0
+    });
+    let mut any = false;
+    let all_locked = defs.all(|n| {
+        any = true;
+        n.string_prefix
+            .as_deref()
+            .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
+    });
+    any && all_locked
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.

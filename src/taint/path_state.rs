@@ -34,16 +34,29 @@ pub enum PredicateKind {
     /// and the **false branch is the validated path**.  Use inverted polarity
     /// when applying branch predicates.
     ShellMetaValidated,
-    /// Inline relative-URL validation: `x.startsWith("/")` / `x.starts_with("/")`
-    /// / `x.startswith("/")` / `strpos(x, "/") === 0`.  The TRUE branch
-    /// constrains `x` to a relative path (no scheme, no `//host`), which is
-    /// the standard inline form of an open-redirect sanitiser when the
-    /// developer didn't extract a named helper.  Cap-aware: clears
-    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch
-    /// so non-redirect sinks downstream still fire on the residual taint.
-    /// Mirrors [`ShellMetaValidated`](Self::ShellMetaValidated) but with
-    /// non-inverted polarity (true branch is the validated path).
+    /// Inline relative-URL validation held in one undecomposed condition:
+    /// `x.startsWith("/") && !x.startsWith("//")`.  The TRUE branch
+    /// constrains `x` to a same-origin path (leading `/`, no `//host`).
+    /// Cap-aware: clears [`crate::labels::Cap::OPEN_REDIRECT`] only on the
+    /// validated branch so non-redirect sinks downstream still fire on the
+    /// residual taint.  The usual split form (one branch per clause) is
+    /// tracked by [`LeadingSlashCheck`](Self::LeadingSlashCheck) and
+    /// [`ProtocolRelativeCheck`](Self::ProtocolRelativeCheck) instead.
     RelativeUrlValidated,
+    /// One half of the inline relative-URL check: `x.startsWith("/")`,
+    /// `x.starts_with("/")`, `x.startswith("/")`, `strpos($x, "/") === 0`,
+    /// `x[0] === '/'`.  On its own it proves nothing about the host:
+    /// `//evil.com` and `/\evil.com` start with `/` and browsers resolve both
+    /// as protocol-relative.  The branch sets a predicate bit, and
+    /// OPEN_REDIRECT is cleared only once
+    /// [`ProtocolRelativeCheck`](Self::ProtocolRelativeCheck) has also been
+    /// seen false on the same path.
+    LeadingSlashCheck,
+    /// `x.startsWith("//")` / `x.startsWith("/\\")` / `x[1] === '/'`.  The
+    /// TRUE branch is the protocol-relative (reject) case; the FALSE branch
+    /// proves the value has no authority prefix.  Pairs with
+    /// [`LeadingSlashCheck`](Self::LeadingSlashCheck).
+    ProtocolRelativeCheck,
     /// Inline URL-parse + host-allowlist validation:
     /// `new URL(x).host === ALLOWED` (JS/TS),
     /// `urlparse(x).netloc == ALLOWED` (Python),
@@ -332,103 +345,147 @@ fn split_top_level_args(args_part: &str) -> Vec<&str> {
     out
 }
 
-fn is_leading_slash_check(text: &str) -> bool {
+/// Every leading-prefix test in `text`, as `(needle, negated)`:
+/// `.startsWith(N)` / `.starts_with(N)` / `.startswith(N)` (all occurrences),
+/// `strpos($x, N) === 0` / `mb_strpos`, and the subscript forms
+/// `x[0] === '/'` (needle `/`) and `x[1] === '/'` (needle `//`).  `negated`
+/// is set when the test is directly preceded by `!` / `not`, which is how a
+/// clause of a conjunction says "does not start with".
+fn leading_prefix_tests(text: &str) -> smallvec::SmallVec<[(String, bool); 2]> {
     let lower = text.to_ascii_lowercase();
-    // Method-call form: `.startswith("/")` covers JS/TS/Java (`startsWith`
-    // lower-cases to `startswith`), Python (`startswith`), Rust
-    // (`starts_with` → `starts_with` after lower).  Keep the variants
-    // explicit so we don't miss the underscore form.
+    let mut out: smallvec::SmallVec<[(String, bool); 2]> = smallvec::SmallVec::new();
     for method in [".startswith(", ".starts_with("] {
-        if let Some(idx) = lower.find(method) {
+        for (idx, _) in lower.match_indices(method) {
             let args_start = idx + method.len();
             if let Some(needle) = extract_first_string_arg(&lower[args_start..]) {
-                if needle == "/" {
-                    return true;
-                }
+                out.push((needle, prefix_test_negated(&lower[..idx])));
             }
         }
     }
-    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0` — leading-
-    // slash detection via offset-zero substring match.  Both equality
+    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0`: leading-
+    // prefix detection via offset-zero substring match.  Both equality
     // forms (`===`, `==`) accepted; the `0` literal is the load-bearing
-    // bit.  Conservative: requires the closing `=== 0` form; bare
-    // `strpos(...)` (truthy check) is not recognised.
+    // bit.  Bare `strpos(...)` (truthy check) is not recognised.
     for prefix in ["strpos(", "mb_strpos("] {
-        if let Some(start) = lower.find(prefix) {
-            let after = &lower[start + prefix.len()..];
-            // Find the closing paren of the strpos call.
-            let mut depth = 1usize;
-            let bytes = after.as_bytes();
-            let mut close = None;
-            let mut i = 0;
-            while i < bytes.len() {
-                match bytes[i] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(i);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            let Some(close) = close else { continue };
-            let args = &after[..close];
-            // Need at least one comma so we have two args.
-            let mut depth = 0i32;
-            let mut comma = None;
-            for (j, ch) in args.char_indices() {
-                match ch {
-                    '(' | '[' | '{' => depth += 1,
-                    ')' | ']' | '}' => depth -= 1,
-                    ',' if depth == 0 => {
-                        comma = Some(j);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let Some(comma) = comma else { continue };
-            let second = args[comma + 1..].trim();
-            // Strip optional surrounding parens / quotes.
-            let needle = second.trim_matches(|c: char| c == '"' || c == '\'');
-            if needle != "/" {
+        for (start, _) in lower.match_indices(prefix) {
+            if prefix == "strpos(" && lower[..start].ends_with("mb_") {
                 continue;
             }
-            // Tail after the strpos `)` should compare against 0 with
-            // `===` / `==`.  Allow whitespace.
+            let after = &lower[start + prefix.len()..];
+            let Some(needle) = call_arg(after, 1) else {
+                continue;
+            };
+            let needle = needle.trim_matches(|c: char| c == '"' || c == '\'');
+            let Some(close) = matching_call_close(after) else {
+                continue;
+            };
             let tail = after[close + 1..].trim_start();
-            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("==")) {
-                if rest.trim() == "0" {
-                    return true;
+            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("=="))
+                && rest.trim_start().starts_with('0')
+                && !rest.trim_start()[1..].starts_with(|c: char| c.is_ascii_digit())
+            {
+                let negated = prefix_test_negated(&lower[..start]);
+                out.push((needle.replace("\\\\", "\\"), negated));
+            }
+        }
+    }
+    // Direct subscript form: `<X>[0] === '/'` / `<X>[1] == "/"`, with or
+    // without spaces around the operator.
+    for (index, needle) in [("[0]", "/"), ("[1]", "//")] {
+        for op in ["===", "=="] {
+            for probe in [format!("{index} {op}"), format!("{index}{op}")] {
+                for (idx, _) in lower.match_indices(probe.as_str()) {
+                    let after = lower[idx + probe.len()..].trim_start();
+                    if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                        out.push((needle.to_string(), prefix_test_negated(&lower[..idx])));
+                    }
                 }
             }
         }
     }
-    // Direct subscript form: `<X>[0] === '/'` / `<X>[0] == "/"`.
-    // Conservative: the literal `[0]` immediately followed by an
-    // equality op and a single-char `/` literal.
-    for op in ["===", "=="] {
-        let probe = format!("[0] {}", op);
-        if let Some(idx) = lower.find(&probe) {
-            let after = lower[idx + probe.len()..].trim_start();
-            if after.starts_with("'/'") || after.starts_with("\"/\"") {
-                return true;
+    out
+}
+
+/// Byte index of the `)` closing a call whose argument list starts at
+/// `args_part`.
+fn matching_call_close(args_part: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (i, b) in args_part.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
             }
-        }
-        // Without spaces around the operator: `[0]==='/'`.
-        let probe_tight = format!("[0]{}", op);
-        if let Some(idx) = lower.find(&probe_tight) {
-            let after = lower[idx + probe_tight.len()..].trim_start();
-            if after.starts_with("'/'") || after.starts_with("\"/\"") {
-                return true;
-            }
+            _ => {}
         }
     }
-    false
+    None
+}
+
+/// True when the prefix test whose receiver ends `before` is negated on its
+/// own (`!x.startsWith(..)`, `not x.startswith(..)`): the clause of the
+/// enclosing condition it belongs to starts with a negation.
+fn prefix_test_negated(before: &str) -> bool {
+    let clause = before
+        .rsplit(['&', '|', '(', ','])
+        .next()
+        .unwrap_or(before)
+        .trim_start();
+    let clause = clause
+        .rsplit(" and ")
+        .next()
+        .unwrap_or(clause)
+        .rsplit(" or ")
+        .next()
+        .unwrap_or(clause)
+        .trim_start();
+    clause.starts_with('!') || clause.starts_with("not ")
+}
+
+/// `//` and `/\` both make a browser treat the rest as a host.
+fn is_protocol_relative_needle(needle: &str) -> bool {
+    matches!(needle, "//" | "/\\")
+}
+
+/// `x.startsWith("/")` and friends as a single test (see
+/// [`PredicateKind::LeadingSlashCheck`]).
+fn is_leading_slash_check(text: &str) -> bool {
+    leading_prefix_tests(text).iter().any(|(n, _)| n == "/")
+}
+
+/// `x.startsWith("//")` / `x.startsWith("/\\")` / `x[1] === '/'`, where every
+/// prefix test in the text is a protocol-relative one.
+fn is_protocol_relative_check(text: &str) -> bool {
+    let tests = leading_prefix_tests(text);
+    !tests.is_empty() && tests.iter().all(|(n, _)| is_protocol_relative_needle(n))
+}
+
+/// A condition with a top-level boolean connective, which the CFG would
+/// normally have split into one branch per clause.
+fn has_boolean_connective(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("&&")
+        || lower.contains("||")
+        || lower.contains(" and ")
+        || lower.contains(" or ")
+}
+
+/// The whole relative-URL check in one conjunction:
+/// `x.startsWith("/") && !x.startsWith("//")` (optionally also rejecting
+/// `/\`).  The TRUE edge holds both facts.
+fn is_relative_url_conjunction(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("||") || lower.contains(" or ") {
+        return false;
+    }
+    if !(lower.contains("&&") || lower.contains(" and ")) {
+        return false;
+    }
+    let tests = leading_prefix_tests(text);
+    tests.iter().any(|(n, neg)| n == "/" && !neg) && tests.iter().any(|(n, neg)| n == "//" && *neg)
 }
 
 /// Check whether `text` is an inline URL-parse + host-allowlist validation.
@@ -1441,12 +1498,22 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // ── Inline relative-URL validation ──────────────────────────────────
     //
     // `x.startsWith("/")` (JS/TS/Java/Kotlin), `x.starts_with("/")` (Rust),
-    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP).
-    // The TRUE branch constrains `x` to a leading-slash relative path —
-    // the canonical inline open-redirect sanitiser.  Matched BEFORE
-    // AllowlistCheck (which would otherwise capture `.starts_with(`).
-    if is_leading_slash_check(text) {
+    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP), and the
+    // protocol-relative rejection `x.startsWith("//")`.  A leading slash
+    // alone does not keep a redirect on-site (`//evil.com`), so the two
+    // tests are separate kinds whose facts meet on the path; only a
+    // single-text conjunction of both is the full check.  A compound text
+    // in any other shape is left to the generic classifier.
+    if is_relative_url_conjunction(text) {
         return PredicateKind::RelativeUrlValidated;
+    }
+    if !has_boolean_connective(text) {
+        if is_protocol_relative_check(text) {
+            return PredicateKind::ProtocolRelativeCheck;
+        }
+        if is_leading_slash_check(text) {
+            return PredicateKind::LeadingSlashCheck;
+        }
     }
 
     // ── Host-allowlist URL-parse validation ─────────────────────────────
@@ -1752,7 +1819,9 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             let target = extract_validation_target(text);
             (kind, target)
         }
-        PredicateKind::RelativeUrlValidated => {
+        PredicateKind::RelativeUrlValidated
+        | PredicateKind::LeadingSlashCheck
+        | PredicateKind::ProtocolRelativeCheck => {
             // Receiver of `.startsWith("/")` / `.startswith("/")` /
             // `.starts_with("/")`, or first arg of `strpos($x, "/")`.
             // Same machinery as ShellMetaValidated.
@@ -2970,6 +3039,61 @@ mod tests {
         let (k2, t2) = classify_condition_with_target("!stringInSlice(host, allowed)");
         assert_eq!(k2, PredicateKind::AllowlistCheck);
         assert_eq!(t2.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn relative_url_checks_split_into_two_facts() {
+        use PredicateKind::*;
+        let cases = [
+            ("next.startsWith('/')", LeadingSlashCheck),
+            ("!next.startsWith('/')", LeadingSlashCheck),
+            ("x.starts_with(\"/\")", LeadingSlashCheck),
+            ("not nxt.startswith(\"/\")", LeadingSlashCheck),
+            ("strpos($x, '/') === 0", LeadingSlashCheck),
+            ("u[0] === '/'", LeadingSlashCheck),
+            ("next.startsWith('//')", ProtocolRelativeCheck),
+            ("next.startsWith('/\\\\')", ProtocolRelativeCheck),
+            ("u[1] === '/'", ProtocolRelativeCheck),
+            ("strpos($x, '//') === 0", ProtocolRelativeCheck),
+            // the whole check in one undecomposed conjunction
+            (
+                "x.startsWith('/') && !x.startsWith('//')",
+                RelativeUrlValidated,
+            ),
+            (
+                "!(x.startsWith('/') && !x.startsWith('//'))",
+                RelativeUrlValidated,
+            ),
+            (
+                "nxt.startswith('/') and not nxt.startswith('//')",
+                RelativeUrlValidated,
+            ),
+        ];
+        for (text, want) in cases {
+            assert_eq!(classify_condition(text), want, "{text}");
+        }
+        // Compound texts that are not the full check are not a URL fact.
+        for text in [
+            "!(x.startsWith('/') || x.startsWith('//'))",
+            "x.startsWith('/') && x.length < 100",
+            "!x.startsWith('/') || x.startsWith('//')",
+        ] {
+            let k = classify_condition(text);
+            assert!(
+                !matches!(
+                    k,
+                    LeadingSlashCheck | ProtocolRelativeCheck | RelativeUrlValidated
+                ),
+                "{text}: {k:?}"
+            );
+        }
+        // Targets resolve to the receiver.
+        assert_eq!(
+            classify_condition_with_target("!next.startsWith('//')")
+                .1
+                .as_deref(),
+            Some("next")
+        );
     }
 
     #[test]

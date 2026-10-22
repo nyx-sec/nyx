@@ -1415,6 +1415,50 @@ mod goto_succ_propagation_tests {
     }
 
     #[test]
+    fn open_redirect_clears_only_after_both_url_facts() {
+        use crate::labels::Cap;
+        use crate::state::symbol::SymbolInterner;
+        use crate::taint::path_state::PredicateKind::{LeadingSlashCheck, ProtocolRelativeCheck};
+        let caps = Cap::OPEN_REDIRECT | Cap::SSRF;
+        let ssa = ssa_body_with_named_value("next");
+        let mut interner = SymbolInterner::new();
+        interner.intern("next");
+        let vars = ["next".to_string()];
+        let apply = |st: &mut SsaTaintState, kind, polarity| {
+            super::super::apply_branch_predicates(st, &vars, kind, polarity, &interner, &ssa, None)
+        };
+        let caps_of = |st: &SsaTaintState| st.get(SsaValue(0)).map(|t| t.caps);
+
+        // Leading slash alone: `//evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, true);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Not protocol-relative alone: `https://evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Both, in either order: only OPEN_REDIRECT is cleared.
+        for order in [
+            [(LeadingSlashCheck, true), (ProtocolRelativeCheck, false)],
+            [(ProtocolRelativeCheck, false), (LeadingSlashCheck, true)],
+        ] {
+            let mut st = tainted_state_with_abstract(caps);
+            for (kind, polarity) in order {
+                apply(&mut st, kind, polarity);
+            }
+            assert_eq!(caps_of(&st), Some(Cap::SSRF), "{order:?}");
+        }
+
+        // The reject edges never clear.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, false);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+    }
+
+    #[test]
     fn path_rejection_single_axis_validates_nothing() {
         // `if (name.includes("..")) return; db.query("..." + name)`: a path
         // shape check says nothing about SQL / shell / HTML and, on one axis

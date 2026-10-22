@@ -1320,6 +1320,8 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
             | PredicateKind::AllowlistCheck
             | PredicateKind::TypeCheck
             | PredicateKind::RelativeUrlValidated
+            | PredicateKind::LeadingSlashCheck
+            | PredicateKind::ProtocolRelativeCheck
             | PredicateKind::ShellMetaValidated
     );
     let sentinel = if predicate_kind || kind == PredicateKind::Comparison {
@@ -1869,9 +1871,11 @@ fn apply_branch_predicates(
     }
 
     // RelativeUrlValidated: TRUE branch is the validated path
-    // (`x.startsWith("/")` succeeded → `x` cannot redirect off-host).
-    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks
-    // (XSS / SQLi / FILE_IO) downstream still fire on residual taint.
+    // (`x.startsWith("/") && !x.startsWith("//")` held → `x` cannot
+    // redirect off-host).  Cap-aware: clear `Cap::OPEN_REDIRECT` only;
+    // non-redirect sinks (XSS / SQLi / FILE_IO) downstream still fire on
+    // residual taint.  The split form is handled after the predicate bits
+    // below.
     if kind == PredicateKind::RelativeUrlValidated && polarity {
         for var in condition_vars {
             clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
@@ -1942,6 +1946,30 @@ fn apply_branch_predicates(
         }
     }
 
+    // Split relative-URL check: `if (!x.startsWith('/') || x.startsWith('//'))
+    // return;` (or the `&&` form) is two branches.  Clear OPEN_REDIRECT once
+    // this path has seen both "starts with /" and "does not start with //";
+    // either fact alone leaves `//evil.com` possible.
+    if matches!(
+        kind,
+        PredicateKind::LeadingSlashCheck | PredicateKind::ProtocolRelativeCheck
+    ) {
+        use crate::taint::domain::{PRED_BIT_LEADING_SLASH, PRED_BIT_PROTOCOL_RELATIVE};
+        for var in condition_vars {
+            let Some(sym) = interner.get(var) else {
+                continue;
+            };
+            let Ok(idx) = state.predicates.binary_search_by_key(&sym, |(id, _)| *id) else {
+                continue;
+            };
+            let p = state.predicates[idx].1;
+            if p.known_true & (1 << PRED_BIT_LEADING_SLASH) != 0
+                && p.known_false & (1 << PRED_BIT_PROTOCOL_RELATIVE) != 0
+            {
+                clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
+            }
+        }
+    }
 }
 
 /// Branch on the presence result of a map lookup (`_, ok := allowed[cmd];
@@ -11897,8 +11925,8 @@ fn is_abstract_safe_for_sink(
         return false;
     }
 
-    // SSRF, string prefix with locked host
-    if sink_caps.intersects(Cap::SSRF) {
+    // SSRF / open redirect, string prefix with locked origin
+    if sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
         // Inline template-literal prefix attached to the CFG node directly
         // (covers sinks whose URL is a template literal argument without an
         // intermediate Assign to seed the abstract domain).
@@ -12038,8 +12066,9 @@ fn is_call_abstract_safe(
     ssa: &SsaBody,
     cfg: &Cfg,
 ) -> bool {
-    // SSRF, check if the URL argument (first arg) has a safe prefix.
-    if sink_caps.intersects(Cap::SSRF) {
+    // SSRF / open redirect, check if the URL argument (first arg) has a
+    // prefix that locks the origin.
+    if sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
         // Inline template-literal prefix from the call AST itself
         // (e.g. `axios.get(\`https://host/…${x}\`)` has no intermediate Assign
         // to seed a StringFact, check the node-attached prefix directly).
@@ -12542,45 +12571,14 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
             .is_some_and(safe_prefix)
 }
 
-/// SSRF safety: prefix includes scheme + full host + path separator.
-///
-/// Soundness: if the prefix contains `scheme://host/`, the attacker cannot
-/// control the destination host. They can only influence the path/query,
-/// which is not SSRF.
+/// URL-sink safety (SSRF and open redirect): the known prefix pins the
+/// origin, either `scheme://host/` or a same-origin `/path` that cannot be
+/// widened into `//host` (see
+/// [`crate::abstract_interp::string_domain::prefix_locks_origin`]).
 fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
-    let prefix = match &sf.prefix {
-        Some(p) => p.as_str(),
-        None => return false,
-    };
-    // Absolute-path prefix (e.g. "/projects/..."), internal redirect, not open redirect.
-    // The leading "/" locks the path to the same origin; the attacker cannot control the scheme
-    // or host, so this is not an SSRF vector.
-    //
-    // Exception: a bare "/" lock is NOT safe.  When the only constant is a
-    // single "/" and the attacker-controlled suffix begins with another "/",
-    // the full value is "//evil.com/..." — a protocol-relative URL that
-    // browsers and common HTTP clients fetch from the attacker's host.
-    // Likewise a prefix already starting with "//" is protocol-relative.
-    // Require a fixed non-slash second character so the leading-slash lock
-    // cannot be widened into "//host".
-    if prefix.starts_with('/') {
-        let mut chars = prefix.chars();
-        chars.next(); // consume leading '/'
-        match chars.next() {
-            // "/x..." with x != '/': same-origin path lock, safe.
-            Some(c) if c != '/' => return true,
-            // "//..." protocol-relative, or bare "/" that a tainted "/host"
-            // suffix can turn protocol-relative: not safe.
-            _ => return false,
-        }
-    }
-    if let Some(after_scheme) = prefix.find("://") {
-        let host_and_rest = &prefix[after_scheme + 3..];
-        if let Some(slash_pos) = host_and_rest.find('/') {
-            return slash_pos > 0; // non-empty host + path separator
-        }
-    }
-    false
+    sf.prefix
+        .as_deref()
+        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by
@@ -13725,8 +13723,8 @@ fn effective_param_sanitizer(
     let mut caller_kt: u8 = 0;
     let mut caller_kf: u8 = 0;
     for (_, pred) in &state.predicates {
-        caller_kt |= pred.known_true;
-        caller_kf |= pred.known_false;
+        caller_kt |= pred.known_true & crate::taint::domain::INTERPROC_PREDICATE_BITS;
+        caller_kf |= pred.known_false & crate::taint::domain::INTERPROC_PREDICATE_BITS;
     }
 
     let mut compatible: smallvec::SmallVec<[&_; 2]> = smallvec::SmallVec::new();

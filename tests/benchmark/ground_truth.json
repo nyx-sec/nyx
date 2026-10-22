@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 712
+    "corpus_size": 718
   },
   "cases": [
     {
@@ -22588,6 +22588,178 @@
       ],
       "disabled": false,
       "notes": "PHP `in_array(..., true) ? $requested : 'name'` is lowered as a branch, so the query sees an allowlisted column."
+    },
+    {
+      "case_id": "js-open_redirect-leading-slash-only-001",
+      "file": "javascript/open_redirect/redirect_leading_slash_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "open-redirect",
+        "leading-slash",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "`startsWith('/')` alone accepts `//evil.example` and `/\\evil.example`."
+    },
+    {
+      "case_id": "js-safe-inline-relative-redirect-001",
+      "file": "javascript/safe/safe_inline_relative_redirect.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "leading-slash",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "Leading `/` required and `//` / `/\\` rejected before the redirect."
+    },
+    {
+      "case_id": "js-safe-redirect-path-prefix-001",
+      "file": "javascript/safe/safe_redirect_path_prefix.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "Fixed `/users/` prefix (template and status-code forms) keeps the redirect on this origin."
+    },
+    {
+      "case_id": "js-open_redirect-bare-slash-prefix-001",
+      "file": "javascript/open_redirect/redirect_bare_slash_prefix.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "open-redirect",
+        "prefix-lock",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "A bare `/` prefix becomes `//evil.example` when the request value starts with `/`."
+    },
+    {
+      "case_id": "rb-safe-redirect-path-prefix-001",
+      "file": "ruby/safe/safe_redirect_path_prefix.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "`redirect_to \"/users/#{id}\"` cannot leave the origin."
+    },
+    {
+      "case_id": "py-safe-redirect-fstring-path-prefix-001",
+      "file": "python/safe/safe_redirect_fstring_path_prefix.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock",
+        "f-string"
+      ],
+      "disabled": false,
+      "notes": "f-string with a fixed `/users/` prefix keeps the redirect on this origin."
     }
   ]
 }
