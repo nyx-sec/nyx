@@ -1,0 +1,28 @@
+{
+  "description": "A typed *http.Client is an SSRF sink on the URL only: a tainted body with a fixed URL, a lookup on the *http.Response returned by http.Get, and a URL whose scheme, host and path are fixed do not fire SSRF.",
+  "tags": ["taint", "ssrf", "go", "negative", "http-client"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [8, 12],
+      "notes": "the user value is the request body, not the destination",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [14, 18],
+      "notes": "http.Get returns a *http.Response; resp.Header.Get is a map lookup",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [20, 23],
+      "notes": "scheme, host and path are fixed; the user value is a query parameter",
+      "must_not_match": true
+    }
+  ]
+}

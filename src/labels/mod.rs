@@ -1404,9 +1404,10 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
 
 // ── Declared-type receiver aliases ──────────────────────────────────────────
 //
-// Some request objects are only recognisable by their declared type: a Go
+// Some receivers are only recognisable by their declared type: a Go
 // handler may name its `*http.Request` `r`, `req`, `httpReq` or anything
-// else, and the flat suffix matchers cannot see the type.  While the CFG
+// else, its `http.ResponseWriter` `w` or `rw`, its `*http.Client` anything,
+// and the flat suffix matchers cannot see the type.  While the CFG
 // builder walks a function body it pushes one frame per function scope,
 // mapping each formal parameter name to a canonical receiver prefix (or to
 // `None` when the formal has an unrecognised type, so an inner closure's
@@ -1459,6 +1460,19 @@ pub(crate) fn push_receiver_aliases(frame: ReceiverAliasFrame) -> ReceiverAliasS
 /// file's CFG build so state never crosses files on a worker thread.
 pub(crate) fn clear_receiver_aliases() {
     RECEIVER_ALIASES.with(|s| s.borrow_mut().clear());
+}
+
+/// Receiver prefix of the innermost formal named `name`, when it has one
+/// (`w` declared `http.ResponseWriter` → `HttpResponse`).  `None` outside
+/// CFG construction, for a name no frame binds, and for an untyped formal.
+pub(crate) fn receiver_alias_prefix(name: &str) -> Option<&'static str> {
+    RECEIVER_ALIASES.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find_map(|frame| frame.iter().find(|(n, _)| n == name))
+            .and_then(|(_, prefix)| *prefix)
+    })
 }
 
 /// Rewrite the root identifier of a member-access text (`req.Header.Get`)
@@ -2001,6 +2015,40 @@ pub fn classify_gated_sink_with_presence(
     const_keyword_arg: impl Fn(&str) -> Option<String>,
     kwarg_present: impl Fn(&str) -> bool,
     arg_present: impl Fn(usize) -> bool,
+) -> SmallVec<[GateMatch; 2]> {
+    let out = classify_gated_sink_text(
+        lang,
+        callee_text,
+        &const_arg_at,
+        &const_keyword_arg,
+        &kwarg_present,
+        &arg_present,
+    );
+    if !out.is_empty() {
+        return out;
+    }
+    // A receiver formal with a declared type (`c *http.Client`) also matches
+    // the gates keyed on its canonical prefix (`HttpClient.Get`).
+    match aliased_receiver_text(callee_text) {
+        Some(aliased) => classify_gated_sink_text(
+            lang,
+            &aliased,
+            &const_arg_at,
+            &const_keyword_arg,
+            &kwarg_present,
+            &arg_present,
+        ),
+        None => out,
+    }
+}
+
+fn classify_gated_sink_text(
+    lang: &str,
+    callee_text: &str,
+    const_arg_at: &impl Fn(usize) -> Option<String>,
+    const_keyword_arg: &impl Fn(&str) -> Option<String>,
+    kwarg_present: &impl Fn(&str) -> bool,
+    arg_present: &impl Fn(usize) -> bool,
 ) -> SmallVec<[GateMatch; 2]> {
     let mut out: SmallVec<[GateMatch; 2]> = SmallVec::new();
     let gates = match GATED_REGISTRY.get(lang).or_else(|| {
@@ -3313,10 +3361,9 @@ mod tests {
 
     #[test]
     fn classify_go_user_client_get_is_not_ssrf_sink() {
-        // `client.Get` on a user-named *http.Client variable should NOT
-        // match, the Go SSRF set is restricted to the stdlib package
-        // helper `http.DefaultClient`. Type-aware resolution would be the
-        // path to a broader rule, not a bare-name match.
+        // `client.Get` on a user-named *http.Client variable does not match
+        // by name.  A client is reached through its declared type instead:
+        // the `HttpClient.*` gates (see `go_typed_client_gates_split_url_and_body`).
         let result = classify("go", "client.Get", None);
         assert_eq!(result, None);
     }
@@ -4061,22 +4108,150 @@ mod tests {
         let rules = go::framework_rules(&ctx);
         let extras = rules.to_vec();
 
-        assert_eq!(
-            classify("go", "c.String", Some(&extras)),
-            Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
-        );
+        // `c.HTML` / `c.HTMLBlob` write raw HTML.
         assert_eq!(
             classify("go", "c.HTML", Some(&extras)),
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
         assert_eq!(
-            classify("go", "c.JSON", Some(&extras)),
+            classify("go", "c.HTMLBlob", Some(&extras)),
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
+        // `c.String` is text/plain and `c.JSON` is HTML-escaped JSON.
+        assert_eq!(classify("go", "c.String", Some(&extras)), None);
+        assert_eq!(classify("go", "c.JSON", Some(&extras)), None);
 
         // Without Echo framework, these should not match
         let empty = go::framework_rules(&FrameworkContext::default());
-        assert_eq!(classify("go", "c.String", Some(&empty)), None);
+        assert_eq!(classify("go", "c.HTML", Some(&empty)), None);
+    }
+
+    #[test]
+    fn classify_go_gin_responses_are_not_html_sinks() {
+        use crate::utils::project::{DetectedFramework, FrameworkContext};
+
+        let ctx = FrameworkContext {
+            frameworks: vec![DetectedFramework::Gin],
+            inspected_langs: std::collections::HashSet::new(),
+        };
+        let extras = go::framework_rules(&ctx);
+        // `c.String` is text/plain; `c.HTML(code, name, obj)` executes a
+        // named html/template, which escapes `obj`.
+        assert_eq!(classify("go", "c.String", Some(&extras)), None);
+        assert_eq!(classify("go", "c.HTML", Some(&extras)), None);
+        assert_eq!(
+            classify("go", "c.Query", Some(&extras)),
+            Some(DataLabel::Source(Cap::all()))
+        );
+    }
+
+    #[test]
+    fn classify_go_response_writers_and_json_marshal() {
+        for writer in [
+            "fmt.Fprintf",
+            "fmt.Fprint",
+            "fmt.Fprintln",
+            "io.WriteString",
+        ] {
+            assert_eq!(
+                classify("go", writer, None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+                "{writer}"
+            );
+        }
+        assert_eq!(
+            classify("go", "HttpResponse.Write", None),
+            Some(DataLabel::Sink(Cap::HTML_ESCAPE))
+        );
+        // Bare `w.Write` has no label: only a typed receiver resolves.
+        assert_eq!(classify("go", "w.Write", None), None);
+        assert_eq!(
+            classify("go", "json.Marshal", None),
+            Some(DataLabel::Sanitizer(Cap::HTML_ESCAPE))
+        );
+        assert_eq!(classify("go", "json.Unmarshal", None), None);
+    }
+
+    #[test]
+    fn classify_go_router_params_are_sources() {
+        for src in ["mux.Vars", "chi.URLParam", "chi.URLParamFromCtx"] {
+            assert_eq!(
+                classify("go", src, None),
+                Some(DataLabel::Source(Cap::all())),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_go_command_context_and_serve_file_gates() {
+        let gate = |callee: &str| {
+            classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                .into_iter()
+                .map(|g| (g.label, g.payload_args.to_vec()))
+                .collect::<Vec<_>>()
+        };
+        // The context at arg 0 is not part of the command.
+        let cmd = gate("exec.CommandContext");
+        assert_eq!(cmd.len(), 1);
+        assert_eq!(cmd[0].0, DataLabel::Sink(Cap::SHELL_ESCAPE));
+        assert!(!cmd[0].1.contains(&0));
+        assert!(cmd[0].1.contains(&1) && cmd[0].1.contains(&2));
+        assert_eq!(
+            gate("http.ServeFile"),
+            vec![(DataLabel::Sink(Cap::FILE_IO), vec![2])]
+        );
+    }
+
+    #[test]
+    fn go_typed_client_gates_split_url_and_body() {
+        let gates = |callee: &str| {
+            let mut out: Vec<(DataLabel, Vec<usize>)> =
+                classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                    .into_iter()
+                    .map(|g| (g.label, g.payload_args.to_vec()))
+                    .collect();
+            out.sort_by_key(|(_, p)| p.clone());
+            out
+        };
+        assert_eq!(
+            gates("HttpClient.Post"),
+            vec![
+                (DataLabel::Sink(Cap::SSRF), vec![0]),
+                (DataLabel::Sink(Cap::DATA_EXFIL), vec![2]),
+            ]
+        );
+        assert_eq!(
+            gates("HttpClient.Do"),
+            vec![(DataLabel::Sink(Cap::DATA_EXFIL), vec![0])]
+        );
+        // Case-sensitive: a lowercase `.get` on an untyped receiver never
+        // matches, and the bare user-named receiver has no gate.
+        assert!(gates("httpclient.get").is_empty());
+        assert!(gates("client.Get").is_empty());
+    }
+
+    #[test]
+    fn go_typed_formals_alias_to_type_qualified_rules() {
+        clear_receiver_aliases();
+        {
+            let _frame = push_receiver_aliases(vec![
+                ("w".to_string(), Some("HttpResponse")),
+                ("c".to_string(), Some("HttpClient")),
+            ]);
+            assert_eq!(
+                classify("go", "w.Write", None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE))
+            );
+            let ssrf = classify_gated_sink("go", "c.Get", |_| None, |_| None, |_| false);
+            assert_eq!(ssrf.len(), 1);
+            assert_eq!(ssrf[0].label, DataLabel::Sink(Cap::SSRF));
+            assert_eq!(ssrf[0].payload_args, &[0]);
+            assert_eq!(receiver_alias_prefix("w"), Some("HttpResponse"));
+            assert_eq!(receiver_alias_prefix("other"), None);
+        }
+        assert_eq!(classify("go", "w.Write", None), None);
+        assert!(classify_gated_sink("go", "c.Get", |_| None, |_| None, |_| false).is_empty());
     }
 
     #[test]

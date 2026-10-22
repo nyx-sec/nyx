@@ -1,0 +1,49 @@
+{
+  "description": "fmt.Fprint* and io.WriteString into writers that are not the HTTP response stay clean: a strings.Builder or bytes.Buffer declared without an initialiser and passed by address, a &bytes.Buffer{} literal, an io.Writer formal, os.Stderr / os.Stdout, and json.Marshal output written to the response.",
+  "tags": ["taint", "xss", "go", "negative", "response-writer"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [13, 19],
+      "notes": "var sb strings.Builder is an in-memory buffer",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [21, 28],
+      "notes": "var buf bytes.Buffer and &bytes.Buffer{} are in-memory buffers",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [30, 34],
+      "notes": "an io.Writer formal is a stream, not the response",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [36, 40],
+      "notes": "encoding/json escapes <, > and & in string values",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [42, 45],
+      "notes": "os.Stderr / os.Stdout are never the response",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [42, 45],
+      "notes": "os.Stderr / os.Stdout are never the response",
+      "must_not_match": true
+    }
+  ]
+}

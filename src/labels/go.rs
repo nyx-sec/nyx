@@ -111,6 +111,16 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: true,
     },
+    // Router path parameters.  gorilla/mux `mux.Vars(r)` returns the route
+    // variables as a `map[string]string`; chi `chi.URLParam(r, key)` and
+    // `chi.URLParamFromCtx(ctx, key)` return one value.  The package
+    // qualifier is specific to each router, so these do not wait on
+    // manifest detection.
+    LabelRule {
+        matchers: &["mux.Vars", "chi.URLParam", "chi.URLParamFromCtx"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &[
@@ -120,6 +130,15 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
+    },
+    // encoding/json escapes `<`, `>`, `&`, U+2028 and U+2029 inside string
+    // values by default (`json.Marshal`, `json.MarshalIndent`), so the bytes
+    // cannot open a tag or script context.  This is the serialiser, not a
+    // parser: decoding (`json.Unmarshal`) is not a sanitizer.
+    LabelRule {
+        matchers: &["json.Marshal", "json.MarshalIndent"],
+        label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
+        case_sensitive: true,
     },
     LabelRule {
         matchers: &["url.QueryEscape", "url.PathEscape"],
@@ -270,12 +289,39 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: true,
     },
     // fmt.Printf/Sprintf write to stdout or build strings in memory, not
-    // security sinks.  fmt.Fprintf writes to an io.Writer (often http.ResponseWriter)
-    // so it IS a security sink for XSS.
+    // security sinks.  `fmt.Fprint*` and `io.WriteString` write to the
+    // io.Writer at arg 0, which is often the http.ResponseWriter, so they are
+    // XSS sinks.  When the writer is typed as something else (a
+    // `*bytes.Buffer`, a `strings.Builder`, an `*os.File`, an `io.Writer`
+    // formal, os.Stderr) the taint engine and `cfg-unguarded-sink` drop the
+    // label; see `type_facts::is_go_writer_sink_callee`.
     LabelRule {
-        matchers: &["fmt.Fprintf"],
+        matchers: &[
+            "fmt.Fprintf",
+            "fmt.Fprint",
+            "fmt.Fprintln",
+            "io.WriteString",
+        ],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
+    },
+    // `w.Write(b)` / `w.WriteString(s)` on a value typed `http.ResponseWriter`
+    // (a formal or local declared with that type).  Reached only through
+    // type-qualified resolution, so a `Write` on a buffer, file or hash is
+    // never a sink.
+    LabelRule {
+        matchers: &["HttpResponse.Write", "HttpResponse.WriteString"],
+        label: DataLabel::Sink(Cap::HTML_ESCAPE),
+        case_sensitive: true,
+    },
+    // Echo writes the string or bytes given to `c.HTML` / `c.HTMLBlob` as
+    // `text/html` without escaping.  The typed form fires for a formal
+    // declared `echo.Context` whatever it is named; the receiver-name form
+    // waits on framework detection (`framework_rules`).
+    LabelRule {
+        matchers: &["EchoContext.HTML", "EchoContext.HTMLBlob"],
+        label: DataLabel::Sink(Cap::HTML_ESCAPE),
+        case_sensitive: true,
     },
     LabelRule {
         matchers: &[
@@ -580,6 +626,68 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // A `*http.Client` the code builds itself (`&http.Client{Timeout: t}`, a
+    // formal or local declared `*http.Client`) is typed `HttpClient`, and
+    // type-qualified resolution rewrites `c.Get(u)` to `HttpClient.Get`.  The
+    // argument roles match the `http.DefaultClient.*` gates above.  These
+    // names are case-sensitive so they never match a lowercase method on an
+    // untyped receiver.
+    SinkGate {
+        callee_matcher: "HttpClient.Get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.PostForm",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
     // ── DATA_EXFIL gates (body-bearing position) ─────────────────────────
     // `http.Post(url, contentType, body)` — body is arg 2.
     SinkGate {
@@ -656,6 +764,50 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Typed `*http.Client` body positions, same roles as the
+    // `http.DefaultClient.*` gates above.
+    SinkGate {
+        callee_matcher: "HttpClient.Do",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Post",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.PostForm",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[1],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
@@ -740,6 +892,40 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `exec.CommandContext(ctx, name, args...)` is `exec.Command` with a
+    // leading `context.Context`.  The context is not part of the command, so
+    // only the program name and its arguments are payloads.
+    SinkGate {
+        callee_matcher: "exec.CommandContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4, 5, 6, 7, 8],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.ServeFile(w, r, name)` opens and streams the file at `name`.  The
+    // `..` rejection it applies looks at `r.URL.Path`, not at `name`, so a name
+    // built from a query value or form field can still leave the served root.
+    SinkGate {
+        callee_matcher: "http.ServeFile",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[2],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
@@ -1477,11 +1663,10 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["c.HTML".into(), "c.String".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
-            case_sensitive: false,
-        });
+        // No gin response method is modelled as an XSS sink.  `c.String`
+        // sends `text/plain`, `c.JSON` sends JSON, and `c.HTML(code, name,
+        // obj)` executes a named html/template, which escapes `obj`.  Raw
+        // HTML handed to a template still fires at `template.HTML`.
     }
 
     if ctx.has(DetectedFramework::Echo) {
@@ -1495,8 +1680,12 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
+        // Echo `c.HTML(code, html)` and `c.HTMLBlob(code, b)` write raw
+        // HTML.  `c.String` is `text/plain` and `c.JSON` is
+        // `application/json` with encoding/json's HTML escaping, so neither
+        // renders markup.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["c.HTML".into(), "c.String".into(), "c.JSON".into()],
+            matchers: vec!["c.HTML".into(), "c.HTMLBlob".into()],
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: false,
         });

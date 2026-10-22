@@ -3581,6 +3581,29 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // Go `fmt.Fprint*` / `io.WriteString` into `os.Stderr` / `os.Stdout`
+    // or into a formal declared as a byte writer that is not a response
+    // (`out io.Writer`, `buf *bytes.Buffer`) is a log, stream or buffer
+    // write, not response rendering, so the call is not an XSS sink for any
+    // consumer (taint, `cfg-unguarded-sink`, `cfg-error-fallthrough`).  The
+    // SSA writer gate sees locals through type facts, but a top-level body
+    // is lowered without its formals, so a formal writer has no SSA value
+    // there.
+    if lang == "go"
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)))
+        && crate::ssa::type_facts::is_go_writer_sink_callee(&text)
+        && call_ast.is_some_and(|cn| go_writer_arg_is_non_response(cn, code))
+    {
+        for label in labels.iter_mut() {
+            if let DataLabel::Sink(c) = label {
+                *c &= !Cap::HTML_ESCAPE;
+            }
+        }
+        labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
+    }
+
     // React JSX text-content auto-escape sanitizer synthesis.  When the
     // assignment / wrapper / return AST contains a `{expr}` interpolation as
     // a direct child of a `jsx_element` or `jsx_fragment` (NOT inside a
@@ -4467,35 +4490,86 @@ fn extract_decl_type(
     crate::ssa::type_facts::rust_annotation_type_kind(&type_text)
 }
 
-/// Go local-binding writer-type inference.
+/// Go local-binding type inference.
 ///
-/// A local writer bound to a byte-buffer constructor —
-/// `stdIn := new(bytes.Buffer)`, `buf := &bytes.Buffer{}`,
-/// `sb := new(strings.Builder)` — is a non-response byte sink, exactly like
-/// a `w bytes.Buffer` parameter.  The `new(T)` type argument (and the
-/// `&T{}` composite-literal type) is dropped from the CFG's `arg_uses` (the
-/// type node is not a value use), so the value's `TypeFact` stays `Unknown`
-/// and the Go `fmt.Fprintf` XSS gate cannot recognise the writer as
-/// non-response.  This recovers the type by reading the RHS constructor text
-/// and mapping it through the shared [`params::go_writer_type_to_kind`]
-/// table, so `fmt.Fprintf(stdIn, "0 %s\t%s\x00", ...)` (gitea
-/// `temp_repo.go`) is not flagged as reflected XSS.  Only writer buffer
-/// types resolve; every other constructor returns `None`, so the inference
-/// stays conservative (never suppresses a real `http.ResponseWriter`).
+/// A local bound to a constructor, `buf := &bytes.Buffer{}`,
+/// `stdIn := new(bytes.Buffer)`, `c := &http.Client{Timeout: t}`, or
+/// declared with a type and no initialiser, `var sb strings.Builder`,
+/// `var c http.Client`, has that type.  The type node is not a value use, so
+/// without this the binding's `TypeFact` stays `Unknown`: the Go
+/// `fmt.Fprint*` XSS gate cannot see that `fmt.Fprintf(&sb, ...)` writes to
+/// a buffer (gitea `temp_repo.go` `fmt.Fprintf(stdIn, ...)`), and
+/// `c.Get(u)` never reaches the `HttpClient.Get` SSRF gate.  The type text
+/// goes through the shared [`params::go_decl_type_to_kind`] table, so only
+/// byte writers, `http.ResponseWriter` and `http.Client` resolve.
+///
+/// A declared type with an initialiser (`var out io.Writer = w`) is not
+/// used: the interface type says nothing about the value it holds.
 fn extract_decl_type_go(ast: Node, code: &[u8]) -> Option<crate::ssa::type_facts::TypeKind> {
-    // Resolve the initialiser expression for the binding statement.
-    let rhs = match ast.kind() {
+    let ty_text = match ast.kind() {
         // `x := <rhs>` / `x = <rhs>`
         "short_var_declaration" | "assignment_statement" => {
             let right = ast.child_by_field_name("right")?;
-            first_go_expr(right)
+            go_constructor_type_text(first_go_expr(right)?, code)?
         }
-        // `var x = <rhs>` (a var_spec carries the value directly)
-        "var_spec" => ast.child_by_field_name("value").and_then(first_go_expr),
-        _ => None,
-    }?;
-    let ty_text = go_constructor_type_text(rhs, code)?;
-    params::go_writer_type_to_kind(&ty_text)
+        // `var x T` / `var x = <rhs>`, possibly under a single-spec
+        // `var_declaration`.
+        "var_declaration" => {
+            let mut cursor = ast.walk();
+            let specs: Vec<Node> = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "var_spec")
+                .collect();
+            if specs.len() != 1 {
+                return None;
+            }
+            go_var_spec_type_text(specs[0], code)?
+        }
+        "var_spec" => go_var_spec_type_text(ast, code)?,
+        _ => return None,
+    };
+    params::go_decl_type_to_kind(&ty_text)
+}
+
+/// Type text for one `var_spec`: the constructor type of its value when it
+/// has one, otherwise the declared type of a zero-value declaration.
+fn go_var_spec_type_text(spec: Node, code: &[u8]) -> Option<String> {
+    match spec.child_by_field_name("value") {
+        Some(value) => go_constructor_type_text(first_go_expr(value)?, code),
+        None => text_of(spec.child_by_field_name("type")?, code),
+    }
+}
+
+/// True when the writer argument (arg 0) of a Go `fmt.Fprint*` /
+/// `io.WriteString` call is never an `http.ResponseWriter`: a stdlib stream
+/// such as `os.Stderr` ([`crate::ssa::type_facts::is_go_non_response_writer`]),
+/// or a formal of the enclosing function declared as a byte writer
+/// (`out io.Writer`, `buf *bytes.Buffer`, `f *os.File`), passed directly or
+/// by address.  Formals are read from the receiver-alias frame, so only the
+/// declared type counts, never the name.
+fn go_writer_arg_is_non_response(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(mut writer) = args.named_children(&mut cursor).next() else {
+        return false;
+    };
+    if writer.kind() == "unary_expression" {
+        match writer.child_by_field_name("operand") {
+            Some(operand) => writer = operand,
+            None => return false,
+        }
+    }
+    let Some(writer_text) = text_of(writer, code) else {
+        return false;
+    };
+    if crate::ssa::type_facts::is_go_non_response_writer(&writer_text) {
+        return true;
+    }
+    let file_handle = crate::ssa::type_facts::TypeKind::FileHandle.label_prefix();
+    writer.kind() == "identifier"
+        && crate::labels::receiver_alias_prefix(&writer_text) == file_handle
 }
 
 /// First concrete expression inside an `expression_list` (or the node itself
@@ -7352,9 +7426,10 @@ pub(super) fn build_sub<'a>(
                 Some(&fn_name),
             );
 
-            // Go request-typed formals (`req *http.Request`, `ctx
-            // *gin.Context`) classify under their canonical receiver prefix
-            // while this body (and any closure nested in it) is built.
+            // Go typed formals (`req *http.Request`, `ctx *gin.Context`,
+            // `w http.ResponseWriter`, `c *http.Client`) classify under their
+            // canonical receiver prefix while this body (and any closure
+            // nested in it) is built.
             let receiver_aliases = (lang == "go").then(|| {
                 crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
             });

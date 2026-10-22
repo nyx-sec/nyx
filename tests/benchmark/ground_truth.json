@@ -5068,6 +5068,78 @@
       "notes": "XSS via r.FormValue flowing to fmt.Fprintf response writer"
     },
     {
+      "case_id": "go-xss-005",
+      "file": "go/xss/xss_response_write.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "response-writer",
+        "write"
+      ],
+      "disabled": false,
+      "notes": "Reflected XSS through `w.Write` on a formal declared `http.ResponseWriter` (the writer is typed by its declaration, so `Write` resolves to the `HttpResponse.Write` sink)."
+    },
+    {
+      "case_id": "go-xss-006",
+      "file": "go/xss/xss_io_writestring.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "response-writer",
+        "io-writestring"
+      ],
+      "disabled": false,
+      "notes": "Reflected XSS through `io.WriteString(w, ...)` into the response writer."
+    },
+    {
       "case_id": "php-safe-filter-001",
       "file": "php/safe/safe_filter_input.php",
       "language": "php",
@@ -11941,8 +12013,9 @@
         "patched",
         "negative"
       ],
-      "disabled": false,
-      "notes": "CVE-2023-3188 patched counterpart: `IsHostnameInternal` early-return + redirect-blocked `*http.Client`. Regression guard that Nyx does not refire on the fix; the local-client sink (`client.Get`) is intentionally not on the SSRF matcher list."
+      "disabled": true,
+      "disabled_reason": "Precision (patched) deferred: the fix rejects internal hosts with an `IsHostnameInternal(fediverseServer)` early return and turns off redirects, then calls `client.Get(requestURL.String())` on a local `&http.Client{...}`. The case used to pass only because a user-built *http.Client was not an SSRF sink at all; with the client typed from its composite literal the call is a sink, and the URL still carries the user-chosen host (passed through a host denylist, which is not recognised as a guard) and the user-chosen `account` in its query. Recognising this needs SSRF host-denylist guard recognition. The vulnerable counterpart (recall) is active and detects.",
+      "notes": "CVE-2023-3188 patched counterpart: `IsHostnameInternal` early-return + redirect-blocked `*http.Client`. DISABLED (precision deferred): the local client is now an SSRF sink and the host denylist is not recognised as a guard. See disabled_reason."
     },
     {
       "case_id": "cve-go-2024-31450-vulnerable",
@@ -20225,6 +20298,42 @@
       "notes": "Synthetic (CVE-2026-21859 shape): InArray(uri, links) allowlist confines the outbound URL through a split/copy-derived uri. Pins value-first membership recognition + copy-alias-aware validation."
     },
     {
+      "case_id": "go-ssrf-005",
+      "file": "go/ssrf/ssrf_typed_client_get.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "http-client"
+      ],
+      "disabled": false,
+      "notes": "SSRF through `client.Get(url)` on a `*http.Client` built with `&http.Client{Timeout: ...}`; the client is typed from its composite literal."
+    },
+    {
       "case_id": "go-xss-safe-002",
       "file": "go/safe/safe_fprintf_new_bytes_buffer.go",
       "language": "go",
@@ -20348,6 +20457,34 @@
       ],
       "disabled": false,
       "notes": "Gitea web.Router closure-group extractor precision: r.Group(path, func(){ r.Get(path, handler) }, reqRepoReader(...)) lifts the trailing ownership-guard middleware (factory closure reads ctx.Repo.Permission.CanRead / ctx.IsUserRepoAdmin / ctx.IsUserSiteAdmin, rejects with ctx.APIError) onto the lexically-nested handler; the id-scoped DAO read must NOT fire missing_ownership_check."
+    },
+    {
+      "case_id": "go-safe-writer-001",
+      "file": "go/safe/safe_fprintf_local_buffer.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "xss",
+        "negative",
+        "response-writer"
+      ],
+      "disabled": false,
+      "notes": "`var sb strings.Builder` / `var buf bytes.Buffer` passed as `&sb` / `&buf` are in-memory buffers, not the response."
     },
     {
       "case_id": "go-auth-realrepo-004",

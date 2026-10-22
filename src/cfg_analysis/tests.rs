@@ -2523,3 +2523,109 @@ func h() {
         "new(non-writer-struct) must not type as FileHandle"
     );
 }
+
+/// Type fact of the first SSA def named `var` in the first body of `src`.
+fn go_binding_type(src: &[u8], var: &str) -> Option<crate::ssa::type_facts::TypeKind> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg.first_body();
+    let facts = build_body_const_facts(body, Lang::Go).expect("body const facts");
+    let val = facts
+        .ssa
+        .blocks
+        .iter()
+        .flat_map(|b| b.body.iter())
+        .find(|i| i.var_name.as_deref() == Some(var))
+        .map(|i| i.value)?;
+    facts.type_facts.get_type(val).cloned()
+}
+
+#[test]
+fn go_declared_bindings_carry_their_type() {
+    use crate::ssa::type_facts::TypeKind;
+    // Zero-value declarations lower to a Nop; the declared type is the
+    // only evidence of what the binding holds.
+    let src = br#"package main
+import ("fmt"; "strings")
+func h(name string) {
+    var sb strings.Builder
+    fmt.Fprintf(&sb, "%s", name)
+}
+"#;
+    assert_eq!(go_binding_type(src, "sb"), Some(TypeKind::FileHandle));
+
+    // `&http.Client{Timeout: t}` lowers to a single-operand Assign; copy
+    // propagation must not fold it into `t` and lose the client type.
+    let src = br#"package main
+import "net/http"
+func h(t int, u string) {
+    c := &http.Client{Timeout: t}
+    c.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+
+    let src = br#"package main
+import "net/http"
+func h(u string) {
+    var c http.Client
+    c.Get(u)
+    d := http.Client{}
+    d.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+    assert_eq!(go_binding_type(src, "d"), Some(TypeKind::HttpClient));
+}
+
+#[test]
+fn go_initialised_interface_declaration_is_not_typed() {
+    // `var out io.Writer = w` says nothing about the value it holds, so the
+    // declared interface type is not used.
+    let src = br#"package main
+import ("fmt"; "io"; "net/http")
+func h(w http.ResponseWriter, name string) {
+    var out io.Writer = w
+    fmt.Fprintf(out, "%s", name)
+}
+"#;
+    assert_ne!(
+        go_binding_type(src, "out"),
+        Some(crate::ssa::type_facts::TypeKind::FileHandle)
+    );
+}
+
+#[test]
+fn go_response_writer_and_client_formals_are_typed() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"package main
+import "net/http"
+func h(w http.ResponseWriter, c *http.Client, n int) {
+    c.Get("x")
+    w.Write(nil)
+}
+"#;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg
+        .bodies
+        .iter()
+        .find(|b| b.meta.name.as_deref() == Some("h"))
+        .expect("h body");
+    assert_eq!(
+        body.meta.param_types,
+        vec![
+            Some(TypeKind::HttpResponse),
+            Some(TypeKind::HttpClient),
+            None
+        ]
+    );
+}

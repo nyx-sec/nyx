@@ -226,8 +226,13 @@ fn sink_payload_args_const(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         return false;
     };
     // Every payload-position operand must resolve to a concrete literal.  A
-    // payload position outside the recorded arg list cannot be proven safe.
+    // payload position outside the call's positional arguments cannot be
+    // proven safe, except in Go (see `payload_position_absent`).  The SSA
+    // argument list can end with an implicit-uses group, so the positional
+    // arity comes from the CFG node.
+    let arity = ctx.cfg[sink].call.arg_uses.len();
     payload_positions.iter().all(|&pos| match args.get(pos) {
+        _ if payload_position_absent(ctx.lang, pos, arity) => true,
         Some(group) => group.iter().all(|v| {
             matches!(
                 facts.const_values.get(v),
@@ -241,6 +246,18 @@ fn sink_payload_args_const(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }),
         None => false,
     })
+}
+
+/// True when a gated sink's payload position lies past the end of the call's
+/// positional arguments and so cannot carry anything.  Only Go qualifies: it
+/// has no keyword arguments, and a spread `xs...` is always the last
+/// positional argument, so it sits at a position the check already covers.
+/// Variadic sinks (`exec.CommandContext(ctx, name, args...)`) list more
+/// payload positions than a typical call passes.  Elsewhere a short
+/// positional list can hide a keyword or splat payload, so the position
+/// stays unproven.
+fn payload_position_absent(lang: Lang, pos: usize, arity: usize) -> bool {
+    lang == Lang::Go && arity > 0 && pos >= arity
 }
 
 /// CFG-syntactic variant of [`sink_payload_args_const`]: suppress a
@@ -319,7 +336,12 @@ fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: NodeIndex) -> 
     // A direct raw-SQL sink (`sequelize.query(`…`, opts)`) has no override, so
     // this preserves the migration suppression while refusing the misaligned
     // rebind case.
-    if info.call.outer_callee.is_some() {
+    if info
+        .call
+        .outer_callee
+        .as_deref()
+        .is_some_and(|outer| info.call.callee.as_deref() != Some(outer))
+    {
         return false;
     }
     // `arg_string_literals` is aligned with positional arguments (keyword /
@@ -329,9 +351,10 @@ fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: NodeIndex) -> 
     // (empty vec on splat args, arity mismatch) is left unproven → not
     // suppressed.
     let lits = &info.call.arg_string_literals;
-    payload_positions
-        .iter()
-        .all(|&pos| matches!(lits.get(pos), Some(Some(_))))
+    payload_positions.iter().all(|&pos| match lits.get(pos) {
+        Some(lit) => lit.is_some(),
+        None => payload_position_absent(ctx.lang, pos, lits.len()),
+    })
 }
 
 /// Suppress a `cfg-unguarded-sink` SSRF finding when the sink's URL operand
@@ -700,10 +723,11 @@ fn sink_args_typed_safe(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
 }
 
 /// Suppress a Go `cfg-unguarded-sink` reflected-XSS finding on
-/// `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln` when the writer (positional
-/// arg 0) is provably not an `http.ResponseWriter` — an in-memory
-/// `*bytes.Buffer`, an `*os.File`, a `bufio.Writer`, an `io.Writer`
-/// parameter, and similar non-response byte sinks.
+/// `fmt.Fprint*` / `io.WriteString` when the writer (positional arg 0) is
+/// provably not an `http.ResponseWriter`: an in-memory `*bytes.Buffer`, an
+/// `*os.File`, a `bufio.Writer`, an `io.Writer` parameter, and similar
+/// non-response byte sinks.  (`os.Stderr` and typed writer formals lose the
+/// sink label at CFG construction.)
 ///
 /// Mirrors the SSA taint engine's Go printf writer gate
 /// ([`crate::ssa::type_facts::go_writer_is_non_response`]) so the two rules
@@ -720,7 +744,7 @@ fn go_fprintf_writer_non_response(ctx: &AnalysisContext, sink: NodeIndex, sink_c
     }
     let sink_info = &ctx.cfg[sink];
     let callee = sink_info.call.callee.as_deref().unwrap_or("");
-    if !matches!(callee, "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln") {
+    if !crate::ssa::type_facts::is_go_writer_sink_callee(callee) {
         return false;
     }
     let Some(facts) = ctx.body_const_facts else {

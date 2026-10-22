@@ -8164,7 +8164,7 @@ fn collect_block_events(
         // For known type-qualified ORM raw-SQL methods (`TypeOrmRepo.query` et al.),
         // also capture the restricted payload-arg list so bind-array taint at arg 1+
         // does not fire.
-        let mut tq_payload_args: Option<&'static [usize]> = None;
+        let mut tq_filters: SmallVec<[TqSinkFilter; 2]> = SmallVec::new();
         if sink_caps.is_empty() {
             if let SsaOp::Call {
                 callee,
@@ -8175,6 +8175,7 @@ fn collect_block_events(
                 if transfer.type_facts.is_some() || state.path_env.is_some() {
                     let (tq_labels, tq_args) = resolve_type_qualified_labels_with_args(
                         callee,
+                        info.call.outer_callee.as_deref(),
                         *rv,
                         transfer.type_facts,
                         state.path_env.as_deref(),
@@ -8187,7 +8188,7 @@ fn collect_block_events(
                             sink_caps |= *bits;
                         }
                     }
-                    tq_payload_args = tq_args;
+                    tq_filters = tq_args;
                 }
             }
         }
@@ -8603,11 +8604,7 @@ fn collect_block_events(
                 // `template.HTML(x)` sink arg 0 is the payload, so a
                 // non-response arg type (e.g. a tainted `String`) must NOT
                 // strip the XSS label.
-                let is_fprintf = matches!(
-                    callee.as_str(),
-                    "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln"
-                );
-                if is_fprintf {
+                if crate::ssa::type_facts::is_go_writer_sink_callee(callee) {
                     if let Some(&first_val) = args.first().and_then(|g| g.first()) {
                         let writer_kind = transfer
                             .type_facts
@@ -8873,10 +8870,11 @@ fn collect_block_events(
         // returns an empty `param_to_sink_sites` for direct label / gated
         // sinks (the early `label_sink_caps` return) and for the type-qualified
         // ORM raw-SQL path, so those single-pass behaviors are byte-identical.
-        // The explicit `tq_payload_args.is_none()` guard keeps the ORM
-        // payload-restriction path single-pass even if it ever co-occurs.
+        // The explicit `tq_filters.is_empty()` guard keeps the type-qualified
+        // payload-restriction path on its own filters even if it ever
+        // co-occurs.
         let multi_sink_caps: smallvec::SmallVec<[Cap; 4]> =
-            if !multi_gate && !summary_per_position && tq_payload_args.is_none() {
+            if !multi_gate && !summary_per_position && tq_filters.is_empty() {
                 distinct_summary_sink_caps(&sink_info.param_to_sink_sites, sink_caps)
             } else {
                 smallvec::SmallVec::new()
@@ -8900,8 +8898,17 @@ fn collect_block_events(
                 .collect()
         } else if multi_sink_caps.len() > 1 {
             multi_sink_caps.iter().map(|&c| (c, None, None)).collect()
+        } else if tq_filters.len() > 1 {
+            // A typed receiver whose qualified callee carries one gate per
+            // cap (`HttpClient.Post`: SSRF on the URL, DATA_EXFIL on the
+            // body).  One pass per gate, as for `info.call.gate_filters`.
+            tq_filters
+                .iter()
+                .map(|&(caps, payload)| (sink_caps & caps, payload, None))
+                .collect()
         } else {
-            smallvec::smallvec![(sink_caps, tq_payload_args, None)]
+            let payload = tq_filters.first().and_then(|&(_, p)| p);
+            smallvec::smallvec![(sink_caps, payload, None)]
         };
 
         for (filter_caps, positions_override, destination_override) in filter_iter {
@@ -8961,6 +8968,7 @@ fn collect_block_events(
                 if filter_caps.is_empty() {
                     continue;
                 }
+            }
             // Compute all_validated: check if all tainted vars are validated
             let all_validated = tainted.iter().all(|(val, _, _)| {
                 let var_name = ssa
@@ -11396,67 +11404,137 @@ fn resolve_type_qualified_labels(
     SmallVec::new()
 }
 
+/// Per-cap payload restriction for a sink found by type-qualified
+/// resolution: `(caps, payload arg positions)`, `None` scanning every
+/// argument.
+type TqSinkFilter = (Cap, Option<&'static [usize]>);
+
+/// Labels for a type-qualified callee plus its per-cap payload filters.
+type TqResolution = (SmallVec<[DataLabel; 2]>, SmallVec<[TqSinkFilter; 2]>);
+
 /// Sibling of [`resolve_type_qualified_labels`] used at sink-firing time.
 ///
-/// Returns the resolved sink labels plus, when the matched qualified
-/// callee has a known restricted payload arg list (Phase 07 ORM raw-SQL
-/// receiver methods such as `TypeOrmRepo.query`), the static slice
-/// describing which positional args carry the SQL payload. The caller
-/// uses this slice to override `positions_override` so taint flowing
-/// only into the bind-array argument (arg 1+) does not fire.
+/// Returns the resolved labels plus the payload restriction for the sink
+/// caps.  Restrictions come from the language's gated sinks keyed on the
+/// qualified name (`HttpClient.Post` is SSRF on arg 0 and DATA_EXFIL on
+/// arg 2), or, for flat type-qualified rules with no gate, from
+/// [`crate::labels::type_qualified_sink_payload_args`] (Phase 07 ORM raw-SQL
+/// receiver methods such as `TypeOrmRepo.query`).  The caller scans each
+/// filter separately so taint in the body of a typed client call does not
+/// fire SSRF, and bind-array taint at arg 1+ of `TypeOrmRepo.query` does not
+/// fire SQL.  An empty list means the whole call is scanned.
+///
+/// `outer_callee` is the call's own text when CFG construction relabelled
+/// the node with a source nested in its arguments
+/// (`c.Get(r.FormValue("u"))` becomes callee `r.FormValue`); the SSA
+/// receiver still belongs to the outer call, so its method is tried too.
 #[allow(clippy::too_many_arguments)]
 fn resolve_type_qualified_labels_with_args(
     callee: &str,
+    outer_callee: Option<&str>,
     receiver: SsaValue,
     type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     path_env: Option<&constraint::PathEnv>,
     lang: Lang,
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa: Option<&SsaBody>,
-) -> (SmallVec<[DataLabel; 2]>, Option<&'static [usize]>) {
-    let method_candidates = method_candidates_from_chain(callee, lang);
+) -> TqResolution {
+    let mut method_candidates = method_candidates_from_chain(callee, lang);
+    if let Some(outer) = outer_callee {
+        for m in method_candidates_from_chain(outer, lang) {
+            if !method_candidates.contains(&m) {
+                method_candidates.push(m);
+            }
+        }
+    }
     let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
 
+    let mut prefixes: SmallVec<[&'static str; 4]> = SmallVec::new();
     if let Some(tf) = type_facts {
         for rv in &receiver_candidates {
-            if let Some(receiver_type) = tf.get_type(*rv) {
-                if let Some(prefix) = receiver_type.label_prefix() {
-                    for method in &method_candidates {
-                        let qualified = format!("{}.{}", prefix, method);
-                        let labels =
-                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
-                        if !labels.is_empty() {
-                            let payload =
-                                crate::labels::type_qualified_sink_payload_args(&qualified);
-                            return (labels, payload);
-                        }
-                    }
-                }
+            if let Some(prefix) = tf.get_type(*rv).and_then(|t| t.label_prefix()) {
+                prefixes.push(prefix);
             }
         }
     }
-
     if let Some(env) = path_env {
         for rv in &receiver_candidates {
-            let types = env.get(*rv).types;
-            if let Some(kind) = types.as_singleton() {
-                if let Some(prefix) = kind.label_prefix() {
-                    for method in &method_candidates {
-                        let qualified = format!("{}.{}", prefix, method);
-                        let labels =
-                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
-                        if !labels.is_empty() {
-                            let payload =
-                                crate::labels::type_qualified_sink_payload_args(&qualified);
-                            return (labels, payload);
-                        }
-                    }
-                }
+            if let Some(prefix) = env
+                .get(*rv)
+                .types
+                .as_singleton()
+                .and_then(|t| t.label_prefix())
+            {
+                prefixes.push(prefix);
             }
         }
     }
 
-    (SmallVec::new(), None)
+    for prefix in prefixes {
+        for method in &method_candidates {
+            let qualified = format!("{}.{}", prefix, method);
+            if let Some(found) = classify_type_qualified_sink(lang, &qualified, extra_labels) {
+                return found;
+            }
+        }
+    }
+
+    (SmallVec::new(), SmallVec::new())
+}
+
+/// Labels and payload filters for one qualified callee
+/// (`HttpClient.Post`), or `None` when nothing matches.  Flat rules and
+/// destination gates are merged: the gates give per-cap payload positions,
+/// and any flat sink cap no gate covers is scanned over every argument.
+/// Gates that narrow by object-literal field are left out, since the field
+/// bindings are only lifted for the call's own callee at CFG construction.
+fn classify_type_qualified_sink(
+    lang: Lang,
+    qualified: &str,
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<TqResolution> {
+    let mut labels = crate::labels::classify_all(lang.as_str(), qualified, extra_labels);
+    let mut filters: SmallVec<[TqSinkFilter; 2]> = SmallVec::new();
+    for gate in
+        crate::labels::classify_gated_sink(lang.as_str(), qualified, |_| None, |_| None, |_| false)
+    {
+        let DataLabel::Sink(caps) = gate.label else {
+            continue;
+        };
+        if !gate.object_destination_fields.is_empty() {
+            continue;
+        }
+        let payload = (!gate.payload_args.is_empty()
+            && gate.payload_args != crate::labels::ALL_ARGS_PAYLOAD)
+            .then_some(gate.payload_args);
+        filters.push((caps, payload));
+        if !labels.contains(&gate.label) {
+            labels.push(gate.label);
+        }
+    }
+    if labels.is_empty() {
+        return None;
+    }
+    if filters.is_empty() {
+        if let Some(payload) = crate::labels::type_qualified_sink_payload_args(qualified) {
+            let caps = labels.iter().fold(Cap::empty(), |acc, l| match l {
+                DataLabel::Sink(c) => acc | *c,
+                _ => acc,
+            });
+            filters.push((caps, Some(payload)));
+        }
+    } else {
+        let gated = filters.iter().fold(Cap::empty(), |acc, (c, _)| acc | *c);
+        let flat = labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        });
+        let ungated = flat & !gated;
+        if !ungated.is_empty() {
+            filters.push((ungated, None));
+        }
+    }
+    Some((labels, filters))
 }
 
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
@@ -11572,7 +11650,7 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
                 sink_caps
             }
         }
-        // Go `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln` carry an HTML_ESCAPE
+        // Go `fmt.Fprint*` / `io.WriteString` carry an HTML_ESCAPE
         // sink label because they CAN write to an `http.ResponseWriter`.  When
         // the writer (positional arg 0) is a known non-response stream
         // (stderr/stdout/discard/gin's package-level debug writers), the call
@@ -11585,8 +11663,7 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
             if !sink_caps.intersects(Cap::HTML_ESCAPE) {
                 return sink_caps;
             }
-            let is_fprintf = matches!(callee, "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln");
-            if !is_fprintf {
+            if !crate::ssa::type_facts::is_go_writer_sink_callee(callee) {
                 return sink_caps;
             }
             let Some(first_arg) = info.call.arg_uses.first() else {
@@ -11594,7 +11671,7 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
             };
             if first_arg
                 .iter()
-                .any(|s| is_go_non_response_writer(s.as_str()))
+                .any(|s| crate::ssa::type_facts::is_go_non_response_writer(s.as_str()))
             {
                 sink_caps & !Cap::HTML_ESCAPE
             } else {
@@ -11603,27 +11680,6 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
         }
         _ => sink_caps,
     }
-}
-
-/// Recognise Go writer identifiers that are categorically not
-/// `http.ResponseWriter` and therefore should not host an XSS sink for
-/// `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln`.  The set covers the
-/// stdlib stdout/stderr/discard streams plus gin's package-level
-/// `DefaultWriter` / `DefaultErrorWriter` (both are `io.Writer` aliases for
-/// `os.Stdout` / `os.Stderr`).  Both qualified (`gin.DefaultErrorWriter`)
-/// and bare (`DefaultErrorWriter`, intra-package) shapes match.
-fn is_go_non_response_writer(text: &str) -> bool {
-    matches!(
-        text,
-        "os.Stderr"
-            | "os.Stdout"
-            | "io.Discard"
-            | "ioutil.Discard"
-            | "DefaultErrorWriter"
-            | "DefaultWriter"
-            | "gin.DefaultErrorWriter"
-            | "gin.DefaultWriter"
-    )
 }
 
 /// Check if a sink is type-safe (e.g., SQL injection or path traversal with int-typed argument).

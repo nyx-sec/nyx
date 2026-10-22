@@ -573,9 +573,12 @@ pub(super) fn classify_param_type<'a>(
 /// strip `HTML_ESCAPE` at the sink.
 ///
 /// A *real* reflected-XSS handler declares its writer explicitly as
-/// `http.ResponseWriter` (or a framework response type).  Those are left
-/// untyped here so the gate's conservative unknown-type path keeps firing —
-/// i.e. this recogniser only ever *suppresses* the FP family, never the TP.
+/// `http.ResponseWriter`.  That formal is typed [`TypeKind::HttpResponse`],
+/// which `go_writer_is_non_response` reports as a possible response, so the
+/// `fmt.Fprint*` gate keeps firing, and which lets type-qualified resolution
+/// turn `w.Write(b)` into the `HttpResponse.Write` sink.  A `*http.Client`
+/// formal is typed [`TypeKind::HttpClient`] so `c.Get(u)` resolves to the
+/// `HttpClient.Get` SSRF gate.  See [`go_decl_type_to_kind`].
 ///
 /// Precision/recall note: an `io.Writer` parameter *could* dynamically be
 /// bound to an `http.ResponseWriter` at some call site (an interprocedural
@@ -595,15 +598,19 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
     }
     let type_node = param.child_by_field_name("type")?;
     let type_text = text_of(type_node, code)?;
-    go_writer_type_to_kind(&type_text)
+    go_decl_type_to_kind(&type_text)
 }
 
 /// Receiver-alias frame for a Go function / method / func literal: every
-/// formal name paired with the canonical request prefix of its declared type
-/// (`req *http.Request` → `("req", Some("Request"))`), or `None` for any
-/// other type so the formal shadows a same-named binding of an enclosing
-/// function.  Pushed via [`crate::labels::push_receiver_aliases`] while the
-/// body is built.  `a, b *http.Request` binds both names.
+/// formal name paired with the canonical receiver prefix of its declared
+/// type, or `None` for any other type so the formal shadows a same-named
+/// binding of an enclosing function.  Request types use their request prefix
+/// (`req *http.Request` → `("req", Some("Request"))`); the types
+/// [`go_decl_type_to_kind`] knows use the [`TypeKind::label_prefix`] the SSA
+/// type-qualified rules are keyed on (`w http.ResponseWriter` →
+/// `HttpResponse`, `c *http.Client` → `HttpClient`, `out io.Writer` →
+/// `FileHandle`).  Pushed via [`crate::labels::push_receiver_aliases`] while
+/// the body is built.  `a, b *http.Request` binds both names.
 pub(super) fn go_receiver_alias_frame(
     func_node: Node<'_>,
     code: &[u8],
@@ -623,7 +630,10 @@ pub(super) fn go_receiver_alias_frame(
             param
                 .child_by_field_name("type")
                 .and_then(|t| text_of(t, code))
-                .and_then(|t| crate::labels::go_request_receiver_prefix(&t))
+                .and_then(|t| {
+                    crate::labels::go_request_receiver_prefix(&t)
+                        .or_else(|| go_decl_type_to_kind(&t).and_then(|k| k.label_prefix()))
+                })
         } else {
             None
         };
@@ -637,13 +647,30 @@ pub(super) fn go_receiver_alias_frame(
     frame
 }
 
+/// Map a declared Go type (a formal's type, a `var x T` declaration, or the
+/// `T` of a `&T{...}` / `new(T)` constructor) to the [`TypeKind`] the
+/// analysis tracks: byte writers that are not a response
+/// ([`go_writer_type_to_kind`]), `http.ResponseWriter` as
+/// [`TypeKind::HttpResponse`], and `http.Client` (by value or pointer) as
+/// [`TypeKind::HttpClient`].  Every other type returns `None`.
+pub(super) fn go_decl_type_to_kind(t: &str) -> Option<TypeKind> {
+    if let Some(kind) = go_writer_type_to_kind(t) {
+        return Some(kind);
+    }
+    match t.trim().trim_start_matches('*').trim() {
+        "http.ResponseWriter" => Some(TypeKind::HttpResponse),
+        "http.Client" => Some(TypeKind::HttpClient),
+        _ => None,
+    }
+}
+
 /// Map a Go parameter / local type-text to [`TypeKind::FileHandle`] when the
 /// head names a generic byte writer that is provably not an
 /// `http.ResponseWriter`.  Strips a leading pointer marker (`*`) and
 /// surrounding whitespace, then matches the qualified type name.  Returns
 /// `None` for `http.ResponseWriter` and every unrecognised type so the sink
 /// gate stays conservative.
-pub(super) fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
+fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
     let head = t.trim().trim_start_matches('*').trim();
     match head {
         // Generic writer interfaces — a bare `io.Writer` is written to be

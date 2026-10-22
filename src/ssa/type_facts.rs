@@ -895,9 +895,11 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             }
         }
         Lang::Go => {
-            if callee.contains("http.") && matches!(suffix, "NewRequest" | "Get" | "Post") {
-                Some(TypeKind::HttpClient)
-            } else if callee.contains("sql.") && suffix == "Open" {
+            // `http.Get` / `http.Post` return a `*http.Response` and
+            // `http.NewRequest` a `*http.Request`; neither is a client.  A
+            // client value is typed from its declaration
+            // (`cfg::extract_decl_type_go`, `c *http.Client` formals).
+            if callee.contains("sql.") && suffix == "Open" {
                 Some(TypeKind::DatabaseConnection)
             } else if callee.contains("os.") && matches!(suffix, "Open" | "Create" | "OpenFile") {
                 Some(TypeKind::FileHandle)
@@ -1697,6 +1699,23 @@ pub fn classify_input_validator_callee(callee: &str) -> Option<InputValidatorPol
 /// Uses constant propagation results to seed types from known constants,
 /// then propagates through copies and phi nodes. Constructor/factory calls
 /// are mapped to security-relevant types when `lang` is provided.
+/// Declared type of a Go binding that does not lower to a call:
+/// `var sb strings.Builder` (a `Nop`), `c := http.Client{}` (a `Const`),
+/// `c := &http.Client{Timeout: t}` (an `Assign` over the field values).
+/// The CFG node's `decl_type` ([`crate::cfg::NodeInfo::decl_type`]) is the
+/// ground truth for these; the operands of a composite literal say nothing
+/// about the type of the value it builds.  Calls consult `decl_type` in their
+/// own arm, after the constructor table.
+fn go_binding_decl_type(inst: &SsaInst, cfg: &Cfg, lang: Option<Lang>) -> Option<TypeKind> {
+    if lang != Some(Lang::Go)
+        || inst.var_name.is_none()
+        || !matches!(inst.op, SsaOp::Const(_) | SsaOp::Nop | SsaOp::Assign(_))
+    {
+        return None;
+    }
+    cfg.node_weight(inst.cfg_node)?.decl_type.clone()
+}
+
 pub fn analyze_types(
     body: &SsaBody,
     cfg: &Cfg,
@@ -1733,6 +1752,10 @@ pub fn analyze_types_with_param_types(
                 .is_some_and(|ni| ni.is_numeric_length_access)
             {
                 facts.insert(inst.value, TypeFact::from_kind(TypeKind::Int));
+                continue;
+            }
+            if let Some(dt) = go_binding_decl_type(inst, cfg, lang) {
+                facts.insert(inst.value, TypeFact::from_kind(dt));
                 continue;
             }
             let fact = match &inst.op {
@@ -2071,10 +2094,12 @@ pub fn analyze_types_with_param_types(
                 // Preserve the Int fact pinned by the numeric-length-access
                 // detector in the first pass, copy propagation would replace
                 // it with the receiver's (usually Unknown) type and defeat the
-                // whole point of the accessor rule.
+                // whole point of the accessor rule.  A Go declared binding
+                // type is kept for the same reason.
                 if cfg
                     .node_weight(inst.cfg_node)
                     .is_some_and(|ni| ni.is_numeric_length_access)
+                    || go_binding_decl_type(inst, cfg, lang).is_some()
                 {
                     continue;
                 }
@@ -2253,6 +2278,36 @@ impl TypeHierarchy {
 /// path does not surface the twin false positive on the other.
 pub fn go_writer_is_non_response(kind: &TypeKind) -> bool {
     GoInterfaceTable::definitely_not(kind, "http.ResponseWriter")
+}
+
+/// Go response-writing sinks whose positional arg 0 is the `io.Writer`
+/// written to (`fmt.Fprintf(w, ...)`, `io.WriteString(w, s)`).  The writer,
+/// not the payload, decides whether the call renders into a response, so
+/// these are the callees the writer gates above apply to.
+pub fn is_go_writer_sink_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln" | "io.WriteString"
+    )
+}
+
+/// Go writer expressions that are never an `http.ResponseWriter`: the
+/// stdlib stdout / stderr / discard streams and gin's package-level
+/// `DefaultWriter` / `DefaultErrorWriter` (`io.Writer` aliases for
+/// `os.Stdout` / `os.Stderr`), qualified or bare.  A text match because the
+/// package-level vars have no local definition to carry a type fact.
+pub fn is_go_non_response_writer(text: &str) -> bool {
+    matches!(
+        text,
+        "os.Stderr"
+            | "os.Stdout"
+            | "io.Discard"
+            | "ioutil.Discard"
+            | "DefaultErrorWriter"
+            | "DefaultWriter"
+            | "gin.DefaultErrorWriter"
+            | "gin.DefaultWriter"
+    )
 }
 
 // ── Go Interface Satisfaction (bounded, conservative) ────────────────────
@@ -3460,9 +3515,19 @@ mod tests {
             Some(TypeKind::HttpClient)
         );
         assert_eq!(
-            constructor_type(Lang::Go, "http.Get"),
-            Some(TypeKind::HttpClient)
+            constructor_type(Lang::Go, "sql.Open"),
+            Some(TypeKind::DatabaseConnection)
         );
+    }
+
+    #[test]
+    fn go_http_response_and_request_constructors_are_not_clients() {
+        // `http.Get` / `http.Post` return a `*http.Response`, `http.NewRequest`
+        // a `*http.Request`.  Typing either as a client would turn
+        // `resp.Header.Get(k)` into the `HttpClient.Get` SSRF sink.
+        for callee in ["http.Get", "http.Post", "http.NewRequest"] {
+            assert_eq!(constructor_type(Lang::Go, callee), None, "{callee}");
+        }
     }
 
     // ── DTO field-level taint ─────────────────────────────────────────────
