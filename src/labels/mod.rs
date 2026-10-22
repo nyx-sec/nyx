@@ -15,7 +15,7 @@ mod c;
 mod cpp;
 mod go;
 mod java;
-mod javascript;
+pub(crate) mod javascript;
 mod php;
 mod python;
 pub(crate) mod ruby;
@@ -80,6 +80,24 @@ pub struct GatedLabelRule {
     pub label: DataLabel,
     pub case_sensitive: bool,
     pub gate: LabelGate,
+    /// Positional args that carry the payload when `label` is a `Sink`.
+    /// Same meaning as [`SinkGate::payload_args`]: the CFG post-pass copies
+    /// these onto the call node's `sink_payload_args`, so taint on the
+    /// receiver or on an options / callback argument does not reach the
+    /// sink.  `&[]` leaves every argument a payload.
+    pub payload_args: &'static [usize],
+}
+
+/// A [`GatedLabelRule`] hit: the label it contributes and the payload
+/// positions it restricts a `Sink` to (`&[]` for every argument).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedLabelMatch {
+    pub label: DataLabel,
+    pub payload_args: &'static [usize],
+    /// The rule matched only the head of a chained callee
+    /// (`execSync(cmd).toString` matching `execSync`), so `payload_args`
+    /// index the head call's arguments, not the outer call's.
+    pub chain_head: bool,
 }
 
 /// Per-file context consulted by [`classify_all_ctx`] when evaluating
@@ -201,6 +219,36 @@ pub struct SinkGate {
     /// [`GateActivation::Destination`] is used for destination-flow modeling
     /// (outbound HTTP clients etc.).
     pub activation: GateActivation,
+}
+
+impl SinkGate {
+    /// A gate that always fires and restricts the sink to the listed
+    /// positional args.  The common shape for an API whose receiver,
+    /// options object or callback is never the injected value
+    /// (`res.send(body)`, `vm.runInNewContext(code, sandbox)`): the gate's
+    /// `payload_args` propagate onto a matching flat sink, so the receiver
+    /// and the trailing arguments are not taint-checked.
+    pub const fn payload_positions(
+        callee_matcher: &'static str,
+        label: DataLabel,
+        case_sensitive: bool,
+        payload_args: &'static [usize],
+    ) -> Self {
+        SinkGate {
+            callee_matcher,
+            arg_index: 0,
+            dangerous_values: &[],
+            dangerous_prefixes: &[],
+            label,
+            case_sensitive,
+            payload_args,
+            keyword_name: None,
+            dangerous_kwargs: &[],
+            activation: GateActivation::Destination {
+                object_destination_fields: &[],
+            },
+        }
+    }
 }
 
 bitflags! {
@@ -1619,31 +1667,58 @@ fn classify_gated_into(
     ctx: Option<&ClassificationContext<'_>>,
     out: &mut SmallVec<[DataLabel; 2]>,
 ) {
+    for m in classify_gated_matches(lang, text, ctx) {
+        if !out.contains(&m.label) {
+            out.push(m.label);
+        }
+    }
+}
+
+/// Gated-rule pass that also reports each hit's payload positions, so a
+/// caller that attaches the label can restrict the sink to the same args
+/// a flat-rule [`SinkGate`] would (see [`GatedLabelRule::payload_args`]).
+/// Hits are deduped by label; the first rule to contribute a label wins.
+pub fn classify_gated_matches(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[GatedLabelMatch; 2]> {
+    let mut out: SmallVec<[GatedLabelMatch; 2]> = SmallVec::new();
     let gated = match GATED_LABEL_REGISTRY.get(lang).or_else(|| {
         let key = lang.to_ascii_lowercase();
         GATED_LABEL_REGISTRY.get(key.as_str())
     }) {
         Some(g) => *g,
-        None => return,
+        None => return out,
     };
     if gated.is_empty() {
-        return;
+        return out;
     }
 
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
     if is_excluded(lang, trimmed) {
-        return;
+        return out;
     }
     let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
     #[inline]
-    fn push_dedup(out: &mut SmallVec<[DataLabel; 2]>, label: DataLabel) {
-        if !out.contains(&label) {
-            out.push(label);
+    fn push_dedup(
+        out: &mut SmallVec<[GatedLabelMatch; 2]>,
+        rule: &GatedLabelRule,
+        chain_head: bool,
+    ) {
+        if !out.iter().any(|m| m.label == rule.label) {
+            out.push(GatedLabelMatch {
+                label: rule.label,
+                payload_args: rule.payload_args,
+                chain_head,
+            });
         }
     }
+    // `text` is a chain (`a(..).b`) whose head is what `trimmed` holds.
+    let chained = text.contains('(');
 
     // Pass 1: exact / suffix.
     for rule in gated {
@@ -1652,10 +1727,10 @@ fn classify_gated_into(
             if m.last() == Some(&b'_') {
                 continue;
             }
-            let matches = match_suffix_cs(trimmed, m, rule.case_sensitive)
-                || match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
-            if matches && gate_satisfied(&rule.gate, head, ctx) {
-                push_dedup(out, rule.label);
+            let on_chain = match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
+            let on_head = match_suffix_cs(trimmed, m, rule.case_sensitive);
+            if (on_head || on_chain) && gate_satisfied(&rule.gate, head, ctx) {
+                push_dedup(&mut out, rule, chained && !on_chain);
             }
         }
     }
@@ -1668,10 +1743,11 @@ fn classify_gated_into(
                     || starts_with_cs(full_norm_bytes, m, rule.case_sensitive))
                 && gate_satisfied(&rule.gate, head, ctx)
             {
-                push_dedup(out, rule.label);
+                push_dedup(&mut out, rule, false);
             }
         }
     }
+    out
 }
 
 /// Restricted payload-arg positions for known type-qualified sink callees.

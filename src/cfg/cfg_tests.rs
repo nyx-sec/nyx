@@ -1847,6 +1847,169 @@ fn js_promisify_non_call_value_ignored() {
     assert!(file_cfg.promisify_aliases.is_empty());
 }
 
+/// Every call node in `file_cfg` whose callee text is `callee`.
+fn js_call_nodes<'a>(file_cfg: &'a FileCfg, callee: &str) -> Vec<&'a NodeInfo> {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| n.call.callee.as_deref() == Some(callee))
+        .collect()
+}
+
+fn has_sink(n: &NodeInfo, cap: Cap) -> bool {
+    n.taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+}
+
+#[test]
+fn js_regex_and_query_exec_are_not_shell_sinks() {
+    let src = b"const re = /a(b)/;\n\
+                function f(x, Model) { re.exec(x); Model.find({ a: x }).exec(); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let shell_nodes: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::SHELL_ESCAPE))
+        .map(|n| n.call.callee.clone())
+        .collect();
+    assert!(
+        shell_nodes.is_empty(),
+        "unexpected shell sinks: {shell_nodes:?}"
+    );
+}
+
+#[test]
+fn js_child_process_alias_is_import_gated_shell_sink() {
+    // `cp.spawn` is a sink only because `cp` is bound to child_process; arg 0
+    // is the payload, and `{ shell: true }` adds the argv array at arg 1.
+    let src = b"const cp = require('child_process');\n\
+                function a(bin, args) { cp.spawn(bin, args); }\n\
+                function b(bin, args) { cp.spawn(bin, args, { shell: true }); }\n\
+                function c(bin, args) { cp.spawn(bin, args, { shell: false, cwd: '/' }); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "cp.spawn");
+    assert_eq!(nodes.len(), 3);
+    let mut payloads: Vec<Vec<usize>> = nodes
+        .iter()
+        .map(|n| {
+            assert!(
+                has_sink(n, Cap::SHELL_ESCAPE),
+                "cp.spawn should be a shell sink"
+            );
+            n.call.sink_payload_args.clone().unwrap_or_default()
+        })
+        .collect();
+    payloads.sort();
+    assert_eq!(payloads, vec![vec![0], vec![0], vec![0, 1]]);
+}
+
+#[test]
+fn js_import_gated_chain_head_sink_checks_head_payload() {
+    // `execFileSync` is a sink only through the import binding, so the gated
+    // post-pass labels the chained call `execFileSync(..).toString()`.  The
+    // head call's payload (arg 0) is what reaches the sink; a constant
+    // binary with request data in the argv array is not a sink at all.
+    let src = b"const { execFileSync } = require('child_process');\n\
+                function f(bin) { return execFileSync(bin).toString(); }\n\
+                function g(file) { return execFileSync('docker', ['ps', file]).trim(); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let shell: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::SHELL_ESCAPE))
+        .collect();
+    assert!(
+        !shell.is_empty(),
+        "execFileSync(bin).toString() is a shell sink"
+    );
+    for n in &shell {
+        assert_eq!(
+            n.call.sink_reaching_uses.as_deref(),
+            Some(&["bin".to_string()][..]),
+            "only the head call's binary argument reaches the sink"
+        );
+    }
+}
+
+#[test]
+fn js_require_member_call_uses_module_callee() {
+    let src = b"function f(x) { require('node:child_process').exec(x, { cwd: x }); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "child_process.exec");
+    assert_eq!(
+        nodes.len(),
+        1,
+        "require('node:child_process').exec canonicalises"
+    );
+    assert!(has_sink(nodes[0], Cap::SHELL_ESCAPE));
+    assert_eq!(
+        nodes[0].call.sink_payload_args.as_deref(),
+        Some(&[0usize][..])
+    );
+}
+
+#[test]
+fn js_split_shell_argv_array_is_shell_payload() {
+    // `spawnSync('bash', ['-c', cmd])`: the shell is arg 0, its `-c` command
+    // lives in the argv array at arg 1.
+    let src = b"function f(spawnSync, cmd) { spawnSync('bash', ['-c', 'ls ' + cmd]); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "spawnSync");
+    assert_eq!(nodes.len(), 1);
+    assert!(has_sink(nodes[0], Cap::SHELL_ESCAPE));
+    assert_eq!(
+        nodes[0].call.sink_payload_args.as_deref(),
+        Some(&[1usize][..])
+    );
+    assert_eq!(
+        nodes[0].call.destination_uses.as_deref(),
+        Some(&["cmd".to_string()][..])
+    );
+}
+
+#[test]
+fn js_timer_string_arg_is_code_exec_but_callbacks_are_not() {
+    // Only a string-valued first argument is compiled.  Callbacks (literal,
+    // named, bound, a Promise `resolve`) and unresolved names are not.
+    let src = b"function retry() {}\n\
+                class P { start() { setInterval(this.poll, 10); } poll() {} }\n\
+                function f(cb, name) {\n\
+                  const code = location.hash.substring(1);\n\
+                  setTimeout(code, 10);\n\
+                  setTimeout('render(' + name + ')', 10);\n\
+                  setTimeout(() => console.log(name), 10);\n\
+                  setTimeout(retry, 10);\n\
+                  setTimeout(cb, 10);\n\
+                  setTimeout(this.tick.bind(this, name), 10);\n\
+                  return new Promise((resolve) => setTimeout(resolve, 10));\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let mut code_exec: Vec<Vec<String>> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::CODE_EXEC))
+        .map(|n| n.call.arg_uses.first().cloned().unwrap_or_default())
+        .collect();
+    code_exec.sort();
+    assert_eq!(
+        code_exec,
+        vec![vec!["code".to_string()], vec!["name".to_string()]],
+        "only the string-valued timer arguments compile code"
+    );
+}
+
 #[test]
 fn sql_placeholder_detection() {
     // Positive cases

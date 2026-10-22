@@ -1,0 +1,55 @@
+{
+  "description": "child_process reached through an import binding (namespace alias, destructured names, inline require) is a shell sink on the command / binary; argv arrays and options objects are payloads only when the call runs through a shell.",
+  "tags": ["taint", "cmdi", "express", "child_process"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "cp.exec through the `cp = require('child_process')` alias"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "require('child_process').spawn canonicalises to child_process.spawn"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [17, 17],
+      "notes": "destructured execFileSync imported from child_process"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [22, 22],
+      "notes": "destructured fork imported from child_process"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [27, 27],
+      "notes": "{ shell: true } joins the argv array into the shell command"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [33, 33],
+      "notes": "spawnSync('bash', ['-c', cmd]) is a shell invocation split across arg 0 and the argv array"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [37, 57],
+      "notes": "argv elements without a shell, an options object, and { shell: false } are not shell payloads"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [37, 57],
+      "notes": "the command / binary at arg 0 is a constant in every safe shape"
+    }
+  ]
+}

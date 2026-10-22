@@ -1,0 +1,43 @@
+{
+  "description": "fs APIs reached through an import binding (destructured from node:fs, default import) and the remaining fs.* path calls are FILE_IO sinks on their path arguments; the data written by writeFileSync / appendFileSync is not a traversal payload.",
+  "tags": ["taint", "path_traversal", "express", "fs"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [10, 10],
+      "notes": "readFileSync destructured from node:fs"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [19, 19],
+      "notes": "renameSync destination is a path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [24, 24],
+      "notes": "fs.appendFileSync path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [29, 29],
+      "notes": "fs.mkdirSync path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [33, 38],
+      "notes": "request data is written content under a fixed path"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [33, 38],
+      "notes": "the path argument is a constant"
+    }
+  ]
+}

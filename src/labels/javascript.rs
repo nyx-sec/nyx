@@ -167,37 +167,54 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::URL_ENCODE),
         case_sensitive: false,
     },
-    // Shell-exec sinks. Qualified `child_process.*` and bare destructured-
-    // import forms (`exec`, `execSync`, `execFile`, ...) are both modeled as
-    // flat sinks here so module-aliased call sites like `cp.exec(...)`
-    // (where `cp = require('child_process')`) still fire via suffix match.
-    // The bare-form FPs that motivated tightening are addressed elsewhere:
+    // Dynamic code construction.  `=Function` is exact-only so it covers
+    // `new Function(src)` and `Function(src)` (the `new_expression`
+    // constructor text is `Function`) without matching `x.Function`.  Every
+    // argument of the Function constructor is compiled (parameter names and
+    // body alike), so it stays unrestricted.  The `vm` entry points compile
+    // arg 0 only; their `GATED_SINKS` entries keep the sandbox / options
+    // object out of the payload.  Destructured `vm` imports ride
+    // `GATED_LABEL_RULES`.
+    LabelRule {
+        matchers: &[
+            "=Function",
+            "vm.runInNewContext",
+            "vm.runInThisContext",
+            "vm.runInContext",
+            "vm.compileFunction",
+            "vm.Script",
+        ],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+    },
+    // Shell-exec sinks.  Only module-qualified `child_process.*` forms are
+    // flat: a bare `exec` suffix also matched `RegExp.prototype.exec`,
+    // mongoose `Query.exec()` and sqlite `db.exec(sql)`.  The other shapes
+    // are resolved through the file's imports instead:
     //
-    //   * `container.exec(...)` (Dockerode) and `exec.start(...)` (the
-    //     resulting `exec` handle) — `container.exec` is excluded via the
-    //     EXCLUDES list below; `exec.start` is suppressed by restricting
-    //     `first_member_label`'s suffix-strip-and-retry to `Source` labels
-    //     only (see `cfg/helpers.rs`).
-    //   * `execSync(cmd, { env: process.env })` flagging `process.env`
-    //     flowing into the options arg — addressed by the
-    //     `=exec`/`=execSync`/`=execFile`/... gates in `GATED_SINKS` below
-    //     which set `payload_args: &[0]`.  The cfg pass propagates a gate's
-    //     payload_args restriction onto the matching flat sink so only arg
-    //     0 (the command string) is taint-checked at the call site.
+    //   * `cp.exec(cmd)` with `cp = require('child_process')` and the
+    //     destructured `const { exec } = require('child_process')` form ride
+    //     the `ImportedFromModule` rule in `GATED_LABEL_RULES`.
+    //   * `require('child_process').exec(cmd)` is rewritten to
+    //     `child_process.exec` by the CFG callee canonicaliser.
+    //   * the bare `=exec` / `=execSync` / `=execFile` gates in `GATED_SINKS`
+    //     keep firing on destructured calls inside function scopes, which
+    //     the top-level import view does not see.
+    //
+    // Only arg 0 (the command or binary) is a payload; the `GATED_SINKS`
+    // entries below restrict the flat sink accordingly.  The argv-taking
+    // forms (`execFile`, `spawn`, ...) also treat the argv array as a payload
+    // when the options object enables `shell` (see
+    // `CHILD_PROCESS_SHELL_OPTION_METHODS`).
     LabelRule {
         matchers: &[
             "child_process.exec",
             "child_process.execSync",
-            "child_process.spawn",
             "child_process.execFile",
-            // Bare forms from destructured imports:
-            //   const { exec, execSync } = require('child_process')
-            // and module-aliased calls like `cp.exec(...)`.  Receiver-name
-            // collisions (`container.exec`, etc.) are suppressed via
-            // EXCLUDES; arg-position restriction comes from the `=*` gates.
-            "exec",
-            "execSync",
-            "execFile",
+            "child_process.execFileSync",
+            "child_process.spawn",
+            "child_process.spawnSync",
+            "child_process.fork",
             // Common promisified wrappers around child_process.exec
             "execAsync",
             "execPromise",
@@ -266,6 +283,24 @@ pub static RULES: &[LabelRule] = &[
             "fs.unlinkSync",
             "fs.readdir",
             "fs.readdirSync",
+            "fs.accessSync",
+            "fs.open",
+            "fs.openSync",
+            "fs.mkdir",
+            "fs.mkdirSync",
+            "fs.rm",
+            "fs.rmSync",
+            "fs.rmdir",
+            "fs.rmdirSync",
+            // Two-path forms: both the source and the destination are paths.
+            "fs.rename",
+            "fs.renameSync",
+            "fs.copyFile",
+            "fs.copyFileSync",
+            // Arg 1 is the appended data, not a path; the `GATED_SINKS`
+            // entries restrict these to arg 0.
+            "fs.appendFile",
+            "fs.appendFileSync",
             // Phase 05 — `node:fs/promises` member-access forms covered
             // here. Bare-name forms (`readFile`, `open`, ...) and
             // `fsp.readFile` namespace-import forms ride the gated
@@ -334,6 +369,9 @@ pub static RULES: &[LabelRule] = &[
             "pool.query",
             "db.query",
             "db.execute",
+            // better-sqlite3 / sqlite3 `db.exec(sql)` runs a raw SQL string.
+            // (A bare `exec` suffix used to classify it as a shell sink.)
+            "db.exec",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
@@ -591,15 +629,125 @@ pub static EXCLUDES: &[&str] = &[
     // Dockerode container API: `container.exec({ Cmd: [...] })` is the
     // canonical non-shell exec path (the Cmd array is passed directly to
     // the kernel via `execve`, no shell parsing).  `exec.start(...)` is
-    // the follow-on stream attach.  Suffix-matching the bare `exec` rule
-    // would otherwise classify every `<receiver>.exec(...)` method call
-    // — including these — as a SHELL_ESCAPE sink.  These patterns name
-    // the Dockerode SDK methods specifically; if a project happens to
-    // also expose its own `container.exec` shell wrapper, override via
+    // the follow-on stream attach.  The built-in shell rules no longer
+    // suffix-match a bare `exec`, but a broad custom `exec` rule still
+    // would, so both stay excluded.  These patterns name the Dockerode SDK
+    // methods specifically; if a project happens to also expose its own
+    // `container.exec` shell wrapper, override via
     // [analysis.languages.javascript] custom rules.
     "container.exec",
     "exec.start",
 ];
+
+/// Timers that compile a string first argument (`setTimeout('run()', 10)`).
+/// Their `GATED_SINKS` entries only apply when arg 0 is a string by
+/// construction (`cfg::literals::js_arg_is_string_valued`): a callback
+/// argument, the normal case, compiles nothing.
+pub(crate) const STRING_EVALUATING_TIMERS: &[&str] = &["setTimeout", "setInterval"];
+
+/// Node `child_process` entry points that spawn a process.  Shared by the
+/// JS and TS import-gated shell rules.
+pub(crate) const CHILD_PROCESS_METHODS: &[&str] = &[
+    "exec",
+    "execSync",
+    "execFile",
+    "execFileSync",
+    "spawn",
+    "spawnSync",
+    "fork",
+];
+
+/// The `child_process` methods that take an argv array and honour a
+/// `shell` option.  Without `shell` the argv elements reach the program
+/// verbatim, so only the binary (arg 0) is a shell payload.  With
+/// `{ shell: true }` (or any non-false value) Node joins the binary and
+/// argv into one `/bin/sh -c` string, which makes the argv array a payload
+/// too.  `exec` / `execSync` always use a shell but take no argv, and
+/// `fork` takes no `shell` option.
+pub(crate) const CHILD_PROCESS_SHELL_OPTION_METHODS: &[&str] =
+    &["execFile", "execFileSync", "spawn", "spawnSync"];
+
+/// `child_process` through an import binding: the namespace alias
+/// (`const cp = require('child_process'); cp.exec(cmd)`) and the
+/// destructured bare name (`const { spawn } = require('node:child_process')`).
+/// The gate checks the call's leading identifier against the file's
+/// imports, so `re.exec(s)`, `User.find().exec()`, `db.exec(sql)` and
+/// redux-saga's `fork(saga)` stay unlabelled.  Arg 0 is the command or
+/// binary; the CFG post-pass widens the argv-taking forms when their options
+/// enable `shell` (see [`CHILD_PROCESS_SHELL_OPTION_METHODS`]).
+pub(crate) const CHILD_PROCESS_IMPORT_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: CHILD_PROCESS_METHODS,
+    label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+    case_sensitive: true,
+    gate: LabelGate::ImportedFromModule(&["child_process", "node:child_process"]),
+    payload_args: &[0],
+};
+
+/// `vm` through an import binding (`const { runInNewContext } =
+/// require('vm')`, `import * as nodeVm from 'node:vm'`).  Arg 0 is the
+/// compiled source; the context / options object is not.
+pub(crate) const VM_IMPORT_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: &[
+        "runInNewContext",
+        "runInThisContext",
+        "runInContext",
+        "compileFunction",
+        "Script",
+    ],
+    label: DataLabel::Sink(Cap::CODE_EXEC),
+    case_sensitive: true,
+    gate: LabelGate::ImportedFromModule(&["vm", "node:vm"]),
+    payload_args: &[0],
+};
+
+/// Callback and sync `fs` APIs through an import binding
+/// (`import { readFileSync } from 'node:fs'`, `const fsx = require('fs')`).
+/// Only the path is a payload: the data written by `writeFile` /
+/// `appendFile` is not a traversal vector.  A call the flat `fs.*` rules
+/// already label keeps its flat payload set; the CFG post-pass applies these
+/// positions only where the import binding is what makes the call a sink.
+pub(crate) const FS_IMPORT_PATH_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: &[
+        "readFile",
+        "readFileSync",
+        "writeFile",
+        "writeFileSync",
+        "appendFile",
+        "appendFileSync",
+        "createReadStream",
+        "createWriteStream",
+        "access",
+        "accessSync",
+        "stat",
+        "statSync",
+        "open",
+        "openSync",
+        "readdir",
+        "readdirSync",
+        "mkdir",
+        "mkdirSync",
+        "rm",
+        "rmSync",
+        "rmdir",
+        "rmdirSync",
+        "unlink",
+        "unlinkSync",
+    ],
+    label: DataLabel::Sink(Cap::FILE_IO),
+    case_sensitive: true,
+    gate: LabelGate::ImportedFromModule(&["fs", "node:fs"]),
+    payload_args: &[0],
+};
+
+/// Two-path `fs` APIs through an import binding: both the source and the
+/// destination are paths.
+pub(crate) const FS_IMPORT_PATH_PAIR_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: &["rename", "renameSync", "copyFile", "copyFileSync"],
+    label: DataLabel::Sink(Cap::FILE_IO),
+    case_sensitive: true,
+    gate: LabelGate::ImportedFromModule(&["fs", "node:fs"]),
+    payload_args: &[0, 1],
+};
 
 /// Phase 05 — `node:fs/promises` path-traversal sinks. The matcher list
 /// holds the bare-name and `<ns>.<method>` member-access shapes; the
@@ -630,7 +778,14 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
         gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+        payload_args: &[],
     },
+    // Node core modules reached through an import binding.  Shared with
+    // typescript.rs; see the constants for each rule's rationale.
+    CHILD_PROCESS_IMPORT_RULE,
+    VM_IMPORT_RULE,
+    FS_IMPORT_PATH_RULE,
+    FS_IMPORT_PATH_PAIR_RULE,
     // Phase 07 — Knex bare-name raw-SQL escape hatches. The receiver in
     // `db.whereRaw(sql)` shape is an arbitrary local binding (`db`, `qb`,
     // `users`, ...) so leading-identifier gating cannot witness the
@@ -646,6 +801,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
             modules: &["knex"],
             local_names: &["knex"],
         },
+        payload_args: &[],
     },
     // Phase 07 — Drizzle `sql` template-tag builder.  Two shapes:
     //   - `sql.raw(x)`              → callee text "sql.raw" (member call)
@@ -658,6 +814,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+        payload_args: &[],
     },
     // Phase 10 — Next.js `cookies()` / `headers()` from `next/headers`
     // return adversary-controlled request-bound state.  Mirrors the
@@ -667,6 +824,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["next/headers"]),
+        payload_args: &[],
     },
 ];
 
@@ -1050,20 +1208,57 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
     // ── Shell-exec sinks (SHELL_ESCAPE) ──────────────────────────────────
     //
-    // Only arg 0 (the command string) is a shell-injection payload.
-    // `options.env` / `options.cwd` / etc. at arg 1+ are not.  Bare forms
-    // (`exec`, `execSync`, `execFile`, `execAsync`, `execPromise`) use the
-    // `=` exact-only sigil so they match the destructured-import shape
-    // (`const { exec } = require('child_process'); exec(cmd)`) without
-    // colliding with any `<receiver>.exec` method (Dockerode's
-    // `container.exec`, `RegExp.prototype.exec`, etc.).
-    // Qualified `child_process.*` forms stay as flat sinks (see RULES above);
-    // gates run only when no flat sink already classifies the call, so adding
-    // them here would never fire.  The bare destructured-import forms below
-    // are the only place where shell-exec needs gating, since `classify_all`
-    // can't safely register a bare `exec` rule without colliding with every
-    // `<receiver>.exec` method (Dockerode `container.exec`,
+    // Only arg 0 (the command string or binary) is a shell-injection
+    // payload.  `options.env` / `options.cwd` / an argv array / a callback at
+    // arg 1+ are not.  The qualified `child_process.*` gates restrict the flat
+    // sinks in RULES to arg 0.  Bare forms (`exec`, `execSync`, `execFile`,
+    // `execAsync`, `execPromise`) use the `=` exact-only sigil so they match
+    // the destructured-import shape (`const { exec } =
+    // require('child_process'); exec(cmd)`) without colliding with any
+    // `<receiver>.exec` method (Dockerode's `container.exec`,
     // `RegExp.prototype.exec`, etc.).
+    SinkGate::payload_positions(
+        "child_process.exec",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execFile",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execFileSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.spawn",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.spawnSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.fork",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
     SinkGate {
         callee_matcher: "=exec",
         arg_index: 0,
@@ -1275,6 +1470,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    SinkGate::payload_positions("db.exec", DataLabel::Sink(Cap::SQL_QUERY), false, &[0]),
     SinkGate {
         callee_matcher: "db.execute",
         arg_index: 0,
@@ -1565,6 +1761,64 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // ── String-evaluating timers ─────────────────────────────────────────
+    //
+    // `setTimeout(code, ms)` / `setInterval(code, ms)` compile a string
+    // first argument like `eval`.  The usual argument is a callback, so the
+    // CFG gate pass keeps these gates only when arg 0 is a string by
+    // construction (see `STRING_EVALUATING_TIMERS`).  Exact-only (`=`) so
+    // `socket.setTimeout(ms)` / `req.setTimeout(ms)` never match.
+    SinkGate::payload_positions("=setTimeout", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions("=setInterval", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions(
+        "window.setTimeout",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "window.setInterval",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    // ── `vm` code compilation and `fs.appendFile` payload positions ──────
+    //
+    // `vm.runInNewContext(code, sandbox)` compiles arg 0; the sandbox and
+    // options objects are data.  `fs.appendFile(path, data)` writes arg 1,
+    // which is not a traversal vector.
+    SinkGate::payload_positions(
+        "vm.runInNewContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.runInThisContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.runInContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.compileFunction",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions("vm.Script", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions("fs.appendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions(
+        "fs.appendFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -1727,4 +1981,151 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     }
 
     rules
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::{
+        Cap, ClassificationContext, DataLabel, classify_all, classify_gated_matches,
+        classify_gated_sink,
+    };
+    use std::collections::HashMap;
+
+    fn shell_sink(labels: &[DataLabel]) -> bool {
+        labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE)))
+    }
+
+    fn gated_payload(lang: &str, callee: &str) -> Option<Vec<usize>> {
+        let gates = classify_gated_sink(lang, callee, |_| None, |_| None, |_| false);
+        gates.first().map(|g| g.payload_args.to_vec())
+    }
+
+    #[test]
+    fn receiver_exec_methods_are_not_shell_sinks() {
+        for lang in ["javascript", "typescript"] {
+            for callee in [
+                "re.exec",
+                "/^Bearer (.+)$/.exec",
+                "SEMVER.exec",
+                "q.exec",
+                "db.exec",
+                "this.exec",
+                "stmt.execSync",
+            ] {
+                assert!(
+                    !shell_sink(&classify_all(lang, callee, None)),
+                    "{lang}: `{callee}` must not be a flat shell sink"
+                );
+            }
+            // sqlite `db.exec(sql)` runs SQL.
+            assert!(
+                classify_all(lang, "db.exec", None).contains(&DataLabel::Sink(Cap::SQL_QUERY)),
+                "{lang}: db.exec should be a SQL sink"
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_child_process_forms_are_shell_sinks_on_arg_zero() {
+        for lang in ["javascript", "typescript"] {
+            for callee in [
+                "child_process.exec",
+                "child_process.execSync",
+                "child_process.execFile",
+                "child_process.execFileSync",
+                "child_process.spawn",
+                "child_process.spawnSync",
+                "child_process.fork",
+            ] {
+                assert!(
+                    shell_sink(&classify_all(lang, callee, None)),
+                    "{lang}: `{callee}` should be a shell sink"
+                );
+                assert_eq!(
+                    gated_payload(lang, callee),
+                    Some(vec![0]),
+                    "{lang}: {callee}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_process_import_binding_gates_alias_and_destructured_calls() {
+        let mut imports: HashMap<String, String> = HashMap::new();
+        imports.insert("cp".into(), "child_process".into());
+        imports.insert("spawn".into(), "node:child_process".into());
+        imports.insert("fork".into(), "redux-saga/effects".into());
+        imports.insert("re".into(), "./patterns".into());
+        let ctx = ClassificationContext {
+            local_imports: Some(&imports),
+        };
+        for lang in ["javascript", "typescript"] {
+            for callee in ["cp.exec", "cp.spawnSync", "cp.fork", "spawn"] {
+                let hits = classify_gated_matches(lang, callee, Some(&ctx));
+                let hit = hits
+                    .iter()
+                    .find(|m| m.label == DataLabel::Sink(Cap::SHELL_ESCAPE))
+                    .unwrap_or_else(|| panic!("{lang}: `{callee}` should be gated in"));
+                assert_eq!(hit.payload_args, &[0], "{lang}: {callee}");
+            }
+            for callee in ["fork", "re.exec", "db.exec", "exec"] {
+                let hits = classify_gated_matches(lang, callee, Some(&ctx));
+                assert!(
+                    hits.is_empty(),
+                    "{lang}: `{callee}` is not bound to child_process, got {hits:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fs_import_binding_restricts_written_data() {
+        let mut imports: HashMap<String, String> = HashMap::new();
+        imports.insert("writeFileSync".into(), "node:fs".into());
+        imports.insert("renameSync".into(), "fs".into());
+        imports.insert("readFile".into(), "fs/promises".into());
+        let ctx = ClassificationContext {
+            local_imports: Some(&imports),
+        };
+        let write = classify_gated_matches("javascript", "writeFileSync", Some(&ctx));
+        assert_eq!(write.len(), 1);
+        assert_eq!(write[0].label, DataLabel::Sink(Cap::FILE_IO));
+        assert_eq!(write[0].payload_args, &[0]);
+        let rename = classify_gated_matches("typescript", "renameSync", Some(&ctx));
+        assert_eq!(rename.len(), 1);
+        assert_eq!(rename[0].payload_args, &[0, 1]);
+        // The existing fs/promises rule keeps every argument a payload.
+        let promises = classify_gated_matches("javascript", "readFile", Some(&ctx));
+        assert_eq!(promises.len(), 1);
+        assert!(promises[0].payload_args.is_empty());
+    }
+
+    #[test]
+    fn function_constructor_and_vm_are_code_exec_sinks() {
+        let code_exec = |labels: &[DataLabel]| {
+            labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::CODE_EXEC)))
+        };
+        for lang in ["javascript", "typescript"] {
+            for callee in [
+                "Function",
+                "vm.runInNewContext",
+                "vm.Script",
+                "vm.compileFunction",
+            ] {
+                assert!(
+                    code_exec(&classify_all(lang, callee, None)),
+                    "{lang}: {callee}"
+                );
+            }
+            // `=Function` is exact-only: a method named Function is not the
+            // global constructor.
+            assert!(!code_exec(&classify_all(lang, "obj.Function", None)));
+            assert_eq!(gated_payload(lang, "vm.runInNewContext"), Some(vec![0]));
+        }
+    }
 }

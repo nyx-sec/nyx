@@ -1,0 +1,49 @@
+{
+  "description": "Node dynamic-code sinks: the Function constructor (with and without `new`), vm.runInNewContext, new vm.Script and a destructured vm import compile request data. A constant vm source with a request-derived sandbox is safe.",
+  "tags": ["taint", "code_exec", "express", "vm"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "new Function compiles every argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "Function(src) without `new` is the same constructor"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [19, 19],
+      "notes": "vm.runInNewContext compiles arg 0"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [24, 24],
+      "notes": "new vm.Script compiles arg 0"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [30, 30],
+      "notes": "runInThisContext destructured from node:vm"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [34, 39],
+      "notes": "the vm sandbox object is data, not code"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [34, 39],
+      "notes": "the compiled source is a constant"
+    }
+  ]
+}

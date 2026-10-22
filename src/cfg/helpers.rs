@@ -215,6 +215,69 @@ pub(crate) fn root_member_receiver(n: Node, code: &[u8]) -> Option<String> {
     None
 }
 
+/// Callee text for a call's `function` node.  For JS/TS this applies
+/// [`js_canonical_callee`] first; every other case is the node's source
+/// text.
+pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option<String> {
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && let Some(canonical) = js_canonical_callee(func, code)
+    {
+        return Some(canonical);
+    }
+    text_of(func, code)
+}
+
+/// Canonical callee text for a JS/TS member call whose raw source text hides
+/// the API being called from the label rules: `require('child_process').exec`
+/// becomes `child_process.exec` (and `require('node:fs').readFileSync` becomes
+/// `fs.readFileSync`).  Only bare identifier-shaped module names are
+/// rewritten, never relative paths.  `None` when the shape does not apply.
+pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
+    let func = unwrap_parens(func);
+    if func.kind() != "member_expression" {
+        return None;
+    }
+    let property = func.child_by_field_name("property")?;
+    if property.kind() != "property_identifier" {
+        return None;
+    }
+    let method = text_of(property, code)?;
+    let object = unwrap_parens(func.child_by_field_name("object")?);
+    if object.kind() != "call_expression" {
+        return None;
+    }
+    js_required_module_name(object, code).map(|module| format!("{module}.{method}"))
+}
+
+/// Module name of a `require('<name>')` call, with any `node:` scheme
+/// stripped.  `None` unless the single argument is a string literal naming
+/// a bare identifier-shaped module (`child_process`, `fs`, `vm`).
+fn js_required_module_name(call: Node, code: &[u8]) -> Option<String> {
+    let callee = call.child_by_field_name("function")?;
+    if callee.kind() != "identifier" || text_of(callee, code).as_deref() != Some("require") {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut named = args.named_children(&mut cursor);
+    let arg = named.next()?;
+    if named.next().is_some() || arg.kind() != "string" {
+        return None;
+    }
+    let raw = text_of(arg, code)?;
+    let spec = raw.trim_matches(|c| c == '\'' || c == '"');
+    let name = spec.strip_prefix("node:").unwrap_or(spec);
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
 /// Check if a callee represents an RAII-managed factory whose resources are
 /// automatically cleaned up by language semantics (Rust ownership/Drop, C++
 /// smart pointers).  Returns `true` to set `managed_resource` on the acquire
@@ -314,7 +377,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
                             if lookup(lang, unwrapped.kind()) == Kind::Function {
                                 Some(anon_fn_name(unwrapped.start_byte()))
                             } else {
-                                text_of(f, code)
+                                call_fn_callee_text(f, lang, code)
                             }
                         }),
                     Kind::CallMethod => {
@@ -432,7 +495,7 @@ fn find_inner_call_impl<'a>(
                         .or_else(|| c.child_by_field_name("method"))
                         .or_else(|| c.child_by_field_name("name"))
                         .or_else(|| c.child_by_field_name("type"))
-                        .and_then(|f| text_of(f, code)),
+                        .and_then(|f| call_fn_callee_text(f, lang, code)),
                     Kind::CallMethod => {
                         let func = c
                             .child_by_field_name("method")
@@ -516,13 +579,14 @@ fn find_inner_call_impl<'a>(
 /// in `push_node` cannot see the per-file import view, so an import-gated sink
 /// (`fsp.readFile`) shadowed under a non-sink outer call
 /// (`JSON.parse(await fsp.readFile(tainted))`, vite CVE-2026-39365) is invisible
-/// until the import view is built.  Returns `(callee_text, label, span)`.
+/// until the import view is built.  Returns `(callee_text, match, span)`,
+/// where the match carries the rule's sink label and payload positions.
 pub(crate) fn find_inner_gated_sink_call<'a>(
     n: Node<'a>,
     lang: &str,
     code: &'a [u8],
     ctx: &crate::labels::ClassificationContext<'_>,
-) -> Option<(String, DataLabel, (usize, usize))> {
+) -> Option<(String, crate::labels::GatedLabelMatch, (usize, usize))> {
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
         if lookup(lang, c.kind()) == Kind::Function {
@@ -553,15 +617,15 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
                     .child_by_field_name("function")
                     .or_else(|| c.child_by_field_name("method"))
                     .or_else(|| c.child_by_field_name("name"))
-                    .and_then(|f| text_of(f, code)),
+                    .and_then(|f| call_fn_callee_text(f, lang, code)),
             };
             if let Some(id) = ident {
-                if let Some(lbl) = crate::labels::classify_gated_only(lang, &id, Some(ctx))
+                if let Some(m) = crate::labels::classify_gated_matches(lang, &id, Some(ctx))
                     .iter()
-                    .find(|l| matches!(l, DataLabel::Sink(_)))
+                    .find(|m| matches!(m.label, DataLabel::Sink(_)))
                     .copied()
                 {
-                    return Some((id, lbl, (c.start_byte(), c.end_byte())));
+                    return Some((id, m, (c.start_byte(), c.end_byte())));
                 }
             }
         }
