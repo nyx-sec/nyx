@@ -19,3 +19,9 @@ public class AuditServlet extends HttpServlet {
         out.println(user);
     }
 }
+
+class WireFormat {
+    static void println(PrintWriter pw, String s) {
+        pw.print(s + "\r\n");
+    }
+}

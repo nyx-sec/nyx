@@ -13170,6 +13170,14 @@ fn resolve_callee_full(
     arity_hint: Option<usize>,
     receiver_type: Option<&str>,
 ) -> Option<ResolvedSummary> {
+    // A callee the language lists in its label EXCLUDES is a library API
+    // (Java `System.out.println`, Express `app.get`), never project code,
+    // so its leaf name must not bind to a same-named project function such
+    // as a `println(PrintWriter, String)` helper in another class.
+    let head = callee.split(['(', '<']).next().unwrap_or(callee).trim();
+    if crate::labels::is_excluded(transfer.lang.as_str(), head.as_bytes()) {
+        return None;
+    }
     // Use leaf name for map/index lookups (FuncKey.name is always leaf).
     let normalized = callee_leaf_name(callee);
     // Split the raw callee into structured qualifier hints.  A `::`
