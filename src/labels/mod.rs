@@ -728,6 +728,7 @@ static EXCLUDES: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     m.insert("js", javascript::EXCLUDES);
     m.insert("typescript", typescript::EXCLUDES);
     m.insert("ts", typescript::EXCLUDES);
+    m.insert("java", java::EXCLUDES);
     m
 });
 

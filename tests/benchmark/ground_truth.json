@@ -20902,6 +20902,60 @@
       "notes": "Precision guard for JDBC Statement-from-Connection ownership (interior-node sibling of the ResultSet and borrowed-connection rules). A PreparedStatement opened on a Connection acquired locally in the same body (here borrowed from a managed Session via session.getConnection() and released with a static closeQuietly helper the release detector does not recognise) is transitively closed by that connection's lifecycle, so the standalone statement leak is a false positive. Suppressed at both the state and cfg passes via the derivation edge ps -> con. Distilled from sonarqube server/sonar-db-dao/.../FileSourceDao.java:66 and the Ce*Dao connection-per-statement shape. A statement on a long-lived field/parameter connection this body does not track is unaffected and still leaks (recall: tests/fixtures/state/java_statement_from_field_connection_leaks.java)."
     },
     {
+      "case_id": "java-safe-spring-infra-001",
+      "file": "java/safe/SafeSpringInfraFormals.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "taint-header-injection"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "spring",
+        "entry-point"
+      ],
+      "disabled": false,
+      "notes": "HttpServletResponse and HttpSession formals are injected by Spring, not request input; constant writes and cookies stay silent"
+    },
+    {
+      "case_id": "java-safe-console-001",
+      "file": "java/safe/SafeConsoleLogHelper.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "console",
+        "xss"
+      ],
+      "disabled": false,
+      "notes": "System.out / System.err prints are console output, directly and through a log helper"
+    },
+    {
       "case_id": "cve-rs-2026-53956-vulnerable",
       "file": "cve_corpus/rust/CVE-2026-53956/vulnerable.rs",
       "language": "rust",

@@ -238,14 +238,13 @@ pub struct SsaTaintTransfer<'a> {
     /// preserves today's per-callsite seeding (`global_seed`,
     /// `param_seed`, `auto_seed_handler_params`).
     pub entry_kind: Option<crate::entry_points::EntryKind>,
-    /// Per-formal route-capture flag, indexed by `SsaOp::Param.index`.
-    /// Used by the entry-kind seeding pass for Python `FlaskRoute`
-    /// (and any future per-formal-name framework gate) to restrict
-    /// `Source(UserInput)` painting to formals whose names appear as
-    /// path captures in the routing decorator.  Out-of-range indices
-    /// default to `false` and skip seeding.  `None` preserves today's
-    /// "seed every Param" behaviour for entry kinds without per-formal
-    /// gating (Spring, JaxRs, Sinatra, Express, Gin, AppRoute, ...).
+    /// Per-formal "bound from the request" flag, indexed by
+    /// `SsaOp::Param.index` (see `BodyMeta::param_route_capture`).
+    /// Used by the entry-kind seeding pass for Flask, Sinatra, FastAPI,
+    /// Spring and JAX-RS to restrict `Source(UserInput)` painting to
+    /// formals that are path captures (Python, Ruby) or request-bound
+    /// (Java).  `None` preserves the "seed every Param" behaviour for entry
+    /// kinds without per-formal gating (Express, Gin, AppRoute, ...).
     pub param_route_capture: Option<&'a [bool]>,
     /// True when the transfer is driving a per-parameter probe inside
     /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
@@ -298,6 +297,40 @@ pub fn run_ssa_taint_full_with_exits(
 ) {
     let result = run_ssa_taint_internal(ssa, cfg, transfer, true);
     (result.events, result.block_states, result.block_exit_states)
+}
+
+/// Request-bound flag of a Spring / JAX-RS entry `Param` (see
+/// `BodyMeta::param_route_capture`).  A formal reads its own flag.  A Param
+/// past the formals is a dotted projection of one (`dto.name`) and takes the
+/// flag of its root formal.  Without flags every Param counts as bound.
+fn java_param_is_request_bound(
+    ssa: &SsaBody,
+    inst: &SsaInst,
+    param_index: Option<usize>,
+    flags: Option<&[bool]>,
+) -> bool {
+    let Some(flags) = flags else {
+        return true;
+    };
+    let Some(index) = param_index else {
+        return false;
+    };
+    if let Some(&bound) = flags.get(index) {
+        return bound;
+    }
+    let Some((root, _)) = inst.var_name.as_deref().and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    ssa.blocks[ssa.entry.0 as usize]
+        .body
+        .iter()
+        .find_map(|i| match i.op {
+            SsaOp::Param { index } if i.var_name.as_deref() == Some(root) => {
+                flags.get(index).copied()
+            }
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 fn run_ssa_taint_internal(
@@ -367,7 +400,9 @@ fn run_ssa_taint_internal(
         // `None` seeds every Param.  `seed_at_all = false` skips seeding
         // entirely; the engine relies on existing label rules instead.
         let (skip_self, only_index, seed_at_all): (bool, Option<usize>, bool) = match entry_kind {
-            // Pure Param-only handlers, all named formals are request-bound.
+            // Param-only handlers.  Every named formal is a candidate; the
+            // per-formal gates below narrow Flask, Sinatra, FastAPI, Spring,
+            // JAX-RS and the Rust frameworks to the request-bound ones.
             EntryKind::AppRouteHandler { .. }
             | EntryKind::UseServerDirective
             | EntryKind::FormAction
@@ -545,6 +580,26 @@ fn run_ssa_taint_internal(
                 if !seed_capture && !seed_extractor {
                     continue;
                 }
+            }
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::SpringMapping { .. } | EntryKind::JaxRsResource
+                )
+                && !java_param_is_request_bound(
+                    ssa,
+                    inst,
+                    param_index,
+                    transfer.param_route_capture,
+                )
+            {
+                // Spring and JAX-RS inject infrastructure objects next to the
+                // request-bound formals: the servlet response and request,
+                // `HttpSession`, `Model`, `Principal`,
+                // `@AuthenticationPrincipal`, `@Context SecurityContext`, ...
+                // Painting those makes a constant `resp.getWriter().write(..)`
+                // or `resp.addCookie(..)` fire on the receiver alone.
+                continue;
             }
             let origin = TaintOrigin {
                 node: inst.cfg_node,
@@ -11637,19 +11692,14 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
     out
 }
 
-/// Suppress sinks from known non-sink callees (e.g., `System.out.println` in Java).
+/// Suppress sinks from known non-sink callees (e.g., Go `fmt.Fprintf(os.Stderr, ..)`).
 ///
 /// These are callees whose suffix matches a broad sink rule but whose
 /// receiver is known to be safe (console output, not HTTP response).
 fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &NodeInfo) -> Cap {
     match lang {
-        Lang::Java => {
-            if callee.starts_with("System.out.") || callee.starts_with("System.err.") {
-                sink_caps & !Cap::HTML_ESCAPE
-            } else {
-                sink_caps
-            }
-        }
+        // Java `System.out` / `System.err` prints never carry the sink: they
+        // are in `labels::java::EXCLUDES`, so the CFG node has no label.
         // Go `fmt.Fprint*` / `io.WriteString` carry an HTML_ESCAPE
         // sink label because they CAN write to an `http.ResponseWriter`.  When
         // the writer (positional arg 0) is a known non-response stream

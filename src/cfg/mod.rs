@@ -1126,15 +1126,17 @@ pub struct BodyMeta {
     /// machine consumes this to seed the entry `AuthLevel` for privileged-sink
     /// checks. Empty for top-level and for functions without auth markers.
     pub auth_decorators: Vec<String>,
-    /// Per-formal route-capture flag. Same length as `params`. `true` at
-    /// position `i` iff the formal name appears as a path capture in a
-    /// framework routing decorator on this function (Flask
-    /// `@app.route("/users/<name>")`, blueprint-prefixed `@bp.get("/u/<int:id>")`,
-    /// FastAPI / Starlette verb decorators). Today populated only for Python.
-    /// The entry-kind seeding pass consults this for `FlaskRoute` so only
-    /// path-bound formals (not implicit globals or DI handles) are painted
-    /// as adversary input. Empty for top-level and for functions without
-    /// matching decorators.
+    /// Per-formal "bound from the request" flag. Same length as `params`.
+    /// For Python and Ruby, `true` at position `i` iff the formal name
+    /// appears as a path capture in a framework routing decorator on this
+    /// function (Flask `@app.route("/users/<name>")`, blueprint-prefixed
+    /// `@bp.get("/u/<int:id>")`, FastAPI / Starlette verb decorators,
+    /// Sinatra `:name` segments). For Java, `true` iff the formal carries a
+    /// Spring / JAX-RS binding annotation or has a non-infrastructure type
+    /// (see `params::java_formal_is_request_bound`). The entry-kind seeding
+    /// pass consults this so only request-bound formals (not implicit
+    /// globals, DI handles or injected response / session objects) are
+    /// painted as adversary input. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
 }
 
@@ -7626,7 +7628,9 @@ pub(super) fn build_sub<'a>(
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let auth_decorators = extract_auth_decorators(ast, lang, code);
             let route_captures = extract_route_path_captures(ast, lang, code);
-            let param_route_capture: Vec<bool> = if route_captures.is_empty() {
+            let param_route_capture: Vec<bool> = if lang == "java" {
+                params::java_request_bound_flags(ast, code, param_names.len())
+            } else if route_captures.is_empty() {
                 vec![false; param_names.len()]
             } else {
                 param_names

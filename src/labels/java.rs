@@ -33,6 +33,9 @@ pub static RULES: &[LabelRule] = &[
             "getRequestURL",
             "getServletPath",
             "getContextPath",
+            // Multipart upload: the client-chosen file name of a
+            // `request.getPart(..)` part.
+            "getSubmittedFileName",
         ],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
@@ -260,8 +263,8 @@ pub static RULES: &[LabelRule] = &[
     // `response.getWriter().write(x)` to the callee text `response.write`
     // (the intermediate `getWriter()` call is dropped), so a receiver-typed
     // `HttpResponse.write` rule never sees it.  The breadth is bounded two
-    // ways: `System.out.println` / `System.err.println` are excluded by
-    // `suppress_known_safe_callees`, and `receiver_incompatible_sink_caps`
+    // ways: the `System.out` / `System.err` console streams are in
+    // [`EXCLUDES`], and `receiver_incompatible_sink_caps`
     // strips `HTML_ESCAPE` whenever the receiver resolves to a non-response
     // type (a `FileWriter` / `FileOutputStream` typed `FileHandle`, a DB
     // connection, etc.), so genuine file/stream writes do not register as XSS.
@@ -1138,6 +1141,27 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "package_declaration"          => Kind::Trivia,
 };
 
+/// Callee patterns that must never be classified as source/sanitizer/sink.
+/// The bare `println` / `print` / `write` response-writer sink would
+/// otherwise match the process console streams.  Excluding them at label
+/// time keeps the sink off the CFG node, so the taint engine, callee
+/// summaries (a `log(msg)` helper that prints) and the structural
+/// `cfg-unguarded-sink` rule all agree.
+pub static EXCLUDES: &[&str] = &[
+    "System.out.print",
+    "System.out.println",
+    "System.out.printf",
+    "System.out.format",
+    "System.out.write",
+    "System.out.append",
+    "System.err.print",
+    "System.err.println",
+    "System.err.printf",
+    "System.err.format",
+    "System.err.write",
+    "System.err.append",
+];
+
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
     param_node_kinds: &["formal_parameter", "spread_parameter"],
@@ -1184,6 +1208,27 @@ mod tests {
                 KINDS.get(kind),
                 Some(&Kind::Block),
                 "{kind} should map to Kind::Block so the CFG builder walks its body"
+            );
+        }
+    }
+
+    #[test]
+    fn console_streams_are_not_response_sinks() {
+        use crate::labels::{Cap, DataLabel, classify};
+        for callee in [
+            "System.out.println",
+            "System.out.print",
+            "System.err.println",
+            "System.out.write",
+            "java.lang.System.out.println",
+        ] {
+            assert_eq!(classify("java", callee, None), None, "{callee}");
+        }
+        for callee in ["out.println", "response.write", "writer.print"] {
+            assert_eq!(
+                classify("java", callee, None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+                "{callee}"
             );
         }
     }

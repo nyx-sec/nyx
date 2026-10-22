@@ -1,0 +1,31 @@
+{
+  "description": "JAX-RS resource formals: the unannotated entity body and @Context UriInfo / HttpHeaders carry request data, while @Context HttpServletResponse and SecurityContext are injected by the container and are not request input.",
+  "tags": ["taint", "java", "jaxrs", "entry-point"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [13, 13],
+      "must_match": true,
+      "notes": "entity body reaches Runtime.exec"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [20, 20],
+      "must_match": true,
+      "notes": "@Context UriInfo query parameters reach SQL"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [27, 27],
+      "must_match": true,
+      "notes": "@Context HttpHeaders header value reaches SQL"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [31, 42],
+      "must_not_match": true,
+      "notes": "the injected response and SecurityContext are not request input"
+    }
+  ]
+}

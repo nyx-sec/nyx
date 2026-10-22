@@ -1,0 +1,33 @@
+{
+  "description": "Request-bound Spring formals stay sources while the injected response, request and principal formals around them do not: @RequestParam, an unannotated String, and @RequestBody reach their sinks, and a servlet request formal is a source only through getParameter.",
+  "tags": ["taint", "java", "spring", "entry-point"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [12, 12],
+      "must_match": true,
+      "evidence_contains": ["source: name"],
+      "notes": "@RequestParam name reaches the response writer; the source is the bound formal, not resp"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [17, 17],
+      "must_match": true,
+      "notes": "unannotated String owner is bound from the query string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [22, 22],
+      "must_match": true,
+      "notes": "@RequestBody field reaches the SQL text"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [28, 28],
+      "must_match": true,
+      "evidence_contains": ["source: request.getParameter"],
+      "notes": "the servlet request formal is a source through its accessor label"
+    }
+  ]
+}
