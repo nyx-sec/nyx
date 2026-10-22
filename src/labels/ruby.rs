@@ -581,7 +581,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "begin"                 => Kind::Try,
     "rescue"                => Kind::Block,
     "ensure"                => Kind::Block,
-    "case"                  => Kind::Block,
+    // `case`/`when`/`else` lowers through `build_switch`; `case ... in`
+    // pattern matching is a separate `case_match` node.
+    "case"                  => Kind::Switch,
     "when"                  => Kind::Block,
     "class"                 => Kind::Block,
     "module"                => Kind::Block,

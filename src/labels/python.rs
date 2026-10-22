@@ -1608,7 +1608,7 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "finally_clause"        => Kind::Block,
     "class_definition"      => Kind::Block,
     "decorated_definition"  => Kind::Block,
-    "match_statement"       => Kind::Block,
+    "match_statement"       => Kind::Switch,
     "case_clause"           => Kind::Block,
 
     // data-flow

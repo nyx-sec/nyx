@@ -5195,3 +5195,403 @@ fn for_update_clause_defines_counter() {
     let n = rmw_def_node(&nodes, "i");
     assert_eq!(n.bin_op, Some(BinOp::Add));
 }
+
+//   Multi-way branches: match / select / case / arrow switch
+
+/// The Call node whose callee is exactly `callee`.
+fn call_named(cfg: &Cfg, callee: &str) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .unwrap_or_else(|| panic!("expected a Call node for `{callee}`"))
+}
+
+/// Nodes reachable from `from` over forward (Seq/True/False) edges,
+/// skipping `blocked` nodes.
+fn forward_reach(
+    cfg: &Cfg,
+    from: NodeIndex,
+    blocked: &[NodeIndex],
+) -> std::collections::HashSet<NodeIndex> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![from];
+    while let Some(n) = stack.pop() {
+        if blocked.contains(&n) || !seen.insert(n) {
+            continue;
+        }
+        for e in cfg.edges(n) {
+            if matches!(e.weight(), EdgeKind::Seq | EdgeKind::True | EdgeKind::False) {
+                stack.push(e.target());
+            }
+        }
+    }
+    seen
+}
+
+fn rust_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "rust", Language::from(tree_sitter_rust::LANGUAGE))
+}
+
+fn go_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "go", Language::from(tree_sitter_go::LANGUAGE))
+}
+
+fn java_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+}
+
+/// Go cases never fall through on their own: case 1's exits leave the
+/// switch instead of entering case 2's body.
+#[test]
+fn go_switch_cases_do_not_fall_through() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\tcase 2:\n\t\tb()\n\t}\n\tafter()\n}\n",
+    );
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(
+        !reach.contains(&call_named(&cfg, "b")),
+        "case 1 must not fall into case 2"
+    );
+    assert!(
+        reach.contains(&call_named(&cfg, "after")),
+        "case 1 must exit the switch"
+    );
+}
+
+/// An explicit `fallthrough` still chains into the next case body.
+#[test]
+fn go_switch_explicit_fallthrough_chains_next_case() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(reach.contains(&call_named(&cfg, "b")));
+}
+
+/// `fallthrough` into a default that sits mid-switch: the default keeps its
+/// source position, is entered from case 1 and on no-match, and does not
+/// fall into the case after it.
+#[test]
+fn go_switch_explicit_fallthrough_into_mid_default() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tdefault:\n\t\td()\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let (a, b, d) = (
+        call_named(&cfg, "a"),
+        call_named(&cfg, "b"),
+        call_named(&cfg, "d"),
+    );
+    assert!(forward_reach(&cfg, a, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, d, &[]).contains(&b));
+    assert!(
+        forward_reach(&cfg, entry, &[a]).contains(&d),
+        "default must be reachable on the no-match path"
+    );
+}
+
+/// `select` runs exactly one case: a returning case does not make the code
+/// after the select unreachable, and cases do not flow into each other.
+#[test]
+fn go_select_cases_are_exclusive() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(ch chan int, done chan bool) {\n\tselect {\n\tcase <-done:\n\t\treturn\n\tcase <-ch:\n\t\ta()\n\t}\n\tafter()\n}\n",
+    );
+    let after = call_named(&cfg, "after");
+    assert!(forward_reach(&cfg, entry, &[]).contains(&after));
+    assert!(forward_reach(&cfg, call_named(&cfg, "a"), &[]).contains(&after));
+    // The last case is the fallback, so the only dispatch test is case 1's.
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// The Go switch initializer and a call in the tag expression both get
+/// CFG nodes ahead of the dispatch.
+#[test]
+fn go_switch_init_and_call_tag_are_lowered() {
+    let (cfg, _) =
+        go_cfg(b"package p\nfunc f() {\n\tswitch x := g(); h(x) {\n\tcase 1:\n\t\ta()\n\t}\n}\n");
+    let g_node = call_named(&cfg, "g");
+    assert_eq!(cfg[g_node].taint.defines.as_deref(), Some("x"));
+    let h = call_named(&cfg, "h");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&h));
+    assert!(forward_reach(&cfg, h, &[]).contains(&call_named(&cfg, "a")));
+}
+
+/// `switch t := v.(type)` binds `t` from `v` for every clause.
+#[test]
+fn go_type_switch_alias_is_bound() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(v interface{}) {\n\tswitch t := v.(type) {\n\tcase string:\n\t\tuse(t)\n\t}\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "t").expect("alias binding node");
+    assert_eq!(bind.taint.uses, vec!["v".to_string()]);
+}
+
+/// A statement-level `match` lowers to one dispatch header per non-default
+/// arm, every arm body gets its own nodes, and arms do not flow into each
+/// other.
+#[test]
+fn rust_match_stmt_builds_dispatch_cascade() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: u8) {\n    match m {\n        1 => a(),\n        2 => { b(); }\n        _ => c(),\n    }\n    after();\n}\n",
+    );
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == 1".to_string()), "got {conds:?}");
+}
+
+/// `match` is exhaustive: the last arm is the fallback, so control cannot
+/// reach the code after the match without running one of the arms.
+#[test]
+fn rust_match_last_arm_is_default() {
+    let (cfg, entry) = rust_cfg(
+        b"fn f(r: Result<u8, u8>) {\n    match r {\n        Ok(v) => a(v),\n        Err(e) => b(e),\n    }\n    after();\n}\n",
+    );
+    let (a, b) = (call_named(&cfg, "a"), call_named(&cfg, "b"));
+    assert!(forward_reach(&cfg, entry, &[]).contains(&call_named(&cfg, "after")));
+    assert!(
+        !forward_reach(&cfg, entry, &[a, b]).contains(&call_named(&cfg, "after")),
+        "no no-match path may skip both arms"
+    );
+}
+
+/// Pattern bindings are defined from the scrutinee at the start of the arm.
+#[test]
+fn rust_match_arm_binding_defines_from_scrutinee() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(r: Result<String, E>) {\n    match r {\n        Ok(Foo { x, y: z }) => sink(x, z),\n        _ => {}\n    }\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "x").expect("binding node for x");
+    assert_eq!(bind.taint.extra_defines, vec!["z".to_string()]);
+    assert_eq!(bind.taint.uses, vec!["r".to_string()]);
+    let sink = call_named(&cfg, "sink");
+    let bind_idx = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .unwrap();
+    assert!(forward_reach(&cfg, bind_idx, &[]).contains(&sink));
+}
+
+/// A call scrutinee gets its own Call node, and its value reaches the arm
+/// bindings through a synthetic name.
+#[test]
+fn rust_match_call_scrutinee_gets_own_node() {
+    let (cfg, _) = rust_cfg(
+        b"fn f() {\n    match env::var(\"X\") {\n        Ok(v) => run(v),\n        Err(_) => {}\n    }\n}\n",
+    );
+    let scrut = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n].kind == StmtKind::Call
+                && cfg[n]
+                    .call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.contains("env::var"))
+        })
+        .expect("scrutinee Call node");
+    let synth = cfg[scrut].taint.defines.clone().expect("synthetic define");
+    assert!(synth.starts_with("__nyx_scrut_"));
+    let bind = find_node_defining(&cfg, "v").expect("binding node for v");
+    assert_eq!(bind.taint.uses, vec![synth]);
+}
+
+/// A guarded arm is a second test: its guard header carries the guard as
+/// its condition, and the guard's False edge continues the dispatch.
+#[test]
+fn rust_match_guard_gets_its_own_branch() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(x: Option<String>) {\n    match x {\n        Some(v) if ok(&v) => a(v),\n        _ => b(),\n    }\n}\n",
+    );
+    let guard = if_nodes(&cfg)
+        .into_iter()
+        .find(|&n| cfg[n].condition_text.as_deref() == Some("ok(&v)"))
+        .expect("guard header");
+    let a = call_named(&cfg, "a");
+    let b = call_named(&cfg, "b");
+    assert!(
+        cfg.edges(guard)
+            .any(|e| matches!(e.weight(), EdgeKind::False))
+    );
+    assert!(forward_reach(&cfg, guard, &[a]).contains(&b));
+    // The binding runs before the guard reads it.
+    let bind = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("v"))
+        .expect("binding node");
+    assert!(forward_reach(&cfg, bind, &[]).contains(&guard));
+}
+
+/// `break` inside a match arm leaves the enclosing loop, not the match.
+#[test]
+fn rust_match_break_in_arm_targets_loop_exit() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(rx: R) {\n    loop {\n        match rx.recv() {\n            Ok(m) => h(m),\n            Err(_) => break,\n        }\n        tick();\n    }\n    after();\n}\n",
+    );
+    let brk = cfg
+        .node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Break)
+        .expect("break node");
+    let reach = forward_reach(&cfg, brk, &[]);
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    assert!(
+        !reach.contains(&call_named(&cfg, "tick")),
+        "break must skip the rest of the loop body"
+    );
+}
+
+/// `let y = match ..` keeps its single-node lowering.
+#[test]
+fn rust_let_match_stays_single_node() {
+    let (cfg, _) = rust_cfg(b"fn f(m: u8) {\n    let y = match m { 1 => a(), _ => b() };\n}\n");
+    assert!(if_nodes(&cfg).is_empty());
+    assert!(find_node_defining(&cfg, "y").is_some());
+}
+
+/// Statement-level `unsafe { .. }` and bare `{ .. }` blocks are walked, so
+/// the calls inside them get their own nodes.
+#[test]
+fn rust_stmt_unsafe_and_bare_blocks_are_walked() {
+    let (cfg, _) = rust_cfg(b"fn f() {\n    unsafe { a(); }\n    { b(); }\n}\n");
+    let a = call_named(&cfg, "a");
+    assert!(forward_reach(&cfg, a, &[]).contains(&call_named(&cfg, "b")));
+}
+
+/// An arm that emits no node still gets a branch target, so the header keeps
+/// distinct True and False successors.
+#[test]
+fn empty_match_arm_keeps_branch_labels() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: &str) {\n    match m {\n        \"q\" => return,\n        _ => {}\n    }\n    after();\n}\n",
+    );
+    let [header] = if_nodes(&cfg)[..] else {
+        panic!("expected one dispatch header");
+    };
+    let true_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::True))
+        .map(|e| e.target());
+    let false_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::False))
+        .map(|e| e.target());
+    assert!(true_tgt.is_some() && false_tgt.is_some() && true_tgt != false_tgt);
+    assert!(forward_reach(&cfg, false_tgt.unwrap(), &[]).contains(&call_named(&cfg, "after")));
+}
+
+/// Python `match`: cases are exclusive, `case _` is the default, and a
+/// capture pattern binds from the subject.
+#[test]
+fn python_match_cases_exclusive_with_bindings() {
+    let src = b"def f(m, d):\n    match m:\n        case \"a\":\n            x = 1\n        case str(v):\n            run(v)\n        case _:\n            other()\n    after()\n";
+    let (cfg, _) = parse_and_build(src, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let x_def = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .expect("x = 1");
+    let reach = forward_reach(&cfg, x_def, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "run")));
+    assert!(!reach.contains(&call_named(&cfg, "other")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let bind = find_node_defining(&cfg, "v").expect("capture binding");
+    assert_eq!(bind.taint.uses, vec!["m".to_string()]);
+}
+
+/// Ruby `case`/`when`/`else`: `else` is the default arm and `when` arms
+/// are exclusive.
+#[test]
+fn ruby_case_when_else_is_default() {
+    let src = b"def f(m)\n  case m\n  when \"a\" then a()\n  when \"b\" then b()\n  else c()\n  end\n  after()\nend\n";
+    let (cfg, _) = parse_and_build(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+}
+
+/// Java arrow rules are recognised as cases: their bodies are lowered
+/// statement by statement and do not fall into the next rule.
+#[test]
+fn java_arrow_switch_rule_bodies_lowered() {
+    let src = b"class S { void m(String m, String p) {\n  switch (m) {\n    case \"a\" -> Runtime.getRuntime().exec(p);\n    case \"b\" -> { x = 1; foo(x); }\n    default -> bar();\n  }\n} }\n";
+    let (cfg, _) = java_cfg(src);
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let exec = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains("exec"))
+        })
+        .expect("exec Call node");
+    let reach = forward_reach(&cfg, exec, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "foo")));
+    assert!(!reach.contains(&call_named(&cfg, "bar")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == \"a\"".to_string()), "got {conds:?}");
+}
+
+/// Java's `default` sits inside the `switch_label`; the colon form must
+/// still treat it as the default arm (no dispatch header of its own).
+#[test]
+fn java_colon_switch_default_detected() {
+    let (cfg, _) =
+        java_cfg(b"class S { void m(int x) { switch (x) { case 1: a(); break; default: c(); } } }");
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// `case String s ->` binds `s` and synthesizes no `==` condition.
+#[test]
+fn java_type_pattern_case_binds_without_condition() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(Object o) { switch (o) { case String s -> use(s); default -> {} } } }",
+    );
+    let bind = find_node_defining(&cfg, "s").expect("pattern binding");
+    assert_eq!(bind.taint.uses, vec!["o".to_string()]);
+    assert!(
+        if_nodes(&cfg)
+            .iter()
+            .all(|&n| cfg[n].condition_text.is_none())
+    );
+}
+
+/// `outer: for (..) { .. }` walks the labeled loop.
+#[test]
+fn java_labeled_for_walks_body() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(String[] ids) { outer: for (String id : ids) { st.executeUpdate(id); } } }",
+    );
+    assert!(cfg.node_indices().any(|n| {
+        cfg[n]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("executeUpdate"))
+    }));
+}
+
+/// A call in a JS switch discriminant gets its own Call node.
+#[test]
+fn js_switch_call_discriminant_lowered() {
+    let (cfg, _) = parse_and_build(
+        b"function f(x) { switch (g(x)) { case 1: a(); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let g_node = call_named(&cfg, "g");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&call_named(&cfg, "a")));
+}

@@ -6442,6 +6442,92 @@ pub(super) fn lower_loop_update<'a>(
     }
 }
 
+/// Emit one `StmtKind::Call` node for `ast` (a call expression, or an
+/// expression that contains one), preceded by its pre-emitted argument
+/// source nodes, and register any function expressions nested in it as
+/// separate bodies.  Returns the call node and whether its callee never
+/// returns (the caller decides whether that ends the frontier).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_call_node<'a>(
+    ast: Node<'a>,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> (NodeIndex, bool) {
+    let ord = *call_ordinal;
+    *call_ordinal += 1;
+    let (effective_preds, src_bindings, src_uses_only) =
+        pre_emit_arg_source_nodes(g, ast, lang, code, enclosing_func, analysis_rules, preds);
+    let n = push_node(
+        g,
+        StmtKind::Call,
+        ast,
+        lang,
+        code,
+        enclosing_func,
+        ord,
+        analysis_rules,
+    );
+    apply_arg_source_bindings(g, n, &src_bindings, &src_uses_only);
+    connect_all(g, &effective_preds, n, EdgeKind::Seq);
+
+    // If the callee never returns, treat as a dead end: no fall-through
+    // edge, so a guard whose failing arm aborts stays dominating.  See
+    // `is_terminator_call`.
+    if let Some(callee) = &g[n].call.callee
+        && is_terminator_call(lang, callee, analysis_rules)
+    {
+        return (n, true);
+    }
+
+    // Recurse into any function expressions nested in arguments.
+    // Each nested function hits Kind::Function and becomes a separate body.
+    // See sibling comment in CallWrapper arm: disconnect the
+    // declaration-marker placeholder Seq edge after build_sub
+    // returns, so the outer body's CFG isn't artificially branched.
+    let nested = collect_nested_function_nodes(ast, lang);
+    for func_node in nested {
+        let placeholders = build_sub(
+            func_node,
+            &[n],
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+        for ph in placeholders {
+            let to_remove: Vec<_> = g.edges_connecting(n, ph).map(|e| e.id()).collect();
+            for eid in to_remove {
+                g.remove_edge(eid);
+            }
+        }
+    }
+
+    (n, false)
+}
+
 //    The recursive *work‑horse* that converts an AST node into a CFG slice.
 //    Returns the set of *exit* nodes that need to be wired further.
 #[allow(clippy::too_many_arguments)]
@@ -7764,6 +7850,19 @@ pub(super) fn build_sub<'a>(
             // the return semantics and letting fall-through Seq edges
             // survive into the SSA terminator (the OR-chain rejection-arm
             // defect, see `or_chain_rejection_block_terminates_with_return`).
+            //
+            // A statement-level Rust `match`, bare `{ .. }` block or
+            // `unsafe { .. }` block is wrapped the same way.  Collapsing it
+            // into one node would hide every source, sink and definition in
+            // its arms or body, so walk it instead.  Only the statement
+            // wrapper qualifies: `let x = match ..` and `let v = unsafe { .. }`
+            // keep their single-node lowering (the let binding and
+            // `detect_rust_let_match_guard` depend on it), and `async` /
+            // `const` blocks stay collapsed because their bodies do not run
+            // in place.  Known limit, shared with `if` bodies: SSA is keyed
+            // by name, so a `let x` inside the block that shadows an outer
+            // `x` also replaces it for the code after the block.
+            let rust_stmt_block = lang == "rust" && ast.kind() == "expression_statement";
             if let Some(inner) = ast.children(&mut cursor).find(|c| {
                 matches!(
                     lookup(lang, c.kind()),
@@ -7775,7 +7874,8 @@ pub(super) fn build_sub<'a>(
                         | Kind::Throw
                         | Kind::Break
                         | Kind::Continue
-                )
+                ) || (rust_stmt_block
+                    && matches!(c.kind(), "match_expression" | "block" | "unsafe_block"))
             }) {
                 return build_sub(
                     inner,
@@ -8016,72 +8116,27 @@ pub(super) fn build_sub<'a>(
         // Direct call nodes (Ruby `call`, Python `call`, etc. when they appear
         // as direct children of a block rather than wrapped in expression_statement)
         Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
-            let ord = *call_ordinal;
-            *call_ordinal += 1;
-            let (effective_preds, src_bindings, src_uses_only) = pre_emit_arg_source_nodes(
-                g,
+            let (n, never_returns) = emit_call_node(
                 ast,
-                lang,
-                code,
-                enclosing_func,
-                analysis_rules,
                 preds,
-            );
-            let n = push_node(
                 g,
-                StmtKind::Call,
-                ast,
                 lang,
                 code,
+                summaries,
+                file_path,
                 enclosing_func,
-                ord,
+                call_ordinal,
                 analysis_rules,
+                break_targets,
+                continue_targets,
+                throw_targets,
+                bodies,
+                next_body_id,
+                current_body_id,
             );
-            apply_arg_source_bindings(g, n, &src_bindings, &src_uses_only);
-            connect_all(g, &effective_preds, n, EdgeKind::Seq);
-
-            // If the callee never returns, treat as a dead end: no
-            // fall-through edge, so a guard whose failing arm aborts stays
-            // dominating.  See `is_terminator_call`.
-            if let Some(callee) = &g[n].call.callee
-                && is_terminator_call(lang, callee, analysis_rules)
-            {
+            if never_returns {
                 return Vec::new();
             }
-
-            // Recurse into any function expressions nested in arguments.
-            // Each nested function hits Kind::Function and becomes a separate body.
-            // See sibling comment in CallWrapper arm: disconnect the
-            // declaration-marker placeholder Seq edge after build_sub
-            // returns, so the outer body's CFG isn't artificially branched.
-            let nested = collect_nested_function_nodes(ast, lang);
-            for func_node in nested {
-                let placeholders = build_sub(
-                    func_node,
-                    &[n],
-                    g,
-                    lang,
-                    code,
-                    summaries,
-                    file_path,
-                    enclosing_func,
-                    call_ordinal,
-                    analysis_rules,
-                    break_targets,
-                    continue_targets,
-                    throw_targets,
-                    bodies,
-                    next_body_id,
-                    current_body_id,
-                );
-                for ph in placeholders {
-                    let to_remove: Vec<_> = g.edges_connecting(n, ph).map(|e| e.id()).collect();
-                    for eid in to_remove {
-                        g.remove_edge(eid);
-                    }
-                }
-            }
-
             vec![n]
         }
 

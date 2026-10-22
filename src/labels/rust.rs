@@ -467,7 +467,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "source_file"          => Kind::SourceFile,
     "block"                => Kind::Block,
     "else_clause"          => Kind::Block,
-    "match_expression"     => Kind::Block,
+    // `match` lowers through `build_switch`: one dispatch header per arm,
+    // arms mutually exclusive, the last arm the exhaustive fallback.
+    "match_expression"     => Kind::Switch,
     "match_block"          => Kind::Block,
     "match_arm"            => Kind::Block,
     "unsafe_block"         => Kind::Block,

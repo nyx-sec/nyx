@@ -5984,7 +5984,7 @@ fn ssa_compound_preserves_taint_java() {
 // ── Read-modify-write assignments (`x += y`, `$x .= $y`, `x ||= y`) ──────
 
 /// Taint findings for `src`, analysed as `slug`.
-fn rmw_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
+fn lang_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
     let (ts_lang, lang, path) = match slug {
         "javascript" => (
             tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
@@ -6042,16 +6042,16 @@ fn rmw_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
     analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
 }
 
-fn assert_rmw_fires(slug: &str, src: &str) {
-    let findings = rmw_taint_findings(src, slug);
+fn assert_taint_fires(slug: &str, src: &str) {
+    let findings = lang_taint_findings(src, slug);
     assert!(
         !findings.is_empty(),
-        "{slug}: expected a taint finding through the compound assignment:\n{src}"
+        "{slug}: expected a taint finding:\n{src}"
     );
 }
 
-fn assert_rmw_clean(slug: &str, src: &str) {
-    let findings = rmw_taint_findings(src, slug);
+fn assert_taint_clean(slug: &str, src: &str) {
+    let findings = lang_taint_findings(src, slug);
     assert!(
         findings.is_empty(),
         "{slug}: expected no taint finding, got {findings:#?}\n{src}"
@@ -6062,7 +6062,7 @@ fn assert_rmw_clean(slug: &str, src: &str) {
 
 #[test]
 fn compound_assign_rhs_taints_target_javascript() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "javascript",
         "const cp = require('child_process');\nfunction h(req, res) {\n  let cmd = 'ls ';\n  cmd += req.query.dir;\n  cp.exec(cmd);\n}\n",
     );
@@ -6070,7 +6070,7 @@ fn compound_assign_rhs_taints_target_javascript() {
 
 #[test]
 fn compound_assign_rhs_taints_target_typescript() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "typescript",
         "import * as cp from 'child_process';\nfunction h(req: any, res: any) {\n  let cmd: string = 'ls ';\n  cmd += req.query.dir;\n  cp.exec(cmd);\n}\n",
     );
@@ -6078,7 +6078,7 @@ fn compound_assign_rhs_taints_target_typescript() {
 
 #[test]
 fn compound_assign_rhs_taints_target_python() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "python",
         "import os\ndef main():\n    cmd = 'ls '\n    cmd += os.getenv('DIR')\n    os.system(cmd)\n",
     );
@@ -6086,7 +6086,7 @@ fn compound_assign_rhs_taints_target_python() {
 
 #[test]
 fn compound_assign_rhs_taints_target_php() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "php",
         "<?php\nfunction h($conn) {\n    $sql = 'SELECT * FROM t WHERE id = ';\n    $sql .= $_GET['id'];\n    mysqli_query($conn, $sql);\n}\n",
     );
@@ -6094,7 +6094,7 @@ fn compound_assign_rhs_taints_target_php() {
 
 #[test]
 fn compound_assign_rhs_taints_target_rust() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "rust",
         "use std::env;\nuse std::process::Command;\nfn main() {\n    let mut cmd = String::from(\"ls \");\n    let e = env::var(\"X\").unwrap();\n    cmd += &e;\n    Command::new(\"sh\").arg(&cmd).status().unwrap();\n}\n",
     );
@@ -6102,7 +6102,7 @@ fn compound_assign_rhs_taints_target_rust() {
 
 #[test]
 fn compound_assign_rhs_taints_target_go() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "go",
         "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\tcmd := \"ls \"\n\tcmd += os.Getenv(\"DIR\")\n\texec.Command(cmd)\n}\n",
     );
@@ -6112,7 +6112,7 @@ fn compound_assign_rhs_taints_target_go() {
 
 #[test]
 fn compound_assign_keeps_target_taint_java() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "java",
         "class Main {\n  void main() {\n    String cmd = System.getenv(\"CMD\");\n    cmd += \" --safe\";\n    Runtime.exec(cmd);\n  }\n}\n",
     );
@@ -6120,7 +6120,7 @@ fn compound_assign_keeps_target_taint_java() {
 
 #[test]
 fn compound_assign_keeps_target_taint_go() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "go",
         "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\tcmd := os.Getenv(\"CMD\")\n\tcmd += \" --safe\"\n\texec.Command(cmd)\n}\n",
     );
@@ -6128,7 +6128,7 @@ fn compound_assign_keeps_target_taint_go() {
 
 #[test]
 fn compound_assign_keeps_target_taint_ruby() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "ruby",
         "def h\n  cmd = ENV['CMD']\n  cmd += ' --safe'\n  system(cmd)\nend\n",
     );
@@ -6136,7 +6136,7 @@ fn compound_assign_keeps_target_taint_ruby() {
 
 #[test]
 fn logical_assign_keeps_target_taint_ruby() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "ruby",
         "def h\n  cmd = ENV['CMD']\n  cmd ||= 'ls'\n  system(cmd)\nend\n",
     );
@@ -6144,7 +6144,7 @@ fn logical_assign_keeps_target_taint_ruby() {
 
 #[test]
 fn compound_assign_keeps_target_taint_c() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "c",
         "#include <stdlib.h>\nint main() {\n    char *p = getenv(\"X\");\n    p += 1;\n    system(p);\n    return 0;\n}\n",
     );
@@ -6152,7 +6152,7 @@ fn compound_assign_keeps_target_taint_c() {
 
 #[test]
 fn compound_assign_keeps_target_taint_cpp() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "cpp",
         "#include <cstdlib>\n#include <string>\nint main() {\n    std::string cmd = getenv(\"X\");\n    cmd += \" --flag\";\n    return system(cmd.c_str());\n}\n",
     );
@@ -6160,7 +6160,7 @@ fn compound_assign_keeps_target_taint_cpp() {
 
 #[test]
 fn compound_assign_keeps_target_taint_python() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "python",
         "import os\ndef main():\n    cmd = os.getenv('CMD')\n    cmd += ' -l'\n    os.system(cmd)\n",
     );
@@ -6170,7 +6170,7 @@ fn compound_assign_keeps_target_taint_python() {
 /// the target's earlier taint still reaches the sink.
 #[test]
 fn compound_assign_sanitized_rhs_keeps_target_taint_php() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "php",
         "<?php\nfunction h() {\n    $out = '<p>' . $_GET['a'];\n    $out .= htmlspecialchars($_GET['b']);\n    echo $out;\n}\n",
     );
@@ -6178,7 +6178,7 @@ fn compound_assign_sanitized_rhs_keeps_target_taint_php() {
 
 #[test]
 fn compound_assign_sanitized_rhs_clean_target_php() {
-    assert_rmw_clean(
+    assert_taint_clean(
         "php",
         "<?php\nfunction h() {\n    $out = '<p>';\n    $out .= htmlspecialchars($_GET['b']);\n    echo $out;\n}\n",
     );
@@ -6188,7 +6188,7 @@ fn compound_assign_sanitized_rhs_clean_target_php() {
 /// the tainted target it is appended to.
 #[test]
 fn compound_assign_sink_call_rhs_does_not_receive_target() {
-    assert_rmw_clean(
+    assert_taint_clean(
         "javascript",
         "const { execSync } = require('child_process');\nfunction h(req, res) {\n  let out = req.query.a;\n  out += execSync('ls');\n  console.log(out.length);\n}\n",
     );
@@ -6197,11 +6197,11 @@ fn compound_assign_sink_call_rhs_does_not_receive_target() {
 /// After a literal overwrite, appending another literal stays clean.
 #[test]
 fn compound_assign_literal_after_kill_is_clean() {
-    assert_rmw_clean(
+    assert_taint_clean(
         "javascript",
         "const cp = require('child_process');\nfunction h(req, res) {\n  let q = req.query.x;\n  q = 'ls';\n  q += ' -l';\n  cp.exec(q);\n}\n",
     );
-    assert_rmw_clean(
+    assert_taint_clean(
         "ruby",
         "def h\n  cmd = ENV['CMD']\n  cmd = 'ls'\n  cmd += ' -l'\n  system(cmd)\nend\n",
     );
@@ -6211,7 +6211,7 @@ fn compound_assign_literal_after_kill_is_clean() {
 /// counter stays feasible.
 #[test]
 fn compound_assign_literal_does_not_fold_to_rhs_constant_java() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "java",
         "class Main {\n  void main() {\n    String cmd = System.getenv(\"CMD\");\n    int n = 5;\n    n += 1;\n    if (n > 5) {\n      Runtime.exec(cmd);\n    }\n  }\n}\n",
     );
@@ -6221,7 +6221,7 @@ fn compound_assign_literal_does_not_fold_to_rhs_constant_java() {
 /// fragment remains suppressed.
 #[test]
 fn compound_assign_int_update_stays_numeric_java() {
-    assert_rmw_clean(
+    assert_taint_clean(
         "java",
         "class Main {\n  void main(HttpServletRequest req, Statement st) throws Exception {\n    int n = Integer.parseInt(req.getParameter(\"n\"));\n    n -= 1;\n    st.executeQuery(\"SELECT * FROM t WHERE id = \" + n);\n  }\n}\n",
     );
@@ -6230,7 +6230,7 @@ fn compound_assign_int_update_stays_numeric_java() {
 /// `n += 2` from `n = 0` must not keep the stale constant `0`.
 #[test]
 fn compound_assign_does_not_keep_stale_constant_python() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "python",
         "import os\ndef main():\n    cmd = os.getenv('CMD')\n    n = 0\n    n += 2\n    if n == 2:\n        os.system(cmd)\n",
     );
@@ -6242,7 +6242,7 @@ fn compound_assign_does_not_keep_stale_constant_python() {
 /// folded the branch away.
 #[test]
 fn increment_does_not_keep_initial_constant_javascript() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "javascript",
         "const cp = require('child_process');\nfunction h(req, res) {\n  let i = 0;\n  i++;\n  if (i === 1) {\n    cp.exec(req.query.x);\n  }\n}\n",
     );
@@ -6250,7 +6250,7 @@ fn increment_does_not_keep_initial_constant_javascript() {
 
 #[test]
 fn increment_does_not_keep_initial_constant_go() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "go",
         "package main\n\nimport \"os\"\nimport \"os/exec\"\n\nfunc main() {\n\ti := 0\n\ti++\n\tif i == 1 {\n\t\texec.Command(os.Getenv(\"CMD\"))\n\t}\n}\n",
     );
@@ -6260,7 +6260,7 @@ fn increment_does_not_keep_initial_constant_go() {
 /// guarded sink is reachable.
 #[test]
 fn increment_in_loop_keeps_guarded_sink_reachable_javascript() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "javascript",
         "const cp = require('child_process');\nfunction h(req, res) {\n  let i = 0;\n  while (more()) {\n    if (i == 2) {\n      cp.exec(req.query.x);\n    }\n    i++;\n  }\n}\n",
     );
@@ -6269,7 +6269,7 @@ fn increment_in_loop_keeps_guarded_sink_reachable_javascript() {
 /// Taint accumulated across a counted `for` loop reaches the sink after it.
 #[test]
 fn counted_for_loop_accumulates_taint_javascript() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "javascript",
         "const cp = require('child_process');\nfunction h(req, res) {\n  const names = req.query.names;\n  let cmd = 'ls';\n  for (let i = 0; i < names.length; i++) {\n    cmd = cmd + ' ' + names[i];\n  }\n  cp.exec(cmd);\n}\n",
     );
@@ -6277,7 +6277,7 @@ fn counted_for_loop_accumulates_taint_javascript() {
 
 #[test]
 fn counted_while_loop_accumulates_taint_python() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "python",
         "import os\ndef main(names):\n    cmd = os.getenv('CMD')\n    out = 'ls'\n    i = 0\n    while i < len(names):\n        out = out + ' ' + cmd\n        i += 1\n    os.system(out)\n",
     );
@@ -6285,7 +6285,7 @@ fn counted_while_loop_accumulates_taint_python() {
 
 #[test]
 fn increment_keeps_pointer_taint_c() {
-    assert_rmw_fires(
+    assert_taint_fires(
         "c",
         "#include <stdlib.h>\nint main() {\n    char *p = getenv(\"X\");\n    p++;\n    system(p);\n    return 0;\n}\n",
     );
@@ -8564,5 +8564,209 @@ def login():
     assert!(
         !findings.is_empty(),
         "a non-validating wrapper must not confine the redirect; got {findings:?}"
+    );
+}
+
+// ── Multi-way branches: match / select / case / switch ────────────────────
+
+// Rust `match` arms are lowered per arm, not collapsed into the statement.
+
+#[test]
+fn rust_match_arm_sink_fires() {
+    assert_taint_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn dispatch(mode: i32) {\n    let x = env::var(\"CMD\").unwrap_or_default();\n    match mode {\n        1 => { Command::new(&x).spawn(); }\n        _ => {}\n    }\n}\n",
+    );
+}
+
+#[test]
+fn rust_match_return_arm_keeps_other_arm_reachable() {
+    assert_taint_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn run(mode: &str) {\n    let x = env::var(\"CMD\").unwrap();\n    match mode {\n        \"quit\" => return,\n        _ => { Command::new(&x).spawn().unwrap(); }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn rust_match_binding_from_call_scrutinee_fires() {
+    assert_taint_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn dispatch() {\n    match env::var(\"CMD\") {\n        Ok(v) => { Command::new(&v).spawn().unwrap(); }\n        Err(_) => {}\n    }\n}\n",
+    );
+}
+
+#[test]
+fn rust_match_sibling_arm_def_does_not_reach_other_arm() {
+    assert_taint_clean(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn dispatch(mode: i32) {\n    let mut x = String::from(\"ls\");\n    match mode {\n        1 => { x = env::var(\"CMD\").unwrap_or_default(); }\n        _ => { Command::new(&x).spawn(); }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn rust_bare_block_overwrite_kills_taint() {
+    assert_taint_clean(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn run() {\n    let mut x = env::var(\"CMD\").unwrap();\n    {\n        x = String::from(\"ls\");\n    }\n    Command::new(&x).spawn().unwrap();\n}\n",
+    );
+}
+
+#[test]
+fn rust_unsafe_block_flow_fires() {
+    assert_taint_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn run() {\n    unsafe {\n        let x = env::var(\"CMD\").unwrap();\n        Command::new(&x).spawn().unwrap();\n    }\n}\n",
+    );
+}
+
+#[test]
+fn rust_match_break_arm_leaves_loop() {
+    assert_taint_fires(
+        "rust",
+        "use std::env;\nuse std::process::Command;\npub fn dispatch(rx: std::sync::mpsc::Receiver<i32>) {\n    let x = env::var(\"CMD\").unwrap_or_default();\n    loop {\n        match rx.recv() {\n            Ok(_) => {}\n            Err(_) => break,\n        }\n    }\n    Command::new(&x).spawn();\n}\n",
+    );
+}
+
+// Go cases do not fall through unless they end in `fallthrough`.
+
+#[test]
+fn go_switch_case_def_does_not_reach_next_case() {
+    assert_taint_clean(
+        "go",
+        "package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tx := \"ls\"\n\tswitch r.URL.Query().Get(\"mode\") {\n\tcase \"a\":\n\t\tx = r.URL.Query().Get(\"cmd\")\n\tcase \"b\":\n\t\texec.Command(x).Run()\n\t}\n}\n",
+    );
+}
+
+#[test]
+fn go_switch_case_def_survives_later_case() {
+    assert_taint_fires(
+        "go",
+        "package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tx := \"ls\"\n\tswitch r.URL.Query().Get(\"mode\") {\n\tcase \"a\":\n\t\tx = r.URL.Query().Get(\"cmd\")\n\tcase \"b\":\n\t\tx = \"pwd\"\n\t}\n\texec.Command(x).Run()\n}\n",
+    );
+}
+
+#[test]
+fn go_switch_fallthrough_carries_def() {
+    assert_taint_fires(
+        "go",
+        "package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tx := \"ls\"\n\tswitch r.URL.Query().Get(\"mode\") {\n\tcase \"a\":\n\t\tx = r.URL.Query().Get(\"cmd\")\n\t\tfallthrough\n\tcase \"b\":\n\t\texec.Command(x).Run()\n\t}\n}\n",
+    );
+}
+
+#[test]
+fn go_select_return_case_keeps_sink_reachable() {
+    assert_taint_fires(
+        "go",
+        "package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tx := r.URL.Query().Get(\"cmd\")\n\tch := make(chan int, 1)\n\tselect {\n\tcase <-r.Context().Done():\n\t\treturn\n\tcase <-ch:\n\t}\n\texec.Command(x).Run()\n}\n",
+    );
+}
+
+// Python `match` and Ruby `case`.
+
+#[test]
+fn python_match_return_case_fires() {
+    assert_taint_fires(
+        "python",
+        "import os\nfrom flask import request\ndef run():\n    x = request.args.get(\"cmd\")\n    mode = request.args.get(\"mode\")\n    match mode:\n        case \"quit\":\n            return \"bye\"\n        case _:\n            os.system(x)\n    return \"ok\"\n",
+    );
+}
+
+#[test]
+fn python_match_sibling_case_isolated() {
+    assert_taint_clean(
+        "python",
+        "import os\nfrom flask import request\ndef run():\n    x = \"ls\"\n    mode = request.args.get(\"mode\")\n    match mode:\n        case \"a\":\n            x = request.args.get(\"cmd\")\n        case _:\n            os.system(x)\n    return \"ok\"\n",
+    );
+}
+
+#[test]
+fn python_match_capture_binding_fires() {
+    assert_taint_fires(
+        "python",
+        "import os\nfrom flask import request\ndef run():\n    data = request.args.get(\"cmd\")\n    match data:\n        case str(v):\n            os.system(v)\n    return \"ok\"\n",
+    );
+}
+
+#[test]
+fn ruby_case_when_return_fires() {
+    assert_taint_fires(
+        "ruby",
+        "class RunController < ApplicationController\n  def run\n    x = params[:cmd]\n    case params[:mode]\n    when \"quit\"\n      return\n    else\n      system(x)\n    end\n  end\nend\n",
+    );
+}
+
+#[test]
+fn ruby_case_when_sibling_isolated() {
+    assert_taint_clean(
+        "ruby",
+        "class RunController < ApplicationController\n  def run\n    x = \"ls\"\n    case params[:mode]\n    when \"a\"\n      x = params[:cmd]\n    else\n      system(x)\n    end\n  end\nend\n",
+    );
+}
+
+#[test]
+fn ruby_case_when_kill_in_one_arm_keeps_other() {
+    assert_taint_fires(
+        "ruby",
+        "class RunController < ApplicationController\n  def run\n    x = params[:cmd]\n    case params[:mode]\n    when \"safe\"\n      x = \"ls\"\n    else\n      system(x)\n    end\n  end\nend\n",
+    );
+}
+
+// Java arrow switch and default detection.
+
+#[test]
+fn java_arrow_switch_sink_fires() {
+    assert_taint_fires(
+        "java",
+        "import javax.servlet.http.*;\npublic class Run extends HttpServlet {\n    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n        String x = req.getParameter(\"cmd\");\n        String mode = req.getParameter(\"mode\");\n        switch (mode) {\n            case \"a\" -> Runtime.getRuntime().exec(x);\n            default -> System.out.println(\"no\");\n        }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn java_arrow_switch_reassign_all_arms_clean() {
+    assert_taint_clean(
+        "java",
+        "import javax.servlet.http.*;\npublic class S extends HttpServlet {\n    public void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n        String cmd = req.getParameter(\"cmd\");\n        String mode = req.getParameter(\"mode\");\n        switch (mode) {\n            case \"a\" -> cmd = \"ls\";\n            default -> cmd = \"ps\";\n        }\n        Runtime.getRuntime().exec(cmd);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn java_colon_switch_default_has_no_phantom_path() {
+    assert_taint_clean(
+        "java",
+        "import javax.servlet.http.*;\npublic class S extends HttpServlet {\n    public void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n        String cmd = req.getParameter(\"cmd\");\n        String mode = req.getParameter(\"mode\");\n        switch (mode) {\n            case \"a\":\n                cmd = \"ls\";\n                break;\n            default:\n                cmd = \"ps\";\n        }\n        Runtime.getRuntime().exec(cmd);\n    }\n}\n",
+    );
+}
+
+// A call in the scrutinee is analysed like any other call.
+
+#[test]
+fn java_switch_call_scrutinee_sink_fires() {
+    assert_taint_fires(
+        "java",
+        "import javax.servlet.http.*;\npublic class Run extends HttpServlet {\n    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n        String x = req.getParameter(\"cmd\");\n        switch (Runtime.getRuntime().exec(x).waitFor()) {\n            case 0: resp.getWriter().write(\"ok\"); break;\n            default: resp.getWriter().write(\"bad\");\n        }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn js_switch_call_discriminant_sink_fires() {
+    assert_taint_fires(
+        "javascript",
+        "const { execSync } = require('child_process');\nfunction h(req, res) {\n  const x = req.query.cmd;\n  switch (execSync(x).toString()) {\n    case 'a':\n      res.send('a');\n      break;\n    default:\n      res.send('b');\n  }\n}\n",
+    );
+}
+
+#[test]
+fn python_match_source_member_subject_binding_fires() {
+    assert_taint_fires(
+        "python",
+        "import os\nfrom flask import request\ndef run():\n    match request.args.get(\"cmd\"):\n        case str(cmd):\n            os.system(cmd)\n    return \"ok\"\n",
+    );
+}
+
+#[test]
+fn python_match_source_attribute_subject_binding_fires() {
+    assert_taint_fires(
+        "python",
+        "import os\nfrom flask import request\ndef run():\n    match request.json:\n        case {\"cmd\": cmd}:\n            os.system(cmd)\n    return \"ok\"\n",
     );
 }
