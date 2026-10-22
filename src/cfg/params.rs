@@ -607,7 +607,7 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
 pub(super) fn go_receiver_alias_frame(
     func_node: Node<'_>,
     code: &[u8],
-) -> Vec<(String, Option<&'static str>)> {
+) -> crate::labels::ReceiverAliasFrame {
     let Some(params) = func_node.child_by_field_name("parameters") else {
         return Vec::new();
     };

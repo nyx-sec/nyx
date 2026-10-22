@@ -1415,8 +1415,11 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
 // replaced by that prefix, so `req.Header.Get` additionally matches the
 // `Request.Header.Get` rule.  The stack is empty outside CFG construction,
 // which makes every other caller a no-op.
+/// One function scope's formals: `(name, canonical receiver prefix)`.
+pub(crate) type ReceiverAliasFrame = Vec<(String, Option<&'static str>)>;
+
 thread_local! {
-    static RECEIVER_ALIASES: std::cell::RefCell<Vec<Vec<(String, Option<&'static str>)>>> =
+    static RECEIVER_ALIASES: std::cell::RefCell<Vec<ReceiverAliasFrame>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -1440,9 +1443,7 @@ impl Drop for ReceiverAliasScope {
 /// Enter a function scope whose formals are `frame` (`(name, prefix)`
 /// pairs).  A frame without any typed formal is only pushed when an outer
 /// scope is active, where it is still needed for shadowing.
-pub(crate) fn push_receiver_aliases(
-    frame: Vec<(String, Option<&'static str>)>,
-) -> ReceiverAliasScope {
+pub(crate) fn push_receiver_aliases(frame: ReceiverAliasFrame) -> ReceiverAliasScope {
     RECEIVER_ALIASES.with(|s| {
         let mut s = s.borrow_mut();
         let has_alias = frame.iter().any(|(_, p)| p.is_some());
