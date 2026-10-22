@@ -1,0 +1,125 @@
+name: Performance
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'build.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/performance.yml'
+      - '.github/scripts/performance-*'
+  # Fork PRs get a read-only token, so run those by hand after reviewing the diff.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: Measure
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      base: ${{ steps.revisions.outputs.base }}
+      head: ${{ steps.revisions.outputs.head }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pr) }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: revisions
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          base=$(git merge-base "${PR_BASE:-origin/master}" "$head")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+          cache-key: performance
+
+      - name: Benchmark base and PR
+        env:
+          BASE: ${{ steps.revisions.outputs.base }}
+          HEAD: ${{ steps.revisions.outputs.head }}
+        run: bash .github/scripts/performance-measure.sh "$BASE" "$HEAD" results
+
+      - name: Write summary
+        if: always()
+        run: python3 .github/scripts/performance-report.py render results/report.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: performance-${{ github.run_attempt }}
+          path: |
+            results/report.json
+            results/logs/
+          retention-days: 14
+
+  comment:
+    name: PR comment
+    needs: measure
+    if: always() && !cancelled() && needs.measure.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # This job has a write token. Manual runs may target fork PRs, so use master's scripts.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.measure.outputs.head }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: performance-${{ github.run_attempt }}
+          path: results
+
+      - name: Render comment
+        env:
+          BASE: ${{ needs.measure.outputs.base }}
+          HEAD: ${{ needs.measure.outputs.head }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 .github/scripts/performance-report.py render results/report.json \
+            --comment --base "$BASE" --head "$HEAD" --run-url "$RUN_URL" > comment.md
+
+      - uses: actions/github-script@v9
+        env:
+          HEAD: ${{ needs.measure.outputs.head }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        with:
+          script: |
+            const body = require('fs').readFileSync('comment.md', 'utf8');
+            const marker = body.split('\n')[0];
+            const number = Number(process.env.PR);
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+            if (pr.state !== 'open' || pr.head.sha !== process.env.HEAD) return;
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: number});
+            const existing = comments.find(c => c.user.login === 'github-actions[bot]' && c.body?.startsWith(marker));
+            if (existing) await github.rest.issues.updateComment({...context.repo, comment_id: existing.id, body});
+            else await github.rest.issues.createComment({...context.repo, issue_number: number, body});
