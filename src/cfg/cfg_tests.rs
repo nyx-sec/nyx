@@ -5595,3 +5595,299 @@ fn js_switch_call_discriminant_lowered() {
     let g_node = call_named(&cfg, "g");
     assert!(forward_reach(&cfg, g_node, &[]).contains(&call_named(&cfg, "a")));
 }
+
+//   Branch and loop headers: classified from the condition only
+
+fn lang_cfg(lang: &str, src: &[u8]) -> (Cfg, NodeIndex) {
+    let ts_lang = match lang {
+        "javascript" => Language::from(tree_sitter_javascript::LANGUAGE),
+        "python" => Language::from(tree_sitter_python::LANGUAGE),
+        "ruby" => Language::from(tree_sitter_ruby::LANGUAGE),
+        "rust" => Language::from(tree_sitter_rust::LANGUAGE),
+        "go" => Language::from(tree_sitter_go::LANGUAGE),
+        "java" => Language::from(tree_sitter_java::LANGUAGE),
+        "c" => Language::from(tree_sitter_c::LANGUAGE),
+        "php" => Language::from(tree_sitter_php::LANGUAGE_PHP),
+        other => panic!("unsupported test language {other}"),
+    };
+    parse_and_build(src, lang, ts_lang)
+}
+
+fn header_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| matches!(cfg[n].kind, StmtKind::If | StmtKind::Loop))
+        .collect()
+}
+
+fn has_sink(info: &NodeInfo) -> bool {
+    info.taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(_)))
+}
+
+/// A sink call in a branch or loop body labels its own node, never the
+/// header: neither the gated-sink walk nor the statement text may reach
+/// into the body.
+#[test]
+fn header_nodes_do_not_take_labels_from_the_body() {
+    let cases: &[(&str, &[u8], &str)] = &[
+        (
+            "javascript",
+            b"function h(req, db) { const f = req.query.f; if (f === \"y\") { db.query(\"SELECT 1\"); } }",
+            "db.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { let n = req.query.n; while (n > 0) { fetch(\"https://x\"); n--; } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, cp) { const flag = req.query.f; do { cp.exec(\"ls\"); } while (flag); }",
+            "cp.exec",
+        ),
+        (
+            "javascript",
+            b"function h(req, pool) { const id = req.query.id; for (let i = 0; i < id.length; i++) { pool.query(\"SELECT now()\"); } }",
+            "pool.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, exec) { const c = req.query.c; if (c) exec(\"ls\"); }",
+            "exec",
+        ),
+        (
+            "python",
+            b"def h(self, flag):\n    if flag:\n        self.cursor.execute(\"select 1\")\n",
+            "self.cursor.execute",
+        ),
+        (
+            "python",
+            b"def h(event):\n    if event == \"a\":\n        pass\n    elif event == \"push\":\n        requests.post(\"https://h\", json={})\n",
+            "requests.post",
+        ),
+        (
+            "python",
+            b"def h(cmd):\n    while cmd:\n        subprocess.run(cmd, shell=True)\n        break\n",
+            "subprocess.run",
+        ),
+        (
+            "ruby",
+            b"def h(mode)\n  if mode == \"x\"\n    User.connection.execute(\"SELECT 1\")\n  end\nend\n",
+            "execute",
+        ),
+        (
+            "ruby",
+            b"def h(payload)\n  unless payload =~ /a/\n    x = 1\n  else\n    STDOUT.print(payload)\n  end\nend\n",
+            "STDOUT.print",
+        ),
+        (
+            "rust",
+            b"fn h(p: &str, flag: bool) { if flag { std::fs::remove_file(p).unwrap(); } }",
+            "std::fs::remove_file",
+        ),
+        (
+            "c",
+            b"int main(int argc, char **argv) { if (argc > 1) { execv(\"/bin/ls\", argv); } return 0; }",
+            "execv",
+        ),
+        (
+            "go",
+            b"package main\nfunc h(flag bool) {\n\tif flag {\n\t\texec.Command(\"ls\").Run()\n\t}\n}\n",
+            "exec.Command",
+        ),
+    ];
+    for (lang, src, body_callee) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        let headers = header_nodes(&cfg);
+        assert!(!headers.is_empty(), "{lang}: no header node");
+        for h in headers {
+            let info = &cfg[h];
+            assert!(
+                info.taint.labels.is_empty(),
+                "{lang}: header took labels {:?} from its body",
+                info.taint.labels
+            );
+            assert!(info.call.callee.is_none(), "{lang}: {:?}", info.call.callee);
+            assert!(info.call.sink_payload_args.is_none(), "{lang}");
+            assert!(info.call.gate_filters.is_empty(), "{lang}");
+        }
+        assert!(
+            cfg.node_indices().any(|n| cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains(body_callee))),
+            "{lang}: the body call `{body_callee}` lost its node"
+        );
+    }
+}
+
+/// A Rust `loop {}` header evaluates nothing: no uses, no labels.
+#[test]
+fn rust_loop_header_is_empty() {
+    let (cfg, _) = rust_cfg(
+        b"fn h(name: String) { loop { std::process::Command::new(\"ls\").status().unwrap(); println!(\"{}\", name); break; } }",
+    );
+    let headers = header_nodes(&cfg);
+    assert_eq!(headers.len(), 1);
+    let info = &cfg[headers[0]];
+    assert!(info.taint.uses.is_empty(), "{:?}", info.taint.uses);
+    assert!(info.taint.labels.is_empty());
+}
+
+/// Header uses are the condition's identifiers.  A C-style `for` keeps its
+/// init / update clauses (Go and Java do not lower them separately) but
+/// never the body.
+#[test]
+fn header_uses_come_from_the_condition() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(f, q, db) { if (f === \"y\") { db.query(q); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert_eq!(cfg[h].taint.uses, vec!["f".to_string()]);
+
+    let (cfg, _) = lang_cfg(
+        "python",
+        b"def h(a, mode, payload):\n    if a:\n        pass\n    elif mode == \"x\":\n        send(payload)\n",
+    );
+    for h in header_nodes(&cfg) {
+        assert!(
+            !cfg[h].taint.uses.contains(&"payload".to_string()),
+            "{:?}",
+            cfg[h].taint.uses
+        );
+    }
+
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(n int, body string) {\n\tfor i := 0; i < n; i++ {\n\t\tuse(body)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    let uses = &cfg[h].taint.uses;
+    assert!(uses.contains(&"i".to_string()) && uses.contains(&"n".to_string()));
+    assert!(!uses.contains(&"body".to_string()), "{uses:?}");
+}
+
+/// Header work is proportional to the condition, not the nested body: the
+/// uses summed over a long else-if chain stay linear in its length.
+#[test]
+fn else_if_chain_header_uses_are_linear() {
+    let mut src = String::from("function h(x, y) {\n");
+    for i in 0..20 {
+        let kw = if i == 0 { "if" } else { "} else if" };
+        src.push_str(&format!("  {kw} (x === {i}) {{\n    y = g{i}(y);\n"));
+    }
+    src.push_str("  }\n}\n");
+    let (cfg, _) = lang_cfg("javascript", src.as_bytes());
+    let headers: Vec<_> = if_nodes(&cfg);
+    assert_eq!(headers.len(), 20);
+    let total: usize = headers.iter().map(|&h| cfg[h].taint.uses.len()).sum();
+    assert_eq!(total, 20, "each header reads only `x`");
+}
+
+/// Calls in the condition still classify the header: an output-parameter
+/// source (`fgets`) in `if`, `while`, `do .. while` and a C-style `for`, a
+/// bare call condition (Python, Ruby), an elif condition, and an `if let`
+/// value.
+#[test]
+fn header_condition_calls_still_classify() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "c",
+            b"void f(void) { char buf[10]; if (!fgets(buf, 10, stdin)) return; system(buf); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; while (fgets(buf, 10, stdin)) { system(buf); } }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; do { puts(\"x\"); } while (!fgets(buf, 10, stdin)); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; for (; fgets(buf, 10, stdin); ) { system(buf); } }",
+        ),
+        ("python", b"def h(cmd):\n    if os.system(cmd):\n        pass\n"),
+        (
+            "python",
+            b"def h(cmd):\n    if cmd == \"a\":\n        pass\n    elif os.system(cmd):\n        pass\n",
+        ),
+        ("ruby", b"def h(cmd)\n  if system(cmd)\n    x = 1\n  end\nend\n"),
+        (
+            "rust",
+            b"fn h() { if let Ok(c) = std::env::var(\"X\") { run(c); } }",
+        ),
+    ];
+    for (lang, src) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        assert!(
+            header_nodes(&cfg)
+                .iter()
+                .any(|&h| !cfg[h].taint.labels.is_empty()),
+            "{lang}: condition call lost its label:\n{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+}
+
+/// A gated sink in the condition (`await axios.get(url)`) gates on the
+/// condition call itself, with its own argument positions.
+#[test]
+fn header_condition_gated_sink_uses_condition_call() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"async function h(url) { if (await axios.get(url)) { log(1); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(has_sink(&cfg[h]), "{:?}", cfg[h].taint.labels);
+    assert_eq!(cfg[h].call.callee.as_deref(), Some("axios.get"));
+    assert_eq!(cfg[h].call.arg_uses, vec![vec!["url".to_string()]]);
+}
+
+/// A for-each header classifies on its iterable, in every language.
+#[test]
+fn for_each_header_classifies_iterable() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(req) { for (const x of req.body) { use(x); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+
+    // Go: the iterable is `range_clause.right`; an index iterable
+    // classifies on its base call.
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tfor _, v := range r.URL.Query()[\"c\"] {\n\t\tuse(v)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+    let info = &cfg[h];
+    assert!(
+        info.taint.defines.as_deref() == Some("v")
+            || info.taint.extra_defines.contains(&"v".into())
+    );
+}

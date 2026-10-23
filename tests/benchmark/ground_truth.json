@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 715
+    "corpus_size": 723
   },
   "cases": [
     {
@@ -22789,6 +22789,249 @@
       ],
       "disabled": false,
       "notes": "`case str(cmd)` binds the value of the `request.args.get` subject; the subject call gets its own node and the capture reads it."
+    },
+    {
+      "case_id": "js-safe-if-header-001",
+      "file": "javascript/safe/safe_if_body_const_query.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "gated-sink",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "The `if` header stands for its condition only; the body's constant `db.query` must not label it and pair it with the tainted condition variable."
+    },
+    {
+      "case_id": "py-safe-if-header-001",
+      "file": "python/safe/safe_if_body_const_cursor.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A paren-less condition must not let the header's text run into the body and match the `cursor.execute` sink."
+    },
+    {
+      "case_id": "rb-safe-if-header-001",
+      "file": "ruby/safe/safe_if_body_const_execute.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A Ruby `if` header classified from the whole statement text matched the body's `connection.execute`."
+    },
+    {
+      "case_id": "rs-safe-loop-header-001",
+      "file": "rust/safe/safe_loop_body_const_command.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "loop-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A Rust `loop` header evaluates nothing; it used to take the body's `Command::new` sink and every body identifier as uses."
+    },
+    {
+      "case_id": "py-cmdi-if-condition-001",
+      "file": "python/cmdi/cmdi_if_condition_call.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "if-header",
+        "condition-call"
+      ],
+      "disabled": false,
+      "notes": "The sink call is the bare `if` condition; header classification checks the condition node itself, not only its children."
+    },
+    {
+      "case_id": "rb-cmdi-if-condition-001",
+      "file": "ruby/cmdi/cmdi_if_condition_call.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "if-header",
+        "condition-call"
+      ],
+      "disabled": false,
+      "notes": "The sink call is the bare `if` condition."
+    },
+    {
+      "case_id": "c-cmdi-for-condition-001",
+      "file": "c/cmdi/cmdi_for_condition_fgets.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "loop-header",
+        "condition-call",
+        "output-param-source"
+      ],
+      "disabled": false,
+      "notes": "`fgets` in a three-clause `for` condition is an output-parameter source; loop-condition calls are classified like `if` / `while` ones."
+    },
+    {
+      "case_id": "go-cmdi-range-source-001",
+      "file": "go/cmdi/cmdi_range_query_values.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "loop-header",
+        "for-each",
+        "range"
+      ],
+      "disabled": false,
+      "notes": "A Go `range` header classifies on its iterable (an index into `r.URL.Query()`), so the loop binding carries the request taint."
     }
   ]
 }

@@ -42,10 +42,10 @@ mod params;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try};
 use helpers::{
-    collect_nested_function_nodes, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, first_call_ident_with_span, first_callback_sink_call, first_member_label,
-    first_member_text, is_raii_factory, is_subscript_kind, root_member_receiver,
-    subscript_components, subscript_lhs_node,
+    call_ident_at_or_under, collect_nested_function_nodes, derive_anon_fn_name_from_context,
+    find_classifiable_inner_call, find_inner_sink_call, first_call_ident_with_span,
+    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
+    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
 // Re-exports so sibling submodules can keep using `super::name` for
 // helpers that physically live in `helpers.rs`.
@@ -56,10 +56,10 @@ use conditions::{
 };
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
-    RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
-    find_constructor_type_child, first_call_ident, has_call_descendant, member_expr_text, node_str,
-    rmw_assignment, rmw_statement, rmw_target_define, rmw_target_reads, root_receiver_text,
-    slice_str, subtree_has_call, text_of,
+    HeaderExpr, RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
+    control_header_expr, find_condition_subtree, find_constructor_type_child, first_call_ident,
+    has_call_descendant, member_expr_text, node_str, rmw_assignment, rmw_statement,
+    rmw_target_define, rmw_target_reads, root_receiver_text, slice_str, subtree_has_call, text_of,
 };
 use imports::{
     extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
@@ -1327,24 +1327,7 @@ fn extract_condition_raw<'a>(
     code: &'a [u8],
 ) -> (Option<String>, Vec<String>, bool, Option<CondArith>) {
     // 1. Find the condition subtree.
-    let cond_node = ast.child_by_field_name("condition").or_else(|| {
-        // Rust `if_expression` uses positional children: the condition is
-        // the first child that is not a keyword, block, or `let` pattern.
-        let mut cursor = ast.walk();
-        ast.children(&mut cursor).find(|c| {
-            let k = c.kind();
-            !matches!(lookup(lang, k), Kind::Block | Kind::Trivia)
-                && k != "if"
-                && k != "else"
-                && k != "let"
-                && k != "{"
-                && k != "}"
-                && k != "("
-                && k != ")"
-        })
-    });
-
-    let Some(cond) = cond_node else {
+    let Some(cond) = find_condition_subtree(ast, lang) else {
         return (None, Vec::new(), false, None);
     };
 
@@ -2559,15 +2542,20 @@ fn is_binary_expr_kind(kind: &str, lang: &str) -> bool {
 
 /// Classification text for a for-each loop's iterable expression.
 ///
-/// Subscript / index iterables (`$_GET['x']`, `params[:list]`, `arr[i]`)
-/// classify on their **base object**: taint sources are keyed on the base
-/// name (`$_GET`, `params`), and the trailing index would otherwise break
-/// the word-boundary suffix match in `classify`.  Non-subscript iterables
-/// (method calls, member chains, bare identifiers) use their full text.
+/// Subscript / index / slice iterables (`$_GET['x']`, `params[:list]`,
+/// `arr[i]`, Go `xs[1:]`) classify on their **base object**: taint sources
+/// are keyed on the base name (`$_GET`, `params`), and the trailing index
+/// would otherwise break the word-boundary suffix match in `classify`.
+/// Non-subscript iterables (method calls, member chains, bare identifiers)
+/// use their full text.
 fn iterable_label_text(iter: Node, code: &[u8]) -> Option<String> {
     if matches!(
         iter.kind(),
-        "subscript_expression" | "subscript" | "index_expression" | "element_reference"
+        "subscript_expression"
+            | "subscript"
+            | "index_expression"
+            | "element_reference"
+            | "slice_expression"
     ) {
         let base = iter
             .child_by_field_name("object")
@@ -2668,6 +2656,21 @@ pub(super) fn push_node<'a>(
 ) -> NodeIndex {
     /* ── 1.  IDENTIFIER EXTRACTION ─────────────────────────────────────── */
 
+    // Branch and loop headers (`if`, elif, `while`, `for`, `loop`, the switch
+    // fallback header) are pushed over the whole statement but stand for
+    // their condition or iterable only.  `scope` is the subtree every label
+    // and call probe below may look at, so a call in the branch or loop body,
+    // which is lowered as a node of its own, never labels the header.
+    let header = if matches!(kind, StmtKind::If | StmtKind::Loop) {
+        control_header_expr(ast, lang)
+    } else {
+        None
+    };
+    let scope: Option<Node<'a>> = match header {
+        Some(h) => h.node(),
+        None => Some(ast),
+    };
+
     // Primary guess (varies by AST kind)
     let mut text = match lookup(lang, ast.kind()) {
         // plain `foo(bar)` style call
@@ -2733,8 +2736,14 @@ pub(super) fn push_node<'a>(
             .and_then(|n| text_of(n, code))
             .unwrap_or_default(),
 
-        // everything else – fallback to raw slice
-        _ => text_of(ast, code).unwrap_or_default(),
+        // everything else – fallback to raw slice.  A for-each header
+        // classifies on its iterable; other headers have no text of their
+        // own, a call in their condition is classified further down.
+        _ => match header {
+            Some(HeaderExpr::Iterable(iter)) => iterable_label_text(iter, code).unwrap_or_default(),
+            Some(_) => String::new(),
+            None => text_of(ast, code).unwrap_or_default(),
+        },
     };
 
     // C++ new/delete: normalize callee to "new"/"delete" for resource pair
@@ -2892,7 +2901,7 @@ pub(super) fn push_node<'a>(
     // never override.  Limited to Rust to avoid disturbing the other
     // languages' chain conventions.
     if lang == "rust" {
-        if let Some(cn) = find_call_node(ast, lang) {
+        if let Some(cn) = scope.and_then(|s| find_call_node(s, lang)) {
             if let Some(chain_raw) = text_of(cn, code) {
                 // Multi-line Rust chains (`Client::new()\n  .post(url)\n
                 // .body(p)\n  .send()`) preserve interior whitespace in
@@ -2958,6 +2967,11 @@ pub(super) fn push_node<'a>(
                         labels.push(DataLabel::Sink(crate::labels::Cap::DATA_EXFIL));
                     }
                 }
+                // A header has no text of its own; name it after the
+                // condition call that labelled it.
+                if header.is_some() && text.is_empty() && !labels.is_empty() {
+                    text = chain_text;
+                }
             }
         }
     }
@@ -3000,7 +3014,8 @@ pub(super) fn push_node<'a>(
     // taint flows through `info.taint.uses` (implicit args) as the
     // promise-callback handler already expects.
     let outer_is_promise_callback = matches!(lang, "javascript" | "typescript" | "tsx")
-        && find_call_node(ast, lang)
+        && scope
+            .and_then(|s| find_call_node(s, lang))
             .and_then(|cn| {
                 cn.child_by_field_name("function")
                     .or_else(|| cn.child_by_field_name("method"))
@@ -3226,14 +3241,17 @@ pub(super) fn push_node<'a>(
     // Conditions can contain source/sink calls whose argument side effects are
     // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
     // Classify the condition call so output-parameter sources still lower as
-    // SSA calls while the CFG node keeps its branch shape.
+    // SSA calls while the CFG node keeps its branch shape.  Covers every
+    // condition header (`if`, elif, `while`, `do`, a C-style `for`); the
+    // header takes the condition call's callee as its text either way, so
+    // the gated-sink pass below matches against that call.
     if labels.is_empty()
-        && matches!(lookup(lang, ast.kind()), Kind::If | Kind::While)
-        && let Some(cond) = ast.child_by_field_name("condition")
-        && let Some((ident, ident_span)) = first_call_ident_with_span(cond, lang, code)
-        && let Some(l) = classify(lang, &ident, extra)
+        && let Some(HeaderExpr::Condition(cond)) = header
+        && let Some((ident, ident_span)) = call_ident_at_or_under(cond, lang, code)
     {
-        labels.push(l);
+        if let Some(l) = classify(lang, &ident, extra) {
+            labels.push(l);
+        }
         text = ident;
         if inner_text_span.is_none() {
             inner_text_span = Some(ident_span);
@@ -3268,7 +3286,7 @@ pub(super) fn push_node<'a>(
     }
 
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
-    let mut call_ast = find_call_node(ast, lang);
+    let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
 
     // Chained-call inner-gate rebinding.  When the outer call is a method-
     // chain wrapper whose receiver is itself a call to a known gated sink
@@ -3326,7 +3344,7 @@ pub(super) fn push_node<'a>(
     // single capability never double-attributes.
     let has_sink_label = labels.iter().any(|l| matches!(l, DataLabel::Sink(_)));
     {
-        let gate_call = call_ast.or_else(|| find_call_node_deep(ast, lang, 4));
+        let gate_call = call_ast.or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 4)));
         if let Some(cn) = gate_call {
             // Derive the gate's callee text from the call's
             // `function`/`method`/`name` field, falling back to `text`.
@@ -3367,7 +3385,7 @@ pub(super) fn push_node<'a>(
                 && ff != text.as_str()
             {
                 ff.to_string()
-            } else if call_ast.is_some() {
+            } else if call_ast.is_some() && !text.is_empty() {
                 text.clone()
             } else {
                 function_field_text.unwrap_or_else(|| text.clone())
@@ -3566,7 +3584,7 @@ pub(super) fn push_node<'a>(
     // the payload elements are constant strings the helper returns no
     // match, so a literal `["bash", "-c", "ls -la"]` doesn't fire either.
     if matches!(lang, "javascript" | "js" | "typescript" | "ts") {
-        if let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4)) {
+        if let Some(cn) = call_ast.or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 4))) {
             let shell_matches = extract_shell_array_payload_idents(cn, code);
             if !shell_matches.is_empty() {
                 let shell_label = DataLabel::Sink(Cap::SHELL_ESCAPE);
@@ -3696,7 +3714,7 @@ pub(super) fn push_node<'a>(
             // chained-call CFG nodes.
             let shape = call_ast
                 .and_then(arg0_kind_and_interpolation)
-                .or_else(|| ruby_chain_arg0_for_method(ast, &[leaf], code));
+                .or_else(|| scope.and_then(|s| ruby_chain_arg0_for_method(s, &[leaf], code)));
             if let Some((arg0_kind, has_interp)) = shape
                 && crate::labels::ruby::ar_query_safe_shape(&text, &arg0_kind, has_interp)
             {
@@ -3851,9 +3869,10 @@ pub(super) fn push_node<'a>(
         // finds the right node regardless of wrapping; fall back to the prior
         // lookups only if the DFS finds nothing.
         let mut orm_dfs_budget: u32 = 96;
-        let chain_call = find_orm_query_chain_call(ast, QUERY_TARGETS, code, &mut orm_dfs_budget)
+        let chain_call = scope
+            .and_then(|s| find_orm_query_chain_call(s, QUERY_TARGETS, code, &mut orm_dfs_budget))
             .or(call_ast)
-            .or_else(|| find_call_node_deep(ast, lang, 4));
+            .or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 4)));
         if let Some(call_node) = chain_call {
             // Outer method must be in the ORM whitelist *and* the chain must
             // have a deeper inner call to a `query`/`execute` whose arg 0 is
@@ -3971,7 +3990,7 @@ pub(super) fn push_node<'a>(
         .iter()
         .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
         && call_ast
-            .or_else(|| find_call_node_deep(ast, lang, 5))
+            .or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 5)))
             .is_some_and(|cn| is_parameterized_query_call(cn, code));
 
     // Extract per-argument inner call callees for interprocedural sanitizer resolution.
@@ -4139,7 +4158,7 @@ pub(super) fn push_node<'a>(
     let string_prefix = if rmw.is_some() {
         None
     } else {
-        extract_template_prefix(ast, lang, code)
+        scope.and_then(|s| extract_template_prefix(s, lang, code))
     }
     .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code)));
 
@@ -4182,11 +4201,13 @@ pub(super) fn push_node<'a>(
     let produces_null_proto = matches!(lang, "javascript" | "typescript")
         && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
 
-    let numeric_confined_uses = collect_numeric_confined_value_idents(ast, lang, code, &labels);
+    let numeric_confined_uses = scope
+        .map(|s| collect_numeric_confined_value_idents(s, lang, code, &labels))
+        .unwrap_or_default();
     // Only Rust format-macro confined sinks need the phantom-ident skip list
     // (see [`NodeInfo::format_macro_method_idents`]); skip the walk otherwise.
     let format_macro_method_idents = if lang == "rust" && !numeric_confined_uses.is_empty() {
-        collect_format_macro_method_idents(ast, code)
+        scope.map_or_else(Vec::new, |s| collect_format_macro_method_idents(s, code))
     } else {
         Vec::new()
     };
@@ -6589,21 +6610,7 @@ pub(super) fn build_sub<'a>(
                 None => preds,
             };
             // Check if condition contains a boolean operator for short-circuit decomposition.
-            let cond_subtree = ast.child_by_field_name("condition").or_else(|| {
-                // Rust `if_expression` uses positional children
-                let mut cursor = ast.walk();
-                ast.children(&mut cursor).find(|c| {
-                    let k = c.kind();
-                    !matches!(lookup(lang, k), Kind::Block | Kind::Trivia)
-                        && k != "if"
-                        && k != "else"
-                        && k != "let"
-                        && k != "{"
-                        && k != "}"
-                        && k != "("
-                        && k != ")"
-                })
-            });
+            let cond_subtree = find_condition_subtree(ast, lang);
 
             let has_short_circuit = cond_subtree
                 .map(|c| is_boolean_operator(unwrap_parens(c)).is_some())

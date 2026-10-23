@@ -5985,6 +5985,31 @@ fn ssa_compound_preserves_taint_java() {
 
 /// Taint findings for `src`, analysed as `slug`.
 fn lang_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
+    lang_taint_run(src, slug).1
+}
+
+/// 1-based source lines of the sink node of every taint finding in `src`.
+fn lang_taint_sink_lines(src: &str, slug: &str) -> Vec<usize> {
+    let (file_cfg, findings) = lang_taint_run(src, slug);
+    let mut lines: Vec<usize> = findings
+        .iter()
+        .map(|f| {
+            let start = file_cfg.bodies[f.body_id.0 as usize].graph[f.sink]
+                .classification_span()
+                .0;
+            src.as_bytes()[..start]
+                .iter()
+                .filter(|&&c| c == b'\n')
+                .count()
+                + 1
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+fn lang_taint_run(src: &str, slug: &str) -> (FileCfg, Vec<Finding>) {
     let (ts_lang, lang, path) = match slug {
         "javascript" => (
             tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
@@ -6039,7 +6064,8 @@ fn lang_taint_findings(src: &str, slug: &str) -> Vec<Finding> {
         other => panic!("unsupported test language {other}"),
     };
     let file_cfg = parse_lang(src.as_bytes(), slug, ts_lang);
-    analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
+    let findings = analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None);
+    (file_cfg, findings)
 }
 
 fn assert_taint_fires(slug: &str, src: &str) {
@@ -8768,5 +8794,112 @@ fn python_match_source_attribute_subject_binding_fires() {
     assert_taint_fires(
         "python",
         "import os\nfrom flask import request\ndef run():\n    match request.json:\n        case {\"cmd\": cmd}:\n            os.system(cmd)\n    return \"ok\"\n",
+    );
+}
+
+// ── Branch and loop headers carry their condition only ─────────────────
+//
+// A sink call in an `if` / loop body is its own node.  The header must not
+// pick it up, or the tainted condition variable is reported as flowing into
+// that sink at the header line (a duplicate of the body finding, or a false
+// positive when the body call's arguments are constant or guarded).
+
+#[test]
+fn header_body_gated_sink_with_constant_args_is_clean() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "javascript",
+            "function h(req, res, db) {\n  const flag = req.query.f;\n  if (flag === \"yes\") {\n    db.query(\"SELECT 1\");\n  }\n}\n",
+        ),
+        (
+            "javascript",
+            "async function h(req, res) {\n  const token = req.headers.authorization;\n  if (token) {\n    fetch(\"https://auth.internal/verify\", { method: \"POST\" });\n  }\n}\n",
+        ),
+        (
+            "javascript",
+            "const cp = require('child_process');\nfunction h(req, res) {\n  const flag = req.query.f;\n  do {\n    cp.exec(\"ls\");\n  } while (flag);\n}\n",
+        ),
+        (
+            "python",
+            "from flask import request\nclass R:\n    def h(self):\n        flag = request.args.get(\"f\")\n        if flag:\n            self.cursor.execute(\"select 1\")\n",
+        ),
+        (
+            "python",
+            "from flask import request\nimport requests\ndef h():\n    items = request.args.getlist(\"f\")\n    for it in items:\n        requests.post(\"https://api.example.com/x\", data=\"const\")\n",
+        ),
+        (
+            "rust",
+            "use std::env;\nfn main() {\n    let name = env::var(\"NAME\").unwrap_or_default();\n    loop {\n        std::process::Command::new(\"ls\").status().unwrap();\n        println!(\"{}\", name);\n        break;\n    }\n}\n",
+        ),
+    ];
+    for (slug, src) in cases {
+        assert_taint_clean(slug, src);
+    }
+}
+
+/// An allowlist guard on the header applies to the body call; the header
+/// itself must not re-check the body's sink before the guard narrows.
+#[test]
+fn header_guard_applies_to_body_sink() {
+    assert_taint_clean(
+        "python",
+        "import subprocess\nfrom flask import request\nALLOWED = {\"ls\", \"pwd\"}\ndef h():\n    cmd = request.args.get(\"c\")\n    if cmd in ALLOWED:\n        subprocess.run(cmd, shell=True)\n",
+    );
+}
+
+/// A real flow into the body sink is reported once, at the body line.
+#[test]
+fn header_body_sink_reported_at_body_line_only() {
+    let js = "const { exec } = require('child_process');\nfunction h(req, res) {\n  const n = req.query.n;\n  if (n) {\n    exec('ls ' + n);\n  }\n}\n";
+    assert_eq!(lang_taint_sink_lines(js, "javascript"), vec![5]);
+    let py = "import subprocess\nfrom flask import request\ndef h():\n    cmd = request.args.get(\"c\")\n    while cmd:\n        subprocess.run(cmd, shell=True)\n        break\n";
+    assert_eq!(lang_taint_sink_lines(py, "python"), vec![6]);
+}
+
+/// A sink call that IS the condition is still checked at the header.
+#[test]
+fn header_condition_sink_call_fires() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "python",
+            "import os\nfrom flask import request\ndef h():\n    cmd = request.args.get(\"c\")\n    if os.system(cmd):\n        print(\"x\")\n",
+        ),
+        (
+            "python",
+            "import os\nfrom flask import request\ndef h():\n    cmd = request.args.get(\"c\")\n    if cmd == \"a\":\n        pass\n    elif os.system(cmd):\n        print(\"x\")\n",
+        ),
+        (
+            "ruby",
+            "class C < ApplicationController\n  def run\n    cmd = params[:cmd]\n    if system(cmd)\n      render plain: \"ok\"\n    end\n  end\nend\n",
+        ),
+        (
+            "c",
+            "#include <stdio.h>\n#include <stdlib.h>\nvoid f(void) {\n    char buf[100];\n    if (!fgets(buf, 100, stdin)) return;\n    system(buf);\n}\n",
+        ),
+        (
+            "c",
+            "#include <stdio.h>\n#include <stdlib.h>\nvoid f(void) {\n    char buf[100];\n    while (fgets(buf, 100, stdin)) {\n        system(buf);\n    }\n}\n",
+        ),
+        (
+            "c",
+            "#include <stdio.h>\n#include <stdlib.h>\nvoid f(void) {\n    char buf[100];\n    do {\n        puts(\"x\");\n    } while (!fgets(buf, 100, stdin));\n    system(buf);\n}\n",
+        ),
+        (
+            "c",
+            "#include <stdio.h>\n#include <stdlib.h>\nvoid f(void) {\n    char buf[100];\n    for (; fgets(buf, 100, stdin); ) {\n        system(buf);\n    }\n}\n",
+        ),
+    ];
+    for (slug, src) in cases {
+        assert_taint_fires(slug, src);
+    }
+}
+
+/// A for-each header classifies on its iterable: Go `range` over a
+/// request accessor taints the loop binding.
+#[test]
+fn go_range_over_source_call_taints_binding() {
+    assert_taint_fires(
+        "go",
+        "package main\n\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\n\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tfor _, v := range r.URL.Query()[\"c\"] {\n\t\texec.Command(\"sh\", \"-c\", v).Run()\n\t}\n}\n",
     );
 }
