@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 692
+    "corpus_size": 693
   },
   "cases": [
     {
@@ -22024,6 +22024,42 @@
       ],
       "disabled": false,
       "notes": "Paired with php-sqli-intval-concat-name-001: only intval($id) is concatenated"
+    },
+    {
+      "case_id": "js-cmdi-counted-loop-accumulator-001",
+      "file": "javascript/cmdi/cmdi_counted_loop_accumulator.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "loop",
+        "constraint-env"
+      ],
+      "disabled": false,
+      "notes": "cmd is extended inside a counted for loop and run after it; the loop counter folds to a constant and must not make the entry constraint environment unsatisfiable"
     }
   ]
 }

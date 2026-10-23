@@ -810,6 +810,31 @@ fn pathenv_seed_from_optimization() {
     assert_eq!(f1.null, Nullability::NonNull);
 }
 
+#[test]
+fn pathenv_seed_unknown_type_does_not_contradict_const() {
+    // A loop counter whose phi folds to a constant has an `Int` const fact
+    // and an `Unknown` type fact.  `Unknown` carries no type information, so
+    // seeding both must leave the environment satisfiable.
+    use crate::ssa::type_facts::{TypeFact, TypeFactResult, TypeKind};
+    let mut env = PathEnv::empty();
+    let v0 = SsaValue(0);
+    let const_values: crate::ssa::const_prop::ConstValues =
+        [(v0, ConstLattice::Int(0))].into_iter().collect();
+    let mut type_facts = TypeFactResult {
+        facts: HashMap::new(),
+    };
+    type_facts.facts.insert(
+        v0,
+        TypeFact {
+            kind: TypeKind::Unknown,
+            nullable: false,
+        },
+    );
+    env.seed_from_optimization(&const_values, &type_facts);
+    assert!(!env.is_unsat());
+    assert_eq!(env.get(v0).exact, Some(ConstValue::Int(0)));
+}
+
 // ── Relational constraint tests ────────────────────────────────────────
 
 #[test]

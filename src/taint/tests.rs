@@ -8897,3 +8897,23 @@ fn nested_source_in_chained_sink_call_fires_go() {
         "getCmd(r) is the payload of exec.Command even when .Run() is chained on"
     );
 }
+
+// ── Counted loops and the entry constraint environment ──────────────────
+//
+// `for (...; i < n; i++)` leaves `i` a constant `0` in SSA (`i++` is not a
+// definition), so its phi has a constant fact and an `Unknown` type fact.
+// Seeding both used to mark the entry environment unsatisfiable, and phi
+// operands reached through goto edges from the entry block were skipped, so
+// taint accumulated across such a loop never reached the sink after it.
+
+#[test]
+fn counted_loop_accumulator_keeps_taint_js() {
+    let src = b"var cp = require('child_process');\nvar app = require('express')();\napp.get('/run', function(req, res) {\n  var cmd = req.query.cmd;\n  for (var i = 0; i < 3; i++) {\n    cmd = cmd + ' --retry';\n  }\n  cp.exec(cmd);\n});\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0);
+}
+
+#[test]
+fn counted_loop_accumulator_of_a_copy_keeps_taint_js() {
+    let src = b"var cp = require('child_process');\nvar app = require('express')();\napp.get('/run', function(req, res) {\n  var data = req.query.cmd;\n  var cmd = data;\n  for (var i = 0; i < 3; i++) {\n    cmd = cmd + ' --retry';\n  }\n  cp.exec(cmd);\n});\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0);
+}
