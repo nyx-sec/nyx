@@ -132,16 +132,9 @@ fn comment_style_for_ext(ext: &str) -> Option<CommentStyle> {
 
 /// Map a file path to its comment style by inspecting the extension.
 fn comment_style_for_path(path: &std::path::Path) -> Option<CommentStyle> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
-    // Normalise common variant extensions
-    let norm = match ext {
-        "RS" => "rs",
-        "c++" => "cpp",
-        "PY" => "py",
-        "TSX" | "tsx" => "ts",
-        other => other,
-    };
-    comment_style_for_ext(norm)
+    // `lowercase_ext` folds the variant extensions (`.cc`, `.hpp`, `.tsx`,
+    // `.mjs`, `.cts`, ...) onto the slug the scanner parses them as.
+    comment_style_for_ext(crate::utils::ext::lowercase_ext(path)?)
 }
 
 //  Parser
@@ -525,6 +518,16 @@ mod tests {
         assert!(idx.check(1, "rule.a").is_none());
         assert!(idx.check(2, "rule.a").is_some());
         assert!(idx.check(3, "rule.a").is_none());
+    }
+
+    // 4b. Module-form JS/TS and C++ header extensions use `//` comments.
+    #[test]
+    fn variant_extensions_use_c_style_comments() {
+        let src = "run(); // nyx:ignore rule.a\n";
+        for file in ["a.mjs", "a.cjs", "a.mts", "a.cts", "a.jsx", "a.hpp"] {
+            let idx = parse_inline_suppressions(Path::new(file), src);
+            assert!(idx.check(1, "rule.a").is_some(), "{file}");
+        }
     }
 
     // 5. Next-line semantics

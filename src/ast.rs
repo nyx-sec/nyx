@@ -808,8 +808,8 @@ pub(crate) const SUPPORTED_LANGUAGE_EXTENSIONS: &[(&str, &[&str])] = &[
     ("go", &["go"]),
     ("php", &["php"]),
     ("python", &["py"]),
-    ("typescript", &["ts", "tsx"]),
-    ("javascript", &["js", "jsx"]),
+    ("typescript", &["ts", "tsx", "mts", "cts"]),
+    ("javascript", &["js", "jsx", "mjs", "cjs"]),
     ("ruby", &["rb"]),
 ];
 
@@ -6715,6 +6715,47 @@ fn unknown_extension_returns_empty() {
         .expect("function should never error on plain text");
 
     assert!(diags.is_empty());
+}
+
+#[test]
+fn module_form_js_ts_extensions_are_analysed() {
+    for (file, slug) in [
+        ("server.mjs", "javascript"),
+        ("config.cjs", "javascript"),
+        ("server.mts", "typescript"),
+        ("config.cts", "typescript"),
+    ] {
+        assert_eq!(
+            lang_for_path(Path::new(file)).map(|(_, s)| s),
+            Some(slug),
+            "{file}"
+        );
+        let ext = file.rsplit('.').next().unwrap();
+        assert!(extensions_for_lang(slug).contains(&ext), "{file}");
+    }
+
+    // An ESM server file gets the same taint analysis as a `.js` one.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("server.mjs");
+    std::fs::write(
+        &file,
+        "import express from 'express';\n\
+         import { exec } from 'child_process';\n\
+         const app = express();\n\
+         app.get('/run', (req, res) => {\n\
+         \x20 exec(req.query.cmd);\n\
+         \x20 res.end();\n\
+         });\n",
+    )
+    .unwrap();
+    let diags = run_rules_on_file(&file, &Config::default(), None, None).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.id.starts_with("taint-unsanitised-flow") && d.line == 5),
+        "expected a shell-injection flow in server.mjs, got {:?}",
+        diags.iter().map(|d| (&d.id, d.line)).collect::<Vec<_>>()
+    );
 }
 
 #[test]
