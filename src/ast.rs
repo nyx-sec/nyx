@@ -2015,7 +2015,11 @@ impl<'a> ParsedFile<'a> {
             let sink_is_url = sink_info.taint.labels.iter().any(
                 |l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)),
             );
-            if sink_is_url && crate::cfg_analysis::guards::redirect_target_origin_locked(sink_info)
+            if sink_is_url
+                && crate::cfg_analysis::guards::redirect_target_origin_locked(
+                    sink_info,
+                    self.source.bytes,
+                )
             {
                 continue;
             }

@@ -234,6 +234,18 @@ fn javascript_bare_slash_prefix_fires() {
 }
 
 #[test]
+fn javascript_status_code_is_not_the_target() {
+    // `res.redirect(303, next)`: the literal status must not count as a
+    // constant redirect target.
+    assert_unsafe("javascript", "unsafe_status_redirect.js");
+}
+
+#[test]
+fn ruby_bare_slash_interpolation_fires() {
+    assert_unsafe("ruby", "unsafe_bare_slash_interp.rb");
+}
+
+#[test]
 fn ruby_same_origin_path_prefix_sanitizes() {
     assert_clean("ruby", "safe_path_prefix_redirect.rb");
 }

@@ -3485,38 +3485,73 @@ fn chain_callee_fragments_with_text<'a>(
     frags
 }
 
-/// True when a redirect-style sink's target is a literal, or starts with a
-/// constant prefix that pins the origin (`res.redirect(`/users/${id}`)`,
-/// `redirect_to "/users/#{id}"`, `redirect("https://app.example/" + p)`).
-/// The prefix is the AST-derived [`crate::cfg::NodeInfo::string_prefix`],
-/// so a bare `"/" + next` (which `next = "/evil.com"` turns into
-/// `//evil.com`) does not count.
+/// True when a redirect-style sink's target is a plain string literal, or
+/// starts with a constant prefix that pins the origin
+/// (`res.redirect(`/users/${id}`)`, `redirect_to "/users/#{id}"`,
+/// `redirect("https://app.example/" + p)`).  The prefix is the AST-derived
+/// [`crate::cfg::NodeInfo::string_prefix`], so a bare `"/" + next` (which
+/// `next = "/evil.com"` turns into `//evil.com`) does not count.
 ///
 /// Reused by both `cfg-unguarded-sink` suppression and taint finding filtering.
-pub(crate) fn redirect_target_origin_locked(info: &crate::cfg::NodeInfo) -> bool {
+pub(crate) fn redirect_target_origin_locked(info: &crate::cfg::NodeInfo, src: &[u8]) -> bool {
     info.call.callee.as_deref().is_some_and(|c| {
         let c = c.to_ascii_lowercase();
         c.ends_with("redirect") || c.ends_with("redirect_to")
-    }) && (redirect_url_arg_is_literal(info)
+    }) && (redirect_url_arg_is_literal(info, src)
         || info
             .string_prefix
             .as_deref()
             .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin))
 }
 
-/// The URL argument of a redirect call is a string literal: the first
-/// positional argument, or the second after a numeric status
-/// (`res.redirect(301, '/home')`).  A literal target is chosen by the
-/// developer, whatever taint the receiver carries.
-fn redirect_url_arg_is_literal(info: &crate::cfg::NodeInfo) -> bool {
-    let lits = &info.call.arg_string_literals;
-    let status_first = info.call.arg_uses.first().is_some_and(|u| u.is_empty());
-    let url = match lits.as_slice() {
-        [None, second] if status_first => second,
-        [first, ..] => first,
-        [] => return false,
+/// The URL argument of a redirect call is a plain quoted string: the first
+/// argument, or the second after a numeric status (`res.redirect(301,
+/// '/home')`).  A literal target is chosen by the developer, whatever taint
+/// the receiver carries.  Read from the call's own source text: f-strings,
+/// template literals and double-quoted text with `#{..}` / `$` interpolation
+/// are not literals, and a callee that is an inner call of the statement
+/// (`get '/x', to: redirect { .. }`) does not count.
+fn redirect_url_arg_is_literal(info: &crate::cfg::NodeInfo, src: &[u8]) -> bool {
+    if info.call.outer_callee.is_some() {
+        return false;
+    }
+    let (start, end) = info.call.callee_span.unwrap_or(info.ast.span);
+    let Some(text) = src.get(start..end) else {
+        return false;
     };
-    url.is_some()
+    let Some(open) = text.iter().position(|&b| b == b'(') else {
+        return false;
+    };
+    let mut rest = text[open + 1..].trim_ascii_start();
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 {
+        let after = rest[digits..].trim_ascii_start();
+        let Some(after_comma) = after.strip_prefix(b",") else {
+            return false;
+        };
+        rest = after_comma.trim_ascii_start();
+    }
+    let Some(&quote) = rest.first() else {
+        return false;
+    };
+    if quote != b'"' && quote != b'\'' {
+        return false;
+    }
+    let mut i = 1;
+    while i < rest.len() && rest[i] != quote {
+        i += if rest[i] == b'\\' { 2 } else { 1 };
+    }
+    if i >= rest.len() {
+        return false;
+    }
+    let content = &rest[1..i];
+    let interpolated =
+        quote == b'"' && (content.windows(2).any(|w| w == b"#{") || content.contains(&b'$'));
+    !interpolated
+        && matches!(
+            rest[i + 1..].trim_ascii_start().first(),
+            Some(b',') | Some(b')')
+        )
 }
 
 /// Check if this sink is an internal redirect: a redirect call (SSRF or
@@ -3529,7 +3564,7 @@ fn is_internal_redirect(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
         return false;
     }
     let info = &ctx.cfg[sink];
-    if redirect_target_origin_locked(info) {
+    if redirect_target_origin_locked(info, ctx.source_bytes) {
         return true;
     }
     let is_redirect = info.call.callee.as_deref().is_some_and(|c| {
