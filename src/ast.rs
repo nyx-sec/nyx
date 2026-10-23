@@ -1501,6 +1501,52 @@ impl<'a> ParsedSource<'a> {
         {
             return None;
         }
+        // Layer J: JS/TS `setHeader('Access-Control-Allow-Origin', origin)`
+        // where an allowlist test on `origin` guards the call, either as the
+        // enclosing `if` (`if (ALLOWED.includes(origin)) ...`) or as an
+        // earlier early exit (`if (!ALLOWED.has(origin)) return ...`).  Only
+        // an admitted origin is echoed, which is the correct CORS setup.
+        if matches!(
+            meta.id,
+            "js.config.cors_dynamic_origin" | "ts.config.cors_dynamic_origin"
+        ) && is_js_allowlisted_origin_header(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer K: JS/TS `secure: false` outside a cookie options object.  The
+        // key also configures mail transports (nodemailer's STARTTLS
+        // `secure: false` on port 587), database clients and proxies, where it
+        // says nothing about cookies.
+        if matches!(
+            meta.id,
+            "js.config.insecure_session_secure" | "ts.config.insecure_session_secure"
+        ) && !is_js_cookie_options_pair(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer L: JS/TS writes of a constant to `location` /
+        // `document.cookie` (`window.location = '/'`, `document.cookie =
+        // 'theme=dark'`).  Layer A only inspects call arguments; these
+        // patterns match assignments.
+        if matches!(
+            meta.id,
+            "js.xss.location_assign"
+                | "ts.xss.location_assign"
+                | "js.xss.cookie_write"
+                | "ts.xss.cookie_write"
+        ) && is_js_assignment_of_constant(cap_node)
+        {
+            return None;
+        }
+        // Layer M: JS/TS `{ error }` passed to a renderer where `error` is a
+        // message string the handler wrote itself, not an `Error` object.
+        if matches!(
+            meta.id,
+            "js.config.verbose_error_response" | "ts.config.verbose_error_response"
+        ) && is_js_error_shorthand_a_message(cap_node, self.bytes)
+        {
+            return None;
+        }
         let point = cap_node.start_position();
         Some(Diag {
             path: self.path.to_string_lossy().into_owned(),
@@ -4429,6 +4475,428 @@ fn is_ruby_eval_string_arg(cap_node: tree_sitter::Node) -> bool {
     false
 }
 
+/// Ancestor of `node` (inclusive) with the given kind, stopping at the
+/// enclosing function.
+fn js_ancestor_of_kind<'a>(
+    node: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        if n.kind() == kind {
+            return Some(n);
+        }
+        if is_js_function_node(n) {
+            return None;
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+fn js_unwrap_parens(node: tree_sitter::Node) -> tree_sitter::Node {
+    let mut node = node;
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+fn is_js_function_node(n: tree_sitter::Node) -> bool {
+    matches!(
+        n.kind(),
+        "function_declaration"
+            | "function_expression"
+            | "function"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function"
+            | "generator_function_declaration"
+    )
+}
+
+/// True for a JS/TS expression whose value is fixed in the source: a string
+/// or number literal, a template literal without substitutions, or a `+`
+/// concatenation of those.
+fn is_js_constant_expr(node: tree_sitter::Node) -> bool {
+    let node = js_unwrap_parens(node);
+    match node.kind() {
+        "string" | "number" => true,
+        "template_string" => {
+            let mut c = node.walk();
+            !node
+                .named_children(&mut c)
+                .any(|ch| ch.kind() == "template_substitution")
+        }
+        "binary_expression" => {
+            node.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "+")
+                && node
+                    .child_by_field_name("left")
+                    .is_some_and(is_js_constant_expr)
+                && node
+                    .child_by_field_name("right")
+                    .is_some_and(is_js_constant_expr)
+        }
+        _ => false,
+    }
+}
+
+/// Layer L recogniser: the captured assignment stores a constant.
+fn is_js_assignment_of_constant(cap_node: tree_sitter::Node) -> bool {
+    js_ancestor_of_kind(cap_node, "assignment_expression")
+        .and_then(|a| a.child_by_field_name("right"))
+        .is_some_and(is_js_constant_expr)
+}
+
+/// `true` when `expr` holds only when `name` is in an allowlist:
+/// `LIST.includes(name)`, `SET.has(name)`, `LIST.indexOf(name) !== -1`
+/// (or `> -1` / `>= 0`), `name === 'https://a.example'`, or a conjunction
+/// with one such operand.  A disjunction needs every operand to qualify.
+fn js_expr_admits_only_allowlisted(expr: tree_sitter::Node, name: &str, code: &[u8]) -> bool {
+    let expr = js_unwrap_parens(expr);
+    match expr.kind() {
+        "call_expression" => js_is_membership_call(expr, name, code),
+        "binary_expression" => {
+            let Some(op) = expr.child_by_field_name("operator").map(|o| o.kind()) else {
+                return false;
+            };
+            let (Some(left), Some(right)) = (
+                expr.child_by_field_name("left"),
+                expr.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            match op {
+                "&&" => {
+                    js_expr_admits_only_allowlisted(left, name, code)
+                        || js_expr_admits_only_allowlisted(right, name, code)
+                }
+                "||" => {
+                    js_expr_admits_only_allowlisted(left, name, code)
+                        && js_expr_admits_only_allowlisted(right, name, code)
+                }
+                "===" | "==" => js_is_name_vs_string(left, right, name, code),
+                "!==" | "!=" | ">" | ">=" => js_is_index_of_found(left, right, op, name, code),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// `true` when `expr` holds whenever `name` is NOT in an allowlist, the
+/// condition of an early exit: `!LIST.includes(name)`,
+/// `LIST.indexOf(name) === -1` (or `< 0`), `name !== 'https://a.example'`.
+fn js_expr_rejects_unlisted(expr: tree_sitter::Node, name: &str, code: &[u8]) -> bool {
+    let expr = js_unwrap_parens(expr);
+    match expr.kind() {
+        "unary_expression" => {
+            expr.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "!")
+                && expr
+                    .child_by_field_name("argument")
+                    .is_some_and(|a| js_expr_admits_only_allowlisted(a, name, code))
+        }
+        "binary_expression" => {
+            let Some(op) = expr.child_by_field_name("operator").map(|o| o.kind()) else {
+                return false;
+            };
+            let (Some(left), Some(right)) = (
+                expr.child_by_field_name("left"),
+                expr.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            match op {
+                "||" => {
+                    js_expr_rejects_unlisted(left, name, code)
+                        || js_expr_rejects_unlisted(right, name, code)
+                }
+                "!==" | "!=" => js_is_name_vs_string(left, right, name, code),
+                "===" | "==" | "<" => js_is_index_of_missing(left, right, op, name, code),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// `<recv>.includes(name)` / `<recv>.has(name)`.
+fn js_is_membership_call(call: tree_sitter::Node, name: &str, code: &[u8]) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    if func.kind() != "member_expression" {
+        return false;
+    }
+    let method = func
+        .child_by_field_name("property")
+        .and_then(|p| crate::cfg::node_str(p, code));
+    if !matches!(method, Some("includes" | "has")) {
+        return false;
+    }
+    js_call_has_ident_arg(call, name, code)
+}
+
+fn js_call_has_ident_arg(call: tree_sitter::Node, name: &str, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut c = args.walk();
+    args.named_children(&mut c)
+        .any(|a| a.kind() == "identifier" && crate::cfg::node_str(a, code) == Some(name))
+}
+
+fn js_is_name_vs_string(
+    left: tree_sitter::Node,
+    right: tree_sitter::Node,
+    name: &str,
+    code: &[u8],
+) -> bool {
+    let is_name = |n: tree_sitter::Node| {
+        n.kind() == "identifier" && crate::cfg::node_str(n, code) == Some(name)
+    };
+    let is_str = |n: tree_sitter::Node| matches!(n.kind(), "string" | "template_string");
+    (is_name(left) && is_str(right)) || (is_str(left) && is_name(right))
+}
+
+/// `<recv>.indexOf(name)` call node, if `n` is one.
+fn js_index_of_call(n: tree_sitter::Node, name: &str, code: &[u8]) -> bool {
+    let n = js_unwrap_parens(n);
+    n.kind() == "call_expression"
+        && n.child_by_field_name("function").is_some_and(|f| {
+            f.kind() == "member_expression"
+                && f.child_by_field_name("property")
+                    .and_then(|p| crate::cfg::node_str(p, code))
+                    == Some("indexOf")
+        })
+        && js_call_has_ident_arg(n, name, code)
+}
+
+fn js_number_text<'a>(n: tree_sitter::Node, code: &'a [u8]) -> Option<&'a str> {
+    let n = js_unwrap_parens(n);
+    match n.kind() {
+        "number" => crate::cfg::node_str(n, code),
+        "unary_expression" => crate::cfg::node_str(n, code),
+        _ => None,
+    }
+}
+
+/// `indexOf(name) !== -1`, `indexOf(name) > -1`, `indexOf(name) >= 0`.
+fn js_is_index_of_found(
+    left: tree_sitter::Node,
+    right: tree_sitter::Node,
+    op: &str,
+    name: &str,
+    code: &[u8],
+) -> bool {
+    js_index_of_call(left, name, code)
+        && matches!(
+            (op, js_number_text(right, code)),
+            ("!==" | "!=" | ">", Some("-1")) | (">=", Some("0"))
+        )
+}
+
+/// `indexOf(name) === -1`, `indexOf(name) < 0`.
+fn js_is_index_of_missing(
+    left: tree_sitter::Node,
+    right: tree_sitter::Node,
+    op: &str,
+    name: &str,
+    code: &[u8],
+) -> bool {
+    js_index_of_call(left, name, code)
+        && matches!(
+            (op, js_number_text(right, code)),
+            ("===" | "==", Some("-1")) | ("<", Some("0"))
+        )
+}
+
+/// `true` when every path through `stmt` leaves the enclosing function:
+/// a `return` / `throw`, or a block that ends in one.
+fn js_stmt_always_exits(stmt: tree_sitter::Node) -> bool {
+    match stmt.kind() {
+        "return_statement" | "throw_statement" => true,
+        "statement_block" => {
+            let mut c = stmt.walk();
+            stmt.named_children(&mut c)
+                .filter(|n| n.kind() != "comment")
+                .last()
+                .is_some_and(js_stmt_always_exits)
+        }
+        _ => false,
+    }
+}
+
+/// Layer J recogniser.  The captured `setHeader` call echoes an identifier
+/// that an allowlist test admitted, either as the condition of an enclosing
+/// `if` whose consequence holds the call, or as an earlier early exit in an
+/// enclosing block of the same function.
+fn is_js_allowlisted_origin_header(cap_node: tree_sitter::Node, code: &[u8]) -> bool {
+    let Some(call) = js_ancestor_of_kind(cap_node, "call_expression") else {
+        return false;
+    };
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut c = args.walk();
+    let Some(value) = args.named_children(&mut c).nth(1) else {
+        return false;
+    };
+    if value.kind() != "identifier" {
+        return false;
+    }
+    let Some(name) = crate::cfg::node_str(value, code) else {
+        return false;
+    };
+    let mut child = call;
+    let mut cur = call.parent();
+    while let Some(n) = cur {
+        if is_js_function_node(n) {
+            return false;
+        }
+        if n.kind() == "if_statement"
+            && n.child_by_field_name("consequence")
+                .is_some_and(|cons| cons.id() == child.id())
+            && n.child_by_field_name("condition")
+                .is_some_and(|cond| js_expr_admits_only_allowlisted(cond, name, code))
+        {
+            return true;
+        }
+        if matches!(n.kind(), "statement_block" | "program") {
+            let mut sib = child.prev_named_sibling();
+            while let Some(s) = sib {
+                if s.kind() == "if_statement"
+                    && s.child_by_field_name("alternative").is_none()
+                    && s.child_by_field_name("consequence")
+                        .is_some_and(js_stmt_always_exits)
+                    && s.child_by_field_name("condition")
+                        .is_some_and(|cond| js_expr_rejects_unlisted(cond, name, code))
+                {
+                    return true;
+                }
+                sib = s.prev_named_sibling();
+            }
+        }
+        child = n;
+        cur = n.parent();
+    }
+    false
+}
+
+/// Option keys that only appear on cookie definitions.
+const JS_COOKIE_OPTION_KEYS: &[&str] = &[
+    "httpOnly",
+    "sameSite",
+    "maxAge",
+    "expires",
+    "signed",
+    "partitioned",
+];
+
+fn js_pair_key_text<'a>(pair: tree_sitter::Node, code: &'a [u8]) -> Option<&'a str> {
+    let key = pair.child_by_field_name("key")?;
+    let text = crate::cfg::node_str(key, code)?;
+    Some(text.trim_matches(|c| c == '"' || c == '\''))
+}
+
+/// Layer K recogniser: the captured `secure: false` pair belongs to cookie
+/// options.  Accepted shapes: a sibling cookie-only key (`httpOnly`,
+/// `sameSite`, `maxAge`, ...), the object under a `cookie:` key (express-
+/// session), an argument of a cookie or session call (`res.cookie(..)`,
+/// `cookies.set(..)`, `session({..})`, `cookieSession({..})`), or a
+/// variable named for cookies or sessions.
+fn is_js_cookie_options_pair(cap_node: tree_sitter::Node, code: &[u8]) -> bool {
+    let Some(pair) = js_ancestor_of_kind(cap_node, "pair") else {
+        return true;
+    };
+    let Some(obj) = pair.parent().filter(|p| p.kind() == "object") else {
+        return true;
+    };
+    let mut c = obj.walk();
+    if obj
+        .named_children(&mut c)
+        .filter(|n| n.kind() == "pair")
+        .filter_map(|n| js_pair_key_text(n, code))
+        .any(|k| JS_COOKIE_OPTION_KEYS.contains(&k))
+    {
+        return true;
+    }
+    let Some(parent) = obj.parent() else {
+        return false;
+    };
+    let names_cookie = |t: &str| {
+        let lower = t.to_ascii_lowercase();
+        lower.contains("cookie") || lower.contains("session")
+    };
+    match parent.kind() {
+        "pair" => js_pair_key_text(parent, code).is_some_and(names_cookie),
+        "arguments" => parent
+            .parent()
+            .and_then(|call| call.child_by_field_name("function"))
+            .and_then(|f| crate::cfg::node_str(f, code))
+            .is_some_and(names_cookie),
+        "variable_declarator" => parent
+            .child_by_field_name("name")
+            .and_then(|n| crate::cfg::node_str(n, code))
+            .is_some_and(names_cookie),
+        _ => false,
+    }
+}
+
+/// Layer M recogniser: the shorthand `{ error }` names a local whose nearest
+/// declaration initialises it with a string (`const error = 'Invalid
+/// credentials'`) or an error's `.message`.  Neither carries a stack trace.
+fn is_js_error_shorthand_a_message(cap_node: tree_sitter::Node, code: &[u8]) -> bool {
+    let Some(call) = js_ancestor_of_kind(cap_node, "call_expression") else {
+        return false;
+    };
+    let mut scope = call.parent();
+    while let Some(s) = scope {
+        if is_js_function_node(s) {
+            return false;
+        }
+        if matches!(s.kind(), "statement_block" | "program") {
+            let mut c = s.walk();
+            for stmt in s.named_children(&mut c) {
+                if stmt.start_byte() >= call.start_byte() {
+                    break;
+                }
+                if !matches!(stmt.kind(), "lexical_declaration" | "variable_declaration") {
+                    continue;
+                }
+                let mut dc = stmt.walk();
+                for decl in stmt.named_children(&mut dc) {
+                    if decl.kind() != "variable_declarator"
+                        || decl
+                            .child_by_field_name("name")
+                            .and_then(|n| crate::cfg::node_str(n, code))
+                            != Some("error")
+                    {
+                        continue;
+                    }
+                    let Some(init) = decl.child_by_field_name("value") else {
+                        return false;
+                    };
+                    let init = js_unwrap_parens(init);
+                    return matches!(init.kind(), "string" | "template_string")
+                        || (init.kind() == "member_expression"
+                            && init
+                                .child_by_field_name("property")
+                                .and_then(|p| crate::cfg::node_str(p, code))
+                                == Some("message"));
+                }
+            }
+        }
+        scope = s.parent();
+    }
+    false
+}
+
 /// `Marshal.load` / `YAML.load` / `YAML.unsafe_load` / `Psych.load` /
 /// `Psych.unsafe_load` shape recogniser.  Only the canonical `Module.method`
 /// chain — bare-leaf `load(b)` is ambiguous in Ruby and not flagged as a
@@ -6756,6 +7224,69 @@ fn module_form_js_ts_extensions_are_analysed() {
         "expected a shell-injection flow in server.mjs, got {:?}",
         diags.iter().map(|d| (&d.id, d.line)).collect::<Vec<_>>()
     );
+}
+
+/// AST pattern rule ids reported for `src` saved as `file`, by line.
+#[cfg(test)]
+fn pattern_ids_by_line(file: &str, src: &str) -> Vec<(usize, String)> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(file);
+    std::fs::write(&path, src).unwrap();
+    let mut out: Vec<(usize, String)> = run_rules_on_file(&path, &Config::default(), None, None)
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.id.starts_with("js.") || d.id.starts_with("ts."))
+        .map(|d| (d.line, d.id))
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn js_config_patterns_skip_allowlisted_and_non_cookie_shapes() {
+    let src = "\
+const ALLOWED = ['https://a.example'];
+function cors1(req, res) {
+  const origin = req.headers.origin;
+  if (ALLOWED.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+}
+function cors2(req, res) {
+  const origin = req.headers.origin;
+  if (ALLOWED.indexOf(origin) === -1) return res.end();
+  res.setHeader('Access-Control-Allow-Origin', origin);
+}
+function cors3(req, res) {
+  const origin = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+}
+const mail = nodemailer.createTransport({ host: 'smtp', port: 587, secure: false });
+app.use(session({ secret: 's', cookie: { secure: false } }));
+function home() { window.location = '/'; document.cookie = 'theme=dark; path=/'; }
+function go(url, sid) { window.location = url; document.cookie = 'sid=' + sid; }
+function login(req, res) {
+  const error = 'Invalid credentials';
+  res.render('login', { error });
+}
+function fail(req, res, err) {
+  const error = err;
+  res.render('error', { error });
+}
+";
+    let ids = pattern_ids_by_line("cfg.js", src);
+    let at = |line: usize, id: &str| ids.iter().any(|(l, i)| *l == line && i == id);
+    assert!(!at(5, "js.config.cors_dynamic_origin"), "{ids:?}");
+    assert!(!at(11, "js.config.cors_dynamic_origin"), "{ids:?}");
+    assert!(at(15, "js.config.cors_dynamic_origin"), "{ids:?}");
+    assert!(!at(17, "js.config.insecure_session_secure"), "{ids:?}");
+    assert!(at(18, "js.config.insecure_session_secure"), "{ids:?}");
+    assert!(!at(19, "js.xss.location_assign"), "{ids:?}");
+    assert!(!at(19, "js.xss.cookie_write"), "{ids:?}");
+    assert!(at(20, "js.xss.location_assign"), "{ids:?}");
+    assert!(at(20, "js.xss.cookie_write"), "{ids:?}");
+    assert!(!at(23, "js.config.verbose_error_response"), "{ids:?}");
+    assert!(at(27, "js.config.verbose_error_response"), "{ids:?}");
 }
 
 #[test]
