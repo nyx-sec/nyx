@@ -81,6 +81,11 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
             }
         }
 
+        // Rewrite what the terminator reads.  The copy is turned into a Nop
+        // below, so a `Return(Some(v))`, branch condition or switch scrutinee
+        // left on it would read a value with no definition.
+        rewrite_terminator_uses(&mut block.terminator, &resolved);
+
         // Rewrite body instructions
         for inst in &mut block.body {
             match &mut inst.op {
@@ -121,6 +126,34 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
     }
 
     (count, resolved)
+}
+
+/// Point the values a terminator reads at their copy roots.
+fn rewrite_terminator_uses(term: &mut Terminator, resolved: &HashMap<SsaValue, SsaValue>) {
+    use crate::constraint::lower::{ConditionExpr, Operand};
+    let fix = |v: &mut SsaValue| {
+        if let Some(&root) = resolved.get(v) {
+            *v = root;
+        }
+    };
+    match term {
+        Terminator::Return(Some(v)) => fix(v),
+        Terminator::Switch { scrutinee, .. } => fix(scrutinee),
+        Terminator::Branch { condition, .. } => match condition.as_deref_mut() {
+            Some(ConditionExpr::BoolTest { var })
+            | Some(ConditionExpr::NullCheck { var, .. })
+            | Some(ConditionExpr::TypeCheck { var, .. }) => fix(var),
+            Some(ConditionExpr::Comparison { lhs, rhs, .. }) => {
+                for operand in [lhs, rhs] {
+                    if let Operand::Value(v) = operand {
+                        fix(v);
+                    }
+                }
+            }
+            Some(ConditionExpr::Unknown) | None => {}
+        },
+        Terminator::Return(None) | Terminator::Goto(_) | Terminator::Unreachable => {}
+    }
 }
 
 /// Chase the replacement chain to find the root value.
@@ -733,5 +766,82 @@ mod tests {
         let (eliminated, map) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 0);
         assert!(map.is_empty());
+    }
+
+    /// `return b` lowers to a copy of `b` that only the terminator reads.
+    /// The copy becomes a Nop, so the terminator has to move to the root or
+    /// the returned value has no definition (and no taint) any more.
+    #[test]
+    fn return_terminator_follows_the_copy_root() {
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Return(Some(SsaValue(1)));
+        let (eliminated, _map) = copy_propagate(&mut body, &cfg);
+        assert_eq!(eliminated, 1);
+        assert!(matches!(body.blocks[0].body[1].op, SsaOp::Nop));
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Return(Some(SsaValue(0)))
+        ));
+    }
+
+    #[test]
+    fn branch_condition_and_switch_scrutinee_follow_the_copy_root() {
+        use crate::constraint::lower::{CompOp, ConditionExpr, Operand};
+        use petgraph::graph::NodeIndex;
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Branch {
+            cond: NodeIndex::new(1),
+            true_blk: BlockId(0),
+            false_blk: BlockId(0),
+            condition: Some(Box::new(ConditionExpr::Comparison {
+                lhs: Operand::Value(SsaValue(1)),
+                op: CompOp::Eq,
+                rhs: Operand::Unknown,
+            })),
+        };
+        copy_propagate(&mut body, &cfg);
+        match &body.blocks[0].terminator {
+            Terminator::Branch {
+                condition: Some(c), ..
+            } => match &**c {
+                ConditionExpr::Comparison { lhs, .. } => {
+                    assert!(matches!(lhs, Operand::Value(SsaValue(0))))
+                }
+                other => panic!("unexpected condition {other:?}"),
+            },
+            other => panic!("unexpected terminator {other:?}"),
+        }
+
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Switch {
+            scrutinee: SsaValue(1),
+            targets: SmallVec::new(),
+            default: BlockId(0),
+            case_values: SmallVec::new(),
+        };
+        copy_propagate(&mut body, &cfg);
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Switch {
+                scrutinee: SsaValue(0),
+                ..
+            }
+        ));
+    }
+
+    /// A copy that is kept (labelled node) must leave its terminator alone.
+    #[test]
+    fn return_terminator_of_a_kept_copy_is_unchanged() {
+        use crate::labels::{Cap, DataLabel};
+        use smallvec::smallvec;
+        let (cfg, mut body) = build_two_inst_body(|info| {
+            info.taint.labels = smallvec![DataLabel::Sanitizer(Cap::SHELL_ESCAPE)];
+        });
+        body.blocks[0].terminator = Terminator::Return(Some(SsaValue(1)));
+        copy_propagate(&mut body, &cfg);
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Return(Some(SsaValue(1)))
+        ));
     }
 }

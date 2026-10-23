@@ -8312,6 +8312,41 @@ fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
     analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
 }
 
+/// SSA summary of the function called `func` in `src`, built the way the
+/// scan builds it.  `None` when the function has no observable effect (the
+/// scan stores no summary for it).
+fn summary_of(
+    src: &[u8],
+    lang: Lang,
+    func: &str,
+) -> Option<crate::summary::ssa_summary::SsaFuncSummary> {
+    let (slug, path, ts_lang) = grammar_for(lang);
+    let file_cfg = parse_lang(src, slug, ts_lang);
+    let (ssa_summaries, _) = crate::taint::lower_all_functions_from_bodies(
+        &file_cfg,
+        lang,
+        path,
+        &file_cfg.summaries,
+        None,
+        None,
+        None,
+        None,
+    );
+    ssa_summaries
+        .into_iter()
+        .find(|(k, _)| k.name == func)
+        .map(|(_, v)| v)
+}
+
+/// Parameter indices the SSA summary of `func` carries to its return value.
+fn return_edge_params(src: &[u8], lang: Lang, func: &str) -> Vec<usize> {
+    let mut idx: Vec<usize> = summary_of(src, lang, func)
+        .map(|s| s.param_to_return.iter().map(|(i, _)| *i).collect())
+        .unwrap_or_default();
+    idx.sort_unstable();
+    idx
+}
+
 // ── Bare `.parse` is numeric only in Rust (and JS `Date.parse`) ──────────
 
 #[test]
@@ -9317,6 +9352,342 @@ fn seed_named_helpers_called_only_with_literals_stay_quiet_ts() {
     assert!(fs.is_empty(), "{fs:?}");
 }
 
+// ── Summary extraction: per-parameter return edges ───────────────────────
+//
+// The per-parameter probe used to credit every parameter with a return edge
+// whenever the returned value was untainted under the probe, so a helper that
+// returns one of its arguments (or a sanitized one) made every other argument
+// look like it flowed to the result.
+
+#[test]
+fn summary_return_edge_only_for_the_returned_param() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::Python,
+            b"def first(aval, zval):\n    return aval\n",
+            "first",
+        ),
+        (
+            Lang::Python,
+            b"def first_tmp(aval, zval):\n    r = aval\n    return r\n",
+            "first_tmp",
+        ),
+        (
+            Lang::JavaScript,
+            b"function first(aval, zval) { return aval; }\n",
+            "first",
+        ),
+        (
+            Lang::JavaScript,
+            b"function first(aval, zval) { return aval.trim(); }\n",
+            "first",
+        ),
+        (
+            Lang::Go,
+            b"package main\nfunc first(a string, b string) string { return a }\n",
+            "first",
+        ),
+        (
+            Lang::Java,
+            b"class A { static String first(String a, String b) { return a; } }\n",
+            "first",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction first($a, $b) { return $a; }\n",
+            "first",
+        ),
+        (Lang::Ruby, b"def first(a, b)\n  return a\nend\n", "first"),
+    ];
+    for (lang, src, name) in cases {
+        assert_eq!(
+            return_edge_params(src, *lang, name),
+            vec![0],
+            "{lang:?} {name}: only the returned parameter may flow to the result"
+        );
+    }
+}
+
+#[test]
+fn summary_return_edge_second_param_when_it_is_the_one_returned() {
+    assert_eq!(
+        return_edge_params(
+            b"function pass(zval, aval) { return aval; }\n",
+            Lang::JavaScript,
+            "pass"
+        ),
+        vec![1]
+    );
+}
+
+#[test]
+fn summary_sanitizing_wrapper_records_a_full_strip_and_no_surviving_edge() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::JavaScript,
+            b"function c3(s) { return Number(s); }\n",
+            "c3",
+        ),
+        (
+            Lang::JavaScript,
+            b"function c4(s) { const n = Number(s); return n; }\n",
+            "c4",
+        ),
+        (
+            Lang::JavaScript,
+            b"function c5(s) { const r = parseInt(s, 10); return r; }\n",
+            "c5",
+        ),
+        (
+            Lang::Python,
+            b"def to_int(s):\n    return int(s)\n",
+            "to_int",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction to_int($s) { return intval($s); }\n",
+            "to_int",
+        ),
+        (
+            Lang::Go,
+            b"package main\nimport \"strconv\"\nfunc toInt(s string) int {\n\tn, _ := strconv.Atoi(s)\n\treturn n\n}\n",
+            "toInt",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        let summary = summary_of(src, *lang, name)
+            .unwrap_or_else(|| panic!("{lang:?} {name}: wrapper has no summary"));
+        // The parameter does reach the return, through a full sanitizer.  The
+        // summary says so with an all-bits strip, so a caller that passes the
+        // call's source inline still sees a sanitizing wrapper.
+        assert!(
+            summary.param_to_return.iter().all(|(_, t)| matches!(
+                t,
+                crate::summary::ssa_summary::TaintTransform::StripBits(c) if *c == Cap::all()
+            )),
+            "{lang:?} {name}: no taint may survive the wrapper, got {:?}",
+            summary.param_to_return
+        );
+    }
+}
+
+#[test]
+fn summary_partial_sanitizer_wrapper_keeps_a_strip_edge() {
+    use crate::summary::ssa_summary::TaintTransform;
+    let src = b"function wrap(s) { return shellescape(s); }\n";
+    let summary = summary_of(src, Lang::JavaScript, "wrap").expect("wrap has a summary");
+    assert!(
+        matches!(
+            summary.param_to_return.as_slice(),
+            [(0, TaintTransform::StripBits(_))]
+        ),
+        "a shell escaper strips its own bits and keeps the rest, got {:?}",
+        summary.param_to_return
+    );
+}
+
+#[test]
+fn summary_return_edges_kept_for_side_effects_the_ssa_has_no_operand_for() {
+    // Container append and receiver mutation make the returned object depend
+    // on a parameter that is not one of its operands.
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::Python,
+            b"def add(lst, item):\n    lst.append(item)\n    return lst\n",
+            "add",
+        ),
+        (
+            Lang::Java,
+            b"class A { static String sbuild(String head, String tail) { StringBuilder sb = new StringBuilder(head); sb.append(tail); return sb.toString(); } }\n",
+            "sbuild",
+        ),
+        (
+            Lang::Go,
+            b"package main\nfunc add(xs []string, x string) []string { return append(xs, x) }\n",
+            "add",
+        ),
+        (
+            Lang::JavaScript,
+            b"function build(base, extra) { let x = base; x = x + extra; return x; }\n",
+            "build",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        assert_eq!(
+            return_edge_params(src, *lang, name),
+            vec![0, 1],
+            "{lang:?} {name}: both parameters reach the returned value"
+        );
+    }
+}
+
+#[test]
+fn summary_mixed_sanitize_and_passthrough_keeps_the_identity_edge() {
+    use crate::summary::ssa_summary::TaintTransform;
+    let src = b"function maybe(s, strict) {\n  if (strict) { return Number(s); }\n  return s;\n}\n";
+    let summary = summary_of(src, Lang::JavaScript, "maybe").expect("maybe has a summary");
+    assert!(
+        summary
+            .param_to_return
+            .iter()
+            .any(|(i, t)| *i == 0 && matches!(t, TaintTransform::Identity)),
+        "the unsanitized return path keeps s flowing, got {:?}",
+        summary.param_to_return
+    );
+}
+
+#[test]
+fn unrelated_argument_to_a_returning_helper_does_not_taint_the_result() {
+    // `first` returns its first argument; the second is dead as far as the
+    // result goes.
+    let safe = b"import os\nfrom flask import request\n\ndef first(aval, zval):\n    return aval\n\ndef handler():\n    t = request.args.get(\"x\")\n    r = first(\"ls\", t)\n    os.system(r)\n";
+    assert!(
+        analyse_src(safe, Lang::Python).is_empty(),
+        "tainted second argument must not reach the result of first()"
+    );
+    let vuln = b"import os\nfrom flask import request\n\ndef first(aval, zval):\n    return aval\n\ndef handler():\n    t = request.args.get(\"x\")\n    r = first(t, \"ls\")\n    os.system(r)\n";
+    assert!(
+        !analyse_src(vuln, Lang::Python).is_empty(),
+        "tainted first argument flows through first()"
+    );
+}
+
+#[test]
+fn numeric_conversion_wrapper_result_does_not_carry_the_input_taint() {
+    let safe_js = b"var cp = require('child_process');\nfunction toNum(s) { return Number(s); }\nrequire('http').createServer(function(req, res) {\n  var n = toNum(req.query.n);\n  cp.exec('ls ' + n);\n});\n";
+    assert!(
+        analyse_src(safe_js, Lang::JavaScript).is_empty(),
+        "Number() wrapper must keep its sanitizing effect"
+    );
+    let safe_py = b"import os\nfrom flask import request\n\ndef to_int(s):\n    return int(s)\n\ndef handler():\n    n = to_int(request.args.get(\"n\"))\n    os.system(\"ls \" + str(n))\n";
+    assert!(analyse_src(safe_py, Lang::Python).is_empty());
+    let vuln_js = b"var cp = require('child_process');\nfunction ident(s) { return s; }\nrequire('http').createServer(function(req, res) {\n  var n = ident(req.query.n);\n  cp.exec('ls ' + n);\n});\n";
+    assert!(
+        !analyse_src(vuln_js, Lang::JavaScript).is_empty(),
+        "an identity helper still passes taint through"
+    );
+}
+
+// ── `return <member source>` is a source ─────────────────────────────────
+
+#[test]
+fn getter_returning_a_member_source_carries_source_caps() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::JavaScript,
+            b"function getQ(req) { return req.query.q; }\n",
+            "getQ",
+        ),
+        (
+            Lang::JavaScript,
+            b"function getBody(req) { return req.body; }\n",
+            "getBody",
+        ),
+        (
+            Lang::JavaScript,
+            b"function getEnv() { return process.env.X; }\n",
+            "getEnv",
+        ),
+        (
+            Lang::TypeScript,
+            b"function getEnv(): string { return process.env.X as string; }\n",
+            "getEnv",
+        ),
+        (
+            Lang::Python,
+            b"from flask import request\ndef get_q():\n    return request.args['x']\n",
+            "get_q",
+        ),
+        (
+            Lang::Python,
+            b"import os\ndef get_e():\n    return os.environ['X']\n",
+            "get_e",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction get_id() { return $_GET['id']; }\n",
+            "get_id",
+        ),
+        (
+            Lang::Ruby,
+            b"def get_id\n  return params[:id]\nend\n",
+            "get_id",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        let summary = summary_of(src, *lang, name)
+            .unwrap_or_else(|| panic!("{lang:?} {name}: getter has no summary"));
+        assert!(
+            !summary.source_caps.is_empty(),
+            "{lang:?} {name}: `return <source>` must give the summary source caps"
+        );
+    }
+}
+
+#[test]
+fn getter_returning_a_member_source_taints_its_callers() {
+    let js = b"var cp = require('child_process');\nfunction getQ(req) { return req.query.x; }\nfunction h(req, res) {\n  var a = getQ(req);\n  cp.exec(a);\n}\nmodule.exports = h;\n";
+    assert!(
+        !analyse_src(js, Lang::JavaScript).is_empty(),
+        "js: a one-line getter of req.query.x is a source for its caller"
+    );
+    let py = b"import os\nfrom flask import request\n\ndef p_sub():\n    return request.args['x']\n\ndef handler():\n    v = p_sub()\n    os.system(v)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: a one-line getter of request.args['x'] is a source for its caller"
+    );
+    let php = b"<?php\nfunction get_id() {\n    return $_GET['id'];\n}\nfunction h() {\n    $a = get_id();\n    system($a);\n}\n";
+    assert!(
+        !analyse_src(php, Lang::Php).is_empty(),
+        "php: a one-line getter of $_GET['id'] is a source for its caller"
+    );
+}
+
+#[test]
+fn returning_a_closure_that_reads_a_source_is_not_a_source() {
+    let src = b"function make(req) { return () => req.query.q; }\n";
+    let carries_source = summary_of(src, Lang::JavaScript, "make")
+        .map(|s| !s.source_caps.is_empty())
+        .unwrap_or(false);
+    assert!(
+        !carries_source,
+        "the closure is returned, not the value its body reads"
+    );
+}
+
+#[test]
+fn getter_returning_a_constant_or_plain_param_has_no_source_caps() {
+    let src = b"function getK() { return 'static'; }\nfunction same(x) { return x.value; }\n";
+    for name in ["getK", "same"] {
+        let carries = summary_of(src, Lang::JavaScript, name)
+            .map(|s| !s.source_caps.is_empty())
+            .unwrap_or(false);
+        assert!(!carries, "{name} must not invent source caps");
+    }
+}
+
+// ── Inline analysis of a callee that returns a copied value ──────────────
+
+#[test]
+fn mixed_return_helper_inlines_the_unsanitized_path() {
+    // One path returns shlex.quote(b), the other returns b.  The copy behind
+    // `return b` used to be a Nop in the inline body, so inline analysis only
+    // saw the sanitized path.
+    let src = b"import os, shlex\n\ndef m_one(b):\n    if b == \"x\":\n        return shlex.quote(b)\n    return b\n\ndef m_else(flag, b):\n    if flag:\n        return shlex.quote(b)\n    else:\n        return b\n\ndef h1():\n    c = os.environ[\"C\"]\n    s = m_one(c)\n    os.system(\"ls \" + s)\n\ndef h2():\n    c = os.environ[\"C\"]\n    s = m_else(True, c)\n    os.system(\"ls \" + s)\n";
+    let findings = analyse_src(src, Lang::Python);
+    assert!(
+        findings.len() >= 2,
+        "both mixed sanitize/passthrough helpers must keep the raw path, got {}",
+        findings.len()
+    );
+}
+
+#[test]
+fn fully_quoting_helper_stays_clean_when_inlined() {
+    let src = b"import os, shlex\n\ndef quote_it(b):\n    return shlex.quote(b)\n\ndef h():\n    c = os.environ[\"C\"]\n    s = quote_it(c)\n    os.system(\"ls \" + s)\n";
+    assert!(analyse_src(src, Lang::Python).is_empty());
+}
+
 // ── Sink checks: interpolated parameterized queries ──────────────────────
 
 #[test]
@@ -9443,4 +9814,14 @@ fn quote_doubling_before_a_quoted_sql_literal_stays_quiet() {
 fn angle_bracket_strip_before_html_output_stays_quiet() {
     let py = b"from flask import request, make_response\n\ndef f():\n    t = request.args[\"t\"]\n    t = t.replace(\"<\", \"&lt;\").replace(\">\", \"&gt;\")\n    return make_response(\"<p>\" + t + \"</p>\")\n";
     assert!(analyse_src(py, Lang::Python).is_empty());
+}
+
+#[test]
+fn field_stored_by_a_helper_that_returns_the_object_stays_tainted() {
+    // `withName` writes its argument into a field and returns the object.
+    let src = b"var cp = require('child_process');\nfunction withName(obj, name) { obj.name = name; return obj; }\nrequire('http').createServer(function(req, res) {\n  var job = withName({}, req.query.job);\n  cp.exec(job.name);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "the stored value is still reachable through the returned object"
+    );
 }

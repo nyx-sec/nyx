@@ -128,6 +128,123 @@ fn collect_reaching_params(
     }
 }
 
+/// What a return block's value depends on, as two walks of its def-use
+/// closure (see [`return_reaching_param_values`]).  `None` means the walk ran
+/// out of budget.
+struct ReturnReach {
+    /// Parameters reached without crossing a sanitizer call.
+    direct: Option<HashSet<SsaValue>>,
+    /// Parameters reached at all.
+    through_sanitizers: Option<HashSet<SsaValue>>,
+}
+
+/// Node budget for [`return_reaching_param_values`].
+const RETURN_REACH_BUDGET: u32 = 512;
+
+/// Parameter values that can influence the returned value `rv`.
+///
+/// The per-parameter summary probe runs with one parameter seeded.  When `rv`
+/// still comes out untainted, either the seeded parameter does not reach it
+/// (`first(a, b) { return a }` probed for `b`), or a sanitizer or numeric
+/// conversion on the way killed the taint (`return Number(s)`), or the SSA
+/// lacks an edge for a side effect the function really has.  Only the last
+/// case should keep the parameter's caps on the return, and that case is
+/// exactly "the parameter is in the def-use closure of `rv` without a
+/// sanitizer in between".
+///
+/// The walk follows `Assign` and `Phi` operands, `FieldProj` receivers and
+/// `Call` receiver plus arguments.  It does not descend through a call whose
+/// CFG node carries a `Sanitizer` label: that call is a deliberate kill, the
+/// same one the intra-procedural transfer applies.  Two edges SSA does not
+/// carry as operands are added: a call made on a reached value as its receiver
+/// (`sb.append(tail)` then `sb.toString()`, `lst.append(x)` then `lst`), and
+/// the prior object of a synthetic field-write base update (`obj.f = v` then
+/// `return obj`).
+///
+/// With `stop_at_sanitizers` off the walk crosses sanitizer calls too, giving
+/// every parameter the value is built from at all.  The difference between the
+/// two walks is the set of parameters that reach the return only through a
+/// sanitizer.
+///
+/// Returns `None` when the node budget runs out, meaning "unknown": the
+/// caller keeps the legacy all-parameters fallback.
+fn return_reaching_param_values(
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    rv: SsaValue,
+    all_param_values: &HashSet<SsaValue>,
+    calls_by_receiver: &HashMap<SsaValue, SmallVec<[SsaValue; 2]>>,
+    stop_at_sanitizers: bool,
+) -> Option<HashSet<SsaValue>> {
+    let mut reached: HashSet<SsaValue> = HashSet::new();
+    let mut seen: HashSet<SsaValue> = HashSet::new();
+    let mut work: Vec<SsaValue> = vec![rv];
+    let mut budget = RETURN_REACH_BUDGET;
+    while let Some(v) = work.pop() {
+        if !seen.insert(v) {
+            continue;
+        }
+        if budget == 0 {
+            return None;
+        }
+        budget -= 1;
+        if all_param_values.contains(&v) {
+            reached.insert(v);
+        }
+        let op = op_for_value(ssa, v);
+        // A phi sits on whichever CFG node starts its block, so only the
+        // value-producing ops can be the sanitizing call.
+        let killed_by_sanitizer = matches!(op, Some(SsaOp::Call { .. } | SsaOp::Assign(_)))
+            && ssa.value_defs.get(v.0 as usize).is_some_and(|vd| {
+                cfg.node_weight(vd.cfg_node).is_some_and(|n| {
+                    n.taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, crate::labels::DataLabel::Sanitizer(_)))
+                })
+            });
+        if killed_by_sanitizer && stop_at_sanitizers {
+            continue;
+        }
+        match op {
+            Some(SsaOp::Assign(uses)) => work.extend(uses.iter().copied()),
+            Some(SsaOp::Phi(operands)) => work.extend(operands.iter().map(|&(_, u)| u)),
+            Some(SsaOp::FieldProj { receiver, .. }) => work.push(*receiver),
+            Some(SsaOp::Call { receiver, args, .. }) => {
+                work.extend(receiver.iter().copied());
+                work.extend(args.iter().flatten().copied());
+            }
+            _ => {}
+        }
+        if let Some((prior, _)) = ssa.field_writes.get(&v) {
+            work.push(*prior);
+        }
+        if let Some(calls) = calls_by_receiver.get(&v) {
+            work.extend(calls.iter().copied());
+        }
+    }
+    Some(reached)
+}
+
+/// Whether `param` is one of the values some return is built from, and every
+/// way it gets there crosses a sanitizer call.
+fn reaches_return_only_through_sanitizers(
+    param: SsaValue,
+    reach_by_block: &HashMap<usize, ReturnReach>,
+) -> bool {
+    let mut through = false;
+    for reach in reach_by_block.values() {
+        let (Some(direct), Some(all)) = (&reach.direct, &reach.through_sanitizers) else {
+            return false;
+        };
+        if direct.contains(&param) {
+            return false;
+        }
+        through |= all.contains(&param);
+    }
+    through
+}
+
 /// Detect parameters confined by a boolean path-prefix predicate.
 ///
 /// Recognises the behaviour-based path-confinement helper shape: a function
@@ -1359,6 +1476,50 @@ pub fn extract_ssa_func_summary_full(
     let all_param_values: std::collections::HashSet<SsaValue> =
         param_info.iter().map(|(_, _, v)| *v).collect();
 
+    // For each return block whose returned value is not itself a parameter:
+    // the parameters that value depends on (see
+    // [`return_reaching_param_values`]), first stopping at sanitizer calls and
+    // then crossing them.  Independent of the probe seed, so computed once.
+    // `None` for a walk means it ran out of budget.
+    let reach_by_block: HashMap<usize, ReturnReach> = {
+        let mut calls_by_receiver: HashMap<SsaValue, SmallVec<[SsaValue; 2]>> = HashMap::new();
+        for block in &ssa.blocks {
+            for inst in &block.body {
+                if let SsaOp::Call {
+                    receiver: Some(r), ..
+                } = &inst.op
+                {
+                    calls_by_receiver.entry(*r).or_default().push(inst.value);
+                }
+            }
+        }
+        return_blocks
+            .iter()
+            .filter_map(|&bid| match &ssa.blocks[bid].terminator {
+                Terminator::Return(Some(rv)) if !all_param_values.contains(rv) => {
+                    let walk = |stop| {
+                        return_reaching_param_values(
+                            ssa,
+                            cfg,
+                            *rv,
+                            &all_param_values,
+                            &calls_by_receiver,
+                            stop,
+                        )
+                    };
+                    Some((
+                        bid,
+                        ReturnReach {
+                            direct: walk(true),
+                            through_sanitizers: walk(false),
+                        },
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
     // Per-return-block observation captured alongside the aggregate return
     // caps.  Each entry records one return block's exit state, caps
     // contributed on that path, path-predicate hash, known_true/false bits,
@@ -1506,29 +1667,34 @@ pub fn extract_ssa_func_summary_full(
                             block_derived_caps |= taint.caps;
                         }
                     }
-                    // When rv is not a param value, also collect param taint as a
-                    // fallback. The SSA terminator's rv may point to the last body
-                    // instruction (e.g. push/append result) rather than the actual
-                    // return expression (the container parameter itself). This fires
-                    // both when rv is tainted (derived) and when rv is untainted
-                    // (the push result may have no taint but the param does).
-                    // Skip when rv IS a param (already handled above) or when rv is
-                    // provably a constant (a return that traces — through Assign
-                    // copies / phis — to only `Const` values cannot carry the
-                    // seeded param's taint).  The plain-`Const` check missed the
-                    // dead-branch-folded shape `return v` where `v = Assign([phi([
-                    // const])])`: the param is fully disconnected from the return,
-                    // but the fallback would still attribute the seeded param's
-                    // `Cap::all` to it, manufacturing a spurious `param→return`
-                    // (Identity) edge that poisons every cross-file caller.
-                    if !all_param_values.contains(&rv)
-                        && !rv_traces_to_constant(ssa, rv, &all_param_values, 0, &mut 256)
-                    {
-                        for (val, taint) in &exit.values {
-                            if all_param_values.contains(val) {
-                                block_param_caps |= taint.caps;
+                    // When rv is not a param value, also collect the caps of
+                    // the parameters it depends on, tainted or not.  The SSA
+                    // can lack an edge for a side effect the function really
+                    // has (`lst.push(x); return lst`), so a parameter in rv's
+                    // def-use closure keeps its caps.  A parameter outside it
+                    // (`first(a, b) { return a }` probed for `b`) or one cut
+                    // off by a sanitizer call (`return parseInt(s)`)
+                    // contributes nothing.  When the closure walk ran out of
+                    // budget, fall back to every live parameter, minus
+                    // returns that trace only to constants.
+                    match reach_by_block.get(&bid).map(|r| &r.direct) {
+                        Some(Some(reaching)) => {
+                            for (val, taint) in &exit.values {
+                                if reaching.contains(val) {
+                                    block_param_caps |= taint.caps;
+                                }
                             }
                         }
+                        Some(None)
+                            if !rv_traces_to_constant(ssa, rv, &all_param_values, 0, &mut 256) =>
+                        {
+                            for (val, taint) in &exit.values {
+                                if all_param_values.contains(val) {
+                                    block_param_caps |= taint.caps;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 } else {
                     // Return(None): implicit return, fall back to all live values.
@@ -1681,7 +1847,7 @@ pub fn extract_ssa_func_summary_full(
     // var_name.  Empty when no parameter is validated.
     let mut validated_params_to_return: SmallVec<[usize; 2]> = SmallVec::new();
 
-    for &(idx, ref var_name, _ssa_val) in &param_info {
+    for &(idx, ref var_name, param_val) in &param_info {
         let mut seed = HashMap::new();
         let origin = TaintOrigin {
             node: NodeIndex::new(0), // synthetic origin for probing
@@ -1788,6 +1954,13 @@ pub fn extract_ssa_func_summary_full(
                 TaintTransform::StripBits(stripped)
             };
             param_to_return.push((idx, transform));
+        } else if reaches_return_only_through_sanitizers(param_val, &reach_by_block) {
+            // `return parseInt(s)`: the parameter does flow to the return, and
+            // a full sanitizer clears it.  Say so, rather than leave the edge
+            // out, so a caller that passes the call's source inline
+            // (`wrap(req.query.x)`) sees a sanitizing wrapper and not an
+            // unrelated one.
+            param_to_return.push((idx, TaintTransform::StripBits(Cap::all())));
         }
 
         // Validated-param-to-return detection.

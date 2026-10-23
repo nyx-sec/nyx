@@ -1,0 +1,68 @@
+{
+  "description": "Return edges are per parameter in JS too: pass(zval, aval) returns zval only, Number() wrappers clear the taint, and a string-building helper carries both of its arguments.",
+  "tags": [
+    "taint",
+    "interproc",
+    "summary",
+    "javascript"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        9,
+        14
+      ],
+      "notes": "pass returns its first argument; the tainted second argument is dead"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "pass(t, 'ls') returns the tainted argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        23,
+        27
+      ],
+      "notes": "Number() wrapper clears the taint"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        29,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "build(base, extra) carries extra"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        9,
+        27
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule"
+    }
+  ]
+}

@@ -59,8 +59,8 @@ use conditions::{
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
     ValidSourceGuard, collect_idents, collect_idents_with_paths, find_constructor_type_child,
-    first_call_ident, has_call_descendant, member_expr_text, node_str, root_receiver_text,
-    slice_str, text_of,
+    first_call_ident, has_call_descendant, has_function_descendant, member_expr_text, node_str,
+    root_receiver_text, slice_str, text_of,
 };
 use imports::{
     extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
@@ -3173,13 +3173,25 @@ pub(super) fn push_node<'a>(
     // `run := func() { exec.Command(...) }` would otherwise inherit
     // `exec.Command`'s Sink label).  The function literal is handled as
     // its own scope by `collect_nested_function_nodes`.
+    //
+    // A bare `return <member source>` (`return req.query.q`,
+    // `return os.environ["X"]`, `return $_GET['id']`) is a read of that
+    // source too, so a one-line getter helper carries source caps in its
+    // summary.  Only a Source label attaches to a return, since a return is
+    // never a sink assignment.  A return with a call is already split into a
+    // Call node plus a Return node (whose argument sources are pre-emitted),
+    // and a returned closure returns the closure, not what its body reads.
+    let is_bare_return = lookup(lang, ast.kind()) == Kind::Return
+        && !has_call_descendant(ast, lang)
+        && !has_function_descendant(ast, lang);
     if labels.is_empty()
-        && matches!(
-            lookup(lang, ast.kind()),
-            Kind::CallWrapper | Kind::Assignment
-        )
-        && !rhs_is_function_literal(ast, lang)
+        && (is_bare_return
+            || (matches!(
+                lookup(lang, ast.kind()),
+                Kind::CallWrapper | Kind::Assignment
+            ) && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
+        && (!is_bare_return || matches!(found, DataLabel::Source(_)))
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
         labels.push(found);

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 712
+    "corpus_size": 717
   },
   "cases": [
     {
@@ -22752,6 +22752,191 @@
       ],
       "disabled": false,
       "notes": "Deleting quotes does nothing for a numeric SQL context"
+    },
+    {
+      "case_id": "js-cmdi-getter-member-source-001",
+      "file": "javascript/cmdi/cmdi_getter_member_source.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "member-source"
+      ],
+      "disabled": false,
+      "notes": "`return req.query.cmd` makes getCommand a source; callers that exec its result are flows"
+    },
+    {
+      "case_id": "py-cmdi-getter-subscript-source-001",
+      "file": "python/cmdi/cmdi_getter_subscript_source.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "subscript-source"
+      ],
+      "disabled": false,
+      "notes": "`return request.args[\"dir\"]` makes requested_dir a source"
+    },
+    {
+      "case_id": "php-cmdi-getter-superglobal-001",
+      "file": "php/cmdi/cmdi_getter_superglobal.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "superglobal"
+      ],
+      "disabled": false,
+      "notes": "`return $_GET['host']` makes requested_host a source"
+    },
+    {
+      "case_id": "py-cmdi-mixed-quote-passthrough-helper-001",
+      "file": "python/cmdi/cmdi_mixed_quote_passthrough_helper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "mixed-return",
+        "inline"
+      ],
+      "disabled": false,
+      "notes": "One return path quotes the argument and the other returns it raw; inlining the helper must keep the raw path"
+    },
+    {
+      "case_id": "js-cmdi-setter-returns-object-001",
+      "file": "javascript/cmdi/cmdi_setter_returns_object.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "field-write",
+        "return-self"
+      ],
+      "disabled": false,
+      "notes": "withName stores its argument in a field of the object it returns; the field read at the sink is tainted"
     }
   ]
 }

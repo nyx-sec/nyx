@@ -809,6 +809,14 @@ pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
     }
 }
 
+/// Check whether any descendant of `n` is a function or closure literal.
+pub(crate) fn has_function_descendant(n: Node, lang: &str) -> bool {
+    let mut cursor = n.walk();
+    n.children(&mut cursor).any(|c| {
+        matches!(lookup(lang, c.kind()), Kind::Function) || has_function_descendant(c, lang)
+    })
+}
+
 /// Check whether any descendant of `n` is a call expression.
 /// Collect function-expression nodes nested inside a call's arguments.
 ///
