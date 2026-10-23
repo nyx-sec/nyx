@@ -1175,15 +1175,16 @@ fn analyse_body_with_seed(
             })
         });
     // Python FastAPI / Starlette handlers need scoped lowering so the
-    // route-bound and typed-extractor formals materialise as `SsaOp::Param`
+    // route-bound and request-bound formals materialise as `SsaOp::Param`
     // ops that the entry-point seeding pass paints as `Source(UserInput)`.
     // The per-formal decision in `ssa_transfer` consults BOTH
     // `BodyMeta.param_route_capture` (for `{name}` brace-segment captures)
-    // and `type_facts.get_type(value)` (for `Annotated[T, Path()/Query()/Body()
-    // /Header()/Cookie()/Form()/File()]` typed extractors). Formals without
+    // and `type_facts.get_type(value)` (set by `classify_param_type_python`
+    // for plain annotations on a route, `Query()` / `Body()` / ... defaults,
+    // `Annotated[T, Query()]` and same-file Pydantic models). Formals without
     // either signal — `db: Session = Depends(get_db)`, `request: Request`,
     // bare `session` — stay un-seeded, matching the Hard Rule 3 policy that
-    // unannotated formals are not adversary input.
+    // an annotation alone outside a route is not adversary input.
     //
     // Gated on "at least one formal qualifies" to mirror the Flask gate:
     // a handler with zero path captures and zero typed extractors gets the

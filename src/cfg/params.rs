@@ -42,6 +42,18 @@ pub(super) fn extract_param_meta<'a>(
 ) -> Vec<(String, Option<TypeKind>, Vec<String>)> {
     let cfg = param_config(lang);
     let mut out: Vec<(String, Option<TypeKind>, Vec<String>)> = Vec::new();
+    // A FastAPI route binds its plain annotated formals from the request, so
+    // the Python classifier needs to know whether it is looking at one.
+    let in_fastapi_route = matches!(lang, "python" | "py")
+        && func_node.kind() == "function_definition"
+        && crate::entry_points::python_is_fastapi_route(func_node, code);
+    let classify = |param: Node<'a>| {
+        if matches!(lang, "python" | "py") {
+            classify_param_type_python(param, code, in_fastapi_route)
+        } else {
+            classify_param_type(param, lang, code)
+        }
+    };
     // Try the params_field directly on the function node first.
     // For C/C++, the parameter list is nested inside the declarator
     // (function_definition > declarator:function_declarator > parameters:parameter_list),
@@ -125,7 +137,7 @@ pub(super) fn extract_param_meta<'a>(
                         Some(tmp.remove(0))
                     };
                     if let Some(name) = primary {
-                        let ty = classify_param_type(child, lang, code);
+                        let ty = classify(child);
                         // Surface destructured siblings only when the
                         // pattern node is a destructure container.  For
                         // ordinary (non-destructured) params, `tmp` is
@@ -153,7 +165,7 @@ pub(super) fn extract_param_meta<'a>(
                 let mut tmp = Vec::new();
                 collect_idents(child, code, &mut tmp);
                 if let Some(last) = tmp.pop() {
-                    let ty = classify_param_type(child, lang, code);
+                    let ty = classify(child);
                     out.push((last, ty, Vec::new()));
                     found = true;
                 }
@@ -178,7 +190,7 @@ pub(super) fn extract_param_meta<'a>(
                 collect_idents(child, code, &mut tmp);
                 if !tmp.is_empty() {
                     let first = tmp.remove(0);
-                    let ty = classify_param_type(child, lang, code);
+                    let ty = classify(child);
                     let siblings = sibling_names_for_destructure(child, &tmp, lang);
                     out.push((first, ty, siblings));
                 }
@@ -538,8 +550,9 @@ pub(super) fn inject_framework_param_sources(
 /// * Rust (Axum / Rocket / Actix), `Path<i64>` / `Path<u32>` /
 ///   `web::Path<i64>` → [`TypeKind::Int`]; `Path<String>` →
 ///   [`TypeKind::String`].
-/// * Python (FastAPI), `def h(x: int)` → [`TypeKind::Int`];
-///   `Annotated[int, Path()]` → [`TypeKind::Int`].
+/// * Python (FastAPI), `def h(x: int)` under a route decorator →
+///   [`TypeKind::Int`]; `Annotated[int, Path()]` → [`TypeKind::Int`].  The same
+///   annotation on an undecorated function classifies as nothing.
 pub(super) fn classify_param_type<'a>(
     param: Node<'a>,
     lang: &str,
@@ -550,7 +563,7 @@ pub(super) fn classify_param_type<'a>(
         "typescript" | "ts" => classify_param_type_ts(param, code),
         "javascript" | "js" => classify_param_type_ts(param, code),
         "rust" | "rs" => classify_param_type_rust(param, code),
-        "python" | "py" => classify_param_type_python(param, code),
+        "python" | "py" => classify_param_type_python(param, code, false),
         "go" => classify_param_type_go(param, code),
         _ => None,
     }
@@ -1067,15 +1080,190 @@ pub(super) fn rust_primitive_to_kind(t: &str) -> Option<TypeKind> {
     }
 }
 
-/// Python (FastAPI), recognise typed-extractor parameters via the
-/// `Annotated[X, Path()/Query()/Body()/Header()/Cookie()]` shape.  Per
-/// Hard Rule 3, a bare `def h(id: int)` is **not** a framework
-/// extractor, the function may be a plain Python function and the
-/// type annotation provides no runtime gate.
-fn classify_param_type_python<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKind> {
-    let type_node = param.child_by_field_name("type")?;
-    let type_text = text_of(type_node, code)?;
-    python_type_to_kind(&type_text)
+/// Python (FastAPI), recognise request-bound formals.  Per Hard Rule 3, a
+/// bare `def h(id: int)` is **not** a framework extractor on its own: the
+/// function may be a plain Python function and the annotation provides no
+/// runtime gate.  A formal counts as request-bound when:
+///
+/// * its annotation is `Annotated[T, Path()/Query()/Body()/...]`, or
+/// * its default is a `Query(..)` / `Body(..)` / `Header(..)` / `Cookie(..)` /
+///   `Form(..)` / `File(..)` / `Path(..)` marker call, or
+/// * the function carries a FastAPI route decorator (`in_route`) and the
+///   annotation is a plain scalar, a container of scalars, or a same-file
+///   Pydantic model, which FastAPI binds from the query string or the body.
+///
+/// A `Depends(..)` / `Security(..)` default is never request-bound, and
+/// neither are formals whose annotation is not one of the above
+/// (`Request`, `Session`, an `Annotated` dependency alias such as
+/// `SessionDep`): those stay unseeded.
+fn classify_param_type_python<'a>(
+    param: Node<'a>,
+    code: &'a [u8],
+    in_route: bool,
+) -> Option<TypeKind> {
+    let default_marker = param
+        .child_by_field_name("value")
+        .and_then(|v| python_default_marker(v, code));
+    if matches!(default_marker.as_deref(), Some("Depends" | "Security")) {
+        return None;
+    }
+    let type_text = param
+        .child_by_field_name("type")
+        .and_then(|t| text_of(t, code));
+    if let Some(kind) = type_text.as_deref().and_then(python_type_to_kind) {
+        return Some(kind);
+    }
+    // pathlib's `Path("..")` default is not FastAPI's `Path(..)` marker.
+    let marker = default_marker.filter(|m| {
+        m != "Path"
+            || !type_text.as_deref().is_some_and(|t| {
+                matches!(
+                    t.trim().rsplit('.').next(),
+                    Some("Path" | "PurePath" | "PosixPath" | "WindowsPath")
+                )
+            })
+    });
+    let marker = marker.filter(|m| {
+        matches!(
+            m.as_str(),
+            "Query" | "Body" | "Form" | "Header" | "Cookie" | "File" | "Path"
+        )
+    });
+    if let Some(kind) = type_text.as_deref().and_then(python_request_value_kind) {
+        // A bare annotation on a route is a request value, but a plain
+        // number is validated by the framework and cannot carry a payload,
+        // so it is only painted when a marker says so.
+        if marker.is_some() || (in_route && !python_annotation_is_numeric(type_text.as_deref())) {
+            return Some(kind);
+        }
+    }
+    // An explicit marker with an annotation we cannot read still says the
+    // value comes from the request.
+    match marker.as_deref() {
+        Some("Body" | "File") => Some(TypeKind::Object),
+        Some(_) => Some(TypeKind::String),
+        None => None,
+    }
+}
+
+/// Last dotted segment of the callee when `default` is a call
+/// (`Query(None)` and `fastapi.Query(None)` both give `Query`).
+fn python_default_marker(default: Node<'_>, code: &[u8]) -> Option<String> {
+    if default.kind() != "call" {
+        return None;
+    }
+    let callee = text_of(default.child_by_field_name("function")?, code)?;
+    callee.rsplit('.').next().map(|s| s.trim().to_string())
+}
+
+/// `X` for `Optional[X]`, `Union[X, None]` and `X | None`; `None` when `t`
+/// is not one of those or has more than one non-`None` member.
+fn strip_optional(t: &str) -> Option<&str> {
+    let t = t.trim();
+    let members: Vec<&str> = if let Some(inner) = t
+        .strip_prefix("Optional[")
+        .or_else(|| t.strip_prefix("typing.Optional["))
+        .or_else(|| t.strip_prefix("Union["))
+        .or_else(|| t.strip_prefix("typing.Union["))
+    {
+        split_top_level(inner.strip_suffix(']')?, ',')
+    } else {
+        split_top_level(t, '|')
+    };
+    let mut rest = members.iter().map(|m| m.trim()).filter(|m| *m != "None");
+    let only = rest.next()?;
+    (rest.next().is_none() && (members.len() > 1 || only != t)).then_some(only)
+}
+
+/// True for an annotation that names only numbers: `int`, `float`, `bool`,
+/// their `Optional` / `| None` forms and lists of them.
+fn python_annotation_is_numeric(t: Option<&str>) -> bool {
+    let Some(mut t) = t.map(str::trim) else {
+        return false;
+    };
+    if let Some(inner) = t
+        .strip_prefix("Annotated[")
+        .or_else(|| t.strip_prefix("typing.Annotated["))
+        && let Some(inside) = inner.strip_suffix(']')
+    {
+        return python_annotation_is_numeric(Some(split_top_level(inside, ',')[0]));
+    }
+    while let Some(inner) = strip_optional(t) {
+        t = inner;
+    }
+    let numeric = |h: &str| matches!(h.trim(), "int" | "float" | "bool");
+    if numeric(t) {
+        return true;
+    }
+    // `list[int]`, `List[float]`, `set[int]`.
+    let Some((head, elem)) = t.split_once('[') else {
+        return false;
+    };
+    matches!(
+        head.trim(),
+        "list" | "List" | "set" | "Set" | "frozenset" | "FrozenSet" | "Sequence"
+    ) && elem.strip_suffix(']').is_some_and(numeric)
+}
+
+/// Kind of a request-bound FastAPI formal from its annotation text:
+/// `str`, `int`, `Optional[str]`, `str | None`, `list[str]` or a same-file
+/// Pydantic model.  `None` for annotations that name types we cannot tell
+/// from an injected dependency, and for `Literal[..]` and validated value
+/// types (`UUID`, `date`), whose values are constrained by the framework.
+fn python_request_value_kind(t: &str) -> Option<TypeKind> {
+    let mut t = t.trim();
+    // `Annotated[X, Field(..)]` is `X`, unless a metadata entry makes it a
+    // dependency (`Annotated[Session, Depends(get_db)]`).
+    if let Some(inner) = t
+        .strip_prefix("Annotated[")
+        .or_else(|| t.strip_prefix("typing.Annotated["))
+    {
+        let parts = split_top_level(inner.strip_suffix(']')?, ',');
+        if parts
+            .iter()
+            .skip(1)
+            .any(|p| p.contains("Depends(") || p.contains("Security("))
+        {
+            return None;
+        }
+        return python_request_value_kind(parts[0]);
+    }
+    // `Optional[X]`, `Union[X, None]` and `X | None` reduce to `X`.
+    while let Some(inner) = strip_optional(t) {
+        t = inner;
+    }
+    if t == "None" {
+        return None;
+    }
+    let head = t.split('[').next().unwrap_or(t).trim();
+    match head.rsplit('.').next().unwrap_or(head) {
+        "list" | "List" | "set" | "Set" | "frozenset" | "FrozenSet" | "tuple" | "Tuple"
+        | "Sequence" => Some(TypeKind::Array),
+        "bytes" => Some(TypeKind::String),
+        "dict" | "Dict" | "Mapping" | "MutableMapping" => Some(TypeKind::Object),
+        "Literal" | "UUID" | "date" | "datetime" | "time" | "timedelta" | "Decimal" => None,
+        _ => python_primitive_to_kind(head).or_else(|| lookup_dto_class(head)),
+    }
+}
+
+/// Split `s` at `sep` outside any bracket nesting.
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 fn python_type_to_kind(t: &str) -> Option<TypeKind> {
@@ -1091,15 +1279,11 @@ fn python_type_to_kind(t: &str) -> Option<TypeKind> {
         if !contains_fastapi_marker(inside) {
             return None;
         }
-        let first = inside.split(',').next().unwrap_or("").trim();
-        if let Some(k) = python_primitive_to_kind(first) {
-            return Some(k);
-        }
-        // `Annotated[CreateUser, Body()]` with a same-file
-        // Pydantic model, resolve via the DTO map.  Generic args are
-        // dropped via the same head-split as `python_primitive_to_kind`.
-        let head = first.split('[').next().unwrap_or(first).trim();
-        return lookup_dto_class(head);
+        // `Annotated[CreateUser, Body()]` resolves a same-file Pydantic
+        // model through the DTO map; `Annotated[Optional[int], Query()]`
+        // unwraps to its scalar.
+        let first = split_top_level(inside, ',')[0];
+        return python_request_value_kind(first);
     }
     None
 }
@@ -1574,5 +1758,152 @@ mod typed_extractor_tests {
         // Unrelated user types.
         assert_eq!(rust_type_to_local_collection("MyDao<User>"), None);
         assert_eq!(rust_type_to_local_collection("Connection"), None);
+    }
+
+    // ── FastAPI request-bound formals ────────────────────────────────────
+
+    use super::{python_request_value_kind, split_top_level};
+
+    /// `(name, kind)` of every formal of the first function named `name`.
+    fn formal_kinds(src: &str, name: &str) -> Vec<(String, Option<TypeKind>)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let file = crate::cfg::build_cfg(&tree, src.as_bytes(), "python", "t.py", None);
+        let body = file
+            .bodies
+            .iter()
+            .find(|b| b.meta.name.as_deref() == Some(name))
+            .expect("function body");
+        body.meta
+            .params
+            .iter()
+            .cloned()
+            .zip(body.meta.param_types.iter().cloned())
+            .collect()
+    }
+
+    fn kind_of(formals: &[(String, Option<TypeKind>)], param: &str) -> Option<TypeKind> {
+        formals
+            .iter()
+            .find(|(n, _)| n == param)
+            .and_then(|(_, k)| k.clone())
+    }
+
+    #[test]
+    fn python_request_value_kinds() {
+        let kind = python_request_value_kind;
+        assert_eq!(kind("str"), Some(TypeKind::String));
+        assert_eq!(kind("int"), Some(TypeKind::Int));
+        assert_eq!(kind("bool"), Some(TypeKind::Bool));
+        assert_eq!(kind("bytes"), Some(TypeKind::String));
+        assert_eq!(kind("Optional[str]"), Some(TypeKind::String));
+        assert_eq!(kind("typing.Optional[int]"), Some(TypeKind::Int));
+        assert_eq!(kind("Union[str, None]"), Some(TypeKind::String));
+        assert_eq!(kind("str | None"), Some(TypeKind::String));
+        assert_eq!(kind("None | str"), Some(TypeKind::String));
+        assert_eq!(kind("list[str]"), Some(TypeKind::Array));
+        assert_eq!(kind("List[str] | None"), Some(TypeKind::Array));
+        assert_eq!(kind("Optional[List[str]]"), Some(TypeKind::Array));
+        assert_eq!(kind("dict[str, Any]"), Some(TypeKind::Object));
+        assert_eq!(
+            kind("Annotated[str, Field(max_length=5)]"),
+            Some(TypeKind::String)
+        );
+        // Values the framework constrains, ambiguous unions, dependencies and
+        // names we cannot tell from an injected handle.
+        assert_eq!(kind("Literal['a', 'b']"), None);
+        assert_eq!(kind("UUID"), None);
+        assert_eq!(kind("Union[int, str]"), None);
+        assert_eq!(kind("Annotated[Session, Depends(get_db)]"), None);
+        assert_eq!(kind("Session"), None);
+        assert_eq!(kind("Request"), None);
+        assert_eq!(kind("SessionDep"), None);
+        assert_eq!(kind("None"), None);
+    }
+
+    #[test]
+    fn split_top_level_ignores_brackets() {
+        assert_eq!(
+            split_top_level("a, b[c, d], e", ','),
+            ["a", " b[c, d]", " e"]
+        );
+        assert_eq!(
+            split_top_level("list[int | str] | None", '|'),
+            ["list[int | str] ", " None"]
+        );
+    }
+
+    #[test]
+    fn fastapi_route_formals_are_request_bound() {
+        let src = "\
+from fastapi import FastAPI, Query, Depends
+from pydantic import BaseModel
+app = FastAPI()
+class Item(BaseModel):
+    name: str
+@app.get('/a')
+def a(q: str, n: int, nums: list[int], page: Optional[int] = None, limit: int = Query(5), tags: list[str] = None, opt: Optional[str] = None, m: str = Query(None)):
+    pass
+@app.post('/b')
+def b(item: Item, payload: dict, request: Request, db: Session = Depends(get_db), user: CurrentUser = None):
+    pass
+@app.get('/c')
+def c(x: str = Depends(get_x), session: SessionDep = None):
+    pass
+";
+        let a = formal_kinds(src, "a");
+        assert_eq!(kind_of(&a, "q"), Some(TypeKind::String));
+        // A bare number is validated by the framework and is not painted.
+        assert_eq!(kind_of(&a, "n"), None);
+        assert_eq!(kind_of(&a, "nums"), None);
+        assert_eq!(kind_of(&a, "page"), None);
+        assert_eq!(kind_of(&a, "limit"), Some(TypeKind::Int));
+        assert_eq!(kind_of(&a, "tags"), Some(TypeKind::Array));
+        assert_eq!(kind_of(&a, "opt"), Some(TypeKind::String));
+        assert_eq!(kind_of(&a, "m"), Some(TypeKind::String));
+        let b = formal_kinds(src, "b");
+        assert!(matches!(kind_of(&b, "item"), Some(TypeKind::Dto(_))));
+        assert_eq!(kind_of(&b, "payload"), Some(TypeKind::Object));
+        // Injected handles stay unseeded.
+        assert_eq!(kind_of(&b, "request"), None);
+        assert_eq!(kind_of(&b, "db"), None);
+        assert_eq!(kind_of(&b, "user"), None);
+        let c = formal_kinds(src, "c");
+        assert_eq!(kind_of(&c, "x"), None);
+        assert_eq!(kind_of(&c, "session"), None);
+    }
+
+    #[test]
+    fn plain_python_functions_keep_bare_annotations_unclassified() {
+        // Hard Rule 3: an annotation alone is no framework gate.
+        let src = "\
+def helper(q: str, n: int):
+    pass
+@app.route('/x/<id>')
+def flask_view(id: int, q: str):
+    pass
+";
+        for name in ["helper", "flask_view"] {
+            let f = formal_kinds(src, name);
+            assert!(f.iter().all(|(_, k)| k.is_none()), "{name}: {f:?}");
+        }
+    }
+
+    #[test]
+    fn default_marker_calls_bind_outside_a_route() {
+        let src = "\
+def read(item_id: int = Path(..., gt=0), tok: str = Header(None), body = Body(...), p: Path = Path('/tmp'), d: str = Depends(dep)):
+    pass
+";
+        let f = formal_kinds(src, "read");
+        assert_eq!(kind_of(&f, "item_id"), Some(TypeKind::Int));
+        assert_eq!(kind_of(&f, "tok"), Some(TypeKind::String));
+        assert_eq!(kind_of(&f, "body"), Some(TypeKind::Object));
+        // pathlib's `Path("..")` default is not FastAPI's marker.
+        assert_eq!(kind_of(&f, "p"), None);
+        assert_eq!(kind_of(&f, "d"), None);
     }
 }

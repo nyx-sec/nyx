@@ -3,9 +3,88 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 685
+    "corpus_size": 687
   },
   "cases": [
+    {
+      "case_id": "py-cmdi-fastapi-plain-query-001",
+      "file": "python/cmdi/cmdi_fastapi_plain_query.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.subprocess_shell"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "fastapi",
+        "query-parameter",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "A plain str annotation on a FastAPI route is a query parameter"
+    },
+    {
+      "case_id": "py-sqli-fastapi-pydantic-body-001",
+      "file": "python/sqli/sqli_fastapi_pydantic_body.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.sqli.execute_format"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "fastapi",
+        "pydantic",
+        "request-body",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "A same-file Pydantic model formal is the request body; its fields reach the SQL text"
+    },
     {
       "case_id": "py-cmdi-getoutput-001",
       "file": "python/cmdi/cmdi_subprocess_getoutput.py",
