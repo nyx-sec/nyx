@@ -1487,6 +1487,8 @@ fn analyse_multi_body(
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
     cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> Vec<Finding> {
+    // Every body of the file is analysed against the same summary map.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(ssa_summaries, lang);
     let order = containment_order(&file_cfg.bodies);
     let mut all_findings: Vec<Finding> = Vec::new();
 
@@ -2606,6 +2608,16 @@ fn rerun_extraction_with_augmented_summaries(
     let in_file_names: std::collections::HashSet<&str> =
         augmented_snapshot.keys().map(|k| k.name.as_str()).collect();
 
+    // Bare names of the in-file helpers whose summary confines a path return.
+    let confiner_names: std::collections::HashSet<&str> = augmented_snapshot
+        .iter()
+        .filter(|(_, s)| s.confines_path_return)
+        .map(|(k, _)| k.name.as_str())
+        .collect();
+
+    // Each body is re-extracted against the same snapshot.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(Some(&augmented_snapshot), lang);
+
     for body in file_cfg.function_bodies() {
         let Some(parent_key) = body.meta.func_key.clone() else {
             continue;
@@ -2684,9 +2696,7 @@ fn rerun_extraction_with_augmented_summaries(
         let calls_confiner = callee.ssa.blocks.iter().any(|b| {
             b.body.iter().any(|inst| {
                 if let SsaOp::Call { callee: name, .. } = &inst.op {
-                    augmented_snapshot
-                        .iter()
-                        .any(|(k, s)| k.name == *name && s.confines_path_return)
+                    confiner_names.contains(name.as_str())
                 } else {
                     false
                 }
@@ -2792,6 +2802,12 @@ fn augment_summaries_with_child_sinks(
     use crate::summary::SinkSite;
     use crate::taint::domain::{TaintOrigin, VarTaint};
     use ssa_transfer::BindingKey;
+
+    // Every probe below resolves against `summaries`, and the loop only ever
+    // grows `param_to_sink` / `param_to_sink_param` on entries that already
+    // exist. The path-confinement gates read none of those fields, so one scan
+    // of the map serves all of the (ancestor, param, child) runs.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(Some(&*summaries), lang);
 
     // ── Build lexical-containment relationships ──────────────────────
     // Map parent BodyId → list of descendant body indices.  Reverse-walk

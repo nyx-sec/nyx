@@ -4284,4 +4284,255 @@ mod confinement_gate_tests {
         let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&m)));
         assert!(!g.return_confiner && !g.assert && !g.path_validator);
     }
+
+    fn confiner_map(name: &str) -> std::collections::HashMap<FuncKey, SsaFuncSummary> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            key(name, Lang::Go),
+            SsaFuncSummary {
+                confines_path_return: true,
+                ..Default::default()
+            },
+        );
+        m
+    }
+
+    /// Inside a scope the gates come back as the scan would give them, for the
+    /// scoped map and for any other map, and the scope leaves nothing behind.
+    #[test]
+    fn scope_serves_the_scoped_map_and_scans_every_other() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let confining = confiner_map("compose_path");
+        let empty: std::collections::HashMap<FuncKey, SsaFuncSummary> =
+            std::collections::HashMap::new();
+
+        {
+            let _scope = ConfinementGatesScope::enter(Some(&confining), Lang::Go);
+            let scoped =
+                compute_confinement_gates(&transfer_with(&interner, &ls, Some(&confining)));
+            assert!(scoped.return_confiner);
+            // A different map is matched by address, so it is scanned, not
+            // handed the scoped map's answer.
+            let other = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&empty)));
+            assert!(!other.return_confiner);
+            // So is the same map under another language.
+            let mut c_transfer = transfer_with(&interner, &ls, Some(&confining));
+            c_transfer.lang = Lang::C;
+            assert!(!compute_confinement_gates(&c_transfer).return_confiner);
+        }
+        // Dropped: nothing is published any more.
+        assert!(CONFINEMENT_GATES_TLS.get().is_none());
+    }
+
+    #[test]
+    fn nested_scopes_restore_the_outer_one() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let outer_map = confiner_map("compose_path");
+        let inner_map: std::collections::HashMap<FuncKey, SsaFuncSummary> =
+            std::collections::HashMap::new();
+
+        let _outer = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+        let outer_published = CONFINEMENT_GATES_TLS.get();
+        {
+            let _inner = ConfinementGatesScope::enter(Some(&inner_map), Lang::Go);
+            let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&inner_map)));
+            assert!(!g.return_confiner);
+        }
+        assert_eq!(
+            CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)),
+            outer_published.map(|(a, l, _)| (a, l)),
+            "the outer scope is published again once the inner one drops"
+        );
+        let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&outer_map)));
+        assert!(g.return_confiner);
+    }
+
+    /// A scope over a map the enclosing scope already holds changes nothing.
+    #[test]
+    fn re_entering_the_same_map_keeps_the_published_gates() {
+        let outer_map = confiner_map("compose_path");
+        let _outer = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+        let before = CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l));
+        {
+            let _again = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+            assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+        }
+        assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+        // No summaries: leaves the published entry alone.
+        let _none = ConfinementGatesScope::enter(None, Lang::Go);
+        assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+    }
+}
+
+// ── Per-run callee resolution memo ───────────────────────────────────────
+#[cfg(test)]
+mod resolve_memo_tests {
+    use super::super::*;
+    use crate::summary::ssa_summary::SsaFuncSummary;
+    use crate::symbol::{FuncKey, FuncKind};
+
+    fn transfer_with<'a>(
+        interner: &'a SymbolInterner,
+        local_summaries: &'a FuncSummaries,
+        summaries: &'a std::collections::HashMap<FuncKey, SsaFuncSummary>,
+        callbacks: &'a std::collections::HashMap<String, FuncKey>,
+    ) -> SsaTaintTransfer<'a> {
+        SsaTaintTransfer {
+            lang: Lang::JavaScript,
+            namespace: "app.js",
+            interner,
+            local_summaries,
+            global_summaries: None,
+            interop_edges: &[],
+            owner_body_id: crate::cfg::BodyId(0),
+            parent_body_id: None,
+            global_seed: None,
+            param_seed: None,
+            receiver_seed: None,
+            const_values: None,
+            type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
+            ssa_summaries: Some(summaries),
+            extra_labels: None,
+            base_aliases: None,
+            callee_bodies: None,
+            inline_cache: None,
+            context_depth: 0,
+            callback_bindings: Some(callbacks),
+            points_to: None,
+            dynamic_pts: None,
+            import_bindings: None,
+            promisify_aliases: None,
+            module_aliases: None,
+            static_map: None,
+            auto_seed_handler_params: false,
+            cross_file_bodies: None,
+            pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
+        }
+    }
+
+    /// A callee bound through `callback_bindings` resolves to its SSA summary,
+    /// which is enough to observe the memo without building a call graph.
+    fn fixtures() -> (
+        std::collections::HashMap<FuncKey, SsaFuncSummary>,
+        std::collections::HashMap<String, FuncKey>,
+    ) {
+        let real = FuncKey::from_parts(
+            Lang::JavaScript,
+            "app.js",
+            "",
+            "real",
+            Some(1),
+            None,
+            FuncKind::Function,
+        );
+        let mut summaries = std::collections::HashMap::new();
+        summaries.insert(
+            real.clone(),
+            SsaFuncSummary {
+                source_caps: Cap::ENV_VAR,
+                ..Default::default()
+            },
+        );
+        let mut callbacks = std::collections::HashMap::new();
+        callbacks.insert("cb".to_string(), real);
+        (summaries, callbacks)
+    }
+
+    #[test]
+    fn a_scope_answers_a_repeated_call_from_the_first_resolution() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let _scope = ResolveMemoScope::enter(&t);
+        let first = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        let again = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        assert!(
+            Rc::ptr_eq(&first, &again),
+            "same call site, same answer object"
+        );
+        assert_eq!(first.source_caps, Cap::ENV_VAR);
+
+        // Any input that differs is a different call site.
+        let other_arity = resolve_callee_hinted(&t, "cb", "caller", 3, Some(2)).expect("resolves");
+        let other_ordinal =
+            resolve_callee_hinted(&t, "cb", "caller", 4, Some(1)).expect("resolves");
+        let other_caller = resolve_callee_hinted(&t, "cb", "other", 3, Some(1)).expect("resolves");
+        for different in [&other_arity, &other_ordinal, &other_caller] {
+            assert!(!Rc::ptr_eq(&first, different));
+            assert_eq!(different.source_caps, first.source_caps);
+        }
+    }
+
+    #[test]
+    fn without_a_scope_every_call_resolves_afresh() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let a = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        let b = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        assert!(!Rc::ptr_eq(&a, &b));
+        assert_eq!(a.source_caps, b.source_caps);
+    }
+
+    /// An inline analysis runs the callee body under its own transfer and its
+    /// own scope. While that is active, a lookup made with the outer transfer
+    /// is not served from the inner frame, and the outer frame is intact after.
+    #[test]
+    fn a_nested_run_has_its_own_frame() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let outer = transfer_with(&interner, &ls, &sums, &cbs);
+        let inner = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let _outer_scope = ResolveMemoScope::enter(&outer);
+        let before = resolve_callee_hinted(&outer, "cb", "caller", 1, Some(1)).expect("resolves");
+        {
+            let _inner_scope = ResolveMemoScope::enter(&inner);
+            let in_inner_1 = resolve_callee_hinted(&inner, "cb", "caller", 1, Some(1)).unwrap();
+            let in_inner_2 = resolve_callee_hinted(&inner, "cb", "caller", 1, Some(1)).unwrap();
+            assert!(Rc::ptr_eq(&in_inner_1, &in_inner_2));
+            assert!(
+                !Rc::ptr_eq(&before, &in_inner_1),
+                "inner frame starts empty"
+            );
+            // The outer transfer is not the frame's owner now: no memo, no store.
+            let o1 = resolve_callee_hinted(&outer, "cb", "caller", 9, Some(1)).unwrap();
+            let o2 = resolve_callee_hinted(&outer, "cb", "caller", 9, Some(1)).unwrap();
+            assert!(!Rc::ptr_eq(&o1, &o2));
+        }
+        let after = resolve_callee_hinted(&outer, "cb", "caller", 1, Some(1)).expect("resolves");
+        assert!(
+            Rc::ptr_eq(&before, &after),
+            "outer frame survives the nested run"
+        );
+    }
+
+    #[test]
+    fn scope_frames_are_popped_on_drop() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+        let depth = || RESOLVE_MEMO.with(|m| m.borrow().len());
+        let base = depth();
+        {
+            let _a = ResolveMemoScope::enter(&t);
+            let _b = ResolveMemoScope::enter(&t);
+            assert_eq!(depth(), base + 2);
+        }
+        assert_eq!(depth(), base);
+    }
 }

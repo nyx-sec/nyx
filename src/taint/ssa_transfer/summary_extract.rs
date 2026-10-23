@@ -1310,6 +1310,10 @@ pub fn extract_ssa_func_summary_full(
     param_types: Option<&[Option<TypeKind>]>,
     base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
+    // The baseline probe and one probe per parameter all consult the same
+    // summary map; let them share one scan of it.
+    let _confinement = super::ConfinementGatesScope::enter(ssa_summaries, lang);
+
     // Pre-compute type facts on the un-optimised SSA body so the per-param
     // probe can resolve sinks that depend on receiver-type inference.
     // Empty const_values: this runs *before* the optimiser, so const-prop
