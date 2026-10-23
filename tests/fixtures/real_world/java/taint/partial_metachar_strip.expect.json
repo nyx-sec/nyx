@@ -1,0 +1,40 @@
+{
+  "description": "String.replaceAll(\"|\", \"\") compiles to a regex that matches the empty string, so it removes nothing; it must not clear shell taint.",
+  "tags": [
+    "taint",
+    "sanitizer",
+    "replace",
+    "cmdi",
+    "java"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "regex alternation of two empty branches removes nothing"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    }
+  ]
+}

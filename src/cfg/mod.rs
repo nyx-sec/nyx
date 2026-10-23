@@ -69,7 +69,7 @@ use imports::{
 #[cfg(test)]
 use literals::has_sql_placeholders;
 use literals::{
-    arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
+    ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
     detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer, extract_arg_callees,
     extract_arg_string_literals, extract_arg_uses, extract_const_keyword_arg,
     extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
@@ -77,10 +77,10 @@ use literals::{
     extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
     find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
-    has_string_interpolation, is_object_create_null_call, is_parameterized_query_call,
-    is_rust_format_style_macro, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
-    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, ruby_chain_arg0_for_method,
-    walk_chain_inner_call_args,
+    has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
+    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
+    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, parameterized_query_shape,
+    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -960,6 +960,15 @@ pub struct NodeInfo {
     /// `:name`) AND the call has >= 2 arguments (the params array/tuple).
     /// Both CFG analysis and SSA taint suppress findings on such nodes.
     pub parameterized_query: bool,
+    /// Same call shape as [`Self::parameterized_query`] (SQL_QUERY sink, query
+    /// text plus a params argument, a placeholder in the text), but the query
+    /// text is itself interpolated (`f"... {sort} LIMIT ?"`, Ruby
+    /// `"... #{q} ... = ?"`, JS `` `... ${t} ... $1` ``).  The sink is kept
+    /// and `sink_payload_args` narrows to the query text, since the bound
+    /// params are never the injection vector.  The structural
+    /// `cfg-unguarded-sink` pass only reports these when taint reaches arg 0.
+    #[serde(default)]
+    pub parameterized_query_interpolated: bool,
     /// Constant leading string prefix recovered from the node's RHS when it
     /// is a template literal (JS/TS) with a leading `string_fragment` or an
     /// equivalent constant-string-then-interpolation shape.  Populated for
@@ -3946,10 +3955,44 @@ pub(super) fn push_node<'a>(
             (None, Vec::new(), false, None)
         };
 
+    // Detect parameterized SQL queries: arg 0 is a string literal with
+    // placeholder patterns ($1, ?, %s, :name) and >= 2 args present.
+    // Uses a deeper recursive search than `call_ast` (which only goes 2
+    // levels) to handle await-wrapped calls inside declarations.
+    let param_query_call = if labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
+    {
+        call_ast.or_else(|| find_call_node_deep(ast, lang, 5))
+    } else {
+        None
+    };
+    let param_query_shape = param_query_call
+        .map(|cn| parameterized_query_shape(cn, code))
+        .unwrap_or(ParamQueryShape::NotParameterized);
+    let parameterized_query = param_query_shape == ParamQueryShape::ConstantQuery;
+    let parameterized_query_interpolated = param_query_shape == ParamQueryShape::InterpolatedQuery;
+
+    // An interpolated query with a params argument
+    // (`cur.execute(f"... ORDER BY {sort} LIMIT ?", (n,))`) keeps its sink,
+    // but only the query text is the payload.  The bound values are
+    // parameters, the same way a gated `cursor.execute` / `pool.query` only
+    // checks arg 0.  Do not override a gate that already chose its positions.
+    let narrowed_query_call = if parameterized_query_interpolated
+        && sink_payload_args.is_none()
+        && gate_filters.is_empty()
+    {
+        sink_payload_args = Some(vec![0]);
+        param_query_call
+    } else {
+        None
+    };
+
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
     let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() {
         call_ast
+            .or(narrowed_query_call)
             .map(|cn| extract_arg_uses(cn, code))
             .unwrap_or_default()
     } else {
@@ -3983,17 +4026,6 @@ pub(super) fn push_node<'a>(
     } else {
         false
     };
-
-    // Detect parameterized SQL queries: arg 0 is a string literal with
-    // placeholder patterns ($1, ?, %s, :name) and >= 2 args present.
-    // Uses a deeper recursive search than `call_ast` (which only goes 2
-    // levels) to handle await-wrapped calls inside declarations.
-    let parameterized_query = labels
-        .iter()
-        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
-        && call_ast
-            .or_else(|| find_call_node_deep(ast, lang, 5))
-            .is_some_and(|cn| is_parameterized_query_call(cn, code));
 
     // Extract per-argument inner call callees for interprocedural sanitizer resolution.
     // Also extracted for non-Call kinds (e.g. Assign whose RHS is a call like
@@ -4248,6 +4280,7 @@ pub(super) fn push_node<'a>(
             && java_getconnection_receiver_is_borrowed(ast, code),
         in_defer: false,
         parameterized_query,
+        parameterized_query_interpolated,
         string_prefix,
         is_eq_with_const: detect_eq_with_const(ast, lang),
         is_numeric_length_access: detect_numeric_length_access(ast, lang, code),

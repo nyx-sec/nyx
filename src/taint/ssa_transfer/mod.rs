@@ -8314,7 +8314,9 @@ fn collect_block_events(
 
         // Check for sink
         let info = &cfg[inst.cfg_node];
-        if info.all_args_literal {
+        if info.all_args_literal
+            && !literal_arg_call_has_tainted_subject_receiver(inst, &state, transfer, ssa)
+        {
             continue;
         }
 
@@ -11919,6 +11921,67 @@ fn resolve_type_qualified_labels_with_args(
     }
 
     (SmallVec::new(), None)
+}
+
+/// A call whose positional arguments are all literals normally carries no
+/// payload, so sink detection skips it.  That is wrong for the handle types
+/// whose receiver IS the sink subject: `p = Path(user); p.write_text("x")`
+/// writes to the attacker's path and `Net::HTTP.new(host).get("/")` requests
+/// the attacker's host, with nothing tainted in the argument list.
+///
+/// True when the receiver is tainted, typed as one of those handles, and the
+/// method is a sink through the type-qualified route (`FileHandle.write_text`).
+/// A literal-argument call that only matches a flat sink rule stays skipped, so
+/// receiver-only matches such as `re.exec("abc")` on a `RegExp` built from
+/// user input do not start firing.
+fn literal_arg_call_has_tainted_subject_receiver(
+    inst: &SsaInst,
+    state: &SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    ssa: &SsaBody,
+) -> bool {
+    use crate::ssa::type_facts::TypeKind;
+    let SsaOp::Call {
+        callee,
+        receiver: Some(rv),
+        ..
+    } = &inst.op
+    else {
+        return false;
+    };
+    if state.get(*rv).is_none() {
+        return false;
+    }
+    if transfer.type_facts.is_none() && state.path_env.is_none() {
+        return false;
+    }
+    let is_subject = |k: &TypeKind| matches!(k, TypeKind::FileHandle | TypeKind::HttpClient);
+    let typed = receiver_candidates_for_type_lookup(*rv, Some(ssa), transfer.lang)
+        .iter()
+        .any(|cand| {
+            transfer
+                .type_facts
+                .and_then(|tf| tf.get_type(*cand))
+                .is_some_and(is_subject)
+                || state
+                    .path_env
+                    .as_deref()
+                    .and_then(|env| env.get(*cand).types.as_singleton())
+                    .is_some_and(|k| is_subject(&k))
+        });
+    if !typed {
+        return false;
+    }
+    let (labels, _) = resolve_type_qualified_labels_with_args(
+        callee,
+        *rv,
+        transfer.type_facts,
+        state.path_env.as_deref(),
+        transfer.lang,
+        transfer.extra_labels,
+        Some(ssa),
+    );
+    labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
 }
 
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`

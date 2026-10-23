@@ -8257,9 +8257,10 @@ def login():
     );
 }
 
-/// Parse `src` in `lang` and run the per-file taint analysis.
-fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
-    let (slug, path, ts_lang) = match lang {
+/// Grammar, slug and file name for the languages the source-level helpers
+/// below can parse.
+fn grammar_for(lang: Lang) -> (&'static str, &'static str, tree_sitter::Language) {
+    match lang {
         Lang::JavaScript => (
             "javascript",
             "test.js",
@@ -8290,8 +8291,23 @@ fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
             "test.php",
             tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
         ),
-        other => panic!("analyse_src: no grammar wired for {other:?}"),
-    };
+        Lang::Ruby => (
+            "ruby",
+            "test.rb",
+            tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
+        ),
+        Lang::Rust => (
+            "rust",
+            "test.rs",
+            tree_sitter::Language::from(tree_sitter_rust::LANGUAGE),
+        ),
+        other => panic!("no grammar wired for {other:?}"),
+    }
+}
+
+/// Parse `src` in `lang` and run the per-file taint analysis.
+fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
+    let (slug, path, ts_lang) = grammar_for(lang);
     let file_cfg = parse_lang(src, slug, ts_lang);
     analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
 }
@@ -9299,4 +9315,132 @@ fn seed_named_helpers_called_only_with_literals_stay_quiet_ts() {
     let src = b"import { execSync } from 'child_process';\nimport * as fs from 'fs';\nfunction readTemplate(input: string) { return fs.readFileSync(input, 'utf8'); }\nfunction git(cmd: string) { return execSync(cmd); }\nfunction main() {\n  readTemplate('./t.html');\n  git('git status');\n}\nmain();\n";
     let fs = analyse_src(src, Lang::TypeScript);
     assert!(fs.is_empty(), "{fs:?}");
+}
+
+// ── Sink checks: interpolated parameterized queries ──────────────────────
+
+#[test]
+fn interpolated_query_text_with_placeholder_still_fires() {
+    let py = b"import sqlite3\nfrom flask import request\n\ndef f():\n    sort = request.args.get(\"sort\")\n    limit = request.args.get(\"limit\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(f\"SELECT * FROM users ORDER BY {sort} LIMIT ?\", (limit,))\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: the interpolated ORDER BY column is injectable even with a bound LIMIT"
+    );
+    let py_concat = b"import sqlite3\nfrom flask import request\n\ndef f():\n    sort = request.args.get(\"sort\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(\"SELECT * FROM users ORDER BY \" f\"{sort}\" \" LIMIT ?\", (10,))\n";
+    assert!(!analyse_src(py_concat, Lang::Python).is_empty());
+    let rb = b"class UsersController < ApplicationController\n  def search\n    q = params[:q]\n    @users = User.where(\"name LIKE '%#{q}%' AND active = ?\", true)\n  end\nend\n";
+    assert!(
+        !analyse_src(rb, Lang::Ruby).is_empty(),
+        "rb: interpolation in the where fragment is injectable"
+    );
+}
+
+#[test]
+fn bound_value_next_to_constant_interpolation_stays_quiet() {
+    // The interpolated part is a constant and the user value is bound: the
+    // bind value is not the injection vector.
+    let py = b"import sqlite3\nfrom flask import request\nTABLE = \"users\"\n\ndef f():\n    uid = request.args.get(\"id\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(f\"SELECT * FROM {TABLE} WHERE id = ?\", (uid,))\n";
+    assert!(
+        analyse_src(py, Lang::Python).is_empty(),
+        "py: a bound value must not fire just because the query text is interpolated"
+    );
+    let rb = b"class UsersController < ApplicationController\n  def by_table\n    q = params[:q]\n    @users = User.where(\"#{User.table_name}.name = ?\", q)\n  end\nend\n";
+    assert!(analyse_src(rb, Lang::Ruby).is_empty());
+}
+
+// ── Sink checks: tainted receiver with literal arguments ─────────────────
+
+#[test]
+fn tainted_path_receiver_with_literal_args_reaches_the_sink() {
+    for call in [
+        "p.write_text(\"pwned\")",
+        "p.read_text(\"utf-8\")",
+        "p.open(\"w\")",
+        "p.read_bytes()",
+    ] {
+        let src = format!(
+            "from pathlib import Path\nfrom flask import request\n\ndef f():\n    p = Path(request.args[\"f\"])\n    {call}\n"
+        );
+        assert!(
+            !analyse_src(src.as_bytes(), Lang::Python).is_empty(),
+            "{call}: the receiver is the attacker's path"
+        );
+    }
+}
+
+#[test]
+fn untainted_path_receiver_with_literal_args_stays_quiet() {
+    let src = b"from pathlib import Path\n\ndef f():\n    p = Path(\"/srv/static/index.html\")\n    p.write_text(\"x\")\n    return p.read_text(\"utf-8\")\n";
+    assert!(analyse_src(src, Lang::Python).is_empty());
+}
+
+#[test]
+fn tainted_http_client_receiver_with_literal_path_reaches_the_sink() {
+    let src = b"require 'net/http'\nclass ProxyController < ApplicationController\n  def status\n    http = Net::HTTP.new(params[:host], 80)\n    res = http.get(\"/status\")\n  end\nend\n";
+    assert!(
+        !analyse_src(src, Lang::Ruby).is_empty(),
+        "Net::HTTP.new(tainted host).get(literal) requests the attacker's host"
+    );
+    let fixed = b"require 'net/http'\nclass ProxyController < ApplicationController\n  def status\n    http = Net::HTTP.new(\"internal.example.com\", 80)\n    res = http.get(\"/status\")\n  end\nend\n";
+    assert!(analyse_src(fixed, Lang::Ruby).is_empty());
+}
+
+#[test]
+fn tainted_untyped_receiver_with_literal_args_stays_quiet() {
+    // A receiver with no handle type is not the sink subject: the literal
+    // argument call has no payload.
+    let src = b"var express = require('express');\nvar app = express();\napp.get('/x', function(req, res) {\n  var re = new RegExp(req.query.r);\n  re.exec('abc');\n  res.send('ok');\n});\n";
+    assert!(analyse_src(src, Lang::JavaScript).is_empty());
+}
+
+// ── A single-character replace is not a sanitizer ────────────────────────
+
+#[test]
+fn single_metachar_strip_before_a_shell_sink_still_fires() {
+    let py = b"import os\nfrom flask import request\n\ndef f():\n    host = request.args[\"host\"]\n    host = host.replace(\";\", \"\")\n    os.system(\"ping -c 1 \" + host)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: removing ';' leaves '|', '&&' and '$(..)'"
+    );
+    let go = b"package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n\t\"strings\"\n)\nfunc strip(s string) string { return strings.ReplaceAll(s, \";\", \"\") }\nfunc h(w http.ResponseWriter, r *http.Request) {\n\thost := strip(r.URL.Query().Get(\"host\"))\n\texec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host).Run()\n}\n";
+    assert!(
+        !analyse_src(go, Lang::Go).is_empty(),
+        "go: ReplaceAll over ';'"
+    );
+    let go_first = b"package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n\t\"strings\"\n)\nfunc h(w http.ResponseWriter, r *http.Request) {\n\thost := strings.Replace(r.URL.Query().Get(\"host\"), \"<\", \"\", 1)\n\texec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host).Run()\n}\n";
+    assert!(
+        !analyse_src(go_first, Lang::Go).is_empty(),
+        "go: Replace with n=1 only strips the first match"
+    );
+    let java = b"import javax.servlet.http.*;\npublic class A extends HttpServlet {\n  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    String host = req.getParameter(\"host\");\n    host = host.replaceAll(\"|\", \"\");\n    Runtime.getRuntime().exec(\"ping -c 1 \" + host);\n  }\n}\n";
+    assert!(
+        !analyse_src(java, Lang::Java).is_empty(),
+        "java: the regex \"|\" matches the empty string and removes nothing"
+    );
+    let php = b"<?php\n$t = $_GET['t'];\n$t = str_replace(\";\", \"\", $t);\nsystem(\"ping -c 1 \" . $t);\n";
+    assert!(!analyse_src(php, Lang::Php).is_empty());
+}
+
+#[test]
+fn quote_deletion_before_a_numeric_sql_context_still_fires() {
+    let py = b"from flask import request\n\ndef f(cur):\n    uid = request.args[\"id\"]\n    uid = uid.replace(\"'\", \"\")\n    cur.execute(\"SELECT * FROM users WHERE id = \" + uid)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "deleting quotes does nothing for a numeric context"
+    );
+}
+
+#[test]
+fn quote_doubling_before_a_quoted_sql_literal_stays_quiet() {
+    let py = b"from flask import request\n\ndef f(cur):\n    name = request.args[\"name\"]\n    name = name.replace(\"'\", \"''\")\n    cur.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n";
+    assert!(
+        analyse_src(py, Lang::Python).is_empty(),
+        "quote doubling is the SQL string-literal escape"
+    );
+}
+
+#[test]
+fn angle_bracket_strip_before_html_output_stays_quiet() {
+    let py = b"from flask import request, make_response\n\ndef f():\n    t = request.args[\"t\"]\n    t = t.replace(\"<\", \"&lt;\").replace(\">\", \"&gt;\")\n    return make_response(\"<p>\" + t + \"</p>\")\n";
+    assert!(analyse_src(py, Lang::Python).is_empty());
 }

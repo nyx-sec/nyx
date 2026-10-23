@@ -974,72 +974,126 @@ pub fn evaluate_string_op_concrete(method: &StringMethod, receiver: &str) -> Opt
 
 //  Sanitizer detection
 
+/// Caps a literal `pattern -> replacement` replace provably neutralises.
+///
+/// Removing or rewriting one metacharacter does not neutralise an injection
+/// class.  `s.replace(";", "")` leaves `|`, `&&`, `$()`, backticks and
+/// newlines for the shell, and `s.replace("'", "")` leaves numeric-context and
+/// backslash injection for SQL.  So only complete escapes earn credit:
+///   * HTML: `<` or `>` removed or entity-escaped (neither `<` nor `>` in the
+///     replacement), or a quote rewritten to its HTML entity.
+///   * SQL: a quote rewritten to the string-literal escape for that quote
+///     (`'` to `''` or `\'`, `"` to `""` or `\"`).
+///   * Shell: nothing.  No single-literal replace covers the metacharacter
+///     class, so shell escaping has to come from a real escaper.
+///
+/// The same policy backs the CFG-time Go and Rust replace detectors, so the
+/// two mechanisms cannot disagree.  Pattern and replacement are the raw
+/// source text of the literals; escapes are resolved here.
+pub(crate) fn replace_neutralises(pattern: &str, replacement: &str) -> Cap {
+    let pattern = unescape_literal(pattern);
+    let replacement = unescape_literal(replacement);
+    let (pattern, replacement) = (pattern.as_str(), replacement.as_str());
+
+    let mut caps = Cap::empty();
+    match pattern {
+        "<" | ">" if !replacement.contains(['<', '>']) => caps |= Cap::HTML_ESCAPE,
+        "\"" | "'" if is_quote_entity(replacement) => caps |= Cap::HTML_ESCAPE,
+        _ => {}
+    }
+    let escaped_quote = match pattern {
+        "'" => replacement == "''" || replacement == "\\'",
+        "\"" => replacement == "\"\"" || replacement == "\\\"",
+        _ => false,
+    };
+    if escaped_quote {
+        caps |= Cap::SQL_QUERY;
+    }
+    caps
+}
+
+/// Resolve the backslash escapes that matter for quote and backslash
+/// comparisons in a raw string-literal body: `\\`, `\'` and `\"`.  Any other
+/// escape is kept verbatim.
+fn unescape_literal(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && matches!(chars.peek(), Some('\\' | '\'' | '"')) {
+            out.push(chars.next().unwrap_or(c));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// True for the HTML entities of a single or double quote: `&quot;`,
+/// `&apos;`, and the decimal or hex numeric forms (`&#34;`, `&#039;`,
+/// `&#x27;`).
+fn is_quote_entity(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    if lower == "&quot;" || lower == "&apos;" {
+        return true;
+    }
+    let Some(body) = lower.strip_prefix("&#").and_then(|b| b.strip_suffix(';')) else {
+        return false;
+    };
+    match body.strip_prefix('x') {
+        Some(hex) => matches!(hex.trim_start_matches('0'), "22" | "27"),
+        None => matches!(body.trim_start_matches('0'), "34" | "39"),
+    }
+}
+
 /// Detect whether a Replace operation acts as a security sanitizer.
 ///
-/// Returns `None` if the pattern is not security-relevant. This is conservative:
-/// the symbolic string theory does NOT clear taint via Replace, detection is
-/// informational only for witness quality.
+/// Returns `None` if the replace does not neutralise a whole injection class
+/// (see [`replace_neutralises`]).  `taint::ssa_transfer` ORs the caps of a
+/// global replace into the call's sanitizer bits.
 pub fn detect_replace_sanitizer(
     pattern: &str,
-    _replacement: &str,
+    replacement: &str,
     callee: &str,
     lang: Lang,
 ) -> Option<SanitizerInfo> {
-    let is_global = is_global_replace(callee, lang);
-
-    let mut caps = Cap::empty();
-
-    // XSS: HTML entity escaping patterns
-    if pattern == "<"
-        || pattern == ">"
-        || pattern == "\""
-        || pattern == "'"
-        || pattern.contains("<script")
-        || pattern.contains("<img")
-        || pattern.contains("<svg")
-    {
-        caps |= Cap::HTML_ESCAPE;
-    }
-
-    // SQLi: quote escaping patterns
-    if pattern == "'" || pattern == "\"" || pattern == "--" || pattern == ";" {
-        caps |= Cap::SQL_QUERY;
-    }
-
-    // CMDi: shell metachar escaping patterns
-    if pattern == "$" || pattern == "`" || pattern == "|" || pattern == ";" || pattern == "&" {
-        caps |= Cap::SHELL_ESCAPE;
-    }
-
+    let caps = replace_neutralises(pattern, replacement);
     if caps.is_empty() {
         None
     } else {
         Some(SanitizerInfo {
             sanitized_caps: caps,
-            is_global,
+            is_global: is_global_replace(callee, lang),
         })
     }
 }
 
 /// Detect a call-site Replace sanitizer from syntactic argument literals.
 ///
-/// Used by SSA transfer to recognize replace-based shell/HTML/SQL escapers
+/// Used by SSA transfer to recognize replace-based HTML and SQL escapers
 /// without requiring a label rule per pattern. Returns the sanitized caps
 /// when:
 ///   * the callee is a recognized Replace string method (per language),
-///   * the pattern argument is a concrete string literal, and
-///   * the pattern matches a security-relevant escape pattern in
-///     [`detect_replace_sanitizer`].
+///   * the pattern and replacement arguments are concrete string literals, and
+///   * the pair neutralises a whole injection class per
+///     [`replace_neutralises`].
 ///
-/// Non-global replaces (e.g. JS `s.replace(";", "")` only replaces the first
-/// occurrence) are excluded because partial replacement does not provide a
-/// sanitiser-strength guarantee at the call site.
+/// Non-global replaces (e.g. JS `s.replace("<", "&lt;")` only replaces the
+/// first occurrence, Python `s.replace("<", "", 1)` stops after one) are
+/// excluded because partial replacement does not provide a sanitiser-strength
+/// guarantee at the call site.
 pub fn detect_call_site_replace_sanitizer(
     callee: &str,
     lang: Lang,
     arg_string_literals: &[Option<String>],
 ) -> Option<Cap> {
     let pattern_pos = pattern_arg_position(callee, lang)?;
+    // A trailing count argument limits the replace to the first matches:
+    // `str.replace(old, new, count)` and `re.sub(pat, rep, s, count)`.
+    if lang == Lang::Python
+        && arg_string_literals.len() > pattern_pos + 2 + usize::from(callee == "re.sub")
+    {
+        return None;
+    }
     let pattern = arg_string_literals
         .get(pattern_pos)
         .and_then(|o| o.as_deref())?;
@@ -1107,8 +1161,8 @@ fn is_global_replace(callee: &str, lang: Lang) -> bool {
         Lang::Go => callee == "strings.ReplaceAll",
         // PHP: str_replace() is always global
         Lang::Php => true,
-        // Rust: str.replace() is always global
-        Lang::Rust => true,
+        // Rust: str.replace() is global, replacen() stops after n matches
+        Lang::Rust => method == "replace",
         _ => false,
     }
 }
@@ -1351,9 +1405,99 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_cmdi_sanitizer() {
-        let info = detect_replace_sanitizer("|", "", "s.replace", Lang::Python).unwrap();
-        assert!(info.sanitized_caps.contains(Cap::SHELL_ESCAPE));
+    fn test_single_shell_metachar_strip_is_not_a_sanitizer() {
+        // Removing one metacharacter leaves the rest of the shell class.
+        for pat in ["|", ";", "&", "$", "`"] {
+            assert!(
+                detect_replace_sanitizer(pat, "", "s.replace", Lang::Python).is_none(),
+                "{pat:?} strip must not earn credit"
+            );
+        }
+    }
+
+    #[test]
+    fn test_quote_deletion_is_not_a_sanitizer() {
+        // Deleting a quote is a partial filter: numeric-context SQL
+        // injection and `<img onerror=...>` still go through.
+        assert!(detect_replace_sanitizer("'", "", "s.replace", Lang::Python).is_none());
+        assert!(detect_replace_sanitizer("\"", "", "s.replace", Lang::Python).is_none());
+        assert!(detect_replace_sanitizer("--", "", "s.replace", Lang::Python).is_none());
+        assert!(detect_replace_sanitizer(";", "", "s.replace", Lang::Python).is_none());
+        // Quote doubling is an SQL escape, not an HTML one.
+        let info = detect_replace_sanitizer("'", "''", "s.replace", Lang::Python).unwrap();
+        assert_eq!(info.sanitized_caps, Cap::SQL_QUERY);
+    }
+
+    #[test]
+    fn test_tag_blacklist_is_not_a_sanitizer() {
+        assert!(detect_replace_sanitizer("<script", "", "s.replace", Lang::Python).is_none());
+        assert!(detect_replace_sanitizer("<img", "", "s.replace", Lang::Python).is_none());
+    }
+
+    #[test]
+    fn test_replace_escape_forms() {
+        let caps = |pat: &str, rep: &str| replace_neutralises(pat, rep);
+        // Backslash escaping.  Inputs are raw source text, so Python
+        // "\\'" arrives as `\\'` and "\'" (just a quote) as `\'`.
+        assert_eq!(caps("'", r"\\'"), Cap::SQL_QUERY);
+        assert_eq!(caps("\"", r#"\\\""#), Cap::SQL_QUERY);
+        assert!(caps("'", r"\'").is_empty());
+        assert!(caps(r"\'", "'").is_empty());
+        // Quote to HTML entity is an HTML escape.
+        assert_eq!(caps("\"", "&quot;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("\\\"", "&quot;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("'", "&#39;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("'", "&#x27;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("'", "&#039;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("'", "&apos;"), Cap::HTML_ESCAPE);
+        assert!(caps("'", "&amp;").is_empty());
+        // Angle brackets.
+        assert_eq!(caps(">", "&gt;"), Cap::HTML_ESCAPE);
+        assert_eq!(caps("<", ""), Cap::HTML_ESCAPE);
+        assert!(caps("<", "<<").is_empty());
+        assert!(caps("<", "&lt;>").is_empty());
+    }
+
+    #[test]
+    fn test_call_site_python_count_arg_is_not_global() {
+        let lits = |v: &[Option<&str>]| -> Vec<Option<String>> {
+            v.iter().map(|o| o.map(str::to_string)).collect()
+        };
+        assert_eq!(
+            detect_call_site_replace_sanitizer(
+                "s.replace",
+                Lang::Python,
+                &lits(&[Some("<"), Some("&lt;")])
+            ),
+            Some(Cap::HTML_ESCAPE)
+        );
+        assert_eq!(
+            detect_call_site_replace_sanitizer(
+                "s.replace",
+                Lang::Python,
+                &lits(&[Some("<"), Some("&lt;"), None])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_call_site_shell_strip_earns_nothing() {
+        let lits = vec![Some(";".to_string()), Some(String::new())];
+        for (callee, lang) in [
+            ("s.replace", Lang::Python),
+            ("s.replaceAll", Lang::JavaScript),
+            ("s.replaceAll", Lang::Java),
+            ("s.gsub", Lang::Ruby),
+            ("str_replace", Lang::Php),
+            ("s.replace", Lang::Rust),
+        ] {
+            assert_eq!(
+                detect_call_site_replace_sanitizer(callee, lang, &lits),
+                None,
+                "{callee} {lang:?}"
+            );
+        }
     }
 
     #[test]
@@ -1365,6 +1509,12 @@ mod tests {
     fn test_global_replace_ruby_gsub() {
         assert!(is_global_replace("s.gsub", Lang::Ruby));
         assert!(!is_global_replace("s.sub", Lang::Ruby));
+    }
+
+    #[test]
+    fn test_global_replace_rust_replacen() {
+        assert!(is_global_replace("s.replace", Lang::Rust));
+        assert!(!is_global_replace("s.replacen", Lang::Rust));
     }
 
     #[test]

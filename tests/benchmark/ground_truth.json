@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 703
+    "corpus_size": 712
   },
   "cases": [
     {
@@ -2690,7 +2690,7 @@
         "pointer-w4-w5"
       ],
       "disabled": false,
-      "notes": "validate() sanitises before append(); cmds[0] re-read carries the validated_must bit through the W4 ELEM cell + W5 subscript synth, suppressing the cmdi finding."
+      "notes": "validate() round-trips the value through strconv.Atoi/Itoa before append(), so only digits remain; cmds[0] re-read carries the validated_must bit through the W4 ELEM cell + W5 subscript synth, suppressing the cmdi finding."
     },
     {
       "case_id": "php-sqli-001",
@@ -22422,6 +22422,336 @@
       ],
       "disabled": false,
       "notes": "run(cmd) has a caller in view, so the flow is req.query.c through run(); the name-based `cmd` seed no longer adds a second finding sourced at the parameter"
+    },
+    {
+      "case_id": "py-sqli-fstring-order-by-placeholder-001",
+      "file": "python/sqli/sqli_fstring_order_by_placeholder.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "parameterized-query",
+        "interpolation",
+        "f-string"
+      ],
+      "disabled": false,
+      "notes": "The trailing `?` is bound, but the f-string interpolates `sort` into the query text itself; only the bound LIMIT value is safe"
+    },
+    {
+      "case_id": "rb-sqli-where-interpolated-placeholder-001",
+      "file": "ruby/sqli/sqli_where_interpolated_placeholder.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "parameterized-query",
+        "interpolation",
+        "rails"
+      ],
+      "disabled": false,
+      "notes": "`where(\"... #{q} ... = ?\", true)` binds the second argument but still interpolates q into the fragment"
+    },
+    {
+      "case_id": "py-path_traversal-pathlib-literal-write-001",
+      "file": "python/path_traversal/path_traversal_pathlib_literal_write.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "receiver-sink",
+        "pathlib",
+        "literal-args"
+      ],
+      "disabled": false,
+      "notes": "The path is the receiver (`Path(user)`); the literal argument of write_text does not make the call safe"
+    },
+    {
+      "case_id": "rb-ssrf-net-http-new-literal-get-001",
+      "file": "ruby/ssrf/ssrf_net_http_new_literal_get.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "receiver-sink",
+        "net-http",
+        "literal-args"
+      ],
+      "disabled": false,
+      "notes": "The host is passed to Net::HTTP.new; the literal path of get does not make the request safe"
+    },
+    {
+      "case_id": "py-cmdi-semicolon-strip-partial-001",
+      "file": "python/cmdi/cmdi_semicolon_strip_partial.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "Removing ';' leaves '|', '&&' and '$(...)', so the replace is not a shell sanitizer"
+    },
+    {
+      "case_id": "go-cmdi-replaceall-semicolon-partial-001",
+      "file": "go/cmdi/cmdi_replaceall_semicolon_partial.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace",
+        "interproc"
+      ],
+      "disabled": false,
+      "notes": "strings.ReplaceAll over ';' in a helper strips one metacharacter of the shell class"
+    },
+    {
+      "case_id": "java-cmdi-replaceall-pipe-regex-001",
+      "file": "java/cmdi/cmdi_replaceall_pipe_regex.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace",
+        "regex"
+      ],
+      "disabled": false,
+      "notes": "replaceAll(\"|\", \"\") uses a regex that matches the empty string and removes nothing"
+    },
+    {
+      "case_id": "php-cmdi-str-replace-semicolon-001",
+      "file": "php/cmdi/cmdi_str_replace_semicolon.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "str_replace over ';' strips one metacharacter of the shell class"
+    },
+    {
+      "case_id": "py-sqli-quote-deletion-numeric-001",
+      "file": "python/sqli/sqli_quote_deletion_numeric.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "Deleting quotes does nothing for a numeric SQL context"
     }
   ]
 }

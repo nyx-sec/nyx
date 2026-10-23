@@ -3606,6 +3606,15 @@ impl CfgAnalysis for UnguardedSink {
                 continue;
             }
 
+            // Interpolated query text with a params argument
+            // (`f"... ORDER BY {sort} LIMIT ?", (n,)`): the bound values are
+            // not the injection vector, so only a taint-confirmed flow into
+            // the query text is reported.  Without this the structural rule
+            // would read the bind value as a source-derived operand.
+            if sink_info.parameterized_query_interpolated && !has_taint {
+                continue;
+            }
+
             // Numeric-confinement: every real argument to the sink is an
             // inline numeric call-chain (`Command::arg(s.parse::<u16>()
             // .unwrap().to_string())`) whose source leaf reaches the sink only

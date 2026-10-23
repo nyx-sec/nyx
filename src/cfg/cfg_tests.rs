@@ -1893,6 +1893,192 @@ fn sql_placeholder_detection() {
     assert!(!has_sql_placeholders("ratio = 50%")); // %<not s>
 }
 
+/// The first node whose callee ends with `suffix`, across all bodies.
+fn node_with_callee_suffix(file_cfg: &FileCfg, suffix: &str) -> NodeInfo {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .find(|n| {
+            n.call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.ends_with(suffix))
+        })
+        .unwrap_or_else(|| panic!("no call ending with {suffix}"))
+        .clone()
+}
+
+#[test]
+fn parameterized_query_constant_text_is_skipped() {
+    let src = b"def f(cur, uid):\n    cur.execute(\"SELECT * FROM t WHERE id = ?\", (uid,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_python_fstring_keeps_the_sink_on_arg0() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(f\"SELECT * FROM t ORDER BY {sort} LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_python_concatenated_fstring_part() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(\"SELECT * FROM t ORDER BY \" f\"{sort}\" \" LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_placeholder_inside_interpolation_is_not_a_placeholder() {
+    // The `?` belongs to the embedded expression, so this is not a
+    // parameterized query at all: no skip, and no payload narrowing.
+    let src = b"def f(cur, a, b, n):\n    cur.execute(f\"SELECT {a if b else 1} FROM t\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_ruby_interpolated_where() {
+    let src = b"def index\n  q = params[:q]\n  User.where(\"name LIKE '%#{q}%' AND active = ?\", true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_ruby_constant_where_is_skipped() {
+    let src = b"def index\n  User.where(\"name = ? AND active = ?\", params[:q], true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_js_template_with_substitution() {
+    let src = b"async function f(pool, t, id) { await pool.query(`SELECT * FROM ${t} WHERE id = $1`, [id]); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "javascript", ts_lang), "query");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+/// Every Sanitizer cap set that landed on a node of a Go snippet.
+fn go_body_sanitizer_caps(src: &[u8]) -> Vec<Cap> {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
+    cfg.node_indices()
+        .flat_map(|i| cfg[i].taint.labels.clone())
+        .filter_map(|l| match l {
+            DataLabel::Sanitizer(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn go_replace_single_metachar_strip_earns_no_credit() {
+    for call in [
+        r#"strings.ReplaceAll(s, ";", "")"#,
+        r#"strings.ReplaceAll(s, "|", "")"#,
+        r#"strings.ReplaceAll(s, "'", "")"#,
+        r#"strings.Replace(s, ";", "", -1)"#,
+    ] {
+        let src = format!("package main\nfunc f(s string) string {{\n\treturn {call}\n}}\n");
+        let caps = go_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{call} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn go_replace_complete_escape_earns_credit() {
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"<\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "tag strip should earn HTML_ESCAPE; got {caps:?}"
+    );
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"..\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "traversal strip should earn FILE_IO; got {caps:?}"
+    );
+}
+
+#[test]
+fn go_replace_with_count_is_only_a_full_replace_for_minus_one() {
+    let full = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", -1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(full)
+            .iter()
+            .any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "Replace(.., -1) is a full replace"
+    );
+    let first_only = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", 1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(first_only).is_empty(),
+        "Replace(.., 1) only strips the first match"
+    );
+}
+
+#[test]
+fn replace_chain_single_shell_or_quote_strip_earns_no_credit() {
+    for body in [
+        r#"s.replace(";", "")"#,
+        r#"s.replace("|", "").replace("&", "")"#,
+        r#"s.replace("'", "")"#,
+        r#"s.replace("--", "")"#,
+    ] {
+        let src = format!("fn f(s: &str) -> String {{\n    {body}\n}}\n");
+        let caps = rust_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{body} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn replace_chain_replacen_hop_earns_no_credit_but_keeps_the_walk() {
+    // replacen only strips the first n matches.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replacen("<", "", 1)
+}
+"#;
+    assert!(rust_body_sanitizer_caps(src).is_empty());
+    // A real full strip beneath a replacen hop still counts.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replace("..", "").replacen("x", "y", 1)
+}
+"#;
+    let caps = rust_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "the replace hop under replacen should still earn FILE_IO; got {caps:?}"
+    );
+}
+
 #[test]
 fn c_function_extracts_param_names() {
     let src = b"void handle_command(int cmd, char *arg) { }";

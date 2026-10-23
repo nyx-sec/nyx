@@ -1,0 +1,82 @@
+{
+  "description": "pathlib.Path built from user input: the path is the receiver, so literal arguments to write_text/open/read_text do not make the call safe. A fixed path stays quiet.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathlib",
+    "receiver",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "write_text with a literal body on a tainted Path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "open with a literal mode on a tainted Path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "read_text with a literal encoding on a tainted Path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        29,
+        33
+      ],
+      "notes": "fixed path"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "noise"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "noise"
+    }
+  ]
+}
