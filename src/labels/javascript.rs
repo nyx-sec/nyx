@@ -778,6 +778,41 @@ pub(crate) const FS_IMPORT_PATH_PAIR_RULE: GatedLabelRule = GatedLabelRule {
     payload_args: &[0, 1],
 };
 
+/// `node:fs/promises` APIs through an import binding
+/// (`import { writeFile } from 'node:fs/promises'`, `import * as fsp from
+/// 'fs/promises'`).  Arg 0 is the path; the written data, mode and options
+/// are not traversal vectors.
+pub(crate) const FS_PROMISES_IMPORT_PATH_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: &[
+        "readFile",
+        "writeFile",
+        "unlink",
+        "open",
+        "stat",
+        "readdir",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "appendFile",
+        "truncate",
+        "chmod",
+    ],
+    label: DataLabel::Sink(Cap::FILE_IO),
+    case_sensitive: false,
+    gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+    payload_args: &[0],
+};
+
+/// Two-path `node:fs/promises` APIs: both the source and the destination are
+/// paths.
+pub(crate) const FS_PROMISES_IMPORT_PATH_PAIR_RULE: GatedLabelRule = GatedLabelRule {
+    matchers: &["copyFile", "rename"],
+    label: DataLabel::Sink(Cap::FILE_IO),
+    case_sensitive: false,
+    gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+    payload_args: &[0, 1],
+};
+
 /// Phase 05 — `node:fs/promises` path-traversal sinks. The matcher list
 /// holds the bare-name and `<ns>.<method>` member-access shapes; the
 /// [`LabelGate::ImportedFromModule`] gate suppresses bare-name matches
@@ -787,28 +822,8 @@ pub(crate) const FS_IMPORT_PATH_PAIR_RULE: GatedLabelRule = GatedLabelRule {
 /// list (no gate needed because the `fs.promises.` prefix is itself
 /// witness to the resolution).
 pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
-    GatedLabelRule {
-        matchers: &[
-            "readFile",
-            "writeFile",
-            "unlink",
-            "open",
-            "stat",
-            "readdir",
-            "mkdir",
-            "rmdir",
-            "rm",
-            "appendFile",
-            "copyFile",
-            "rename",
-            "truncate",
-            "chmod",
-        ],
-        label: DataLabel::Sink(Cap::FILE_IO),
-        case_sensitive: false,
-        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
-        payload_args: &[],
-    },
+    FS_PROMISES_IMPORT_PATH_RULE,
+    FS_PROMISES_IMPORT_PATH_PAIR_RULE,
     // Node core modules reached through an import binding.  Shared with
     // typescript.rs; see the constants for each rule's rationale.
     CHILD_PROCESS_IMPORT_RULE,
@@ -1891,6 +1906,48 @@ pub static GATED_SINKS: &[SinkGate] = &[
         false,
         &[0],
     ),
+    // ── `fs` write payload positions ─────────────────────────────────────
+    //
+    // Path traversal needs taint in the path.  The written content (arg 1)
+    // and the options object are not traversal vectors, so logging request
+    // data to a fixed file is not a FILE_IO finding.
+    SinkGate::payload_positions("fs.writeFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions(
+        "fs.writeFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.createWriteStream",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.appendFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.appendFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -2169,10 +2226,30 @@ mod tests {
         let rename = classify_gated_matches("typescript", "renameSync", Some(&ctx));
         assert_eq!(rename.len(), 1);
         assert_eq!(rename[0].payload_args, &[0, 1]);
-        // The existing fs/promises rule keeps every argument a payload.
+        // fs/promises imports check the path alone, and both paths of a copy.
         let promises = classify_gated_matches("javascript", "readFile", Some(&ctx));
         assert_eq!(promises.len(), 1);
-        assert!(promises[0].payload_args.is_empty());
+        assert_eq!(promises[0].payload_args, &[0]);
+        imports.insert("copyFile".into(), "node:fs/promises".into());
+        let ctx = ClassificationContext {
+            local_imports: Some(&imports),
+        };
+        let copy = classify_gated_matches("typescript", "copyFile", Some(&ctx));
+        assert_eq!(copy.len(), 1);
+        assert_eq!(copy[0].payload_args, &[0, 1]);
+        // The flat `fs.*` write sinks check the path, not the content.
+        for callee in ["fs.writeFile", "fs.writeFileSync", "fs.promises.writeFile"] {
+            assert_eq!(
+                gated_payload("javascript", callee),
+                Some(vec![0]),
+                "{callee}"
+            );
+            assert_eq!(
+                gated_payload("typescript", callee),
+                Some(vec![0]),
+                "{callee}"
+            );
+        }
     }
 
     #[test]

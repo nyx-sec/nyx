@@ -20,4 +20,4 @@ child_process.exec(valA);
 // Call site 2: source on line 22 — distinct from call site 1.
 const sourceB = process.env.OTHER_INPUT;
 const valB = passthrough(sourceB);
-fs.writeFileSync('/tmp/log', valB);
+fs.writeFileSync(valB, 'x');

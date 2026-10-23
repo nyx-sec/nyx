@@ -499,28 +499,8 @@ pub static EXCLUDES: &[&str] = &[
 /// language registries carry the same matcher list to keep .ts and .js
 /// fixtures in lockstep.
 pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
-    GatedLabelRule {
-        matchers: &[
-            "readFile",
-            "writeFile",
-            "unlink",
-            "open",
-            "stat",
-            "readdir",
-            "mkdir",
-            "rmdir",
-            "rm",
-            "appendFile",
-            "copyFile",
-            "rename",
-            "truncate",
-            "chmod",
-        ],
-        label: DataLabel::Sink(Cap::FILE_IO),
-        case_sensitive: false,
-        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
-        payload_args: &[],
-    },
+    super::javascript::FS_PROMISES_IMPORT_PATH_RULE,
+    super::javascript::FS_PROMISES_IMPORT_PATH_PAIR_RULE,
     // Node core modules reached through an import binding; shared with
     // javascript.rs, which documents each rule.
     super::javascript::CHILD_PROCESS_IMPORT_RULE,
@@ -1471,6 +1451,48 @@ pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate::payload_positions("fs.appendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
     SinkGate::payload_positions(
         "fs.appendFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    // ── `fs` write payload positions ─────────────────────────────────────
+    //
+    // Path traversal needs taint in the path.  The written content (arg 1)
+    // and the options object are not traversal vectors, so logging request
+    // data to a fixed file is not a FILE_IO finding.
+    SinkGate::payload_positions("fs.writeFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions(
+        "fs.writeFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.createWriteStream",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.appendFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.appendFile",
         DataLabel::Sink(Cap::FILE_IO),
         false,
         &[0],

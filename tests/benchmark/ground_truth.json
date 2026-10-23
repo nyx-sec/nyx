@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 674
+    "corpus_size": 676
   },
   "cases": [
     {
@@ -21384,6 +21384,70 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "js-path-writefile-path-001",
+      "file": "javascript/path_traversal/path_traversal_writefile_path.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "fs.writeFileSync",
+        "write-path",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "The request chooses the path argument of fs.writeFileSync"
+    },
+    {
+      "case_id": "js-safe-writefile-content-001",
+      "file": "javascript/safe/safe_writefile_fixed_path.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "fs.writeFileSync",
+        "write-content",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "Request data is only the file content; the path is a constant"
     }
   ]
 }
