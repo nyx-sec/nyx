@@ -5132,3 +5132,426 @@ fn super_call_resolves_through_type_hierarchy() {
         CalleeResolution::Resolved(k_sub)
     );
 }
+
+// ── Resolver oracle ─────────────────────────────────────────────────────
+//
+// `resolve_callee` counts candidate sets in place and clones keys only for
+// the answer it returns. The version below is the resolver as it was before
+// that change (it builds a Vec per step and clones the ambiguous list). Both
+// have to agree on every query, including the order of an ambiguous list.
+mod resolve_callee_oracle_tests {
+    use super::*;
+
+    /// The pre-refactor resolver, kept verbatim as an oracle.
+    #[allow(clippy::needless_borrow)]
+    fn reference_resolve_callee(gs: &GlobalSummaries, q: &CalleeQuery<'_>) -> CalleeResolution {
+        // ── Helpers ─────────────────────────────────────────────────
+        let arity_matches = |k: &FuncKey| match q.arity {
+            Some(a) => k.arity == Some(a),
+            None => true,
+        };
+
+        // Look up `{container}::{name}` and return a single arity-matched
+        // candidate if one exists (using same-namespace to break ties).
+        let try_qualified = |container: &str| -> Option<FuncKey> {
+            if container.is_empty() {
+                return None;
+            }
+            let qual = format!("{container}::{}", q.name);
+            let candidates: Vec<&FuncKey> = gs
+                .lookup_qualified(q.caller_lang, &qual)
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| arity_matches(k))
+                .collect();
+            match candidates.len() {
+                0 => None,
+                1 => Some(candidates[0].clone()),
+                _ => {
+                    let same_ns: Vec<&FuncKey> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|k| k.namespace == q.caller_namespace)
+                        .collect();
+                    if same_ns.len() == 1 {
+                        Some(same_ns[0].clone())
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+
+        // ── Step 1: receiver_type (authoritative) ───────────────────
+        if let Some(rt) = q.receiver_type {
+            if let Some(key) = try_qualified(rt) {
+                return CalleeResolution::Resolved(key);
+            }
+            // Authoritative miss: before returning, check whether any
+            // candidate exists at all for the leaf name.  If there are
+            // some, report Ambiguous with the leaf candidates (so the
+            // caller knows we saw the name but refused to pick the
+            // wrong container).  If there are none, return NotFound.
+            let bare: Vec<&FuncKey> = gs
+                .lookup_same_lang(q.caller_lang, q.name)
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| arity_matches(k))
+                .collect();
+            return if bare.is_empty() {
+                CalleeResolution::NotFound
+            } else {
+                CalleeResolution::Ambiguous(bare.into_iter().cloned().collect())
+            };
+        }
+
+        // ── Step 2: namespace_qualifier (authoritative for `::` paths) ──
+        if let Some(nq) = q.namespace_qualifier {
+            if let Some(key) = try_qualified(nq) {
+                return CalleeResolution::Resolved(key);
+            }
+            // A `::`-qualified callee names a concrete type or module.  With
+            // no summary in that container it is an external associated
+            // function (stdlib / third-party crate) or a module-path free
+            // function — never a same-leaf METHOD in an unrelated container.
+            // Refuse the caller-container (step 3) and leaf/arity fallbacks
+            // (steps 4/6) that would bind the stdlib `File::open` to the
+            // enclosing `impl V5Reader { fn open }`, or `BufReader::new` to a
+            // unique-arity `UpdateFile::new`.  Allow only a unique same-leaf
+            // FREE function (`crate::util::sanitize` → top-level `fn
+            // sanitize`).  `Self::` / `self::` is a real self-call and defers
+            // to the caller-container step below.
+            if !matches!(nq, "Self" | "self") {
+                let free: Vec<FuncKey> = gs
+                    .lookup_same_lang(q.caller_lang, q.name)
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .filter(|k| k.container.is_empty() && arity_matches(k))
+                    .cloned()
+                    .collect();
+                return match free.len() {
+                    1 => CalleeResolution::Resolved(free[0].clone()),
+                    0 => CalleeResolution::NotFound,
+                    _ => CalleeResolution::Ambiguous(free),
+                };
+            }
+        }
+
+        // ── Step 3: caller self-container ───────────────────────────
+        // Only a call on the caller's own instance can land in the
+        // caller's container.  `repo.find(id)` inside `find` names another
+        // object's method, and `super.init(cfg)` inside `init` names the
+        // supertype's, so neither may resolve to the caller.
+        match q.receiver() {
+            CallReceiver::Own => {
+                if let Some(cc) = q.caller_container
+                    && let Some(key) = try_qualified(cc)
+                {
+                    return CalleeResolution::Resolved(key);
+                }
+            }
+            CallReceiver::Super => {
+                // The nearest supertype that defines the method.  Like step
+                // 4, tolerate a declaration with more parameters than the
+                // call passes (defaults, or Python's explicit `self`).
+                let in_supertype = |sup: &str| -> Option<FuncKey> {
+                    try_qualified(sup).or_else(|| {
+                        let a = q.arity?;
+                        let qual = format!("{sup}::{}", q.name);
+                        let wider: Vec<&FuncKey> = gs
+                            .lookup_qualified(q.caller_lang, &qual)
+                            .into_iter()
+                            .map(|(k, _)| k)
+                            .filter(|k| matches!(k.arity, Some(p) if p > a))
+                            .collect();
+                        (wider.len() == 1).then(|| wider[0].clone())
+                    })
+                };
+                return match q.caller_container {
+                    Some(cc) => gs
+                        .supertypes_of(q.caller_lang, cc)
+                        .iter()
+                        .find_map(|sup| in_supertype(sup))
+                        .map_or(CalleeResolution::NotFound, CalleeResolution::Resolved),
+                    None => CalleeResolution::NotFound,
+                };
+            }
+            CallReceiver::Other => {}
+        }
+
+        // ── Step 4: same-namespace unique leaf ──────────────────────
+        let all_candidates: Vec<&FuncKey> = gs
+            .lookup_same_lang(q.caller_lang, q.name)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        if all_candidates.is_empty() {
+            return CalleeResolution::NotFound;
+        }
+
+        let mut arity_filtered: Vec<&FuncKey> = all_candidates
+            .iter()
+            .copied()
+            .filter(|k| arity_matches(k))
+            .collect();
+        if arity_filtered.is_empty() {
+            // Exact-arity match found nothing. Tolerate under-application:
+            // `FuncKey::arity` is the *total* parameter count, so a call
+            // supplying `a` arguments to a function declared with more
+            // parameters (the surplus being default-valued / optional) is a
+            // routine, valid call shape in Python, JS/TS, PHP, and Ruby. Retry
+            // with `param_count >= call_arity` so these calls still resolve.
+            //
+            // This only ever WIDENS the candidate set, and resolution below
+            // still requires a unique candidate, so a genuinely ambiguous name
+            // degrades to `Ambiguous`, never a wrong `Resolved`. Exact-arity
+            // matches always take precedence (this branch runs only when none
+            // exist), so no existing exact-match resolution regresses.
+            if let Some(a) = q.arity {
+                arity_filtered = all_candidates
+                    .iter()
+                    .copied()
+                    .filter(|k| matches!(k.arity, Some(p) if p >= a))
+                    .collect();
+            }
+            if arity_filtered.is_empty() {
+                return CalleeResolution::NotFound;
+            }
+        }
+
+        let same_ns: Vec<&FuncKey> = arity_filtered
+            .iter()
+            .copied()
+            .filter(|k| k.namespace == q.caller_namespace)
+            .collect();
+        if same_ns.len() == 1 {
+            return CalleeResolution::Resolved(same_ns[0].clone());
+        }
+
+        // ── Step 5: receiver_var tie-break (soft) ───────────────────
+        if let Some(rv) = q.receiver_var
+            && let Some(key) = try_qualified(rv)
+        {
+            return CalleeResolution::Resolved(key);
+        }
+
+        // ── Step 5.5: bare-call free-function preference ────────────
+        // A call with no receiver, no namespace qualifier, and no
+        // authoritative receiver type is syntactically a free-function
+        // invocation: a class method cannot be invoked that way from
+        // outside its own class (intra-class self-calls were already
+        // resolved by step 3).  When the same-namespace candidate set
+        // contains exactly one empty-container entry, it is the
+        // unambiguous target, returning Ambiguous here would be a
+        // silent false negative whenever a top-level helper happens to
+        // share a name with some method elsewhere in the file.
+        let syntactic_bare = q.receiver_type.is_none()
+            && q.namespace_qualifier.is_none()
+            && q.receiver_var.is_none();
+        if syntactic_bare {
+            let empty_container_same_ns: Vec<&FuncKey> = same_ns
+                .iter()
+                .copied()
+                .filter(|k| k.container.is_empty())
+                .collect();
+            if empty_container_same_ns.len() == 1 {
+                return CalleeResolution::Resolved(empty_container_same_ns[0].clone());
+            }
+        }
+
+        // ── Step 6: leaf fallback ───────────────────────────────────
+        if arity_filtered.len() == 1 {
+            return CalleeResolution::Resolved(arity_filtered[0].clone());
+        }
+
+        // Multiple arity-matched candidates remain.  When a qualified
+        // hint was supplied but missed, refuse to guess, a silent
+        // leaf-name pick would defeat the point of qualified-first
+        // resolution.  (`receiver_type` is handled in Step 1 and never
+        // reaches here; `namespace_qualifier` / `caller_container`
+        // missing their target flow through as a soft miss.)
+        if q.has_qualified_hint() {
+            return CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect());
+        }
+
+        // No qualified hints whatsoever, tolerate namespace narrowing.
+        match same_ns.len() {
+            1 => CalleeResolution::Resolved(same_ns[0].clone()),
+            0 => CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect()),
+            _ => CalleeResolution::Ambiguous(same_ns.into_iter().cloned().collect()),
+        }
+    }
+
+    fn populated() -> GlobalSummaries {
+        let mut gs = GlobalSummaries::new();
+        let langs = [Lang::Java, Lang::Python];
+        let namespaces = ["a.java", "b.java", "c.java"];
+        let containers = ["", "A", "B"];
+        let names = ["get", "run", "id"];
+        let mut n = 0u32;
+        for lang in langs {
+            for ns in namespaces {
+                for container in containers {
+                    for name in names {
+                        for arity in 0..3usize {
+                            n += 1;
+                            // Leave gaps so some names are unique in a namespace,
+                            // some ambiguous and some missing.
+                            if (n * 7 + arity as u32) % 3 == 0 {
+                                continue;
+                            }
+                            let kind = if container.is_empty() {
+                                FuncKind::Function
+                            } else {
+                                FuncKind::Method
+                            };
+                            let key = FuncKey::from_parts(
+                                lang,
+                                ns,
+                                container,
+                                name,
+                                Some(arity),
+                                Some(n),
+                                kind,
+                            );
+                            let mut summary = FuncSummary {
+                                name: name.into(),
+                                file_path: ns.into(),
+                                lang: lang.as_str().into(),
+                                param_count: arity,
+                                container: container.into(),
+                                disambig: Some(n),
+                                kind,
+                                ..Default::default()
+                            };
+                            if container == "A" {
+                                summary.hierarchy_edges = vec![("A".into(), "B".into())];
+                            }
+                            gs.insert(key, summary);
+                        }
+                    }
+                }
+            }
+        }
+        gs.install_hierarchy();
+        gs
+    }
+
+    #[test]
+    fn resolve_callee_matches_the_reference_on_every_query_shape() {
+        let gs = populated();
+        let (mut resolved, mut ambiguous, mut not_found) = (0usize, 0usize, 0usize);
+        for lang in [Lang::Java, Lang::Python] {
+            for name in ["get", "run", "id", "missing"] {
+                for caller_namespace in ["a.java", "c.java", "elsewhere.java"] {
+                    for caller_container in [None, Some("A"), Some("B"), Some("Z")] {
+                        for receiver_type in [None, Some("A"), Some("B"), Some("Z")] {
+                            for namespace_qualifier in [None, Some("A"), Some("Self"), Some("util")]
+                            {
+                                for receiver_var in
+                                    [None, Some("this"), Some("super"), Some("A"), Some("other")]
+                                {
+                                    for arity in [None, Some(0), Some(1), Some(3)] {
+                                        let q = CalleeQuery {
+                                            name,
+                                            caller_lang: lang,
+                                            caller_namespace,
+                                            caller_container,
+                                            receiver_type,
+                                            namespace_qualifier,
+                                            receiver_var,
+                                            arity,
+                                        };
+                                        let got = gs.resolve_callee(&q);
+                                        let want = reference_resolve_callee(&gs, &q);
+                                        assert_eq!(got, want, "{q:?}");
+                                        let unique = gs.resolve_callee_unique(&q);
+                                        match &want {
+                                            CalleeResolution::Resolved(k) => {
+                                                resolved += 1;
+                                                assert_eq!(unique.as_ref(), Some(k), "{q:?}");
+                                            }
+                                            CalleeResolution::Ambiguous(_) => {
+                                                ambiguous += 1;
+                                                assert_eq!(unique, None, "{q:?}");
+                                            }
+                                            CalleeResolution::NotFound => {
+                                                not_found += 1;
+                                                assert_eq!(unique, None, "{q:?}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The grid must exercise every outcome, or the comparison proves little.
+        assert!(
+            resolved > 500 && ambiguous > 500 && not_found > 500,
+            "resolved={resolved} ambiguous={ambiguous} not_found={not_found}"
+        );
+    }
+
+    /// A name shared by many functions answers `resolve_callee_unique` without
+    /// the candidate list, and keeps the same answer as `resolve_callee`.
+    #[test]
+    fn unique_resolution_of_a_widely_shared_name() {
+        let mut gs = GlobalSummaries::new();
+        for i in 0..300 {
+            let (k, s) = method_summary(
+                &format!("src/M{i}.java"),
+                &format!("Model{i}"),
+                "getId",
+                0,
+                0,
+            );
+            gs.insert(k, s);
+        }
+        let (k_free, s_free) = free_summary("src/Caller.java", "getId", 0, 0);
+        gs.insert(k_free.clone(), s_free);
+        let q = CalleeQuery {
+            name: "getId",
+            caller_lang: Lang::Java,
+            caller_namespace: "src/Caller.java",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(0),
+        };
+        // Bare call, one free function in the caller's namespace: it wins.
+        assert_eq!(gs.resolve_callee_unique(&q), Some(k_free));
+        // A call on some object cannot pick among 301 candidates.
+        let on_object = CalleeQuery {
+            receiver_var: Some("order"),
+            caller_namespace: "src/Other.java",
+            ..q.clone()
+        };
+        assert_eq!(gs.resolve_callee_unique(&on_object), None);
+        match gs.resolve_callee(&on_object) {
+            CalleeResolution::Ambiguous(keys) => assert_eq!(keys.len(), 301),
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keys_same_lang_borrows_the_index_in_insertion_order() {
+        let mut gs = GlobalSummaries::new();
+        let (k1, s1) = method_summary("src/a.java", "A", "run", 0, 0);
+        let (k2, s2) = method_summary("src/b.java", "B", "run", 0, 0);
+        gs.insert(k1.clone(), s1);
+        gs.insert(k2.clone(), s2);
+        assert_eq!(
+            gs.keys_same_lang(Lang::Java, "run"),
+            &[k1.clone(), k2.clone()]
+        );
+        assert!(gs.keys_same_lang(Lang::Python, "run").is_empty());
+        assert!(gs.keys_same_lang(Lang::Java, "walk").is_empty());
+        assert_eq!(gs.keys_qualified(Lang::Java, "A::run"), &[k1]);
+        // The owned view agrees with the borrowed one.
+        assert_eq!(gs.lookup_same_lang(Lang::Java, "run").len(), 2);
+    }
+}

@@ -58,7 +58,7 @@ use crate::ssa::ir::*;
 use crate::ssa::type_facts::InputValidatorPolarity;
 use crate::state::lattice::Lattice;
 use crate::state::symbol::SymbolInterner;
-use crate::summary::{CallReceiver, CalleeQuery, CalleeResolution, GlobalSummaries, SinkSite};
+use crate::summary::{CallReceiver, CalleeQuery, GlobalSummaries, SinkSite};
 use crate::symbol::{FuncKey, Lang};
 use crate::taint::domain::{PredicateSummary, TaintOrigin, VarTaint, predicate_kind_bit};
 use crate::taint::path_state::{PredicateKind, classify_condition_with_target};
@@ -3368,9 +3368,8 @@ fn inline_analyse_callee_with_seeds(
             receiver_var,
             arity: arity_hint,
         };
-        let res = gs.resolve_callee(&query);
-        match res {
-            CalleeResolution::Resolved(key) => {
+        match gs.resolve_callee_unique(&query) {
+            Some(key) => {
                 let xfile_bodies = transfer.cross_file_bodies?;
                 let body = xfile_bodies.get(&key)?;
                 // Indexed-scan bodies deserialized from SQLite
@@ -3394,7 +3393,7 @@ fn inline_analyse_callee_with_seeds(
                 );
                 (key, body)
             }
-            _ => return None,
+            None => return None,
         }
     };
 
