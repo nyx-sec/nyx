@@ -804,6 +804,98 @@ fn link_alternative_paths(findings: &mut [Finding]) {
     }
 }
 
+/// Bodies of this file that some other body of the same file calls.
+///
+/// Walks every call in every body, the top-level body included (module-scope
+/// code has no function summary, so the call graph never sees its calls),
+/// and resolves each callee the way the taint engine resolves a same-file
+/// call.  Nested calls and calls inside arguments count too.  A call that
+/// resolves to no single local body, or only to the calling body itself,
+/// marks nothing.
+fn bodies_called_in_file(
+    file_cfg: &FileCfg,
+    lang: Lang,
+    namespace: &str,
+    local_summaries: &FuncSummaries,
+) -> HashSet<BodyId> {
+    let mut called: HashSet<BodyId> = HashSet::new();
+    let by_key: HashMap<&FuncKey, BodyId> = file_cfg
+        .bodies
+        .iter()
+        .filter_map(|b| b.meta.func_key.as_ref().map(|k| (k, b.meta.id)))
+        .collect();
+    if by_key.is_empty() {
+        return called;
+    }
+    for caller in &file_cfg.bodies {
+        let caller_container = caller
+            .meta
+            .func_key
+            .as_ref()
+            .map(|k| k.container.as_str())
+            .filter(|c| !c.is_empty());
+        for info in caller.graph.node_weights() {
+            let mut sites: SmallVec<[(&str, Option<usize>); 4]> = SmallVec::new();
+            if let Some(callee) = info.call.callee.as_deref() {
+                sites.push((callee, Some(info.call.arg_uses.len())));
+            }
+            // A source or sink nested in the call (`run(req.query.c)`) takes
+            // over `callee`; the call itself is kept here.
+            if let Some(outer) = info.call.outer_callee.as_deref() {
+                sites.push((outer, None));
+            }
+            if let Some(tree) = info.call.nested_calls.as_deref() {
+                for call in &tree.calls {
+                    sites.push((call.callee.as_str(), call.arity.map(usize::from)));
+                }
+            }
+            for callee in info.arg_callees.iter().flatten() {
+                sites.push((callee.as_str(), None));
+            }
+            for (callee, arity) in sites {
+                let (namespace_qualifier, receiver_var) = ssa_transfer::split_qualifier(callee);
+                let query = crate::summary::CalleeQuery {
+                    name: crate::callgraph::callee_leaf_name(callee),
+                    caller_lang: lang,
+                    caller_namespace: namespace,
+                    caller_container,
+                    receiver_type: None,
+                    namespace_qualifier,
+                    receiver_var,
+                    arity,
+                };
+                if let Some(key) =
+                    ssa_transfer::resolve_local_func_key_query(local_summaries, &query)
+                    && let Some(&id) = by_key.get(&key)
+                    && id != caller.meta.id
+                {
+                    called.insert(id);
+                }
+            }
+        }
+    }
+    called
+}
+
+/// Whether `body` has a known caller: one in this file (`called_in_file`)
+/// or one the pass-2 call graph resolved (see
+/// [`GlobalSummaries::has_known_caller`]).
+fn body_has_known_caller(
+    body: &BodyCfg,
+    namespace: &str,
+    called_in_file: &HashSet<BodyId>,
+    global_summaries: Option<&GlobalSummaries>,
+) -> bool {
+    called_in_file.contains(&body.meta.id)
+        || body.meta.func_key.as_ref().is_some_and(|k| {
+            global_summaries.is_some_and(|gs| {
+                let mut k = k.clone();
+                k.set_namespace(namespace);
+                gs.has_known_caller(&k)
+            })
+        })
+}
+
 /// Compute containment-topological order: parent bodies before children.
 ///
 /// Uses BFS from roots (bodies with no parent), ensuring a body is always
@@ -1032,6 +1124,7 @@ fn analyse_body_with_seed(
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
     parent_var_types: Option<&HashMap<String, crate::ssa::type_facts::TypeKind>>,
     cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
+    has_known_caller: bool,
 ) -> (
     Vec<Finding>,
     Option<HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>,
@@ -1337,7 +1430,13 @@ fn analyse_body_with_seed(
                     Some(&opt.module_aliases)
                 },
                 static_map: static_map_opt.as_ref(),
-                auto_seed_handler_params: matches!(lang, Lang::JavaScript | Lang::TypeScript)
+                // The JS/TS name-based seed stands in for callers the scan
+                // cannot see.  A body with a known caller gets its inbound
+                // taint from that caller through summaries and inlining,
+                // so seeding it would only invent sources (internal helpers
+                // called with literals) or duplicate the call-site flow.
+                auto_seed_handler_params: (matches!(lang, Lang::JavaScript | Lang::TypeScript)
+                    && !has_known_caller)
                     || (lang == Lang::Java
                         && body.meta.kind == crate::cfg::BodyKind::AnonymousFunction),
                 cross_file_bodies,
@@ -1489,6 +1588,12 @@ fn analyse_multi_body(
 ) -> Vec<Finding> {
     let order = containment_order(&file_cfg.bodies);
     let mut all_findings: Vec<Finding> = Vec::new();
+    // Only the JS/TS handler-param seed asks whether a body has a caller.
+    let called_in_file = if matches!(lang, Lang::JavaScript | Lang::TypeScript) {
+        bodies_called_in_file(file_cfg, lang, namespace, local_summaries)
+    } else {
+        HashSet::new()
+    };
 
     // Exit states per body, used to seed children.
     let mut body_exit_states: HashMap<
@@ -1538,6 +1643,7 @@ fn analyse_multi_body(
             cross_file_bodies,
             parent_var_types,
             cross_package_imports,
+            body_has_known_caller(body, namespace, &called_in_file, global_summaries),
         );
         tracing::debug!(
             body_id = body.meta.id.0,
@@ -1760,6 +1866,7 @@ fn analyse_multi_body(
                     cross_file_bodies,
                     parent_var_types,
                     cross_package_imports,
+                    body_has_known_caller(body, namespace, &called_in_file, global_summaries),
                 );
                 // Phase-B: replace (not append) this body's findings
                 // in the cache.  Previous rounds' findings for this

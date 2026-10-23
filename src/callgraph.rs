@@ -1796,6 +1796,53 @@ mod tests {
     }
 
     #[test]
+    fn install_called_keys_skips_self_recursion_and_test_callers() {
+        let js = |name: &str, path: &str, arity: usize, callees: Vec<&str>| {
+            make_summary(name, path, "javascript", arity, callees)
+        };
+        let mut gs = merge_summaries(
+            vec![
+                js("helper", "src/lib.js", 1, vec![]),
+                js("main", "src/app.js", 0, vec!["helper"]),
+                js("walk", "src/walk.js", 1, vec!["walk"]),
+                js("handle", "src/handle.js", 1, vec![]),
+                js("handlesInput", "src/handle.test.js", 0, vec!["handle"]),
+            ],
+            None,
+        );
+        let cg = build_call_graph(&gs, &[]);
+        gs.install_called_keys(&cg);
+        let key = |name: &str, path: &str, arity: usize| {
+            FuncKey::from_parts(
+                Lang::JavaScript,
+                path,
+                String::new(),
+                name,
+                Some(arity),
+                None,
+                crate::symbol::FuncKind::Function,
+            )
+        };
+        assert!(gs.has_known_caller(&key("helper", "src/lib.js", 1)));
+        assert!(
+            !gs.has_known_caller(&key("main", "src/app.js", 0)),
+            "nothing calls main"
+        );
+        assert!(
+            !gs.has_known_caller(&key("walk", "src/walk.js", 1)),
+            "self-recursion is not a caller"
+        );
+        assert!(
+            !gs.has_known_caller(&key("handle", "src/handle.js", 1)),
+            "a test-file caller does not make a handler internal"
+        );
+
+        // A merge invalidates the index until it is installed again.
+        gs.merge(GlobalSummaries::new());
+        assert!(!gs.has_known_caller(&key("helper", "src/lib.js", 1)));
+    }
+
+    #[test]
     fn scc_file_batches_with_metadata_marks_cross_file() {
         // Two mutually-recursive functions in different files → cross_file = true
         let root = Path::new("/proj");

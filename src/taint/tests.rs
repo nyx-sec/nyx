@@ -9235,3 +9235,68 @@ fn negated_null_check_after_guard_is_still_pruned_rust() {
     let fs = analyse_rust_src(src);
     assert!(fs.is_empty(), "{fs:?}");
 }
+
+// ── JS/TS handler-param seed and known callers ──────────────────────────
+//
+// A formal named `cmd` / `input` / `userId` is seeded as user input only when
+// the function has no known caller.  With a caller in view, what reaches the
+// parameter is whatever that caller passes.
+
+#[test]
+fn seed_named_helpers_called_only_with_literals_stay_quiet_js() {
+    let src = b"const { execSync } = require('child_process');\nconst fs = require('fs');\nfunction run(cmd) {\n  return execSync(cmd, { stdio: 'inherit' });\n}\nfunction readInput(input) {\n  return fs.readFileSync(input, 'utf8');\n}\nrun('npm run build');\nrun('npm test');\nconst cfg = JSON.parse(readInput('./config.json'));\nconsole.log(cfg);\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(fs.is_empty(), "every caller passes a literal: {fs:?}");
+}
+
+#[test]
+fn seed_named_helper_called_from_a_function_with_a_literal_stays_quiet_js() {
+    let src = b"const db = require('./db');\nasync function loadUser(userId) {\n  return db.query('SELECT * FROM users WHERE id = ' + userId);\n}\nasync function main() {\n  const u = await loadUser(42);\n  console.log(u);\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(fs.is_empty(), "loadUser's only caller passes 42: {fs:?}");
+}
+
+#[test]
+fn seed_named_function_without_callers_is_still_seeded_js() {
+    let src = b"const { execSync } = require('child_process');\nmodule.exports = function run(cmd) {\n  return execSync(cmd);\n};\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "an entry point with no caller in view keeps the seed"
+    );
+    let arrow = b"const { exec } = require('child_process');\nconst handle = (input) => exec(input);\nmodule.exports = { handle };\n";
+    assert!(!analyse_src(arrow, Lang::JavaScript).is_empty());
+}
+
+#[test]
+fn self_recursion_alone_does_not_count_as_a_caller_js() {
+    let src = b"const { execSync } = require('child_process');\nfunction run(cmd, n) {\n  if (n > 0) return run(cmd, n - 1);\n  return execSync(cmd);\n}\nmodule.exports = run;\n";
+    assert!(!analyse_src(src, Lang::JavaScript).is_empty());
+}
+
+#[test]
+fn helper_called_from_a_route_reports_only_the_call_site_flow_js() {
+    let src = b"const { execSync } = require('child_process');\nconst app = require('express')();\nfunction run(cmd) {\n  return execSync(cmd);\n}\napp.get('/x', (req, res) => {\n  run(req.query.c);\n  res.send('ok');\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(
+        fs.len(),
+        1,
+        "one flow, from req.query.c through run(), not a second one sourced at `cmd`: {fs:?}"
+    );
+}
+
+#[test]
+fn inlined_seed_named_callee_with_literal_argument_stays_quiet_js() {
+    let src = b"const { exec } = require('child_process');\nfunction normalize(input) {\n  return input.trim();\n}\nfunction main() {\n  const c = normalize('ls -la');\n  exec(c);\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(
+        fs.is_empty(),
+        "normalize returns its literal argument: {fs:?}"
+    );
+}
+
+#[test]
+fn seed_named_helpers_called_only_with_literals_stay_quiet_ts() {
+    let src = b"import { execSync } from 'child_process';\nimport * as fs from 'fs';\nfunction readTemplate(input: string) { return fs.readFileSync(input, 'utf8'); }\nfunction git(cmd: string) { return execSync(cmd); }\nfunction main() {\n  readTemplate('./t.html');\n  git('git status');\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::TypeScript);
+    assert!(fs.is_empty(), "{fs:?}");
+}

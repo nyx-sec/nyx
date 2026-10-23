@@ -697,6 +697,12 @@ pub struct GlobalSummaries {
     /// "fall through to today's bare resolution", so the index is
     /// strictly additive.
     hierarchy: Option<crate::callgraph::TypeHierarchyIndex>,
+    /// Functions with at least one resolved caller elsewhere in the
+    /// program, from the pass-2 call graph.  Installed by
+    /// [`Self::install_called_keys`]; empty until then, which reads as "no
+    /// known caller" everywhere.  Consulted by the JS/TS handler-param
+    /// auto-seed, which only stands in for callers the scan cannot see.
+    called_keys: rustc_hash::FxHashSet<FuncKey>,
 }
 
 impl GlobalSummaries {
@@ -1027,6 +1033,8 @@ impl GlobalSummaries {
         // each input; rebuild is O(n) over `by_key.iter()` and is the
         // single source of truth.
         self.hierarchy = None;
+        // Same for the caller index: it is rebuilt from the call graph.
+        self.called_keys.clear();
     }
 
     /// Insert an SSA summary.
@@ -1922,6 +1930,37 @@ impl GlobalSummaries {
     /// Borrow the installed hierarchy index, if any.
     pub fn hierarchy(&self) -> Option<&crate::callgraph::TypeHierarchyIndex> {
         self.hierarchy.as_ref()
+    }
+
+    /// Record which functions the call graph shows a caller for.
+    ///
+    /// Self-recursion does not count, and neither do callers in test files:
+    /// a production handler whose only callers are its tests is still an
+    /// entry point.  Only resolved edges exist in the graph, so an
+    /// ambiguous or unresolved call never marks a function as called.
+    /// `merge()` clears the set, so a forgotten reinstall degrades to "no
+    /// known caller" rather than a stale answer.
+    pub fn install_called_keys(&mut self, cg: &crate::callgraph::CallGraph) {
+        self.called_keys.clear();
+        for edge in cg.graph.edge_indices() {
+            let Some((from, to)) = cg.graph.edge_endpoints(edge) else {
+                continue;
+            };
+            if from == to {
+                continue;
+            }
+            let caller = &cg.graph[from];
+            if crate::ast::is_test_file(std::path::Path::new(&caller.namespace)) {
+                continue;
+            }
+            self.called_keys.insert(cg.graph[to].clone());
+        }
+    }
+
+    /// Whether the installed call graph shows a caller of `key` outside
+    /// `key` itself and outside test files.
+    pub fn has_known_caller(&self, key: &FuncKey) -> bool {
+        self.called_keys.contains(key)
     }
 
     /// Hard cap on hierarchy fan-out from a single call site, see

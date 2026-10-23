@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 702
+    "corpus_size": 703
   },
   "cases": [
     {
@@ -22381,6 +22381,47 @@
       ],
       "disabled": false,
       "notes": "Paired with js-xss-escaped-copy-raw-original-001: rebinding the copy `label` to request data leaves the module constant it was copied from untouched"
+    },
+    {
+      "case_id": "js-cmdi-handler-named-helper-route-caller-001",
+      "file": "javascript/cmdi/cmdi_handler_named_helper_route_caller.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "auto-seed",
+        "handler-param",
+        "interproc"
+      ],
+      "disabled": false,
+      "notes": "run(cmd) has a caller in view, so the flow is req.query.c through run(); the name-based `cmd` seed no longer adds a second finding sourced at the parameter"
     }
   ]
 }

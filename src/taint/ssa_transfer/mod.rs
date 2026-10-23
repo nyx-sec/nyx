@@ -196,7 +196,9 @@ pub struct SsaTaintTransfer<'a> {
     /// auto-seeded with a `UserInput` source on entry.  Defaults to `false`
     /// so summary probes and non-JS/TS pipelines keep their existing
     /// baseline-subtraction semantics; the findings pipeline flips this on
-    /// to detect handler-style flows that have no registered caller.
+    /// to detect handler-style flows that have no registered caller, and
+    /// leaves it off for bodies with a known caller, whose inbound taint
+    /// arrives through summaries and inlining instead.
     pub auto_seed_handler_params: bool,
     /// Cross-file callee bodies sourced from
     /// [`GlobalSummaries`].  Populated in pass 2 to enable
@@ -3606,7 +3608,13 @@ fn inline_analyse_callee_with_seeds(
         promisify_aliases: transfer.promisify_aliases,
         module_aliases: None, // callee body has its own const_values; module aliases not propagated
         static_map: None, // static-map seeding is caller-body local, not propagated to inlined callees
-        auto_seed_handler_params: transfer.auto_seed_handler_params,
+        // A callee being inlined has a caller by definition, and its
+        // `param_seed` says what that caller passes: an empty slot is an
+        // untainted argument, which the JS/TS name-based seed would turn
+        // into a phantom source.  Turning the seed off here also keeps the
+        // shared inline cache independent of which body inlined first.
+        auto_seed_handler_params: transfer.auto_seed_handler_params
+            && !matches!(transfer.lang, Lang::JavaScript | Lang::TypeScript),
         cross_file_bodies: transfer.cross_file_bodies,
         // Inline analysis re-lowers the callee in its own body-local
         // location space; pointer facts are body-relative, so we don't
@@ -7145,8 +7153,10 @@ pub(super) fn transfer_inst(
             // registered caller (typical for controller methods, handler
             // dispatch functions, and stream lambda bodies). Skipped in
             // summary-extraction mode so baseline probes keep their
-            // intrinsic-source contract. Gate is set by the caller, e.g.
-            // always-on for JS/TS, only AnonymousFunction bodies for Java.
+            // intrinsic-source contract. Gate is set by the caller: for
+            // JS/TS only bodies with no known caller in the file or the
+            // call graph (and never inlined callees), for Java only
+            // AnonymousFunction bodies.
             //
             // The `Param` branch fires for both real formal parameters and
             // synthetic externals injected by lowering for free / closure-
@@ -12933,7 +12943,7 @@ fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
 /// produces a `receiver_var`.  When both separators appear, the
 /// last-used one wins, matching the leaf-extraction rule in
 /// [`callee_leaf_name`].
-fn split_qualifier(raw: &str) -> (Option<&str>, Option<&str>) {
+pub(crate) fn split_qualifier(raw: &str) -> (Option<&str>, Option<&str>) {
     if let Some(pos) = raw.rfind("::") {
         let prefix = &raw[..pos];
         let last = prefix.rsplit("::").next().unwrap_or(prefix);
