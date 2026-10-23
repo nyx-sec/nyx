@@ -21945,6 +21945,44 @@
       "notes": "RestTemplate: request parameter as the URL, and as a variable in the authority of the URI template"
     },
     {
+      "case_id": "java-code_injection-002",
+      "file": "java/code_injection/ReflectionMethodName.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "code_injection",
+      "cwe": "CWE-470",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "java.reflection.method_invoke"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "reflection",
+        "get-method"
+      ],
+      "disabled": false,
+      "notes": "Request parameter chooses the method passed to getMethod (unsafe reflection)"
+    },
+    {
       "case_id": "java-safe-jdbctemplate-001",
       "file": "java/safe/SafeJdbcTemplatePlaceholders.java",
       "language": "java",
@@ -22025,6 +22063,33 @@
       "notes": "A request parameter as the body or as a uriVariable under a fixed origin does not choose the host"
     },
     {
+      "case_id": "java-safe-reflection-001",
+      "file": "java/safe/SafeReflectionConstantMethod.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "reflection",
+        "get-method"
+      ],
+      "disabled": false,
+      "notes": "getMethod with a literal name, and the servlet's own request.getMethod()"
+    },
+    {
       "case_id": "java-safe-runtime-exec-001",
       "file": "java/safe/SafeRuntimeExecLiteral.java",
       "language": "java",
@@ -22051,6 +22116,32 @@
       ],
       "disabled": false,
       "notes": "Runtime.getRuntime().exec with a constant command string"
+    },
+    {
+      "case_id": "java-safe-invoke-001",
+      "file": "java/safe/SafeNonMethodInvoke.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.reflection.method_invoke"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "reflection",
+        "precision"
+      ],
+      "disabled": false,
+      "notes": "invoke calls on the class's own helper, a declared user interface and MBeanServer are not Method.invoke"
     },
     {
       "case_id": "java-safe-process-stream-001",

@@ -868,6 +868,15 @@ pub static GATED_SINKS: &[SinkGate] = &[
     destination_gate("RestTemplate.put", Cap::DATA_EXFIL, &[1]),
     destination_gate("RestTemplate.patchForObject", Cap::DATA_EXFIL, &[1]),
     destination_gate("RestTemplate.exchange", Cap::DATA_EXFIL, &[0, 2]),
+    // ── Reflective dispatch by name ───────────────────────────────────────
+    //
+    // `cls.getMethod(name, paramTypes...)` / `getDeclaredMethod`: a
+    // request-chosen `name` is the Struts DispatchAction / DMI style of
+    // unsafe reflection (CWE-470), the method-level twin of
+    // `Class.forName(tainted)`.  A literal name never fires; a call with no
+    // arguments (`request.getMethod()`) has no name to be tainted.
+    method_name_gate("getMethod"),
+    method_name_gate("getDeclaredMethod"),
     // A template that puts a variable in the scheme or authority
     // (`"http://{host}/api"`) does let the uriVariables pick the host, so
     // every argument is SSRF payload there.
@@ -1139,6 +1148,25 @@ const fn destination_gate(
         activation: GateActivation::Destination {
             object_destination_fields: &[],
         },
+    }
+}
+
+/// `Sink(CODE_EXEC)` on a reflective lookup whose first argument is the
+/// method name.  Value-match activation with no dangerous values: a string
+/// literal name suppresses, a computed one fires, and a call with no first
+/// argument stays inert.
+const fn method_name_gate(callee_matcher: &'static str) -> SinkGate {
+    SinkGate {
+        callee_matcher,
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     }
 }
 
@@ -1452,6 +1480,31 @@ mod tests {
         assert_eq!(
             infer_source_kind(Cap::all(), "br.readLine"),
             SourceKind::FileSystem
+        );
+    }
+
+    #[test]
+    fn reflective_lookup_by_name_is_a_gated_code_exec_sink() {
+        use crate::labels::{Cap, DataLabel, classify_gated_sink_with_presence};
+        let fires = |callee: &str, first: Option<&str>, has_arg: bool| {
+            let first = first.map(str::to_string);
+            classify_gated_sink_with_presence(
+                "java",
+                callee,
+                |i| if i == 0 { first.clone() } else { None },
+                |_| None,
+                |_| false,
+                |i| has_arg && i == 0,
+            )
+            .iter()
+            .any(|g| matches!(g.label, DataLabel::Sink(c) if c.contains(Cap::CODE_EXEC)))
+        };
+        assert!(fires("this.getMethod", None, true), "computed name");
+        assert!(fires("cls.getDeclaredMethod", None, true), "computed name");
+        assert!(!fires("cls.getMethod", Some("list"), true), "literal name");
+        assert!(
+            !fires("request.getMethod", None, false),
+            "servlet getMethod() has no name"
         );
     }
 }

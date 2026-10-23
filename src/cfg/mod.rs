@@ -3353,7 +3353,7 @@ pub(super) fn push_node<'a>(
             } else {
                 function_field_text.unwrap_or_else(|| text.clone())
             };
-            let matches = classify_gated_sink_with_presence(
+            let mut matches = classify_gated_sink_with_presence(
                 lang,
                 &gate_callee_text,
                 |idx| {
@@ -3398,6 +3398,10 @@ pub(super) fn push_node<'a>(
                 },
                 |idx| call_has_arg_at(cn, idx),
             );
+
+            if lang == "java" && !matches.is_empty() {
+                java_veto_non_reflective_lookup(ast, &gate_callee_text, code, &mut matches);
+            }
 
             if !matches.is_empty() {
                 // Per-gate filter accumulation.  Each match contributes:
@@ -4258,7 +4262,7 @@ pub(super) fn push_node<'a>(
 /// Simple leaf name of a Java type text: strip generic arguments
 /// (`Session<T>` → `Session`), array brackets (`Foo[]` → `Foo`), and any
 /// package qualifier (`liquibase.database.Database` → `Database`).
-fn java_type_leaf(type_text: &str) -> &str {
+pub(crate) fn java_type_leaf(type_text: &str) -> &str {
     let no_generics = type_text.split('<').next().unwrap_or(type_text);
     let no_array = no_generics.split('[').next().unwrap_or(no_generics);
     no_array.rsplit('.').next().unwrap_or(no_array).trim()
@@ -4523,6 +4527,97 @@ fn java_stream_root(expr: Node, code: &[u8], depth: u8) -> JavaStreamRoot {
     }
 }
 
+/// Every `method_invocation` under `ast` named `name`, outermost first,
+/// without entering lambdas, nested classes or method declarations.
+fn find_java_invocation_named<'a>(ast: Node<'a>, name: &str, code: &[u8]) -> Vec<Node<'a>> {
+    fn walk<'a>(n: Node<'a>, name: &str, code: &[u8], out: &mut Vec<Node<'a>>) {
+        if n.kind() == "method_invocation"
+            && n.child_by_field_name("name")
+                .and_then(|m| m.utf8_text(code).ok())
+                == Some(name)
+        {
+            out.push(n);
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            if matches!(
+                child.kind(),
+                "lambda_expression" | "class_body" | "method_declaration"
+            ) {
+                continue;
+            }
+            walk(child, name, code, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(ast, name, code, &mut out);
+    out
+}
+
+/// Whether `call` can be `java.lang.Class.getMethod` / `getDeclaredMethod`:
+/// it names a method (one argument or more) on a receiver that can hold a
+/// `Class`.  `Class` is final, so an unqualified call, a `this.` / `super.`
+/// call and a call on a receiver declared as another type are the
+/// enclosing code's own helpers or other APIs (`ZipEntry.getMethod()`).  A
+/// bare class name receiver (`Util.getMethod(..)`) is a static helper.
+/// Receivers the file does not settle stay plausible.
+fn java_may_be_class_method_lookup(call: Node, code: &[u8]) -> bool {
+    let has_name_arg = call
+        .child_by_field_name("arguments")
+        .is_some_and(|a| a.named_child(0).is_some());
+    if !has_name_arg {
+        return false;
+    }
+    let Some(object) = call.child_by_field_name("object") else {
+        return false;
+    };
+    match object.kind() {
+        "this" | "super" => false,
+        "identifier" | "field_access" => match java_receiver_declared_type(call, code) {
+            Some(ty) => {
+                let leaf = java_type_leaf(&ty);
+                leaf == "Class"
+                    || leaf == "var"
+                    || (leaf.len() <= 2 && leaf.chars().all(|c| c.is_ascii_uppercase()))
+            }
+            None => {
+                !(object.kind() == "identifier"
+                    && object.utf8_text(code).is_ok_and(|t| {
+                        t.starts_with(|c: char| c.is_ascii_uppercase())
+                            && t.chars().any(|c| c.is_ascii_lowercase())
+                    }))
+            }
+        },
+        _ => true,
+    }
+}
+
+/// Drop the reflective-lookup gate match when no `getMethod` /
+/// `getDeclaredMethod` call in the statement can be `Class.getMethod`.  The
+/// gate is keyed on the callee name, which user helpers and unrelated APIs
+/// share.
+fn java_veto_non_reflective_lookup(
+    ast: Node,
+    callee_text: &str,
+    code: &[u8],
+    matches: &mut SmallVec<[crate::labels::GateMatch; 2]>,
+) {
+    let leaf = callee_text.rsplit('.').next().unwrap_or(callee_text);
+    if !matches!(leaf, "getMethod" | "getDeclaredMethod") {
+        return;
+    }
+    let calls = find_java_invocation_named(ast, leaf, code);
+    if !calls.is_empty()
+        && !calls
+            .iter()
+            .any(|c| java_may_be_class_method_lookup(*c, code))
+    {
+        matches.retain(
+            |g| !matches!(g.label, DataLabel::Sink(c) if c.contains(crate::labels::Cap::CODE_EXEC)),
+        );
+    }
+}
+
 /// Whether the Java call `call` is a stream accessor whose `Source` label
 /// does not apply.
 ///
@@ -4617,23 +4712,32 @@ fn java_call_receiver_decl_type(
     call: Node,
     code: &[u8],
 ) -> Option<crate::ssa::type_facts::TypeKind> {
+    java_receiver_declared_type(call, code).and_then(|ty| java_declared_receiver_kind(&ty))
+}
+
+/// Declared type text of the receiver of a Java `method_invocation`: a plain
+/// identifier resolved through the enclosing scopes (formals, locals, `for` /
+/// `catch` / `try` bindings, fields), or `this.f` resolved against the
+/// enclosing class fields.  `None` for a static receiver (a class name binds
+/// no variable), a chained or otherwise computed receiver, `var` locals
+/// excepted: those return the literal text `var`.
+pub(crate) fn java_receiver_declared_type(call: Node, code: &[u8]) -> Option<String> {
     if call.kind() != "method_invocation" {
         return None;
     }
     let obj = call.child_by_field_name("object")?;
-    let ty = match obj.kind() {
-        "identifier" => resolve_java_var_declared_type(call, &text_of(obj, code)?, code)?,
+    match obj.kind() {
+        "identifier" => resolve_java_var_declared_type(call, &text_of(obj, code)?, code),
         "field_access"
             if obj
                 .child_by_field_name("object")
                 .is_some_and(|o| o.kind() == "this") =>
         {
             let field = text_of(obj.child_by_field_name("field")?, code)?;
-            resolve_java_field_declared_type(call, &field, code)?
+            resolve_java_field_declared_type(call, &field, code)
         }
-        _ => return None,
-    };
-    java_declared_receiver_kind(&ty)
+        _ => None,
+    }
 }
 
 /// Declared type of field `var` in the class enclosing `from` (the inner

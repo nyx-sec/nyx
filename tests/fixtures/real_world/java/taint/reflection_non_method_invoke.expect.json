@@ -1,0 +1,13 @@
+{
+  "description": "invoke(..) calls that cannot be java.lang.reflect.Method.invoke: the class's own helper (bare or via this), a lambda argument, and receivers declared as a user interface or MBeanServer.  The Method.invoke shape in reflection_method_name.java keeps firing.",
+  "tags": ["java", "reflection", "precision"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "line_range": [1, 60],
+      "must_not_match": true,
+      "notes": "none of these receivers can be a Method"
+    }
+  ]
+}

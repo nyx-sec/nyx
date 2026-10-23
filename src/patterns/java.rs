@@ -88,11 +88,27 @@ pub const PATTERNS: &[Pattern] = &[
         category: PatternCategory::Reflection,
         confidence: Confidence::High,
     },
+    // `Method.invoke(Object obj, Object... args)` is an instance method of a
+    // final JDK class, so a hit needs a receiver expression (never an
+    // unqualified, `this.` or `super.` call to the enclosing class's own
+    // `invoke` helper, and never a `new X(..)` receiver since `Method` has no
+    // public constructor) and at least one argument.  The receiver's declared
+    // type and a lambda first argument are judged in `ast_query_diag`, which
+    // a query cannot express.
     Pattern {
         id: "java.reflection.method_invoke",
         description: "Method.invoke() is a reflective method invocation",
         query: r#"(method_invocation
-                     name: (identifier) @id (#eq? @id "invoke"))
+                     object: [
+                       (identifier)
+                       (field_access)
+                       (method_invocation)
+                       (array_access)
+                       (parenthesized_expression)
+                       (cast_expression)
+                     ]
+                     name: (identifier) @id (#eq? @id "invoke")
+                     arguments: (argument_list (_)))
                    @vuln"#,
         severity: Severity::Medium,
         tier: PatternTier::A,

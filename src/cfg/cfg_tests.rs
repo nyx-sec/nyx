@@ -5094,3 +5094,56 @@ fn java_read_line_source_follows_the_reader_root() {
         vec!["req.getReader"]
     );
 }
+
+#[test]
+fn java_get_method_sink_needs_a_class_receiver_and_a_name() {
+    // Callee text of every call node carrying a CODE_EXEC sink.
+    let sinks = |body: &str| -> Vec<String> {
+        let src = format!(
+            "class T {{ void f(Class<?> cls, ZipEntry entry, String n, HttpServletRequest req) throws Exception {{ {body} }} }}"
+        );
+        let file_cfg = parse_to_file_cfg(
+            src.as_bytes(),
+            "java",
+            Language::from(tree_sitter_java::LANGUAGE),
+        );
+        file_cfg
+            .bodies
+            .iter()
+            .flat_map(|b| {
+                b.graph
+                    .node_indices()
+                    .filter(|&i| {
+                        b.graph[i].taint.labels.iter().any(|l| {
+                            matches!(l, crate::labels::DataLabel::Sink(c) if c.contains(crate::labels::Cap::CODE_EXEC))
+                        })
+                    })
+                    .filter_map(|i| b.graph[i].call.callee.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    // A computed name on a Class-typed or unresolved receiver is a sink.
+    assert_eq!(sinks("cls.getMethod(n);"), vec!["cls.getMethod"]);
+    assert_eq!(
+        sinks("cls.getDeclaredMethod(n, String.class);"),
+        vec!["cls.getDeclaredMethod"]
+    );
+    assert_eq!(sinks("this.getClass().getMethod(n);").len(), 1);
+    assert_eq!(sinks("Object m = Foo.class.getMethod(n);").len(), 1);
+    assert_eq!(
+        sinks("Object m = other.getMethod(n);").len(),
+        1,
+        "undeclared receiver is not ruled out"
+    );
+    // A literal name, no name at all, another declared type, a bare class
+    // name and an unqualified or this-call are not.
+    assert!(sinks("cls.getMethod(\"run\");").is_empty());
+    assert!(sinks("String v = req.getMethod();").is_empty());
+    assert!(sinks("int m = entry.getMethod();").is_empty());
+    assert!(sinks("Object m = entry.getMethod(n);").is_empty());
+    assert!(sinks("Object m = Util.getMethod(cls, n);").is_empty());
+    assert!(sinks("Object m = getMethod(cls, n);").is_empty());
+    assert!(sinks("Object m = this.getMethod(cls, n);").is_empty());
+    assert!(sinks("int m = (entry.getMethod() != 8) ? 1 : build(n);").is_empty());
+}
