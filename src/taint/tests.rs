@@ -8992,3 +8992,83 @@ fn try_body_definition_reaches_finally_sink_on_return_path() {
         "const cp = require('child_process');\nfunction h(req) {\n  let v = 'ls';\n  try {\n    v = req.query.cmd;\n    return 1;\n  } finally {\n    cp.exec(v);\n  }\n}\n",
     );
 }
+
+// ── Catch handlers read the definitions live where the try body can raise ──
+//
+// Exception edges are stripped before SSA renaming, so a handler used to be
+// seeded with the definition closest to the entry.  A variable set before
+// the try and reassigned inside it then read as its pre-try value in the
+// handler whenever an earlier branch put the try body in a later block.
+
+#[test]
+fn catch_handler_sees_try_body_assignment_after_a_branch() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "javascript",
+            "const { exec } = require('child_process');\nfunction h(req, res) {\n  let cmd = 'ls';\n  if (req.query.v) { console.log('v'); }\n  try {\n    cmd = req.query.cmd;\n    doSomething();\n  } catch (e) {\n    exec(cmd);\n  }\n}\n",
+        ),
+        (
+            "python",
+            "import os\nfrom flask import request\ndef h():\n    path = '/tmp/default'\n    if request.args.get('v'):\n        print('v')\n    try:\n        path = request.args.get('path')\n        validate(path)\n    except Exception:\n        os.system('rm ' + path)\n",
+        ),
+        (
+            "java",
+            "import javax.servlet.http.*;\npublic class A extends HttpServlet {\n  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    String cmd = \"ls\";\n    if (req.getHeader(\"x\") != null) { resp.setStatus(200); }\n    try {\n      cmd = req.getParameter(\"cmd\");\n      check(cmd);\n    } catch (Exception e) {\n      Runtime.getRuntime().exec(cmd);\n    }\n  }\n  void check(String s) throws Exception {}\n}\n",
+        ),
+        (
+            "php",
+            "<?php\nfunction h() {\n    $cmd = 'ls';\n    if ($_GET['v']) { echo 'v'; }\n    try {\n        $cmd = $_GET['cmd'];\n        doSomething();\n    } catch (Exception $e) {\n        system($cmd);\n    }\n}\n",
+        ),
+        (
+            "ruby",
+            "class C < ApplicationController\n  def h\n    cmd = 'ls'\n    if params[:v]\n      puts 'v'\n    end\n    begin\n      cmd = params[:cmd]\n      work()\n    rescue StandardError => e\n      system(cmd)\n    end\n  end\nend\n",
+        ),
+        // The default-then-override idiom with the override behind a branch.
+        (
+            "javascript",
+            "const { exec } = require('child_process');\nfunction h(req, res) {\n  let cmd = 'ls';\n  try {\n    if (req.query.cmd) { cmd = req.query.cmd; }\n    doSomething();\n  } catch (e) {\n    exec(cmd);\n  }\n}\n",
+        ),
+        // The value is live at the call that raises, ahead of the reassignment.
+        (
+            "javascript",
+            "const { exec } = require('child_process');\nfunction h(req) {\n  let x = req.query.x;\n  try {\n    work();\n    x = 'safe';\n  } catch (e) {\n    exec(x);\n  }\n}\n",
+        ),
+    ];
+    for (slug, src) in cases {
+        assert_taint_fires(slug, src);
+    }
+}
+
+/// A definition that does not reach the handler stays out of it.
+#[test]
+fn catch_handler_does_not_see_unrelated_constants() {
+    let cases: &[(&str, &str)] = &[
+        // Constant everywhere.
+        (
+            "javascript",
+            "const { exec } = require('child_process');\nfunction h(req) {\n  let cmd = 'ls';\n  if (req.query.v) { console.log('v'); }\n  try {\n    cmd = 'pwd';\n    work();\n  } catch (e) {\n    exec(cmd);\n  }\n}\n",
+        ),
+        // The tainted value is overwritten before anything can raise.
+        (
+            "javascript",
+            "const { exec } = require('child_process');\nfunction h(req) {\n  let cmd = req.query.cmd;\n  cmd = 'ls';\n  try {\n    work();\n  } catch (e) {\n    exec(cmd);\n  }\n}\n",
+        ),
+        // Sanitised before the try.
+        (
+            "python",
+            "import os, shlex\nfrom flask import request\ndef h():\n    p = shlex.quote(request.args.get('p'))\n    try:\n        validate(p)\n    except Exception:\n        os.system('rm ' + p)\n",
+        ),
+    ];
+    for (slug, src) in cases {
+        assert_taint_clean(slug, src);
+    }
+}
+
+/// A handler inside another handler sees the outer handler's locals.
+#[test]
+fn nested_catch_handler_sees_outer_handler_local() {
+    assert_taint_fires(
+        "javascript",
+        "const { exec } = require('child_process');\nfunction h(req, res) {\n  try {\n    risky();\n  } catch (e) {\n    const c = req.query.c;\n    try {\n      other();\n    } catch (e2) {\n      exec(c);\n    }\n  }\n}\n",
+    );
+}

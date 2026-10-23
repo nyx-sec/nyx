@@ -314,6 +314,13 @@ fn lower_to_ssa_inner(
 
     // 6. Rename variables (dominator tree preorder walk)
     let dom_tree_children = build_dom_tree_children(num_blocks, &doms, &block_graph);
+    let mut handler_seeds = HandlerSeeds::new(
+        cfg,
+        &blocks_nodes,
+        &block_of_node,
+        &block_succs,
+        &raw_exception_edges,
+    );
     let (
         mut ssa_blocks,
         mut value_defs,
@@ -334,6 +341,7 @@ fn lower_to_ssa_inner(
         formal_params,
         with_params,
         &nop_nodes,
+        &mut handler_seeds,
     );
 
     // 6b. Fill any missing phi operands with a shared Undef sentinel so
@@ -402,7 +410,7 @@ fn lower_to_ssa_inner(
     // downstream findings carry "SSA lowering bailed" provenance, and fall
     // through to the existing orphan handling above, which lowers orphan
     // (catch) subtrees with a locally-built dominator tree and seeds them from
-    // the most entry-dominating reaching definitions.
+    // the definitions live at their exception sources.
     check_catch_block_reachability_gated(&body);
 
     Ok(body)
@@ -413,9 +421,9 @@ fn lower_to_ssa_inner(
 ///
 /// The current lowering's orphan handling (`process_block` fallback in
 /// `rename_variables`) lowers orphan (catch) subtrees via a locally-built
-/// dominator tree and seeds them from the most entry-dominating reaching
-/// definitions, so blocks without predecessors are still renamed and
-/// populated. That keeps catch-block analysis usable but masks CFG-builder
+/// dominator tree and seeds them from the definitions live at their
+/// exception sources (see `HandlerSeeds`), so blocks without predecessors are
+/// still renamed and populated. That keeps catch-block analysis usable but masks CFG-builder
 /// bugs: this gate surfaces them.
 fn check_catch_block_reachability_gated(body: &SsaBody) {
     let result = super::invariants::check_catch_block_reachability(body);
@@ -1039,6 +1047,189 @@ fn compute_entry_reachable(num_blocks: usize, block_succs: &[Vec<usize>]) -> Vec
     reachable
 }
 
+/// Reaching definitions for catch handlers.
+///
+/// Exception edges are stripped before renaming, so a handler is an orphan
+/// block that the dominator walk never enters.  Its variable stacks are
+/// seeded from here instead.  While the main walk (and the walks of the
+/// handlers themselves) pass each node that can raise into a handler, the
+/// values on top of the variable stacks are recorded for that handler.  When
+/// the handler is renamed, a variable that was live at its exception sources
+/// resolves to those values: one value directly, several through an `Assign`
+/// that merges them (a phi without predecessors).
+struct HandlerSeeds {
+    /// Exception-raising CFG node -> SSA blocks of the handlers it can enter.
+    sources: FxHashMap<NodeIndex, SmallVec<[usize; 2]>>,
+    /// Variable names the handler domains read, sorted.  Only these are
+    /// recorded, which keeps the work proportional to what a handler can see.
+    names: Vec<String>,
+    /// Per handler block: variable -> values on top of its stack at each
+    /// exception source, in value order.
+    live: Vec<BTreeMap<String, BTreeSet<SsaValue>>>,
+    /// Per handler block: the blocks holding its exception sources.
+    source_blocks: Vec<Vec<usize>>,
+}
+
+impl HandlerSeeds {
+    fn new(
+        cfg: &Cfg,
+        blocks_nodes: &[Vec<NodeIndex>],
+        block_of_node: &FxHashMap<NodeIndex, usize>,
+        block_succs: &[Vec<usize>],
+        exception_edges: &[(NodeIndex, NodeIndex)],
+    ) -> Self {
+        let num_blocks = blocks_nodes.len();
+        let mut sources: FxHashMap<NodeIndex, SmallVec<[usize; 2]>> = FxHashMap::default();
+        let mut source_blocks: Vec<Vec<usize>> = Vec::new();
+        for &(src, handler) in exception_edges {
+            let (Some(&src_blk), Some(&handler_blk)) =
+                (block_of_node.get(&src), block_of_node.get(&handler))
+            else {
+                continue;
+            };
+            let hs = sources.entry(src).or_default();
+            if !hs.contains(&handler_blk) {
+                hs.push(handler_blk);
+            }
+            if source_blocks.is_empty() {
+                source_blocks = vec![Vec::new(); num_blocks];
+            }
+            if !source_blocks[handler_blk].contains(&src_blk) {
+                source_blocks[handler_blk].push(src_blk);
+            }
+        }
+        if sources.is_empty() {
+            return HandlerSeeds {
+                sources,
+                names: Vec::new(),
+                live: Vec::new(),
+                source_blocks,
+            };
+        }
+
+        // Names read anywhere a handler can see: blocks that only an
+        // exception edge reaches, and everything they lead to.
+        let entry_reachable = compute_entry_reachable(num_blocks, block_succs);
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (blk, nodes) in blocks_nodes.iter().enumerate() {
+            if entry_reachable[blk] {
+                continue;
+            }
+            for &node in nodes {
+                collect_read_names(&cfg[node], &mut names);
+            }
+        }
+        HandlerSeeds {
+            sources,
+            names: names.into_iter().collect(),
+            live: vec![BTreeMap::new(); num_blocks],
+            source_blocks,
+        }
+    }
+
+    /// Record the values live before `node` raises, for every handler it can
+    /// enter.  Called before the node's own definitions are pushed: when it
+    /// raises, those never happen.
+    fn record(&mut self, node: NodeIndex, var_stacks: &FxHashMap<String, Vec<SsaValue>>) {
+        let Some(handlers) = self.sources.get(&node) else {
+            return;
+        };
+        for name in &self.names {
+            let Some(&top) = var_stacks.get(name).and_then(|s| s.last()) else {
+                continue;
+            };
+            for &h in handlers {
+                self.live[h].entry(name.clone()).or_default().insert(top);
+            }
+        }
+    }
+
+    /// Order in which to rename the orphan handler `entries`: a handler whose
+    /// exception sources sit inside another handler comes after it, so the
+    /// outer handler's definitions are recorded before they are read.  Ties
+    /// and cycles fall back to block order.
+    fn handler_order(
+        &self,
+        entries: &[usize],
+        block_succs: &[Vec<usize>],
+        entry_reachable: &[bool],
+    ) -> Vec<usize> {
+        if self.source_blocks.is_empty() || entries.len() < 2 {
+            return entries.to_vec();
+        }
+        // Blocks each entry leads to without leaving the orphan domain.
+        let domain_of = |entry: usize| -> FxHashSet<usize> {
+            let mut seen: FxHashSet<usize> = FxHashSet::default();
+            let mut stack = vec![entry];
+            seen.insert(entry);
+            while let Some(b) = stack.pop() {
+                for &s in &block_succs[b] {
+                    if !entry_reachable[s] && seen.insert(s) {
+                        stack.push(s);
+                    }
+                }
+            }
+            seen
+        };
+        let domains: Vec<FxHashSet<usize>> = entries.iter().map(|&e| domain_of(e)).collect();
+        // deps[i]: entries (by index) whose domain holds a source of entries[i].
+        let deps: Vec<Vec<usize>> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| {
+                (0..entries.len())
+                    .filter(|&j| {
+                        j != i
+                            && self.source_blocks[e]
+                                .iter()
+                                .any(|sb| domains[j].contains(sb))
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut done = vec![false; entries.len()];
+        let mut order = Vec::with_capacity(entries.len());
+        while order.len() < entries.len() {
+            let next = (0..entries.len())
+                .find(|&i| !done[i] && deps[i].iter().all(|&d| done[d]))
+                .or_else(|| (0..entries.len()).find(|&i| !done[i]))
+                .expect("an entry is left");
+            done[next] = true;
+            order.push(entries[next]);
+        }
+        order
+    }
+}
+
+/// Variable names a CFG node reads, plus the root of each dotted path.
+fn collect_read_names(info: &crate::cfg::NodeInfo, names: &mut BTreeSet<String>) {
+    let mut add = |n: &str| {
+        names.insert(n.to_string());
+        if let Some((root, _)) = n.split_once('.') {
+            names.insert(root.to_string());
+        }
+    };
+    for u in &info.taint.uses {
+        add(u);
+    }
+    for group in &info.call.arg_uses {
+        for u in group {
+            add(u);
+        }
+    }
+    if let Some(r) = &info.call.receiver {
+        add(r);
+    }
+    for v in &info.condition_vars {
+        add(v);
+    }
+    if let Some(callee) = &info.call.callee {
+        if let Some((root, _)) = callee.split_once('.') {
+            names.insert(root.to_string());
+        }
+    }
+}
+
 /// Build a dominator-tree children list restricted to the orphan domain.
 ///
 /// The main `simple_fast` walk is rooted at block 0 and never reaches orphan
@@ -1126,6 +1317,7 @@ fn rename_variables(
     formal_params: &[String],
     with_params: bool,
     nop_nodes: &FxHashSet<NodeIndex>,
+    handler_seeds: &mut HandlerSeeds,
 ) -> (
     Vec<SsaBlock>,
     Vec<ValueDef>,
@@ -1235,6 +1427,7 @@ fn rename_variables(
         field_interner: &mut crate::ssa::ir::FieldInterner,
         field_writes: &mut FxHashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
         slot_scoped_assigns: &mut FxHashSet<SsaValue>,
+        seeds: &mut HandlerSeeds,
     ) {
         let block_id = BlockId(block_idx as u32);
 
@@ -1252,6 +1445,7 @@ fn rename_variables(
         // 2. Process body nodes
         for &node in &blocks_nodes[block_idx] {
             let info = &cfg[node];
+            seeds.record(node, var_stacks);
 
             // Helper: build Call args from arg_uses, falling back to info.taint.uses
             let build_call_args = |info: &crate::cfg::NodeInfo,
@@ -2311,6 +2505,7 @@ fn rename_variables(
                 field_interner,
                 field_writes,
                 slot_scoped_assigns,
+                seeds,
             );
         }
 
@@ -2429,6 +2624,7 @@ fn rename_variables(
         &mut field_interner,
         &mut field_writes,
         &mut slot_scoped_assigns,
+        handler_seeds,
     );
 
     // Process orphan blocks (e.g. catch blocks disconnected after exception edge removal).
@@ -2450,30 +2646,22 @@ fn rename_variables(
     let entry_reachable = compute_entry_reachable(num_blocks, block_succs);
     let has_orphans = (1..num_blocks).any(|bid| !entry_reachable[bid]);
     if has_orphans {
-        // Seed var_stacks with the definitions that actually *reach* the catch.
+        // Baseline seed for variables no exception source recorded: the
+        // definition closest to the entry.
         //
-        // The previous implementation rebuilt var_stacks from *all* blocks in
-        // ascending block-id order and took `.last()`, i.e. the highest-block-id
-        // def.  For a variable defined before the `try` (block 0) and re-killed
-        // *after* the `try`/`catch` join (a later, higher-id block — e.g.
-        // `x = "safe"` post-catch), `.last()` picked that post-join kill, which
-        // does NOT reach the handler.  A catch-side `sink(x)` then resolved to
-        // the killed constant instead of the pre-`try` (possibly tainted) value
-        // — a false negative.  (The doc comment further up claiming this is a
-        // sound "all definitions" widening was inaccurate.)
+        // The stacks are rebuilt from the *entry-reachable* blocks (orphan
+        // blocks are renamed below, not used as a seed) in DESCENDING block-id
+        // order, so `.last()` lands on the LOWEST-id, most entry-dominating
+        // definition of each variable.  Block 0 dominates every block,
+        // including the handler, so it wins over a reassignment after the
+        // try/catch join, which does not reach the handler (an ascending
+        // rebuild resolved a handler-side `sink(x)` to such a post-join kill and
+        // masked the pre-try, possibly tainted, value).  A variable defined
+        // only inside the `try` body still keeps a `try`-side definition.
         //
-        // We restrict the rebuild to *entry-reachable* blocks (orphan-domain
-        // blocks are renamed below, not used as a seed) and iterate them in
-        // DESCENDING block-id order so `.last()` lands on the LOWEST-id — i.e.
-        // most entry-dominating — definition of each variable.  Block 0 (which
-        // dominates every block, including the catch) therefore wins over any
-        // post-join reassignment, fixing the reported false negative, while a
-        // variable defined only inside the `try` body still keeps a `try`-side
-        // definition (rather than being dropped), avoiding a new false negative.
-        // Exact reaching-definition resolution for variables redefined along the
-        // protected region would require the pre-strip exception-edge structure,
-        // which isn't available here; this ordering is the conservative
-        // approximation.
+        // Each handler then overrides this for every variable that was live at
+        // one of its exception sources (see `HandlerSeeds`), which is exact for
+        // variables redefined along the protected region.
         var_stacks.clear();
         for bid in (0..num_blocks).rev() {
             if !entry_reachable[bid] {
@@ -2495,30 +2683,80 @@ fn rename_variables(
         let orphan_dom_children =
             build_orphan_dom_tree_children(num_blocks, block_succs, block_preds, &entry_reachable);
 
-        for bid in 1..num_blocks {
-            // Orphan *entries* are orphan-domain blocks with no predecessors
-            // (their only inbound edges were exception edges, now stripped).
-            if !entry_reachable[bid] && block_preds[bid].is_empty() {
-                process_block(
-                    bid,
-                    cfg,
-                    blocks_nodes,
-                    block_succs,
-                    block_preds,
-                    phi_placements,
-                    &orphan_dom_children,
-                    filtered_edges,
-                    &mut var_stacks,
-                    &mut ssa_blocks,
-                    &mut phi_values,
-                    &mut value_defs,
-                    &mut cfg_node_map,
-                    &mut next_value,
-                    nop_nodes,
-                    &mut field_interner,
-                    &mut field_writes,
-                    &mut slot_scoped_assigns,
-                );
+        // Orphan *entries* are orphan-domain blocks with no predecessors
+        // (their only inbound edges were exception edges, now stripped).
+        let entries: Vec<usize> = (1..num_blocks)
+            .filter(|&bid| !entry_reachable[bid] && block_preds[bid].is_empty())
+            .collect();
+        for bid in handler_seeds.handler_order(&entries, block_succs, &entry_reachable) {
+            // Seed the variables live at this handler's exception sources.
+            let live = handler_seeds
+                .live
+                .get_mut(bid)
+                .map(std::mem::take)
+                .unwrap_or_default();
+            let mut undo: Vec<(String, usize)> = Vec::with_capacity(live.len());
+            let mut merges: Vec<SsaInst> = Vec::new();
+            for (name, vals) in &live {
+                let value = if vals.len() == 1 {
+                    vals.iter().copied().next().expect("one value")
+                } else {
+                    // Several definitions reach the handler: merge them in a
+                    // pred-less phi substitute so no real phi needs operands
+                    // for an edge the block graph does not have.
+                    let merged = SsaValue(next_value);
+                    next_value += 1;
+                    let anchor = blocks_nodes[bid][0];
+                    value_defs.push(ValueDef {
+                        var_name: Some(name.clone()),
+                        cfg_node: anchor,
+                        block: BlockId(bid as u32),
+                    });
+                    merges.push(SsaInst {
+                        value: merged,
+                        op: SsaOp::Assign(vals.iter().copied().collect()),
+                        cfg_node: anchor,
+                        var_name: Some(name.clone()),
+                        span: cfg[anchor].ast.span,
+                    });
+                    merged
+                };
+                undo.push((name.clone(), var_stacks.get(name).map_or(0, Vec::len)));
+                var_stacks.entry(name.clone()).or_default().push(value);
+            }
+            if !merges.is_empty() {
+                merges.append(&mut ssa_blocks[bid].body);
+                ssa_blocks[bid].body = merges;
+            }
+
+            process_block(
+                bid,
+                cfg,
+                blocks_nodes,
+                block_succs,
+                block_preds,
+                phi_placements,
+                &orphan_dom_children,
+                filtered_edges,
+                &mut var_stacks,
+                &mut ssa_blocks,
+                &mut phi_values,
+                &mut value_defs,
+                &mut cfg_node_map,
+                &mut next_value,
+                nop_nodes,
+                &mut field_interner,
+                &mut field_writes,
+                &mut slot_scoped_assigns,
+                handler_seeds,
+            );
+
+            for (name, depth) in undo {
+                if depth == 0 {
+                    var_stacks.remove(&name);
+                } else if let Some(stack) = var_stacks.get_mut(&name) {
+                    stack.truncate(depth);
+                }
             }
         }
     }
@@ -3177,11 +3415,10 @@ mod tests {
         //   src --Exception--> catch(e) → sink(x)                       (orphan)
         // `src` branches (b1/b2) so it ends block 0; the `kill` join is a
         // higher-id block.  The buggy ascending+`.last()` rebuild seeded the
-        // catch with the Const kill; the fixed descending rebuild seeds the
-        // most entry-dominating def (the block-0 Source).  A degenerate
-        // straight-line `src→kill` (single coalesced block) is a separate,
-        // documented limitation — exact within-block reaching defs need the
-        // pre-strip exception-point structure, unavailable post-lowering.
+        // catch with the Const kill; the handler seed records the value live
+        // at the exception source (the block-0 Source).  The straight-line
+        // `src→kill` shape, one coalesced block, is covered by
+        // `orphan_catch_sees_value_live_at_the_exception_source`.
         let mut cfg: Cfg = Graph::new();
         let entry = cfg.add_node(make_node(StmtKind::Entry));
         // Pure source (no callee) so it lowers to `SsaOp::Source` and defines x.
@@ -5334,5 +5571,114 @@ mod tests {
                 Terminator::Return(_)
             ));
         }
+    }
+    /// CFG nodes that define the values passed to the first call of `callee`,
+    /// following merge `Assign`s down to their operands.
+    fn arg_def_nodes(ssa: &SsaBody, callee: &str) -> Vec<NodeIndex> {
+        let args: Vec<SsaValue> = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.body.iter())
+            .find_map(|i| match &i.op {
+                SsaOp::Call {
+                    callee: c, args, ..
+                } if c == callee => Some(args.iter().flatten().copied().collect()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no call to {callee}"));
+        let mut out = Vec::new();
+        let mut stack = args;
+        while let Some(v) = stack.pop() {
+            let def = ssa
+                .blocks
+                .iter()
+                .flat_map(|b| b.phis.iter().chain(b.body.iter()))
+                .find(|i| i.value == v)
+                .expect("value has a defining instruction");
+            match &def.op {
+                SsaOp::Assign(ops) if def.var_name.is_some() && ops.len() > 1 => {
+                    stack.extend(ops.iter().copied());
+                }
+                _ => out.push(def.cfg_node),
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn defines(cfg: &Cfg, name: &str) -> Vec<NodeIndex> {
+        cfg.node_indices()
+            .filter(|&n| cfg[n].taint.defines.as_deref() == Some(name))
+            .collect()
+    }
+
+    /// A handler resolves a variable to the value live where the protected
+    /// code can raise, not to the definition closest to the entry.
+    #[test]
+    fn handler_sees_try_body_definition_after_an_earlier_branch() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let cmd = 'ls'; if (req.v) { log('v'); } try { cmd = req.query.cmd; work(); } catch (e) { exec(cmd); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "cmd");
+        let try_def = *defs.last().expect("the try body defines cmd");
+        assert_eq!(arg_def_nodes(&ssa, "exec"), vec![try_def]);
+    }
+
+    /// The straight-line shape, where the pre-try value and the in-try
+    /// reassignment share one block: the handler sees the value live at the
+    /// call that can raise, which is the one before the reassignment.
+    #[test]
+    fn orphan_catch_sees_value_live_at_the_exception_source() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let x = req.query.x; try { work(); x = 'safe'; } catch (e) { sink(x); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "x");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(
+            arg_def_nodes(&ssa, "sink"),
+            vec![defs[0]],
+            "work() raises before x is reassigned"
+        );
+    }
+
+    /// Two reaching definitions at different exception sources merge.
+    #[test]
+    fn handler_merges_definitions_from_several_exception_sources() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(c) { let x = 'a'; try { first(); x = 'b'; second(); } catch (e) { sink(x); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "x");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(arg_def_nodes(&ssa, "sink"), defs);
+        assert!(crate::ssa::invariants::check_structural_invariants(&ssa).is_empty());
+    }
+
+    /// A handler inside another handler sees the outer handler's locals.
+    #[test]
+    fn nested_handler_sees_outer_handler_definition() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { try { a(); } catch (e) { const c = req.query.c; try { b(); } catch (e2) { exec(c); } } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "c");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(arg_def_nodes(&ssa, "exec"), defs);
+    }
+
+    /// A variable defined only after the try, or never reaching a source, is
+    /// not invented in the handler: it keeps the baseline resolution.
+    #[test]
+    fn handler_keeps_baseline_for_unrecorded_variables() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let a = req.query.a; try { work(); } catch (e) { sink(a); } a = 'post'; }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "a");
+        assert_eq!(arg_def_nodes(&ssa, "sink"), vec![defs[0]]);
+        assert!(crate::ssa::invariants::check_structural_invariants(&ssa).is_empty());
     }
 }

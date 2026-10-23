@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 733
+    "corpus_size": 737
   },
   "cases": [
     {
@@ -23364,6 +23364,139 @@
       ],
       "disabled": false,
       "notes": "Recall guard: the finally clause runs on the return path but does not close the stream, so the leak must still be reported."
+    },
+    {
+      "case_id": "js-cmdi-catch-seed-001",
+      "file": "javascript/cmdi/cmdi_catch_sees_try_assignment.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "try-catch",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The handler reads `cmd` as the try body assigned it. Exception edges are stripped before renaming, so the handler used to be seeded with the definition closest to the entry (the constant default) once an earlier branch put the try body in a later block."
+    },
+    {
+      "case_id": "py-cmdi-catch-seed-001",
+      "file": "python/cmdi/cmdi_catch_sees_try_assignment.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "try-except",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The except handler reads `path` as the try body assigned it."
+    },
+    {
+      "case_id": "java-cmdi-catch-seed-001",
+      "file": "java/cmdi/CmdiCatchSeesTryAssignment.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "try-catch",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The catch handler reads `cmd` as the try body assigned it."
+    },
+    {
+      "case_id": "js-safe-catch-seed-001",
+      "file": "javascript/safe/safe_catch_constant_try_assignment.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "try-catch",
+        "reaching-definitions",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "Precision pair for js-cmdi-catch-seed-001: the try body only assigns another constant, so the handler's exec never sees request data."
     }
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "description": "An except handler reads the value the try body assigned before it raised, not the default set before an earlier branch",
+  "tags": ["taint", "cmdi", "try-except", "reaching-definitions"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [17, 17],
+      "evidence_contains": [],
+      "notes": "path = request.args.get(...) in the try body reaches os.system in the handler"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [30, 30],
+      "notes": "the handler only sees constants here (regression guard)"
+    }
+  ]
+}
