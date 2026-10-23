@@ -96,7 +96,12 @@ fn contains_negated_err_identifier(text: &str) -> bool {
 pub struct IncompleteErrorHandling;
 
 /// Check if the true branch of an If node terminates (has Return/Break/Continue).
-fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> bool {
+///
+/// `join` is the If node's immediate post-dominator (see the comment below).
+/// The caller computes the post-dominator tree once per body and passes the
+/// join in, so a body with many error checks does not rebuild the tree per
+/// check.
+fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex, join: Option<NodeIndex>) -> bool {
     // Follow the True edge from the If node
     let true_successors: Vec<NodeIndex> = cfg
         .edges(if_node)
@@ -116,9 +121,7 @@ fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> bool {
     // Without this bound, a trailing `return nil` (present in essentially
     // every Go `func(...) error`) makes the walk report "all paths
     // terminate" and silently suppresses the rule.
-    let join = super::dominators::compute_post_dominators(cfg)
-        .and_then(|pd| pd.immediate_dominator(if_node));
-
+    //
     // Check if any path through the true branch terminates before the join.
     for &start in &true_successors {
         if terminates_on_all_paths(cfg, start, join) {
@@ -406,7 +409,7 @@ impl CfgAnalysis for IncompleteErrorHandling {
 
         // Post-dominators are needed both to bound `branch_terminates`'s
         // walk and to bound the recovery-idiom true-branch walk; compute
-        // once per CFG and reuse for the recovery check below.
+        // once per CFG and reuse for every error check below.
         let post_doms = super::dominators::compute_post_dominators(ctx.cfg);
 
         for idx in ctx.cfg.node_indices() {
@@ -453,8 +456,14 @@ impl CfgAnalysis for IncompleteErrorHandling {
                 continue;
             }
 
+            // The if statement's join point: its immediate post-dominator.
+            // Bounds both the termination walk and the recovery walk below.
+            let join = post_doms
+                .as_ref()
+                .and_then(|pd| pd.immediate_dominator(idx));
+
             // Check: does the true branch terminate?
-            if branch_terminates(ctx.cfg, idx) {
+            if branch_terminates(ctx.cfg, idx, join) {
                 continue;
             }
 
@@ -478,9 +487,6 @@ impl CfgAnalysis for IncompleteErrorHandling {
             // consumes a recovered variable — a sink reading a
             // non-recovered failed value (`if err != nil { log(err) };
             // sink(failed)`) still fires.
-            let join = post_doms
-                .as_ref()
-                .and_then(|pd| pd.immediate_dominator(idx));
             let recovered = collect_true_branch_defines(ctx.cfg, idx, join);
             if !recovered.is_empty()
                 && dangerous
@@ -588,9 +594,16 @@ mod err_ident_tests {
 
 #[cfg(test)]
 mod join_boundary_tests {
-    use super::branch_terminates;
     use crate::cfg::{CallMeta, Cfg, EdgeKind, NodeInfo, StmtKind};
+    use crate::cfg_analysis::dominators::compute_post_dominators;
     use petgraph::graph::NodeIndex;
+
+    /// Run `super::branch_terminates` with the join `run` would pass: the
+    /// If node's immediate post-dominator.
+    fn branch_terminates(cfg: &Cfg, if_n: NodeIndex) -> bool {
+        let join = compute_post_dominators(cfg).and_then(|pd| pd.immediate_dominator(if_n));
+        super::branch_terminates(cfg, if_n, join)
+    }
 
     fn node(kind: StmtKind) -> NodeInfo {
         NodeInfo {
