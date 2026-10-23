@@ -1,0 +1,19 @@
+{
+  "description": "Null-check facts record whether the value is null, whichever operator the code uses, and describe one value of the variable. `=== null` then `!== null` is consistent, and a reassigned variable can be null again, so neither second branch is pruned.",
+  "tags": ["taint", "predicate", "null-check"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [10, 10],
+      "notes": "cfg is non-null after the first return, so `cfg !== null` holds"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [20, 20],
+      "notes": "cfg was reassigned, so the earlier non-null fact no longer applies"
+    }
+  ]
+}

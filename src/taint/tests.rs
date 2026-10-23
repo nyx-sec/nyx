@@ -8917,3 +8917,321 @@ fn counted_loop_accumulator_of_a_copy_keeps_taint_js() {
     let src = b"var cp = require('child_process');\nvar app = require('express')();\napp.get('/run', function(req, res) {\n  var data = req.query.cmd;\n  var cmd = data;\n  for (var i = 0; i < 3; i++) {\n    cmd = cmd + ' --retry';\n  }\n  cp.exec(cmd);\n});\n";
     assert!(unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0);
 }
+
+// ── Name-keyed facts and redefinition ───────────────────────────────────
+//
+// Copy aliases, validation bits and predicate bits are recorded per variable
+// name.  A new definition of a name must not inherit facts about its earlier
+// value, and rebinding one name must not change its copies.
+
+fn analyse_rust_src(src: &[u8]) -> Vec<Finding> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter::Language::from(tree_sitter_rust::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = crate::cfg::build_cfg(&tree, src, "rust", "test.rs", None);
+    analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::Rust,
+        "test.rs",
+        &[],
+        None,
+    )
+}
+
+#[test]
+fn rebinding_a_copy_does_not_taint_the_original_js() {
+    let src = b"const { exec } = require('child_process');\nconst app = require('express')();\nfunction getDefaultCmd() { return 'ls -la'; }\napp.get('/run', (req, res) => {\n  let cmd = getDefaultCmd();\n  let userCmd = cmd;\n  userCmd = req.query.c;\n  console.log(userCmd);\n  exec(cmd);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`userCmd = req.query.c` rebinds the copy, `cmd` stays the constant: {fs:?}"
+    );
+}
+
+#[test]
+fn rebinding_a_copy_of_a_module_constant_does_not_taint_it_js() {
+    let src = b"const { exec } = require('child_process');\nconst app = require('express')();\nconst DEFAULT_CMD = 'uptime';\napp.get('/run', (req, res) => {\n  let label = DEFAULT_CMD;\n  if (req.query.label) {\n    label = req.query.label;\n  }\n  console.log(label);\n  exec(DEFAULT_CMD);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn rebinding_a_copy_does_not_taint_the_original_py() {
+    let src = br#"
+import os
+from flask import request
+def default_cmd():
+    return "ls -la"
+def run():
+    cmd = default_cmd()
+    user_cmd = cmd
+    user_cmd = request.args.get("c")
+    print(user_cmd)
+    os.system(cmd)
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn sanitizing_a_copy_leaves_the_original_raw_js() {
+    let src = b"const escapeHtml = require('escape-html');\nconst app = require('express')();\napp.get('/a', (req, res) => {\n  let x = req.query.a;\n  let y = x;\n  y = escapeHtml(y);\n  console.log(y);\n  res.send(x);\n});\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0,
+        "escaping the copy `y` does not escape `x`"
+    );
+}
+
+#[test]
+fn sanitizing_a_copy_leaves_the_original_raw_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def run():
+    x = request.args.get("c")
+    y = x
+    y = shlex.quote(y)
+    print(y)
+    os.system("echo " + x)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "quoting the copy `y` does not quote `x`"
+    );
+}
+
+#[test]
+fn pointer_write_through_still_taints_the_pointee_go() {
+    // CFG lowering drops `&`, so `p := &cmd` reaches SSA as a copy and the
+    // write `*p = ...` defines `p`.  The name-level alias group is what
+    // carries the write back to `cmd`.
+    let src = b"package main\nimport (\"net/http\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tcmd := \"ls\"\n\tp := &cmd\n\t*p = r.URL.Query().Get(\"c\")\n\texec.Command(\"sh\", \"-c\", cmd).Run()\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Go)) > 0);
+}
+
+#[test]
+fn mut_ref_write_through_still_taints_the_referent_rust() {
+    let src = br#"
+        use std::process::Command;
+        fn main() {
+            let mut a = String::from("ls");
+            let b = &mut a;
+            *b = std::env::var("CMD").unwrap();
+            Command::new("sh").arg("-c").arg(&a).output().unwrap();
+        }"#;
+    assert!(unvalidated_count(&analyse_rust_src(src)) > 0);
+}
+
+const JS_HOST_APP: &str = "const { exec } = require('child_process');\nconst app = require('express')();\nfunction isValidHost(h) { return /^[a-z.]+$/.test(h); }\n";
+
+fn js_host_route(lines: &str) -> Vec<u8> {
+    format!(
+        "{JS_HOST_APP}app.get('/a', (req, res) => {{\n  let host = req.query.host;\n  if (!isValidHost(host)) return res.status(400).send('bad');\n{lines}\n  exec(host);\n}});\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_js() {
+    let fs = analyse_src(
+        &js_host_route("  host = req.query.other;"),
+        Lang::JavaScript,
+    );
+    assert!(
+        unvalidated_count(&fs) > 0,
+        "the second `req.query` read was never validated: {fs:?}"
+    );
+}
+
+#[test]
+fn validation_does_not_survive_concat_of_new_taint_js() {
+    for line in [
+        "  host = host + req.query.extra;",
+        "  const extra = req.query.extra;\n  host = host + extra;",
+        "  const extra = req.query.extra;\n  host = host.concat(extra);",
+        "  const extra = req.query.extra;\n  host = extra;",
+    ] {
+        let fs = analyse_src(&js_host_route(line), Lang::JavaScript);
+        assert!(
+            unvalidated_count(&fs) > 0,
+            "`{line}` mixes unvalidated taint into `host`: {fs:?}"
+        );
+    }
+}
+
+#[test]
+fn validation_survives_self_updates_of_the_validated_value_js() {
+    for line in [
+        "  host = host.trim();",
+        "  host = host.trim().toLowerCase();",
+        "  host = host + '.internal';",
+        "  host = `${host}`;",
+        "  host = host || 'localhost';",
+        "  host = host.replace(/\\.$/, '');",
+    ] {
+        let fs = analyse_src(&js_host_route(line), Lang::JavaScript);
+        assert_eq!(
+            unvalidated_count(&fs),
+            0,
+            "`{line}` only transforms the validated value: {fs:?}"
+        );
+    }
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_py() {
+    let src = br#"
+import os
+from flask import request
+def validate_page(v):
+    return v.isdigit()
+def a():
+    value = request.args["page"]
+    if not validate_page(value):
+        return "bad", 400
+    value = request.args["sort"]
+    os.system(value)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn validation_does_not_survive_a_foreach_binder_reusing_the_name_php() {
+    let src = b"<?php\n$value = $_GET['page'];\nif (!is_numeric($value)) {\n    die('bad');\n}\necho 'page ' . intval($value);\nforeach ($_POST['names'] as $value) {\n    system('echo ' . $value);\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Php)) > 0);
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_java() {
+    let src = b"class Ctl {\n  static boolean isValidName(String s) { return s.matches(\"[a-z]+\"); }\n  void doGet(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    if (!isValidName(name)) {\n      resp.sendError(400);\n      return;\n    }\n    name = req.getParameter(\"other\");\n    Runtime.getRuntime().exec(name);\n  }\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Java)) > 0);
+}
+
+#[test]
+fn inline_source_beside_a_validated_operand_is_not_validated_js() {
+    let src = b"const app = require('express')();\nconst db = require('./db');\nconst SORTS = ['name', 'date'];\napp.get('/items', (req, res) => {\n  const sort = req.query.sort;\n  if (!SORTS.includes(sort)) return res.status(400).end();\n  const sql = 'SELECT * FROM items ORDER BY ' + sort + ' LIMIT ' + req.query.limit;\n  db.query(sql);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(
+        unvalidated_count(&fs) > 0,
+        "`req.query.limit` joins the query unvalidated: {fs:?}"
+    );
+}
+
+#[test]
+fn allowlisted_operand_alone_stays_validated_js() {
+    let src = b"const app = require('express')();\nconst db = require('./db');\nconst SORTS = ['name', 'date'];\napp.get('/items', (req, res) => {\n  const sort = req.query.sort;\n  if (!SORTS.includes(sort)) return res.status(400).end();\n  const sql = 'SELECT * FROM items ORDER BY ' + sort + ' LIMIT 10';\n  db.query(sql);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn inline_source_beside_a_validated_operand_is_not_validated_py() {
+    let src = br#"
+from flask import request
+import sqlite3
+SORTS = ["name", "date"]
+def items():
+    sort = request.args.get("sort")
+    if sort not in SORTS:
+        return "bad", 400
+    conn = sqlite3.connect("x.db")
+    sql = "SELECT * FROM items ORDER BY " + sort + " LIMIT " + request.args.get("limit")
+    conn.execute(sql)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn reused_err_check_after_redefinition_keeps_taint_go() {
+    // After `if err != nil { return }` a later `_, err = ...` is a new
+    // value; its own `err != nil` branch is reachable.
+    let src = b"package main\nimport (\"net/http\"; \"os\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"n\")\n\t_, err := os.Getwd()\n\tif err != nil {\n\t\treturn\n\t}\n\t_, err = os.Stat(\"/tmp/x\")\n\tif err != nil {\n\t\texec.Command(\"sh\", \"-c\", \"echo \"+name).Run()\n\t}\n}\n";
+    let fs = analyse_src(src, Lang::Go);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_error_check_polarity_is_not_a_contradiction_go() {
+    let src = b"package main\nimport (\"net/http\"; \"os\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"n\")\n\t_, err := os.Stat(\"/tmp/x\")\n\tif err == nil {\n\t\treturn\n\t}\n\tif err != nil {\n\t\texec.Command(\"sh\", \"-c\", \"echo \"+name).Run()\n\t}\n}\n";
+    let fs = analyse_src(src, Lang::Go);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_null_check_polarity_is_not_a_contradiction_js() {
+    let src = b"const { execSync } = require('child_process');\nconst app = require('express')();\napp.get('/a', (req, res) => {\n  const cmd = req.query.cmd;\n  const cfg = loadConfig();\n  if (cfg === null) return;\n  if (cfg !== null) {\n    execSync(cmd);\n  }\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_none_check_polarity_is_not_a_contradiction_py() {
+    let src = br#"
+import os
+from flask import request
+def h():
+    cmd = request.args.get("cmd")
+    cfg = load_config()
+    if cfg is None:
+        return "no"
+    if cfg is not None:
+        os.system(cmd)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn opposite_null_check_polarity_is_not_a_contradiction_rust() {
+    let src = br#"
+        use std::env; use std::process::Command;
+        fn main() {
+            let x = env::var("INPUT").unwrap();
+            let y = env::var("OTHER").ok();
+            if y.is_none() { return; }
+            if y.is_some() {
+                Command::new("sh").arg(&x).status().unwrap();
+            }
+        }"#;
+    assert!(unvalidated_count(&analyse_rust_src(src)) > 0);
+}
+
+#[test]
+fn negated_null_check_after_guard_is_still_pruned_py() {
+    // After `if cfg is not None: return` only a None `cfg` reaches the
+    // second check, so its true edge is infeasible: the negated form records
+    // the same "is null" bit as `is None` would.
+    let src = br#"
+import os
+from flask import request
+def h():
+    cmd = request.args.get("cmd")
+    cfg = load_config()
+    if cfg is not None:
+        return "no"
+    if cfg is not None:
+        os.system(cmd)
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn negated_null_check_after_guard_is_still_pruned_rust() {
+    let src = br#"
+        use std::env; use std::process::Command;
+        fn main() {
+            let x = env::var("INPUT").unwrap();
+            let y = env::var("OTHER").ok();
+            if y.is_some() { return; }
+            if y.is_some() {
+                Command::new("sh").arg(&x).status().unwrap();
+            }
+        }"#;
+    let fs = analyse_rust_src(src);
+    assert!(fs.is_empty(), "{fs:?}");
+}

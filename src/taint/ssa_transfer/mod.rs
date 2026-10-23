@@ -1292,6 +1292,11 @@ struct BranchCondClass {
     /// Semantic negation not captured by AST-level `condition_negated`
     /// (Python `not in`, TypeCheck `!==`/`!=`, negative-polarity validator).
     has_semantic_negation: bool,
+    /// For null / empty / error checks, whether the text states the negated
+    /// form (`x != null`, `err == nil`); `None` when no single predicate bit
+    /// describes the condition.  See
+    /// [`crate::taint::path_state::predicate_bit_negative_form`].
+    bit_negated: Option<bool>,
     path: PathBranchClass,
 }
 
@@ -1314,10 +1319,12 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         }
         _ => false,
     };
+    let bit_negated = crate::taint::path_state::predicate_bit_negative_form(kind, cond_text);
     BranchCondClass {
         kind,
         target_var,
         has_semantic_negation,
+        bit_negated,
         path: classify_path_branch(cond_text),
     }
 }
@@ -1483,6 +1490,7 @@ fn compute_succ_states(
                     &effective_vars,
                     kind,
                     true_polarity,
+                    class.bit_negated,
                     transfer.interner,
                     ssa,
                     transfer.base_aliases,
@@ -1493,6 +1501,7 @@ fn compute_succ_states(
                     &effective_vars,
                     kind,
                     false_polarity,
+                    class.bit_negated,
                     transfer.interner,
                     ssa,
                     transfer.base_aliases,
@@ -1749,11 +1758,17 @@ fn compute_succ_states(
 }
 
 /// Apply validation and predicate bits for a branch edge.
+///
+/// `bit_negated` says whether a null / empty / error check is written in its
+/// negated form, so the recorded bit states the same fact (value is null,
+/// error present, collection empty) whichever operator the code used.
+/// `None` records no bit.
 fn apply_branch_predicates(
     state: &mut SsaTaintState,
     condition_vars: &[String],
     kind: PredicateKind,
     polarity: bool,
+    bit_negated: Option<bool>,
     interner: &SymbolInterner,
     ssa: &SsaBody,
     base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
@@ -1824,7 +1839,8 @@ fn apply_branch_predicates(
     }
 
     // Whitelisted predicate kinds: update PredicateSummary bits
-    if let Some(bit_idx) = predicate_kind_bit(kind) {
+    if let (Some(bit_idx), Some(negated)) = (predicate_kind_bit(kind), bit_negated) {
+        let fact_holds = polarity != negated;
         for var in condition_vars {
             if let Some(sym) = interner.get(var) {
                 let mut summary = state
@@ -1833,7 +1849,7 @@ fn apply_branch_predicates(
                     .ok()
                     .map(|idx| state.predicates[idx].1)
                     .unwrap_or_else(PredicateSummary::empty);
-                if polarity {
+                if fact_holds {
                     summary.known_true |= 1 << bit_idx;
                 } else {
                     summary.known_false |= 1 << bit_idx;
@@ -4934,6 +4950,90 @@ fn try_apply_promise_combinator(
     true
 }
 
+/// Drop the name-keyed facts a new definition makes stale.
+///
+/// `validated_must` / `validated_may` and `predicates` are keyed by variable
+/// name, so they describe whichever SSA value of that name is current.  A
+/// definition that does not read the old value (`x = req.query.other`, a Go
+/// `:=` shadow, a foreach binder that reuses the name) starts with none of
+/// them.  A self-update keeps the old value's validation only when nothing
+/// unvalidated is mixed in: `x = x.trim()` stays validated, while
+/// `x = x + req.query.extra` or `x = x + y` with an unvalidated `y` does not.
+/// `validated_may` survives a mixed self-update because part of the new
+/// value is still the validated one.  Predicate bits (null, empty and error
+/// checks) describe one value and go on every redefinition.
+///
+/// Runs before the op arm, so the arms that validate a definition on their
+/// own terms (every tainted operand validated, a validating wrapper, a
+/// validated-param summary) insert into a state that no longer holds the
+/// stale bit.  Field projections read a location rather than redefine a
+/// name, and the synthetic base update behind `obj.f = rhs` updates `obj`
+/// in place, so neither drops anything.
+fn kill_redefined_symbol_facts(
+    inst: &SsaInst,
+    info: &NodeInfo,
+    ssa: &SsaBody,
+    transfer: &SsaTaintTransfer,
+    state: &mut SsaTaintState,
+) {
+    if state.validated_must.is_empty()
+        && state.validated_may.is_empty()
+        && state.predicates.is_empty()
+    {
+        return;
+    }
+    if matches!(
+        inst.op,
+        SsaOp::Phi(_)
+            | SsaOp::Param { .. }
+            | SsaOp::SelfParam
+            | SsaOp::Nop
+            | SsaOp::Undef
+            | SsaOp::FieldProj { .. }
+    ) || ssa.field_writes.contains_key(&inst.value)
+    {
+        return;
+    }
+    let value_name =
+        |v: SsaValue| -> Option<&str> { ssa.value_defs.get(v.0 as usize)?.var_name.as_deref() };
+    let Some(name) = value_name(inst.value) else {
+        return;
+    };
+    let Some(sym) = transfer.interner.get(name) else {
+        return;
+    };
+    if let Ok(idx) = state.predicates.binary_search_by_key(&sym, |(id, _)| *id) {
+        state.predicates.remove(idx);
+    }
+    let must = state.validated_must.contains(sym);
+    if !must && !state.validated_may.contains(sym) {
+        return;
+    }
+    let operands = inst_use_values(inst);
+    let self_update = operands.iter().any(|&v| value_name(v) == Some(name));
+    let introduces_source = (info
+        .taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Source(_)))
+        && !ssa.slot_scoped_assigns.contains(&inst.value))
+        || operands::may_hold_nested_sources(info);
+    if !self_update || introduces_source {
+        state.validated_must.remove(sym);
+        state.validated_may.remove(sym);
+        return;
+    }
+    let mixes_unvalidated = must
+        && operands.iter().any(|&v| {
+            value_name(v) != Some(name)
+                && state.get(v).is_some_and(|t| !t.caps.is_empty())
+                && !ssa_value_validated_bits(v, ssa, transfer.interner, state).0
+        });
+    if mixes_unvalidated {
+        state.validated_must.remove(sym);
+    }
+}
+
 /// Transfer a single SSA instruction.
 pub(super) fn transfer_inst(
     inst: &SsaInst,
@@ -4943,6 +5043,8 @@ pub(super) fn transfer_inst(
     state: &mut SsaTaintState,
 ) {
     let info = &cfg[inst.cfg_node];
+
+    kill_redefined_symbol_facts(inst, info, ssa, transfer, state);
 
     // Cross-file abstract return fact from callee resolution.
     // Set inside the Call arm, applied after transfer_abstract to override Top.
@@ -5430,6 +5532,11 @@ pub(super) fn transfer_inst(
             let url_is_hardcoded_safe =
                 node_is_hardcoded_network_fetch_source(info) || url_prefix_safe_via_abs;
 
+            // Set when this node's own Source label put fresh taint on the
+            // result.  Such a result does not inherit its operands'
+            // validation below: `'... ' + sort + ' LIMIT ' + req.query.limit`
+            // is not validated just because `sort` passed an allowlist.
+            let mut fresh_source_applied = false;
             for lbl in &info.taint.labels {
                 if let DataLabel::Source(bits) = lbl {
                     if url_is_hardcoded_safe {
@@ -5437,6 +5544,7 @@ pub(super) fn transfer_inst(
                         // source suppression rationale above.
                         continue;
                     }
+                    fresh_source_applied |= !bits.is_empty();
                     return_bits |= *bits;
                     let callee_str = info.call.callee.as_deref().unwrap_or("");
                     let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
@@ -6098,7 +6206,7 @@ pub(super) fn transfer_inst(
                     // residual finding in the patched fixture for
                     // CVE-2026-25544 even though the SQL injection itself is
                     // suppressed.
-                    if !return_bits.is_empty() {
+                    if !return_bits.is_empty() && !fresh_source_applied {
                         let mut all_args_validated = true;
                         let mut any_tainted_arg = false;
                         let check_value = |v: SsaValue, state: &SsaTaintState| -> Option<bool> {
@@ -6183,6 +6291,7 @@ pub(super) fn transfer_inst(
                             sanitizer_bits,
                             aliases,
                             ssa,
+                            transfer.lang,
                         );
                     }
                 }
@@ -6477,6 +6586,7 @@ pub(super) fn transfer_inst(
                             &return_origins,
                             aliases,
                             ssa,
+                            transfer.lang,
                         );
                     }
                 }
@@ -6686,7 +6796,15 @@ pub(super) fn transfer_inst(
                 if let Some(aliases) = transfer.base_aliases
                     && !aliases.is_empty()
                 {
-                    propagate_taint_to_aliases(inst, state, sib.caps, &sib.origins, aliases, ssa);
+                    propagate_taint_to_aliases(
+                        inst,
+                        state,
+                        sib.caps,
+                        &sib.origins,
+                        aliases,
+                        ssa,
+                        transfer.lang,
+                    );
                 }
             }
 
@@ -6767,6 +6885,7 @@ pub(super) fn transfer_inst(
                             sanitizer_bits,
                             aliases,
                             ssa,
+                            transfer.lang,
                         );
                     }
                 }
@@ -6778,9 +6897,11 @@ pub(super) fn transfer_inst(
             // SsaValue into `ssa.slot_scoped_assigns`).  Operand union still
             // ran above, so transitive taint via inner uses propagates.
             let suppress_node_source = ssa.slot_scoped_assigns.contains(&inst.value);
+            let mut node_source_applied = false;
             if !suppress_node_source {
                 for lbl in &info.taint.labels {
                     if let DataLabel::Source(bits) = lbl {
+                        node_source_applied |= !bits.is_empty();
                         combined_caps |= *bits;
                         let callee_str = info.call.callee.as_deref().unwrap_or("");
                         let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
@@ -6805,6 +6926,7 @@ pub(super) fn transfer_inst(
                             &combined_origins,
                             aliases,
                             ssa,
+                            transfer.lang,
                         );
                     }
                 }
@@ -6833,9 +6955,11 @@ pub(super) fn transfer_inst(
                 // scalar counterpart to the field-cell `must_all`/`may_any`
                 // lift below and closes the "validate-each-part then rebuild"
                 // idiom (DVWA exec/source/impossible.php).
-                let mut tainted_must_all = true;
+                // A Source label on this node is fresh taint that no
+                // operand vouches for, so it counts as an unvalidated part.
+                let mut tainted_must_all = !node_source_applied;
                 let mut tainted_may_any = false;
-                let mut saw_tainted = false;
+                let mut saw_tainted = node_source_applied;
                 for &u in uses {
                     if state.get(u).is_some() {
                         saw_tainted = true;
@@ -9139,22 +9263,31 @@ fn collect_block_events(
                     // Copy-alias-aware validation: the branch guard records
                     // `validated_must` keyed by the condition's variable name
                     // (e.g. `uri` in `if !in_array(uri, allow)`), but the
-                    // value reaching the sink can be reported under a must-
-                    // alias name after copy propagation / an elided container
-                    // index (`uri := parts[1]` lowers to `uri = assign(parts)`,
-                    // so the sink taint may surface as `parts`).  Mirror
-                    // `clear_cap_alias_aware`: treat the value as validated when
-                    // any of its copy must-aliases is in `validated_must`.
-                    // Sound because `base_aliases` groups only pure-copy
-                    // must-aliases (the same SSA value under different names).
-                    // Motivated by CVE-2026-21859 (Mailpit `InArray(uri, links)`
-                    // SSRF allowlist reached through a base64/split-derived uri).
-                    if let Some(aliases) = transfer.base_aliases.and_then(|a| a.aliases_of(name)) {
-                        if aliases.iter().any(|alias| {
-                            transfer
-                                .interner
-                                .get(alias)
-                                .is_some_and(|sym| state.validated_must.contains(sym))
+                    // value reaching the sink can be reported under the name
+                    // it was copied from after copy propagation / an elided
+                    // container index (`uri := parts[1]` lowers to
+                    // `uri = assign(parts)`, so the sink taint may surface as
+                    // `parts`).  Treat the value as validated when one of its
+                    // own copies is validated under the copy's name.  The bit
+                    // is keyed by name, so it only speaks for the copy when
+                    // that name has no other definition: after
+                    // `host = extra` a stale bit from an earlier `host` must
+                    // not vouch for `extra`.  Motivated by CVE-2026-21859
+                    // (Mailpit `InArray(uri, links)` SSRF allowlist reached
+                    // through a base64/split-derived uri).
+                    if let Some(aliases) = transfer.base_aliases {
+                        if aliases.copies_of(*val).any(|copy| {
+                            ssa.value_defs
+                                .get(copy.0 as usize)
+                                .and_then(|vd| vd.var_name.as_deref())
+                                .is_some_and(|copy_name| {
+                                    copy_name != name
+                                        && name_has_single_definition(ssa, copy_name)
+                                        && transfer
+                                            .interner
+                                            .get(copy_name)
+                                            .is_some_and(|sym| state.validated_must.contains(sym))
+                                })
                         }) {
                             return true;
                         }
@@ -11381,6 +11514,17 @@ fn is_url_accessor_method(callee: &str) -> bool {
     )
 }
 
+/// Whether exactly one SSA value in `ssa` is named `name`, so a name-keyed
+/// fact about `name` can only describe that value.
+fn name_has_single_definition(ssa: &SsaBody, name: &str) -> bool {
+    ssa.value_defs
+        .iter()
+        .filter(|vd| vd.var_name.as_deref() == Some(name))
+        .take(2)
+        .count()
+        == 1
+}
+
 /// Locate the [`SsaInst`] that defines `v` within its declared block.
 /// Returns `None` only when the SSA body is malformed (the instruction
 /// table and `value_defs` table disagree on which block defines `v`).
@@ -11396,17 +11540,48 @@ fn find_inst_for_value(v: SsaValue, ssa: &SsaBody) -> Option<&SsaInst> {
 
 // ── Alias-Aware Sanitization ────────────────────────────────────────────
 
+/// Whether defining a plain identifier can write through to a copy of it.
+///
+/// CFG lowering drops `&x` / `&mut x` and C++ reference binders, so
+/// `p := &cmd` (Go), `let b = &mut a` (Rust) and `T& b = a` (C++) reach SSA
+/// as the plain copy `p = cmd`, and the later `*p = v` / `b = v` defines the
+/// pointer's own name.  In those languages the name-level alias groups are
+/// what carries the write back to the pointee.  Everywhere else rebinding a
+/// local never changes its copies: `b = a; b = req.query.c` leaves `a` alone
+/// and `b = escape(b)` does not sanitize `a`.  Writes through a shared object
+/// (`b.f = v`, `b.push(v)`) go through the dotted-path branch, the receiver
+/// value and the points-to cells instead.
+fn plain_ident_rebind_may_write_through(lang: Lang) -> bool {
+    matches!(lang, Lang::Go | Lang::Rust | Lang::C | Lang::Cpp)
+}
+
+/// The values a plain-identifier definition at `inst` must update besides
+/// itself, in a language where rebinding cannot write through: the copies
+/// copy propagation eliminated in favour of `inst.value`.  A stale reference
+/// to such a copy (a `Return` terminator or a FieldProj receiver, which copy
+/// propagation does not rewrite) still reads the value defined here.
+fn plain_ident_copy_targets(
+    inst: &SsaInst,
+    aliases: &crate::ssa::alias::BaseAliasResult,
+) -> SmallVec<[SsaValue; 8]> {
+    aliases.copies_of(inst.value).collect()
+}
+
 /// After sanitizing `inst`, propagate the sanitization to must-aliased field paths.
 ///
 /// When `alias.data` is sanitized and `alias` and `obj` are base aliases (from
 /// copy propagation), this function also sanitizes `obj.data` in the taint state.
-/// For plain idents (no dot), sanitizing `alias` also sanitizes `obj`.
+/// For plain idents (no dot), sanitizing `alias` also sanitizes `obj` in the
+/// languages where rebinding can write through (see
+/// [`plain_ident_rebind_may_write_through`]); elsewhere only the eliminated
+/// copies of `inst.value` itself follow it.
 fn propagate_sanitization_to_aliases(
     inst: &SsaInst,
     state: &mut SsaTaintState,
     sanitizer_bits: Cap,
     aliases: &crate::ssa::alias::BaseAliasResult,
     ssa: &SsaBody,
+    lang: Lang,
 ) {
     let var_name = match inst.var_name.as_deref() {
         Some(n) => n,
@@ -11419,52 +11594,47 @@ fn propagate_sanitization_to_aliases(
         None => (var_name, ""),
     };
 
-    let alias_bases = match aliases.aliases_of(base) {
-        Some(bases) => bases,
-        None => return,
-    };
-
-    // Collect SsaValues to sanitize (avoid borrowing state while iterating).
-    let to_sanitize: SmallVec<[SsaValue; 8]> = state
-        .values
-        .iter()
-        .filter_map(|&(v, ref t)| {
-            if t.caps.is_empty() {
-                return None;
-            }
-            let vdef_name = ssa.value_defs.get(v.0 as usize)?.var_name.as_deref()?;
-
-            // For each alias base, check if the value's var_name matches
-            // the aliased field path.
-            for alias_base in alias_bases {
-                if alias_base == base {
-                    continue; // skip self, already sanitized
-                }
-                let target = if suffix.is_empty() {
-                    // Plain ident: look for exact match on alias base
-                    alias_base.as_str()
-                } else {
-                    // Can't construct target without allocation; check inline
-                    ""
-                };
-
-                if suffix.is_empty() {
-                    if vdef_name == target {
-                        return Some(v);
+    let to_sanitize: SmallVec<[SsaValue; 8]> =
+        if suffix.is_empty() && !plain_ident_rebind_may_write_through(lang) {
+            plain_ident_copy_targets(inst, aliases)
+        } else {
+            let alias_bases = match aliases.aliases_of(base) {
+                Some(bases) => bases,
+                None => return,
+            };
+            // Collect SsaValues to sanitize (avoid borrowing state while iterating).
+            state
+                .values
+                .iter()
+                .filter_map(|&(v, ref t)| {
+                    if t.caps.is_empty() {
+                        return None;
                     }
-                } else {
-                    // Dotted path: check if vdef_name == "{alias_base}{suffix}"
-                    if vdef_name.len() == alias_base.len() + suffix.len()
-                        && vdef_name.starts_with(alias_base.as_str())
-                        && vdef_name.ends_with(suffix)
-                    {
-                        return Some(v);
+                    let vdef_name = ssa.value_defs.get(v.0 as usize)?.var_name.as_deref()?;
+
+                    // For each alias base, check if the value's var_name matches
+                    // the aliased field path.
+                    for alias_base in alias_bases {
+                        if alias_base == base {
+                            continue; // skip self, already sanitized
+                        }
+                        if suffix.is_empty() {
+                            // Plain ident: look for exact match on alias base
+                            if vdef_name == alias_base.as_str() {
+                                return Some(v);
+                            }
+                        } else if vdef_name.len() == alias_base.len() + suffix.len()
+                            && vdef_name.starts_with(alias_base.as_str())
+                            && vdef_name.ends_with(suffix)
+                        {
+                            // Dotted path: vdef_name == "{alias_base}{suffix}"
+                            return Some(v);
+                        }
                     }
-                }
-            }
-            None
-        })
-        .collect();
+                    None
+                })
+                .collect()
+        };
 
     for v in to_sanitize {
         if let Some(taint) = state.get(v) {
@@ -11491,7 +11661,10 @@ fn propagate_sanitization_to_aliases(
 ///
 /// When `obj.data` receives taint and `obj` and `alias` are base aliases (from
 /// copy propagation), this function also taints `alias.data` in the taint state.
-/// For plain idents (no dot), tainting `obj` also taints `alias`.
+/// For plain idents (no dot), tainting `obj` also taints `alias` in the
+/// languages where rebinding can write through (see
+/// [`plain_ident_rebind_may_write_through`]); elsewhere only the eliminated
+/// copies of `inst.value` itself pick the taint up.
 ///
 /// Uses only the existing `BaseAliasResult` alias groups, no new alias inference.
 fn propagate_taint_to_aliases(
@@ -11501,6 +11674,7 @@ fn propagate_taint_to_aliases(
     taint_origins: &SmallVec<[TaintOrigin; 2]>,
     aliases: &crate::ssa::alias::BaseAliasResult,
     ssa: &SsaBody,
+    lang: Lang,
 ) {
     let var_name = match inst.var_name.as_deref() {
         Some(n) => n,
@@ -11513,41 +11687,42 @@ fn propagate_taint_to_aliases(
         None => (var_name, ""),
     };
 
-    let alias_bases = match aliases.aliases_of(base) {
-        Some(bases) => bases,
-        None => return,
-    };
-
-    // Collect SsaValues to taint. Iterate value_defs (not state.values) because
-    // target alias values may not yet be in the taint state.
-    let to_taint: SmallVec<[SsaValue; 8]> = ssa
-        .value_defs
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, vdef)| {
-            let vdef_name = vdef.var_name.as_deref()?;
-            for alias_base in alias_bases {
-                if alias_base == base {
-                    continue; // skip self, already tainted
-                }
-                if suffix.is_empty() {
-                    // Plain ident: look for exact match on alias base
-                    if vdef_name == alias_base.as_str() {
-                        return Some(SsaValue(idx as u32));
+    let to_taint: SmallVec<[SsaValue; 8]> =
+        if suffix.is_empty() && !plain_ident_rebind_may_write_through(lang) {
+            plain_ident_copy_targets(inst, aliases)
+        } else {
+            let alias_bases = match aliases.aliases_of(base) {
+                Some(bases) => bases,
+                None => return,
+            };
+            // Collect SsaValues to taint. Iterate value_defs (not state.values)
+            // because target alias values may not yet be in the taint state.
+            ssa.value_defs
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, vdef)| {
+                    let vdef_name = vdef.var_name.as_deref()?;
+                    for alias_base in alias_bases {
+                        if alias_base == base {
+                            continue; // skip self, already tainted
+                        }
+                        if suffix.is_empty() {
+                            // Plain ident: look for exact match on alias base
+                            if vdef_name == alias_base.as_str() {
+                                return Some(SsaValue(idx as u32));
+                            }
+                        } else if vdef_name.len() == alias_base.len() + suffix.len()
+                            && vdef_name.starts_with(alias_base.as_str())
+                            && vdef_name.ends_with(suffix)
+                        {
+                            // Dotted path: vdef_name == "{alias_base}{suffix}"
+                            return Some(SsaValue(idx as u32));
+                        }
                     }
-                } else {
-                    // Dotted path: check if vdef_name == "{alias_base}{suffix}"
-                    if vdef_name.len() == alias_base.len() + suffix.len()
-                        && vdef_name.starts_with(alias_base.as_str())
-                        && vdef_name.ends_with(suffix)
-                    {
-                        return Some(SsaValue(idx as u32));
-                    }
-                }
-            }
-            None
-        })
-        .collect();
+                    None
+                })
+                .collect()
+        };
 
     for v in to_taint {
         if let Some(existing) = state.get(v) {

@@ -1199,6 +1199,75 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     PredicateKind::Unknown
 }
 
+/// Whether a null, error or empty check is written in its negated form.
+///
+/// The predicate bits for these kinds record a fact about the value: bit set
+/// in `known_true` means the value is null / holds an error / is empty.  The
+/// condition text can state either side (`x == null` or `x != null`,
+/// `err != nil` or `err == nil`), so the branch that makes the fact true
+/// depends on the operator.  Returns `Some(true)` for the negated form
+/// (`x != null`, `err == nil`, `.length != 0`), `Some(false)` for the plain
+/// form, and `None` for other kinds or when the text holds both forms
+/// (`a != null && b == null`), where no single bit describes the condition.
+///
+/// The negated markers are matched first and blanked out, because the `==`
+/// inside `!==` would otherwise read as the plain form.
+pub fn predicate_bit_negative_form(kind: PredicateKind, text: &str) -> Option<bool> {
+    let (negated, plain): (&[&str], &[&str]) = match kind {
+        PredicateKind::NullCheck => (
+            &[
+                "!== null",
+                "!= null",
+                "!= nil",
+                "!= none",
+                "is not none",
+                "is_some",
+            ],
+            &[
+                "=== null", "== null", "== nil", "== none", "is none", "is_none",
+            ],
+        ),
+        PredicateKind::ErrorCheck => (
+            &["err == nil", "error == nil", "is_ok"],
+            &["err != nil", "error != nil", "is_err"],
+        ),
+        PredicateKind::EmptyCheck => (
+            &[
+                ".len() != 0",
+                ".length !== 0",
+                ".length != 0",
+                "!== \"\"",
+                "!= \"\"",
+                "!== ''",
+                "!= ''",
+            ],
+            &[
+                "is_empty",
+                ".len() == 0",
+                ".length === 0",
+                ".length == 0",
+                "== \"\"",
+                "== ''",
+            ],
+        ),
+        _ => return None,
+    };
+    let mut rest = text.to_ascii_lowercase();
+    let mut has_negated = false;
+    for marker in negated {
+        if rest.contains(marker) {
+            has_negated = true;
+            rest = rest.replace(marker, " ");
+        }
+    }
+    let has_plain = plain.iter().any(|m| rest.contains(m));
+    match (has_negated, has_plain) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
 /// Classify a condition AND extract the specific validated variable target.
 ///
 /// For `ValidationCall`/`SanitizerCall`, tries to extract the first argument
@@ -1801,6 +1870,36 @@ mod tests {
             classify_condition("x.length === 0"),
             PredicateKind::EmptyCheck
         );
+    }
+
+    #[test]
+    fn predicate_bit_negative_form_reads_the_operator() {
+        use PredicateKind::*;
+        let neg = |k, t| predicate_bit_negative_form(k, t);
+        // Null checks: the `==` inside `!==` / `!=` must not read as equality.
+        assert_eq!(neg(NullCheck, "x === null"), Some(false));
+        assert_eq!(neg(NullCheck, "x == null"), Some(false));
+        assert_eq!(neg(NullCheck, "x !== null"), Some(true));
+        assert_eq!(neg(NullCheck, "x != nil"), Some(true));
+        assert_eq!(neg(NullCheck, "cfg is None"), Some(false));
+        assert_eq!(neg(NullCheck, "cfg is not None"), Some(true));
+        assert_eq!(neg(NullCheck, "y.is_none()"), Some(false));
+        assert_eq!(neg(NullCheck, "y.is_some()"), Some(true));
+        // Error checks: the plain form is "an error is present".
+        assert_eq!(neg(ErrorCheck, "err != nil"), Some(false));
+        assert_eq!(neg(ErrorCheck, "err == nil"), Some(true));
+        assert_eq!(neg(ErrorCheck, "r.is_err()"), Some(false));
+        assert_eq!(neg(ErrorCheck, "r.is_ok()"), Some(true));
+        // Empty checks.
+        assert_eq!(neg(EmptyCheck, "xs.length === 0"), Some(false));
+        assert_eq!(neg(EmptyCheck, "xs.length !== 0"), Some(true));
+        assert_eq!(neg(EmptyCheck, "s !== \"\""), Some(true));
+        assert_eq!(neg(EmptyCheck, "v.is_empty()"), Some(false));
+        // Both forms in one condition: no single bit applies.
+        assert_eq!(neg(NullCheck, "a != null && b == null"), None);
+        assert_eq!(neg(ErrorCheck, "err != nil || error == nil"), None);
+        // Other kinds carry no predicate bit.
+        assert_eq!(neg(ValidationCall, "validate(x)"), None);
     }
 
     #[test]

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 693
+    "corpus_size": 702
   },
   "cases": [
     {
@@ -22060,6 +22060,327 @@
       ],
       "disabled": false,
       "notes": "cmd is extended inside a counted for loop and run after it; the loop counter folds to a constant and must not make the entry constraint environment unsatisfiable"
+    },
+    {
+      "case_id": "js-cmdi-validated-then-reread-001",
+      "file": "javascript/cmdi/cmdi_validated_then_reread.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "host passes isValidHost, then is re-read from req.query.fallback; the earlier check says nothing about the new value"
+    },
+    {
+      "case_id": "py-cmdi-validated-then-reread-001",
+      "file": "python/cmdi/cmdi_validated_then_reread.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "value passes validate_page, then is re-read from request.args[\"sort\"] before os.system"
+    },
+    {
+      "case_id": "java-cmdi-validated-then-reread-001",
+      "file": "java/cmdi/CmdiValidatedThenReread.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "name passes isValidName, then is re-read from getParameter(\"other\") before Runtime.exec"
+    },
+    {
+      "case_id": "php-cmdi-foreach-binder-after-validation-001",
+      "file": "php/cmdi/cmdi_foreach_binder_after_validation.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition",
+        "foreach"
+      ],
+      "disabled": false,
+      "notes": "the foreach binder reuses the name $value that an earlier is_numeric check validated; the bound $_POST elements were never checked"
+    },
+    {
+      "case_id": "js-sqli-allowlisted-sort-inline-limit-001",
+      "file": "javascript/sqli/sqli_allowlisted_sort_inline_limit.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "validation",
+        "inline-source",
+        "allowlist"
+      ],
+      "disabled": false,
+      "notes": "sort is allowlisted, but req.query.limit is concatenated into the same statement unvalidated"
+    },
+    {
+      "case_id": "go-cmdi-err-reused-branch-001",
+      "file": "go/cmdi/cmdi_err_reused_branch.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "predicate",
+        "error-check",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "err is redefined by os.Stat after an earlier `if err != nil { return }`; its own error branch is reachable"
+    },
+    {
+      "case_id": "js-xss-escaped-copy-raw-original-001",
+      "file": "javascript/xss/xss_escaped_copy_raw_original.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "alias",
+        "copy-propagation",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "only the copy `shown` is escaped; rebinding a copy does not change `name`, which reaches res.send raw"
+    },
+    {
+      "case_id": "py-cmdi-quoted-copy-raw-original-001",
+      "file": "python/cmdi/cmdi_quoted_copy_raw_original.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "alias",
+        "copy-propagation",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "only the copy `shown` is shell-quoted; msg reaches os.system raw"
+    },
+    {
+      "case_id": "js-safe-copy-rebind-original-constant-001",
+      "file": "javascript/safe/safe_copy_rebind_original_constant.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "alias",
+        "copy-propagation",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with js-xss-escaped-copy-raw-original-001: rebinding the copy `label` to request data leaves the module constant it was copied from untouched"
     }
   ]
 }

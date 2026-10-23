@@ -20,6 +20,14 @@ pub struct BaseAliasResult {
     canonical: HashMap<String, String>,
     /// canonical_name → all member base names (including the canonical itself).
     members: HashMap<String, SmallVec<[String; 4]>>,
+    /// The plain-identifier copies behind the groups, as `(root, dst)` SSA
+    /// value pairs sorted by root then dst.  `dst` is a copy that copy
+    /// propagation replaced with `root`.  The name groups above say two
+    /// names were copies somewhere in the body; this says which value of
+    /// one name a value of the other was copied from, so a later rebinding
+    /// of either name can be told apart from the copied value.
+    #[serde(default)]
+    copy_roots: Vec<(SsaValue, SsaValue)>,
 }
 
 impl BaseAliasResult {
@@ -28,12 +36,22 @@ impl BaseAliasResult {
         Self {
             canonical: HashMap::new(),
             members: HashMap::new(),
+            copy_roots: Vec::new(),
         }
     }
 
     /// True when no aliases were found.
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
+    }
+
+    /// The plain-identifier copies whose copied value is `root`.
+    pub fn copies_of(&self, root: SsaValue) -> impl Iterator<Item = SsaValue> + '_ {
+        let start = self.copy_roots.partition_point(|&(r, _)| r < root);
+        self.copy_roots[start..]
+            .iter()
+            .take_while(move |&&(r, _)| r == root)
+            .map(|&(_, dst)| dst)
     }
 
     /// Get all must-alias base names for `base` (including itself).
@@ -113,6 +131,8 @@ pub fn compute_base_aliases(
         }
     }
 
+    let mut copy_roots: Vec<(SsaValue, SsaValue)> = Vec::new();
+
     // Collect alias pairs from the copy map.
     for (&dst, &src) in copy_map {
         let dst_idx = dst.0 as usize;
@@ -150,11 +170,13 @@ pub fn compute_base_aliases(
             .or_insert_with(|| src_name.to_string());
 
         union(&mut parent, dst_name, src_name);
+        copy_roots.push((src, dst));
     }
 
     if parent.is_empty() {
         return BaseAliasResult::empty();
     }
+    copy_roots.sort_unstable();
 
     // Build groups from union-find.
     let mut groups: HashMap<String, SmallVec<[String; 4]>> = HashMap::new();
@@ -182,6 +204,7 @@ pub fn compute_base_aliases(
     BaseAliasResult {
         canonical,
         members: groups,
+        copy_roots,
     }
 }
 
@@ -315,6 +338,34 @@ mod tests {
 
         let result = compute_base_aliases(&copy_map, &body);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_copies_of_follows_copy_roots() {
+        // v0="a", v1="b", v2="c", v3="b" (a later rebinding of b, not a copy).
+        // copy_map (already resolved to roots): v1→v0, v2→v0.
+        let body = make_body(vec![vdef("a"), vdef("b"), vdef("c"), vdef("b")]);
+        let mut copy_map = HashMap::new();
+        copy_map.insert(SsaValue(1), SsaValue(0));
+        copy_map.insert(SsaValue(2), SsaValue(0));
+
+        let result = compute_base_aliases(&copy_map, &body);
+        let copies: Vec<SsaValue> = result.copies_of(SsaValue(0)).collect();
+        assert_eq!(copies, vec![SsaValue(1), SsaValue(2)]);
+        // The rebinding of `b` and the copies themselves are nobody's root.
+        assert_eq!(result.copies_of(SsaValue(3)).count(), 0);
+        assert_eq!(result.copies_of(SsaValue(1)).count(), 0);
+    }
+
+    #[test]
+    fn test_copies_of_skips_dotted_and_unnamed() {
+        let body = make_body(vec![vdef("a"), vdef("b.x"), vdef_none()]);
+        let mut copy_map = HashMap::new();
+        copy_map.insert(SsaValue(1), SsaValue(0));
+        copy_map.insert(SsaValue(2), SsaValue(0));
+
+        let result = compute_base_aliases(&copy_map, &body);
+        assert_eq!(result.copies_of(SsaValue(0)).count(), 0);
     }
 
     #[test]
