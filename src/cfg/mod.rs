@@ -4607,26 +4607,40 @@ type ConfinedCounts = std::collections::HashMap<String, (u32, u32)>;
 /// handler can re-run the same structured tally on a re-parsed argument
 /// subtree and merge into the shared `counts` (preserving the
 /// single-raw-occurrence-blocks soundness across the whole sink node).
+///
+/// Each stack entry carries the node's parent and its nearest enclosing call,
+/// so no identifier walks `parent()` (itself O(depth) in tree-sitter), and the
+/// confinement verdict of each enclosing call is computed once and shared by
+/// every identifier under it.  Callee texts of chained calls can hold whole
+/// callback bodies, so recomputing the verdict per identifier made large
+/// bundled JS files quadratic.
 fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut ConfinedCounts) {
     use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
-    let mut stack = vec![root];
-    while let Some(n) = stack.pop() {
+    let is_call = |n: Node| matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod);
+    // Verdict per enclosing call, keyed by `Node::id`.  Ids are unique within
+    // one tree; the Rust format-macro path re-parses into a separate tree and
+    // recurses with its own map.
+    let mut call_confines: HashMap<usize, bool> = HashMap::new();
+    let mut stack = vec![(root, root.parent(), nearest_enclosing_call(root, lang))];
+    while let Some((n, parent, enclosing_call)) = stack.pop() {
         // Rust `format!`/`write!`/… macros model their arguments as a flat
         // `token_tree` of raw tokens, so the inner `g.parse::<u32>()` chain is
-        // NOT a `call_expression` subtree and `nearest_enclosing_call` below
-        // can't see it (the leaf `g` would be counted raw).  Re-parse each
-        // interpolated argument expression and tally it structurally, then
-        // skip descending into the flat tokens so the phantom method-name
-        // tokens (`parse`, `unwrap`) are not miscounted as raw value-uses.
+        // NOT a `call_expression` subtree and the enclosing-call tracking
+        // below can't see it (the leaf `g` would be counted raw).  Re-parse
+        // each interpolated argument expression and tally it structurally,
+        // then skip descending into the flat tokens so the phantom
+        // method-name tokens (`parse`, `unwrap`) are not miscounted as raw
+        // value-uses.
         if lang == "rust"
             && n.kind() == "macro_invocation"
             && count_rust_format_macro_confined(n, lang, code, counts)
         {
             continue;
         }
+        let child_enclosing_call = if is_call(n) { Some(n) } else { enclosing_call };
         let mut cursor = n.walk();
         for child in n.children(&mut cursor) {
-            stack.push(child);
+            stack.push((child, Some(n), child_enclosing_call));
         }
         // Variable references across the supported grammars: `identifier`
         // (Rust/Go/Python/JS/TS/Java/Ruby/C/C++) plus PHP `variable_name`.
@@ -4638,8 +4652,8 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         // value.  Method-name identifiers (`.parse`, `.unwrap`) already carry
         // distinct node kinds (`field_identifier` / `property_identifier`) and
         // are excluded by the kind filter above.
-        if let Some(p) = n.parent()
-            && matches!(lookup(lang, p.kind()), Kind::CallFn | Kind::CallMethod)
+        if let Some(p) = parent
+            && is_call(p)
         {
             let callee_field = p
                 .child_by_field_name("function")
@@ -4651,9 +4665,11 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         let Some(text) = text_of(n, code) else {
             continue;
         };
-        let confined = nearest_enclosing_call(n, lang).is_some_and(|c| {
-            call_ident_of(c, lang, code).is_some_and(|ci| {
-                is_int_producing_callee(&ci) || is_safe_string_producing_callee(&ci)
+        let confined = enclosing_call.is_some_and(|c| {
+            *call_confines.entry(c.id()).or_insert_with(|| {
+                call_ident_of(c, lang, code).is_some_and(|ci| {
+                    is_int_producing_callee(&ci) || is_safe_string_producing_callee(&ci)
+                })
             })
         });
         let entry = counts.entry(text).or_insert((0, 0));
