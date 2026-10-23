@@ -156,6 +156,63 @@ fn java_log4j_config_loader_secure_processing_clean() {
     assert_clean("java", "SafeLog4jConfig.java");
 }
 
+/// StAX parses straight off the `XMLInputFactory`; the factory is the
+/// parser receiver and a default one resolves external entities.
+#[test]
+fn java_stax_default_factory_fires() {
+    assert_unsafe("java", "UnsafeStax.java");
+}
+
+/// `setProperty(SUPPORT_DTD, false)` and `IS_SUPPORTING_EXTERNAL_ENTITIES`
+/// harden the factory before the reader is created.
+#[test]
+fn java_stax_hardened_factory_clean() {
+    assert_clean("java", "SafeStax.java");
+}
+
+#[test]
+fn java_dom4j_sax_reader_fires() {
+    assert_unsafe("java", "UnsafeDom4j.java");
+}
+
+#[test]
+fn java_dom4j_sax_reader_literal_feature_clean() {
+    assert_clean("java", "SafeDom4j.java");
+}
+
+/// `dbf.newDocumentBuilder().parse(x)` and the all-static chain read as a
+/// call on the factory, so the factory has to be the typed receiver.
+#[test]
+fn java_chained_builder_parse_fires() {
+    let diags = diags_for_file(&fixture_dir("java"), "UnsafeChainedFactory.java");
+    let lines: std::collections::BTreeSet<usize> = diags
+        .iter()
+        .filter(|d| d.id.starts_with(RULE_PREFIX))
+        .map(|d| d.line)
+        .collect();
+    assert!(
+        lines.iter().any(|l| (10..=13).contains(l)) && lines.iter().any(|l| (16..=22).contains(l)),
+        "both chained forms must report taint-xxe, got lines {lines:?}"
+    );
+}
+
+#[test]
+fn java_chained_builder_parse_hardened_factory_clean() {
+    assert_clean("java", "SafeChainedFactory.java");
+}
+
+/// The OWASP cheat-sheet form: the feature name is an inline string literal
+/// with no `XMLConstants` identifier alongside it.
+#[test]
+fn java_literal_disallow_doctype_feature_clean() {
+    assert_clean("java", "SafeXxeLiteralFeature.java");
+}
+
+#[test]
+fn java_literal_external_entity_features_clean() {
+    assert_clean("java", "SafeXxeExternalEntities.java");
+}
+
 #[test]
 fn python_sax_parse_with_tainted_xml_fires() {
     assert_unsafe("python", "unsafe_xxe.py");

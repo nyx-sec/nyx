@@ -1253,6 +1253,7 @@ fn clone_preserves_all_sub_structs() {
                 payload_args: Some(vec![0]),
                 arg_string_literals: vec![Some("SELECT 1".into())],
             })),
+            receiver_decl_type: Some(crate::ssa::type_facts::TypeKind::JdbcTemplate),
         },
         taint: TaintMeta {
             labels: {
@@ -1290,6 +1291,10 @@ fn clone_preserves_all_sub_structs() {
         original.call.sink_reaching_uses
     );
     assert_eq!(cloned.call.kwargs, original.call.kwargs);
+    assert_eq!(
+        cloned.call.receiver_decl_type,
+        original.call.receiver_decl_type
+    );
     assert_eq!(cloned.taint.labels.len(), original.taint.labels.len());
     assert_eq!(cloned.taint.const_text, original.taint.const_text);
     assert_eq!(cloned.taint.defines, original.taint.defines);
@@ -4851,5 +4856,241 @@ fn go_request_typed_formal_classifies_as_source() {
     assert!(
         crate::labels::classify("go", "req.Header.Get", None).is_none(),
         "receiver aliases must not outlive build_cfg"
+    );
+}
+
+/// Callee text and `all_args_literal` of every call node with a callee in a
+/// Java snippet's method body.
+fn java_call_literal_flags(src: &[u8]) -> Vec<(String, bool)> {
+    let (cfg, _) = parse_and_build(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    cfg.node_indices()
+        .filter_map(|n| {
+            let callee = cfg[n].call.callee.clone()?;
+            Some((callee, cfg[n].all_args_literal))
+        })
+        .collect()
+}
+
+#[test]
+fn java_chained_literal_call_is_all_literal_despite_zero_arg_inner_call() {
+    let literal = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { Runtime.getRuntime().exec(\"uptime\"); } }",
+    );
+    assert!(
+        literal.iter().any(|(c, lit)| c.ends_with("exec") && *lit),
+        "a literal argument on the exec call makes the chain literal, got {literal:?}"
+    );
+
+    let variable = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { Runtime.getRuntime().exec(p); } }",
+    );
+    assert!(
+        variable.iter().any(|(c, lit)| c.ends_with("exec") && !*lit),
+        "a variable argument keeps the call non-literal, got {variable:?}"
+    );
+
+    // The zero-argument guard still applies to the call that is the sink
+    // itself: `ois.readObject()` has no arguments to prove safe.
+    let receiver_sink =
+        java_call_literal_flags(b"class T { Object f(ObjectInputStream ois) throws Exception { return ois.readObject(); } }");
+    assert!(
+        receiver_sink
+            .iter()
+            .any(|(c, lit)| c.ends_with("readObject") && !*lit),
+        "a zero-arg outer call is not literal, got {receiver_sink:?}"
+    );
+
+    // An inner call that takes a variable still rejects the chain.
+    let inner_variable = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { a.b(p).c(\"lit\"); } }",
+    );
+    assert!(
+        inner_variable
+            .iter()
+            .any(|(c, lit)| c.ends_with('c') && !*lit),
+        "a variable argument on an inner chain call rejects the chain, got {inner_variable:?}"
+    );
+}
+
+/// Declared receiver type recorded on the Java call nodes of a snippet,
+/// keyed by callee text.
+fn java_receiver_decl_types(src: &[u8]) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>)> {
+    let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter_map(|n| {
+                    let callee = b.graph[n].call.callee.clone()?;
+                    Some((callee, b.graph[n].call.receiver_decl_type.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn java_receiver_decl_type_follows_the_declaration() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import org.springframework.jdbc.core.JdbcTemplate;
+class T {
+    private JdbcTemplate jdbc;
+    private final javax.naming.directory.DirContext dirCtx;
+    private Object other;
+    void field(String q) { jdbc.queryForList(q); }
+    void thisField(String q) { this.jdbc.update(q); }
+    void formal(DirContext dc, String q) throws Exception { dc.search("", q, null); }
+    void local(String q) { EntityManager mgr = lookup(); mgr.createQuery(q); }
+    void catchBound() { try { run(); } catch (Exception jdbc) { jdbc.getMessage(); } }
+    void lambdaShadow() { run(jdbc -> jdbc.update("x")); }
+    void unrelated(String q) { other.update(q); }
+    void staticCall(String q) { Files.readString(q); }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(kind_of("jdbc.queryForList"), Some(TypeKind::JdbcTemplate));
+    assert_eq!(kind_of("this.jdbc.update"), Some(TypeKind::JdbcTemplate));
+    assert_eq!(kind_of("dc.search"), Some(TypeKind::LdapClient));
+    assert_eq!(kind_of("mgr.createQuery"), Some(TypeKind::HibernateSession));
+    assert_eq!(
+        kind_of("jdbc.getMessage"),
+        None,
+        "a catch parameter shadows the field of the same name"
+    );
+    assert_eq!(
+        kind_of("jdbc.update"),
+        None,
+        "an untyped lambda formal shadows the field of the same name"
+    );
+    assert_eq!(kind_of("other.update"), None);
+    assert_eq!(kind_of("Files.readString"), None);
+}
+
+/// Callee text of every Java call node that carries a `Source` label.
+fn java_source_callees(src: &[u8]) -> Vec<String> {
+    let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter(|&n| {
+                    b.graph[n]
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, crate::labels::DataLabel::Source(_)))
+                })
+                .filter_map(|n| b.graph[n].call.callee.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn java_process_and_resource_streams_are_not_sources() {
+    // Child-process output, through a declared `Process`, a chained
+    // `exec(..)`, or a `ProcessBuilder.start()`.
+    for body in [
+        "Process p = Runtime.getRuntime().exec(cmd); InputStream in = p.getInputStream();",
+        "Process p = new ProcessBuilder(cmd).start(); BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String l = r.readLine();",
+        "InputStream in = Runtime.getRuntime().exec(cmd).getInputStream();",
+        "String l = new BufferedReader(new InputStreamReader(proc.getInputStream())).readLine();",
+        // Classpath and zip entries ship with the application.
+        "InputStream in = new ClassPathResource(\"app.properties\").getInputStream();",
+        "InputStream in = zip.getInputStream(entry);",
+    ] {
+        let src = format!(
+            "class T {{ void f(String cmd, Process proc, java.util.zip.ZipFile zip, Object entry) throws Exception {{ {body} }} }}"
+        );
+        assert_eq!(
+            java_source_callees(src.as_bytes()),
+            Vec::<String>::new(),
+            "no source expected in: {body}"
+        );
+    }
+}
+
+#[test]
+fn java_request_and_unresolved_streams_stay_sources() {
+    let sources = |body: &str| {
+        java_source_callees(
+            format!(
+                "class T {{ void f(HttpServletRequest req, Socket sock, Stream unknown) throws Exception {{ {body} }} }}"
+            )
+            .as_bytes(),
+        )
+    };
+    assert_eq!(
+        sources("InputStream in = req.getInputStream();"),
+        vec!["req.getInputStream"]
+    );
+    assert_eq!(
+        sources("BufferedReader r = req.getReader();"),
+        vec!["req.getReader"]
+    );
+    // A socket, and a receiver the method does not declare, are not ruled out.
+    assert_eq!(
+        sources("InputStream in = sock.getInputStream();"),
+        vec!["sock.getInputStream"]
+    );
+    assert_eq!(
+        sources("InputStream in = unknown.getInputStream();"),
+        vec!["unknown.getInputStream"]
+    );
+    assert_eq!(
+        sources("InputStream in = other().getInputStream();"),
+        vec!["other().getInputStream"],
+        "a computed receiver is not ruled out"
+    );
+}
+
+#[test]
+fn java_read_line_source_follows_the_reader_root() {
+    let sources = |body: &str| {
+        java_source_callees(
+            format!(
+                "class T {{ void f(HttpServletRequest req, Process p) throws Exception {{ {body} }} }}"
+            )
+            .as_bytes(),
+        )
+    };
+    // A file reader keeps the engine's file-content source.
+    assert_eq!(
+        sources(
+            "BufferedReader br = new BufferedReader(new FileReader(\"/etc/app/hosts\")); String h = br.readLine();"
+        ),
+        vec!["br.readLine"]
+    );
+    // Stdin and an undeclared reader keep it too.
+    assert_eq!(
+        sources(
+            "BufferedReader br = new BufferedReader(new InputStreamReader(System.in)); String h = br.readLine();"
+        ),
+        vec!["br.readLine"]
+    );
+    // Over the request the getInputStream / getReader source is the origin,
+    // and readLine is not a second one.
+    assert_eq!(
+        sources(
+            "BufferedReader r = new BufferedReader(new InputStreamReader(req.getInputStream())); String l = r.readLine();"
+        ),
+        vec!["req.getInputStream"]
+    );
+    assert_eq!(
+        sources("BufferedReader r = req.getReader(); String l = r.readLine();"),
+        vec!["req.getReader"]
     );
 }

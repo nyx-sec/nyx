@@ -21808,6 +21808,275 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "java-sqli-jdbctemplate-declared-001",
+      "file": "java/sqli/SqliJdbcTemplateDeclared.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "tags": [
+        "spring",
+        "jdbc-template",
+        "declared-type"
+      ],
+      "disabled": false,
+      "notes": "Spring templates are injected fields, typed only by their declaration: JdbcTemplate.queryForList and NamedParameterJdbcTemplate.queryForList with concatenated SQL"
+    },
+    {
+      "case_id": "java-path_traversal-006",
+      "file": "java/path_traversal/PathTraversalFileReaderWriter.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "file-reader",
+        "file-writer"
+      ],
+      "disabled": false,
+      "notes": "new FileReader(path) and new FileWriter(path) open the request-chosen path"
+    },
+    {
+      "case_id": "java-ssrf-005",
+      "file": "java/ssrf/SsrfRestTemplateUrl.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "rest-template",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "RestTemplate: request parameter as the URL, and as a variable in the authority of the URI template"
+    },
+    {
+      "case_id": "java-safe-jdbctemplate-001",
+      "file": "java/safe/SafeJdbcTemplatePlaceholders.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "spring",
+        "jdbc-template",
+        "declared-type"
+      ],
+      "disabled": false,
+      "notes": "Placeholder and named-parameter statements on declared Spring templates bind the request value"
+    },
+    {
+      "case_id": "java-safe-filereader-001",
+      "file": "java/safe/SafeFileReaderFixedPath.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "file-reader",
+        "file-writer"
+      ],
+      "disabled": false,
+      "notes": "FileReader and FileWriter on fixed paths; the request value is not a path"
+    },
+    {
+      "case_id": "java-safe-resttemplate-001",
+      "file": "java/safe/SafeRestTemplateFixedHost.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "rest-template",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "A request parameter as the body or as a uriVariable under a fixed origin does not choose the host"
+    },
+    {
+      "case_id": "java-safe-runtime-exec-001",
+      "file": "java/safe/SafeRuntimeExecLiteral.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.cmdi.runtime_exec",
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "runtime-exec",
+        "literal"
+      ],
+      "disabled": false,
+      "notes": "Runtime.getRuntime().exec with a constant command string"
+    },
+    {
+      "case_id": "java-safe-process-stream-001",
+      "file": "java/safe/SafeProcessOutputStream.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "stream-source",
+        "process"
+      ],
+      "disabled": false,
+      "notes": "Output of a child process written to the response is not request input"
     }
   ]
 }

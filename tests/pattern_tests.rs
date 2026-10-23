@@ -285,6 +285,21 @@ fn positive_java() {
 }
 
 #[test]
+fn go_exec_command_needs_the_exec_package_operand() {
+    let hit = |src: &str| run_patterns("go", src.as_bytes()).contains("go.cmdi.exec_command");
+    assert!(hit(
+        "package main\nfunc f(c string) { exec.Command(\"sh\", \"-c\", c) }\n"
+    ));
+    assert!(hit(
+        "package main\nfunc f(c string) { execabs.Command(c) }\n"
+    ));
+    assert!(!hit(
+        "package main\nfunc f(h string) { app.Command(\"check\", h) }\n"
+    ));
+    assert!(!hit("package main\nfunc f() { rdb.Command(ctx) }\n"));
+}
+
+#[test]
 fn positive_python() {
     assert_positive_match(
         "python",

@@ -237,6 +237,8 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // Runtime is likewise a type-qualified-resolver-only receiver kind
         // (`Runtime.exec`); no dedicated bitset slot, share the Object index.
         TypeKind::Runtime => 3,
+        // Spring JdbcTemplate is the same kind of resolver-only receiver.
+        TypeKind::JdbcTemplate => 3,
     }
 }
 

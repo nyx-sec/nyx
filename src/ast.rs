@@ -1208,11 +1208,16 @@ impl<'a> ParsedSource<'a> {
                 if in_test_file && is_test_suppressible_pattern(slot.meta.id) {
                     continue;
                 }
+                let vuln = m
+                    .captures
+                    .iter()
+                    .find(|c| Some(c.index) == cq.vuln_capture_index)
+                    .map(|c| c.node);
                 if let Some(cap) = m
                     .captures
                     .iter()
                     .find(|c| c.index == slot.primary_capture_index)
-                    && let Some(diag) = self.ast_query_diag(&slot.meta, cap.node)
+                    && let Some(diag) = self.ast_query_diag(&slot.meta, cap.node, vuln)
                 {
                     out.push(diag);
                 }
@@ -1231,10 +1236,16 @@ impl<'a> ParsedSource<'a> {
             if in_test_file && is_test_suppressible_pattern(cq.meta.id) {
                 continue;
             }
+            let vuln_idx = cq.query.capture_index_for_name("vuln");
             let mut matches = cursor.matches(&cq.query, root, self.bytes);
             while let Some(m) = matches.next() {
+                let vuln = m
+                    .captures
+                    .iter()
+                    .find(|c| Some(c.index) == vuln_idx)
+                    .map(|c| c.node);
                 if let Some(cap) = m.captures.iter().find(|c| c.index == 0)
-                    && let Some(diag) = self.ast_query_diag(&cq.meta, cap.node)
+                    && let Some(diag) = self.ast_query_diag(&cq.meta, cap.node, vuln)
                 {
                     out.push(diag);
                 }
@@ -1250,11 +1261,21 @@ impl<'a> ParsedSource<'a> {
     /// the enclosing call) and as the finding span position. Returns `None`
     /// when a recogniser suppresses the match. Shared verbatim by the
     /// combined-query fast path and the legacy per-rule loop so they cannot drift.
+    ///
+    /// `vuln_node` is the rule's `@vuln` capture.  Layer A checks the
+    /// arguments of that call when it is one: the primary capture of
+    /// `java.cmdi.runtime_exec` is the `getRuntime` name inside the
+    /// zero-arg receiver call, whose enclosing call is not the `exec`
+    /// call being judged.
     fn ast_query_diag(
         &self,
         meta: &crate::patterns::Pattern,
         cap_node: tree_sitter::Node,
+        vuln_node: Option<tree_sitter::Node>,
     ) -> Option<Diag> {
+        let layer_a_node = vuln_node
+            .filter(|v| find_enclosing_call(*v) == Some(*v))
+            .unwrap_or(cap_node);
         // Layer A: suppress Security findings on calls with all-literal args.
         //
         // Carve-outs for categories where the literal argument IS
@@ -1272,7 +1293,7 @@ impl<'a> ParsedSource<'a> {
                     | PatternCategory::InsecureConfig
                     | PatternCategory::InsecureTransport
             )
-            && is_call_all_args_literal(cap_node, self.bytes, self.lang_slug)
+            && is_call_all_args_literal(layer_a_node, self.bytes, self.lang_slug)
         {
             return None;
         }
@@ -8813,5 +8834,34 @@ fn is_call_all_args_literal_recognises_java_call_kinds() {
     assert!(
         is_call_all_args_literal(cap, code, "java"),
         "object_creation_expression with literal arg must trigger Layer A"
+    );
+}
+
+#[cfg(test)]
+fn java_pattern_lines(src: &str, rule_id: &str) -> Vec<usize> {
+    let cfg = Config::default();
+    let mut lines: Vec<usize> = bench_run_ast_queries(src.as_bytes(), Path::new("T.java"), &cfg)
+        .into_iter()
+        .filter(|d| d.id == rule_id)
+        .map(|d| d.line)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn java_runtime_exec_literal_command_is_not_flagged_but_variable_is() {
+    let src = "\
+class T {
+    void literal() throws Exception { Runtime.getRuntime().exec(\"uptime\"); }
+    void variable(String cmd) throws Exception { Runtime.getRuntime().exec(cmd); }
+    void split(String cmd) throws Exception { Runtime rt = Runtime.getRuntime(); rt.exec(cmd); }
+}
+";
+    let lines = java_pattern_lines(src, "java.cmdi.runtime_exec");
+    assert_eq!(
+        lines,
+        vec![3],
+        "an all-literal exec is judged on the exec call's own arguments, not on getRuntime()"
     );
 }

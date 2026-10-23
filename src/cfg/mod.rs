@@ -317,15 +317,24 @@ pub(crate) fn lookup_local_receiver_type(
 /// Public entry consulted by `find_classifiable_inner_call`: given the
 /// inner call's AST node and its bare receiver text, return the
 /// `label_prefix()` for the receiver's locally-bound TypeKind, when
-/// available.  Returns `None` when no enclosing function is found, no
-/// binding was recorded, or the bound `TypeKind` has no label prefix.
+/// available.  Java falls back to the receiver's declared type
+/// ([`java_declared_receiver_kind`]), so a chain hop on an injected field
+/// (`em.createQuery(q).getResultList()`, `http.send(req).body()`) is typed
+/// too.  Returns `None` when neither source types the receiver or the
+/// `TypeKind` has no label prefix.
 pub(crate) fn local_receiver_type_prefix(
     inner_call: Node<'_>,
     receiver: &str,
     lang: &str,
+    code: &[u8],
 ) -> Option<&'static str> {
-    let fn_start = enclosing_fn_start(inner_call, lang)?;
-    let kind = lookup_local_receiver_type(fn_start, receiver)?;
+    let local = enclosing_fn_start(inner_call, lang)
+        .and_then(|fn_start| lookup_local_receiver_type(fn_start, receiver));
+    let kind = match local {
+        Some(kind) => kind,
+        None if lang == "java" => java_call_receiver_decl_type(inner_call, code)?,
+        None => return None,
+    };
     kind.label_prefix()
 }
 
@@ -702,6 +711,15 @@ pub struct CallMeta {
     /// hoisted label did not come from inside a callback body).
     #[serde(default)]
     pub hoisted_sink: Option<Box<HoistedSink>>,
+    /// Java: service kind of the call's receiver taken from its declared
+    /// type (a field, formal or local such as `private JdbcTemplate jdbc;`).
+    /// Spring injects these receivers, so no constructor in the method body
+    /// types them for SSA type facts.  Type-qualified label resolution uses
+    /// it after the SSA type facts and path environment.  Only set when the
+    /// call carries no `Sink` label of its own; see
+    /// [`java_declared_receiver_kind`] for the kinds that qualify.
+    #[serde(default)]
+    pub receiver_decl_type: Option<crate::ssa::type_facts::TypeKind>,
 }
 
 /// Recorded provenance of a callback-nested inner sink call whose `Sink` label
@@ -2819,6 +2837,20 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // Java stream accessors are sources only when the stream can carry
+    // attacker bytes.  The label belongs to the call `text` came from.
+    if lang == "java" && labels.iter().any(|l| matches!(l, DataLabel::Source(_))) {
+        let source_call = match inner_text_span {
+            Some((start, end)) => ast.descendant_for_byte_range(start, end).filter(|c| {
+                c.start_byte() == start && c.end_byte() == end && c.kind() == "method_invocation"
+            }),
+            None => find_call_node(ast, lang),
+        };
+        if source_call.is_some_and(|call| java_stream_source_is_local(call, code)) {
+            labels.retain(|l| !matches!(l, DataLabel::Source(_)));
+        }
+    }
+
     // Rust chain-text classification.  The default `text` for a Rust
     // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
     // is the leftmost identifier after walking through every nested
@@ -3001,6 +3033,12 @@ pub(super) fn push_node<'a>(
         } else {
             find_inner_sink_call(ast, lang, code, extra)
         };
+        // A nested `p.getInputStream()` on a child process is not a source.
+        let inner = inner.filter(|(_, label, node)| {
+            !(lang == "java"
+                && matches!(label, DataLabel::Source(_))
+                && java_stream_source_is_local(*node, code))
+        });
         if let Some((inner_text, inner_label, inner_node)) = inner {
             let inner_is_sink = matches!(inner_label, DataLabel::Sink(_));
             labels.push(inner_label);
@@ -4123,6 +4161,16 @@ pub(super) fn push_node<'a>(
     let produces_null_proto = matches!(lang, "javascript" | "typescript")
         && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
 
+    // Java receivers typed only by a declaration (injected fields, formals,
+    // locals bound to an untyped call).  Skipped when the node already has a
+    // sink: type-qualified resolution only runs on calls with none.
+    let receiver_decl_type =
+        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
+        } else {
+            None
+        };
+
     let numeric_confined_uses = collect_numeric_confined_value_idents(ast, lang, code, &labels);
     // Only Rust format-macro confined sinks need the phantom-ident skip list
     // (see [`NodeInfo::format_macro_method_idents`]); skip the walk otherwise.
@@ -4151,6 +4199,7 @@ pub(super) fn push_node<'a>(
             is_constructor,
             produces_null_proto,
             hoisted_sink,
+            receiver_decl_type,
         },
         taint: TaintMeta {
             labels,
@@ -4301,6 +4350,307 @@ fn java_receiver_var_name(obj: Node, code: &[u8]) -> Option<String> {
     }
 }
 
+/// Where the bytes behind a Java stream expression come from, as far as the
+/// expression and the declarations in the same method show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum JavaStreamRoot {
+    /// `Process.getInputStream()` and friends: output of a child process.
+    Process,
+    /// Classpath / zip entries and Spring `*Resource` objects: files that
+    /// ship with the application.
+    LocalResource,
+    /// An `HttpServletRequest`-like receiver.  Its `getInputStream()` /
+    /// `getReader()` is the source and `readLine()` on what it returns
+    /// carries that taint by propagation.
+    Request,
+    /// Anything else, including everything the file does not settle.
+    Other,
+}
+
+/// Wrapper streams that read from their first constructor argument.
+fn java_is_stream_wrapper(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "BufferedReader"
+            | "InputStreamReader"
+            | "LineNumberReader"
+            | "PushbackReader"
+            | "Scanner"
+            | "BufferedInputStream"
+            | "DataInputStream"
+            | "PushbackInputStream"
+            | "GZIPInputStream"
+            | "InflaterInputStream"
+    )
+}
+
+fn java_type_stream_root(type_text: &str) -> JavaStreamRoot {
+    let leaf = java_type_leaf(type_text);
+    if leaf == "Process" {
+        JavaStreamRoot::Process
+    } else if matches!(
+        leaf,
+        "ZipFile"
+            | "JarFile"
+            | "Resource"
+            | "ClassPathResource"
+            | "FileSystemResource"
+            | "PathResource"
+            | "ByteArrayResource"
+            | "ServletContextResource"
+    ) {
+        JavaStreamRoot::LocalResource
+    } else if leaf.ends_with("Request") || leaf.ends_with("RequestWrapper") {
+        JavaStreamRoot::Request
+    } else {
+        JavaStreamRoot::Other
+    }
+}
+
+/// Initialiser expression of local variable `var` in the Java scopes
+/// enclosing `from`: a block-level declaration or a try-with-resources
+/// binding.  Formals, fields and loop variables have none.
+fn java_local_initializer<'a>(from: Node<'a>, var: &str, code: &[u8]) -> Option<Node<'a>> {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "block" | "constructor_body" => {
+                let mut cursor = parent.walk();
+                for decl in parent.named_children(&mut cursor) {
+                    if decl.kind() != "local_variable_declaration" {
+                        continue;
+                    }
+                    let mut c2 = decl.walk();
+                    for d in decl.children(&mut c2) {
+                        if d.kind() == "variable_declarator"
+                            && d.child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return d.child_by_field_name("value");
+                        }
+                    }
+                }
+            }
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return res.child_by_field_name("value");
+                        }
+                    }
+                }
+            }
+            "method_declaration" | "constructor_declaration" | "lambda_expression" => {
+                return None;
+            }
+            _ => {}
+        }
+        cur = parent;
+    }
+    None
+}
+
+/// Classify a Java stream expression.  `depth` bounds the walk through
+/// wrapper constructors and local initialisers.
+fn java_stream_root(expr: Node, code: &[u8], depth: u8) -> JavaStreamRoot {
+    if depth == 0 {
+        return JavaStreamRoot::Other;
+    }
+    match expr.kind() {
+        "parenthesized_expression" => expr.named_child(0).map_or(JavaStreamRoot::Other, |e| {
+            java_stream_root(e, code, depth - 1)
+        }),
+        "object_creation_expression" => {
+            let Some(leaf) = expr
+                .child_by_field_name("type")
+                .and_then(|t| text_of(t, code))
+            else {
+                return JavaStreamRoot::Other;
+            };
+            let leaf = java_type_leaf(&leaf).to_string();
+            if java_is_stream_wrapper(&leaf) {
+                expr.child_by_field_name("arguments")
+                    .and_then(|a| a.named_child(0))
+                    .map_or(JavaStreamRoot::Other, |a| {
+                        java_stream_root(a, code, depth - 1)
+                    })
+            } else {
+                java_type_stream_root(&leaf)
+            }
+        }
+        "method_invocation" => {
+            let name = expr
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(code).ok())
+                .unwrap_or("");
+            match name {
+                "exec" | "start" => JavaStreamRoot::Process,
+                "getResourceAsStream" => JavaStreamRoot::LocalResource,
+                "getInputStream" | "getReader" | "getErrorStream" => expr
+                    .child_by_field_name("object")
+                    .map_or(JavaStreamRoot::Other, |o| {
+                        java_stream_root(o, code, depth - 1)
+                    }),
+                _ => JavaStreamRoot::Other,
+            }
+        }
+        "identifier" => {
+            let Some(var) = text_of(expr, code) else {
+                return JavaStreamRoot::Other;
+            };
+            if let Some(ty) = resolve_java_var_declared_type(expr, &var, code)
+                && java_type_leaf(&ty) != "var"
+            {
+                let root = java_type_stream_root(&ty);
+                if root != JavaStreamRoot::Other {
+                    return root;
+                }
+            }
+            // A wrapper-typed or `var` local takes the root of what it was
+            // built from.
+            java_local_initializer(expr, &var, code).map_or(JavaStreamRoot::Other, |init| {
+                java_stream_root(init, code, depth - 1)
+            })
+        }
+        _ => JavaStreamRoot::Other,
+    }
+}
+
+/// Whether the Java call `call` is a stream accessor whose `Source` label
+/// does not apply.
+///
+/// `getInputStream` / `getReader` are request accessors by name, but the same
+/// names read a child process's output and classpath or zip entries.  Those
+/// are local data, not input.  `readLine` is a file-content source on its own
+/// (a config file read into a command is the engine's FileSystem model), but
+/// not when its reader is built on a process, a local resource, or the
+/// request itself.  The request case keeps its flow: the reader's receiver
+/// taint, which comes from the `getInputStream` / `getReader` source,
+/// propagates into the line, and the source stays attributed to the request
+/// instead of to a generic file read.  A receiver the file does not settle
+/// keeps the label.
+fn java_stream_source_is_local(call: Node, code: &[u8]) -> bool {
+    if call.kind() != "method_invocation" {
+        return false;
+    }
+    let Some(name) = call
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(code).ok())
+    else {
+        return false;
+    };
+    if !matches!(name, "getInputStream" | "getReader" | "readLine") {
+        return false;
+    }
+    let Some(object) = call.child_by_field_name("object") else {
+        return false;
+    };
+    let root = java_stream_root(object, code, 6);
+    match name {
+        "readLine" => matches!(
+            root,
+            JavaStreamRoot::Process | JavaStreamRoot::LocalResource | JavaStreamRoot::Request
+        ),
+        _ => matches!(
+            root,
+            JavaStreamRoot::Process | JavaStreamRoot::LocalResource
+        ),
+    }
+}
+
+/// Service kind of a Java declared receiver type, for type-qualified label
+/// resolution on receivers whose type is only visible in a declaration: an
+/// injected field (`private JdbcTemplate jdbc;`), a formal
+/// (`void f(DirContext ctx)`), or a local bound to an untyped call
+/// (`DirContext c = lookup();`).  Only library service types whose
+/// `TypeKind` prefixes label rules are mapped.  Value and stream types
+/// (`String`, `Writer`, `HttpServletResponse`) are not: a declared
+/// `PrintWriter out` is normally the servlet response writer, whose
+/// `println` must stay an XSS sink, and `HttpResponse` would also match
+/// `java.net.http.HttpResponse`.
+pub(crate) fn java_declared_receiver_kind(
+    type_text: &str,
+) -> Option<crate::ssa::type_facts::TypeKind> {
+    use crate::ssa::type_facts::TypeKind;
+    let leaf = java_type_leaf(type_text);
+    match leaf {
+        "JdbcTemplate"
+        | "NamedParameterJdbcTemplate"
+        | "JdbcOperations"
+        | "NamedParameterJdbcOperations" => Some(TypeKind::JdbcTemplate),
+        // JPA `EntityManager` has the same `createQuery` /
+        // `createNativeQuery` statement API as the Hibernate session.
+        "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
+        "CallableStatement" => Some(TypeKind::DatabaseConnection),
+        "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+        // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
+        // `dbf.parse`, and StAX parses straight off the factory
+        // (`xif.createXMLStreamReader(in)`).
+        "SAXReader" | "XMLInputFactory" | "DocumentBuilderFactory" | "SAXParserFactory" => {
+            Some(TypeKind::XmlParser)
+        }
+        _ => match crate::constraint::solver::class_name_to_type_kind(leaf)? {
+            k @ (TypeKind::HttpClient
+            | TypeKind::DatabaseConnection
+            | TypeKind::LdapClient
+            | TypeKind::XPathClient
+            | TypeKind::XmlParser
+            | TypeKind::Template
+            | TypeKind::Runtime) => Some(k),
+            _ => None,
+        },
+    }
+}
+
+/// Declared service kind of the receiver of a Java `method_invocation`: a
+/// plain identifier resolved through the enclosing scopes, or `this.f`
+/// resolved against the enclosing class fields.  A class name used as a
+/// static receiver (`Files.readString`) binds no variable and gives `None`.
+fn java_call_receiver_decl_type(
+    call: Node,
+    code: &[u8],
+) -> Option<crate::ssa::type_facts::TypeKind> {
+    if call.kind() != "method_invocation" {
+        return None;
+    }
+    let obj = call.child_by_field_name("object")?;
+    let ty = match obj.kind() {
+        "identifier" => resolve_java_var_declared_type(call, &text_of(obj, code)?, code)?,
+        "field_access"
+            if obj
+                .child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "this") =>
+        {
+            let field = text_of(obj.child_by_field_name("field")?, code)?;
+            resolve_java_field_declared_type(call, &field, code)?
+        }
+        _ => return None,
+    };
+    java_declared_receiver_kind(&ty)
+}
+
+/// Declared type of field `var` in the class enclosing `from` (the inner
+/// class first, then outer classes).
+fn resolve_java_field_declared_type(from: Node, var: &str, code: &[u8]) -> Option<String> {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        if matches!(parent.kind(), "class_body" | "interface_body" | "enum_body")
+            && let Some(t) = java_field_declared_type(parent, var, code)
+        {
+            return Some(t);
+        }
+        cur = parent;
+    }
+    None
+}
+
 /// Pre-order search for a `method_invocation` named `getConnection` within
 /// (or equal to) `ast`.  Does not descend into nested method / lambda bodies
 /// (those own their own scope and acquire nodes).  Returns the first match.
@@ -4336,6 +4686,60 @@ fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<
             "method_declaration" | "constructor_declaration" | "lambda_expression" => {
                 if let Some(t) = java_param_declared_type(parent, var, code) {
                     return Some(t);
+                }
+                // An untyped lambda formal (`jdbc -> jdbc.update(..)`) may
+                // shadow a field of the same name; its type is unknown.
+                if parent.kind() == "lambda_expression"
+                    && java_lambda_binds_untyped(parent, var, code)
+                {
+                    return None;
+                }
+            }
+            // `for (T x : xs)` and `catch (T e)` bind their own variable.
+            "enhanced_for_statement" => {
+                if parent
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(code).ok())
+                    == Some(var)
+                {
+                    return parent
+                        .child_by_field_name("type")
+                        .and_then(|t| text_of(t, code));
+                }
+            }
+            "catch_clause" => {
+                let mut cursor = parent.walk();
+                if let Some(fp) = parent
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "catch_formal_parameter")
+                    && fp
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(code).ok())
+                        == Some(var)
+                {
+                    let mut c2 = fp.walk();
+                    return fp
+                        .named_children(&mut c2)
+                        .find(|c| c.kind() == "catch_type")
+                        .and_then(|t| text_of(t, code));
+                }
+            }
+            // `try (T x = ...) { ... }`
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return res
+                                .child_by_field_name("type")
+                                .and_then(|t| text_of(t, code));
+                        }
+                    }
                 }
             }
             "block" | "constructor_body" => {
@@ -4375,6 +4779,21 @@ fn java_param_declared_type(method: Node, var: &str, code: &[u8]) -> Option<Stri
         }
     }
     None
+}
+
+/// Whether a Java lambda binds `var` as an untyped formal (`x -> ...`,
+/// `(x, y) -> ...`).
+fn java_lambda_binds_untyped(lambda: Node, var: &str, code: &[u8]) -> bool {
+    let Some(params) = lambda.child_by_field_name("parameters") else {
+        return false;
+    };
+    if params.kind() == "identifier" {
+        return params.utf8_text(code).ok() == Some(var);
+    }
+    let mut cursor = params.walk();
+    params
+        .named_children(&mut cursor)
+        .any(|p| p.kind() == "identifier" && p.utf8_text(code).ok() == Some(var))
 }
 
 /// Declared type of `var` among the direct `local_variable_declaration`

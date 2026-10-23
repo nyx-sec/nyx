@@ -250,16 +250,16 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // Java I/O supertypes (enables hierarchy fallback for subtypes)
         | "InputStream" | "OutputStream" | "Reader" | "Writer" | "PrintWriter"
         | "BufferedInputStream" | "BufferedOutputStream" => Some(TypeKind::FileHandle),
-        // JNDI / Spring LDAP directory-service types.  Field- and method-typed
-        // declarations (`DirContext ctx = ...`, `LdapTemplate ldapTemplate;`)
-        // attach this fact to the receiver SSA value so type-qualified
-        // resolution rewrites `ctx.search(...)` → `LdapClient.search`.
+        // JNDI / Spring LDAP directory-service types.  A receiver declared
+        // with one of these types (`DirContext ctx = ...`,
+        // `LdapTemplate ldapTemplate;`) reaches type-qualified resolution
+        // through `cfg::java_declared_receiver_kind`, which rewrites
+        // `ctx.search(...)` → `LdapClient.search`.
         "DirContext" | "LdapContext" | "InitialDirContext" | "InitialLdapContext"
         | "LdapTemplate" => Some(TypeKind::LdapClient),
-        // JAXP XML parser instances.  Field/local declarations like
-        // `DocumentBuilder builder = factory.newDocumentBuilder();` route
-        // through this map so the receiver SSA value carries
-        // `TypeKind::XmlParser` and the type-qualified
+        // JAXP XML parser instances.  A field / formal / local declared
+        // `DocumentBuilder builder` routes through this map (via
+        // `cfg::java_declared_receiver_kind`) so the type-qualified
         // `XmlParser.parse` rule fires on `builder.parse(...)`.
         "DocumentBuilder" | "SAXParser" | "XMLReader" | "SAXBuilder" => {
             Some(TypeKind::XmlParser)

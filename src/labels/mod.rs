@@ -1079,6 +1079,9 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
         // (`r.PathValue("id")`).
         || cl.contains("bind")
         || cl.contains("pathvalue")
+        // Servlet `req.getReader()` reads the body.  Without this the "read"
+        // substring below files it under FileSystem.
+        || cl.ends_with("getreader")
         || cl.contains("stdin")
         || cl.contains("fgets")
         || cl.contains("scanf")

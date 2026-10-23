@@ -294,6 +294,13 @@ pub enum TypeKind {
     /// either the command (arg 0) or the environment array (arg 1), so the
     /// default all-args sink scan must cover every position.
     Runtime,
+    /// A Spring `JdbcTemplate` / `NamedParameterJdbcTemplate` (or their
+    /// `JdbcOperations` interfaces).  Only reached through a declared
+    /// field, parameter or local type, since Spring injects the template
+    /// rather than building it in the method.  The `JdbcTemplate.*` SQL
+    /// rules in `labels/java.rs` take the statement at arg 0 and treat the
+    /// rest as bind values, row mappers or result classes.
+    JdbcTemplate,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -353,6 +360,7 @@ impl TypeKind {
             Self::HibernateSession => Some("HibernateSession"),
             Self::ProcessBuilder => Some("ProcessBuilder"),
             Self::Runtime => Some("Runtime"),
+            Self::JdbcTemplate => Some("JdbcTemplate"),
             _ => None,
         }
     }
@@ -744,6 +752,19 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // sink when the receiver carries a hardening fact.
             "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
             | "createXMLReader" => Some(TypeKind::XmlParser),
+            // The parser factories themselves: StAX parses straight off the
+            // `XMLInputFactory`, and `dbf.newDocumentBuilder().parse(x)`
+            // reads as `dbf.parse`, so the factory is the receiver the
+            // config sidecar and the `XmlParser.*` sinks see.  dom4j's
+            // `new SAXReader()` is the parser.
+            "newInstance" | "newFactory" | "newDefaultFactory"
+                if callee.contains("DocumentBuilderFactory")
+                    || callee.contains("SAXParserFactory")
+                    || callee.contains("XMLInputFactory") =>
+            {
+                Some(TypeKind::XmlParser)
+            }
+            "SAXReader" => Some(TypeKind::XmlParser),
             // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
             // Mapping it to `XPathClient` lets the type-qualified resolver
             // pick up `xpath.evaluate(...)` against the existing

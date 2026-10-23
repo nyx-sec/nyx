@@ -21,3 +21,9 @@ func safeStringOps() {
 	x := "hello"
 	_ = len(x)
 }
+
+// Not os/exec: a CLI builder and a Redis client both have a Command method.
+func notExec(app *kingpin.Application, rdb *redis.Client, help string) {
+	app.Command("check", help)
+	rdb.Command(ctx)
+}

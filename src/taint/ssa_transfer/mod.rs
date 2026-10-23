@@ -5932,41 +5932,59 @@ pub(super) fn transfer_inst(
             // callee name from the receiver's inferred type (e.g., client.send →
             // HttpClient.send when client is typed as HttpClient).
             if !resolved_callee && info.taint.labels.is_empty() {
-                if let Some(rv) = receiver {
-                    if transfer.type_facts.is_some() || state.path_env.is_some() {
-                        let tq_labels = resolve_type_qualified_labels(
-                            callee,
-                            *rv,
-                            transfer.type_facts,
-                            state.path_env.as_deref(),
-                            transfer.lang,
-                            transfer.extra_labels,
-                            Some(ssa),
-                        );
-                        for lbl in &tq_labels {
-                            match lbl {
-                                DataLabel::Source(bits) if !has_source_label => {
-                                    return_bits |= *bits;
-                                    let source_kind =
-                                        crate::labels::infer_source_kind(*bits, callee);
-                                    let origin = TaintOrigin {
-                                        node: inst.cfg_node,
-                                        source_kind,
-                                        source_span: None,
-                                    };
-                                    if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
-                                        return_origins.push(origin);
-                                    }
+                let declared = info.call.receiver_decl_type.as_ref();
+                if (receiver.is_some()
+                    && (transfer.type_facts.is_some() || state.path_env.is_some()))
+                    || declared.is_some()
+                {
+                    let tq_labels = resolve_type_qualified_labels(
+                        callee,
+                        *receiver,
+                        transfer.type_facts,
+                        state.path_env.as_deref(),
+                        declared,
+                        transfer.lang,
+                        transfer.extra_labels,
+                        Some(ssa),
+                    );
+                    // A callee whose own text already matches a Source rule but
+                    // reached here without the label had it withdrawn at CFG
+                    // construction (a process-output `readLine`, an excluded
+                    // callee).  The qualified form (`FileHandle.readLine`)
+                    // matches the same bare rule and would bring it back.
+                    let plain_text_is_source =
+                        tq_labels.iter().any(|l| matches!(l, DataLabel::Source(_)))
+                            && crate::labels::classify_all(
+                                transfer.lang.as_str(),
+                                callee,
+                                transfer.extra_labels,
+                            )
+                            .iter()
+                            .any(|l| matches!(l, DataLabel::Source(_)));
+                    for lbl in &tq_labels {
+                        match lbl {
+                            DataLabel::Source(bits)
+                                if !has_source_label && !plain_text_is_source =>
+                            {
+                                return_bits |= *bits;
+                                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                                let origin = TaintOrigin {
+                                    node: inst.cfg_node,
+                                    source_kind,
+                                    source_span: None,
+                                };
+                                if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
+                                    return_origins.push(origin);
                                 }
-                                DataLabel::Sanitizer(bits) => {
-                                    sanitizer_bits |= *bits;
-                                }
-                                DataLabel::Sink(_) => {
-                                    // Sink detection is handled separately in
-                                    // collect_block_events via resolve_sink_caps_typed
-                                }
-                                _ => {}
                             }
+                            DataLabel::Sanitizer(bits) => {
+                                sanitizer_bits |= *bits;
+                            }
+                            DataLabel::Sink(_) => {
+                                // Sink detection is handled separately in
+                                // collect_block_events via resolve_sink_caps_typed
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -8234,18 +8252,24 @@ fn collect_block_events(
         let mut tq_filters: SmallVec<[TqSinkFilter; 2]> = SmallVec::new();
         if sink_caps.is_empty() {
             if let SsaOp::Call {
-                callee,
-                receiver: Some(rv),
-                ..
+                callee, receiver, ..
             } = &inst.op
             {
-                if transfer.type_facts.is_some() || state.path_env.is_some() {
+                // A declared receiver type needs no SSA receiver: a Java
+                // field read in a body lowered without its class scope has
+                // no value, but its declaration still names the type.
+                let declared = info.call.receiver_decl_type.as_ref();
+                if (receiver.is_some()
+                    && (transfer.type_facts.is_some() || state.path_env.is_some()))
+                    || declared.is_some()
+                {
                     let (tq_labels, tq_args) = resolve_type_qualified_labels_with_args(
                         callee,
                         info.call.outer_callee.as_deref(),
-                        *rv,
+                        *receiver,
                         transfer.type_facts,
                         state.path_env.as_deref(),
+                        declared,
                         transfer.lang,
                         transfer.extra_labels,
                         Some(ssa),
@@ -11434,11 +11458,15 @@ fn all_args_const(inst: &SsaInst, const_values: &crate::ssa::const_prop::ConstVa
 /// Resolution order:
 /// 1. Static type from [`TypeFactResult`] (constructor/const inference)
 /// 2. Flow-sensitive type from [`PathEnv`] (branch narrowing, casts)
+/// 3. The receiver's declared type recorded at CFG construction
+///    ([`crate::cfg::CallMeta::receiver_decl_type`])
+#[allow(clippy::too_many_arguments)]
 fn resolve_type_qualified_labels(
     callee: &str,
-    receiver: SsaValue,
+    receiver: Option<SsaValue>,
     type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     path_env: Option<&constraint::PathEnv>,
+    declared: Option<&crate::ssa::type_facts::TypeKind>,
     lang: Lang,
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa: Option<&SsaBody>,
@@ -11456,7 +11484,9 @@ fn resolve_type_qualified_labels(
     // chains (Rust parses `conn.execute(&sql, []).unwrap()` as one outer
     // call whose receiver is another call, and so on).  We stop once we find
     // a typed value or run out of receivers.
-    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+    let receiver_candidates = receiver
+        .map(|rv| receiver_candidates_for_type_lookup(rv, ssa, lang))
+        .unwrap_or_default();
 
     // 1. Try static type first (existing behavior)
     if let Some(tf) = type_facts {
@@ -11495,6 +11525,17 @@ fn resolve_type_qualified_labels(
         }
     }
 
+    // 3. Declared receiver type
+    if let Some(prefix) = declared.and_then(|t| t.label_prefix()) {
+        for method in &method_candidates {
+            let qualified = format!("{}.{}", prefix, method);
+            let labels = crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+            if !labels.is_empty() {
+                return labels;
+            }
+        }
+    }
+
     SmallVec::new()
 }
 
@@ -11526,9 +11567,10 @@ type TqResolution = (SmallVec<[DataLabel; 2]>, SmallVec<[TqSinkFilter; 2]>);
 fn resolve_type_qualified_labels_with_args(
     callee: &str,
     outer_callee: Option<&str>,
-    receiver: SsaValue,
+    receiver: Option<SsaValue>,
     type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     path_env: Option<&constraint::PathEnv>,
+    declared: Option<&crate::ssa::type_facts::TypeKind>,
     lang: Lang,
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa: Option<&SsaBody>,
@@ -11541,7 +11583,9 @@ fn resolve_type_qualified_labels_with_args(
             }
         }
     }
-    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+    let receiver_candidates = receiver
+        .map(|rv| receiver_candidates_for_type_lookup(rv, ssa, lang))
+        .unwrap_or_default();
 
     let mut prefixes: SmallVec<[&'static str; 4]> = SmallVec::new();
     if let Some(tf) = type_facts {
@@ -11562,6 +11606,9 @@ fn resolve_type_qualified_labels_with_args(
                 prefixes.push(prefix);
             }
         }
+    }
+    if let Some(prefix) = declared.and_then(|t| t.label_prefix()) {
+        prefixes.push(prefix);
     }
 
     for prefix in prefixes {

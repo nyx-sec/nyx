@@ -349,11 +349,10 @@ pub static RULES: &[LabelRule] = &[
     // ── Outbound HTTP clients (SSRF) ───────────────────────────────────
     //
     // These are modeled as destination-aware gated sinks in `GATED_SINKS`
-    // below.  Flat Sink rules would over-flag every positional argument as
-    // SSRF (so a tainted body in `http.Post(url, contentType, body)` would
-    // fire SSRF on the body), and the gate machinery short-circuits when a
-    // flat Sink label is already attached to the callee, blocking DATA_EXFIL
-    // body-flow gates from running.
+    // below.  A flat Sink rule alone would over-flag every positional
+    // argument as SSRF (so a tainted body in `http.Post(url, contentType,
+    // body)` would fire SSRF on the body).  When a flat Sink does exist, the
+    // CFG gate pass still narrows it to each gate's payload positions.
     //
     // `net.Dial` / `net.DialTimeout` keep their flat-sink modeling: the
     // first positional arg is the network address with no body / payload

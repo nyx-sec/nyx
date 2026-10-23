@@ -1551,13 +1551,13 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
 }
 
 /// Returns true when every argument in the call's argument list is a
-/// syntactic literal (per `is_syntactic_literal`). Returns true for calls
-/// with zero arguments (no argument-carried taint vector). Returns false
-/// when the argument list cannot be found.
+/// syntactic literal (per `is_syntactic_literal`).  Returns false for a call
+/// with no arguments, or when the argument list cannot be found.
 ///
-/// For method chains like `a("x").b(y).c()`, the outermost call node
+/// For method chains like `a("x").b(y).c("z")`, the outermost call node
 /// represents the entire chain. This function walks nested call expressions
-/// to verify ALL argument lists in the chain contain only literals.
+/// to verify ALL argument lists in the chain contain only literals.  Inner
+/// chain calls may take no arguments (`Runtime.getRuntime().exec("ls")`).
 pub(super) fn has_only_literal_args(call_node: Node, code: &[u8]) -> bool {
     let Some(args) = call_node.child_by_field_name("arguments") else {
         return false;
@@ -1592,7 +1592,7 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
         }
         // If this child is itself a call expression, check its arguments.
         if child.child_by_field_name("arguments").is_some() {
-            if !has_only_literal_args(child, code) {
+            if !inner_call_args_literal(child, code) {
                 return false;
             }
         } else {
@@ -1603,6 +1603,25 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
         }
     }
     true
+}
+
+/// An inner call of a method chain whose arguments, if any, are all
+/// syntactic literals, as are those of the calls further down its chain.
+/// Unlike the outermost call, a zero-argument inner call qualifies: the
+/// receiver-sink guard in [`has_only_literal_args`] is about the call that
+/// is the sink, not the calls that build its receiver.
+fn inner_call_args_literal(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    if !args
+        .named_children(&mut cursor)
+        .all(|ch| is_syntactic_literal(ch, code))
+    {
+        return false;
+    }
+    check_inner_call_args(call, code)
 }
 
 /// Extract identifiers captured by Rust format-string named-argument syntax
