@@ -1,0 +1,35 @@
+{
+  "description": "A sink in an ensure clause the body always returns through (begin/ensure and method-level ensure): reached on the return path, flagged when tainted and quiet when constant",
+  "tags": ["taint", "cmdi", "begin-ensure", "return"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [8, 8],
+      "evidence_contains": [],
+      "notes": "params[:dir] reaches system in the begin/ensure clause"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [17, 17],
+      "evidence_contains": [],
+      "notes": "params[:dir] reaches system in the method-level ensure clause"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [24, 24],
+      "notes": "constant command in the ensure clause must NOT fire"
+    },
+    {
+      "rule_id": "cfg-unreachable",
+      "must_not_match": true,
+      "line_range": [1, 26],
+      "notes": "the ensure clause runs after the return, so nothing in it is unreachable (regression guard)"
+    }
+  ]
+}

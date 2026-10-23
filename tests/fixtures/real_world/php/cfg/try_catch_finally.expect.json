@@ -24,25 +24,21 @@
     },
     {
       "rule_id": "state-resource-leak",
-      "severity": "MEDIUM",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [
         3,
         3
       ],
-      "evidence_contains": [],
-      "notes": "noise: state-resource-leak on fopen in processFile; the file handle IS properly closed in the finally block at line 10, so this is a false positive"
+      "notes": "the file handle is closed in the finally block at line 10, which runs on the return path of the try body (regression guard)"
     },
     {
       "rule_id": "state-resource-leak-possible",
-      "severity": "LOW",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [
         3,
         3
       ],
-      "evidence_contains": [],
-      "notes": "noise: state-resource-leak-possible on fopen in processFile; the file handle IS properly closed in the finally block at line 10, so this is a false positive"
+      "notes": "same: the return at line 6 must not hide the close in finally"
     }
   ]
 }

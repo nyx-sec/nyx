@@ -436,6 +436,186 @@ pub(super) fn extract_catch_param_name<'a>(
     }
 }
 
+//    finally / ensure on early exits
+
+thread_local! {
+    /// Nesting depth of early-exit `finally` copies being lowered next to a
+    /// normal-completion copy (see [`build_finally_paths`]).  The Function
+    /// arm of `build_sub` reads it through [`in_duplicate_finally_copy`].
+    static DUPLICATE_FINALLY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True while the second copy of a `finally` / `ensure` clause is being
+/// lowered.  A function or closure declared in the clause was already
+/// registered by the first copy, so its second declaration site gets only a
+/// placeholder node and no body of its own.
+pub(super) fn in_duplicate_finally_copy() -> bool {
+    DUPLICATE_FINALLY_DEPTH.with(|d| d.get() > 0)
+}
+
+struct DuplicateFinallyCopy;
+
+impl DuplicateFinallyCopy {
+    fn enter() -> Self {
+        DUPLICATE_FINALLY_DEPTH.with(|d| d.set(d.get() + 1));
+        DuplicateFinallyCopy
+    }
+}
+
+impl Drop for DuplicateFinallyCopy {
+    fn drop(&mut self) {
+        DUPLICATE_FINALLY_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+/// Return nodes at or after node index `first` that nothing leaves yet: the
+/// early exits of the try / catch bodies built since `first`.
+///
+/// A return rerouted through an inner `finally` already has its edge into
+/// that clause, so it is not collected again.  The inner clause's tail
+/// stands in for it (see [`build_finally_paths`]).
+fn collect_abrupt_returns(g: &Cfg, first: usize, enclosing_func: Option<&str>) -> Vec<NodeIndex> {
+    (first..g.node_count())
+        .map(NodeIndex::new)
+        .filter(|&idx| {
+            g[idx].kind == StmtKind::Return
+                && g[idx].ast.enclosing_func.as_deref() == enclosing_func
+                && g.neighbors(idx).next().is_none()
+        })
+        .collect()
+}
+
+/// Lower a `finally` / `ensure` clause on the paths that reach it.
+///
+/// Control reaches the clause by falling out of the try and catch bodies
+/// (`normal_preds`) and by returning from them.  `build_sub` ends a return's
+/// path, so without more work a return never ran the clause: its releases
+/// were invisible on the return path (resource-leak false positives), and a
+/// clause every path returns through had no predecessor at all (its sinks
+/// read as unreachable and were never analysed).
+///
+/// The clause is lowered once for the normal path, from `normal_preds`, and
+/// once more for the early exits, from the Return nodes built since
+/// `body_first_idx`.  Each such Return is marked `finally_return` and keeps
+/// one edge into the second copy, which ends in a synthetic `finally_tail`
+/// Return that carries the union of the returns' uses.  Nested clauses
+/// compose: the inner tail is collected by the outer clause as one more
+/// early exit, so inner cleanup runs before outer cleanup.
+///
+/// The first copy is skipped when nothing falls out of the bodies and some
+/// path returns, so no orphan copy is left behind.  Break, continue and
+/// throw leave a try without running its finally clause.
+///
+/// Returns the exits of the normal-path copy.
+#[allow(clippy::too_many_arguments)]
+fn build_finally_paths<'a>(
+    clause: Node<'a>,
+    normal_preds: &[NodeIndex],
+    body_first_idx: usize,
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    // Collect before either copy exists, so a return inside the clause itself
+    // is not rerouted through the clause it sits in.
+    let abrupt = collect_abrupt_returns(g, body_first_idx, enclosing_func);
+    let normal_copy_built = abrupt.is_empty() || !normal_preds.is_empty();
+
+    let normal_exits = if normal_copy_built {
+        build_sub(
+            clause,
+            normal_preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )
+    } else {
+        Vec::new()
+    };
+    if abrupt.is_empty() {
+        return normal_exits;
+    }
+
+    let mut tail_uses: Vec<String> = Vec::new();
+    for &ret in &abrupt {
+        for u in &g[ret].taint.uses {
+            if !tail_uses.contains(u) {
+                tail_uses.push(u.clone());
+            }
+        }
+        if g[ret].finally_tail {
+            // The inner clause's tail is an early exit of this clause too:
+            // it flows on into the copy below instead of returning.
+            g[ret].kind = StmtKind::Seq;
+            g[ret].finally_tail = false;
+            g[ret].taint.uses.clear();
+        } else {
+            g[ret].finally_return = true;
+        }
+    }
+
+    let copy_exits = {
+        let _guard = normal_copy_built.then(DuplicateFinallyCopy::enter);
+        build_sub(
+            clause,
+            &abrupt,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )
+    };
+    if !copy_exits.is_empty() {
+        let tail = g.add_node(NodeInfo {
+            kind: StmtKind::Return,
+            ast: AstMeta {
+                span: (clause.end_byte(), clause.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            taint: TaintMeta {
+                uses: tail_uses,
+                ..Default::default()
+            },
+            finally_tail: true,
+            ..Default::default()
+        });
+        connect_all(g, &copy_exits, tail, EdgeKind::Seq);
+    }
+    normal_exits
+}
+
 //    Ruby begin/rescue/ensure handler
 
 /// Builds CFG for Ruby's `begin`/`rescue`/`ensure` blocks (and `body_statement`
@@ -660,9 +840,10 @@ pub(super) fn build_begin_rescue<'a>(
             ensure_preds.extend(&try_throw_targets);
         }
 
-        build_sub(
+        build_finally_paths(
             ensure_node,
             &ensure_preds,
+            try_body_first_idx,
             g,
             lang,
             code,
@@ -1679,9 +1860,10 @@ pub(super) fn build_try<'a>(
             finally_preds.extend(&try_throw_targets);
         }
 
-        let finally_exits = build_sub(
+        build_finally_paths(
             finally_node,
             &finally_preds,
+            try_body_first_idx,
             g,
             lang,
             code,
@@ -1696,8 +1878,7 @@ pub(super) fn build_try<'a>(
             bodies,
             next_body_id,
             current_body_id,
-        );
-        finally_exits
+        )
     } else {
         // No finally: return try normal exits + catch exits
         let mut exits = try_exits;

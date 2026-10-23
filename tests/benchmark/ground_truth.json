@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 723
+    "corpus_size": 733
   },
   "cases": [
     {
@@ -23032,6 +23032,338 @@
       ],
       "disabled": false,
       "notes": "A Go `range` header classifies on its iterable (an index into `r.URL.Query()`), so the loop binding carries the request taint."
+    },
+    {
+      "case_id": "js-cmdi-finally-return-001",
+      "file": "javascript/cmdi/cmdi_finally_after_return.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path, so its exec sink is reachable. It used to be an orphan: the sink was dropped and cfg-unreachable-sink fired instead."
+    },
+    {
+      "case_id": "py-cmdi-finally-return-001",
+      "file": "python/cmdi/cmdi_finally_after_return.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return",
+        "except"
+      ],
+      "disabled": false,
+      "notes": "Both the try body and the except handler return; the finally clause runs after either."
+    },
+    {
+      "case_id": "rb-cmdi-ensure-return-001",
+      "file": "ruby/cmdi/cmdi_ensure_after_return.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "begin-ensure",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The begin body returns; the ensure clause runs on that path."
+    },
+    {
+      "case_id": "php-cmdi-finally-return-001",
+      "file": "php/cmdi/cmdi_finally_after_return.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path."
+    },
+    {
+      "case_id": "java-cmdi-finally-return-001",
+      "file": "java/cmdi/CmdiFinallyAfterReturn.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path."
+    },
+    {
+      "case_id": "java-safe-finally-close-001",
+      "file": "java/safe/SafeReturnInTryCloseInFinally.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Returns in the try body and the catch handler run the finally clause, which closes the stream and the connection. The finally clause used to be skipped on return paths, so these read as leaks."
+    },
+    {
+      "case_id": "py-safe-finally-close-001",
+      "file": "python/safe/safe_return_in_try_close_in_finally.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Return inside try, close in finally (plain and with an early return)."
+    },
+    {
+      "case_id": "js-safe-finally-close-001",
+      "file": "javascript/safe/safe_return_in_try_close_in_finally.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "fs.openSync fd returned through try, closed in finally."
+    },
+    {
+      "case_id": "rb-safe-ensure-close-001",
+      "file": "ruby/safe/safe_return_in_ensure_close.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "begin-ensure",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Return inside begin and inside a method-level ensure body; the ensure clause closes the file."
+    },
+    {
+      "case_id": "java-vuln-finally-no-close-001",
+      "file": "java/safe/VulnReturnInTryNoCloseInFinally.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Recall guard: the finally clause runs on the return path but does not close the stream, so the leak must still be reported."
     }
   ]
 }

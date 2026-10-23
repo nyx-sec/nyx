@@ -561,8 +561,13 @@ fn form_blocks(
     // here so block-level adjacency reflects real control flow; the SSA
     // terminator for the containing block becomes Return / Unreachable
     // instead of Goto(exit).
-    let is_terminating =
-        |n: NodeIndex| -> bool { matches!(cfg[n].kind, StmtKind::Return | StmtKind::Throw) };
+    //
+    // A Return that runs a `finally` clause first (`finally_return`) is the
+    // exception: the CFG gives it no edge to the exit, only the edge into the
+    // clause's early-exit copy.  That edge is real flow and stays.
+    let is_terminating = |n: NodeIndex| -> bool {
+        matches!(cfg[n].kind, StmtKind::Return | StmtKind::Throw) && !cfg[n].finally_return
+    };
 
     for &(src, tgt, kind) in filtered_edges {
         if is_terminating(src) {
@@ -589,9 +594,11 @@ fn form_blocks(
         if in_deg == 0 && node != entry {
             is_leader.insert(node);
         }
-        // Node following a multi-exit node
+        // Node following a multi-exit node.  The clause copy a return runs
+        // starts its own block, so the Return stays the last node of its
+        // block and keeps its return value.
         let succs = successors.get(&node).map(|s| s.len()).unwrap_or(0);
-        if succs > 1 {
+        if succs > 1 || (succs > 0 && cfg[node].finally_return) {
             for &(tgt, _) in successors.get(&node).unwrap_or(&vec![]) {
                 is_leader.insert(tgt);
             }
@@ -2056,7 +2063,13 @@ fn rename_variables(
         let succs = &block_succs[block_idx];
         let last_node = *blocks_nodes[block_idx].last().unwrap();
 
-        ssa_blocks[block_idx].terminator = if succs.is_empty() {
+        // A block that returns through a `finally` clause ends in the return
+        // terminator like any other return, but keeps its successor: the
+        // clause copy it runs next (see `NodeInfo::finally_return`).
+        let returns_through_finally = blocks_nodes[block_idx]
+            .iter()
+            .any(|&n| cfg[n].kind == StmtKind::Return && cfg[n].finally_return);
+        ssa_blocks[block_idx].terminator = if succs.is_empty() || returns_through_finally {
             // A block with no successors at the block level is one of:
             //   (1) a block containing a Throw, terminates with an
             //       exception; no normal fall-through.
@@ -2077,7 +2090,11 @@ fn rename_variables(
                 .iter()
                 .any(|&n| cfg[n].kind == StmtKind::Throw);
 
-            if has_throw_node && return_node.is_none() {
+            if blocks_nodes[block_idx].iter().any(|&n| cfg[n].finally_tail) {
+                // The end of a clause copy a return ran through.  The value
+                // was returned by the original Return block.
+                Terminator::Unreachable
+            } else if has_throw_node && return_node.is_none() {
                 // Throw terminates control flow with an exception.  No
                 // structured Throw terminator exists today; downstream
                 // analyses rely on `exception_edges` (recorded separately)
@@ -5221,5 +5238,101 @@ mod tests {
         );
         // No phis (nothing converged), no value_defs except possibly
         // entry sentinels. We just assert it lowered without panic.
+    }
+    /// Lower the first function body of JavaScript `src`.
+    fn lower_js_fn(src: &str) -> (crate::cfg::FileCfg, SsaBody) {
+        use crate::cfg::build_cfg;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_javascript::LANGUAGE,
+            ))
+            .unwrap();
+        let tree = parser.parse(src.as_bytes(), None).unwrap();
+        let file_cfg = build_cfg(&tree, src.as_bytes(), "javascript", "test.js", None);
+        let body = &file_cfg.bodies[1];
+        let ssa = lower_to_ssa(&body.graph, body.entry, None, true).expect("lowering succeeds");
+        (file_cfg, ssa)
+    }
+
+    fn block_of_call(file_cfg: &crate::cfg::FileCfg, ssa: &SsaBody, callee: &str) -> usize {
+        let cfg = &file_cfg.bodies[1].graph;
+        let node = cfg
+            .node_indices()
+            .find(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+            .unwrap_or_else(|| panic!("no call node for {callee}"));
+        ssa.blocks
+            .iter()
+            .position(|b| b.body.iter().any(|i| i.cfg_node == node))
+            .unwrap_or_else(|| panic!("{callee} is in no block"))
+    }
+
+    /// A return that runs a `finally` clause first ends its block with the
+    /// return terminator, keeps its return value, and has the clause copy as
+    /// a successor.  The copy ends in an unreachable block: the value was
+    /// already returned.
+    #[test]
+    fn return_through_finally_keeps_terminator_and_clause_successor() {
+        let (file_cfg, ssa) =
+            lower_js_fn("function f(x) { try { return g(x); } finally { cleanup(); } }");
+        assert!(
+            crate::ssa::invariants::check_structural_invariants(&ssa).is_empty(),
+            "{:?}",
+            crate::ssa::invariants::check_structural_invariants(&ssa)
+        );
+        let ret = block_of_call(&file_cfg, &ssa, "g");
+        let clause = block_of_call(&file_cfg, &ssa, "cleanup");
+        assert_ne!(ret, clause, "the clause must start its own block");
+        assert!(
+            matches!(ssa.blocks[ret].terminator, Terminator::Return(Some(_))),
+            "{:?}",
+            ssa.blocks[ret].terminator
+        );
+        assert_eq!(
+            ssa.blocks[ret].succs.as_slice(),
+            &[BlockId(clause as u32)],
+            "the return block continues into the clause"
+        );
+        assert!(
+            matches!(ssa.blocks[clause].terminator, Terminator::Unreachable),
+            "{:?}",
+            ssa.blocks[clause].terminator
+        );
+        // The only Return terminator is the original return.
+        let returns = ssa
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Terminator::Return(_)))
+            .count();
+        assert_eq!(returns, 1);
+    }
+
+    /// Two returns share the early-exit copy; the copy joins them with a phi
+    /// and the blocks stay structurally valid.
+    #[test]
+    fn two_returns_through_finally_join_at_the_clause() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(x) { let v = 'a'; try { if (x) { v = h(); return 1; } return 2; } finally { use(v); } }",
+        );
+        assert!(
+            crate::ssa::invariants::check_structural_invariants(&ssa).is_empty(),
+            "{:?}",
+            crate::ssa::invariants::check_structural_invariants(&ssa)
+        );
+        let clause = block_of_call(&file_cfg, &ssa, "use");
+        assert_eq!(ssa.blocks[clause].preds.len(), 2);
+        assert!(
+            ssa.blocks[clause]
+                .phis
+                .iter()
+                .any(|p| p.var_name.as_deref() == Some("v")),
+            "v has two reaching definitions at the clause"
+        );
+        for b in &ssa.blocks[clause].preds {
+            assert!(matches!(
+                ssa.blocks[b.0 as usize].terminator,
+                Terminator::Return(_)
+            ));
+        }
     }
 }

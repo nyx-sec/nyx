@@ -5891,3 +5891,266 @@ fn for_each_header_classifies_iterable() {
             || info.taint.extra_defines.contains(&"v".into())
     );
 }
+
+//   try / finally and begin / ensure on early exits
+
+fn exit_node(cfg: &Cfg) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Exit)
+        .expect("function body has an Exit node")
+}
+
+fn return_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].kind == StmtKind::Return)
+        .collect()
+}
+
+fn calls_named(cfg: &Cfg, callee: &str) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .collect()
+}
+
+fn reachable_from_entry(cfg: &Cfg, entry: NodeIndex) -> usize {
+    let mut bfs = petgraph::visit::Bfs::new(cfg, entry);
+    let mut n = 0;
+    while bfs.next(cfg).is_some() {
+        n += 1;
+    }
+    n
+}
+
+/// `return` in the try body runs the finally clause before leaving: the
+/// clause is reachable (it used to be an orphan when every path returned),
+/// the return reaches the exit only through it, and the clause is lowered
+/// once, not once per path.
+#[test]
+fn return_in_try_runs_finally_in_every_language() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "javascript",
+            b"function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "java",
+            b"class C { int f() { try { return a(); } finally { cleanup(); } } }",
+        ),
+        (
+            "python",
+            b"def f():\n    try:\n        return a()\n    finally:\n        cleanup()\n",
+        ),
+        (
+            "php",
+            b"<?php function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "ruby",
+            b"def f\n  begin\n    return a()\n  ensure\n    cleanup()\n  end\nend\n",
+        ),
+        // Method-level `ensure` without a `begin`.
+        ("ruby", b"def f\n  return a()\nensure\n  cleanup()\nend\n"),
+    ];
+    for (lang, src) in cases {
+        let (cfg, entry) = lang_cfg(lang, src);
+        let src_text = String::from_utf8_lossy(src);
+        assert_eq!(
+            reachable_from_entry(&cfg, entry),
+            cfg.node_count(),
+            "{lang}: orphan node:\n{src_text}"
+        );
+        let cleanup = calls_named(&cfg, "cleanup");
+        assert_eq!(cleanup.len(), 1, "{lang}: finally lowered once\n{src_text}");
+        let cleanup = cleanup[0];
+
+        let exit = exit_node(&cfg);
+        let (tails, real): (Vec<NodeIndex>, Vec<NodeIndex>) = return_nodes(&cfg)
+            .into_iter()
+            .partition(|&r| cfg[r].finally_tail);
+        assert_eq!((real.len(), tails.len()), (1, 1), "{lang}\n{src_text}");
+        let (ret, tail) = (real[0], tails[0]);
+        assert!(cfg[ret].finally_return, "{lang}");
+        assert!(
+            !cfg.contains_edge(ret, exit),
+            "{lang}: the return left the function without running the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, ret, &[]).contains(&cleanup),
+            "{lang}: the return does not reach the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, cleanup, &[]).contains(&tail),
+            "{lang}: the finally clause does not reach the tail"
+        );
+        assert!(
+            cfg.contains_edge(tail, exit),
+            "{lang}: tail must reach Exit"
+        );
+    }
+}
+
+/// A return in a catch handler runs the clause too, and with every path
+/// returning there is no normal-path copy left over.
+#[test]
+fn return_in_catch_runs_finally_once() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { return b(); } finally { c(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    assert_eq!(calls_named(&cfg, "c").len(), 1);
+    let exit = exit_node(&cfg);
+    let c = calls_named(&cfg, "c")[0];
+    let rerouted: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_return)
+        .collect();
+    assert_eq!(rerouted.len(), 2);
+    for r in rerouted {
+        assert!(!cfg.contains_edge(r, exit));
+        assert!(forward_reach(&cfg, r, &[]).contains(&c));
+    }
+}
+
+/// A return on only some paths: the clause exists on the normal path and on
+/// the return path, and both reach the exit.
+#[test]
+fn partial_return_runs_finally_on_both_paths() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f(x) { try { if (x) { return a(); } b(); } finally { c(); } d(); }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let copies = calls_named(&cfg, "c");
+    assert_eq!(copies.len(), 2, "normal-path copy and early-exit copy");
+    let exit = exit_node(&cfg);
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .expect("the return is rerouted");
+    let reached_from_ret = forward_reach(&cfg, ret, &[]);
+    let early = copies
+        .iter()
+        .copied()
+        .find(|c| reached_from_ret.contains(c))
+        .unwrap();
+    let normal = copies.iter().copied().find(|&c| c != early).unwrap();
+    // The code after the try follows the normal copy only.
+    let d = call_named(&cfg, "d");
+    assert!(forward_reach(&cfg, normal, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, early, &[]).contains(&d));
+    assert!(forward_reach(&cfg, early, &[]).contains(&exit));
+}
+
+/// The inner clause runs before the outer one on the return path.
+#[test]
+fn nested_finally_runs_inner_before_outer() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { try { return a(); } finally { inner(); } } finally { outer(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let (inner, outer) = (call_named(&cfg, "inner"), call_named(&cfg, "outer"));
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .unwrap();
+    assert!(forward_reach(&cfg, ret, &[]).contains(&inner));
+    assert!(
+        !forward_reach(&cfg, ret, &[inner]).contains(&outer),
+        "the outer clause ran without the inner one"
+    );
+    assert!(forward_reach(&cfg, inner, &[]).contains(&outer));
+    // Only the outermost tail is a Return: the inner tail flows on.
+    let tails: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_tail)
+        .collect();
+    assert_eq!(tails.len(), 1);
+    assert!(forward_reach(&cfg, outer, &[]).contains(&tails[0]));
+}
+
+/// A return inside the clause is the clause's own and is not rerouted
+/// through the clause it sits in.
+#[test]
+fn return_inside_finally_is_not_rerouted() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } finally { return b(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let exit = exit_node(&cfg);
+    let own: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| !cfg[r].finally_return && !cfg[r].finally_tail)
+        .collect();
+    assert!(!own.is_empty());
+    for r in own {
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// Without a finally clause nothing changes: the return goes to the exit.
+#[test]
+fn return_without_finally_keeps_exit_edge() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { b(); } }",
+    );
+    let exit = exit_node(&cfg);
+    for r in return_nodes(&cfg) {
+        assert!(!cfg[r].finally_return && !cfg[r].finally_tail);
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// The tail returns what the original returns returned, so ownership of a
+/// returned resource still reads as handed to the caller.
+#[test]
+fn finally_tail_carries_the_returned_names() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f(r) { try { if (r) { return r; } return s; } finally { audit(); } }",
+    );
+    let tail = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_tail)
+        .unwrap();
+    let mut uses = cfg[tail].taint.uses.clone();
+    uses.sort();
+    assert_eq!(uses, vec!["r".to_string(), "s".to_string()]);
+}
+
+/// A function declared in the clause is registered once even though the
+/// clause is lowered for two paths.
+#[test]
+fn closure_in_duplicated_finally_has_one_body() {
+    let src = b"function f(x) { try { if (x) { return a(); } b(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    // top level, f, and the closure
+    assert_eq!(file_cfg.bodies.len(), 3);
+    let spans: std::collections::HashSet<_> = file_cfg
+        .bodies
+        .iter()
+        .skip(1)
+        .map(|b| b.meta.span)
+        .collect();
+    assert_eq!(spans.len(), 2, "no body is registered twice");
+}
+
+/// With every path returning there is no normal-path copy, so a closure in
+/// the clause is still registered by the early-exit copy.
+#[test]
+fn closure_in_only_finally_copy_is_registered() {
+    let src = b"function f() { try { return a(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert_eq!(file_cfg.bodies.len(), 3);
+}

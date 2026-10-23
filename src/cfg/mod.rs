@@ -40,7 +40,7 @@ mod imports;
 mod literals;
 mod params;
 pub mod safe_fields;
-use blocks::{build_begin_rescue, build_switch, build_try};
+use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
     call_ident_at_or_under, collect_nested_function_nodes, derive_anon_fn_name_from_context,
     find_classifiable_inner_call, find_inner_sink_call, first_call_ident_with_span,
@@ -898,6 +898,20 @@ pub struct NodeInfo {
     /// node's single CFG predecessor (the call node).
     #[serde(default)]
     pub rmw_rhs_from_pred: bool,
+    /// Return node that leaves its function through the `finally` / `ensure`
+    /// clause of an enclosing try.  It keeps one Seq edge into the clause's
+    /// early-exit copy instead of the usual edge to the function exit, and
+    /// SSA lowering keeps that edge as a block successor of the return.
+    /// See `blocks::build_finally_paths`.
+    #[serde(default)]
+    pub finally_return: bool,
+    /// Synthetic Return that ends an early-exit copy of a `finally` /
+    /// `ensure` clause.  It stands for the returns the copy was entered from
+    /// and carries the union of their uses.  SSA lowers it as
+    /// `Terminator::Unreachable`: the value was already returned at the
+    /// original Return block.
+    #[serde(default)]
+    pub finally_tail: bool,
     /// True when this acquisition node is inside a language-managed cleanup
     /// scope (Python `with`, Java try-with-resources, C# `using`).
     /// Only meaningful on Call nodes that define a resource variable.
@@ -4257,6 +4271,8 @@ pub(super) fn push_node<'a>(
         bin_op_const,
         rmw_assign: rmw.is_some(),
         rmw_rhs_from_pred: false,
+        finally_return: false,
+        finally_tail: false,
         managed_resource: is_raii_managed || is_ruby_block_managed,
         borrowed_resource: lang == "java"
             && code
@@ -7513,6 +7529,18 @@ pub(super) fn build_sub<'a>(
 
         // Function item – create a header and dive into its body
         Kind::Function => {
+            // A function declared in a `finally` clause lowered a second time
+            // for the early-exit paths: the first copy registered its body.
+            if in_duplicate_finally_copy() {
+                let placeholder = g.add_node(make_empty_node_info(
+                    StmtKind::Seq,
+                    (ast.start_byte(), ast.end_byte()),
+                    enclosing_func,
+                ));
+                connect_all(g, preds, placeholder, EdgeKind::Seq);
+                return vec![placeholder];
+            }
+
             // ── 1) Extract function name ──────────────────────────────────────
             // Lambda expressions don't have meaningful names; force the
             // synthetic anon name to avoid C++ lambdas picking up parameter
@@ -7635,10 +7663,13 @@ pub(super) fn build_sub<'a>(
             for &b in &body_exits {
                 connect_all(&mut fn_graph, &[b], fn_exit, EdgeKind::Seq);
             }
-            // Wire internal Return/Throw nodes to Exit (both terminate this body)
+            // Wire internal Return/Throw nodes to Exit (both terminate this
+            // body).  A return that runs a `finally` clause first reaches
+            // Exit through that clause's tail instead.
             for idx in fn_graph.node_indices().collect::<Vec<_>>() {
                 if matches!(fn_graph[idx].kind, StmtKind::Return | StmtKind::Throw)
                     && idx != fn_exit
+                    && !fn_graph[idx].finally_return
                     && !fn_graph.contains_edge(idx, fn_exit)
                 {
                     connect_all(&mut fn_graph, &[idx], fn_exit, EdgeKind::Seq);

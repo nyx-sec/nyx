@@ -8903,3 +8903,92 @@ fn go_range_over_source_call_taints_binding() {
         "package main\n\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n)\n\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tfor _, v := range r.URL.Query()[\"c\"] {\n\t\texec.Command(\"sh\", \"-c\", v).Run()\n\t}\n}\n",
     );
 }
+
+// ── Sinks in a finally / ensure clause that every path returns through ──
+//
+// `build_sub` ends a path at `return`, so a clause the try body always
+// returns through had no predecessor: its sinks were never analysed (and read
+// as unreachable).  The clause now runs on the return path.
+
+#[test]
+fn finally_sink_after_return_fires() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "javascript",
+            "const cp = require('child_process');\nfunction h(req, res) {\n  try {\n    return res.send('ok');\n  } finally {\n    cp.exec(req.query.cmd);\n  }\n}\n",
+        ),
+        (
+            "python",
+            "import os\nfrom flask import request\ndef h():\n    cmd = request.args.get('cmd')\n    try:\n        return 'ok'\n    finally:\n        os.system(cmd)\n",
+        ),
+        (
+            "php",
+            "<?php\nfunction h() {\n    $cmd = $_GET['cmd'];\n    try {\n        return 'ok';\n    } finally {\n        system($cmd);\n    }\n}\n",
+        ),
+        (
+            "ruby",
+            "class C < ApplicationController\n  def h\n    cmd = params[:cmd]\n    begin\n      return 1\n    ensure\n      system(cmd)\n    end\n  end\nend\n",
+        ),
+        // Method-level ensure, no `begin`.
+        (
+            "ruby",
+            "class C < ApplicationController\n  def h\n    cmd = params[:cmd]\n    return 1\n  ensure\n    system(cmd)\n  end\nend\n",
+        ),
+        (
+            "java",
+            "import javax.servlet.http.*;\npublic class C extends HttpServlet {\n  protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    String v = req.getParameter(\"y\");\n    try {\n      return;\n    } finally {\n      Runtime.getRuntime().exec(v);\n    }\n  }\n}\n",
+        ),
+        // Return in a catch handler as well.
+        (
+            "python",
+            "import os\nfrom flask import request\ndef h():\n    cmd = request.args.get('cmd')\n    try:\n        return 'ok'\n    except Exception:\n        return 'err'\n    finally:\n        os.system(cmd)\n",
+        ),
+        // Some paths return, one falls out.
+        (
+            "javascript",
+            "const cp = require('child_process');\nfunction h(req, x) {\n  try {\n    if (x) { return 1; }\n    log();\n  } finally {\n    cp.exec(req.query.cmd);\n  }\n}\n",
+        ),
+    ];
+    for (slug, src) in cases {
+        assert_taint_fires(slug, src);
+    }
+}
+
+#[test]
+fn finally_sink_after_return_with_constant_argument_is_clean() {
+    assert_taint_clean(
+        "python",
+        "import os\nfrom flask import request\ndef h():\n    cmd = request.args.get('cmd')\n    try:\n        return 'ok'\n    finally:\n        os.system('ls')\n",
+    );
+    assert_taint_clean(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req, res) {\n  const c = req.query.c;\n  try {\n    return res.send('ok');\n  } finally {\n    cp.exec('ls');\n  }\n}\n",
+    );
+}
+
+/// The inner and the outer clause both run on the return path.
+#[test]
+fn nested_finally_sinks_after_return_both_fire() {
+    let src = "const cp = require('child_process');\nfunction h(req) {\n  try {\n    try {\n      return 1;\n    } finally {\n      cp.exec('inner ' + req.query.a);\n    }\n  } finally {\n    cp.exec('outer ' + req.query.b);\n  }\n}\n";
+    assert_eq!(lang_taint_sink_lines(src, "javascript"), vec![7, 10]);
+}
+
+/// Returning a tainted value through a finally clause still taints the
+/// caller: the original return block keeps its return value.
+#[test]
+fn return_value_through_finally_still_taints_caller() {
+    assert_taint_fires(
+        "java",
+        "import javax.servlet.http.*;\npublic class C extends HttpServlet {\n  String p(HttpServletRequest r) {\n    try {\n      return r.getParameter(\"x\");\n    } finally {\n      System.out.println(\"log\");\n    }\n  }\n  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    String v = p(req);\n    Runtime.getRuntime().exec(v);\n  }\n}\n",
+    );
+}
+
+/// A tainted value defined in the try body reaches a sink in the clause on
+/// the return path.
+#[test]
+fn try_body_definition_reaches_finally_sink_on_return_path() {
+    assert_taint_fires(
+        "javascript",
+        "const cp = require('child_process');\nfunction h(req) {\n  let v = 'ls';\n  try {\n    v = req.query.cmd;\n    return 1;\n  } finally {\n    cp.exec(v);\n  }\n}\n",
+    );
+}
