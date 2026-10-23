@@ -4049,8 +4049,18 @@ mod tests {
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
         assert_eq!(
+            classify("javascript", "ctx.response.body", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+        );
+        // A redirect navigates the browser (open redirect, not SSRF); header
+        // setters are CRLF-injection sinks, not XSS sinks.
+        assert_eq!(
             classify("javascript", "ctx.redirect", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
+        );
+        assert_eq!(
+            classify("javascript", "ctx.set", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HEADER_INJECTION)),
         );
 
         let empty = javascript::framework_rules(&FrameworkContext::default());
@@ -4077,7 +4087,11 @@ mod tests {
         );
         assert_eq!(
             classify("typescript", "reply.redirect", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
+        );
+        assert_eq!(
+            classify("typescript", "reply.header", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HEADER_INJECTION)),
         );
 
         let empty = typescript::framework_rules(&FrameworkContext::default());

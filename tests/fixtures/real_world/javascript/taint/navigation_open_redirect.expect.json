@@ -1,0 +1,25 @@
+{
+  "description": "window.open / location.assign / location.replace navigate the browser: open redirect, not SSRF.",
+  "tags": ["taint", "open-redirect", "dom"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [3, 3],
+      "notes": "window.open(u)"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [4, 5],
+      "notes": "location.assign(u) / location.replace(u)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [3, 5],
+      "notes": "the server never fetches these URLs, so no SSRF"
+    }
+  ]
+}

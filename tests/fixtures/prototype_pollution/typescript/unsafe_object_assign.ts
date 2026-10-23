@@ -1,8 +1,9 @@
-// Unsafe: Object.assign with attacker-controlled `req.body` source.
+// Unsafe: Object.assign into a shared prototype with attacker-controlled
+// `req.body`.  Every object inheriting from `Object.prototype` sees the
+// injected properties.
 import type { Request, Response } from "express";
 
 export function handler(req: Request, res: Response): void {
-    const target: Record<string, unknown> = {};
-    Object.assign(target, req.body);
-    res.json(target);
+    Object.assign(Object.getPrototypeOf({}), req.body);
+    res.json({ ok: true });
 }

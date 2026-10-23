@@ -5014,3 +5014,16 @@ app.get('/probe', (req, res) => {
         }
     }
 }
+#[test]
+fn js_object_assign_pollutes_only_a_prototype_target() {
+    let src = b"function h(body) {\n\
+                  Object.assign({}, body);\n\
+                  Object.assign(Session.prototype, body);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let assigns = js_call_nodes(&file_cfg, "Object.assign");
+    assert_eq!(assigns.len(), 2);
+    assert!(!has_sink(assigns[0], Cap::PROTOTYPE_POLLUTION));
+    assert!(has_sink(assigns[1], Cap::PROTOTYPE_POLLUTION));
+}

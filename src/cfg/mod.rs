@@ -76,10 +76,10 @@ use literals::{
     find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     has_string_interpolation, is_object_create_null_call, is_parameterized_query_call,
-    is_rust_format_style_macro, java_chain_arg0_kind_for_method, js_arg_is_string_valued,
-    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    js_positional_arity, js_shell_option_argv_positions, ruby_chain_arg0_for_method,
-    walk_chain_inner_call_args,
+    is_rust_format_style_macro, java_chain_arg0_kind_for_method, js_arg_is_prototype_object,
+    js_arg_is_string_valued, js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner,
+    js_orm_query_arg0_is_uid_ref, js_positional_arity, js_shell_option_argv_positions,
+    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -3394,6 +3394,16 @@ pub(super) fn push_node<'a>(
                         && crate::labels::javascript::STRING_EVALUATING_TIMERS
                             .contains(&gate_callee_text.rsplit('.').next().unwrap_or(""))
                         && !js_arg_is_string_valued(cn, 0, lang, code, extra)
+                    {
+                        continue;
+                    }
+                    // A shallow `Object.assign(target, src)` pollutes a shared
+                    // prototype only when `target` is one.
+                    if matches!(lang, "javascript" | "typescript" | "tsx")
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::PROTOTYPE_POLLUTION))
+                        && crate::labels::javascript::SHALLOW_ASSIGN_MERGES
+                            .contains(&gate_callee_text.as_str())
+                        && !js_arg_is_prototype_object(cn, 0, code)
                     {
                         continue;
                     }

@@ -5,8 +5,11 @@
 //!
 //! * `unsafe_lodash_merge.*` — `_.merge(target, req.body)` shape; must
 //!   produce >=1 `taint-prototype-pollution` finding.
-//! * `unsafe_object_assign.js` — `Object.assign(target, req.body)` shape;
-//!   must produce >=1 finding (JS-only fixture).
+//! * `unsafe_object_assign.*`: `Object.assign(Foo.prototype, req.body)`
+//!   shape; must produce >=1 finding.
+//! * `safe_object_assign_plain_target.*`: `Object.assign(target, req.body)`
+//!   into a plain object; a shallow assign cannot reach `Object.prototype`,
+//!   so it must produce 0 findings.
 //! * `safe_lodash_merge_const.*` — constant-source merge; must produce 0
 //!   findings.
 //!
@@ -129,6 +132,11 @@ fn javascript_object_assign_constant_source_does_not_fire() {
 }
 
 #[test]
+fn javascript_object_assign_into_plain_object_does_not_fire() {
+    assert_clean("javascript", "safe_object_assign_plain_target.js");
+}
+
+#[test]
 fn javascript_set_value_with_tainted_key_fires() {
     // `set-value` standalone helper (CVE-2019-10747).  Tainted `key` /
     // `value` from req.body must surface PROTOTYPE_POLLUTION.
@@ -171,6 +179,11 @@ fn typescript_object_assign_with_tainted_source_fires() {
 #[test]
 fn typescript_object_assign_constant_source_does_not_fire() {
     assert_clean("typescript", "safe_object_assign_const.ts");
+}
+
+#[test]
+fn typescript_object_assign_into_plain_object_does_not_fire() {
+    assert_clean("typescript", "safe_object_assign_plain_target.ts");
 }
 
 // ── Bare `extend` deep-merge gate (LiteralOnly activation) ────────────────

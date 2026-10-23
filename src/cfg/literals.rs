@@ -3061,6 +3061,42 @@ pub(super) fn js_arg_is_string_valued(
     js_expr_is_string_valued(arg, lang, code, extra, 3)
 }
 
+/// True when the positional argument at `index` of a JS/TS call names an
+/// object's prototype: `Foo.prototype`, `x.__proto__`, `x['__proto__']`, or
+/// `Object.getPrototypeOf(x)` / `Reflect.getPrototypeOf(x)`.  Properties
+/// written into such a target are inherited by every object built from it,
+/// which is what a shallow `Object.assign` needs to pollute a prototype.
+pub(super) fn js_arg_is_prototype_object(call_node: Node, index: usize, code: &[u8]) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(index) else {
+        return false;
+    };
+    let arg = unwrap_parens(arg);
+    match arg.kind() {
+        "member_expression" => arg
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))
+            .is_some_and(|p| p == "prototype" || p == "__proto__"),
+        "subscript_expression" => arg
+            .child_by_field_name("index")
+            .and_then(|i| const_string_value(i, code))
+            .is_some_and(|k| k == "prototype" || k == "__proto__"),
+        "call_expression" => arg
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|f| {
+                matches!(
+                    f.as_str(),
+                    "Object.getPrototypeOf" | "Reflect.getPrototypeOf"
+                )
+            }),
+        _ => false,
+    }
+}
+
 /// String-returning `String.prototype` / `Array.prototype.join` methods.
 const JS_STRING_METHODS: &[&str] = &[
     "substring",

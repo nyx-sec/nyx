@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 676
+    "corpus_size": 677
   },
   "cases": [
     {
@@ -21448,6 +21448,34 @@
       ],
       "disabled": false,
       "notes": "Request data is only the file content; the path is a constant"
+    },
+    {
+      "case_id": "js-safe-object-assign-plain-001",
+      "file": "javascript/safe/safe_object_assign_plain_target.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-1321",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "taint-prototype-pollution"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "Object.assign",
+        "prototype-pollution",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "Shallow Object.assign into a plain object cannot reach Object.prototype"
     }
   ]
 }

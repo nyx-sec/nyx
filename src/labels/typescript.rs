@@ -208,11 +208,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["res.set", "res.header"],
-        label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
     // DOM XSS sinks
     LabelRule {
         matchers: &[
@@ -222,12 +217,6 @@ pub static RULES: &[LabelRule] = &[
             "insertAdjacentHTML",
         ],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
-    // Navigation / open-redirect sinks
-    LabelRule {
-        matchers: &["location.assign", "location.replace", "window.open"],
-        label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
     // Node.js file-system sinks
@@ -430,6 +419,7 @@ pub static RULES: &[LabelRule] = &[
             "res.redirect",
             "location.replace",
             "location.assign",
+            "window.open",
             "router.navigate",
             "router.navigateByUrl",
             "window.location",
@@ -1244,6 +1234,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // Prototype targets only; see `javascript::SHALLOW_ASSIGN_MERGES`.
     SinkGate {
         callee_matcher: "Object.assign",
         arg_index: 0,
@@ -1595,19 +1586,29 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
+        // `ctx.body` is an alias of `ctx.response.body`; both are written
+        // as assignment targets.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.body".into()],
+            matchers: vec!["ctx.body".into(), "ctx.response.body".into()],
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: false,
         });
+        // A redirect sends the browser elsewhere: open redirect, not SSRF.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            matchers: vec!["ctx.redirect".into(), "ctx.response.redirect".into()],
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
+        // Header setters write a response header, so the risk is CRLF
+        // injection; HTML escaping does nothing for them.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.set".into(), "ctx.append".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            matchers: vec![
+                "ctx.set".into(),
+                "ctx.append".into(),
+                "ctx.response.set".into(),
+                "ctx.response.append".into(),
+            ],
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }
@@ -1635,7 +1636,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
         rules.push(RuntimeLabelRule {
@@ -1645,7 +1646,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.header".into(), "reply.headers".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }

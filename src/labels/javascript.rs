@@ -251,11 +251,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["res.set", "res.header"],
-        label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
     // DOM XSS sinks
     LabelRule {
         matchers: &[
@@ -265,12 +260,6 @@ pub static RULES: &[LabelRule] = &[
             "insertAdjacentHTML",
         ],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
-    // Navigation / open-redirect sinks
-    LabelRule {
-        matchers: &["location.assign", "location.replace", "window.open"],
-        label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
     // Node.js file-system sinks
@@ -531,8 +520,10 @@ pub static RULES: &[LabelRule] = &[
     // ─── Open redirect sinks ───
     //
     // Express response redirect: `res.redirect(url)`.  Browser-side
-    // navigation: `location.replace` / `location.assign` fire as direct
-    // calls; `window.location = url` / `window.location.href = url` /
+    // navigation: `location.replace` / `location.assign` / `window.open`
+    // fire as direct calls.  They navigate the user's browser, so they are
+    // open redirects, not SSRF: the server never fetches the URL.
+    // `window.location = url` / `window.location.href = url` /
     // `location.href = url` fire as assignment-LHS sinks via the
     // `member_expr_text` classification path in `cfg::push_node`.
     // `router.navigate` covers the Angular Router (`Router.navigate`,
@@ -544,6 +535,7 @@ pub static RULES: &[LabelRule] = &[
             "res.redirect",
             "location.replace",
             "location.assign",
+            "window.open",
             "router.navigate",
             "router.navigateByUrl",
             "window.location",
@@ -673,6 +665,15 @@ pub(crate) const FLUENT_RESPONSE_METHODS: &[&str] = &[
 /// construction (`cfg::literals::js_arg_is_string_valued`): a callback
 /// argument, the normal case, compiles nothing.
 pub(crate) const STRING_EVALUATING_TIMERS: &[&str] = &["setTimeout", "setInterval"];
+
+/// Shallow merges that copy own properties with plain `[[Set]]`
+/// (`Object.assign(target, ...sources)`).  A `__proto__` key in a source
+/// only swaps `target`'s own prototype; `Object.prototype` stays untouched.
+/// The call can therefore pollute a shared prototype only when `target`
+/// already is one (`Object.assign(Foo.prototype, src)`), and the CFG gate
+/// pass keeps their `PROTOTYPE_POLLUTION` gates for that shape alone
+/// (`cfg::literals::js_arg_is_prototype_object`).
+pub(crate) const SHALLOW_ASSIGN_MERGES: &[&str] = &["Object.assign"];
 
 /// Node `child_process` entry points that spawn a process.  Shared by the
 /// JS and TS import-gated shell rules.
@@ -1664,10 +1665,11 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
-    // `Object.assign(target, ...sources)` is safe with constant-literal
-    // sources (`{a: 1, b: 2}`) but dangerous with attacker-controlled
-    // input (`req.body`).  Gate target out of payload_args so tainted-
-    // target alone does not fire.
+    // `Object.assign(target, ...sources)` copies own properties without
+    // recursing, so attacker input can only reach a shared prototype when
+    // `target` is one (`Object.assign(Foo.prototype, req.body)`).  The CFG
+    // gate pass drops this gate for any other target (see
+    // `SHALLOW_ASSIGN_MERGES`); the target stays out of `payload_args`.
     SinkGate {
         callee_matcher: "Object.assign",
         arg_index: 0,
@@ -2054,19 +2056,29 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
+        // `ctx.body` is an alias of `ctx.response.body`; both are written
+        // as assignment targets.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.body".into()],
+            matchers: vec!["ctx.body".into(), "ctx.response.body".into()],
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: false,
         });
+        // A redirect sends the browser elsewhere: open redirect, not SSRF.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            matchers: vec!["ctx.redirect".into(), "ctx.response.redirect".into()],
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
+        // Header setters write a response header, so the risk is CRLF
+        // injection; HTML escaping does nothing for them.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.set".into(), "ctx.append".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            matchers: vec![
+                "ctx.set".into(),
+                "ctx.append".into(),
+                "ctx.response.set".into(),
+                "ctx.response.append".into(),
+            ],
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }
@@ -2094,7 +2106,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
         rules.push(RuntimeLabelRule {
@@ -2104,7 +2116,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.header".into(), "reply.headers".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }
@@ -2275,6 +2287,35 @@ mod tests {
             // global constructor.
             assert!(!code_exec(&classify_all(lang, "obj.Function", None)));
             assert_eq!(gated_payload(lang, "vm.runInNewContext"), Some(vec![0]));
+        }
+    }
+
+    #[test]
+    fn browser_navigation_is_open_redirect_not_ssrf() {
+        for lang in ["javascript", "typescript"] {
+            for callee in ["window.open", "location.assign", "location.replace"] {
+                let labels = classify_all(lang, callee, None);
+                assert!(
+                    labels.contains(&DataLabel::Sink(Cap::OPEN_REDIRECT)),
+                    "{lang}: {callee} -> {labels:?}"
+                );
+                assert!(
+                    !labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SSRF))),
+                    "{lang}: {callee} must not be SSRF, got {labels:?}"
+                );
+            }
+            // Header setters are header-injection sinks only.
+            for callee in ["res.set", "res.header"] {
+                let labels = classify_all(lang, callee, None);
+                assert!(
+                    !labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE))),
+                    "{lang}: {callee} must not be an XSS sink, got {labels:?}"
+                );
+            }
         }
     }
 
