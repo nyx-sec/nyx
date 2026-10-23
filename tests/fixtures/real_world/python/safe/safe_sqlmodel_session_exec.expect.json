@@ -1,0 +1,37 @@
+{
+  "description": "SQLModel session.exec(select(..)) is an ORM call, not code execution; the builtin exec still fires",
+  "tags": [
+    "taint",
+    "code-exec",
+    "sqlmodel",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        10,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "session.exec runs a SQLAlchemy select, it does not execute Python",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        16,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "builtin exec of request data",
+      "must_match": true
+    }
+  ]
+}

@@ -1276,6 +1276,23 @@ impl<'a> ParsedSource<'a> {
         {
             return None;
         }
+        // Layer A2: Python `execute(<constant SQL>, <bind values>)`.  Layer A
+        // wants every argument literal, so the parameter tuple of a
+        // parameterised query always defeated it.
+        if matches!(meta.id, "py.sqli.execute_format" | "py.sqli.text_format")
+            && self.lang_slug == "python"
+            && python_sql_arg0_is_constant(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer A3: Python `yaml.load(stream, Loader=yaml.SafeLoader)`.
+        if meta.id == "py.deser.yaml_load"
+            && self.lang_slug == "python"
+            && find_enclosing_call(cap_node)
+                .is_some_and(|c| crate::cfg::python_shapes::yaml_loader_is_safe(c, self.bytes))
+        {
+            return None;
+        }
         // Layer B: PHP `include $var` where $var is a formal parameter
         // of the immediately enclosing function/method/closure and is
         // not reassigned before the include.  This is the canonical
@@ -2870,15 +2887,64 @@ fn is_literal_or_named_scalar(
         "unary_expression" | "unary_op" => node
             .named_child(0)
             .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars)),
-        "binary_expression" | "concatenated_string" => {
+        "binary_expression" | "binary_operator" | "concatenated_string" => {
             node.named_child_count() >= 2
                 && (0..node.named_child_count() as u32).all(|i| {
                     node.named_child(i)
                         .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars))
                 })
         }
+        // A Python f-string reaches this arm only when `is_literal_node`
+        // rejected it for its interpolations.  It is still a constant when
+        // every interpolated expression is itself a literal or a file-level
+        // scalar (`f"SELECT * FROM {TABLE}"`) and no format spec nests
+        // another field.
+        "string" => {
+            let mut cursor = node.walk();
+            let mut interpolations = 0;
+            for child in node.children(&mut cursor) {
+                if child.kind() != "interpolation" {
+                    continue;
+                }
+                interpolations += 1;
+                let constant = child
+                    .child_by_field_name("expression")
+                    .is_some_and(|e| is_literal_or_named_scalar(e, bytes, scalars))
+                    // A format spec nests its own `{expr}` fields.
+                    && !child
+                        .child_by_field_name("format_specifier")
+                        .is_some_and(|spec| spec.named_child_count() > 0);
+                if !constant {
+                    return false;
+                }
+            }
+            interpolations > 0
+        }
         _ => false,
     }
+}
+
+/// True when the SQL text of a Python DB-API `execute(<sql>, <params>)` or
+/// SQLAlchemy `text(<sql>)` call is constant: a literal, a concatenation or
+/// f-string over literals and file-level scalar constants. The first
+/// positional argument is the SQL; any later one is bound by the driver, so
+/// unlike [`is_call_all_args_literal`] the bind values are not inspected.
+fn python_sql_arg0_is_constant(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(call) = find_enclosing_call(cap_node) else {
+        return false;
+    };
+    let Some(arg_list) = find_arg_list(call) else {
+        return false;
+    };
+    let mut cursor = arg_list.walk();
+    let Some(sql) = arg_list
+        .named_children(&mut cursor)
+        .find(|c| !matches!(c.kind(), "comment" | "keyword_argument"))
+    else {
+        return false;
+    };
+    let scalars = file_level_scalar_bindings(cap_node, bytes, "python");
+    is_literal_or_named_scalar(sql, bytes, &scalars)
 }
 
 /// Walk up to find a call-expression-like ancestor of the captured node.
@@ -2984,8 +3050,9 @@ fn is_literal_node(node: tree_sitter::Node, bytes: &[u8]) -> bool {
                     .is_some_and(|c| is_literal_node(c, bytes))
         }
 
-        // String concatenation of literals: `"a" + "b"` or `"a" . "b"`
-        "binary_expression" | "concatenated_string" => {
+        // String concatenation of literals: `"a" + "b"` or `"a" . "b"`.
+        // Python spells `+` as `binary_operator`.
+        "binary_expression" | "binary_operator" | "concatenated_string" => {
             node.named_child_count() >= 2
                 && (0..node.named_child_count() as u32).all(|i| {
                     node.named_child(i)
@@ -9386,4 +9453,98 @@ fn is_call_all_args_literal_recognises_java_call_kinds() {
         is_call_all_args_literal(cap, code, "java"),
         "object_creation_expression with literal arg must trigger Layer A"
     );
+}
+
+#[cfg(test)]
+fn python_call_attribute_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    attribute: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let query_str = format!(
+        r#"(call function: (attribute attribute: (identifier) @fn (#eq? @fn "{attribute}"))) @vuln"#
+    );
+    let query = tree_sitter::Query::new(&lang, &query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    m.captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0")
+        .node
+}
+
+#[cfg(test)]
+fn python_sql_is_constant(src: &str) -> bool {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let cap = python_call_attribute_capture(&tree, src.as_bytes(), "execute");
+    python_sql_arg0_is_constant(cap, src.as_bytes())
+}
+
+/// The SQL text is the first argument of `execute`; later arguments are bound
+/// by the driver and may be anything.
+#[test]
+fn python_sql_arg0_constant_shapes() {
+    let consts = "TABLE = 'users'\nBASE_Q = 'SELECT * FROM users'\n";
+    for call in [
+        "cur.execute('SELECT 1')",
+        "cur.execute('SELECT a ' + 'FROM b')",
+        "cur.execute(BASE_Q + ' WHERE id = ?', (uid,))",
+        "cur.execute(BASE_Q, {'id': uid})",
+        "cur.execute(f'SELECT * FROM {TABLE} WHERE id = ?', (uid,))",
+        "cur.execute('SELECT * FROM t WHERE id = %s', [request.args['id']])",
+    ] {
+        let src = format!("{consts}def f(cur, uid):\n    {call}\n");
+        assert!(python_sql_is_constant(&src), "{call}");
+    }
+}
+
+#[test]
+fn python_sql_arg0_dynamic_shapes() {
+    let consts = "TABLE = 'users'\n";
+    for call in [
+        "cur.execute(f'SELECT * FROM {user_table}')",
+        "cur.execute('SELECT * FROM t WHERE id = ' + uid)",
+        "cur.execute('SELECT * FROM t WHERE id = %s' % uid)",
+        "cur.execute(self.table)",
+        "cur.execute(build_query(uid), (uid,))",
+        "cur.execute(f'SELECT * FROM {TABLE} WHERE id = {uid}')",
+        "cur.execute(f'SELECT * FROM {TABLE:{width}}')",
+        "cur.execute()",
+    ] {
+        let src = format!("{consts}def f(cur, uid):\n    {call}\n");
+        assert!(!python_sql_is_constant(&src), "{call}");
+    }
+}
+
+#[test]
+fn python_binary_operator_over_literals_is_a_literal_call_argument() {
+    let src = "def f():\n    os.system('ls ' + '-la')\n    os.system('ls ' + flag)\n";
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let query = tree_sitter::Query::new(
+        &lang,
+        r#"(call function: (attribute attribute: (identifier) @fn (#eq? @fn "system"))) @vuln"#,
+    )
+    .unwrap();
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut verdicts = Vec::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), src.as_bytes());
+    while let Some(m) = matches.next() {
+        let cap = m.captures.iter().find(|c| c.index == 0).unwrap().node;
+        verdicts.push(is_call_all_args_literal(cap, src.as_bytes(), "python"));
+    }
+    assert_eq!(verdicts, [true, false]);
 }

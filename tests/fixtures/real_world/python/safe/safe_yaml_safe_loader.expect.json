@@ -1,0 +1,130 @@
+{
+  "description": "yaml.load with a safe Loader (keyword, bare name, positional) is quiet for every rule family; default and full loaders still fire",
+  "tags": [
+    "taint",
+    "deserialization",
+    "yaml",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        6,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "SafeLoader on a local file",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        11,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "SafeLoader on request data",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        16,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "SafeLoader imported by name",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        21,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "CSafeLoader as the second positional argument",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "py.deser.yaml_load",
+      "severity": null,
+      "line_range": [
+        6,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "the AST pattern is for loads without SafeLoader",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        6,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "no structural finding on a safe loader",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        26,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "no Loader argument",
+      "must_match": true
+    },
+    {
+      "rule_id": "py.deser.yaml_load",
+      "severity": null,
+      "line_range": [
+        26,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "the pattern still flags the loader-less call",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        31,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "FullLoader constructs Python objects",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        36,
+        38
+      ],
+      "evidence_contains": [],
+      "notes": "UnsafeLoader constructs Python objects",
+      "must_match": true
+    }
+  ]
+}

@@ -3,9 +3,263 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 677
+    "corpus_size": 685
   },
   "cases": [
+    {
+      "case_id": "py-cmdi-getoutput-001",
+      "file": "python/cmdi/cmdi_subprocess_getoutput.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "subprocess",
+        "getoutput",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "subprocess.getoutput always runs its argument through /bin/sh"
+    },
+    {
+      "case_id": "py-cmdi-drf-query-params-001",
+      "file": "python/cmdi/cmdi_drf_query_params.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "drf",
+        "query-params",
+        "source",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "DRF request.query_params is request input"
+    },
+    {
+      "case_id": "py-cmdi-from-import-001",
+      "file": "python/cmdi/cmdi_from_import_check_output.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.subprocess_shell"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "from-import",
+        "subprocess",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "check_output imported by name still resolves to subprocess.check_output"
+    },
+    {
+      "case_id": "py-safe-make-response-render-template-001",
+      "file": "python/safe/safe_flask_make_response_render_template.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "flask",
+        "render-template",
+        "jsonify",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "make_response over an autoescaped render or a JSON body is not reflected XSS"
+    },
+    {
+      "case_id": "py-safe-yaml-safe-loader-001",
+      "file": "python/safe/safe_yaml_load_safe_loader.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "py.deser.yaml_load"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "yaml",
+        "safe-loader",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "yaml.load with Loader=yaml.SafeLoader builds plain data only"
+    },
+    {
+      "case_id": "py-safe-sqlmodel-session-exec-001",
+      "file": "python/safe/safe_sqlmodel_session_exec.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-94",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqlmodel",
+        "orm",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "SQLModel session.exec runs a select, it does not execute Python"
+    },
+    {
+      "case_id": "py-safe-sql-constant-bind-001",
+      "file": "python/safe/safe_sql_constant_bind_variable.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "parameterized",
+        "module-constant",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "Constant SQL text with driver-bound parameters, including a chained fetchall"
+    },
+    {
+      "case_id": "py-safe-flask-args-type-int-001",
+      "file": "python/safe/safe_flask_args_type_int.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "flask",
+        "type-coercion",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "request.args.get(type=int) returns a number"
+    },
     {
       "case_id": "js-sqli-001",
       "file": "javascript/sqli/sqli_concat.js",

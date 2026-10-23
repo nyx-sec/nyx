@@ -99,6 +99,26 @@ fn assert_clean(lang: &str, file_suffix: &str) {
     );
 }
 
+/// No taint finding of any kind, not just an open-redirect one: a redirect
+/// that is guarded for open redirect must not resurface as another cap.
+fn assert_no_taint(lang: &str, file_suffix: &str) {
+    let dir = fixture_dir(lang);
+    let diags = diags_for_file(&dir, file_suffix);
+    let taint: Vec<_> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-"))
+        .collect();
+    assert!(
+        taint.is_empty(),
+        "{lang}/{file_suffix}: expected no taint findings, got {}:\n{:#?}",
+        taint.len(),
+        taint
+            .iter()
+            .map(|d| format!("{}:{} {}", d.path, d.line, d.id))
+            .collect::<Vec<_>>(),
+    );
+}
+
 #[test]
 fn javascript_redirect_with_tainted_url_fires() {
     assert_unsafe("javascript", "unsafe_redirect.js");
@@ -150,16 +170,42 @@ fn python_redirect_with_tainted_url_fires() {
 #[test]
 fn python_validate_url_sanitizes() {
     assert_clean("python", "safe_redirect.py");
+    assert_no_taint("python", "safe_redirect.py");
 }
 
 #[test]
 fn python_relative_only_sanitizes() {
     assert_clean("python", "safe_relative_redirect.py");
+    assert_no_taint("python", "safe_relative_redirect.py");
 }
 
 #[test]
 fn python_host_allowlist_sanitizes() {
     assert_clean("python", "safe_host_allowlist_redirect.py");
+    assert_no_taint("python", "safe_host_allowlist_redirect.py");
+}
+
+#[test]
+fn python_startswith_guard_sanitizes() {
+    assert_clean("python", "safe_startswith_redirect.py");
+    assert_no_taint("python", "safe_startswith_redirect.py");
+}
+
+#[test]
+fn python_redirect_is_not_reported_as_ssrf() {
+    // A redirect makes no server-side request: the unsafe fixture must
+    // surface as an open redirect only, never under the SSRF cap as well.
+    let diags = diags_for_file(&fixture_dir("python"), "unsafe_redirect.py");
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.id.starts_with(RULE_PREFIX) || !d.id.starts_with("taint-")),
+        "{:#?}",
+        diags
+            .iter()
+            .map(|d| (d.line, d.id.clone()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

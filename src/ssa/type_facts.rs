@@ -58,6 +58,15 @@ fn file_imports_match(pred: impl Fn(&str) -> bool) -> bool {
     })
 }
 
+/// Dotted path the active file-imports view binds `name` to. Only Python
+/// files publish this shape (`from M import n [as a]` maps to `M.n`,
+/// `import M as a` to `M`); label classification uses it to also try the
+/// module-qualified spelling of a bare imported callee. `None` when no view
+/// is published or `name` is not a recorded binding.
+pub(crate) fn file_import_path(name: &str) -> Option<String> {
+    FILE_IMPORTS_TLS.with(|cell| cell.borrow().as_ref().and_then(|m| m.get(name).cloned()))
+}
+
 /// Strip a leading `node:` prefix from a module specifier so gates can
 /// match `import x from "fs"` and `import x from "node:fs"` uniformly.
 fn strip_node_prefix(spec: &str) -> &str {

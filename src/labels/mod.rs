@@ -1442,6 +1442,26 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
     }
 }
 
+#[inline]
+fn is_python_lang(lang: &str) -> bool {
+    lang == "python" || lang == "py"
+}
+
+/// Python: the module-qualified spelling of `text` when its leading name is
+/// bound by `from M import n [as a]` or `import M as a` in the file being
+/// analysed (`from subprocess import check_output` makes `check_output(..)`
+/// into `subprocess.check_output`). `None` when the leading name is not an
+/// import binding or no file view is published.
+///
+/// Label rules are keyed on the qualified callee. The qualified spelling is
+/// classified in addition to the written one, so the written one keeps every
+/// label it had and an import can only add labels, never take them away.
+pub(crate) fn python_import_qualified(text: &str) -> Option<String> {
+    let end = text.find(['.', '(', '[', ' ']).unwrap_or(text.len());
+    let path = crate::ssa::type_facts::file_import_path(&text[..end])?;
+    Some(format!("{path}{}", &text[end..]))
+}
+
 /// Try to classify a piece of syntax text.
 /// `lang` is the canonicalised language key ("rust", "javascript", ...).
 ///
@@ -1453,6 +1473,15 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
 /// greedy prefix like `sanitize_` from shadowing a more specific exact
 /// match like `sanitize_shell`.
 pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
+    let direct = classify_text(lang, text, extra);
+    if direct.is_some() || !is_python_lang(lang) {
+        return direct;
+    }
+    let qualified = python_import_qualified(text)?;
+    classify_text(lang, &qualified, extra)
+}
+
+fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
 
@@ -1540,6 +1569,24 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 /// collects every match instead of returning on first hit.  Deduplicates
 /// exact `(variant, caps)` pairs.
 pub fn classify_all(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = classify_all_text(lang, text, extra);
+    if is_python_lang(lang)
+        && let Some(qualified) = python_import_qualified(text)
+    {
+        for label in classify_all_text(lang, &qualified, extra) {
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+    }
+    out
+}
+
+fn classify_all_text(
     lang: &str,
     text: &str,
     extra: Option<&[RuntimeLabelRule]>,
@@ -1948,6 +1995,43 @@ pub fn classify_gated_sink_with_presence(
     const_keyword_arg: impl Fn(&str) -> Option<String>,
     kwarg_present: impl Fn(&str) -> bool,
     arg_present: impl Fn(usize) -> bool,
+) -> SmallVec<[GateMatch; 2]> {
+    let mut out = gated_sink_matches(
+        lang,
+        callee_text,
+        &const_arg_at,
+        &const_keyword_arg,
+        &kwarg_present,
+        &arg_present,
+    );
+    // `from subprocess import run` calls `run(cmd, shell=True)`: gate it as
+    // `subprocess.run` too.
+    if is_python_lang(lang)
+        && let Some(qualified) = python_import_qualified(callee_text)
+    {
+        for m in gated_sink_matches(
+            lang,
+            &qualified,
+            &const_arg_at,
+            &const_keyword_arg,
+            &kwarg_present,
+            &arg_present,
+        ) {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+fn gated_sink_matches(
+    lang: &str,
+    callee_text: &str,
+    const_arg_at: &impl Fn(usize) -> Option<String>,
+    const_keyword_arg: &impl Fn(&str) -> Option<String>,
+    kwarg_present: &impl Fn(&str) -> bool,
+    arg_present: &impl Fn(usize) -> bool,
 ) -> SmallVec<[GateMatch; 2]> {
     let mut out: SmallVec<[GateMatch; 2]> = SmallVec::new();
     let gates = match GATED_REGISTRY.get(lang).or_else(|| {
@@ -4200,5 +4284,146 @@ mod tests {
             classify("rust", "Redirect::to(next)", Some(&extras)),
             Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
+    }
+    fn sink_caps_of(labels: &[DataLabel]) -> Cap {
+        labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        })
+    }
+
+    #[test]
+    fn python_redirect_is_open_redirect_not_ssrf() {
+        let caps = sink_caps_of(&classify_all("python", "redirect", None));
+        assert!(caps.contains(Cap::OPEN_REDIRECT));
+        assert!(!caps.contains(Cap::SSRF));
+    }
+
+    #[test]
+    fn python_exec_is_a_sink_only_as_the_builtin() {
+        let sink = |text: &str| {
+            classify_all("python", text, None).contains(&DataLabel::Sink(Cap::CODE_EXEC))
+        };
+        assert!(sink("exec"));
+        assert!(sink("builtins.exec"));
+        // ORM and UI methods named `exec`.
+        assert!(!sink("session.exec"));
+        assert!(!sink("self.session.exec"));
+        assert!(!sink("QDialog.exec"));
+        // `eval` stays a suffix match: `df.eval` and `redis.eval` evaluate their argument.
+        assert!(sink("eval"));
+        assert!(sink("df.eval"));
+    }
+
+    #[test]
+    fn python_getoutput_helpers_are_shell_sinks() {
+        for callee in ["subprocess.getoutput", "subprocess.getstatusoutput"] {
+            assert!(
+                classify_all("python", callee, None).contains(&DataLabel::Sink(Cap::SHELL_ESCAPE)),
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_request_param_accessors_are_sources() {
+        for text in [
+            "request.query_params",
+            "request.path_params",
+            "request.view_args",
+            "self.request.query_params",
+        ] {
+            assert_eq!(
+                classify("python", text, None),
+                Some(DataLabel::Source(Cap::all())),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_render_calls_sanitize_html_but_template_source_does_not() {
+        let html = DataLabel::Sanitizer(Cap::HTML_ESCAPE);
+        assert!(classify_all("python", "render_template", None).contains(&html));
+        assert!(classify_all("python", "flask.render_template", None).contains(&html));
+        assert!(classify_all("python", "render_to_string", None).contains(&html));
+        let ssti = classify_all("python", "render_template_string", None);
+        assert!(!ssti.contains(&html));
+        assert!(ssti.contains(&DataLabel::Sink(Cap::CODE_EXEC)));
+    }
+
+    /// Publishes `imports` as the active Python import view while `f` runs.
+    fn with_python_imports<R>(imports: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+        let map: std::collections::HashMap<String, String> = imports
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        crate::ssa::type_facts::with_file_imports(Some(&map), f)
+    }
+
+    #[test]
+    fn python_from_import_names_classify_as_their_qualified_callee() {
+        // Without the view the bare names match nothing.
+        assert!(classify_all("python", "check_output", None).is_empty());
+        assert!(classify_all("python", "escape", None).is_empty());
+        with_python_imports(
+            &[
+                ("check_output", "subprocess.check_output"),
+                ("escape", "html.escape"),
+                ("quote", "shlex.quote"),
+                ("co", "subprocess.check_output"),
+                ("sp", "subprocess"),
+            ],
+            || {
+                let sink = |t: &str| sink_caps_of(&classify_all("python", t, None));
+                assert!(sink("check_output").contains(Cap::SHELL_ESCAPE));
+                // Aliased binding and aliased module.
+                assert!(sink("co").contains(Cap::SHELL_ESCAPE));
+                assert!(sink("sp.check_output").contains(Cap::SHELL_ESCAPE));
+                assert!(
+                    classify_all("python", "escape", None)
+                        .contains(&DataLabel::Sanitizer(Cap::HTML_ESCAPE))
+                );
+                assert!(
+                    classify_all("python", "quote", None)
+                        .contains(&DataLabel::Sanitizer(Cap::SHELL_ESCAPE))
+                );
+                // The written spelling keeps every label it had.
+                assert!(sink("subprocess.check_output").contains(Cap::SHELL_ESCAPE));
+                // Names that are not import bindings are unaffected.
+                assert!(classify_all("python", "helper", None).is_empty());
+                // `classify` agrees with `classify_all`.
+                assert_eq!(
+                    classify("python", "check_output", None),
+                    Some(DataLabel::Sink(Cap::SHELL_ESCAPE))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn python_import_view_does_not_leak_into_other_languages() {
+        with_python_imports(&[("check_output", "subprocess.check_output")], || {
+            assert!(classify_all("ruby", "check_output", None).is_empty());
+            assert!(classify_all("javascript", "check_output", None).is_empty());
+        });
+    }
+
+    #[test]
+    fn python_from_import_names_pick_up_gated_sinks() {
+        let gated = |text: &str, shell: &'static str| {
+            classify_gated_sink(
+                "python",
+                text,
+                |_| None,
+                move |kw| (kw == "shell").then(|| shell.to_string()),
+                |kw| kw == "shell",
+            )
+        };
+        assert!(gated("run", "True").is_empty());
+        with_python_imports(&[("run", "subprocess.run")], || {
+            assert!(!gated("run", "True").is_empty());
+            assert!(gated("run", "False").is_empty());
+        });
     }
 }

@@ -39,6 +39,7 @@ mod hierarchy;
 mod imports;
 mod literals;
 mod params;
+pub(crate) mod python_shapes;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try};
 use helpers::{
@@ -62,7 +63,7 @@ pub(crate) use helpers::{
 };
 use imports::{
     extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
-    rust_bare_join_crate_prefix,
+    extract_python_import_paths, rust_bare_join_crate_prefix,
 };
 #[cfg(test)]
 use literals::has_sql_placeholders;
@@ -1209,7 +1210,10 @@ pub struct FileCfg {
     /// [`crate::entry_points::EntryKind`] to the resulting summary.
     pub entry_kinds: std::collections::HashMap<(usize, usize), crate::entry_points::EntryKind>,
     /// Per-file local import view: local-name → source-module specifier.
-    /// Built once during JS/TS CFG construction (empty for other langs).
+    /// Built once during JS/TS CFG construction. For Python it maps a bound
+    /// name to the dotted path it names instead (`from M import n as a`
+    /// gives `a` → `M.n`), which label classification uses to also try the
+    /// qualified callee. Empty for other langs.
     /// Consumed by gated label rules and by the ORM TypeKind import gate
     /// in `crate::ssa::type_facts::constructor_type` (via the
     /// `FILE_IMPORTS_TLS` thread-local set around per-body SSA passes).
@@ -3216,6 +3220,26 @@ pub(super) fn push_node<'a>(
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = find_call_node(ast, lang);
 
+    // Python `conn.execute(sql, params).fetchall()` classifies on its head
+    // (`conn.execute`, the text before the first `(`), so the node already has
+    // its Sink label while the outermost call is the zero-arg `.fetchall()`.
+    // The gate's payload positions and the literal-SQL check refer to the sink
+    // call's arguments, so rebind to that call the way the block below does
+    // for an unclassified outer call.
+    if lang == "python"
+        && text.contains('(')
+        && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+        && let Some(outer) = call_ast
+        && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
+        && inner.id() != outer.id()
+        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+    {
+        call_ast = Some(inner);
+        outer_callee = Some(text.clone());
+        text = inner_callee_text;
+        inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
+    }
+
     // Chained-call inner-gate rebinding.  When the outer call is a method-
     // chain wrapper whose receiver is itself a call to a known gated sink
     // (e.g. `http.get(uri, cb).on('error', e => ...)` or
@@ -3693,6 +3717,17 @@ pub(super) fn push_node<'a>(
         && jsx_text_content_interp_present(ast, lang)
     {
         labels.push(DataLabel::Sanitizer(Cap::HTML_ESCAPE));
+    }
+
+    // Python call shapes the flat sink labels cannot tell apart from the
+    // dangerous ones: `make_response(render_template(..))`, a JSON
+    // `HttpResponse`, `yaml.load(f, Loader=yaml.SafeLoader)`.
+    if lang == "python"
+        && let Some(cn) = call_ast
+        && let Some(san) =
+            python_shapes::safe_shape_sanitizer(&text, cn, code, extra, labels.as_slice())
+    {
+        labels.push(san);
     }
 
     // Shape-based sanitizer synthesis for Ruby ActiveRecord query methods.
@@ -5935,20 +5970,26 @@ fn pre_emit_arg_source_nodes(
         args_node.named_children(&mut cursor).collect()
     };
 
-    // Bail on spread/splat/keyword arguments where positional mapping is unreliable.
+    // Bail on spread/splat arguments where positional mapping is unreliable.
+    // Keyword arguments sit outside the positional numbering (`arg_uses`
+    // skips them, see `extract_arg_uses`), so they are skipped rather than
+    // bailing: `check_output("ls " + request.args["d"], shell=True)` still
+    // binds its positional source.
     for child in &children {
         let k = child.kind();
         if k == "spread_element"
             || k == "dictionary_splat"
             || k == "list_splat"
-            || k == "keyword_argument"
             || k == "splat_argument"
             || k == "hash_splat_argument"
-            || k == "named_argument"
         {
             return (effective_preds, bindings, uses_only);
         }
     }
+    let children: Vec<_> = children
+        .into_iter()
+        .filter(|c| !matches!(c.kind(), "keyword_argument" | "named_argument"))
+        .collect();
 
     let pointer_on = crate::pointer::is_enabled();
 
@@ -8195,24 +8236,39 @@ pub(crate) fn build_cfg<'a>(
     let mut top_breaks = Vec::new();
     let mut top_continues = Vec::new();
     let mut top_throws = Vec::new();
-    let exits = build_sub(
-        tree.root_node(),
-        &[entry],
-        &mut g,
-        lang,
-        code,
-        &mut summaries,
-        file_path,
-        None,
-        &mut top_ordinal,
-        analysis_rules,
-        &mut top_breaks,
-        &mut top_continues,
-        &mut top_throws,
-        &mut bodies,
-        &mut next_body_id,
-        BodyId(0),
-    );
+    // Python: the file's `from M import n` bindings, consulted by label
+    // classification while the nodes are built and kept on the `FileCfg` for
+    // the taint passes (see `extract_python_import_paths`).
+    let python_imports = if lang == "python" {
+        extract_python_import_paths(tree, code)
+    } else {
+        HashMap::new()
+    };
+    let mut build_top_level = || {
+        build_sub(
+            tree.root_node(),
+            &[entry],
+            &mut g,
+            lang,
+            code,
+            &mut summaries,
+            file_path,
+            None,
+            &mut top_ordinal,
+            analysis_rules,
+            &mut top_breaks,
+            &mut top_continues,
+            &mut top_throws,
+            &mut bodies,
+            &mut next_body_id,
+            BodyId(0),
+        )
+    };
+    let exits = if python_imports.is_empty() {
+        build_top_level()
+    } else {
+        crate::ssa::type_facts::with_file_imports(Some(&python_imports), build_top_level)
+    };
     debug!(target: "cfg", "exits: {:?}", exits);
     // Wire every real exit to our synthetic EXIT node.
     for e in exits {
@@ -8317,7 +8373,8 @@ pub(crate) fn build_cfg<'a>(
         }
         local_imports
     } else {
-        HashMap::new()
+        // Empty for every language but Python, whose view holds dotted paths.
+        python_imports
     };
 
     // Clear the per-file DFS-index map so it does not leak to the next
