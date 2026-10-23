@@ -1664,6 +1664,93 @@ mod receiver_candidates_field_proj_tests {
         // Cycle: only the start value is recorded; no infinite walk.
         assert_eq!(cands.as_slice(), &[SsaValue(0)]);
     }
+
+    /// The walk crosses blocks: `c` is defined in block 0, the projection in
+    /// block 1, and the call in block 2. The value table names each defining
+    /// block, so the walk has to follow it rather than assume block 0.
+    #[test]
+    fn walk_follows_definitions_across_blocks() {
+        let mut interner = crate::ssa::ir::FieldInterner::default();
+        let f_id = interner.intern("client");
+        let inst = |value: u32, op: SsaOp| SsaInst {
+            value: SsaValue(value),
+            op,
+            cfg_node: NodeIndex::new(0),
+            var_name: None,
+            span: (0, 0),
+        };
+        let block = |id: u32, body: Vec<SsaInst>, succ: Option<u32>| SsaBlock {
+            id: BlockId(id),
+            phis: vec![],
+            body,
+            terminator: match succ {
+                Some(s) => Terminator::Goto(BlockId(s)),
+                None => Terminator::Return(None),
+            },
+            preds: smallvec![],
+            succs: succ.map(|s| smallvec![BlockId(s)]).unwrap_or_default(),
+        };
+        let def_in = |b: u32| ValueDef {
+            var_name: None,
+            cfg_node: NodeIndex::new(0),
+            block: BlockId(b),
+        };
+        let body = SsaBody {
+            blocks: vec![
+                block(0, vec![inst(0, SsaOp::Param { index: 0 })], Some(1)),
+                block(
+                    1,
+                    vec![inst(
+                        1,
+                        SsaOp::FieldProj {
+                            receiver: SsaValue(0),
+                            field: f_id,
+                            projected_type: None,
+                        },
+                    )],
+                    Some(2),
+                ),
+                block(
+                    2,
+                    vec![inst(
+                        2,
+                        SsaOp::Call {
+                            callee: "send".into(),
+                            callee_text: None,
+                            args: vec![],
+                            receiver: Some(SsaValue(1)),
+                        },
+                    )],
+                    None,
+                ),
+            ],
+            entry: BlockId(0),
+            value_defs: vec![def_in(0), def_in(1), def_in(2)],
+            cfg_node_map: Default::default(),
+            exception_edges: vec![],
+            field_interner: interner,
+            field_writes: Default::default(),
+            synthetic_externals: Default::default(),
+            slot_scoped_assigns: Default::default(),
+        };
+        let cands =
+            super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&body), Lang::Rust);
+        assert_eq!(cands.as_slice(), &[SsaValue(2), SsaValue(1), SsaValue(0)]);
+    }
+
+    /// A body whose value table names the wrong block still resolves, through
+    /// the whole-body fallback.
+    #[test]
+    fn walk_survives_a_value_table_that_names_the_wrong_block() {
+        let body = body_with_field_proj_chain();
+        let mut skewed = body.clone();
+        for vd in &mut skewed.value_defs {
+            vd.block = BlockId(7);
+        }
+        let cands =
+            super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&skewed), Lang::Go);
+        assert_eq!(cands.as_slice(), &[SsaValue(2), SsaValue(0)]);
+    }
 }
 
 // ── Hierarchy: ResolvedSummary union semantics ──────────

@@ -11362,6 +11362,25 @@ fn resolve_type_qualified_labels_with_args(
     (SmallVec::new(), None)
 }
 
+/// The instruction that defines `v`. The value table names the defining block,
+/// so only that block is searched; a hand-built body whose table disagrees with
+/// its block layout falls back to scanning every block.
+fn defining_inst(body: &SsaBody, v: SsaValue) -> Option<&SsaInst> {
+    fn in_block(b: &SsaBlock, v: SsaValue) -> Option<&SsaInst> {
+        b.phis
+            .iter()
+            .chain(b.body.iter())
+            .find(|inst| inst.value == v)
+    }
+    if let Some(vd) = body.value_defs.get(v.0 as usize)
+        && let Some(block) = body.blocks.get(vd.block.0 as usize)
+        && let Some(inst) = in_block(block, v)
+    {
+        return Some(inst);
+    }
+    body.blocks.iter().find_map(|b| in_block(b, v))
+}
+
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
 /// chains to collect candidate SSA values for type-fact lookup.
 ///
@@ -11389,31 +11408,26 @@ fn receiver_candidates_for_type_lookup(
     for _ in 0..8 {
         // Find the instruction defining `current`.
         let mut next_receiver: Option<SsaValue> = None;
-        'scan: for block in &body.blocks {
-            for inst in block.phis.iter().chain(block.body.iter()) {
-                if inst.value == current {
-                    match &inst.op {
-                        // FieldProj receiver chain, universal.
-                        SsaOp::FieldProj { receiver, .. } => {
-                            next_receiver = Some(*receiver);
-                        }
-                        // Chain through nested Call receivers.  Rust:
-                        // `conn.execute(x).unwrap()` parsed as one outer
-                        // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
-                        // where the FieldProj walks `searchParams →
-                        // <call result>` and we want to keep walking
-                        // through the `getUrl()` call to surface the
-                        // original URL receiver value (Phase 09 deferred
-                        // fix).
-                        SsaOp::Call {
-                            receiver: Some(rv), ..
-                        } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
-                            next_receiver = Some(*rv);
-                        }
-                        _ => {}
-                    }
-                    break 'scan;
+        if let Some(inst) = defining_inst(body, current) {
+            match &inst.op {
+                // FieldProj receiver chain, universal.
+                SsaOp::FieldProj { receiver, .. } => {
+                    next_receiver = Some(*receiver);
                 }
+                // Chain through nested Call receivers.  Rust:
+                // `conn.execute(x).unwrap()` parsed as one outer
+                // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
+                // where the FieldProj walks `searchParams →
+                // <call result>` and we want to keep walking
+                // through the `getUrl()` call to surface the
+                // original URL receiver value (Phase 09 deferred
+                // fix).
+                SsaOp::Call {
+                    receiver: Some(rv), ..
+                } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
+                    next_receiver = Some(*rv);
+                }
+                _ => {}
             }
         }
         match next_receiver {
