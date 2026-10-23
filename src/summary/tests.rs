@@ -4852,3 +4852,283 @@ fn cross_package_imports_merged_across_thread_local_summaries() {
             .is_some()
     );
 }
+
+// ── SCC change tracking and canonical sink sets ─────────────────────────
+
+/// The change log must report exactly the keys a whole-map snapshot diff
+/// reports: a changed key, a key that did not exist before, and nothing
+/// for a rewrite with an identical value.
+#[test]
+fn summary_change_log_matches_snapshot_diff() {
+    let mut gs = GlobalSummaries::new();
+    let (k_same, s_same) = free_summary("src/a.java", "same", 1, 0x01);
+    let (k_grow, s_grow) = free_summary("src/a.java", "grow", 1, 0x01);
+    let (k_untouched, s_untouched) = free_summary("src/b.java", "untouched", 1, 0x01);
+    gs.insert(k_same.clone(), s_same.clone());
+    gs.insert(k_grow.clone(), s_grow.clone());
+    gs.insert(k_untouched.clone(), s_untouched);
+    gs.insert_ssa(k_same.clone(), SsaFuncSummary::default());
+    gs.insert_ssa(k_grow.clone(), SsaFuncSummary::default());
+
+    let caps_before = gs.snapshot_caps();
+    let ssa_before = gs.snapshot_ssa().clone();
+
+    let mut log = SummaryChangeLog::new();
+    gs.insert_tracked(k_same.clone(), s_same, &mut log);
+    gs.insert_ssa_tracked(k_same.clone(), SsaFuncSummary::default(), &mut log);
+    let grown = FuncSummary {
+        sink_caps: 0x03,
+        ..s_grow
+    };
+    gs.insert_tracked(k_grow.clone(), grown, &mut log);
+    let grown_ssa = SsaFuncSummary {
+        source_caps: Cap::ENV_VAR,
+        ..Default::default()
+    };
+    gs.insert_ssa_tracked(k_grow.clone(), grown_ssa, &mut log);
+    let (k_new, s_new) = free_summary("src/a.java", "fresh", 1, 0x01);
+    gs.insert_tracked(k_new.clone(), s_new, &mut log);
+    gs.insert_ssa_tracked(k_new.clone(), SsaFuncSummary::default(), &mut log);
+
+    let caps_after = gs.snapshot_caps();
+    let mut want_caps: Vec<FuncKey> = caps_after
+        .iter()
+        .filter(|(k, v)| caps_before.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let mut want_ssa: Vec<FuncKey> = gs
+        .snapshot_ssa()
+        .iter()
+        .filter(|(k, v)| ssa_before.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let mut got_caps: Vec<FuncKey> = log.changed_cap_keys(&gs).into_iter().collect();
+    let mut got_ssa: Vec<FuncKey> = log.changed_ssa_keys(&gs).into_iter().collect();
+    for v in [&mut want_caps, &mut want_ssa, &mut got_caps, &mut got_ssa] {
+        v.sort_by_key(|k| k.to_string());
+    }
+    assert_eq!(got_caps, want_caps);
+    assert_eq!(got_ssa, want_ssa);
+    assert_eq!(got_caps.len(), 2, "grow and fresh changed caps");
+    assert_eq!(got_ssa.len(), 2, "grow and fresh changed SSA");
+    assert!(!got_caps.contains(&k_same) && !got_ssa.contains(&k_same));
+    assert!(!got_caps.contains(&k_untouched));
+    assert_eq!(
+        log.ssa_before(&k_grow),
+        Some(&SsaFuncSummary::default()),
+        "the log keeps the value from before the first write"
+    );
+
+    // Rewriting a summary with the same facts in a different order is not
+    // a change.
+    let site = |line| SinkSite {
+        file_rel: "a.java".into(),
+        line,
+        col: 1,
+        snippet: String::new(),
+        cap: Cap::SQL_QUERY,
+        from_chain: true,
+    };
+    let ordered = SsaFuncSummary {
+        param_to_sink: vec![(0, smallvec![site(3), site(9)])],
+        ..Default::default()
+    };
+    let flipped = SsaFuncSummary {
+        param_to_sink: vec![(0, smallvec![site(9), site(3)])],
+        ..Default::default()
+    };
+    let (k_order, _) = free_summary("src/c.java", "reorder", 1, 0x01);
+    gs.insert_ssa(k_order.clone(), ordered);
+    let mut log = SummaryChangeLog::new();
+    gs.insert_ssa_tracked(k_order, flipped, &mut log);
+    assert!(log.changed_ssa_keys(&gs).is_empty());
+}
+
+fn site(line: u32, cap: Cap, from_chain: bool) -> SinkSite {
+    SinkSite {
+        file_rel: "main.go".into(),
+        line,
+        col: 2,
+        snippet: format!("line {line}"),
+        cap,
+        from_chain,
+    }
+}
+
+/// Two summaries holding the same sink facts in a different order must
+/// compare equal after canonicalisation, and `same_facts` must say so
+/// without canonicalising either.  The SCC fixed-point loop compares
+/// summaries this way; an order that flips on every iteration otherwise
+/// keeps a recursive batch running to its cap.
+#[test]
+fn canonicalize_makes_sink_set_order_irrelevant() {
+    let a = SsaFuncSummary {
+        param_to_sink: vec![
+            (1, smallvec![site(9, Cap::SQL_QUERY, false)]),
+            (
+                0,
+                smallvec![
+                    site(34, Cap::HEADER_INJECTION, true),
+                    site(53, Cap::HEADER_INJECTION, true)
+                ],
+            ),
+        ],
+        param_to_sink_param: vec![
+            (0, 2, Cap::HEADER_INJECTION),
+            (0, 0, Cap::HEADER_INJECTION),
+            (0, 0, Cap::HEADER_INJECTION),
+        ],
+        param_to_gate_filters: vec![(1, Cap::SSRF), (0, Cap::SSRF), (1, Cap::SSRF)],
+        validated_params_to_return: smallvec![2, 0, 2],
+        ..Default::default()
+    };
+    let b = SsaFuncSummary {
+        param_to_sink: vec![
+            (0, smallvec![site(53, Cap::HEADER_INJECTION, true)]),
+            (1, smallvec![site(9, Cap::SQL_QUERY, false)]),
+            // A second entry for the same parameter, as a merge of two
+            // extraction passes can produce.  The duplicate site upgrades
+            // to `from_chain` like `union_sink_sites` does.
+            (
+                0,
+                smallvec![
+                    site(34, Cap::HEADER_INJECTION, false),
+                    site(34, Cap::HEADER_INJECTION, true)
+                ],
+            ),
+        ],
+        param_to_sink_param: vec![(0, 0, Cap::HEADER_INJECTION), (0, 2, Cap::HEADER_INJECTION)],
+        param_to_gate_filters: vec![(0, Cap::SSRF), (1, Cap::SSRF)],
+        validated_params_to_return: smallvec![0, 2],
+        ..Default::default()
+    };
+    assert_ne!(a, b);
+    assert!(a.same_facts(&b) && b.same_facts(&a));
+    let mut fewer = b.clone();
+    fewer.param_to_sink.pop();
+    assert!(!a.same_facts(&fewer), "a dropped site is a different fact");
+    let (mut a, mut b) = (a, b);
+    a.canonicalize();
+    b.canonicalize();
+    assert_eq!(a, b);
+    assert_eq!(
+        a.param_to_sink
+            .iter()
+            .map(|(i, s)| (*i, s.iter().map(|s| s.line).collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+        vec![(0, vec![34, 53]), (1, vec![9])]
+    );
+    assert!(a.param_to_sink[0].1.iter().all(|s| s.from_chain));
+    assert_eq!(
+        a.param_to_sink_param,
+        vec![(0, 0, Cap::HEADER_INJECTION), (0, 2, Cap::HEADER_INJECTION)]
+    );
+    assert_eq!(
+        a.param_to_gate_filters,
+        vec![(0, Cap::SSRF), (1, Cap::SSRF)]
+    );
+    assert_eq!(a.validated_params_to_return.as_slice(), &[0, 2]);
+
+    // Idempotent.
+    let once = a.clone();
+    a.canonicalize();
+    assert_eq!(a, once);
+}
+
+// ── Receiver-aware caller-container resolution ──────────────────────────
+
+#[test]
+fn classify_call_receiver_shapes() {
+    use crate::summary::{CallReceiver, classify_call_receiver};
+    let own = |lang, r: Option<&str>| classify_call_receiver(lang, r, Some("Person"));
+    assert_eq!(own(Lang::Java, None), CallReceiver::Own);
+    for r in ["this", "self", "$this", "static", "Self", "cls", "Person"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Own, "{r}");
+    }
+    for r in ["super", "super()", "super(Sub, self)", "parent"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Super, "{r}");
+    }
+    for r in ["repo", "name", "sb", "$this->inner", "@repo", "json"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Other, "{r}");
+    }
+    // Go names its method receiver freely, so a plain identifier may be
+    // the caller's own receiver.
+    assert_eq!(own(Lang::Go, Some("h")), CallReceiver::Own);
+}
+
+fn query_with<'a>(
+    name: &'a str,
+    caller_namespace: &'a str,
+    caller_container: Option<&'a str>,
+    receiver_var: Option<&'a str>,
+    arity: usize,
+) -> CalleeQuery<'a> {
+    CalleeQuery {
+        name,
+        caller_lang: Lang::Java,
+        caller_namespace,
+        caller_container,
+        receiver_type: None,
+        namespace_qualifier: None,
+        receiver_var,
+        arity: Some(arity),
+    }
+}
+
+/// `repo.find(id)` inside `Person.find` names another object's `find`, so
+/// the caller-container step must not bind it to `Person.find`; `this.find`
+/// and a bare `find` still resolve to the caller's own method.
+#[test]
+fn caller_container_step_only_for_own_receiver() {
+    let mut gs = GlobalSummaries::new();
+    let (k_person, s_person) = method_summary("src/Person.java", "Person", "find", 1, 0x01);
+    let (k_repo, s_repo) = method_summary("src/Person.java", "Repo", "find", 1, 0x02);
+    let (k_cache, s_cache) = method_summary("src/Cache.java", "Cache", "find", 1, 0x04);
+    gs.insert(k_person.clone(), s_person);
+    gs.insert(k_repo, s_repo);
+    gs.insert(k_cache, s_cache);
+
+    let ns = "src/Person.java";
+    for rv in [None, Some("this")] {
+        assert_eq!(
+            gs.resolve_callee(&query_with("find", ns, Some("Person"), rv, 1)),
+            CalleeResolution::Resolved(k_person.clone()),
+            "receiver {rv:?}"
+        );
+    }
+    assert!(matches!(
+        gs.resolve_callee(&query_with("find", ns, Some("Person"), Some("repo"), 1)),
+        CalleeResolution::Ambiguous(_)
+    ));
+}
+
+/// `super.init(cfg)` inside `Sub.init` resolves to the closest supertype
+/// that defines `init`, never to `Sub.init` itself, and is unresolved
+/// when no supertype is known.
+#[test]
+fn super_call_resolves_through_type_hierarchy() {
+    let mut gs = GlobalSummaries::new();
+    let (k_sub, mut s_sub) = method_summary("src/Sub.java", "Sub", "init", 1, 0x01);
+    s_sub.hierarchy_edges = vec![("Sub".into(), "Mid".into())];
+    let (k_mid, mut s_mid) = method_summary("src/Mid.java", "Mid", "other", 0, 0x00);
+    s_mid.hierarchy_edges = vec![("Mid".into(), "Base".into())];
+    let (k_base, s_base) = method_summary("src/Base.java", "Base", "init", 1, 0x02);
+    gs.insert(k_sub.clone(), s_sub);
+    gs.insert(k_mid, s_mid);
+    gs.insert(k_base.clone(), s_base);
+
+    let q = query_with("init", "src/Sub.java", Some("Sub"), Some("super"), 1);
+    assert_eq!(
+        gs.resolve_callee(&q),
+        CalleeResolution::NotFound,
+        "without an installed hierarchy a super call has no target"
+    );
+    gs.install_hierarchy();
+    assert_eq!(gs.supertypes_of(Lang::Java, "Sub"), vec!["Mid", "Base"]);
+    assert_eq!(gs.resolve_callee(&q), CalleeResolution::Resolved(k_base));
+    let parent = query_with("init", "src/Sub.java", Some("Sub"), Some("parent"), 1);
+    assert_ne!(
+        gs.resolve_callee(&parent),
+        CalleeResolution::Resolved(k_sub)
+    );
+}

@@ -454,3 +454,72 @@ fn scc_cap_hit_tags_only_the_unconverged_group() {
         listing()
     );
 }
+
+/// Recursive pairs whose sink sites reach each other through the recursive
+/// call used to flip the order of those sites on every fixed-point
+/// iteration, so the summaries never compared equal and the batch ran to
+/// the 64-iteration cap with every finding tagged unconverged.  Summaries
+/// are now compared on their facts, ignoring that order, so both converge.
+#[test]
+fn scc_sink_site_order_does_not_oscillate() {
+    let _guard = SCC_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    set_scc_fixpoint_cap_override(0);
+    let dir = fixture_path("scc_sink_order_oscillation");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+
+    let iters = last_scc_max_iterations();
+    assert!(
+        (1..=8).contains(&iters),
+        "the recursive pairs must run the fixed-point loop and converge \
+         well below the cap; got {iters} iterations"
+    );
+    let tagged: Vec<String> = diags
+        .iter()
+        .filter(|d| {
+            d.evidence.as_ref().is_some_and(|e| {
+                e.notes
+                    .iter()
+                    .any(|n| n.starts_with(SCC_UNCONVERGED_NOTE_PREFIX))
+            })
+        })
+        .map(|d| format!("{}:{} {}", d.path, d.line, d.id))
+        .collect();
+    assert!(tagged.is_empty(), "unconverged findings: {tagged:#?}");
+}
+
+/// A recursive pair whose summaries alternate between two states forever
+/// (see the fixture README).  The loop must notice the repeated state and
+/// stop instead of running all 64 iterations, and report the oscillation
+/// as the reason on the findings it tags.
+#[test]
+fn scc_repeating_summaries_stop_early() {
+    let _guard = SCC_TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    set_scc_fixpoint_cap_override(0);
+    let dir = fixture_path("scc_summary_cycle_stops_early");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+
+    let iters = last_scc_max_iterations();
+    assert!(
+        (1..8).contains(&iters),
+        "the recursive pair must run the fixed-point loop and stop well \
+         below the cap; got {iters} iterations"
+    );
+    for d in &diags {
+        let Some(ev) = d.evidence.as_ref() else {
+            continue;
+        };
+        for note in ev
+            .notes
+            .iter()
+            .filter(|n| n.starts_with(SCC_UNCONVERGED_NOTE_PREFIX))
+        {
+            assert!(
+                note.contains("reason=suspected_oscillation"),
+                "{}:{} {} tagged with {note}",
+                d.path,
+                d.line,
+                d.id
+            );
+        }
+    }
+}

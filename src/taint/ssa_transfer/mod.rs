@@ -58,7 +58,7 @@ use crate::ssa::ir::*;
 use crate::ssa::type_facts::InputValidatorPolarity;
 use crate::state::lattice::Lattice;
 use crate::state::symbol::SymbolInterner;
-use crate::summary::{CalleeQuery, CalleeResolution, GlobalSummaries, SinkSite};
+use crate::summary::{CallReceiver, CalleeQuery, CalleeResolution, GlobalSummaries, SinkSite};
 use crate::symbol::{FuncKey, Lang};
 use crate::taint::domain::{PredicateSummary, TaintOrigin, VarTaint, predicate_kind_bit};
 use crate::taint::path_state::{PredicateKind, classify_condition_with_target};
@@ -12647,10 +12647,20 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
         }
     }
 
-    if let Some(cc) = q.caller_container {
-        if let Some(k) = pick_with_container(cc) {
-            return Some(k);
+    // Mirrors `GlobalSummaries::resolve_callee` step 3: only a call on the
+    // caller's own instance resolves through the caller's container.  A
+    // `super` / `parent` call targets a supertype, which this file-local
+    // index cannot see, so it is left to the global resolver.
+    match q.receiver() {
+        CallReceiver::Own => {
+            if let Some(cc) = q.caller_container
+                && let Some(k) = pick_with_container(cc)
+            {
+                return Some(k);
+            }
         }
+        CallReceiver::Super => return None,
+        CallReceiver::Other => {}
     }
 
     let arity_filtered: Vec<&FuncKey> = all.iter().copied().filter(|k| arity_matches(k)).collect();

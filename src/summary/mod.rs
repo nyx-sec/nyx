@@ -562,8 +562,11 @@ pub struct CalleeQuery<'a> {
     /// `std::env::var` in Rust the caller passes `"env"`; for `http.Get`
     /// in Go, `"http"`.  Left `None` for purely bare calls.
     pub namespace_qualifier: Option<&'a str>,
-    /// Syntactic receiver variable name.  Used only as a tie-breaker, a
-    /// variable name is a weak proxy for a class name.
+    /// Syntactic receiver: the segment right before the leaf name (`"repo"`
+    /// in `this.repo.find()`, `"super"` in `super.init()`).  Decides
+    /// whether the caller's own container may hold the target (see
+    /// [`CallReceiver`]); otherwise only a tie-breaker, since a variable
+    /// name is a weak proxy for a class name.
     pub receiver_var: Option<&'a str>,
     /// Positional-argument count at the call site.  Hard filter when set.
     pub arity: Option<usize>,
@@ -578,6 +581,142 @@ impl<'a> CalleeQuery<'a> {
         self.receiver_type.is_some()
             || self.namespace_qualifier.is_some()
             || self.caller_container.is_some_and(|s| !s.is_empty())
+    }
+
+    /// How the call's receiver relates to the caller's own instance.
+    pub fn receiver(&self) -> CallReceiver {
+        classify_call_receiver(self.caller_lang, self.receiver_var, self.caller_container)
+    }
+}
+
+/// How a call's receiver relates to the instance the calling function
+/// runs on.  Only an [`CallReceiver::Own`] call can target a method of the
+/// caller's own container through the caller-container resolution step,
+/// and only an `Own` call can be the caller calling itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallReceiver {
+    /// No receiver (`foo()`), the caller's own instance or class
+    /// (`this.foo()`, `self::foo()`, `static::foo()`, `cls.foo()`,
+    /// `Owner::foo()` inside `Owner`), or a Go method receiver, which each
+    /// method names freely.
+    Own,
+    /// The caller's supertype: `super.foo()`, `super().foo()`,
+    /// `parent::foo()`.  Never the caller's own container.
+    Super,
+    /// Any other object: `repo.find()`, `this.repo.find()`,
+    /// `$this->inner->get()`, `json.dumps()`.
+    Other,
+}
+
+/// Classify a call's receiver.  `receiver` is the receiver text the
+/// callee name carries before its leaf (`None` for a bare call); a
+/// multi-segment chain such as `this.repo` or `$this->inner` is a field
+/// of some object, never the caller's own instance.
+pub fn classify_call_receiver(
+    lang: Lang,
+    receiver: Option<&str>,
+    caller_container: Option<&str>,
+) -> CallReceiver {
+    let Some(r) = receiver.filter(|r| !r.is_empty()) else {
+        return CallReceiver::Own;
+    };
+    match r {
+        "this" | "self" | "$this" | "static" | "Self" | "cls" => CallReceiver::Own,
+        "super" | "parent" => CallReceiver::Super,
+        _ if r.starts_with("super(") => CallReceiver::Super,
+        _ if caller_container.is_some_and(|c| !c.is_empty() && c == r) => CallReceiver::Own,
+        _ if lang == Lang::Go && r.chars().all(|c| c == '_' || c.is_alphanumeric()) => {
+            CallReceiver::Own
+        }
+        _ => CallReceiver::Other,
+    }
+}
+
+/// The fields of a [`FuncSummary`] the SCC fixed-point loop compares
+/// between iterations: `(source_caps, sanitizer_caps, sink_caps,
+/// propagating_params)`.
+pub type CapsFingerprint = (u32, u32, u32, Vec<usize>);
+
+pub fn caps_fingerprint(s: &FuncSummary) -> CapsFingerprint {
+    (
+        s.source_caps,
+        s.sanitizer_caps,
+        s.sink_caps,
+        s.propagating_params.clone(),
+    )
+}
+
+/// Pre-write values of every key written through
+/// [`GlobalSummaries::insert_tracked`] / [`GlobalSummaries::insert_ssa_tracked`]
+/// since the log was created.
+///
+/// One SCC fixed-point iteration writes only the summaries of the files it
+/// re-analysed, so comparing each written key's first pre-write value with
+/// its current value finds every key that changed, at O(keys written)
+/// instead of the O(functions in the repo) a whole-map snapshot diff costs.
+/// A key that did not exist before its first write counts as changed.
+#[derive(Default)]
+pub struct SummaryChangeLog {
+    caps_before: HashMap<FuncKey, Option<CapsFingerprint>>,
+    ssa_before: HashMap<FuncKey, Option<SsaFuncSummary>>,
+}
+
+impl SummaryChangeLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Written keys whose [`caps_fingerprint`] differs from before.
+    pub fn changed_cap_keys(&self, gs: &GlobalSummaries) -> std::collections::HashSet<FuncKey> {
+        self.caps_before
+            .iter()
+            .filter(|(k, before)| {
+                let now = gs.by_key.get(*k).map(caps_fingerprint);
+                now != **before
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// Written keys whose SSA summary carries different facts than before
+    /// (see [`SsaFuncSummary::same_facts`]).
+    pub fn changed_ssa_keys(&self, gs: &GlobalSummaries) -> std::collections::HashSet<FuncKey> {
+        self.ssa_before
+            .iter()
+            .filter(
+                |(k, before)| match (gs.ssa_by_key.get(*k), Option::as_ref(*before)) {
+                    (Some(now), Some(before)) => !now.same_facts(before),
+                    (None, None) => false,
+                    _ => true,
+                },
+            )
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// The SSA summary `key` held before its first write, `None` when the
+    /// key was not written or did not exist yet.
+    pub fn ssa_before(&self, key: &FuncKey) -> Option<&SsaFuncSummary> {
+        self.ssa_before.get(key).and_then(Option::as_ref)
+    }
+
+    /// The cap tuple and SSA summary `key` held before this log's writes:
+    /// the logged pre-write value for each part that was written, the
+    /// current value for a part that was not.
+    pub fn values_before<'a>(
+        &'a self,
+        gs: &'a GlobalSummaries,
+        key: &FuncKey,
+    ) -> (Option<CapsFingerprint>, Option<&'a SsaFuncSummary>) {
+        let caps = match self.caps_before.get(key) {
+            Some(before) => before.clone(),
+            None => gs.by_key.get(key).map(caps_fingerprint),
+        };
+        let ssa = match self.ssa_before.get(key) {
+            Some(before) => before.as_ref(),
+            None => gs.ssa_by_key.get(key),
+        };
+        (caps, ssa)
     }
 }
 
@@ -836,6 +975,28 @@ impl GlobalSummaries {
     /// preserved.
     pub fn insert(&mut self, key: FuncKey, summary: FuncSummary) {
         let key = self.reconcile_func_summary_key(key, &summary);
+        self.insert_reconciled(key, summary);
+    }
+
+    /// [`Self::insert`] that also records in `log` the convergence view
+    /// the target key held before this iteration first wrote it.  Used by
+    /// the SCC fixed-point loop so it can tell which keys changed without
+    /// snapshotting every summary in the repo.
+    pub fn insert_tracked(
+        &mut self,
+        key: FuncKey,
+        summary: FuncSummary,
+        log: &mut SummaryChangeLog,
+    ) {
+        let key = self.reconcile_func_summary_key(key, &summary);
+        if !log.caps_before.contains_key(&key) {
+            let before = self.by_key.get(&key).map(caps_fingerprint);
+            log.caps_before.insert(key.clone(), before);
+        }
+        self.insert_reconciled(key, summary);
+    }
+
+    fn insert_reconciled(&mut self, key: FuncKey, summary: FuncSummary) {
         let lang = key.lang;
         let name = key.name.clone();
         let qualified = key.qualified_name();
@@ -1057,6 +1218,28 @@ impl GlobalSummaries {
     /// (audit gap A.2.1.G1 ,
     /// `project_typed_callgraph_audit_gap_ssa_disambig.md`).
     pub fn insert_ssa(&mut self, key: FuncKey, summary: SsaFuncSummary) {
+        let key = self.ssa_insert_key(key, &summary);
+        self.index_ssa_key(&key);
+        self.ssa_by_key.insert(key, summary);
+    }
+
+    /// [`Self::insert_ssa`] that also records in `log` the summary the
+    /// target key held before this iteration first wrote it.  The replaced
+    /// value is moved into the log, so tracking costs no clone.
+    pub fn insert_ssa_tracked(
+        &mut self,
+        key: FuncKey,
+        summary: SsaFuncSummary,
+        log: &mut SummaryChangeLog,
+    ) {
+        let key = self.ssa_insert_key(key, &summary);
+        self.index_ssa_key(&key);
+        let before = self.ssa_by_key.insert(key.clone(), summary);
+        log.ssa_before.entry(key).or_insert(before);
+    }
+
+    /// The key [`Self::insert_ssa`] stores `summary` under.
+    fn ssa_insert_key(&self, key: FuncKey, summary: &SsaFuncSummary) -> FuncKey {
         // The summary may reference a parameter index ≥ `key.arity` when
         // scoped SSA lowering synthesised `Param` ops for **external
         // captures** (free identifiers like `this`, module imports,
@@ -1093,7 +1276,7 @@ impl GlobalSummaries {
         //   dethrone the existing entry by silent overwrite.  Both
         //   summaries survive, the existing one at the original key,
         //   the new one at the synthesised disambig.
-        let key = if key.arity.is_some() && !ssa_summary_fits_arity(&summary, key.arity) {
+        if key.arity.is_some() && !ssa_summary_fits_arity(summary, key.arity) {
             let existing_also_overflows = self
                 .ssa_by_key
                 .get(&key)
@@ -1102,13 +1285,11 @@ impl GlobalSummaries {
             if !existing_present || existing_also_overflows {
                 key
             } else {
-                self.reconcile_ssa_summary_key(key, &summary)
+                self.reconcile_ssa_summary_key(key, summary)
             }
         } else {
-            self.reconcile_ssa_summary_key(key, &summary)
-        };
-        self.index_ssa_key(&key);
-        self.ssa_by_key.insert(key, summary);
+            self.reconcile_ssa_summary_key(key, summary)
+        }
     }
 
     /// Push `key` onto the secondary `(lang, namespace, name)` index.
@@ -1486,33 +1667,24 @@ impl GlobalSummaries {
         self.by_key.iter()
     }
 
+    /// Number of coarse [`FuncSummary`] entries.
+    pub fn func_count(&self) -> usize {
+        self.by_key.len()
+    }
+
     /// Snapshot the convergence-relevant fields of every summary.
     ///
-    /// Returns `(source_caps, sanitizer_caps, sink_caps, propagating_params)`
-    /// per key.  Used by the SCC fixed-point loop to detect when an iteration
-    /// has not changed any summary, i.e. convergence.
-    pub fn snapshot_caps(&self) -> HashMap<FuncKey, (u32, u32, u32, Vec<usize>)> {
+    /// Returns [`caps_fingerprint`] per key.  The SCC fixed-point loop
+    /// tracks changes per write through [`SummaryChangeLog`] instead, since
+    /// a whole-map snapshot per iteration costs O(functions in the repo).
+    pub fn snapshot_caps(&self) -> HashMap<FuncKey, CapsFingerprint> {
         self.by_key
             .iter()
-            .map(|(k, s)| {
-                (
-                    k.clone(),
-                    (
-                        s.source_caps,
-                        s.sanitizer_caps,
-                        s.sink_caps,
-                        s.propagating_params.clone(),
-                    ),
-                )
-            })
+            .map(|(k, s)| (k.clone(), caps_fingerprint(s)))
             .collect()
     }
 
-    /// Snapshot the SSA summaries for convergence detection.
-    ///
-    /// Used alongside [`Self::snapshot_caps`] in the SCC fixed-point loop so that
-    /// SSA-only refinements (e.g. a `StripBits` transform appearing after a
-    /// cross-file sanitizer is resolved) are not invisible to convergence.
+    /// Borrow every SSA summary.
     pub fn snapshot_ssa(&self) -> &HashMap<FuncKey, SsaFuncSummary> {
         &self.ssa_by_key
     }
@@ -1797,10 +1969,45 @@ impl GlobalSummaries {
         }
 
         // ── Step 3: caller self-container ───────────────────────────
-        if let Some(cc) = q.caller_container
-            && let Some(key) = try_qualified(cc)
-        {
-            return CalleeResolution::Resolved(key);
+        // Only a call on the caller's own instance can land in the
+        // caller's container.  `repo.find(id)` inside `find` names another
+        // object's method, and `super.init(cfg)` inside `init` names the
+        // supertype's, so neither may resolve to the caller.
+        match q.receiver() {
+            CallReceiver::Own => {
+                if let Some(cc) = q.caller_container
+                    && let Some(key) = try_qualified(cc)
+                {
+                    return CalleeResolution::Resolved(key);
+                }
+            }
+            CallReceiver::Super => {
+                // The nearest supertype that defines the method.  Like step
+                // 4, tolerate a declaration with more parameters than the
+                // call passes (defaults, or Python's explicit `self`).
+                let in_supertype = |sup: &str| -> Option<FuncKey> {
+                    try_qualified(sup).or_else(|| {
+                        let a = q.arity?;
+                        let qual = format!("{sup}::{}", q.name);
+                        let wider: Vec<&FuncKey> = self
+                            .lookup_qualified(q.caller_lang, &qual)
+                            .into_iter()
+                            .map(|(k, _)| k)
+                            .filter(|k| matches!(k.arity, Some(p) if p > a))
+                            .collect();
+                        (wider.len() == 1).then(|| wider[0].clone())
+                    })
+                };
+                return match q.caller_container {
+                    Some(cc) => self
+                        .supertypes_of(q.caller_lang, cc)
+                        .iter()
+                        .find_map(|sup| in_supertype(sup))
+                        .map_or(CalleeResolution::NotFound, CalleeResolution::Resolved),
+                    None => CalleeResolution::NotFound,
+                };
+            }
+            CallReceiver::Other => {}
         }
 
         // ── Step 4: same-namespace unique leaf ──────────────────────
@@ -1922,6 +2129,34 @@ impl GlobalSummaries {
     /// Borrow the installed hierarchy index, if any.
     pub fn hierarchy(&self) -> Option<&crate::callgraph::TypeHierarchyIndex> {
         self.hierarchy.as_ref()
+    }
+
+    /// Every recorded supertype of `container`, nearest first (direct
+    /// supertypes, then theirs).  Empty when no hierarchy is installed.
+    /// Used to resolve `super.m()` / `parent::m()` to the closest
+    /// supertype that defines `m`.
+    pub fn supertypes_of(&self, lang: Lang, container: &str) -> Vec<String> {
+        /// Bound on the inheritance depth walked; real chains are short and
+        /// the visited set already stops cycles.
+        const MAX_SUPERTYPES: usize = 32;
+        let Some(h) = self.hierarchy.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        let mut next = 0;
+        let mut current = container.to_string();
+        loop {
+            for sup in h.supers_of(lang, &current) {
+                if sup != container && !out.contains(sup) && out.len() < MAX_SUPERTYPES {
+                    out.push(sup.clone());
+                }
+            }
+            if next >= out.len() {
+                return out;
+            }
+            current = out[next].clone();
+            next += 1;
+        }
     }
 
     /// Hard cap on hierarchy fan-out from a single call site, see

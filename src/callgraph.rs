@@ -12,7 +12,9 @@
 
 use crate::interop::InteropEdge;
 use crate::rust_resolve::RustUseMap;
-use crate::summary::{CalleeQuery, CalleeResolution, GlobalSummaries};
+use crate::summary::{
+    CallReceiver, CalleeQuery, CalleeResolution, GlobalSummaries, classify_call_receiver,
+};
 use crate::symbol::{FuncKey, Lang};
 use petgraph::graph::NodeIndex;
 use petgraph::prelude::*;
@@ -160,6 +162,32 @@ pub(crate) fn callee_container_hint(raw: &str) -> &str {
     ""
 }
 
+/// Whether the call `raw_callee` made inside `caller` may be `caller`
+/// calling itself.
+///
+/// Name-based resolution matches on the leaf name, so a call that only
+/// shares the caller's name (`repo.find(id)` inside `find`,
+/// `super.init(cfg)` inside `init`, `parent::events()` inside `events`,
+/// `json.dumps(o)` inside `dumps`) would otherwise become a self edge and
+/// mark the caller recursive.  Only a bare call or a call on the caller's
+/// own instance or class can be self-recursion.  A receiver chain
+/// (`this.repo`, `$this->inner`, `h.mux`) is a field of some object and
+/// never the caller's own instance.
+pub(crate) fn site_may_call_self(caller: &FuncKey, raw_callee: &str) -> bool {
+    let prefix = if let Some(pos) = raw_callee.rfind("::") {
+        &raw_callee[..pos]
+    } else if let Some(pos) = raw_callee.rfind('.') {
+        &raw_callee[..pos]
+    } else {
+        return true;
+    };
+    if prefix.contains('.') || prefix.contains("->") || prefix.contains("::") {
+        return false;
+    }
+    let container = Some(caller.container.as_str()).filter(|c| !c.is_empty());
+    classify_call_receiver(caller.lang, Some(prefix), container) == CallReceiver::Own
+}
+
 /// Strip the optional `"<pkg>::"` package prefix from a call-graph
 /// namespace, yielding the plain project-relative path.
 ///
@@ -294,6 +322,9 @@ impl ClassMethodIndex {
 pub struct TypeHierarchyIndex {
     /// `(lang, super_type)` → distinct sub-type / impl container names.
     by_super: HashMap<(Lang, String), SmallVec<[String; 4]>>,
+    /// `(lang, sub_type)` → distinct direct super-type names, in the order
+    /// the declarations list them.  Resolves `super.m()` / `parent::m()`.
+    by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>>,
 }
 
 impl TypeHierarchyIndex {
@@ -304,6 +335,7 @@ impl TypeHierarchyIndex {
     /// summary) collapse via the membership check.
     pub fn build(summaries: &GlobalSummaries) -> Self {
         let mut by_super: HashMap<(Lang, String), SmallVec<[String; 4]>> = HashMap::new();
+        let mut by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>> = HashMap::new();
 
         for (key, summary) in summaries.iter() {
             let lang = key.lang;
@@ -315,10 +347,23 @@ impl TypeHierarchyIndex {
                 if !subs.iter().any(|s| s == sub) {
                     subs.push(sub.clone());
                 }
+                let sups = by_sub.entry((lang, sub.clone())).or_default();
+                if !sups.iter().any(|s| s == sup) {
+                    sups.push(sup.clone());
+                }
             }
         }
 
-        TypeHierarchyIndex { by_super }
+        TypeHierarchyIndex { by_super, by_sub }
+    }
+
+    /// Return the distinct direct super-type names of `sub_type`.  Empty
+    /// when none were recorded.
+    pub fn supers_of(&self, lang: Lang, sub_type: &str) -> &[String] {
+        self.by_sub
+            .get(&(lang, sub_type.to_string()))
+            .map(|v| v.as_slice())
+            .unwrap_or_default()
     }
 
     /// Return the distinct sub-type / impl container names for
@@ -481,6 +526,22 @@ pub fn build_call_graph(summaries: &GlobalSummaries, interop_edges: &[InteropEdg
             // Structured arity carried per call site, used to disambiguate
             // same-name/different-arity overloads during resolution.
             let arity_hint: Option<usize> = site.arity;
+            // The receiver segment right before the leaf (`repo` in
+            // `this.repo.find`), which is what the resolver's
+            // caller-container step keys on.  `site.receiver` holds the
+            // root of the chain (`this`) and is only the fallback for a
+            // callee name that does not spell its receiver.
+            let receiver_hint: Option<&str> = site.receiver.as_deref().map(|root| {
+                let immediate = callee_container_hint(raw_callee);
+                if immediate.is_empty() {
+                    root
+                } else {
+                    immediate
+                }
+            });
+            // Name-based resolution may only produce a self edge for a call
+            // on the caller's own instance; see `site_may_call_self`.
+            let may_call_self = site_may_call_self(caller_key, raw_callee);
 
             // Devirtualisation: for method calls whose SSA summary
             // recorded a typed container, resolve via ClassMethodIndex
@@ -578,7 +639,7 @@ pub fn build_call_graph(summaries: &GlobalSummaries, interop_edges: &[InteropEdg
                         caller_container,
                         receiver_type: Some(container),
                         namespace_qualifier: site.qualifier.as_deref(),
-                        receiver_var: site.receiver.as_deref(),
+                        receiver_var: receiver_hint,
                         arity: arity_hint,
                     });
                     if let CalleeResolution::Resolved(key) = resolution
@@ -645,7 +706,6 @@ pub fn build_call_graph(summaries: &GlobalSummaries, interop_edges: &[InteropEdg
                         None
                     }
                 });
-                let receiver_var = site.receiver.clone();
                 let caller_container: Option<&str> = if caller_key.container.is_empty() {
                     None
                 } else {
@@ -658,14 +718,16 @@ pub fn build_call_graph(summaries: &GlobalSummaries, interop_edges: &[InteropEdg
                     caller_container,
                     receiver_type: None,
                     namespace_qualifier: namespace_qualifier.as_deref(),
-                    receiver_var: receiver_var.as_deref(),
+                    receiver_var: receiver_hint,
                     arity: arity_hint,
                 })
             };
 
             match resolution {
                 CalleeResolution::Resolved(target_key) => {
-                    if let Some(&target_node) = index.get(&target_key) {
+                    if let Some(&target_node) = index.get(&target_key)
+                        && (may_call_self || target_node != caller_node)
+                    {
                         graph.add_edge(
                             caller_node,
                             target_node,
@@ -709,6 +771,7 @@ pub fn build_call_graph(summaries: &GlobalSummaries, interop_edges: &[InteropEdg
                             .collect();
                         if narrowed.len() == 1
                             && let Some(&target_node) = index.get(&narrowed[0])
+                            && (may_call_self || target_node != caller_node)
                         {
                             graph.add_edge(
                                 caller_node,
@@ -3605,5 +3668,52 @@ mod tests {
         assert!(!reach.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
         // Project-relative still works.
         assert!(reach.reaches("routes.py", "helper.py"));
+    }
+
+    /// Only a bare call or a call on the caller's own instance or class
+    /// can be the caller calling itself.
+    #[test]
+    fn site_may_call_self_shapes() {
+        let method = |lang, container: &str| {
+            FuncKey::from_parts(
+                lang,
+                "src/a",
+                container,
+                "find",
+                Some(1),
+                None,
+                crate::symbol::FuncKind::Method,
+            )
+        };
+        let java = method(Lang::Java, "Person");
+        for own in ["find", "this.find", "Person.find", "Person::find"] {
+            assert!(site_may_call_self(&java, own), "{own}");
+        }
+        for other in [
+            "repo.find",
+            "this.repo.find",
+            "super.find",
+            "a.b.find",
+            "x::y::find",
+        ] {
+            assert!(!site_may_call_self(&java, other), "{other}");
+        }
+        let php = method(Lang::Php, "Cache");
+        for own in ["this.find", "self.find", "static.find"] {
+            assert!(site_may_call_self(&php, own), "{own}");
+        }
+        for other in ["parent.find", "$this->inner.find"] {
+            assert!(!site_may_call_self(&php, other), "{other}");
+        }
+        let py = method(Lang::Python, "Sub");
+        assert!(site_may_call_self(&py, "self.find"));
+        assert!(site_may_call_self(&py, "cls.find"));
+        assert!(!site_may_call_self(&py, "super().find"));
+        assert!(!site_may_call_self(&py, "json.find"));
+        // Go names the method receiver freely, so a plain receiver may be
+        // the caller's own; a field chain never is.
+        let go = method(Lang::Go, "");
+        assert!(site_may_call_self(&go, "h.find"));
+        assert!(!site_may_call_self(&go, "h.mux.find"));
     }
 }
