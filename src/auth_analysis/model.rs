@@ -47,6 +47,21 @@ pub enum AuthCheckKind {
     Other,
 }
 
+/// Where a JS/TS unit runs, as far as the file and the unit show.
+///
+/// `Browser` units are React components, hooks and other client code.  They
+/// cannot enforce authorization, so the ownership rule has nothing to say
+/// about them.  `Server` units sit in a file that imports a server framework
+/// or a database client.  Everything else, and every non-JS unit, is
+/// `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnitRuntime {
+    #[default]
+    Unknown,
+    Browser,
+    Server,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Read,
@@ -204,9 +219,12 @@ pub struct AnalysisUnit {
     /// reverse walk consults this map to also accept rows whose
     /// population args contain the aliased chain.
     pub var_alias_chain: HashMap<String, String>,
-    /// Per row-binding metadata: the `let ROW = CALL(..)` declaration
-    /// line and the value-refs appearing in the call's arguments.
-    /// Populated for every `let V = call(..)` shape.  Powers the
+    /// Per row-binding metadata: every `let ROW = CALL(..)` declaration of
+    /// the name, each with its line and the value-refs appearing in the
+    /// call's arguments.  A name can be bound more than once (a reassigned
+    /// row, sibling `const` declarations in `if`/`else` blocks, both arms of
+    /// a ternary, the elements of a `Promise.all` destructure), so every
+    /// binding is kept.  Populated for every `let V = call(..)` shape.  Powers the
     /// "fetch-then-authorize" exemption in `checks.rs`: if a row-fetch
     /// operation produces variable `V` and SOME auth check elsewhere
     /// in the unit names `V`, the row-fetch operation is considered
@@ -214,7 +232,7 @@ pub struct AnalysisUnit {
     /// fetch.  This is the standard idiom in row-level authz code:
     /// fetch the row first to extract the resource id, then call
     /// `check_<resource>_<role>(&user, &row, ...)` to authorize it.
-    pub row_population_data: HashMap<String, (usize, Vec<ValueRef>)>,
+    pub row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
     /// Variables bound to an authenticated-user value. Populated from
     /// `let V = require_auth(..).await?` (or any call matching the
     /// configured login-guard / authorization-check names) and from
@@ -299,6 +317,21 @@ pub struct AnalysisUnit {
     /// `is_nextauth_callback_unit` so the missing-ownership check
     /// suppresses operations inside the factory.
     pub is_nextauth_options_factory: bool,
+    /// Go: package-level names (imported package aliases and file-level
+    /// consts) that nothing in this unit shadows.  A selector rooted at an
+    /// import alias (`common.LDAPUID`, `grid.GetByteBuffer`) or a bare file
+    /// const names a declaration, never a per-request value, so
+    /// `is_relevant_target_subject` skips them.  Empty for other languages.
+    pub package_names: HashSet<String>,
+    /// JS/TS: whether the unit is browser code, server code, or unknown.
+    pub runtime: UnitRuntime,
+    /// Go: parameters and locals bound to the request or the framework
+    /// request context (`r *http.Request`, `c *gin.Context`,
+    /// `ctx *context.APIContext`, and locals copied from them).  Accessor
+    /// calls count as user input only on these receivers, and
+    /// `<root>.Repo.Repository.ID` style chains read the scope entity the
+    /// middleware already resolved.  Empty for other languages.
+    pub request_roots: HashSet<String>,
 }
 
 /// Per-function summary of which positional parameters are

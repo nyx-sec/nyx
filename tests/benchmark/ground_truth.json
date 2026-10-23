@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 697
+    "corpus_size": 710
   },
   "cases": [
     {
@@ -22058,6 +22058,370 @@
       ],
       "disabled": false,
       "notes": "Request value passes through a same-file helper wrapping shlex.quote before os.system. The helper's SHELL_ESCAPE sanitizer is evidence that the engine cleared the flow, so the AST pattern stays suppressed."
+    },
+    {
+      "case_id": "go-auth-state-001",
+      "file": "go/auth/safe_request_context_scope.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "request-context"
+      ],
+      "disabled": false,
+      "notes": "gitea-style request-context scope and actor chains (ctx.Repo.Repository.ID, ctx.Doer.ID, a co-passed scope id) are not foreign ids."
+    },
+    {
+      "case_id": "go-auth-state-002",
+      "file": "go/auth/vuln_unscoped_label_lookup.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "request-context"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for go-auth-state-001: the same handler without a scope id looks the label up by the request-supplied id alone."
+    },
+    {
+      "case_id": "go-auth-state-003",
+      "file": "go/auth/safe_in_memory_values.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "in-memory"
+      ],
+      "disabled": false,
+      "notes": "Atomic field, local set, url.Values, request header/form accessors and a router registration are not data-layer operations even though their names are id-shaped and the verbs are Get/Add/Remove/Load."
+    },
+    {
+      "case_id": "go-auth-state-004",
+      "file": "go/auth/safe_package_level_symbols.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "package-symbols"
+      ],
+      "disabled": false,
+      "notes": "A selector rooted at an imported package and a file-level const name declarations, not per-request values."
+    },
+    {
+      "case_id": "go-auth-state-005",
+      "file": "go/auth/safe_fetch_then_authorize.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "fetch-then-authorize"
+      ],
+      "disabled": false,
+      "notes": "Go fetch-then-authorize: `issue, err := Get(...)` followed by a permission check on the row covers the fetch."
+    },
+    {
+      "case_id": "ts-auth-state-001",
+      "file": "typescript/auth/safe_browser_components.tsx",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "browser"
+      ],
+      "disabled": false,
+      "notes": "React components and hooks are browser code; their id-named props and SDK calls are not unchecked server-side data access."
+    },
+    {
+      "case_id": "ts-auth-state-002",
+      "file": "typescript/auth/vuln_next_server_component.tsx",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "browser"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for ts-auth-state-001: an async App Router server component queries the database directly with a path param."
+    },
+    {
+      "case_id": "js-auth-state-001",
+      "file": "javascript/auth/safe_route_level_middleware.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "route-middleware"
+      ],
+      "disabled": false,
+      "notes": "Authorization middleware named on an Express route guards the whole handler."
+    },
+    {
+      "case_id": "js-auth-state-002",
+      "file": "javascript/auth/vuln_commonjs_controller_exports.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "controller-exports"
+      ],
+      "disabled": false,
+      "notes": "CommonJS `exports.x = fn` and undecorated class methods are controller handlers; both delete by a request id with no check."
+    },
+    {
+      "case_id": "js-auth-state-003",
+      "file": "javascript/auth/vuln_shorthand_where_id.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "shorthand"
+      ],
+      "disabled": false,
+      "notes": "`where: { id }` shorthand carries the request id; the delete has no ownership check."
+    },
+    {
+      "case_id": "js-auth-state-004",
+      "file": "javascript/auth/safe_row_fetch_then_authorize.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "fetch-then-authorize"
+      ],
+      "disabled": false,
+      "notes": "Fetch-then-authorize holds when the row is reassigned, written after the check, or fetched through Promise.all."
+    },
+    {
+      "case_id": "js-auth-state-005",
+      "file": "javascript/auth/safe_session_user_id.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "session"
+      ],
+      "disabled": false,
+      "notes": "req.session.userId is the caller's own id and is self-scoped for own-account writes."
+    },
+    {
+      "case_id": "py-auth-state-001",
+      "file": "python/auth/safe_words_ending_in_id.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "id-like"
+      ],
+      "disabled": false,
+      "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
     }
   ]
 }

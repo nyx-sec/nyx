@@ -4,12 +4,15 @@
 //! `ValueRef` extraction, and tree-sitter node/string/span helpers — used by the
 //! per-framework extractors in this directory (`express`, `axum`, `django`, …).
 
+use super::go_scope;
+use super::js_scope::{self, JsFileFacts};
 use crate::auth_analysis::config::{AuthAnalysisRules, canonical_name, matches_name, strip_quotes};
 use crate::auth_analysis::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, CallSite,
     Framework, HttpMethod, OperationKind, RouteRegistration, SensitiveOperation, SinkClass,
-    ValueRef, ValueSourceKind,
+    UnitRuntime, ValueRef, ValueSourceKind,
 };
+use crate::auth_analysis::naming::is_id_like_name;
 use crate::labels::bare_method_name;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -112,6 +115,34 @@ fn collect_top_level_from_node(
                 }
             }
         }
+        // CommonJS controller exports: `exports.remove = async (req, res) =>
+        // ..`, `module.exports.show = function ..`, `module.exports = {
+        // async update(req, res) {} }`.  The dominant Express MVC shape.
+        "expression_statement" => {
+            if let Some(assign) = node.named_child(0)
+                && assign.kind() == "assignment_expression"
+            {
+                collect_commonjs_export_units(assign, bytes, rules, model, file_meta);
+            }
+        }
+        // Handler methods of an undecorated class (`class DocController {
+        // async archive(req, res) {} }`).  Decorated classes and methods
+        // (NestJS, TypeORM) carry their authorization in the decorators,
+        // which this pass does not read, so they stay out.
+        "class_declaration" if class_is_decorated(node) => {}
+        "method_definition" if !node_has_decorator(node) => {
+            let unit = build_function_unit_with_meta(
+                node,
+                AnalysisUnitKind::Function,
+                function_name(node, bytes),
+                bytes,
+                rules,
+                Some(file_meta),
+            );
+            if takes_http_request(&unit) {
+                model.units.push(unit);
+            }
+        }
         "export_statement" => {
             for idx in 0..node.named_child_count() {
                 let Some(child) = node.named_child(idx as u32) else {
@@ -177,6 +208,92 @@ fn collect_top_level_from_node(
         }
         _ => {}
     }
+}
+
+/// `exports.X = fn`, `module.exports.X = fn`, `module.exports = fn`, and
+/// `module.exports = { method() {}, key: fn }`.
+fn collect_commonjs_export_units(
+    assign: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    model: &mut AuthorizationModel,
+    file_meta: &FileMeta,
+) {
+    let (Some(left), Some(right)) = (
+        assign.child_by_field_name("left"),
+        assign.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    let target = text(left, bytes);
+    let is_export = target == "module.exports"
+        || target == "exports"
+        || target.starts_with("exports.")
+        || target.starts_with("module.exports.");
+    if !is_export {
+        return;
+    }
+    let push = |model: &mut AuthorizationModel, node: Node<'_>, name: Option<String>| {
+        let unit = build_function_unit_with_meta(
+            node,
+            AnalysisUnitKind::Function,
+            name.filter(|n| !n.is_empty()),
+            bytes,
+            rules,
+            Some(file_meta),
+        );
+        if takes_http_request(&unit) {
+            model.units.push(unit);
+        }
+    };
+    if is_inline_function(right) {
+        let name =
+            function_name(right, bytes).or_else(|| target.rsplit('.').next().map(str::to_string));
+        push(model, right, name);
+        return;
+    }
+    if right.kind() != "object" {
+        return;
+    }
+    for entry in named_children(right) {
+        match entry.kind() {
+            "method_definition" => push(model, entry, function_name(entry, bytes)),
+            "pair" => {
+                let (Some(key), Some(value)) = (
+                    entry.child_by_field_name("key"),
+                    entry.child_by_field_name("value"),
+                ) else {
+                    continue;
+                };
+                if is_inline_function(value) {
+                    push(model, value, Some(strip_quotes(&text(key, bytes))));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Controller-shaped: the function takes the request (`req`, `request`,
+/// `ctx`).  Class methods and `exports.x = ..` functions are mostly service
+/// and model code with id parameters, so unlike a top-level function they only
+/// become units when they look like a handler.
+fn takes_http_request(unit: &AnalysisUnit) -> bool {
+    unit.params
+        .iter()
+        .any(|p| matches!(p.to_ascii_lowercase().as_str(), "req" | "request" | "ctx"))
+}
+
+fn node_has_decorator(node: Node<'_>) -> bool {
+    named_children(node)
+        .iter()
+        .any(|child| child.kind() == "decorator")
+}
+
+/// A class with decorators of its own, or under an `export` that carries
+/// them (`@Controller('docs') export class DocsController`).
+fn class_is_decorated(node: Node<'_>) -> bool {
+    node_has_decorator(node) || node.parent().is_some_and(node_has_decorator)
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -497,14 +614,99 @@ pub fn attach_route_handler(
 #[derive(Default, Debug, Clone)]
 pub struct FileMeta {
     pub trpc_alias_names: HashSet<String>,
+    /// Go: imported package names and file-level consts.  Empty for other
+    /// languages, whose top-level nodes never match.
+    pub package_names: HashSet<String>,
+    /// JS/TS: imports and directives that say where the file runs.
+    pub js: JsFileFacts,
 }
 
 impl FileMeta {
     pub fn scan(root: Node<'_>, bytes: &[u8]) -> Self {
         let mut trpc_alias_names = HashSet::new();
         scan_trpc_aliases_visit(root, bytes, &mut trpc_alias_names);
-        Self { trpc_alias_names }
+        Self {
+            trpc_alias_names,
+            package_names: go_scope::package_level_names(root, bytes),
+            js: js_scope::scan_file(root, bytes),
+        }
     }
+}
+
+/// Names bound to an Express app or router, or a Koa router, in this file:
+/// `const api = express.Router()`, `const r = new Router()`, `const app =
+/// express()`.  `defaults` are always included (`router`, `app`).
+pub fn router_binding_names(root: Node<'_>, bytes: &[u8], defaults: &[&str]) -> HashSet<String> {
+    let mut names: HashSet<String> = defaults.iter().map(|d| d.to_string()).collect();
+    visit_named_nodes(root, &mut |node| {
+        if node.kind() != "variable_declarator" {
+            return;
+        }
+        let (Some(name), Some(value)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("value"),
+        ) else {
+            return;
+        };
+        if name.kind() != "identifier" {
+            return;
+        }
+        let constructor = match value.kind() {
+            "call_expression" => value
+                .child_by_field_name("function")
+                .map(|f| text(f, bytes)),
+            "new_expression" => value
+                .child_by_field_name("constructor")
+                .map(|c| text(c, bytes)),
+            _ => None,
+        };
+        let Some(constructor) = constructor else {
+            return;
+        };
+        let last = constructor.rsplit('.').next().unwrap_or(&constructor);
+        let is_router = last.ends_with("Router")
+            || constructor == "express"
+            || (value.kind() == "new_expression" && last == "Koa");
+        if is_router {
+            names.insert(text(name, bytes));
+        }
+    });
+    names
+}
+
+/// Record a path-less `<router>.use(mw, ..)` so routes registered on the same
+/// router after it start with those middleware.  Returns true when the node
+/// was one.  Path-prefixed `use` calls apply to a subtree and are not
+/// modelled.
+pub fn note_router_use(
+    node: Node<'_>,
+    bytes: &[u8],
+    routers: &HashSet<String>,
+    uses: &mut HashMap<String, Vec<CallSite>>,
+) -> bool {
+    let Some(function) = node.child_by_field_name("function") else {
+        return false;
+    };
+    let Some((object, method)) = member_target(function, bytes) else {
+        return false;
+    };
+    if method != "use" || !routers.contains(&object) {
+        return false;
+    }
+    let Some(arguments) = node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let args = named_children(arguments);
+    if args
+        .first()
+        .is_none_or(|first| string_literal_value(*first, bytes).is_some())
+    {
+        return false;
+    }
+    uses.entry(object)
+        .or_default()
+        .extend(args.into_iter().map(|arg| call_site_from_node(arg, bytes)));
+    true
 }
 
 pub fn push_route_registration(
@@ -640,6 +842,18 @@ fn find_top_level_function_node_in_child<'tree>(
             }
             None
         }
+        // `exports.show = async (req, res) => ..` / `module.exports.show = ..`
+        "expression_statement" => {
+            let assign = node.named_child(0)?;
+            if assign.kind() != "assignment_expression" {
+                return None;
+            }
+            let target = text(assign.child_by_field_name("left")?, bytes);
+            let is_export = target.starts_with("exports.") || target.starts_with("module.exports.");
+            let right = assign.child_by_field_name("right")?;
+            (is_export && target.rsplit('.').next() == Some(name) && is_inline_function(right))
+                .then_some(right)
+        }
         "program" | "source_file" | "class_declaration" | "class_body" => {
             for idx in 0..node.named_child_count() {
                 let Some(child) = node.named_child(idx as u32) else {
@@ -713,7 +927,34 @@ pub fn build_function_unit_with_meta(
     if let Some(meta) = file_meta {
         state.trpc_alias_names = meta.trpc_alias_names.clone();
     }
+    let is_go = rules.is_go_lang();
+    if is_go {
+        state.request_roots = Some(go_scope::request_root_params(definition, bytes));
+    }
     collect_unit_state(node, bytes, rules, &mut state);
+    let runtime = match file_meta {
+        Some(meta) if rules.is_object_literal_lang() => js_scope::classify_unit(
+            &meta.js,
+            name.as_deref(),
+            &state.call_sites,
+            state.saw_jsx,
+            bytes[node.start_byte()..].starts_with(b"async"),
+        ),
+        _ => UnitRuntime::Unknown,
+    };
+    let (package_names, request_roots) = if is_go {
+        let roots = state.request_roots.take().unwrap_or_default();
+        let names = match file_meta {
+            Some(meta) if !meta.package_names.is_empty() => {
+                let declared = go_scope::declared_names(definition, bytes);
+                meta.package_names.difference(&declared).cloned().collect()
+            }
+            _ => HashSet::new(),
+        };
+        (names, roots)
+    } else {
+        (HashSet::new(), HashSet::new())
+    };
     dedup_value_refs(&mut state.value_refs);
     let context_inputs: Vec<ValueRef> = state
         .value_refs
@@ -763,6 +1004,9 @@ pub fn build_function_unit_with_meta(
         typed_bounded_dto_fields: std::collections::HashMap::new(),
         self_scoped_session_bases: state.self_scoped_session_bases,
         is_nextauth_options_factory,
+        package_names,
+        request_roots,
+        runtime,
     }
 }
 
@@ -997,7 +1241,7 @@ struct UnitState {
     /// `ROW`, we back-date the check to this line and merge these
     /// argument value-refs into its subjects so the original fetch
     /// (e.g. `db.query_one(..., &[doc_id])`) is also covered.
-    row_population_data: HashMap<String, (usize, Vec<ValueRef>)>,
+    row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
     /// A3: local variables bound to the authenticated actor.
     /// Populated from `let V = require_auth(..).await?` (or any call
     /// matching `rules.is_login_guard` / `rules.is_authorization_check`)
@@ -1046,6 +1290,12 @@ struct UnitState {
     /// resolves to a TRPC handler signature.  Empty for non-TS
     /// languages, the scanner only matches TS-grammar node kinds.
     trpc_alias_names: HashSet<String>,
+    /// Go only: names bound to the request or a framework request context,
+    /// grown as `:=` copies are met in source order.  `None` for other
+    /// languages, where accessor calls are classified by name alone.
+    request_roots: Option<HashSet<String>>,
+    /// The unit builds JSX somewhere in its body.
+    saw_jsx: bool,
 }
 
 fn collect_unit_state(
@@ -1054,6 +1304,15 @@ fn collect_unit_state(
     rules: &AuthAnalysisRules,
     state: &mut UnitState,
 ) {
+    if state.request_roots.is_some() {
+        track_go_request_roots(node, bytes, state);
+    }
+    if matches!(
+        node.kind(),
+        "jsx_element" | "jsx_self_closing_element" | "jsx_fragment"
+    ) {
+        state.saw_jsx = true;
+    }
     match node.kind() {
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
             collect_call(node, bytes, rules, state)
@@ -1115,8 +1374,19 @@ fn collect_unit_state(
         | "assignment"
         | "assignment_expression"
         | "augmented_assignment"
+        | "assignment_statement"
         | "expression_statement" => {
             collect_const_string_binding(node, bytes, state);
+            // Go `x := ...`, `x = ...` and `var x = ...`.  The helpers read
+            // `left`/`right` expression lists and `name`/`value` on a
+            // `var_spec`.
+            if matches!(
+                node.kind(),
+                "short_var_declaration" | "assignment_statement" | "var_spec"
+            ) {
+                collect_non_sink_binding(node, bytes, rules, state);
+                collect_row_population(node, bytes, state);
+            }
             // Ruby `@issue = Issue.find(params[:id])` is the canonical
             // controller idiom: instance-variable assignment whose RHS
             // is a row-fetch call.  The let_declaration arm above
@@ -1173,13 +1443,46 @@ fn collect_unit_state(
     // `collect_call`, `collect_condition`, assignment-side extraction) keep
     // the deep walk: they intentionally want refs from the full subtree
     // rooted at the argument they pass.
-    append_shallow_value_ref(node, bytes, &mut state.value_refs);
+    append_shallow_value_ref(
+        node,
+        bytes,
+        state.request_roots.as_ref(),
+        &mut state.value_refs,
+    );
 
     for idx in 0..node.named_child_count() {
         let Some(child) = node.named_child(idx as u32) else {
             continue;
         };
         collect_unit_state(child, bytes, rules, state);
+    }
+}
+
+/// Grow the Go request-root set as the walk meets request-typed closure
+/// parameters and `:=` copies of a request or request-context expression
+/// (`q := r.URL.Query()`, `repo := ctx.Repo.Repository`).
+fn track_go_request_roots(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some(roots) = state.request_roots.as_mut() else {
+        return;
+    };
+    match node.kind() {
+        "func_literal" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                go_scope::collect_request_params(params, bytes, roots);
+            }
+        }
+        "short_var_declaration" | "assignment_statement" => {
+            let Some(right) = node.child_by_field_name("right") else {
+                return;
+            };
+            let rooted = go_scope::expression_items(right).into_iter().any(|expr| {
+                go_scope::expr_root(expr, bytes).is_some_and(|root| roots.contains(&root))
+            });
+            if rooted {
+                roots.extend(go_scope::bound_names(node, bytes));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1190,7 +1493,12 @@ fn collect_unit_state(
 /// descending into descendants.  The caller's existing AST recursion handles
 /// children; relying on that recursion turns the previously O(N²) per-body
 /// walk into O(N).
-fn append_shallow_value_ref(node: Node<'_>, bytes: &[u8], refs: &mut Vec<ValueRef>) {
+fn append_shallow_value_ref(
+    node: Node<'_>,
+    bytes: &[u8],
+    roots: Option<&HashSet<String>>,
+    refs: &mut Vec<ValueRef>,
+) {
     match node.kind() {
         "member_expression"
         | "attribute"
@@ -1211,7 +1519,7 @@ fn append_shallow_value_ref(node: Node<'_>, bytes: &[u8], refs: &mut Vec<ValueRe
             // into a single chain ValueRef; non-accessor calls return None
             // here and rely on recursion to visit `function` + arg children
             // so each leaf identifier emits its own ref.
-            if let Some(value) = call_value_ref(node, bytes) {
+            if let Some(value) = call_value_ref(node, bytes, roots) {
                 refs.push(value);
             }
         }
@@ -1220,7 +1528,11 @@ fn append_shallow_value_ref(node: Node<'_>, bytes: &[u8], refs: &mut Vec<ValueRe
         // identifier arm so `dedup_value_refs` collapses any cross-path
         // duplicates against existing emissions from sibling deep walks
         // (e.g. `collect_condition`'s `extract_value_refs(condition)`).
-        "identifier" | "instance_variable" | "class_variable" | "global_variable" => {
+        "identifier"
+        | "shorthand_property_identifier"
+        | "instance_variable"
+        | "class_variable"
+        | "global_variable" => {
             refs.push(ValueRef {
                 source_kind: ValueSourceKind::Identifier,
                 name: text(node, bytes),
@@ -1253,9 +1565,18 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     // a SECOND time to seed `subjects` — pure duplicate work on the hottest
     // auth-extraction path (profiled: `collect_call` was the dominant caller of
     // alloc / memmove / from_utf8 on mm/channels/app).
+    // A function-literal argument contributes no subjects: its parameters and
+    // locals are bound when the callback runs, not at this call.  Calls made
+    // inside the body are collected on their own as the walk descends.
     let args_value_refs: Vec<Vec<ValueRef>> = args
         .iter()
-        .map(|arg| extract_value_refs(*arg, bytes))
+        .map(|arg| {
+            if is_inline_function(*arg) {
+                Vec::new()
+            } else {
+                extract_value_refs(*arg, bytes, state.request_roots.as_ref())
+            }
+        })
         .collect();
 
     // Borrow the call text.  The classification below reads it as `&str`, and
@@ -1271,6 +1592,29 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     // session checks that care about read-vs-mutation semantics.
     let (op_kind, sink_class) = if rules.is_token_lookup_call(&callee, node_text) {
         (Some(OperationKind::TokenLookup), None)
+    } else if rules.is_object_literal_lang()
+        && callee.contains('.')
+        && args.first().is_some_and(|arg| is_inline_function(*arg))
+    {
+        // `providers.find((p) => p.id === providerId)`: a predicate or
+        // callback as the FIRST argument is the shape of the Array
+        // higher-order methods.  ORM read APIs never take a function first;
+        // callback-style drivers take it last.
+        (None, None)
+    } else if is_route_registration_call(&callee, &args, bytes) {
+        // `m.Get("/blob/{sha}", repo.DownloadByID)` wires a handler to a
+        // path.  The verb name and the id-shaped handler name make it look
+        // like a lookup, but nothing is read or written.
+        (None, None)
+    } else if rules.is_object_literal_lang() && is_http_client_call(&callee, &args, bytes) {
+        // `axios.delete(`/api/todos/${id}`)`, `api.get(url)`: an HTTP request,
+        // not a query.  The verb name must not make it a data-layer call.
+        let kind = if rules.is_read(&callee) && !rules.is_mutation(&callee) {
+            OperationKind::Read
+        } else {
+            OperationKind::Mutation
+        };
+        (Some(kind), Some(SinkClass::OutboundNetwork))
     } else if let Some(class) = rules.classify_sink_class(&callee, &state.non_sink_vars) {
         let op = match class {
             SinkClass::DbCrossTenantRead => OperationKind::Read,
@@ -1307,7 +1651,7 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     // entirely.  Order is identical to the old eager form: receiver refs first,
     // then each argument's refs in argument order.
     let subjects: Vec<ValueRef> = if is_auth || op_kind.is_some() {
-        let mut subjects = call_receiver_subjects(node, bytes);
+        let mut subjects = call_receiver_subjects(node, bytes, state.request_roots.as_ref());
         subjects.reserve(args_value_refs.iter().map(Vec::len).sum());
         for refs in &args_value_refs {
             subjects.extend(refs.iter().cloned());
@@ -1356,6 +1700,81 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     }
 }
 
+/// `<client>.<verb>(<url>, ..)` in JS/TS: an HTTP client request.  Either the
+/// receiver is a well-known client (`axios`, `got`, `ky`, `superagent`) or
+/// the first argument is a URL or an absolute path (`/api/todos/${id}`,
+/// `https://..`).
+fn is_http_client_call(callee: &str, args: &[Node<'_>], bytes: &[u8]) -> bool {
+    if !callee.contains('.') {
+        return false;
+    }
+    let method = bare_method_name(callee).to_ascii_lowercase();
+    if !matches!(
+        method.as_str(),
+        "get" | "post" | "put" | "patch" | "delete" | "del" | "head" | "options" | "request"
+    ) {
+        return false;
+    }
+    let root = callee.split('.').next().unwrap_or(callee);
+    if matches!(
+        root,
+        "axios" | "got" | "ky" | "superagent" | "$http" | "http" | "https"
+    ) {
+        return true;
+    }
+    let Some(first) = args.first() else {
+        return false;
+    };
+    if !matches!(first.kind(), "string" | "template_string") {
+        return false;
+    }
+    let literal = text(*first, bytes);
+    let literal = literal.trim_matches(['"', '\'', '`']);
+    literal.starts_with('/') || literal.starts_with("http://") || literal.starts_with("https://")
+}
+
+/// An inline function literal in any of the grammars the auth pass reads.
+fn is_inline_function(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "arrow_function"
+            | "function_expression"
+            | "function"
+            | "generator_function"
+            | "func_literal"
+            | "lambda"
+            | "lambda_expression"
+            | "closure_expression"
+    )
+}
+
+/// `<router>.<verb>("/path", handler)`: an HTTP verb method whose first
+/// argument is a path literal and whose last argument is a handler.
+fn is_route_registration_call(callee: &str, args: &[Node<'_>], bytes: &[u8]) -> bool {
+    let method = bare_method_name(callee).to_ascii_lowercase();
+    if !matches!(
+        method.as_str(),
+        "get"
+            | "post"
+            | "put"
+            | "delete"
+            | "patch"
+            | "head"
+            | "options"
+            | "any"
+            | "all"
+            | "handle"
+            | "handlefunc"
+    ) || !callee.contains('.')
+        || args.len() < 2
+    {
+        return false;
+    }
+    let path_is_literal = string_literal_value(args[0], bytes).is_some_and(|p| p.starts_with('/'));
+    let last = args[args.len() - 1];
+    path_is_literal && (is_function_like(last) || is_handler_reference(last))
+}
+
 fn collect_condition(
     node: Node<'_>,
     bytes: &[u8],
@@ -1368,7 +1787,7 @@ fn collect_condition(
     }
     state.condition_texts.push(condition_text.clone());
 
-    let subjects = extract_value_refs(node, bytes);
+    let subjects = extract_value_refs(node, bytes, state.request_roots.as_ref());
     let line = node.start_position().row + 1;
 
     if rules.has_expiry_field(&condition_text) {
@@ -1419,6 +1838,7 @@ fn collect_non_sink_binding(
     let Some(pattern) = node
         .child_by_field_name("pattern")
         .or_else(|| node.child_by_field_name("left"))
+        .or_else(|| node.child_by_field_name("name"))
     else {
         return;
     };
@@ -1431,7 +1851,9 @@ fn collect_non_sink_binding(
 
     if let Some(ty_node) = node.child_by_field_name("type") {
         let ty_text = text(ty_node, bytes);
-        if rules.is_non_sink_receiver_type(&ty_text) {
+        if rules.is_non_sink_receiver_type(&ty_text)
+            || (rules.is_go_lang() && go_scope::type_is_in_memory(ty_node, bytes))
+        {
             state.non_sink_vars.insert(var_name);
             return;
         }
@@ -1440,7 +1862,8 @@ fn collect_non_sink_binding(
     if let Some(value) = node
         .child_by_field_name("value")
         .or_else(|| node.child_by_field_name("right"))
-        && value_is_non_sink_constructor(value, bytes, rules)
+        && (value_is_non_sink_constructor(value, bytes, rules)
+            || (rules.is_go_lang() && go_scope::value_is_in_memory(value, bytes)))
     {
         state.non_sink_vars.insert(var_name);
     }
@@ -1610,10 +2033,10 @@ fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     else {
         return;
     };
-    let Some(var_name) = first_identifier_name(pattern, bytes) else {
-        return;
-    };
-    if var_name.is_empty() {
+    // `document.title = title.trim()` edits a field of a row that is already
+    // bound.  Reading the object root out of the target would re-bind the row
+    // to this call and move its fetch line.
+    if is_member_like_target(pattern) {
         return;
     }
     let Some(value) = node
@@ -1622,25 +2045,140 @@ fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     else {
         return;
     };
-    let call_node = unwrap_try_like(value);
-    if !matches!(
-        call_node.kind(),
-        "call_expression" | "call" | "method_invocation" | "method_call_expression"
-    ) {
+    if pattern.kind() == "array_pattern"
+        && collect_promise_all_population(pattern, value, bytes, state)
+    {
         return;
     }
+    let Some(var_name) = first_identifier_name(pattern, bytes) else {
+        return;
+    };
+    if var_name.is_empty() || var_name == "_" {
+        return;
+    }
+    for call_node in row_fetch_calls(value) {
+        record_row_binding(&var_name, call_node, bytes, state);
+    }
+}
+
+fn is_member_like_target(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "member_expression"
+            | "subscript_expression"
+            | "attribute"
+            | "subscript"
+            | "selector_expression"
+            | "index_expression"
+            | "field_expression"
+            | "field_access"
+            | "element_reference"
+    )
+}
+
+/// The row-fetch calls a right-hand side can evaluate to: the call itself,
+/// or one per arm of `cond ? a : b` and `a ?? b` / `a || b`.
+fn row_fetch_calls(value: Node<'_>) -> Vec<Node<'_>> {
+    let node = unwrap_try_like(value);
+    match node.kind() {
+        "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            vec![node]
+        }
+        "ternary_expression" => ["consequence", "alternative"]
+            .iter()
+            .filter_map(|field| node.child_by_field_name(field))
+            .flat_map(row_fetch_calls)
+            .collect(),
+        "binary_expression" => {
+            let is_fallback = node
+                .child_by_field_name("operator")
+                .is_some_and(|op| matches!(op.kind(), "??" | "||"));
+            if !is_fallback {
+                return Vec::new();
+            }
+            ["left", "right"]
+                .iter()
+                .filter_map(|field| node.child_by_field_name(field))
+                .flat_map(row_fetch_calls)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Record one `ROW = CALL(args)` binding: the call's own line (not the
+/// declaration's, which differs for a call wrapped onto the next line) and
+/// the value-refs of its arguments.
+fn record_row_binding(var_name: &str, call_node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     let args = call_node
         .child_by_field_name("arguments")
         .map(named_children)
         .unwrap_or_default();
     let mut arg_refs: Vec<ValueRef> = Vec::new();
     for arg in args {
-        arg_refs.extend(extract_value_refs(arg, bytes));
+        arg_refs.extend(extract_value_refs(arg, bytes, state.request_roots.as_ref()));
     }
     let call_line = call_node.start_position().row + 1;
     state
         .row_population_data
-        .insert(var_name, (call_line, arg_refs));
+        .entry(var_name.to_string())
+        .or_default()
+        .push((call_line, arg_refs));
+}
+
+/// `const [a, b] = await Promise.all([A.find(x), B.find(y)])`: bind each
+/// name to the call at its own position.  Returns false when the right-hand
+/// side is not a plain `Promise.all` / `Promise.allSettled` over an array
+/// literal, so the caller falls back to the single-binding path.
+fn collect_promise_all_population(
+    pattern: Node<'_>,
+    value: Node<'_>,
+    bytes: &[u8],
+    state: &mut UnitState,
+) -> bool {
+    let call = unwrap_try_like(value);
+    if call.kind() != "call_expression" {
+        return false;
+    }
+    let callee = call_name(call, bytes);
+    if !matches!(callee.as_str(), "Promise.all" | "Promise.allSettled") {
+        return false;
+    }
+    let Some(array) = call
+        .child_by_field_name("arguments")
+        .and_then(|args| args.named_child(0))
+        .filter(|arg| arg.kind() == "array")
+    else {
+        return false;
+    };
+    if named_children(array)
+        .iter()
+        .any(|element| element.kind() == "spread_element")
+    {
+        return false;
+    }
+
+    // Pattern slots by position; holes (`[, b]`) advance the index.
+    let mut slots: Vec<Option<String>> = vec![None];
+    let mut cursor = pattern.walk();
+    for child in pattern.children(&mut cursor) {
+        if child.kind() == "," {
+            slots.push(None);
+        } else if child.is_named()
+            && let Some(last) = slots.last_mut()
+        {
+            *last = first_identifier_name(child, bytes);
+        }
+    }
+    for (slot, element) in slots.into_iter().zip(named_children(array)) {
+        let Some(name) = slot else {
+            continue;
+        };
+        for call_node in row_fetch_calls(element) {
+            record_row_binding(&name, call_node, bytes, state);
+        }
+    }
+    true
 }
 
 /// A3: record `let V = CALL(..)` (or `.await?` / `?` / reference
@@ -1685,7 +2223,10 @@ fn collect_self_actor_binding(
     if var_name.is_empty() {
         return;
     }
-    if value_is_self_actor_call(value, bytes, rules) {
+    // `const user = ctx.state.user` / `req.user` / `ctx.state.auth.user`
+    // copies the authenticated actor into a local.
+    if value_is_self_actor_call(value, bytes, rules) || value_is_self_actor_base_chain(value, bytes)
+    {
         state.self_actor_vars.insert(var_name);
     }
 }
@@ -1943,7 +2484,12 @@ fn value_is_session_provider_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             // `request.session`, plus the Koa `ctx.state` shape.
             matches!(
                 joined.as_str(),
-                "ctx.session" | "ctx.state" | "req.session" | "request.session" | "session"
+                "ctx.session"
+                    | "ctx.state"
+                    | "ctx.state.auth"
+                    | "req.session"
+                    | "request.session"
+                    | "session"
             )
         }
         "identifier" => {
@@ -2491,6 +3037,7 @@ fn is_self_scoped_session_base_text(base: &str) -> bool {
             | "ctx.session.currentUser"
             | "ctx.state.user"
             | "ctx.state.currentUser"
+            | "ctx.state.auth.user"
     )
 }
 
@@ -2656,7 +3203,7 @@ fn find_authorized_sql_call_in_chain<'tree>(
                 ) {
                     continue;
                 }
-                bind_arg_refs.extend(extract_value_refs(arg, bytes));
+                bind_arg_refs.extend(extract_value_refs(arg, bytes, None));
             }
         }
 
@@ -3023,6 +3570,14 @@ fn unwrap_try_like(node: Node<'_>) -> Node<'_> {
                 };
                 cur = inner;
             }
+            // Go `row, err := Fetch(..)`: the right-hand side is an
+            // expression list holding the one call.
+            "expression_list" if cur.named_child_count() == 1 => {
+                let Some(inner) = cur.named_child(0) else {
+                    return cur;
+                };
+                cur = inner;
+            }
             _ => return cur,
         }
     }
@@ -3070,8 +3625,8 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         return;
     }
 
-    let left_refs = extract_value_refs(left, bytes);
-    let right_refs = extract_value_refs(right, bytes);
+    let left_refs = extract_value_refs(left, bytes, state.request_roots.as_ref());
+    let right_refs = extract_value_refs(right, bytes, state.request_roots.as_ref());
 
     let (owner_ref, _self_ref) = match (
         pick_owner_field_ref(&left_refs),
@@ -3092,10 +3647,17 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
     let if_span = span(if_node);
     let condition_text = text(condition, bytes);
 
-    let (check_line, mut subjects) = match row_binding
-        .as_ref()
-        .and_then(|row| state.row_population_data.get(row).map(|v| (row, v)))
-    {
+    // The binding the check reads is the nearest fetch of the row above it.
+    let nearest_binding = row_binding.as_ref().and_then(|row| {
+        let bindings = state.row_population_data.get(row)?;
+        let nearest = bindings
+            .iter()
+            .filter(|(line, _)| *line <= if_line)
+            .max_by_key(|(line, _)| *line)
+            .or_else(|| bindings.first())?;
+        Some((row, nearest))
+    });
+    let (check_line, mut subjects) = match nearest_binding {
         Some((row, (row_line, arg_refs))) => {
             let mut subjects = arg_refs.clone();
             subjects.push(ValueRef {
@@ -3882,7 +4444,7 @@ fn collect_param_names(
             // Same shape over-fires on minio's `cmd/iam-*-store`
             // helpers and would on every Go ORM/DAO codebase.
             let type_is_bounded_scalar = type_node
-                .map(|t| is_go_bounded_scalar_type(t, bytes))
+                .map(|t| is_go_id_carrier_type(t, bytes))
                 .unwrap_or(false);
             let mut cursor = node.walk();
             for child in node.children_by_field_name("name", &mut cursor) {
@@ -3891,10 +4453,7 @@ fn collect_param_names(
                     if name.is_empty() || out.contains(&name) {
                         continue;
                     }
-                    if !include_id_like_typed
-                        && type_is_bounded_scalar
-                        && is_go_id_like_typed_param(&name)
-                    {
+                    if !include_id_like_typed && type_is_bounded_scalar && is_id_like_name(&name) {
                         continue;
                     }
                     out.push(name);
@@ -3989,7 +4548,7 @@ fn collect_param_names(
                     // path that was previously empty for handlers like
                     // `def get_dag_run(dag_id: str, dag_run_id: str,
                     // session)`).
-                    let is_id_like = is_python_id_like_typed_param(&name_text);
+                    let is_id_like = is_id_like_name(&name_text);
                     if !name_text.is_empty()
                         && !out.contains(&name_text)
                         && (include_id_like_typed || !is_id_like)
@@ -4025,7 +4584,7 @@ fn collect_param_names(
                     let name = text(pattern, bytes);
                     let drop_id_like = !include_id_like_typed
                         && is_ts_payload_incompatible_type(type_node, bytes)
-                        && is_python_id_like_typed_param(&name);
+                        && is_id_like_name(&name);
                     if !name.is_empty() && !out.contains(&name) && !drop_id_like {
                         out.push(name);
                     }
@@ -4058,26 +4617,19 @@ fn collect_param_names(
 ///
 /// Implementation note: tree-sitter-go's `qualified_type` exposes
 /// `package` (identifier) and `name` (type_identifier) as named fields.
-/// Pointer-wrapping is rare for these (they're already interfaces) but
-/// is handled defensively by descending through `pointer_type`.
+/// A `pointer_type` never matches: see the body.
 fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
-    let mut node = type_node;
-    // Strip a single layer of pointer indirection if present.
-    if node.kind() == "pointer_type" {
-        if let Some(inner) = node.child_by_field_name("type") {
-            node = inner;
-        } else if let Some(inner) = node.named_child(0) {
-            node = inner;
-        }
-    }
-    if node.kind() != "qualified_type" {
+    // The stdlib `context.Context` is an interface and is passed by value.
+    // A pointer to a type spelled `context.Context` is a framework's own
+    // request context (gitea's `*context.Context`), which carries the request.
+    if type_node.kind() != "qualified_type" {
         return false;
     }
-    let pkg = node
+    let pkg = type_node
         .child_by_field_name("package")
         .map(|n| text(n, bytes))
         .unwrap_or_default();
-    let name = node
+    let name = type_node
         .child_by_field_name("name")
         .map(|n| text(n, bytes))
         .unwrap_or_default();
@@ -4087,17 +4639,6 @@ fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
     )
 }
 
-/// Ascii-lowered id-shape predicate used by the Python typed-param
-/// fallback in `collect_param_names`.  Mirrors
-/// `auth_analysis::checks::is_id_like_name` (cannot share that fn
-/// directly without a cross-module dep), both must move in lockstep
-/// so the precondition gate and the param-extraction filter agree on
-/// what counts as id-like.
-fn is_python_id_like_typed_param(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
-}
-
 /// True iff a TypeScript parameter's type annotation names a
 /// **payload-incompatible** primitive: `number`, `bigint`, or
 /// `boolean`.  Same vocabulary as `cfg::params::ts_type_to_kind`'s
@@ -4105,9 +4646,7 @@ fn is_python_id_like_typed_param(name: &str) -> bool {
 /// `typed_bounded_vars` set that
 /// `auth_analysis::checks::is_typed_bounded_subject` reasons over; the
 /// three must move in lockstep (the cfg helper is `pub(super)` to its
-/// own module, so it cannot be shared directly, mirroring the
-/// `is_python_id_like_typed_param` / `is_go_id_like_typed_param`
-/// duplication above).
+/// own module, so it cannot be shared directly).
 ///
 /// Used by the TS arm of `collect_param_names` to decide whether an
 /// id-shaped parameter name is a caller-passed scope key (`userId:
@@ -4121,16 +4660,6 @@ fn is_ts_payload_incompatible_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
     matches!(stripped, "number" | "bigint" | "boolean")
 }
 
-/// Same shape predicate used by the Go typed-param fallback in
-/// `collect_param_names`.  Kept separate from the Python helper so the
-/// two recognisers can diverge if/when language-specific spellings
-/// emerge; the current vocabulary is the same canonical id-suffix
-/// set as `auth_analysis::checks::is_id_like_name`.
-fn is_go_id_like_typed_param(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
-}
-
 /// True iff `type_node` names a Go bounded primitive scalar:
 /// integer (`int*` / `uint*` / `byte` / `rune` / `uintptr`), floating
 /// point (`float32` / `float64`), `bool`, or `string`.  Used by the
@@ -4138,13 +4667,13 @@ fn is_go_id_like_typed_param(name: &str) -> bool {
 /// "id-like name + scalar type" DAO-helper shape and refuse to lift
 /// such params into `unit.params` for non-route units.
 ///
-/// Conservative scope: only bare `type_identifier` matches.  Pointer
-/// types (`*Foo`), generic types (`Map[K, V]`), qualified types
-/// (`pkg.Type`), and slice/array types (`[]T`) are framework or
+/// Conservative scope: only bare `type_identifier` matches here.  Pointer
+/// types (`*Foo`) and generic types (`Map[K, V]`) are framework or
 /// payload shapes, NOT bounded primitives, so they're left alone and
 /// the param keeps its name.  This keeps real handler shapes that
 /// happen to spell an id-like name on a complex type (`req
-/// *RequestWithID`) from being silently dropped.
+/// *RequestWithID`) from being silently dropped.  Named id types and
+/// slices or maps of scalars are covered by [`is_go_id_carrier_type`].
 fn is_go_bounded_scalar_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
     if type_node.kind() != "type_identifier" {
         return false;
@@ -4169,6 +4698,37 @@ fn is_go_bounded_scalar_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
             | "bool"
             | "string"
     )
+}
+
+/// True iff a Go parameter type is a value a caller passes in as an id:
+/// a bounded scalar, a named id newtype (`type EndpointID int`, spelled
+/// `portainer.EndpointID` or `TargetID`), or a slice, array, variadic or map
+/// built from those (`[]int64`, `...TargetID`, `map[int64]int64`).
+///
+/// A newtype whose own name is id-like is an identifier type, not a request
+/// object.  Route handlers keep every parameter, so real path params are
+/// unaffected.
+fn is_go_id_carrier_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
+    match type_node.kind() {
+        "type_identifier" => {
+            is_go_bounded_scalar_type(type_node, bytes) || is_id_like_name(&text(type_node, bytes))
+        }
+        "qualified_type" => type_node
+            .child_by_field_name("name")
+            .is_some_and(|name| is_id_like_name(&text(name, bytes))),
+        "slice_type" | "array_type" => type_node
+            .child_by_field_name("element")
+            .is_some_and(|element| is_go_id_carrier_type(element, bytes)),
+        "map_type" => {
+            type_node
+                .child_by_field_name("key")
+                .is_some_and(|key| is_go_id_carrier_type(key, bytes))
+                && type_node
+                    .child_by_field_name("value")
+                    .is_some_and(|value| is_go_id_carrier_type(value, bytes))
+        }
+        _ => false,
+    }
 }
 
 pub fn is_function_like(node: Node<'_>) -> bool {
@@ -4219,7 +4779,7 @@ pub fn call_site_from_node(node: Node<'_>, bytes: &[u8]) -> CallSite {
         let args = arg_nodes.iter().map(|arg| text(*arg, bytes)).collect();
         let args_value_refs = arg_nodes
             .iter()
-            .map(|arg| extract_value_refs(*arg, bytes))
+            .map(|arg| extract_value_refs(*arg, bytes, None))
             .collect();
         CallSite {
             name,
@@ -4281,7 +4841,17 @@ pub fn auth_check_from_call_site(
     })
 }
 
-pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
+/// Value-refs of the subtree rooted at `node`.
+///
+/// `roots` is the Go request-root set of the enclosing unit (`None` for every
+/// other language).  When present, accessor calls such as `Get`, `Query` and
+/// `Param` only count as request input on a receiver rooted at one of those
+/// names; see [`accessor_call_value_ref`].
+pub fn extract_value_refs(
+    node: Node<'_>,
+    bytes: &[u8],
+    roots: Option<&HashSet<String>>,
+) -> Vec<ValueRef> {
     match node.kind() {
         "member_expression"
         | "attribute"
@@ -4292,7 +4862,7 @@ pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
             subscript_value_ref(node, bytes).into_iter().collect()
         }
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
-            call_value_ref(node, bytes)
+            call_value_ref(node, bytes, roots)
                 .map(|value| vec![value])
                 .unwrap_or_else(|| {
                     let mut refs = Vec::new();
@@ -4300,12 +4870,16 @@ pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
                         let Some(child) = node.named_child(idx as u32) else {
                             continue;
                         };
-                        refs.extend(extract_value_refs(child, bytes));
+                        refs.extend(extract_value_refs(child, bytes, roots));
                     }
                     refs
                 })
         }
         "identifier"
+        // ES6 shorthand property (`{ where: { id } }`): the leaf is the
+        // identifier itself and has no named children, so without this arm
+        // the id never becomes a subject.
+        | "shorthand_property_identifier"
         // Ruby `@foo` instance variables and `@@foo` class variables are
         // leaves with no named children, so the catch-all recurse arm
         // would yield an empty subject set.  Surface them as Identifier
@@ -4343,7 +4917,7 @@ pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
                 .child_by_field_name("value")
                 .or_else(|| node.child_by_field_name("argument"))
             {
-                extract_value_refs(value, bytes)
+                extract_value_refs(value, bytes, roots)
             } else {
                 Vec::new()
             }
@@ -4354,14 +4928,18 @@ pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
                 let Some(child) = node.named_child(idx as u32) else {
                     continue;
                 };
-                refs.extend(extract_value_refs(child, bytes));
+                refs.extend(extract_value_refs(child, bytes, roots));
             }
             refs
         }
     }
 }
 
-fn call_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
+fn call_value_ref(
+    node: Node<'_>,
+    bytes: &[u8],
+    roots: Option<&HashSet<String>>,
+) -> Option<ValueRef> {
     let callee = call_name(node, bytes);
     let args = node
         .child_by_field_name("arguments")
@@ -4369,7 +4947,7 @@ fn call_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
         .unwrap_or_default();
     let chain = member_chain(node, bytes);
 
-    if let Some(value) = accessor_call_value_ref(node, &callee, &chain, &args, bytes) {
+    if let Some(value) = accessor_call_value_ref(node, &callee, &chain, &args, bytes, roots) {
         return Some(value);
     }
 
@@ -4755,6 +5333,13 @@ pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
 
 pub fn callee_name(node: Node<'_>, bytes: &[u8]) -> String {
     match node.kind() {
+        // tree-sitter-typescript parses `await api.get<T>(url)` with the
+        // `await` on the callee, so the call's function is an
+        // `await_expression`.
+        "await_expression" => node
+            .named_child(0)
+            .map(|inner| callee_name(inner, bytes))
+            .unwrap_or_else(|| text(node, bytes)),
         "identifier" | "property_identifier" | "constant" | "field_identifier" => text(node, bytes),
         "member_expression"
         | "attribute"
@@ -4839,7 +5424,11 @@ pub fn join_route_paths(prefix: &str, route: &str) -> String {
     }
 }
 
-fn call_receiver_subjects(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
+fn call_receiver_subjects(
+    node: Node<'_>,
+    bytes: &[u8],
+    roots: Option<&HashSet<String>>,
+) -> Vec<ValueRef> {
     let mut subjects = Vec::new();
     if let Some(receiver) = node
         .child_by_field_name("receiver")
@@ -4854,7 +5443,7 @@ fn call_receiver_subjects(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
             })
         })
     {
-        subjects.extend(extract_value_refs(receiver, bytes));
+        subjects.extend(extract_value_refs(receiver, bytes, roots));
     }
     subjects
 }
@@ -4961,6 +5550,7 @@ fn accessor_call_value_ref(
     chain: &[String],
     args: &[Node<'_>],
     bytes: &[u8],
+    roots: Option<&HashSet<String>>,
 ) -> Option<ValueRef> {
     let method = bare_method_name(callee);
     let field = args
@@ -4985,6 +5575,16 @@ fn accessor_call_value_ref(
         }
         _ => None,
     }?;
+
+    // Go reuses `Get`, `Query` and `Param` for caches, header maps, ORMs and
+    // URL values.  They are request input only when the receiver is rooted at
+    // the request or a framework request context.
+    if let Some(roots) = roots
+        && source_kind != ValueSourceKind::TokenField
+        && !roots.contains(go_scope::callee_root(callee))
+    {
+        return None;
+    }
 
     let normalized_field = field
         .or_else(|| {
@@ -5891,7 +6491,7 @@ export async function handleGet({ id }: { id: string }) {
         // anchor at the call site, not the let line.  In this fixture
         // both are on the same line so the back-dating is invisible
         // here, the assertion is that the entry exists.
-        assert!(webhook_pop.0 > 0);
+        assert!(webhook_pop[0].0 > 0);
 
         let owner_check = unit
             .auth_checks

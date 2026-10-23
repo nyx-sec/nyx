@@ -1,0 +1,15 @@
+{
+  "required_findings": [
+    {
+      "id_prefix": "js.auth.missing_ownership_check",
+      "min_count": 1
+    }
+  ],
+  "forbidden_findings": [],
+  "performance_expectations": {
+    "max_ms_no_index": 1000,
+    "max_ms_index_cold": 1500,
+    "max_ms_index_warm": 500,
+    "ci_mode": "lenient"
+  }
+}

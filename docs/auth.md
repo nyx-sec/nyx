@@ -21,6 +21,44 @@ Handlers registered through attribute macros (`#[get("/path")]`, `#[routes::path
 
 `<entity>.id` / `<entity>.pk` is not flagged when `<entity>` is a unit parameter named after a multi-tenant scope primitive: `organization` / `org`, `project`, `team`, `workspace`, `tenant`, `account`, `community`, `group`, `repository` / `repo`, `company`. The argument represents the caller's scope, not a user-controlled target, so internal helpers like `def get_environments(request, organization): Environment.objects.filter(organization_id=organization.id, ...)` inherit the caller's authorization. Other field names (`.name`, `.slug`) still flag, and `user` / `member` / `actor` are deliberately excluded; those are handled by the actor-context recogniser.
 
+## What counts as an identifier
+
+A subject is a scoped id when its name reads as one: `id`, `user_id`, `userId`, `userID`, `UserIDs`, `userid`, `uuid`. The match is made on word boundaries, so ordinary words that end in the letters "id" (`grid`, `valid`, `paid`, `android`, `void`, `fluid`) are not ids. A single lowercase token such as `docid` is accepted unless the whole word is plain English; the list lives in [`naming.rs`](https://github.com/nyx-sec/nyx/blob/master/src/auth_analysis/naming.rs).
+
+A `uid` is treated as a possible schema selector. Strapi, for one, passes a content-type UID such as `api::article.article` to `strapi.getModel(uid)` and `db.query(uid)`. Outside a route handler a bare `uid` is not a subject and a `uid` parameter does not make a helper an entry point. In a route handler, or when it is read off a request chain, it stays a subject.
+
+## Go: request roots and package names
+
+`Get`, `Query`, `Param` and friends are user input only on the request. For Go the extractor collects the parameters and receiver whose type is `*http.Request`, a framework context (`*gin.Context`, `echo.Context`, `*fiber.Ctx`, `*context.APIContext`, a package-local `*Context`) and the locals copied from them (`q := r.URL.Query()`, `repo := ctx.Repo.Repository`). A `cache.Get("k")`, `resp.Header.Get("ETag")` or `db.Query(sql)` on anything else does not open the function as a request entry point.
+
+The same set makes request-context chains readable:
+
+- `ctx.Doer.ID` (also `User`, `SignedUser`) is the signed-in user.
+- `ctx.Repo.Repository.ID`, `ctx.Org.Organization.ID`, `ctx.Package.Owner.ID` are the repo, organisation or package owner the router resolved from the URL and checked before the handler ran. They are scope, not foreign ids. A chain that goes through request payload (`ctx.Req.Form.ID`) is not.
+- A call that also passes a scope id, such as `GetLabelInRepoByID(ctx, repo.ID, labelID)`, is confined to that scope and is not flagged. The unscoped `GetLabelByID(ctx, labelID)` still is. This co-subject rule applies to every language, next to the existing actor co-subject rule.
+
+A selector rooted at an imported package (`common.LDAPUID`, `grid.GetByteBuffer()`) or at a file-level const names a declaration and is never a per-request value. A parameter or local with the same name shadows it, so a `event *Event` parameter next to an `event` import is still a subject.
+
+Values that cannot be a data-layer client are not sinks: an id or a collection of ids (`uniqueIDs.Remove(0)`, `r.configVersionID.Load()`), `make`/map/slice/`sync`/`atomic`/`url.Values`/set locals, the standard-library helper packages (`slices`, `sort`, `strings`, ...), request data fields (`r.Header.Add`, `r.Form.Get`), and router registrations (`m.Get("/blob/{sha}", handler)`).
+
+Internal helpers whose id parameters have a named id type (`portainer.EndpointID`, `...TargetID`) or are slices and maps of ids are treated like the bounded-scalar helpers above. A Go `row, err := Fetch(...)` records the row, so a permission check on `row` after the fetch covers the fetch, as in the other languages.
+
+## JavaScript and TypeScript
+
+- **Browser code is skipped.** A unit is browser code when its file starts with `'use client'`, it is named or calls like a React hook (`useState`, `useSidebarLabel`), it calls a binding imported from a browser-only module (`react-query`, `swr`, `mobx-react`, `react-dom`, `@angular/*`, ...), or it is a synchronous function that builds JSX. A file that imports a web framework or a database client is never browser code. An `async` App Router server component has no hooks and no directive, so it stays in scope.
+- **HTTP clients are not queries.** `axios.delete(`/api/todos/${id}`)` and `api.put(url, body)` are requests. Outside a route handler, in a file that is not a server file, they are not checked; the check belongs on the server end.
+- **Shorthand properties** count: `where: { id }` carries `id`.
+- **Array predicates** (`providers.find((p) => p.id === providerId)`) are not reads, and a function-literal argument contributes no subjects to the call that receives it.
+- **Fetch then authorize** survives a later field write, a reassignment, sibling blocks that declare the same name, a `Promise.all` destructure and a `??`/ternary right-hand side. Each binding of a name is kept, so an authorize call on the row covers every fetch of it.
+- **Actors**: `const { user } = ctx.state.auth`, `const user = ctx.state.user` and `req.session.userId` are the caller. `user.teamId`, `organizationId`, `tenantId` and `accountId` on a recognised actor are the caller's own tenant. `workspaceId` and `groupId` are not, since a user can belong to several.
+- **Route-level middleware.** Express, Koa, Fastify, Gin and Echo routes copy their authorization-bearing middleware onto the handler as a route-level check, the way the decorator frameworks do. A path-less `router.use(mw)` guards the routes registered on that router after it. A handler registered on several routes keeps only the checks every registration has. Login-only middleware never suppresses an ownership finding.
+- **Handlers that are not top-level functions** are analysed: `exports.remove = (req, res) => ..`, `module.exports.show = ..`, `module.exports = { update(req, res) {} }` and methods of an undecorated class. Decorated classes (NestJS) are left out because their guards live in decorators the pass does not read yet. Routers can have any name when they are bound from `express()`, `express.Router()` or `new Router()`.
+- Sequelize `destroy`, `bulkDestroy` and `upsert` are writes. Schema registry lookups (`strapi.getModel`, `getContentType`) are not reads.
+
+## Framework detection per language
+
+The project manifests list frameworks for several languages at once, and React is a browser library. An extractor for framework X runs on a file unless the manifests name some other server framework for the file's language. A Next.js repo (`next` and `react`, no Express) still gets the Express, Koa and Fastify route extractors, and a FastAPI backend with a UI `package.json` that lists only React still gets the Flask and FastAPI extractor.
+
 ## Project-level web-framework gate (Rust)
 
 In Rust, the `context_inputs` and param-name arms of the user-input heuristic are gated by a project-level web-framework signal. The signal is three-valued:

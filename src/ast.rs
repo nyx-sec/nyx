@@ -7220,10 +7220,9 @@ fn vendored_skip_ignores_directories_above_the_scan_root() {
 #[test]
 fn go_test_files_report_no_auth_findings_and_are_downgraded() {
     let dir = tempfile::tempdir().unwrap();
-    let src = "package integration\n\nimport (\n\t\"testing\"\n\n\t\"example.com/models/packages\"\n)\n\n\
-               func TestPackageConan(t *testing.T) {\n\
-               \tresp := MakeRequest(t, nil, 200)\n\
-               \tloc := resp.Header().Get(\"Location\")\n\
+    let src = "package integration\n\nimport (\n\t\"net/http\"\n\t\"testing\"\n\n\t\"example.com/models/packages\"\n)\n\n\
+               func TestPackageConan(t *testing.T, req *http.Request) {\n\
+               \tloc := req.Header.Get(\"Location\")\n\
                \t_ = loc\n\
                \tpvs, _ := packages.GetVersionsByPackageType(t.Context(), 1, packages.TypeConan)\n\
                \tpfs, _ := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)\n\

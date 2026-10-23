@@ -111,6 +111,12 @@ impl AuthAnalysisRules {
         self.finding_prefix == "js.auth"
     }
 
+    /// True for the Go auth family (finding prefix `go.auth`).
+    #[inline]
+    pub fn is_go_lang(&self) -> bool {
+        self.finding_prefix == "go.auth"
+    }
+
     /// Last path segment of a type name (e.g. `std::collections::HashMap` → `HashMap`).
     /// Accepts either `::` or `.` as the path separator.
     fn type_last_segment(ty: &str) -> &str {
@@ -285,6 +291,16 @@ impl AuthAnalysisRules {
         if self.callee_has_non_sink_global_receiver(callee)
             || self.callee_has_non_sink_method(callee)
         {
+            return Some(SinkClass::InMemoryLocal);
+        }
+        // An id, or a collection of ids, is a value and never a data-layer
+        // client: `uniqueIDs.Remove(0)`, `r.configVersionID.Load()`.
+        if receiver_is_id_value(callee) {
+            return Some(SinkClass::InMemoryLocal);
+        }
+        // Go request data: `r.Header.Add(..)`, `r.Form.Get(..)`.  Header maps,
+        // form values and URLs are read off the request, not a store.
+        if self.is_go_lang() && receiver_passes_through_request_data(callee) {
             return Some(SinkClass::InMemoryLocal);
         }
         let first = first_receiver_segment(callee);
@@ -995,7 +1011,18 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             ],
             non_sink_receiver_types: Vec::new(),
             non_sink_receiver_name_prefixes: Vec::new(),
-            non_sink_global_receivers: Vec::new(),
+            // Standard-library packages whose functions work on values the
+            // caller already holds (`slices.Delete`, `sort.Find`,
+            // `maps.Keys`, `atomic.AddInt64`).  A call rooted at one of
+            // these is never a data-layer operation.
+            non_sink_global_receivers: [
+                "slices", "maps", "sort", "strings", "bytes", "strconv", "atomic", "fmt", "math",
+                "errors", "filepath", "path", "unicode", "utf8", "regexp", "base64", "hex",
+                "binary", "bits", "cmp", "reflect", "big", "time",
+            ]
+            .iter()
+            .map(|name| name.to_string())
+            .collect(),
             non_sink_method_names: Vec::new(),
             realtime_receiver_prefixes: Vec::new(),
             outbound_network_receiver_prefixes: Vec::new(),
@@ -1328,6 +1355,10 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "invite".into(),
                 "run".into(),
                 "accept".into(),
+                // Sequelize `Model.destroy({ where })`, `Model.upsert(row)`.
+                "destroy".into(),
+                "bulkDestroy".into(),
+                "upsert".into(),
             ],
             read_indicator_names: vec![
                 "findById".into(),
@@ -1427,6 +1458,17 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "getItem".into(),
                 "setItem".into(),
                 "removeItem".into(),
+                // Schema and model registry lookups (`strapi.getModel(uid)`,
+                // `strapi.getContentType(uid)`) return metadata about a model,
+                // not a row, and `createQueryBuilder(uid)` only builds a
+                // query.
+                "getModel".into(),
+                "getModels".into(),
+                "getContentType".into(),
+                "getContentTypes".into(),
+                "getComponent".into(),
+                "getComponents".into(),
+                "createQueryBuilder".into(),
             ],
             realtime_receiver_prefixes: Vec::new(),
             outbound_network_receiver_prefixes: Vec::new(),
@@ -1555,6 +1597,47 @@ pub fn receiver_is_chained_call(callee: &str) -> bool {
         return false;
     };
     receiver.contains('(')
+}
+
+/// True when the receiver's last segment is named like an id or a collection
+/// of ids (`uniqueIDs.Remove`, `r.configVersionID.Load`).  Chained-call
+/// receivers are left to the other rules.
+fn receiver_is_id_value(callee: &str) -> bool {
+    let Some((receiver, _method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    if receiver.contains('(') {
+        return false;
+    }
+    let last = receiver.rsplit('.').next().unwrap_or(receiver);
+    crate::auth_analysis::naming::is_id_like_name(last)
+}
+
+/// Go struct fields that hold request data.  A call made through one of them
+/// (`r.Form.Get`, `req.Header.Add`, `r.PostForm.Set`) reads or edits the
+/// request, not a data store.
+const GO_REQUEST_DATA_FIELDS: &[&str] = &[
+    "Header",
+    "Form",
+    "PostForm",
+    "MultipartForm",
+    "Trailer",
+    "URL",
+];
+
+fn receiver_passes_through_request_data(callee: &str) -> bool {
+    let Some((receiver, _method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    // Chained-call receivers (`r.URL.Query().Get`) already skip the verb
+    // fallback in `classify_sink_class`.
+    if receiver.contains('(') {
+        return false;
+    }
+    receiver
+        .split('.')
+        .skip(1)
+        .any(|segment| GO_REQUEST_DATA_FIELDS.contains(&segment))
 }
 
 /// True when the callee has a non-chained receiver dot, i.e. an actual

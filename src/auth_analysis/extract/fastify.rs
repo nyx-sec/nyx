@@ -15,8 +15,7 @@ pub struct FastifyExtractor;
 impl AuthExtractor for FastifyExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         matches!(lang, "javascript" | "typescript")
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Fastify))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Fastify))
     }
 
     fn extract(

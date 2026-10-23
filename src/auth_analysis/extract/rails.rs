@@ -17,9 +17,7 @@ pub struct RailsExtractor;
 
 impl AuthExtractor for RailsExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
-        lang == "ruby"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Rails))
+        lang == "ruby" && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Rails))
     }
 
     fn requires_top_level_units(&self) -> bool {

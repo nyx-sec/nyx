@@ -1,0 +1,9 @@
+{
+  "name": "auth-analysis-next-react",
+  "private": true,
+  "dependencies": {
+    "next": "14.2.3",
+    "react": "18.2.0",
+    "@prisma/client": "5.0.0"
+  }
+}

@@ -82,6 +82,25 @@ fn auth_analysis_noise_frameworks() {
     validate_expectations(&diags, &dir);
 }
 
+/// A Next.js manifest lists `next` and `react` and no Express, Koa or Fastify.
+/// The JS route extractors must still run, so the API route's unchecked
+/// delete is reported.
+#[test]
+fn auth_analysis_next_react_manifest_keeps_js_extractors() {
+    let dir = fixture_path("auth_analysis_next_react");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// A Python backend with a UI `package.json` that lists only React.  The
+/// FastAPI extractor must still read the route dependency.
+#[test]
+fn auth_analysis_python_backend_with_ui_manifest_keeps_fastapi_extractor() {
+    let dir = fixture_path("auth_analysis_python_ui_manifest");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 #[test]
 fn auth_analysis_python_frameworks_integration() {
     let dir = fixture_path("auth_analysis_python_frameworks_integration");

@@ -19,8 +19,7 @@ pub struct DjangoExtractor;
 impl AuthExtractor for DjangoExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "python"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Django))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Django))
     }
 
     fn extract(
