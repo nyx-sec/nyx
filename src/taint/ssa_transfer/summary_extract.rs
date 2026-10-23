@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Maximum number of parameters to probe for summary extraction.
 /// Functions with more params fall back to legacy `FuncSummary`.
-const MAX_PROBE_PARAMS: usize = 8;
+pub(crate) const MAX_PROBE_PARAMS: usize = 8;
 
 /// Whether return value `v` provably evaluates to a compile-time constant —
 /// its def is a `Const`, or an `Assign`/`Phi` whose every operand traces

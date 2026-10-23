@@ -44,7 +44,7 @@ use state::{
 pub(crate) use state::{
     push_origin_bounded, record_engine_note, reset_body_engine_notes, take_body_engine_notes,
 };
-pub(crate) use summary_extract::detect_path_confined_return;
+pub(crate) use summary_extract::{MAX_PROBE_PARAMS, detect_path_confined_return};
 pub use summary_extract::{extract_ssa_func_summary, extract_ssa_func_summary_full};
 
 use crate::abstract_interp::AbstractState;
