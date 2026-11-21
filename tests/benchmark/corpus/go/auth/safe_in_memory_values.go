@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"sync/atomic"
@@ -24,7 +25,7 @@ func reload(r *rootCommand, req *http.Request) int32 {
 func GetObjectHandler(w http.ResponseWriter, r *http.Request) {
 	vid := r.Form.Get(xhttp.VersionID)
 	r.Header.Add(xhttp.HeaderRequestID, vid)
-	w.Write([]byte(vid))
+	w.Write([]byte(html.EscapeString(vid)))
 }
 
 func PossibleUsers(req *http.Request, ids []int64, userID int64) {
