@@ -150,11 +150,31 @@ fn check_ownership_gaps(
                 // pattern is rare and would need its own rule.  The
                 // owner-eq common case removes ~70 cal.com FPs and
                 // matches the canonical Express / TRPC scoping idiom.
-                let has_actor_co_subject = op
-                    .subjects
-                    .iter()
-                    .any(|s| is_actor_context_subject(s, unit));
+                //
+                // The caller as a whole object (`owner=request.user`,
+                // `author: current_user`) pins a lookup, but in a write it is
+                // just a field being stored (`create(project_id=pid,
+                // created_by=request.user)`), so it counts as the owner pin
+                // only for a lookup callee.
+                let lookup = is_lookup_callee(&op.callee);
+                //
+                // The receiver chain of the callee is not a co-subject:
+                // `req.user.constructor.findById(id)` and
+                // `req.user.createMembership(..)` start at the caller, but
+                // whether that scopes the call is for `is_owner_scoped_callee`
+                // to say, by what the method does.
+                let has_actor_co_subject = op.subjects.iter().any(|s| {
+                    !is_callee_receiver(s, &op.callee)
+                        && is_actor_context_subject(s, unit)
+                        && (lookup || !is_whole_actor_object(s))
+                });
                 if has_actor_co_subject {
+                    continue;
+                }
+                // Association scoping: `current_user.notes.find(params[:id])`,
+                // `request.user.documents.filter(id=doc_id)`.  The query
+                // starts at the caller, so it can only return their rows.
+                if is_owner_scoped_callee(&op.callee) {
                     continue;
                 }
                 // Scope co-subject: the same call also binds the caller's
@@ -683,13 +703,23 @@ fn related_subject_base(subject: &ValueRef) -> Option<String> {
 }
 
 fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &str) -> bool {
-    is_id_like(subject)
+    (is_id_like(subject) || is_route_primary_key(subject, unit))
         && !is_actor_context_subject(subject, unit)
         && !is_const_bound_subject(subject, unit)
         && !is_typed_bounded_subject(subject, unit)
         && !is_caller_scope_entity_subject(subject, unit)
         && !is_package_level_subject(subject, unit)
         && !is_model_selector_subject(subject, unit, lang)
+}
+
+/// `pk`, the Django and DRF name for the row id a viewset action receives
+/// (`def destroy(self, request, pk=None)`).  Inside a route handler it is as
+/// much a request-supplied id as `doc_id`.  Elsewhere `pk` is too common a name
+/// in framework internals to count as one.
+fn is_route_primary_key(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    unit.kind == AnalysisUnitKind::RouteHandler
+        && subject.source_kind == ValueSourceKind::Identifier
+        && subject.name == "pk"
 }
 
 /// `uid`, `targetUid`, `componentUID` outside a route handler.  In Strapi and
@@ -954,6 +984,14 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
         return true;
     }
 
+    // A field named like an owner pin (`ownerId`, `createdBy`) is the caller's
+    // identity only when the caller supplied it.  `req.query.ownerId` or an
+    // `ownerId` route parameter is chosen by whoever sends the request, so
+    // pinning a query to it scopes nothing, and writing it reassigns the row.
+    if is_request_supplied_subject(subject, unit) {
+        return false;
+    }
+
     matches!(
         subject_identity_key(subject).as_deref(),
         Some(
@@ -966,6 +1004,36 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
                 | "updatedby"
         )
     )
+}
+
+/// True when the value comes from the request: a request param, body or query
+/// chain, a local copied from one, or a route handler's own bound parameter.
+fn is_request_supplied_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    if matches!(
+        subject.source_kind,
+        ValueSourceKind::RequestParam
+            | ValueSourceKind::RequestBody
+            | ValueSourceKind::RequestQuery
+    ) {
+        return true;
+    }
+    if let Some(chain) = unit.var_alias_chain.get(&subject.name) {
+        let root = chain.split('.').next().unwrap_or(chain);
+        if matches!(
+            root,
+            "req" | "request" | "params" | "body" | "query" | "input"
+        ) {
+            return true;
+        }
+    }
+    // A bare identifier that is a parameter of a route handler is bound from
+    // the path, query or body by the framework, unless the framework fills it
+    // in itself (a `Depends(..)` default, a custom parameter decorator, an
+    // `@AuthenticationPrincipal`).
+    unit.kind == AnalysisUnitKind::RouteHandler
+        && subject.source_kind == ValueSourceKind::Identifier
+        && !unit.injected_params.contains(&subject.name)
+        && unit.params.iter().any(|param| param == &subject.name)
 }
 
 /// `<root>.Doer`, `<root>.User`, `<root>.Session.User`: the authenticated
@@ -1014,7 +1082,7 @@ fn is_self_actor_id_field(field: &str) -> bool {
     let lower = field.to_ascii_lowercase();
     matches!(
         lower.as_str(),
-        "id" | "user_id" | "userid" | "uid"
+        "id" | "_id" | "pk" | "uuid" | "user_id" | "userid" | "uid"
             // Self-publish / self-channel fields: when the receiver
             // is bound from `require_auth(..)`, `user.email` /
             // `user.username` / `user.handle` reference the actor's
@@ -1042,15 +1110,151 @@ fn subject_identity_key(subject: &ValueRef) -> Option<String> {
 }
 
 fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
+    // The caller as an object (`owner=current_user`, `owner: req.user`).  A
+    // bare `current_user` is an identifier, not a session chain, so this does
+    // not depend on the source kind.
+    if is_actor_object(&subject.name) {
+        return true;
+    }
+    if subject.source_kind != ValueSourceKind::Session {
+        return false;
+    }
     // `req.session.user.id` has base `req.session.user`; `req.session.userId`
     // has base `req.session` and the whole chain is the entry the allowlist
     // names.  Match either.
-    subject.source_kind == ValueSourceKind::Session
-        && (subject
-            .base
-            .as_deref()
-            .is_some_and(is_self_scoped_session_base)
-            || is_self_scoped_session_base(&subject.name))
+    if subject
+        .base
+        .as_deref()
+        .is_some_and(is_self_scoped_session_base)
+        || is_self_scoped_session_base(&subject.name)
+    {
+        return true;
+    }
+    // One of the caller's own identifiers: `current_user.id`, `request.user.pk`.
+    subject.base.as_deref().is_some_and(is_actor_object)
+        && subject.field.as_deref().is_some_and(is_self_actor_id_field)
+}
+
+/// Chains that name the authenticated caller itself.  `current_user` and
+/// `current_account` are the Devise / Flask-Login / Rails helpers; the rest are
+/// the request-bound user of Django, Express, Koa and Flask.
+fn is_actor_object(chain: &str) -> bool {
+    matches!(
+        chain,
+        "current_user"
+            | "current_account"
+            | "current_member"
+            | "g.user"
+            | "self.request.user"
+            | "req.user"
+            | "request.user"
+            | "req.currentUser"
+            | "request.currentUser"
+            | "ctx.state.user"
+            | "ctx.state.currentUser"
+            | "ctx.state.auth.user"
+            | "ctx.session.user"
+            | "session.user"
+    )
+}
+
+/// The caller as a whole object (`current_user`, `request.user`) rather than
+/// one of its fields.
+fn is_whole_actor_object(subject: &ValueRef) -> bool {
+    is_actor_object(&subject.name)
+}
+
+/// True when the subject is (a prefix of) the callee's own receiver chain:
+/// `req.user` and `req.user.documents` for `req.user.documents.find`.
+fn is_callee_receiver(subject: &ValueRef, callee: &str) -> bool {
+    callee
+        .strip_prefix(subject.name.as_str())
+        .is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// True when the callee's method looks rows up or removes them by a key or a
+/// filter (`find`, `find_by!`, `get`, `getPosts`, `filter`, `where`, `first`,
+/// `findOne`, `updateOne`, `delete_widget`) and so takes the owner pin as part
+/// of the query.  Creating, linking and updating methods are not lookups: their
+/// arguments are the data being written.
+fn is_lookup_callee(callee: &str) -> bool {
+    let method = callee.rsplit('.').next().unwrap_or(callee);
+    let lower = method
+        .trim_end_matches(['!', '?'])
+        .trim_end_matches("()")
+        .to_ascii_lowercase();
+    if lower.contains("create") || lower.starts_with("get_or_") {
+        return false;
+    }
+    lower.starts_with("find")
+        || lower.starts_with("get")
+        || lower.starts_with("filter")
+        // Removing by key through a caller-rooted association
+        // (`request.user.dashboard.delete_widget(id)`) selects within it.
+        || lower.starts_with("delete")
+        || lower.starts_with("destroy")
+        || lower.starts_with("remove")
+        || matches!(
+            lower.as_str(),
+            "where" | "first" | "last" | "take" | "fetch" | "exists" | "one" | "one_or_none"
+                | "all"
+        )
+        // Filter-taking writes: the first argument selects the rows.
+        || matches!(
+            lower.as_str(),
+            "update_one" | "updateone" | "update_many" | "updatemany" | "delete_one"
+                | "deleteone" | "delete_many" | "deletemany"
+        )
+}
+
+/// True when the callee reads through a scope that only holds what the caller
+/// may reach: `current_user.notes.find`, `request.user.documents.filter`,
+/// `req.user.getPosts`, Pundit's `policy_scope(Note).find` and CanCanCan's
+/// `Note.accessible_by(ability).find`.
+///
+/// The scope proves which rows a lookup can return.  It proves nothing about
+/// an id passed as data, so a creating or linking method
+/// (`current_user.memberships.create(project_id: id)`, `req.user.setRoles(ids)`)
+/// is not covered, and neither is a lookup that leaves the caller for its
+/// model (`current_user.class.find(id)`).
+fn is_owner_scoped_callee(callee: &str) -> bool {
+    let Some((receiver, _method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    // The lookup is either the callee itself (`current_user.notes.find`) or an
+    // earlier call of the chain that the callee then acts on
+    // (`current_user.notes.find(id).destroy`).
+    if !is_lookup_callee(callee) && !receiver.split('.').any(is_lookup_callee) {
+        // `current_user.update(..)` changes the caller's own record, which is
+        // the caller's to change.
+        return is_actor_object(receiver)
+            && matches!(
+                callee
+                    .rsplit('.')
+                    .next()
+                    .map(|m| m.trim_end_matches(['!', '?'])),
+                Some("update" | "update_attributes" | "save" | "touch")
+            );
+    }
+    // A chain (`current_user.notes.where(..).find`) is still rooted at the
+    // caller as long as its first segments name it.
+    let mut prefix_end = 0;
+    let mut scoped = false;
+    for (idx, segment) in receiver.split('.').enumerate() {
+        let name = segment.trim_end_matches("()");
+        if scoped && matches!(name, "class" | "klass" | "constructor" | "__class__") {
+            return false;
+        }
+        if !scoped && (name == "accessible_by" || (idx == 0 && name == "policy_scope")) {
+            scoped = true;
+        }
+        prefix_end += segment.len();
+        if !scoped && is_actor_object(&receiver[..prefix_end]) {
+            scoped = true;
+        }
+        prefix_end += 1;
+    }
+    scoped
 }
 
 fn is_self_scoped_session_base(base: &str) -> bool {
@@ -1071,6 +1275,8 @@ fn is_self_scoped_session_base(base: &str) -> bool {
             | "ctx.state.user"
             | "ctx.state.currentUser"
             | "ctx.state.auth.user"
+            | "g.user"
+            | "self.request.user"
             // The caller's own id from the session is self-scoped: fetching
             // your own record with it is not IDOR (only a foreign,
             // request-supplied id is). The `.user` forms above missed the
@@ -1413,6 +1619,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            injected_params: HashSet::new(),
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
@@ -2361,5 +2568,140 @@ mod tests {
         assert!(is_external_input_param_name_for_lang("uuid", "typescript"));
         // Other languages keep `uid` as an id.
         assert!(is_external_input_param_name("uid"));
+    }
+
+    #[test]
+    fn caller_objects_and_their_own_ids_are_actor_context() {
+        let unit = empty_unit();
+        // A bare `current_user` is an identifier, not a session chain.
+        for name in ["current_user", "current_account", "g.user", "request.user"] {
+            assert!(
+                is_actor_context_subject(&plain(name), &unit),
+                "whole object {name}"
+            );
+        }
+        for (base, field) in [
+            ("current_user", "id"),
+            ("current_user", "pk"),
+            ("g.user", "id"),
+            ("request.user", "pk"),
+            ("req.user", "_id"),
+        ] {
+            assert!(
+                is_actor_context_subject(&session_member(base, field), &unit),
+                "{base}.{field}"
+            );
+        }
+        // Other fields of `current_user` are not the caller's identity.
+        assert!(!is_actor_context_subject(
+            &session_member("current_user", "organization_id"),
+            &unit
+        ));
+        // Another object with an id is not the caller.
+        assert!(!is_actor_context_subject(&member("note", "id"), &unit));
+    }
+
+    #[test]
+    fn owner_scoped_callees_start_at_the_caller_or_a_policy_scope() {
+        use super::is_owner_scoped_callee as scoped;
+        assert!(scoped("current_user.notes.find"));
+        assert!(scoped("current_user.notes.where().find"));
+        assert!(scoped("request.user.documents.filter"));
+        assert!(scoped("req.user.getPosts"));
+        assert!(scoped("current_account.projects.find_by!"));
+        assert!(scoped("policy_scope.find"));
+        assert!(scoped("Note.accessible_by.find"));
+        // The scope proves which rows a lookup returns, not that an id passed
+        // as data may be linked to the caller.
+        assert!(!scoped("current_user.memberships.create"));
+        assert!(!scoped("req.user.setRoles"));
+        assert!(!scoped("request.user.favorites.create"));
+        assert!(!scoped("current_user.notes.find_or_create_by"));
+        assert!(scoped("current_user.notes.destroy"));
+        assert!(scoped("request.user.dashboard.delete_widget"));
+        assert!(scoped("current_user.update!"));
+        assert!(scoped("current_user.save"));
+        assert!(!scoped("current_user.notes.update"));
+        // A lookup earlier in the chain is what selects the row.
+        assert!(scoped("current_user.notes.find().destroy"));
+        // A lookup that leaves the caller for its model is unscoped.
+        assert!(!scoped("current_user.class.find"));
+        assert!(!scoped("req.user.constructor.findById"));
+        // A view's loaded object is only as scoped as the queryset it came
+        // from, which this check cannot see.
+        assert!(!scoped("self.object.items.filter"));
+        assert!(!scoped("Note.find"));
+        assert!(!scoped("notes.find"));
+        assert!(!scoped("find"));
+        // The user's name in a later segment does not scope the query.
+        assert!(!scoped("Note.current_user.find"));
+    }
+
+    #[test]
+    fn request_supplied_owner_pins_are_not_actor_context() {
+        let mut unit = empty_unit();
+        let owner_from = |kind: ValueSourceKind| ValueRef {
+            source_kind: kind,
+            ..member("req.query", "ownerId")
+        };
+        assert!(!is_actor_context_subject(
+            &owner_from(ValueSourceKind::RequestQuery),
+            &unit
+        ));
+        assert!(!is_actor_context_subject(
+            &owner_from(ValueSourceKind::RequestBody),
+            &unit
+        ));
+        // A local copied from a request chain.
+        unit.var_alias_chain
+            .insert("ownerId".to_string(), "req.query.ownerId".to_string());
+        assert!(!is_actor_context_subject(&plain("ownerId"), &unit));
+        // A route handler's own `owner_id` parameter.
+        let mut route = empty_unit();
+        route.kind = AnalysisUnitKind::RouteHandler;
+        route.params.push("owner_id".to_string());
+        assert!(!is_actor_context_subject(&plain("owner_id"), &route));
+        // A local `ownerId` that came from nowhere visible keeps its meaning.
+        assert!(is_actor_context_subject(&plain("ownerId"), &empty_unit()));
+        assert!(is_actor_context_subject(
+            &member("doc", "createdBy"),
+            &empty_unit()
+        ));
+    }
+
+    #[test]
+    fn framework_injected_params_are_not_request_supplied() {
+        let mut route = empty_unit();
+        route.kind = AnalysisUnitKind::RouteHandler;
+        route.params.push("currentUserId".to_string());
+        // A bare handler parameter is request-supplied ..
+        assert!(!is_actor_context_subject(&plain("currentUserId"), &route));
+        // .. unless the framework injects it.
+        route.injected_params.insert("currentUserId".to_string());
+        assert!(is_actor_context_subject(&plain("currentUserId"), &route));
+    }
+
+    #[test]
+    fn whole_actor_object_pins_lookups_only() {
+        use super::{is_lookup_callee, is_whole_actor_object};
+        let unit = empty_unit();
+        let subject = plain("request.user");
+        assert!(is_whole_actor_object(&subject));
+        assert!(is_actor_context_subject(&subject, &unit));
+        assert!(is_lookup_callee("Document.objects.filter"));
+        assert!(is_lookup_callee("Doc.findOne"));
+        assert!(is_lookup_callee("Doc.updateOne"));
+        assert!(!is_lookup_callee("Task.objects.create"));
+        assert!(!is_lookup_callee("Task.objects.get_or_create"));
+        assert!(!is_lookup_callee("Comment.create"));
+    }
+
+    #[test]
+    fn pk_is_an_id_inside_route_handlers_only() {
+        let helper = empty_unit();
+        assert!(!is_relevant_target_subject(&plain("pk"), &helper));
+        let mut route = empty_unit();
+        route.kind = AnalysisUnitKind::RouteHandler;
+        assert!(is_relevant_target_subject(&plain("pk"), &route));
     }
 }

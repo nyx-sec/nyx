@@ -294,6 +294,19 @@ static RUST_AUTH: &[AuthRule] = &[AuthRule {
     ],
 }];
 
+/// Boolean authentication predicates that count as a guard only when a branch
+/// condition tests them.  A call to one as a statement, or one whose result is
+/// stored, enforces nothing: `const authed = req.isAuthenticated();` leaves the
+/// handler open.  So these are kept out of [`auth_rules`], which also drives
+/// call-statement matching, and are consulted by condition checks alone.
+pub fn auth_condition_matchers(lang: Lang) -> &'static [&'static str] {
+    match lang {
+        // Passport.js `req.isAuthenticated()`.
+        Lang::JavaScript | Lang::TypeScript => &["isAuthenticated"],
+        _ => &[],
+    }
+}
+
 pub fn auth_rules(lang: Lang) -> &'static [AuthRule] {
     match lang {
         Lang::Go => GO_AUTH,

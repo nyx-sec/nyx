@@ -10,7 +10,9 @@ fire here.
 
 from uuid import UUID
 
+from .models import Invitation
+
 
 def persist_ti_state_change(*, task_instance_id: UUID, payload: dict, session) -> None:
-    if payload.get("kind") == "reschedule":
-        session.add({"id": task_instance_id, "data": payload})
+    invitation = Invitation.objects.get(token=payload["token"])
+    session.add({"id": task_instance_id, "data": invitation})

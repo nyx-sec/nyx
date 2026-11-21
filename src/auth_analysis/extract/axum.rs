@@ -1,7 +1,8 @@
 use super::AuthExtractor;
 use super::common::{
     attach_route_handler, call_name, call_site_from_node, call_sites_from_value,
-    function_definition_node, named_children, resolve_handler_node, string_literal_value, text,
+    function_definition_node, method_call_receiver, named_children, resolve_handler_node,
+    string_literal_value, text,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{
@@ -93,7 +94,7 @@ fn maybe_collect_route(
         return;
     };
 
-    let mut middleware_calls = inherited_layer_calls(node, bytes);
+    let mut middleware_calls = enclosing_layer_calls(node, bytes);
     middleware_calls.extend(spec.middleware_calls.clone());
     let guard_calls =
         guard_calls_for_handler(handler_node, &route_path, bytes, GuardFramework::Axum);
@@ -149,9 +150,7 @@ fn parse_method_router<'tree>(node: Node<'tree>, bytes: &[u8]) -> Option<MethodR
     }
 
     let function = node.child_by_field_name("function")?;
-    let receiver = function
-        .child_by_field_name("object")
-        .or_else(|| function.child_by_field_name("argument"))?;
+    let receiver = method_call_receiver(function)?;
     let mut spec = parse_method_router(receiver, bytes)?;
     match last.as_str() {
         "layer" | "route_layer" => {
@@ -179,42 +178,63 @@ fn axum_http_method(name: &str) -> Option<HttpMethod> {
     }
 }
 
-fn inherited_layer_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
-    let Some(function) = node.child_by_field_name("function") else {
-        return Vec::new();
-    };
-    let Some(receiver) = function
-        .child_by_field_name("object")
-        .or_else(|| function.child_by_field_name("argument"))
-    else {
-        return Vec::new();
-    };
-    collect_layer_calls(receiver, bytes)
+/// Layers that cover the route registered by `node`.
+///
+/// `Router::layer` and `Router::route_layer` wrap the routes added before the
+/// call, so the layers that cover a route are the ones applied further out in
+/// the same method chain:
+///
+/// ```ignore
+/// Router::new()
+///     .route("/a", get(a))            // covered by both layers
+///     .route_layer(from_fn(auth))
+///     .route("/b", get(b))            // covered by `audit` only
+///     .layer(from_fn(audit))
+/// ```
+///
+/// A layer written before the route (`Router::new().layer(L).route(..)`) wraps
+/// nothing and is not collected.
+fn enclosing_layer_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
+    chained_call_args_after(node, bytes, &["layer", "route_layer"])
 }
 
-fn collect_layer_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
-    if node.kind() != "call_expression" {
-        return Vec::new();
-    }
+/// The method call whose receiver is `node`: `.m(..)` in `node.m(..)`, with the
+/// method name.  `None` when `node` is not the receiver of a method call.
+fn method_call_on<'tree>(node: Node<'tree>, bytes: &[u8]) -> Option<(Node<'tree>, String)> {
+    let field = node
+        .parent()
+        .filter(|parent| parent.kind() == "field_expression")
+        .filter(|parent| parent.child_by_field_name("value") == Some(node))?;
+    let call = field
+        .parent()
+        .filter(|parent| parent.kind() == "call_expression")
+        .filter(|parent| parent.child_by_field_name("function") == Some(field))?;
+    let method = field
+        .child_by_field_name("field")
+        .map(|name| text(name, bytes))?;
+    Some((call, method))
+}
 
+/// Arguments of the `methods` calls chained after `node` on the same builder.
+/// Seen from the first `route` call, `a.route(..).layer(L).route(..)` yields
+/// `L` for `["layer"]`.
+pub(crate) fn chained_call_args_after(
+    node: Node<'_>,
+    bytes: &[u8],
+    methods: &[&str],
+) -> Vec<CallSite> {
     let mut calls = Vec::new();
-    let name = call_name(node, bytes);
-    if matches!(name.rsplit('.').next(), Some("layer" | "route_layer"))
-        && let Some(arguments) = node.child_by_field_name("arguments")
-    {
-        for arg in named_children(arguments) {
-            calls.extend(expanded_guard_call_sites(arg, bytes));
+    let mut current = node;
+    while let Some((call, method)) = method_call_on(current, bytes) {
+        if methods.contains(&method.as_str())
+            && let Some(arguments) = call.child_by_field_name("arguments")
+        {
+            for arg in named_children(arguments) {
+                calls.extend(expanded_guard_call_sites(arg, bytes));
+            }
         }
+        current = call;
     }
-
-    if let Some(function) = node.child_by_field_name("function")
-        && let Some(receiver) = function
-            .child_by_field_name("object")
-            .or_else(|| function.child_by_field_name("argument"))
-    {
-        calls.extend(collect_layer_calls(receiver, bytes));
-    }
-
     calls
 }
 

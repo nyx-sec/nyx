@@ -773,6 +773,189 @@ fn auth_check_before_sink_no_finding() {
     );
 }
 
+// ─── Authentication tests written in the condition ─────────────────────
+
+fn auth_gap_findings(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<CfgFinding> {
+    parse_and_analyse(&auth::AuthGap, src, lang_str, ts_lang)
+        .into_iter()
+        .filter(|f| f.rule_id == "cfg-auth-gap")
+        .collect()
+}
+
+fn js() -> Language {
+    Language::from(tree_sitter_javascript::LANGUAGE)
+}
+
+fn py() -> Language {
+    Language::from(tree_sitter_python::LANGUAGE)
+}
+
+#[test]
+fn auth_gap_negated_property_check_with_early_return_is_a_guard() {
+    let src = br#"
+def handle_x(request):
+    if not request.user.is_authenticated:
+        return "no"
+    with open("/srv/x") as f:
+        return f.read()
+"#;
+    let found = auth_gap_findings(src, "python", py());
+    assert!(found.is_empty(), "got {found:?}");
+}
+
+#[test]
+fn auth_gap_positive_property_check_guards_its_branch() {
+    let src = br#"
+def handle_x(request):
+    if request.user.is_authenticated:
+        with open("/srv/x") as f:
+            return f.read()
+    return "no"
+"#;
+    let found = auth_gap_findings(src, "python", py());
+    assert!(found.is_empty(), "got {found:?}");
+}
+
+#[test]
+fn auth_gap_passport_is_authenticated_guards_the_rest_of_the_handler() {
+    let src = br#"
+function handle_delete(req, res) {
+    if (!req.isAuthenticated()) {
+        return res.status(401).end();
+    }
+    fs.unlinkSync("/x");
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert!(found.is_empty(), "got {found:?}");
+}
+
+#[test]
+fn passport_is_authenticated_is_a_condition_matcher_not_a_call_matcher() {
+    use crate::cfg_analysis::rules;
+    use crate::state::transfer::condition_is_auth_test;
+    // `req.isAuthenticated()` guards only where a branch tests it: it is not
+    // among the matchers that make a call statement an auth call.
+    let call_matchers = rules::auth_rules(Lang::JavaScript)
+        .iter()
+        .flat_map(|rule| rule.matchers.iter());
+    assert!(!call_matchers.into_iter().any(|m| *m == "isAuthenticated"));
+    assert!(condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::JavaScript
+    ));
+    assert!(condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::TypeScript
+    ));
+    assert!(!condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::Python
+    ));
+}
+
+#[test]
+fn auth_gap_auth_call_inside_the_condition_is_a_guard() {
+    let src = br#"
+function handle_delete(req, res) {
+    if (!ensureAuthenticated(req)) {
+        return;
+    }
+    fs.unlinkSync("/x");
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert!(found.is_empty(), "got {found:?}");
+}
+
+#[test]
+fn auth_gap_rejection_that_falls_through_is_not_a_guard() {
+    // No `return`: the rejecting branch rejoins the flow before the sink.
+    let src = br#"
+function handle_delete(req, res) {
+    if (!isAuthenticated(req)) {
+        res.redirect("/login");
+    }
+    fs.unlinkSync("/x");
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
+#[test]
+fn auth_gap_sink_inside_the_failed_branch_is_not_a_guard() {
+    let src = br#"
+function handle_delete(req, res) {
+    if (!is_authenticated(req)) {
+        fs.unlinkSync("/x");
+    }
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
+#[test]
+fn auth_gap_sink_in_the_else_of_a_passing_test_is_not_a_guard() {
+    let src = br#"
+function handle_delete(req, res) {
+    if (is_authenticated(req)) {
+        res.send("ok");
+    } else {
+        fs.unlinkSync("/x");
+    }
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
+#[test]
+fn auth_gap_unrelated_condition_is_not_a_guard() {
+    let src = br#"
+function handle_delete(req, res) {
+    if (req.query.force) {
+        return;
+    }
+    fs.unlinkSync("/x");
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
+#[test]
+fn auth_gap_comparison_on_the_auth_test_is_not_a_guard() {
+    // The True edge of `=== false` is the unauthenticated side, so the
+    // polarity rule cannot place the guard.
+    let src = br#"
+function handle_delete(req, res) {
+    if (req.isAuthenticated() === false) {
+        fs.unlinkSync("/x");
+    }
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
+#[test]
+fn auth_gap_negated_compound_is_not_a_guard() {
+    // `!(authed || isPublic)` is false for a public request that never
+    // authenticated.
+    let src = br#"
+function handle_delete(req, res) {
+    if (!(req.isAuthenticated() || req.query.public)) {
+        return;
+    }
+    fs.unlinkSync("/x");
+}
+"#;
+    let found = auth_gap_findings(src, "javascript", js());
+    assert_eq!(found.len(), 1, "got {found:?}");
+}
+
 // ─── Error handling tests ──────────────────────────────────────────────
 
 #[test]
