@@ -1607,7 +1607,11 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 
 /// [`classify_text`], retried on the receiver-aliased text when the literal
 /// text matches nothing.
-fn classify_aliased(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
+fn classify_aliased(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> Option<DataLabel> {
     classify_text(lang, text, extra).or_else(|| {
         aliased_receiver_text(text).and_then(|aliased| classify_text(lang, &aliased, extra))
     })

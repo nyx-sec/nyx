@@ -362,9 +362,9 @@ pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: Nod
     payload_positions.iter().all(|&pos| match lits.get(pos) {
         Some(Some(_)) => true,
         Some(None) => ctx.class_constant_scalars.is_some_and(|consts| {
-            arg_uses.get(pos).is_some_and(|uses| {
-                !uses.is_empty() && uses.iter().all(|u| consts.contains_key(u))
-            })
+            arg_uses
+                .get(pos)
+                .is_some_and(|uses| !uses.is_empty() && uses.iter().all(|u| consts.contains_key(u)))
         }),
         None => payload_position_absent(ctx.lang, pos, lits.len()),
     })
