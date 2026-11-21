@@ -73,6 +73,30 @@ fn rv_traces_to_constant(
     }
 }
 
+/// True when the value returned on one path can hold data that came into the
+/// function: it depends on a parameter, or it already carries source taint.
+///
+/// A return that depends on neither (a failure sentinel such as `null` or
+/// `None`, `errors.New("bad")`) holds nothing a caller's taint can flow into,
+/// so having no abstract fact for it does not make the fact joined over the
+/// other returns wrong.  An exhausted node budget answers `true`.
+fn return_carries_input(
+    ssa: &SsaBody,
+    rv: SsaValue,
+    all_param_values: &HashSet<SsaValue>,
+    derived_caps: Cap,
+) -> bool {
+    if !derived_caps.is_empty() {
+        return true;
+    }
+    let params: HashMap<SsaValue, usize> = all_param_values.iter().map(|&v| (v, 0)).collect();
+    let mut seen = HashSet::new();
+    let mut found: SmallVec<[usize; 2]> = SmallVec::new();
+    let mut budget = 256u32;
+    collect_reaching_params(ssa, rv, &params, &mut seen, &mut found, &mut budget);
+    !found.is_empty() || budget == 0
+}
+
 /// Walk the def-use closure of `v`, collecting the set of formal-parameter
 /// indices it depends on.
 ///
@@ -1636,6 +1660,10 @@ pub fn extract_ssa_func_summary_full(
         let mut total_param_caps = Cap::empty();
         // Extract abstract value of the return SSA value.
         let mut return_abstract: Option<crate::abstract_interp::AbstractValue> = None;
+        // Cleared when any reached return path yields no abstract fact (a
+        // pass-through `return p` is Top).  The join over the remaining paths
+        // would then describe only some returns, so the summary claims none.
+        let mut every_return_has_abstract = true;
         // Per-return-block observations for per-path transforms.
         let mut per_return: Vec<ReturnBlockObs> = Vec::with_capacity(return_blocks.len());
         let confinement = crate::taint::ssa_transfer::compute_confinement_gates(&transfer);
@@ -1736,9 +1764,23 @@ pub fn extract_ssa_func_summary_full(
                                 None => av,
                                 Some(prev) => prev.join(&av),
                             });
+                        } else if return_carries_input(
+                            ssa,
+                            rv,
+                            &all_param_values,
+                            block_derived_caps,
+                        ) {
+                            // A return that can hold caller data has no fact,
+                            // so the join over the other returns would not
+                            // describe it.
+                            every_return_has_abstract = false;
                         }
                         block_variant_inner = detect_variant_inner_fact(rv, ssa, &exit);
+                    } else {
+                        every_return_has_abstract = false;
                     }
+                } else {
+                    every_return_has_abstract = false;
                 }
 
                 // Derive a predicate hash + known-true/false
@@ -1774,8 +1816,9 @@ pub fn extract_ssa_func_summary_full(
             total_param_caps
         };
 
-        // Drop return_abstract if it joined to Top
-        let return_abstract = return_abstract.filter(|v| !v.is_top());
+        // Drop return_abstract if it joined to Top, or if some return path
+        // contributed nothing to the join.
+        let return_abstract = return_abstract.filter(|v| every_return_has_abstract && !v.is_top());
 
         (return_caps, events, return_abstract, per_return)
     };

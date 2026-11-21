@@ -1602,8 +1602,16 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
     if matches!(lookup(lang, ast.kind()), Kind::Return) {
         let mut cursor = ast.walk();
         for child in ast.named_children(&mut cursor) {
-            if is_syntactic_literal(child, code) {
-                return text_of(child, code);
+            // Go wraps the returned values in an `expression_list`; a single
+            // literal in it (`return ""`) is the whole return value, a tuple
+            // (`return "", err`) is not.
+            let value = if child.kind() == "expression_list" && child.named_child_count() == 1 {
+                child.named_child(0).unwrap_or(child)
+            } else {
+                child
+            };
+            if is_syntactic_literal(value, code) {
+                return text_of(value, code);
             }
         }
     }
