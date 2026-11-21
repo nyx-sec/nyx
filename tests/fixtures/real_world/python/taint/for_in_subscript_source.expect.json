@@ -1,0 +1,19 @@
+{
+  "description": "A loop over a subscripted request body binds its variable to request data; a loop over a constant list does not.",
+  "tags": ["taint", "cmdi", "flask", "for-in"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [10, 10],
+      "notes": "for cmd in request.json[\"commands\"] -> os.system(cmd)"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [16, 18],
+      "notes": "constant list"
+    }
+  ]
+}

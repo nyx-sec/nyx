@@ -5386,6 +5386,277 @@ app.get('/probe', (req, res) => {
     }
 }
 
+fn file_cfg_nodes(file_cfg: &FileCfg) -> Vec<&NodeInfo> {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .collect()
+}
+
+#[test]
+fn js_sink_assignment_member_source_is_pre_emitted() {
+    let src = b"function f() {\n\
+                  const el = document.getElementById('a');\n\
+                  el.innerHTML = '<b>' + location.hash + '</b>';\n\
+                  el.textContent = location.hash;\n\
+                  el.innerHTML = DOMPurify.sanitize(location.search);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = file_cfg_nodes(&file_cfg);
+    let synth: Vec<&&NodeInfo> = nodes
+        .iter()
+        .filter(|n| {
+            n.taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.starts_with("__nyx_src_") && d.contains("_rhs"))
+        })
+        .collect();
+    // Only the concatenation written into `innerHTML` gets one: `textContent`
+    // is not a sink and the sanitizer call's argument is left to the call.
+    assert_eq!(synth.len(), 1, "{synth:?}");
+    assert!(
+        synth[0]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+    );
+    let name = synth[0].taint.defines.clone().unwrap();
+    let sink = nodes
+        .iter()
+        .find(|n| n.taint.uses.contains(&name))
+        .expect("the assignment uses the synthetic source");
+    assert!(has_sink(sink, Cap::HTML_ESCAPE));
+}
+
+#[test]
+fn js_for_of_over_source_field_is_a_source() {
+    let src = b"function h(req, config) {\n\
+                  for (const f of req.body.items) { run(f); }\n\
+                  for (const g of config.items) { run(g); }\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let loop_sources: Vec<String> = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .filter(|n| {
+            n.taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(_)))
+        })
+        .filter_map(|n| n.call.callee.clone())
+        .collect();
+    assert!(
+        loop_sources.iter().any(|c| c == "req.body.items"),
+        "{loop_sources:?}"
+    );
+    assert!(!loop_sources.iter().any(|c| c.contains("config")));
+}
+
+#[test]
+fn ts_sql_tagged_templates_bind_substitutions() {
+    let src = b"import { sql } from 'drizzle-orm';\n\
+                import { Prisma } from '@prisma/client';\n\
+                async function h(prisma, db, name, col) {\n\
+                  await prisma.$queryRaw`SELECT * FROM t WHERE n = ${name}`;\n\
+                  await prisma.$queryRaw`SELECT ${Prisma.raw(col)} FROM t WHERE n = ${name}`;\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                  const q = sql`select * from t where n = ${name}`;\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let raws = js_call_nodes(&file_cfg, "prisma.$queryRaw");
+    assert_eq!(raws.len(), 2);
+    // Plain substitutions are parameters: no SQL sink.
+    assert!(!has_sink(raws[0], Cap::SQL_QUERY));
+    // The raw splice is the only payload: `${Prisma.raw(col)}` is the
+    // template's second named child.
+    assert!(has_sink(raws[1], Cap::SQL_QUERY));
+    assert_eq!(
+        raws[1].call.sink_payload_args.as_deref(),
+        Some(&[1usize][..])
+    );
+    // A SQL executor fed a parameterized tag is not a sink either.
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert_eq!(execs.len(), 1);
+    assert!(!has_sink(execs[0], Cap::SQL_QUERY));
+    // The builder's result is SQL-safe.
+    let builder = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .find(|n| n.taint.defines.as_deref() == Some("q"))
+        .unwrap();
+    assert!(
+        builder
+            .taint
+            .labels
+            .contains(&DataLabel::Sanitizer(Cap::SQL_QUERY))
+    );
+}
+
+#[test]
+fn ts_query_builder_chain_condition_is_a_sql_sink() {
+    let src = b"async function h(repo, name) {\n\
+                  await repo.createQueryBuilder('u').leftJoin('u.p', 'p').where(`u.name = '${name}'`).getMany();\n\
+                  await repo.createQueryBuilder('u').where({ name }).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert_eq!(wheres.len(), 2, "both chains rebind to their where link");
+    assert!(has_sink(wheres[0], Cap::SQL_QUERY));
+    assert_eq!(
+        wheres[0].call.sink_payload_args.as_deref(),
+        Some(&[0usize][..])
+    );
+    // An object condition is bound by the ORM.
+    assert!(!has_sink(wheres[1], Cap::SQL_QUERY));
+}
+
+#[test]
+fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
+    let src = b"async function h(repo, col, name) {\n\
+                  await repo.createQueryBuilder('u').orderBy({ [col]: 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.name': 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ ...col }).getMany();\n\
+                  await repo.createQueryBuilder('u').groupBy(new String(col)).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new Brackets(q => q.where('a = 1'))).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new String(name)).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let order = js_call_nodes(&file_cfg, "QueryBuilder.orderBy");
+    assert_eq!(order.len(), 3);
+    // A computed key or a spread puts an attacker-chosen column into SQL.
+    assert!(has_sink(order[0], Cap::SQL_QUERY));
+    assert!(!has_sink(order[1], Cap::SQL_QUERY));
+    assert!(has_sink(order[2], Cap::SQL_QUERY));
+    let group = js_call_nodes(&file_cfg, "QueryBuilder.groupBy");
+    assert!(has_sink(group[0], Cap::SQL_QUERY));
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert!(
+        wheres
+            .iter()
+            .any(|w| w.call.arg_uses[0].iter().any(|u| u == "name") && has_sink(w, Cap::SQL_QUERY)),
+        "where(new String(name)) is not a Brackets group"
+    );
+    assert!(wheres.iter().any(|w| !has_sink(w, Cap::SQL_QUERY)));
+}
+
+#[test]
+fn ts_user_defined_sql_tag_is_not_parameterized() {
+    // Same shapes as the drizzle test, with no SQL library import: the tag
+    // and the `raw` helper are the file's own functions.
+    let src = b"function sql(s, ...v) { return s.join(''); }\n\
+                async function h(db, name) {\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert_eq!(execs.len(), 1);
+    assert!(has_sink(execs[0], Cap::SQL_QUERY));
+    let builder = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .find(|n| n.call.callee.as_deref() == Some("sql"));
+    assert!(builder.is_none_or(|b| {
+        !b.taint
+            .labels
+            .contains(&DataLabel::Sanitizer(Cap::SQL_QUERY))
+    }));
+}
+
+#[test]
+fn ts_query_builder_chain_binds_an_inline_member_source() {
+    let src = b"async function h(repo, req) {\n\
+                  await repo.createQueryBuilder('u').where(`u.name = '${req.query.name}'`).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert_eq!(wheres.len(), 1, "the chain rebinds to its where link");
+    assert!(has_sink(wheres[0], Cap::SQL_QUERY));
+    // The inline `req.query.name` is bound to the where condition's argument.
+    assert!(
+        wheres[0].call.arg_uses[0]
+            .iter()
+            .any(|u| u.starts_with("__nyx_src_")),
+        "{:?}",
+        wheres[0].call.arg_uses
+    );
+}
+
+#[test]
+fn js_sink_assignment_from_source_receiver_call_keeps_the_sink() {
+    let src = b"function f() {\n\
+                  location.href = location.hash.substring(1);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = file_cfg_nodes(&file_cfg);
+    let synth = nodes
+        .iter()
+        .find(|n| {
+            n.taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.contains("_rhs"))
+        })
+        .expect("location.hash is pre-emitted");
+    let name = synth.taint.defines.clone().unwrap();
+    let sink = nodes
+        .iter()
+        .find(|n| n.taint.uses.contains(&name))
+        .unwrap_or_else(|| panic!("no node uses {name}: {nodes:#?}"));
+    assert!(
+        sink.taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(_))),
+        "{sink:#?}"
+    );
+}
+
+/// The page's own origin parts are not attacker input: same-origin
+/// navigation built from them gets no pre-emitted Source, while the path or
+/// query of the location still does.
+#[test]
+fn js_sink_assignment_from_own_origin_has_no_source() {
+    let count = |body: &str| {
+        let src = format!("function f(name) {{\n  {body}\n}}");
+        let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+        let file_cfg = parse_to_file_cfg(src.as_bytes(), "javascript", ts_lang);
+        file_cfg_nodes(&file_cfg)
+            .iter()
+            .filter(|n| {
+                n.taint
+                    .defines
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("__nyx_src_") && d.contains("_rhs"))
+            })
+            .count()
+    };
+    assert_eq!(
+        count("window.location.href = window.location.origin + window.location.pathname;"),
+        0
+    );
+    assert_eq!(
+        count("window.location.href = `/auth/${name}?host=${window.location.host}`;"),
+        0
+    );
+    assert_eq!(
+        count("window.location.href = window.location.origin + window.location.search;"),
+        1
+    );
+    assert_eq!(
+        count("window.location.href = window.location.hash.slice(1);"),
+        1
+    );
+}
+
 // ── Read-modify-write assignments (`x += y`, `x ||= y`) ─────────────────
 
 fn rmw_all_nodes(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<NodeInfo> {
@@ -6211,6 +6482,31 @@ fn has_any_sink(info: &NodeInfo) -> bool {
         .any(|l| matches!(l, DataLabel::Sink(_)))
 }
 
+/// A loop over a member read whose prefix is a Source is itself a read of
+/// that Source, so its header carries the Source label.  Nothing of the loop
+/// body (here a gated sink call) reaches the header.
+#[test]
+fn for_of_header_over_a_source_field_takes_only_that_source() {
+    let src = b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }";
+    let (cfg, _) = lang_cfg("javascript", src);
+    let headers = header_nodes(&cfg);
+    assert!(!headers.is_empty());
+    for h in headers {
+        let info = &cfg[h];
+        assert!(
+            !info.taint.labels.is_empty()
+                && info
+                    .taint
+                    .labels
+                    .iter()
+                    .all(|l| matches!(l, DataLabel::Source(_))),
+            "{:?}",
+            info.taint.labels
+        );
+        assert!(info.call.sink_payload_args.is_none());
+    }
+}
+
 /// A sink call in a branch or loop body labels its own node, never the
 /// header: neither the gated-sink walk nor the statement text may reach
 /// into the body.
@@ -6239,7 +6535,7 @@ fn header_nodes_do_not_take_labels_from_the_body() {
         ),
         (
             "javascript",
-            b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }",
+            b"function h(ids) { for (const id of ids) { fetch(\"https://x\"); } }",
             "fetch",
         ),
         (

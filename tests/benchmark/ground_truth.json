@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 951
+    "corpus_size": 958
   },
   "cases": [
     {
@@ -28709,6 +28709,241 @@
       ],
       "disabled": false,
       "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
+    },
+    {
+      "case_id": "py-sqli-sqlalchemy-where-text-001",
+      "file": "python/sqli/sqli_sqlalchemy_where_text.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "sqlalchemy",
+        "text",
+        "fastapi",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "A raw text() clause inside a statement splices the request value into the SQL"
+    },
+    {
+      "case_id": "py-safe-sqlalchemy-select-where-001",
+      "file": "python/safe/safe_sqlalchemy_select_where.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqlalchemy",
+        "statement-builder",
+        "fastapi",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "select().where(Col == value) binds the value as a parameter"
+    },
+    {
+      "case_id": "ts-cmdi-nestjs-query-001",
+      "file": "typescript/cmdi/cmdi_nestjs_query_param.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "nestjs",
+        "decorator-source",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "NestJS @Query('host') formal is request input whatever it is named; reaches exec through a template literal"
+    },
+    {
+      "case_id": "ts-sqli-typeorm-001",
+      "file": "typescript/sqli/sqli_typeorm_querybuilder_where.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "typeorm",
+        "query-builder",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "TypeORM createQueryBuilder().where() takes SQL text; an interpolated request value is injection even with a getMany() tail"
+    },
+    {
+      "case_id": "js-xss-dom-assign-source-001",
+      "file": "javascript/xss/xss_innerhtml_location_hash.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "innerHTML",
+        "dom-xss",
+        "assignment-rhs-source",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "location.hash read directly on the right-hand side of an innerHTML assignment"
+    },
+    {
+      "case_id": "ts-safe-prisma-tagged-001",
+      "file": "typescript/safe/safe_prisma_tagged_template.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "prisma",
+        "tagged-template",
+        "parameterized",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "prisma.$queryRaw tagged template binds every substitution as a parameter"
+    },
+    {
+      "case_id": "js-safe-pg-config-object-001",
+      "file": "javascript/safe/safe_pg_config_object.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pg",
+        "config-object",
+        "parameterized",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "pg {text, values} config form: the request value sits in values, not in the SQL text"
     },
     {
       "case_id": "py-auth-r9-001",

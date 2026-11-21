@@ -1,0 +1,37 @@
+{
+  "description": "A member source written straight into a sink assignment (el.innerHTML = location.search) is a flow; a sanitizer call or a non-sink target is not.",
+  "tags": ["taint", "xss", "dom", "redirect"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [3, 3],
+      "notes": "el.innerHTML = location.search"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [6, 6],
+      "notes": "document.getElementById('a').innerHTML = location.search"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [10, 10],
+      "notes": "concatenation around location.hash"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "window.location.href = location.hash.substring(1); an href assignment reports its URL_ENCODE cap first"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [17, 21],
+      "notes": "DOMPurify-sanitised value / textContent target"
+    }
+  ]
+}

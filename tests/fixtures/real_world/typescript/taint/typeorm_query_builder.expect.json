@@ -1,0 +1,31 @@
+{
+  "description": "TypeORM query-builder condition / ordering strings are SQL text; the parameters object and object conditions are bound.",
+  "tags": ["taint", "sqli", "typeorm"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [9, 9],
+      "notes": "createQueryBuilder('u').where(`u.name = '${name}'`)"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [15, 16],
+      "notes": "parameters object / object condition"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [22, 26],
+      "notes": "orderBy(sort) after a join"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [31, 31],
+      "notes": "inline req.query.name in the condition of a chain ending in getMany()"
+    }
+  ]
+}

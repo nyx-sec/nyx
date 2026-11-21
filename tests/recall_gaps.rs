@@ -840,6 +840,8 @@ fn orm_builders() {
         "sqli_typeorm_safe_parameterized.ts",
         "sqli_no_orm_import_safe.ts",
         "sqli_knex_type_only_safe.ts",
+        // The drizzle `sql` tag binds plain substitutions as parameters.
+        "sqli_drizzle_tagged_template_param_safe.ts",
     ];
     for file in negatives {
         let leak = findings.iter().any(|f| {

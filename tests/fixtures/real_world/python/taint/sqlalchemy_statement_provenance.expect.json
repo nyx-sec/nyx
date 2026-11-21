@@ -1,0 +1,59 @@
+{
+  "description": "A clause added to a SQLAlchemy statement variable only binds values when every binding of the variable is a bound statement; a raw text() earlier in the chain and a bare string clause keep their finding",
+  "tags": [
+    "taint",
+    "sqli",
+    "sqlalchemy",
+    "fastapi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        10,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "raw text() splice survives a later bound where()",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        17,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "order_by over a string variable is SQL text",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        23,
+        24
+      ],
+      "evidence_contains": [],
+      "notes": "where() over a formatted string is SQL text",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        34,
+        38
+      ],
+      "evidence_contains": [],
+      "notes": "every clause is bound",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "for-of over a field of a request source (req.body.items) taints the loop binding; a loop over a non-source member does not.",
+  "tags": ["taint", "cmdi", "loop"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [6, 6],
+      "notes": "for (const f of req.body.items) cp.exec('ls ' + f)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "through an intermediate variable"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [19, 19],
+      "notes": "config.items is not a source"
+    }
+  ]
+}

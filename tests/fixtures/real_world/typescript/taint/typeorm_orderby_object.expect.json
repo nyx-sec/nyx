@@ -1,0 +1,25 @@
+{
+  "description": "TypeORM orderBy/groupBy put object keys into SQL text: a computed key is attacker controlled, static keys are not.",
+  "tags": ["taint", "sqli", "typeorm"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [8, 12],
+      "notes": "orderBy({ [req.query.sort]: 'ASC' }) uses the request value as the column"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [17, 20],
+      "notes": "object with static keys"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [25, 29],
+      "notes": "groupBy(new String(sort)) is not a Brackets group"
+    }
+  ]
+}
