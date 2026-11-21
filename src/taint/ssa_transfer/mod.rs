@@ -12163,6 +12163,40 @@ fn plain_ident_copy_targets(
     aliases.copies_of(inst.value).collect()
 }
 
+/// True when the definition of `def` can execute before the definition of
+/// `at`: it sits earlier in the same block, or its block reaches `at`'s block.
+/// A definition on a sibling branch never precedes the other arm.
+fn def_precedes(ssa: &SsaBody, def: SsaValue, at: SsaValue) -> bool {
+    let (Some(d), Some(a)) = (
+        ssa.value_defs.get(def.0 as usize),
+        ssa.value_defs.get(at.0 as usize),
+    ) else {
+        return false;
+    };
+    if d.block == a.block {
+        return def.0 < at.0;
+    }
+    let mut seen = vec![false; ssa.blocks.len()];
+    let mut stack = vec![d.block];
+    while let Some(b) = stack.pop() {
+        let Some(blk) = ssa.blocks.get(b.0 as usize) else {
+            continue;
+        };
+        for &succ in &blk.succs {
+            if succ == a.block {
+                return true;
+            }
+            if let Some(slot) = seen.get_mut(succ.0 as usize)
+                && !*slot
+            {
+                *slot = true;
+                stack.push(succ);
+            }
+        }
+    }
+    false
+}
+
 /// After sanitizing `inst`, propagate the sanitization to must-aliased field paths.
 ///
 /// When `alias.data` is sanitized and `alias` and `obj` are base aliases (from
@@ -12319,8 +12353,16 @@ fn propagate_taint_to_aliases(
                 })
                 // A literal or declaration-only definition of an alias name (the
                 // `'name'` arm of `order = ok ? s : 'name'`) holds no data from the
-                // tainted value, so it is never a copy target.
-                .filter(|v| !matches!(op_for_value(ssa, *v), Some(SsaOp::Const(_) | SsaOp::Nop)))
+                // tainted value, so it is never a copy target.  The exception is
+                // a pointee written through a pointer (`cmd := "ls"; p := &cmd;
+                // *p = src`): its initial literal is the definition the write
+                // replaces, so it is a target when it comes before the write.
+                .filter(|v| {
+                    !matches!(op_for_value(ssa, *v), Some(SsaOp::Const(_) | SsaOp::Nop))
+                        || (suffix.is_empty()
+                            && plain_ident_rebind_may_write_through(lang)
+                            && def_precedes(ssa, *v, inst.value))
+                })
                 .collect()
         };
 
