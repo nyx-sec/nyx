@@ -45,8 +45,8 @@ pub struct ScanJob {
     pub id: String,
     pub status: JobStatus,
     pub scan_root: PathBuf,
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub started_at: Option<jiff::Timestamp>,
+    pub finished_at: Option<jiff::Timestamp>,
     pub duration_secs: Option<f64>,
     pub findings: Option<Arc<Vec<Diag>>>,
     pub error: Option<String>,
@@ -119,7 +119,7 @@ impl JobManager {
             id: job_id.clone(),
             status: JobStatus::Running,
             scan_root: scan_root.clone(),
-            started_at: Some(chrono::Utc::now()),
+            started_at: Some(jiff::Timestamp::now()),
             finished_at: None,
             duration_secs: None,
             findings: None,
@@ -171,7 +171,7 @@ impl JobManager {
                 id: job_id.clone(),
                 status: "running".to_string(),
                 scan_root: scan_root.display().to_string(),
-                started_at: Some(chrono::Utc::now().to_rfc3339()),
+                started_at: Some(crate::utils::time::now_rfc3339()),
                 finished_at: None,
                 duration_secs: None,
                 engine_version: Some(engine_version),
@@ -295,7 +295,7 @@ impl JobManager {
             let files_scanned = progress_snap.files_discovered;
             let files_skipped = progress_snap.files_skipped;
             let timing = progress_snap.timing;
-            let finished_at = chrono::Utc::now();
+            let finished_at = jiff::Timestamp::now();
 
             // Prepare the final state outside the lock.
             let (status, diags, error_str) = match result {
@@ -394,7 +394,7 @@ impl JobManager {
             if let Some(ref pool) = db_pool
                 && let Ok(idx) = Indexer::from_pool("_scans", pool)
             {
-                let finished_str = finished_at.to_rfc3339();
+                let finished_str = crate::utils::time::rfc3339(finished_at);
                 let _ = idx.update_scan(
                     &jid,
                     if finding_count.is_some() {

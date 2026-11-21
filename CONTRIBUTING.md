@@ -27,7 +27,7 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ### Prerequisites
 
-- Rust 1.88+ (edition 2024)
+- Rust 1.89+ (edition 2024)
 - Git
 - Node 20+, only if you touch the browser UI under `frontend/` (the `nyx serve`
   web app). Pure-Rust changes do not need it.

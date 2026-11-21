@@ -2662,7 +2662,7 @@ pub mod index {
             for log in logs {
                 stmt.execute(params![
                     scan_id,
-                    log.timestamp.to_rfc3339(),
+                    crate::utils::time::rfc3339(log.timestamp),
                     log.level.to_string(),
                     log.message,
                     log.file_path,
@@ -2712,9 +2712,7 @@ pub mod index {
                 })?
                 .filter_map(Result::ok)
                 .filter_map(|(ts_str, level_str, message, file_path, detail)| {
-                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                        .ok()?
-                        .with_timezone(&chrono::Utc);
+                    let timestamp = crate::utils::time::parse_rfc3339(&ts_str)?;
                     let level = level_str.parse().ok()?;
                     Some(crate::server::scan_log::ScanLogEntry {
                         timestamp,
@@ -2757,7 +2755,7 @@ pub mod index {
             note: &str,
             action: &str,
         ) -> NyxResult<String> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             let prev: String = self
                 .c()
                 .query_row(
@@ -2793,7 +2791,7 @@ pub mod index {
             note: &str,
             action: &str,
         ) -> NyxResult<Vec<(String, String)>> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             let mut results = Vec::with_capacity(fingerprints.len());
 
             // Read all previous states first
@@ -2970,7 +2968,7 @@ pub mod index {
             state: &str,
             note: &str,
         ) -> NyxResult<i64> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             self.c().execute(
                 "INSERT OR REPLACE INTO triage_suppression_rules
                  (suppress_by, match_value, state, note, created_at)

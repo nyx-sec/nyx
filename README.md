@@ -5,7 +5,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/nyx-sec/nyx/ci.yml?branch=master)](https://github.com/nyx-sec/nyx/actions)
 [![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
@@ -111,7 +111,7 @@ git clone https://github.com/nyx-sec/nyx.git
 cd nyx && cargo build --release
 ```
 
-Requires stable Rust 1.88+. The frontend is compiled and embedded in the binary at build time, so there is no separate install step for `nyx serve`.
+Requires stable Rust 1.89+. The frontend is compiled and embedded in the binary at build time, so there is no separate install step for `nyx serve`.
 
 ---
 

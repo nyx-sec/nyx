@@ -296,7 +296,7 @@ fn insert_verdict_cache(
     let Ok(json) = serde_json::to_string(result) else {
         return;
     };
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = crate::utils::time::now_rfc3339();
     let _ = conn.execute(
         "INSERT OR REPLACE INTO dynamic_verdict_cache \
          (spec_hash, entry_content_hash, transitive_import_digest, toolchain_id, \
@@ -1922,7 +1922,7 @@ mod tests {
             use rusqlite::Connection;
             let conn = Connection::open(&db_path).unwrap();
             let json = serde_json::to_string(&result).unwrap();
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             conn.execute(
                 "INSERT OR REPLACE INTO dynamic_verdict_cache \
                  (spec_hash, entry_content_hash, transitive_import_digest, toolchain_id, \

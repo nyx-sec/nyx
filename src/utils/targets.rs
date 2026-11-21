@@ -1,6 +1,5 @@
 use crate::errors::{NyxError, NyxResult};
 use crate::utils::project::{get_project_info, sanitize_project_name};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,7 +65,7 @@ pub fn remember_target(
 ) -> NyxResult<TargetRecord> {
     let canonical = project_path.canonicalize()?;
     let path_str = canonical.to_string_lossy().to_string();
-    let now = Utc::now().to_rfc3339();
+    let now = crate::utils::time::now_rfc3339();
     let (_, db_path) = get_project_info(&canonical, database_dir)?;
     let mut targets = load_targets(database_dir)?;
     let id = target_id_for_path(&canonical);

@@ -412,7 +412,7 @@ fn collect_recent_scans(state: &AppState, limit: usize) -> Vec<ScanSummary> {
             scans.push(ScanSummary {
                 id: job.id.clone(),
                 status: format!("{:?}", job.status).to_ascii_lowercase(),
-                started_at: job.started_at.map(|t| t.to_rfc3339()),
+                started_at: job.started_at.map(crate::utils::time::rfc3339),
                 duration_secs: job.duration_secs,
                 finding_count: job.findings.as_ref().map(|f| f.len() as i64),
             });
@@ -644,9 +644,9 @@ fn is_fresh_scan(scan: Option<&ScanSummary>) -> bool {
     let Some(ref started_at) = scan.started_at else {
         return false;
     };
-    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(started_at) {
-        let elapsed = chrono::Utc::now() - ts.with_timezone(&chrono::Utc);
-        return elapsed.num_seconds() < 300;
+    if let Some(ts) = crate::utils::time::parse_rfc3339(started_at) {
+        let elapsed = jiff::Timestamp::now().duration_since(ts);
+        return elapsed.as_secs() < 300;
     }
     false
 }
@@ -942,7 +942,7 @@ fn compute_backlog(state: &AppState, findings: &[Diag], history: &ScanHistory) -
         };
     }
 
-    let now = chrono::Utc::now();
+    let now = jiff::Timestamp::now();
 
     // Pull DB-cached first_seen first; fall back to in-memory history map.
     let fingerprints: Vec<String> = findings.iter().map(compute_fingerprint).collect();
@@ -962,9 +962,9 @@ fn compute_backlog(state: &AppState, findings: &[Diag], history: &ScanHistory) -
         let Some(ts) = cached.get(fp) else {
             continue;
         };
-        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-            let elapsed = now - dt.with_timezone(&chrono::Utc);
-            let days = elapsed.num_days().max(0) as u32;
+        if let Some(dt) = crate::utils::time::parse_rfc3339(ts) {
+            let elapsed = now.duration_since(dt);
+            let days = (elapsed.as_secs() / 86_400).max(0) as u32;
             ages_days.push(days);
         }
     }

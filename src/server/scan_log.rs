@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::Serialize;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -38,7 +38,7 @@ impl FromStr for LogLevel {
 /// A single structured log entry from a scan.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanLogEntry {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub level: LogLevel,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,7 +78,7 @@ impl ScanLogCollector {
 
     pub fn info(&self, message: impl Into<String>, file_path: Option<String>) {
         self.push(ScanLogEntry {
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             level: LogLevel::Info,
             message: message.into(),
             file_path,
@@ -93,7 +93,7 @@ impl ScanLogCollector {
         detail: Option<String>,
     ) {
         self.push(ScanLogEntry {
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             level: LogLevel::Warn,
             message: message.into(),
             file_path,
@@ -108,7 +108,7 @@ impl ScanLogCollector {
         detail: Option<String>,
     ) {
         self.push(ScanLogEntry {
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             level: LogLevel::Error,
             message: message.into(),
             file_path,

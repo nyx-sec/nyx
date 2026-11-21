@@ -13,7 +13,7 @@ Release binaries are published for:
 | macOS Apple Silicon | `nyx-aarch64-apple-darwin.zip` |
 | Windows x86_64 | `nyx-x86_64-pc-windows-msvc.zip` |
 
-Build from source works on any stable Rust 1.88+ target (edition 2024).
+Build from source works on any stable Rust 1.89+ target (edition 2024).
 
 ## Verify the download
 
