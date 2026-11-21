@@ -661,6 +661,9 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "has_perm".into(),
                 "has_permission".into(),
                 "has_object_permission".into(),
+                // DRF permission classes that decide per model or per object.
+                "DjangoObjectPermissions".into(),
+                "DjangoModelPermissions".into(),
                 "user_passes_test".into(),
                 "verify_access".into(),
                 "authorize".into(),

@@ -683,13 +683,23 @@ fn related_subject_base(subject: &ValueRef) -> Option<String> {
 }
 
 fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &str) -> bool {
-    is_id_like(subject)
+    (is_id_like(subject) || is_route_primary_key(subject, unit))
         && !is_actor_context_subject(subject, unit)
         && !is_const_bound_subject(subject, unit)
         && !is_typed_bounded_subject(subject, unit)
         && !is_caller_scope_entity_subject(subject, unit)
         && !is_package_level_subject(subject, unit)
         && !is_model_selector_subject(subject, unit, lang)
+}
+
+/// `pk`, the Django and DRF name for the row id a viewset action receives
+/// (`def destroy(self, request, pk=None)`).  Inside a route handler it is as
+/// much a request-supplied id as `doc_id`.  Elsewhere `pk` is too common a name
+/// in framework internals to count as one.
+fn is_route_primary_key(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    unit.kind == AnalysisUnitKind::RouteHandler
+        && subject.source_kind == ValueSourceKind::Identifier
+        && subject.name == "pk"
 }
 
 /// `uid`, `targetUid`, `componentUID` outside a route handler.  In Strapi and
@@ -2361,5 +2371,14 @@ mod tests {
         assert!(is_external_input_param_name_for_lang("uuid", "typescript"));
         // Other languages keep `uid` as an id.
         assert!(is_external_input_param_name("uid"));
+    }
+
+    #[test]
+    fn pk_is_an_id_inside_route_handlers_only() {
+        let helper = empty_unit();
+        assert!(!is_relevant_target_subject(&plain("pk"), &helper));
+        let mut route = empty_unit();
+        route.kind = AnalysisUnitKind::RouteHandler;
+        assert!(is_relevant_target_subject(&plain("pk"), &route));
     }
 }

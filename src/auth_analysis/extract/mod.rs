@@ -121,6 +121,9 @@ pub fn extract_authorization_model(
             extractor.extract(tree, bytes, path, rules, &mut model);
         }
     }
+    if lang == "python" {
+        django::apply_view_decorator_checks(tree.root_node(), bytes, rules, &mut model);
+    }
 
     // Per-language web-framework signal used to gate the param-name arm
     // of `unit_has_user_input_evidence`.  Combines the project-root
