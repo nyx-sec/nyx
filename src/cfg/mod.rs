@@ -83,12 +83,12 @@ use literals::{
     extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
     find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
-    has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
-    java_chain_arg0_kind_for_method, js_arg_is_prototype_object, js_arg_is_string_valued,
-    js_arg_is_structured_condition, js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner,
-    js_orm_query_arg0_is_uid_ref, js_positional_arity, js_shell_option_argv_positions,
-    js_sql_template_raw_splices, parameterized_query_shape, python_positional_arity,
-    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
+    is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
+    js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
+    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
+    js_positional_arity, js_shell_option_argv_positions, js_sql_template_raw_splices,
+    parameterized_query_shape, python_positional_arity, ruby_chain_arg0_for_method,
+    walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
