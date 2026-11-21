@@ -5185,7 +5185,7 @@ fn java_veto_non_reflective_lookup(
 /// propagates into the line, and the source stays attributed to the request
 /// instead of to a generic file read.  A receiver the file does not settle
 /// keeps the label.
-fn java_stream_source_is_local(call: Node, code: &[u8]) -> bool {
+pub(super) fn java_stream_source_is_local(call: Node, code: &[u8]) -> bool {
     if call.kind() != "method_invocation" {
         return false;
     }

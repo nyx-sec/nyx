@@ -368,7 +368,14 @@ impl Builder<'_> {
         let mut label_sink = false;
         let mut labelled = false;
         if !callee.is_empty() {
+            // A Java stream accessor on a child process or a local resource
+            // carries no Source label (see `java_stream_source_is_local`).
+            let local_stream =
+                self.lang == "java" && super::java_stream_source_is_local(call, self.code);
             for l in crate::labels::classify_all(self.lang, &callee, self.extra) {
+                if local_stream && matches!(l, DataLabel::Source(_)) {
+                    continue;
+                }
                 labelled = true;
                 match l {
                     DataLabel::Source(bits) => label_source |= bits,
