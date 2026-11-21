@@ -11,8 +11,14 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         id: "go.cmdi.exec_command",
         description: "exec.Command() runs an arbitrary process",
+        // The operand pins the `os/exec` (or `x/sys/execabs`) package, so
+        // CLI builders (`app.Command(name, help)`) and client methods
+        // (`rdb.Command(ctx)`) do not match.  `CommandContext` is left out:
+        // Layer A cannot tell its `ctx` argument from a payload, so every
+        // constant `exec.CommandContext(ctx, "git", ...)` would fire.
         query: r#"(call_expression
                      function: (selector_expression
+                       operand: (identifier) @pkg (#match? @pkg "^(exec|execabs)$")
                        field: (field_identifier) @f (#eq? @f "Command")))
                    @vuln"#,
         severity: Severity::High,

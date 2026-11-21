@@ -22,25 +22,21 @@
     },
     {
       "rule_id": "cfg-resource-leak",
-      "severity": "MEDIUM",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [
-        11,
-        11
+        10,
+        18
       ],
-      "evidence_contains": [],
-      "notes": "noise: cfg-resource-leak — low-value duplicate of more specific findings"
+      "notes": "connect_and_close returns inside try and closes in finally: the finally clause runs on the return path, so there is no leak (regression guard)"
     },
     {
-      "rule_id": "cfg-resource-leak",
-      "severity": "MEDIUM",
-      "must_match": false,
+      "rule_id": "state-resource-leak",
+      "must_not_match": true,
       "line_range": [
-        12,
-        12
+        10,
+        18
       ],
-      "evidence_contains": [],
-      "notes": "noise: cfg-resource-leak — low-value duplicate of more specific findings"
+      "notes": "same: state-resource-leak and state-resource-leak-possible must NOT fire for the socket closed in finally"
     },
     {
       "rule_id": "cfg-resource-leak",

@@ -1,0 +1,27 @@
+{
+  "description": "A sink in a finally clause the try and except bodies always return through: reached on the return path, flagged when tainted and quiet when constant",
+  "tags": ["taint", "cmdi", "try-finally", "return"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [17, 17],
+      "evidence_contains": [],
+      "notes": "request.args value reaches os.system in the finally clause; both returns run it first"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [26, 26],
+      "notes": "constant argv in the finally clause must NOT fire"
+    },
+    {
+      "rule_id": "cfg-unreachable",
+      "must_not_match": true,
+      "line_range": [1, 27],
+      "notes": "the finally clause runs after the return, so nothing in it is unreachable (regression guard)"
+    }
+  ]
+}

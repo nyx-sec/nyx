@@ -1,0 +1,125 @@
+{
+  "description": "Removing one metacharacter is a partial filter, not a sanitizer: ';' or '&' stripped before a shell command, and a deleted quote before a numeric SQL context, still fire. Quote doubling in a quoted SQL literal and full angle-bracket escaping are complete escapes and stay quiet.",
+  "tags": [
+    "taint",
+    "sanitizer",
+    "replace",
+    "cmdi",
+    "sqli",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "';' removed, '|' and '&&' still reach the shell"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on os.system with a dynamic argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "'&' removed, ';' and '|' still reach the shell"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on os.system with a dynamic argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "quote deleted, a numeric context needs no quote"
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on string concatenation inside execute"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        23,
+        27
+      ],
+      "notes": "quote doubling inside a quoted literal is the SQL string escape"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        29,
+        32
+      ],
+      "notes": "both angle brackets entity-escaped"
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        23,
+        27
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern fires on concatenation regardless of the escape"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        23,
+        27
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule"
+    }
+  ]
+}

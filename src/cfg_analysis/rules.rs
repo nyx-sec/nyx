@@ -356,6 +356,42 @@ pub fn entry_point_rules(lang: Lang) -> &'static [EntryPointRule] {
 
 // ── Resource pairs ──────────────────────────────────────────────────────
 
+/// Match a callee against a resource acquire/release pattern at an identifier
+/// boundary.
+///
+/// A bare-identifier pattern (`connect`, `open`, `alloc`) matches only when the
+/// character immediately preceding the matched suffix in the callee is a name
+/// separator (not an identifier char).  So `disconnect` / `reconnect` do NOT
+/// match `connect`, `register_open` / `_ensure_open` do NOT match `open`, and
+/// Rust's release `dealloc` does NOT match acquire `alloc`, all of which the
+/// old raw `ends_with` conflated.  Patterns that already carry a leading
+/// separator (`.close`, `os.Open`) keep matching by plain suffix.
+pub(crate) fn callee_matches_at_boundary(callee_lower: &str, pattern_lower: &str) -> bool {
+    if callee_lower == pattern_lower {
+        return true;
+    }
+    if !callee_lower.ends_with(pattern_lower) {
+        return false;
+    }
+    // A pattern whose first char is a separator (`.`, `:`) carries its own
+    // left boundary, so no preceding-char check is needed (`f.Close` matches
+    // `.Close`).
+    if pattern_lower
+        .chars()
+        .next()
+        .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // Bare-identifier pattern: require an identifier boundary before the match.
+    let prefix = &callee_lower[..callee_lower.len() - pattern_lower.len()];
+    match prefix.chars().next_back() {
+        Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
+        None => true,
+    }
+}
+
 static C_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
         acquire: &["malloc", "calloc", "realloc"],
@@ -470,14 +506,14 @@ static RUST_RESOURCES: &[ResourcePair] = &[
     },
 ];
 
+// `URL.openConnection()` is deliberately not an acquire here.  A
+// `URLConnection` / `HttpURLConnection` has no `close()`: the release is
+// closing the stream from `getInputStream()` / `getOutputStream()` (often in a
+// try-with-resources) or the optional `disconnect()`, neither of which is a
+// release of the connection variable the pair would track.
 static JAVA_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &[
-            "FileInputStream",
-            "FileOutputStream",
-            "BufferedReader",
-            "openConnection",
-        ],
+        acquire: &["FileInputStream", "FileOutputStream", "BufferedReader"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "stream/connection",
@@ -496,7 +532,8 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
         ],
     },
     ResourcePair {
-        acquire: &["Socket"],
+        // `SocketFactory.createSocket` / `SSLSocketFactory.createSocket`.
+        acquire: &["Socket", "createSocket"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "socket",
@@ -518,7 +555,7 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
         use_patterns: &[".next", ".getString", ".getInt", ".getBoolean"],
     },
     ResourcePair {
-        acquire: &["ServerSocket"],
+        acquire: &["ServerSocket", "createServerSocket"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "server socket",
@@ -549,7 +586,10 @@ static JAVA_RESOURCES: &[ResourcePair] = &[
 
 static PYTHON_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &["open"],
+        // `fdopen` / `os.popen` return file objects with `.close()`; they
+        // were only caught by the old raw suffix match.  `subprocess.Popen`
+        // is deliberately absent: it has no `close()`.
+        acquire: &["open", "fdopen", "os.popen"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "file handle",
@@ -620,7 +660,7 @@ static PYTHON_RESOURCES: &[ResourcePair] = &[
 
 static RUBY_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &["File.open", "File.new", "open"],
+        acquire: &["File.open", "File.new", "open", "IO.popen"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "file handle",
@@ -681,7 +721,10 @@ static RUBY_RESOURCES: &[ResourcePair] = &[
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "temp file",
-        use_patterns: &[".write", ".read", ".path"],
+        // No `.path`: a closed Tempfile keeps its path until `unlink` /
+        // `close!`, and `File.read(tmp.path)` after `close` is the usual
+        // idiom.
+        use_patterns: &[".write", ".read"],
     },
 ];
 
@@ -856,9 +899,82 @@ pub(crate) fn jdbc_statement_owning_connection(callee: Option<&str>) -> Option<&
     None
 }
 
+/// Python DB-API: if `callee` opens a cursor on a connection
+/// (`conn.cursor()`), return the receiver connection variable (`conn`).
+/// Same contract as [`jdbc_statement_owning_connection`]: only a simple
+/// identifier receiver names a locally trackable connection.
+pub(crate) fn python_cursor_owning_connection(callee: Option<&str>) -> Option<&str> {
+    let c = callee?;
+    let (recv, leaf) = c.rsplit_once('.')?;
+    if leaf.eq_ignore_ascii_case("cursor")
+        && !recv.is_empty()
+        && !recv.contains('.')
+        && !recv.contains('(')
+    {
+        return Some(recv);
+    }
+    None
+}
+
+/// Python DB-API connection acquire: any `connect` call
+/// (`sqlite3.connect`, `psycopg2.connect`, `pymysql.connect`,
+/// `engine.connect`).
+pub(crate) fn is_python_connection_acquire(callee: Option<&str>) -> bool {
+    callee.is_some_and(|c| {
+        c.rsplit('.')
+            .next()
+            .is_some_and(|leaf| leaf.eq_ignore_ascii_case("connect"))
+    })
+}
+
+/// A handle derived from a connection whose lifetime it shares: a JDBC
+/// `Statement` (`con.prepareStatement`) or a Python DB-API cursor
+/// (`conn.cursor()`).  Returns the owning connection variable.  Closing the
+/// connection releases what was derived from it, so when that connection is
+/// itself tracked in the same body (closed, managed, or leaking on its own)
+/// the derived handle is never a unique leak.
+pub(crate) fn derived_resource_owner(lang: Lang, callee: Option<&str>) -> Option<&str> {
+    match lang {
+        Lang::Java => jdbc_statement_owning_connection(callee),
+        Lang::Python => python_cursor_owning_connection(callee),
+        _ => None,
+    }
+}
+
+/// Whether `callee` acquires the connection kind [`derived_resource_owner`]
+/// derives from in `lang`.
+pub(crate) fn is_owning_connection_acquire(lang: Lang, callee: Option<&str>) -> bool {
+    match lang {
+        Lang::Java => is_jdbc_connection_acquire(callee),
+        Lang::Python => is_python_connection_acquire(callee),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod jdbc_derivation_tests {
-    use super::{is_jdbc_connection_acquire, jdbc_statement_owning_connection};
+    use super::{
+        is_jdbc_connection_acquire, is_python_connection_acquire, jdbc_statement_owning_connection,
+        python_cursor_owning_connection,
+    };
+
+    #[test]
+    fn python_cursor_derivation() {
+        assert_eq!(
+            python_cursor_owning_connection(Some("conn.cursor")),
+            Some("conn")
+        );
+        assert_eq!(
+            python_cursor_owning_connection(Some("self.conn.cursor")),
+            None
+        );
+        assert_eq!(python_cursor_owning_connection(Some("cursor")), None);
+        assert_eq!(python_cursor_owning_connection(Some("conn.execute")), None);
+        assert!(is_python_connection_acquire(Some("sqlite3.connect")));
+        assert!(is_python_connection_acquire(Some("psycopg2.connect")));
+        assert!(!is_python_connection_acquire(Some("client.disconnect")));
+        assert!(!is_python_connection_acquire(None));
+    }
 
     #[test]
     fn connection_acquire_recognises_getconnection_forms() {

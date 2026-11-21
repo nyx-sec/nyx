@@ -5,10 +5,14 @@
 //! const propagation.
 
 use super::conditions::unwrap_parens;
-use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
+use super::helpers::{
+    collect_array_pattern_bindings_indexed, collect_assign_targets,
+    collect_rhs_array_literal_elements, find_condition_subtree, for_each_parts,
+};
 use super::{
-    anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
-    first_call_ident, root_receiver_text, text_of,
+    RmwAssign, anon_fn_name, collect_idents, collect_idents_with_paths,
+    find_constructor_type_child, first_call_ident, rmw_assignment, rmw_target_define,
+    rmw_target_reads, root_receiver_text, text_of,
 };
 use crate::labels::{Cap, Kind, lookup};
 use smallvec::SmallVec;
@@ -1251,6 +1255,11 @@ pub(super) fn walk_chain_inner_call_args<'a>(outer: Node<'a>, lang: &str, out: &
 /// Recursively find a call-expression node within an AST subtree (up to
 /// 4 levels deep).  Unlike `find_call_node` which only checks 2 levels,
 /// this handles `await`-wrapped calls inside declarations.
+///
+/// The walk stops at nested blocks and function literals: a call inside a
+/// loop / `if` body or a callback is its own CFG node, so it must not stand
+/// in for the enclosing statement (a `for` header picking up the gated sink
+/// of a `res.setHeader(..)` call in its body).
 pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Option<Node<'a>> {
     if depth == 0 {
         return None;
@@ -1260,6 +1269,9 @@ pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Opt
         _ => {
             let mut cursor = n.walk();
             for c in n.children(&mut cursor) {
+                if matches!(lookup(lang, c.kind()), Kind::Block | Kind::Function) {
+                    continue;
+                }
                 if let Some(found) = find_call_node_deep(c, lang, depth - 1) {
                     return Some(found);
                 }
@@ -1269,56 +1281,105 @@ pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Opt
     }
 }
 
-/// Detect whether a call node is a parameterized SQL query.
+/// How a call's first argument relates to the parameterized-query shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParamQueryShape {
+    /// Not a `query-with-placeholders, params` call.
+    NotParameterized,
+    /// Arg 0 is constant query text with placeholders and a params argument
+    /// follows.  The driver binds the params, so the sink is safe.
+    ConstantQuery,
+    /// Same shape, but the query text itself is interpolated
+    /// (`f"... ORDER BY {sort} LIMIT ?"`, `"... #{q} ... = ?"`,
+    /// `` `... ${t} ... $1` ``).  Binding the params does nothing for the
+    /// interpolated part, so arg 0 is still a live injection point while the
+    /// bind values are not.
+    InterpolatedQuery,
+}
+
+/// Classify a call as a parameterized SQL query.
 ///
-/// Returns `true` when:
-/// 1. The first argument (arg 0) is a string literal (including template
-///    strings without interpolation) containing SQL placeholder patterns:
-///    `$1`..`$N`, `?`, `%s`, or `:identifier`.
-/// 2. The call has at least 2 arguments (the second being the params
-///    array/tuple).
+/// The call must have at least 2 arguments (query + params), and arg 0 must
+/// be a string literal (a template string, an f-string or a Ruby `"#{..}"`
+/// string counts) containing SQL placeholder patterns: `$1`..`$N`, `?`,
+/// `%s`, or `:identifier`.  Placeholder characters that sit inside an
+/// interpolation do not count.
 ///
-/// This is intentionally conservative: if arg 0 is dynamic (variable,
-/// concatenation, template with interpolation), returns `false`.
-pub(super) fn is_parameterized_query_call(call_node: Node, code: &[u8]) -> bool {
+/// If arg 0 is a variable, a concatenation or any other expression the result
+/// is `NotParameterized`.
+pub(super) fn parameterized_query_shape(call_node: Node, code: &[u8]) -> ParamQueryShape {
     let Some(args) = call_node.child_by_field_name("arguments") else {
-        return false;
+        return ParamQueryShape::NotParameterized;
     };
     let mut cursor = args.walk();
     let named: Vec<_> = args.named_children(&mut cursor).collect();
     // Need at least 2 arguments: query string + params
     if named.len() < 2 {
-        return false;
+        return ParamQueryShape::NotParameterized;
     }
     let first_arg = named[0];
-    // Extract the raw text of arg 0, must be a string literal or
-    // template string without interpolation.
-    let query_text = match first_arg.kind() {
+    let dynamic = match first_arg.kind() {
         "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" => {
-            text_of(first_arg, code)
+            has_string_interpolation(first_arg)
         }
         "template_string" => {
-            // Only constant templates (no interpolation)
             let mut c = first_arg.walk();
-            if first_arg
+            first_arg
                 .named_children(&mut c)
                 .any(|ch| ch.kind() == "template_substitution")
-            {
-                return false; // dynamic, not safe
-            }
-            text_of(first_arg, code)
         }
-        // Python concatenated strings: "SELECT" "..." are implicit concat
+        // Python implicit concatenation: "SELECT" "..." f"{x}" is one node
+        // whose parts are plain or f-strings.
         "concatenated_string" => {
-            // If it's a concatenated_string, get the full text
-            text_of(first_arg, code)
+            let mut c = first_arg.walk();
+            first_arg
+                .named_children(&mut c)
+                .any(has_string_interpolation)
         }
-        _ => return false, // not a literal
+        _ => return ParamQueryShape::NotParameterized, // not a literal
     };
-    let Some(qt) = query_text else {
-        return false;
+    let Some(qt) = text_of(first_arg, code) else {
+        return ParamQueryShape::NotParameterized;
     };
-    has_sql_placeholders(&qt)
+    let qt = if dynamic {
+        mask_interpolations(first_arg, &qt)
+    } else {
+        qt
+    };
+    if !has_sql_placeholders(&qt) {
+        return ParamQueryShape::NotParameterized;
+    }
+    if dynamic {
+        ParamQueryShape::InterpolatedQuery
+    } else {
+        ParamQueryShape::ConstantQuery
+    }
+}
+
+/// Blank out the source text of every interpolation inside `node`, so a `?`
+/// or `:name` that belongs to an embedded expression (`{a if b else c}`,
+/// `${x ? y : z}`) is not mistaken for a SQL placeholder.  `text` is the
+/// text of `node` itself; offsets are relative to its start byte.
+fn mask_interpolations(node: Node, text: &str) -> String {
+    fn walk(n: Node, base: usize, out: &mut Vec<(usize, usize)>) {
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            if ch.kind().contains("interpolation") || ch.kind() == "template_substitution" {
+                out.push((ch.start_byte() - base, ch.end_byte() - base));
+            } else {
+                walk(ch, base, out);
+            }
+        }
+    }
+    let mut spans = Vec::new();
+    walk(node, node.start_byte(), &mut spans);
+    let mut bytes = text.as_bytes().to_vec();
+    for (s, e) in spans {
+        if let Some(slice) = bytes.get_mut(s..e.min(text.len())) {
+            slice.fill(b' ');
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_string())
 }
 
 /// Check whether a string contains SQL parameterized-query placeholders.
@@ -1551,13 +1612,13 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
 }
 
 /// Returns true when every argument in the call's argument list is a
-/// syntactic literal (per `is_syntactic_literal`). Returns true for calls
-/// with zero arguments (no argument-carried taint vector). Returns false
-/// when the argument list cannot be found.
+/// syntactic literal (per `is_syntactic_literal`).  Returns false for a call
+/// with no arguments, or when the argument list cannot be found.
 ///
-/// For method chains like `a("x").b(y).c()`, the outermost call node
+/// For method chains like `a("x").b(y).c("z")`, the outermost call node
 /// represents the entire chain. This function walks nested call expressions
-/// to verify ALL argument lists in the chain contain only literals.
+/// to verify ALL argument lists in the chain contain only literals.  Inner
+/// chain calls may take no arguments (`Runtime.getRuntime().exec("ls")`).
 pub(super) fn has_only_literal_args(call_node: Node, code: &[u8]) -> bool {
     let Some(args) = call_node.child_by_field_name("arguments") else {
         return false;
@@ -1592,7 +1653,7 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
         }
         // If this child is itself a call expression, check its arguments.
         if child.child_by_field_name("arguments").is_some() {
-            if !has_only_literal_args(child, code) {
+            if !inner_call_args_literal(child, code) {
                 return false;
             }
         } else {
@@ -1603,6 +1664,25 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
         }
     }
     true
+}
+
+/// An inner call of a method chain whose arguments, if any, are all
+/// syntactic literals, as are those of the calls further down its chain.
+/// Unlike the outermost call, a zero-argument inner call qualifies: the
+/// receiver-sink guard in [`has_only_literal_args`] is about the call that
+/// is the sink, not the calls that build its receiver.
+fn inner_call_args_literal(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    if !args
+        .named_children(&mut cursor)
+        .all(|ch| is_syntactic_literal(ch, code))
+    {
+        return false;
+    }
+    check_inner_call_args(call, code)
 }
 
 /// Extract identifiers captured by Rust format-string named-argument syntax
@@ -2027,36 +2107,30 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
     out
 }
 
-/// Caps that a search literal is known to strip, provided the replacement
-/// itself does not reintroduce any dangerous sequence.
+/// Caps a literal `search -> replacement` replace is known to strip.
 ///
-/// Policy is deliberately narrow and conservative: only literals that contain
-/// *known-dangerous* payloads earn a strip credit, so an arbitrary
-/// `.replace("foo", "bar")` is never promoted to a sanitizer.
-///   * `..`, `/`, `\\`         → path-traversal     → `Cap::FILE_IO`
-///   * `<`, `>`                → HTML metachars     → `Cap::HTML_ESCAPE`
-///   * `;`, `|`, `&`, `$`, `\`` → shell metachars   → `Cap::SHELL_ESCAPE`
-///   * `'`, `"`, `--`          → SQL metachars      → `Cap::SQL_QUERY`
-pub(super) fn caps_stripped_by_literal_pattern(search: &str) -> Cap {
-    let mut caps = Cap::empty();
+/// Policy is deliberately narrow: an arbitrary `.replace("foo", "bar")` is
+/// never promoted to a sanitizer, and neither is removing a single injection
+/// metacharacter.
+///   * `..`, `/`, `\\` in the search: path traversal (`Cap::FILE_IO`)
+///   * HTML and SQL: only complete escapes, per
+///     [`crate::symex::strings::replace_neutralises`]
+///   * shell: never, no single literal covers the metacharacter class
+pub(super) fn caps_stripped_by_literal_replace(search: &str, replacement: &str) -> Cap {
+    let mut caps = crate::symex::strings::replace_neutralises(search, replacement);
     if search.contains("..") || search.contains('/') || search.contains('\\') {
         caps |= Cap::FILE_IO;
     }
-    if search.contains('<') || search.contains('>') {
-        caps |= Cap::HTML_ESCAPE;
-    }
-    if search.contains(';')
-        || search.contains('|')
-        || search.contains('&')
-        || search.contains('$')
-        || search.contains('`')
-    {
-        caps |= Cap::SHELL_ESCAPE;
-    }
-    if search.contains('\'') || search.contains('"') || search.contains("--") {
-        caps |= Cap::SQL_QUERY;
-    }
     caps
+}
+
+/// True when a replacement literal carries a character that some injection
+/// class cares about.  A hop whose replacement does is able to reintroduce
+/// what a later hop strips, so the chain detectors abandon all credit.
+fn literal_carries_metachars(lit: &str) -> bool {
+    lit.contains("..")
+        || lit.contains(['/', '\\', '<', '>', ';', '|', '&', '$', '`', '\'', '"'])
+        || lit.contains("--")
 }
 
 /// Maximum number of `.replace(LIT, LIT)` hops we'll walk on a single chain.
@@ -2129,6 +2203,10 @@ pub(super) fn detect_rust_replace_chain_sanitizer(call_ast: Node, code: &[u8]) -
         if method_name != "replace" && method_name != "replacen" {
             return None;
         }
+        // `replacen` stops after n matches, so it strips nothing for sure.
+        // It still counts as a hop: its replacement can put a metacharacter
+        // back, and the walk has to reach the receiver beneath it.
+        let is_global = method_name == "replace";
 
         let args_node = current.child_by_field_name("arguments")?;
         let mut cursor = args_node.walk();
@@ -2160,10 +2238,12 @@ pub(super) fn detect_rust_replace_chain_sanitizer(call_ast: Node, code: &[u8]) -
         // If the replacement itself contains a dangerous sequence, this hop
         // can reintroduce the pattern that a later hop tries to strip.  Be
         // conservative: abandon all credit.
-        if !caps_stripped_by_literal_pattern(&replacement).is_empty() {
+        if literal_carries_metachars(&replacement) {
             return None;
         }
-        earned |= caps_stripped_by_literal_pattern(&search);
+        if is_global {
+            earned |= caps_stripped_by_literal_replace(&search, &replacement);
+        }
 
         // Walk to receiver via field_expression.value.
         current = func.child_by_field_name("value")?;
@@ -2203,6 +2283,16 @@ pub(super) fn detect_go_replace_call_sanitizer(call_ast: Node, code: &[u8]) -> O
     if method_name != "Replace" && method_name != "ReplaceAll" {
         return None;
     }
+    // `strings.Replace(s, old, new, n)` only replaces the first n matches.
+    // Only n == -1 is a full replace.
+    if method_name == "Replace" {
+        let args = call_ast.child_by_field_name("arguments")?;
+        let mut cursor = args.walk();
+        let n_arg = args.named_children(&mut cursor).nth(3)?;
+        if text_of(n_arg, code)?.trim() != "-1" {
+            return None;
+        }
+    }
     // Args layout: (s, old, new[, n]).  Need positional args 1 (old) and
     // 2 (new) to be string literals.
     let old_lit = extract_const_string_arg(call_ast, 1, code)?;
@@ -2210,10 +2300,10 @@ pub(super) fn detect_go_replace_call_sanitizer(call_ast: Node, code: &[u8]) -> O
 
     // If the replacement itself reintroduces a dangerous sequence, don't
     // credit the strip, matches the Rust chain detector's policy.
-    if !caps_stripped_by_literal_pattern(&new_lit).is_empty() {
+    if literal_carries_metachars(&new_lit) {
         return None;
     }
-    let caps = caps_stripped_by_literal_pattern(&old_lit);
+    let caps = caps_stripped_by_literal_replace(&old_lit, &new_lit);
     if caps.is_empty() { None } else { Some(caps) }
 }
 
@@ -2448,6 +2538,34 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
+/// `(defines, uses)` of a read-modify-write assignment (`x += y`, `x ||= y`,
+/// `i++`).  The target is both the define and a use, and its reads come first
+/// in `uses` so SSA lowering sees `x' = op(x, y)` with the old value as the
+/// left operand.  A plain `x = y` takes the other `def_use` paths and never
+/// lists its target as a use.
+fn rmw_def_use(rmw: &RmwAssign, code: &[u8]) -> (Option<String>, Vec<String>) {
+    let defs = rmw_target_define(rmw.target, code);
+    let mut uses = rmw_target_reads(rmw.target, code);
+    if let Some(rhs) = rmw.value {
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        collect_idents_with_paths(rhs, code, &mut idents, &mut paths);
+        uses.extend(paths);
+        uses.extend(idents);
+        uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
+    }
+    (defs, uses)
+}
+
+/// Primary define and extra defines of a Java / PHP assignment LHS (see
+/// [`collect_assign_targets`]).
+fn assign_targets(lhs: Node, code: &[u8]) -> (Option<String>, Vec<String>) {
+    let mut targets = Vec::new();
+    collect_assign_targets(lhs, code, &mut targets);
+    let mut it = targets.into_iter();
+    (it.next(), it.collect())
+}
+
 /// Return `(defines, uses, extra_defines, array_pattern_indices,
 /// rhs_array_elements)` for the AST fragment `ast`.
 ///
@@ -2477,6 +2595,12 @@ pub(super) fn def_use(
     SmallVec<[usize; 4]>,
     SmallVec<[crate::cfg::RhsArraySlot; 4]>,
 ) {
+    // Java / PHP member and subscript LHS are split into whole targets
+    // (`o.cmd`, `this.fh`, `arr`) instead of being flattened into their
+    // component identifiers, which made `o.cmd = x` also redefine a local
+    // `cmd` and `$this->fh = ..` define `this`.  Other languages keep their
+    // existing split.
+    let java_or_php = matches!(lang, "java" | "php");
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
         Kind::CallWrapper => {
@@ -2514,6 +2638,10 @@ pub(super) fn def_use(
                             extra_defs.push(name);
                             pattern_indices.push(idx);
                         }
+                    } else if java_or_php {
+                        let (d, extra) = assign_targets(pat, code);
+                        defs = d;
+                        extra_defs.extend(extra);
                     } else {
                         let mut idents = Vec::new();
                         let mut paths = Vec::new();
@@ -2558,6 +2686,16 @@ pub(super) fn def_use(
                     // Only use left/right fields for actual assignment nodes, binary
                     // expressions also have left/right but are not definitions.
                     let is_assign = matches!(lookup(lang, child.kind()), Kind::Assignment);
+                    // `x += y;` / `x++;` wrapped in an expression statement.
+                    if is_assign
+                        && defs.is_none()
+                        && let Some(rmw) = rmw_assignment(child)
+                    {
+                        let (d, u) = rmw_def_use(&rmw, code);
+                        defs = d;
+                        uses.extend(u);
+                        continue;
+                    }
                     let child_name = child
                         .child_by_field_name("name")
                         .or_else(|| child.child_by_field_name("declarator"))
@@ -2594,6 +2732,10 @@ pub(super) fn def_use(
                                     extra_defs.push(name);
                                     pattern_indices.push(idx);
                                 }
+                            } else if java_or_php {
+                                let (d, extra) = assign_targets(name_node, code);
+                                defs = d;
+                                extra_defs.extend(extra);
                             } else {
                                 let mut idents = Vec::new();
                                 let mut paths = Vec::new();
@@ -2649,6 +2791,10 @@ pub(super) fn def_use(
         // SSA lowering's destructure-promise rewrite can paint each
         // binding from the matching combinator argument.
         Kind::Assignment => {
+            if let Some(rmw) = rmw_assignment(ast) {
+                let (defs, uses) = rmw_def_use(&rmw, code);
+                return (defs, uses, Vec::new(), SmallVec::new(), SmallVec::new());
+            }
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
@@ -2666,6 +2812,10 @@ pub(super) fn def_use(
                         extra_defs.push(name);
                         pattern_indices.push(idx);
                     }
+                } else if java_or_php {
+                    let (d, extra) = assign_targets(lhs, code);
+                    defs = d;
+                    extra_defs.extend(extra);
                 } else {
                     let mut idents = Vec::new();
                     let mut paths = Vec::new();
@@ -2718,7 +2868,7 @@ pub(super) fn def_use(
         // the value expression.  E.g. `if let Ok(cmd) = env::var("CMD")`
         // defines `cmd` and uses `env`, `var`, `CMD`.
         Kind::If | Kind::While => {
-            let cond = ast.child_by_field_name("condition");
+            let cond = find_condition_subtree(ast, lang);
             if let Some(c) = cond
                 && c.kind() == "let_condition"
             {
@@ -2739,84 +2889,46 @@ pub(super) fn def_use(
                 return (defs, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
-            let mut idents = Vec::new();
-            let mut paths = Vec::new();
-            collect_idents_with_paths(ast, code, &mut idents, &mut paths);
-            let mut uses = paths;
-            uses.extend(idents);
-            (None, uses, vec![], SmallVec::new(), SmallVec::new())
+            // The header reads its condition only: the branches and the loop
+            // body are lowered as nodes of their own.
+            (
+                None,
+                header_uses(cond, code),
+                vec![],
+                SmallVec::new(),
+                SmallVec::new(),
+            )
         }
+
+        Kind::InfiniteLoop => (None, vec![], vec![], SmallVec::new(), SmallVec::new()),
 
         // for-in / for-of / Python `for x in iter:` ─────────────────────────
         //
-        // Tree-sitter classifies these as `Kind::For` with a `left`/`right`
-        // field pair (binding pattern + iterable).  Without an explicit
-        // arm here, the default branch collects every ident as a `use` and
-        // never registers the iteration binding as a `define`, so taint
-        // entering the iterable does not propagate into the body's
-        // references to the binding (`for (const [a, b] of obj) { sink(a) }`
-        // would lose the flow at `a`).
+        // A for-each loop defines its binding from the iterable
+        // (`for_each_parts` maps every grammar's field layout, including Go's
+        // `range_clause`, Java `enhanced_for_statement` and PHP `foreach`).
+        // Without the define, taint entering the iterable never reaches the
+        // body's references to the binding (`for (const [a, b] of obj) {
+        // sink(a) }`, OWASP's `for (Cookie c : req.getCookies())`,
+        // CVE-2026-41422 daptin's Go `range c.QueryArray("col")`).
         //
-        // C-style `for_statement` has no `left`/`right` fields (it uses
-        // `initializer`/`condition`/`increment`), so this path falls through
-        // to the default-collecting behaviour for those, preserving today's
-        // semantics.
-        //
-        // Go's `for ident := range iter` shape places the binding pattern
-        // and iterable on a `range_clause` child of the `for_statement`
-        // rather than as direct fields.  Without the range_clause lookup
-        // below, taint from the iterable never reaches the loop binding
-        // (CVE-2026-41422 daptin: `c.QueryArray("col")` loop var `project`
-        // flows into `goqu.L(project)` SQL_QUERY sink).
+        // A C-style three-clause loop has neither part.  Its header reads the
+        // init / condition / update clauses but never the body: Go's
+        // `for_clause` and Java's `init` are not lowered as nodes of their
+        // own, so their identifiers stay on the header.
         Kind::For => {
-            let mut left = ast.child_by_field_name("left");
-            let mut right = ast.child_by_field_name("right");
+            let (left, right) = for_each_parts(ast, lang);
             if left.is_none() && right.is_none() {
-                let mut cursor = ast.walk();
-                for child in ast.children(&mut cursor) {
-                    if child.kind() == "range_clause" {
-                        left = child.child_by_field_name("left");
-                        right = child.child_by_field_name("right");
-                        break;
-                    }
-                }
-            }
-            // Java `enhanced_for_statement` binds the loop variable on the
-            // `name` field and the iterable on the `value` field; Ruby's
-            // `for x in coll` uses `pattern`/`value`.  Neither uses the
-            // JS/Python `left`/`right` convention, so without this mapping
-            // the loop binding was never recorded as a define and taint on
-            // the iterable could not reach the loop variable (OWASP's
-            // dominant `for (Cookie c : req.getCookies())` shape).
-            if left.is_none() && right.is_none() {
-                if let Some(v) = ast.child_by_field_name("value") {
-                    left = ast
-                        .child_by_field_name("name")
-                        .or_else(|| ast.child_by_field_name("pattern"));
-                    right = Some(v);
-                }
-            }
-            // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`:
-            // the iterable and binding are unnamed children separated by the
-            // `as` keyword (only `body` is a named field).  Map the binding
-            // onto `left` and the iterable onto `right` so the shared
-            // define/use logic below records the loop variable.
-            if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
-                let mut cursor = ast.walk();
-                let kids: Vec<Node> = ast.children(&mut cursor).collect();
-                if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
-                    right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
-                    left = kids[as_pos + 1..]
-                        .iter()
-                        .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
-                        .copied();
-                }
-            }
-            if left.is_none() && right.is_none() {
-                // C-style for, defer to default ident collection.
+                let body = ast.child_by_field_name("body");
                 let mut idents = Vec::new();
                 let mut paths = Vec::new();
-                collect_idents_with_paths(ast, code, &mut idents, &mut paths);
+                let mut cursor = ast.walk();
+                for child in ast.named_children(&mut cursor) {
+                    if Some(child) == body || lookup(lang, child.kind()) == Kind::Block {
+                        continue;
+                    }
+                    collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                }
                 let mut uses = paths;
                 uses.extend(idents);
                 return (None, uses, vec![], SmallVec::new(), SmallVec::new());
@@ -2848,6 +2960,16 @@ pub(super) fn def_use(
             (defs, uses, extra_defs, SmallVec::new(), SmallVec::new())
         }
 
+        // Python `elif` / PHP `elseif` guard nodes (their grammar kind maps
+        // to `Kind::Block`): the guard reads its condition, not its body.
+        _ if matches!(ast.kind(), "elif_clause" | "else_if_clause") => (
+            None,
+            header_uses(ast.child_by_field_name("condition"), code),
+            vec![],
+            SmallVec::new(),
+            SmallVec::new(),
+        ),
+
         // everything else – no definition, but may read vars
         _ => {
             let mut idents = Vec::new();
@@ -2858,6 +2980,19 @@ pub(super) fn def_use(
             (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
     }
+}
+
+/// Uses of a branch or loop header: the dotted paths and identifiers of its
+/// condition, none when it has no condition.
+fn header_uses(cond: Option<Node>, code: &[u8]) -> Vec<String> {
+    let Some(cond) = cond else {
+        return Vec::new();
+    };
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(cond, code, &mut idents, &mut paths);
+    paths.extend(idents);
+    paths
 }
 
 /// One match from [`extract_shell_array_payload_idents`].
@@ -2892,6 +3027,12 @@ pub(super) struct ShellArrayMatch {
 /// not a shell.  Element 1 must be a literal `-c` (POSIX) or `/c`/`/C` (cmd);
 /// otherwise the array is not in shell-exec form regardless of element 0.
 ///
+/// The split form `(<shell>, [<flag>, <payload>...])`, where the shell is
+/// its own string argument and the next argument is the argv array
+/// (`spawn('sh', ['-c', cmd])`, `execFile('/bin/bash', ['-c', cmd])`), is the
+/// same shell invocation spelled through an argv-taking API and matches too;
+/// its `arg_position` is the argv array's index.
+///
 /// Identifiers from elements at positions 2+ are lifted via
 /// [`collect_idents_with_paths`] so template-literal interpolations
 /// (`` `echo ${x}` ``), member-expressions (`obj.field`), and bare idents are
@@ -2905,8 +3046,21 @@ pub(super) fn extract_shell_array_payload_idents(
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return out;
     };
+    // Shell named by the previous positional argument, for the split form.
+    let mut prev_shell: Option<String> = None;
     let mut cursor = args_node.walk();
     for (idx, child) in args_node.named_children(&mut cursor).enumerate() {
+        let shell_here = const_string_value(child, code).filter(|s| is_known_shell(s));
+        if let Some(shell) = prev_shell.take()
+            && let Some(idents) = shell_argv_payload_idents_of(&shell, child, code)
+        {
+            out.push(ShellArrayMatch {
+                arg_position: idx,
+                payload_idents: idents,
+            });
+            continue;
+        }
+        prev_shell = shell_here;
         let kind = child.kind();
         // Splats break positional indexing; bail conservatively on the whole call.
         if kind == "spread_element"
@@ -2980,12 +3134,344 @@ fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>>
     if !is_shell_command_flag(&shell, &flag) {
         return None;
     }
-    // Lift identifiers from the payload elements (positions 2+).  Constants
-    // contribute nothing.  An empty result means the entire payload is
-    // statically benign.
+    shell_payload_idents(&elems[2..], code)
+}
+
+/// Number of positional arguments a JS/TS call passes, counted the way
+/// [`extract_arg_uses`] indexes them, or `None` when a spread argument
+/// (`f(...args)`) hides the real arity.
+pub(super) fn js_positional_arity(call_node: Node) -> Option<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Some(0);
+    };
+    let mut cursor = args.walk();
+    let mut arity = 0;
+    for arg in args.named_children(&mut cursor) {
+        if arg.kind() == "spread_element" {
+            return None;
+        }
+        arity += 1;
+    }
+    Some(arity)
+}
+
+/// True when the positional argument at `index` of a JS/TS call is a
+/// string by construction, the shape a string-evaluating timer
+/// (`setTimeout(code, ms)`) compiles:
+///
+/// * a string or template literal, or a `+` concatenation;
+/// * a member read that classifies as a taint Source (`req.query.code`,
+///   `location.hash`);
+/// * a call to a string-producing method or global
+///   ([`JS_STRING_METHODS`], [`JS_STRING_FUNCTIONS`]), as in
+///   `location.hash.substring(1)`;
+/// * a local name whose nearest declaration initialises it with one of the
+///   above.
+///
+/// Everything else (a function reference, a parameter, an arbitrary call
+/// result) is not evidence of a string: timers almost always receive a
+/// callback.
+pub(super) fn js_arg_is_string_valued(
+    call_node: Node,
+    index: usize,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(index) else {
+        return false;
+    };
+    js_expr_is_string_valued(arg, lang, code, extra, 3)
+}
+
+/// True when the positional argument at `index` of a JS/TS call names an
+/// object's prototype: `Foo.prototype`, `x.__proto__`, `x['__proto__']`, or
+/// `Object.getPrototypeOf(x)` / `Reflect.getPrototypeOf(x)`.  Properties
+/// written into such a target are inherited by every object built from it,
+/// which is what a shallow `Object.assign` needs to pollute a prototype.
+pub(super) fn js_arg_is_prototype_object(call_node: Node, index: usize, code: &[u8]) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(index) else {
+        return false;
+    };
+    let arg = unwrap_parens(arg);
+    match arg.kind() {
+        "member_expression" => arg
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))
+            .is_some_and(|p| p == "prototype" || p == "__proto__"),
+        "subscript_expression" => arg
+            .child_by_field_name("index")
+            .and_then(|i| const_string_value(i, code))
+            .is_some_and(|k| k == "prototype" || k == "__proto__"),
+        "call_expression" => arg
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|f| {
+                matches!(
+                    f.as_str(),
+                    "Object.getPrototypeOf" | "Reflect.getPrototypeOf"
+                )
+            }),
+        _ => false,
+    }
+}
+
+/// String-returning `String.prototype` / `Array.prototype.join` methods.
+const JS_STRING_METHODS: &[&str] = &[
+    "substring",
+    "substr",
+    "slice",
+    "replace",
+    "replaceAll",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "toString",
+    "toLowerCase",
+    "toUpperCase",
+    "concat",
+    "join",
+    "padStart",
+    "padEnd",
+    "repeat",
+    "normalize",
+];
+
+/// String-returning global functions.
+const JS_STRING_FUNCTIONS: &[&str] = &[
+    "String",
+    "decodeURIComponent",
+    "decodeURI",
+    "unescape",
+    "atob",
+];
+
+fn js_expr_is_string_valued(
+    expr: Node,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    depth: u8,
+) -> bool {
+    let expr = unwrap_parens(expr);
+    match expr.kind() {
+        "string" | "template_string" => true,
+        "binary_expression" => expr
+            .child_by_field_name("operator")
+            .and_then(|o| text_of(o, code))
+            .is_some_and(|o| o == "+"),
+        "member_expression" | "subscript_expression" => matches!(
+            super::helpers::first_member_label(expr, lang, code, extra),
+            Some(crate::labels::DataLabel::Source(_))
+        ),
+        "call_expression" => {
+            let Some(func) = expr.child_by_field_name("function") else {
+                return false;
+            };
+            match func.kind() {
+                "member_expression" => func
+                    .child_by_field_name("property")
+                    .and_then(|p| text_of(p, code))
+                    .is_some_and(|p| JS_STRING_METHODS.contains(&p.as_str())),
+                "identifier" => {
+                    text_of(func, code).is_some_and(|f| JS_STRING_FUNCTIONS.contains(&f.as_str()))
+                }
+                _ => false,
+            }
+        }
+        "identifier" if depth > 0 => text_of(expr, code)
+            .and_then(|name| js_local_initializer(expr, &name, code))
+            .is_some_and(|init| js_expr_is_string_valued(init, lang, code, extra, depth - 1)),
+        _ => false,
+    }
+}
+
+/// Initialiser of the nearest `const` / `let` / `var` declaration of `name`
+/// in a block enclosing `from`.  `None` when a parameter of an enclosing
+/// function binds `name` first, or when no initialised declaration is found.
+fn js_local_initializer<'a>(from: Node<'a>, name: &str, code: &[u8]) -> Option<Node<'a>> {
+    let mut scope = from.parent();
+    while let Some(s) = scope {
+        if matches!(
+            s.kind(),
+            "function_expression"
+                | "function"
+                | "function_declaration"
+                | "generator_function"
+                | "generator_function_declaration"
+                | "arrow_function"
+                | "method_definition"
+        ) && js_function_has_param(s, name, code)
+        {
+            return None;
+        }
+        if matches!(s.kind(), "statement_block" | "program") {
+            let mut cursor = s.walk();
+            for stmt in s.named_children(&mut cursor) {
+                if !matches!(stmt.kind(), "lexical_declaration" | "variable_declaration") {
+                    continue;
+                }
+                let mut dc = stmt.walk();
+                for decl in stmt.named_children(&mut dc) {
+                    if decl.kind() == "variable_declarator"
+                        && decl
+                            .child_by_field_name("name")
+                            .and_then(|n| text_of(n, code))
+                            .is_some_and(|n| n == name)
+                    {
+                        return decl.child_by_field_name("value");
+                    }
+                }
+            }
+        }
+        scope = s.parent();
+    }
+    None
+}
+
+/// True when the function node `func` declares a parameter named `name`.
+fn js_function_has_param(func: Node, name: &str, code: &[u8]) -> bool {
+    // `x => ...` keeps its lone parameter in the `parameter` field.
+    if let Some(p) = func.child_by_field_name("parameter") {
+        return text_of(p, code).is_some_and(|t| t == name);
+    }
+    let Some(params) = func.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut cursor = params.walk();
+    params.named_children(&mut cursor).any(|p| {
+        // TS wraps each parameter (`required_parameter` / `optional_parameter`)
+        // with the binding under `pattern`; JS default values wrap it in an
+        // `assignment_pattern` under `left`.
+        let binding = p
+            .child_by_field_name("pattern")
+            .or_else(|| p.child_by_field_name("left"))
+            .unwrap_or(p);
+        binding.kind() == "identifier" && text_of(binding, code).is_some_and(|t| t == name)
+    })
+}
+
+/// Positional args of an argv-taking `child_process` call (`spawn`,
+/// `execFile`, ...) that become shell payloads because an inline options
+/// object enables `shell`.  Node then joins the binary and the argv array
+/// into one `/bin/sh -c` string, so the argv array is injectable the same
+/// way `exec`'s command string is.
+///
+/// Empty when no object-literal argument after arg 0 has a `shell` key, or
+/// when its value is a falsy literal (`false`, `null`, `undefined`, `0`,
+/// `''`).  A dynamic value counts as enabled.  Arg 0 is not reported (it is
+/// already a payload), and neither are the options object itself nor a
+/// function argument (the completion callback).
+pub(super) fn js_shell_option_argv_positions(call_node: Node, code: &[u8]) -> Vec<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut cursor = args.walk();
+    let positional: Vec<Node> = args.named_children(&mut cursor).collect();
+    let shell_enabled = positional
+        .iter()
+        .skip(1)
+        .any(|a| js_object_enables_shell(unwrap_parens(*a), code));
+    if !shell_enabled {
+        return Vec::new();
+    }
+    positional
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, a)| {
+            !matches!(
+                unwrap_parens(**a).kind(),
+                "object" | "function_expression" | "arrow_function" | "function"
+            )
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// True when `obj` is an object literal whose `shell` property is present
+/// and not a falsy literal.
+fn js_object_enables_shell(obj: Node, code: &[u8]) -> bool {
+    if obj.kind() != "object" {
+        return false;
+    }
+    let mut cursor = obj.walk();
+    for child in obj.named_children(&mut cursor) {
+        match child.kind() {
+            // `{ shell }`: value is whatever the local binding holds.
+            "shorthand_property_identifier" if text_of(child, code).as_deref() == Some("shell") => {
+                return true;
+            }
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    continue;
+                };
+                let key_text = match key.kind() {
+                    "string" => const_string_value(key, code),
+                    "property_identifier" => text_of(key, code),
+                    _ => None,
+                };
+                if key_text.as_deref() != Some("shell") {
+                    continue;
+                }
+                let Some(value) = child.child_by_field_name("value") else {
+                    return true;
+                };
+                let value = unwrap_parens(value);
+                return match value.kind() {
+                    "false" | "null" | "undefined" => false,
+                    "number" => text_of(value, code).as_deref() != Some("0"),
+                    "string" | "template_string" => {
+                        const_string_value(value, code).is_none_or(|s| !s.is_empty())
+                    }
+                    "identifier" => text_of(value, code).as_deref() != Some("undefined"),
+                    _ => true,
+                };
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split-form counterpart of [`shell_array_payload_idents_of`]: `shell` came
+/// from the previous positional argument and `node` must be an argv array
+/// literal `[<flag>, *]` whose first element is that shell's command flag.
+/// Returns the identifiers in the elements after the flag.
+fn shell_argv_payload_idents_of(shell: &str, node: Node, code: &[u8]) -> Option<Vec<String>> {
+    let node = unwrap_parens(node);
+    if node.kind() != "array" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let elems: Vec<Node> = node.named_children(&mut cursor).collect();
+    if elems.len() < 2 {
+        return None;
+    }
+    let flag = const_string_value(elems[0], code)?;
+    if !is_shell_command_flag(shell, &flag) {
+        return None;
+    }
+    shell_payload_idents(&elems[1..], code)
+}
+
+/// Identifiers and dotted paths referenced by the shell-command elements of
+/// a shell-array literal.  `None` when every element is a constant.
+fn shell_payload_idents(payload: &[Node], code: &[u8]) -> Option<Vec<String>> {
+    // Lift identifiers from the payload elements.  Constants contribute
+    // nothing.  An empty result means the entire payload is statically
+    // benign.
     let mut idents: Vec<String> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
-    for elem in &elems[2..] {
+    for elem in payload {
         collect_idents_with_paths(*elem, code, &mut idents, &mut paths);
     }
     let mut combined = paths;

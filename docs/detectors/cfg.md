@@ -25,7 +25,7 @@ These detectors use dominator analysis. A guard dominates a sink when the guard 
 
 `cfg-unreachable-*`: sinks, sanitizers, or sources in dead code. Usually a refactoring error that silently disabled security-relevant logic.
 
-`cfg-error-fallthrough`: an error-handling branch (null check, error-return check) does not terminate, so execution falls through to a dangerous operation on the error path.
+`cfg-error-fallthrough`: an error-handling branch (null check, error-return check) does not terminate, so execution falls through to a dangerous operation on the error path. A sink whose payload arguments are all constant literals (`exec.Command("sync")`, `res.send('saved')`) does not count, since nothing from the failed call can reach it.
 
 `cfg-resource-leak`, `cfg-lock-not-released`: a resource acquisition (`File::open`, `fopen`, `socket`, `Lock`) is not matched by a release on every exit path from the function.
 

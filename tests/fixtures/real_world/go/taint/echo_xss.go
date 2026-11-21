@@ -8,5 +8,5 @@ import (
 
 func handler(c echo.Context) error {
 	name := c.QueryParam("name")
-	return c.String(http.StatusOK, "<h1>Hello "+name+"</h1>")
+	return c.HTML(http.StatusOK, "<h1>Hello "+name+"</h1>")
 }

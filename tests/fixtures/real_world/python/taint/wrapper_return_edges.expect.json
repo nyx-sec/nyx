@@ -1,0 +1,88 @@
+{
+  "description": "Return edges are per parameter: a helper returning its first argument does not carry the second, and a full sanitizer (int(), shlex.quote on every path) clears the result. A helper that sanitizes on one path and returns the argument raw on another still carries the taint.",
+  "tags": [
+    "taint",
+    "interproc",
+    "summary",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        26,
+        31
+      ],
+      "notes": "first(aval, zval) returns aval; the tainted zval does not reach the result"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        39
+      ],
+      "evidence_contains": [],
+      "notes": "first(t, 'ls') returns the tainted argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        42,
+        46
+      ],
+      "notes": "int() wrapper clears the taint"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        49,
+        53
+      ],
+      "notes": "shlex.quote wrapper"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        56,
+        61
+      ],
+      "evidence_contains": [],
+      "notes": "maybe_quote returns the raw value when strict is false"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        26,
+        61
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on os.system with a dynamic argument"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        26,
+        61
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule"
+    }
+  ]
+}

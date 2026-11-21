@@ -172,6 +172,164 @@ pub(crate) fn field_container_is_nonescaping(
     single_ident_dot_container(def).is_some_and(|base| nonescaping.contains(base))
 }
 
+/// Whether a Return node (or a Ruby tail expression) hands the variable
+/// picked out by `is_var` to the caller.
+///
+/// The structural answer is [`NodeInfo::returned_idents`]: the variable sits
+/// in an escape position of the returned value (`return f`, `return f, nil`,
+/// `return &W{f: f}`, `return new Wrapper(r)`), while `return f.read()` or
+/// `return io.ReadAll(f)` keeps the handle here.
+///
+/// C / C++ also count any mention in the returned expression.  There, a
+/// pointer passed to the call whose result is returned is usually handed on
+/// (`return insert(t, node)`, `return register_graft(r, graft)`,
+/// `return read_header_fd(fd, ..)` which returns `fd`, `return &x->base`),
+/// and the leak passes have no model of what the callee keeps.
+pub(crate) fn return_hands_off(lang: Lang, info: &NodeInfo, is_var: impl Fn(&str) -> bool) -> bool {
+    if !(info.kind == StmtKind::Return || info.implicit_return) {
+        return false;
+    }
+    info.returned_idents.iter().any(|n| is_var(n))
+        || (matches!(lang, Lang::C | Lang::Cpp) && info.taint.uses.iter().any(|n| is_var(n)))
+}
+
+/// Method names that store their argument in the receiving collection, so a
+/// handle passed to them now belongs to that collection: `list.add(s)`,
+/// `map.put(k, s)`, `v.push_back(f)`, `xs.append(f)`, `arr.push(fd)`,
+/// `cache.set(k, fd)`, and the synthetic `__index_set__` of `m[k] = f`.
+/// Compared case-insensitively against the callee's last segment.
+static CONTAINER_INSERT_LEAVES: &[&str] = &[
+    "add",
+    "addfirst",
+    "addlast",
+    "append",
+    "emplace",
+    "emplace_back",
+    "emplace_front",
+    "insert",
+    "offer",
+    "push",
+    "push_back",
+    "push_front",
+    "put",
+    "putifabsent",
+    "set",
+    "unshift",
+];
+
+/// Argument positions whose bare-variable value a call hands over to a
+/// container (or, for C++ `ptr.reset(raw)`, to an owning smart pointer).
+/// Empty for every other call.  Only bare identifiers qualify: a nested call
+/// or expression argument (`v.push_back(f->next)`) moves nothing.
+///
+/// Recall trade-off, matching the field-store rule: a handle put into a
+/// local collection that then dies unreleased is no longer reported.
+pub(crate) fn container_insert_arg_positions(
+    lang: Lang,
+    info: &NodeInfo,
+) -> smallvec::SmallVec<[usize; 2]> {
+    let mut out = smallvec::SmallVec::new();
+    let Some(callee) = info.call.callee.as_deref() else {
+        return out;
+    };
+    let is_method = callee.contains(['.', ':', '>']);
+    let leaf = callee
+        .rsplit(['.', ':', '>'])
+        .next()
+        .unwrap_or(callee)
+        .to_ascii_lowercase();
+    let first = match (lang, leaf.as_str()) {
+        (_, "__index_set__") => 1,
+        (Lang::Go, "append") if !is_method => 1,
+        (Lang::Php, "array_push" | "array_unshift") if !is_method => 1,
+        (Lang::Cpp, "reset") if is_method => 0,
+        (_, l) if is_method && CONTAINER_INSERT_LEAVES.contains(&l) => 0,
+        _ => return out,
+    };
+    let args = &info.call.arg_uses;
+    if leaf == "set" && args.len() < 2 {
+        return out;
+    }
+    for (i, arg) in args.iter().enumerate().skip(first) {
+        let bare = info.arg_callees.get(i).is_none_or(|c| c.is_none()) && arg.len() == 1;
+        if bare {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// Java wrapper-handoff facts for one body (see [`closeable_wrapper_names`]).
+#[derive(Debug, Default)]
+pub struct CloseableWrappers {
+    /// Wrapper objects whose lifetime the body accounts for.
+    pub names: std::collections::HashSet<String>,
+    /// Names bound by a try-with-resources acquire.  That scope already
+    /// closes the stream, so a wrapper built on it does not take it over.
+    pub managed: std::collections::HashSet<String>,
+}
+
+/// Java: names of local wrapper objects whose lifetime is accounted for in
+/// this body: closed (`w.close()`, including a release in argument
+/// position), returned, bound by try-with-resources, or stored somewhere
+/// the function does not own (a field, global, or collection).  A stream
+/// passed to the constructor of such a wrapper is owned by the wrapper.
+/// Empty for other languages.
+pub(crate) fn closeable_wrapper_names(cfg: &crate::cfg::Cfg, lang: Lang) -> CloseableWrappers {
+    let mut facts = CloseableWrappers::default();
+    if lang != Lang::Java {
+        return facts;
+    }
+    let out = &mut facts.names;
+    let pairs = rules::resource_pairs(lang);
+    let is_release = |callee: &str| {
+        let c = callee.to_ascii_lowercase();
+        pairs
+            .iter()
+            .any(|p| p.release.iter().any(|r| callee_matches(&c, r)))
+    };
+    for info in cfg.node_weights() {
+        if info.kind == StmtKind::Call
+            && let Some(callee) = info.call.callee.as_deref()
+            && is_release(callee)
+            && let Some((recv, _)) = try_chain_decompose(callee)
+            && !recv.contains('.')
+        {
+            out.insert(recv.to_string());
+        }
+        for arg_callee in info.arg_callees.iter().flatten() {
+            if is_release(arg_callee)
+                && let Some((recv, _)) = try_chain_decompose(arg_callee)
+                && !recv.contains('.')
+            {
+                out.insert(recv.to_string());
+            }
+        }
+        if info.kind == StmtKind::Return || info.implicit_return {
+            out.extend(info.returned_idents.iter().cloned());
+        }
+        if info.managed_resource
+            && let Some(d) = info.taint.defines.as_deref()
+        {
+            out.insert(d.to_string());
+            facts.managed.insert(d.to_string());
+        }
+        let stores_away = info.escaping_store
+            || info
+                .taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.contains('.'));
+        if stores_away && info.kind == StmtKind::Seq {
+            out.extend(info.taint.uses.iter().cloned());
+        }
+        for i in container_insert_arg_positions(lang, info) {
+            out.insert(info.call.arg_uses[i][0].clone());
+        }
+    }
+    facts
+}
+
 /// Decompose a textual callee like `"c.mu.Lock"` into
 /// `(chain_receiver_text, method_suffix)`.  Returns `None` when the
 /// callee isn't a clean dotted member chain (parens, brackets, `::`,
@@ -355,6 +513,12 @@ pub struct DefaultTransfer<'a> {
     /// `nonescaping_local_field_containers` in `run_state_analysis`.
     /// Strict-additive: when `None`, the blanket suppression stands.
     pub nonescaping_field_containers: Option<&'a std::collections::HashSet<String>>,
+    /// Java only: names of wrapper objects that this body closes, returns,
+    /// manages with try-with-resources, or stores away (see
+    /// [`closeable_wrapper_names`]).  A stream handed to the constructor of
+    /// one of these (`new BufferedInputStream(in)`) is owned by the wrapper
+    /// from then on.  `None` disables the handoff.
+    pub closeable_wrappers: Option<&'a CloseableWrappers>,
 }
 
 impl Transfer<ProductState> for DefaultTransfer<'_> {
@@ -368,6 +532,27 @@ impl Transfer<ProductState> for DefaultTransfer<'_> {
         mut state: ProductState,
     ) -> (ProductState, Vec<TransferEvent>) {
         let mut events = Vec::new();
+
+        // A node that reassigns a Go error companion (or its resource)
+        // breaks the pairing: after `_, err = f.Write(b)` an `err != nil`
+        // branch says nothing about whether `f` was acquired.  The acquire
+        // that re-binds a pair runs after this in `apply_call`.
+        if self.lang == Lang::Go {
+            self.kill_redefined_err_companions(info, &mut state);
+        }
+
+        // C++ smart pointer adopting a raw pointer (`std::unique_ptr<T>
+        // p(raw)`): RAII now owns `raw`.  Runs before the assignment
+        // transfer so `raw`'s OPEN state is not copied onto `p`.
+        if self.lang == Lang::Cpp {
+            for u in &info.call.ctor_owned_args {
+                if let Some(sym) = self.get_sym(info, u)
+                    && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
+                {
+                    state.resource.set(sym, ResourceLifecycle::MOVED);
+                }
+            }
+        }
 
         match info.kind {
             StmtKind::Call => {
@@ -428,7 +613,7 @@ impl DefaultTransfer<'_> {
         }
         let mut handled = false;
         for summary in self.resource_method_summaries {
-            if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+            if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                 continue;
             }
             handled = true;
@@ -455,6 +640,105 @@ impl DefaultTransfer<'_> {
             }
         }
         handled
+    }
+
+    /// Whether a resource method summary named `summary_name` is the method
+    /// the call in `info` invokes (`method_lower` is its lowercased name).
+    /// Method names are case-sensitive except in PHP: Go `buf.Write` is not
+    /// a call to `func write`.
+    fn proxy_name_matches(&self, summary_name: &str, info: &NodeInfo, method_lower: &str) -> bool {
+        if self.lang == Lang::Php {
+            return summary_name.eq_ignore_ascii_case(method_lower);
+        }
+        info.call
+            .callee
+            .as_deref()
+            .and_then(try_chain_decompose)
+            .is_some_and(|(_, method)| method == summary_name)
+    }
+
+    /// Whether `callee_lower` operates on a resource handle: a use pattern of
+    /// any resource pair, or the global fallback list.
+    fn is_use_callee(&self, callee_lower: &str) -> bool {
+        self.resource_pairs
+            .iter()
+            .flat_map(|pair| pair.use_patterns.iter())
+            .chain(RESOURCE_USE_PATTERNS.iter())
+            .any(|p| use_callee_matches(self.lang, callee_lower, p))
+    }
+
+    /// Report a use-after-close for every CLOSED handle this use call
+    /// operates on.
+    ///
+    /// C, C++ and Rust count any mention: reading through a freed pointer
+    /// (`strcpy(buf, n->name)` after `free(n)`) is itself the bug.  In the
+    /// handle languages a closed object stays alive, so reading its name or
+    /// path (`f.name`, `f.Name()`, `tmp.path`) is fine.  There only the
+    /// handle the call works on counts: the receiver of the matched method,
+    /// a handle passed whole as an argument (`fwrite($fh, ..)`,
+    /// `fmt.Fprintf(f, ..)`), or the receiver of a nested use call
+    /// (`out.write(f.read())`).
+    fn emit_use_after_close(
+        &self,
+        node_idx: NodeIndex,
+        info: &NodeInfo,
+        state: &ProductState,
+        events: &mut Vec<TransferEvent>,
+    ) {
+        let any_mention = matches!(self.lang, Lang::C | Lang::Cpp | Lang::Rust);
+        let mut operands: smallvec::SmallVec<[&str; 4]> = smallvec::SmallVec::new();
+        if !any_mention {
+            if let Some(r) = info.call.receiver.as_deref() {
+                operands.push(r);
+            }
+            if let Some((r, _)) = info.call.callee.as_deref().and_then(try_chain_decompose) {
+                operands.push(r);
+            }
+            for arg in &info.call.arg_uses {
+                if let [whole] = arg.as_slice() {
+                    operands.push(whole);
+                }
+            }
+            for inner in info.arg_callees.iter().flatten() {
+                if let Some((r, _)) = try_chain_decompose(inner)
+                    && self.is_use_callee(&inner.to_ascii_lowercase())
+                {
+                    operands.push(r);
+                }
+            }
+        }
+        let mut reported: smallvec::SmallVec<[SymbolId; 2]> = smallvec::SmallVec::new();
+        for used in &info.taint.uses {
+            if !any_mention && !operands.contains(&used.as_str()) {
+                continue;
+            }
+            if let Some(sym) = self.get_sym(info, used)
+                && !reported.contains(&sym)
+                && state.resource.get(sym) == ResourceLifecycle::CLOSED
+            {
+                reported.push(sym);
+                events.push(TransferEvent {
+                    kind: TransferEventKind::UseAfterClose,
+                    node: node_idx,
+                    var: sym,
+                });
+            }
+        }
+    }
+
+    /// Drop Go error-companion pairs whose error or resource symbol this
+    /// node reassigns.
+    fn kill_redefined_err_companions(&self, info: &NodeInfo, state: &mut ProductState) {
+        for name in info
+            .taint
+            .defines
+            .iter()
+            .chain(info.taint.extra_defines.iter())
+        {
+            if let Some(sym) = self.get_sym(info, name) {
+                state.err_companions.kill(sym);
+            }
+        }
     }
 
     fn apply_call(
@@ -514,17 +798,32 @@ impl DefaultTransfer<'_> {
                     .nonescaping_field_containers
                     .is_some_and(|set| field_container_is_nonescaping(set, d))
         });
+        // Acquires stored straight into a global, an unqualified field, a
+        // pointer target (`*out = malloc(n)`) or a container element are
+        // owned by whatever holds that storage, exactly like the field case.
+        let define_is_field_lhs = define_is_field_lhs || info.escaping_store;
         let resource_pairs_iter: &[ResourcePair] = if define_is_field_lhs {
             &[]
         } else {
             self.resource_pairs
         };
         for pair in resource_pairs_iter {
-            let is_acquire = pair.acquire.iter().any(|a| callee_matches(&callee, a));
+            // Go `sync.Mutex` / `RWMutex` `Lock` returns nothing, and this
+            // pass only tracks an acquire through the value it binds.  So a
+            // bound `.Lock()` result (`cache := store.lock()`,
+            // `ok := l.Lock(ctx)`) is a user method that shares the name,
+            // not a held lock.  Go locks are checked by the cfg twin.
+            if self.lang == Lang::Go && pair.resource_name == "mutex" {
+                continue;
+            }
+            let is_acquire = pair
+                .acquire
+                .iter()
+                .any(|a| acquire_callee_matches(self.lang, &callee, a));
             let is_excluded = pair
                 .exclude_acquire
                 .iter()
-                .any(|e| callee_matches(&callee, e));
+                .any(|e| acquire_callee_matches(self.lang, &callee, e));
 
             if is_acquire
                 && !is_excluded
@@ -533,6 +832,18 @@ impl DefaultTransfer<'_> {
             {
                 state.resource.set(sym, ResourceLifecycle::OPEN);
                 direct_acquire = true;
+                // Go `f, err := os.Open(p)`: pair the handle with the error
+                // result so `if err != nil { return err }` can prune the
+                // failure branch (see `apply_if`).
+                if self.lang == Lang::Go {
+                    for extra in &info.taint.extra_defines {
+                        if let Some(err_sym) = self.get_sym(info, extra)
+                            && err_sym != sym
+                        {
+                            state.err_companions.bind(err_sym, sym);
+                        }
+                    }
+                }
             }
         }
 
@@ -570,6 +881,54 @@ impl DefaultTransfer<'_> {
                         released.push(sym);
                     }
                 }
+            }
+        }
+
+        // ── Ownership handed to a container or wrapper ───────────────────
+        if !direct_acquire && !direct_release {
+            for i in container_insert_arg_positions(self.lang, info) {
+                let u = &info.call.arg_uses[i][0];
+                if info.call.receiver.as_deref() == Some(u.as_str()) {
+                    continue;
+                }
+                if let Some(sym) = self.get_sym(info, u)
+                    && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
+                {
+                    state.resource.set(sym, ResourceLifecycle::MOVED);
+                }
+            }
+        }
+        // Java decorator streams: `BufferedInputStream b = new
+        // BufferedInputStream(in)` makes `b` the owner of `in` (closing `b`
+        // closes `in`).  Only when `b` itself is closed, returned, managed
+        // or stored away; `new InputSource(in)` followed by `in.close()`
+        // must keep `in` as the tracked handle.
+        if self.lang == Lang::Java
+            && info.call.is_constructor
+            && !define_is_field_lhs
+            && let Some(w) = info.taint.defines.as_deref()
+            && let Some(wrappers) = self.closeable_wrappers
+            && wrappers.names.contains(w)
+            && let Some(w_sym) = self.get_sym(info, w)
+        {
+            for u in &info.call.ctor_owned_args {
+                if u == w || wrappers.managed.contains(u) {
+                    continue;
+                }
+                let Some(u_sym) = self.get_sym(info, u) else {
+                    continue;
+                };
+                let u_lc = state.resource.get(u_sym);
+                if !u_lc.contains(ResourceLifecycle::OPEN) {
+                    continue;
+                }
+                let w_lc = if direct_acquire {
+                    state.resource.get(w_sym)
+                } else {
+                    u_lc
+                };
+                state.resource.set(w_sym, w_lc);
+                state.resource.set(u_sym, ResourceLifecycle::MOVED);
             }
         }
 
@@ -651,7 +1010,7 @@ impl DefaultTransfer<'_> {
             let receiver_is_chain = receiver_text.contains('.');
             if receiver_is_chain {
                 for summary in self.resource_method_summaries {
-                    if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+                    if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                         continue;
                     }
                     match summary.effect {
@@ -688,7 +1047,7 @@ impl DefaultTransfer<'_> {
                     _ => receiver_text,
                 };
                 for summary in self.resource_method_summaries {
-                    if !summary.method_name.eq_ignore_ascii_case(method_suffix) {
+                    if !self.proxy_name_matches(&summary.method_name, info, method_suffix) {
                         continue;
                     }
                     let Some(sym) = self.get_sym(info, recv_name) else {
@@ -713,41 +1072,9 @@ impl DefaultTransfer<'_> {
             }
         }
 
-        // ── Resource use (pair-specific patterns first, then global fallback)
-        let mut use_checked = false;
-        for pair in self.resource_pairs {
-            if pair.use_patterns.iter().any(|p| callee_matches(&callee, p)) {
-                use_checked = true;
-                for used in &info.taint.uses {
-                    if let Some(sym) = self.get_sym(info, used) {
-                        if state.resource.get(sym) == ResourceLifecycle::CLOSED {
-                            events.push(TransferEvent {
-                                kind: TransferEventKind::UseAfterClose,
-                                node: node_idx,
-                                var: sym,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        if !use_checked {
-            let is_use = RESOURCE_USE_PATTERNS
-                .iter()
-                .any(|p| callee_matches(&callee, p));
-            if is_use {
-                for used in &info.taint.uses {
-                    if let Some(sym) = self.get_sym(info, used) {
-                        if state.resource.get(sym) == ResourceLifecycle::CLOSED {
-                            events.push(TransferEvent {
-                                kind: TransferEventKind::UseAfterClose,
-                                node: node_idx,
-                                var: sym,
-                            });
-                        }
-                    }
-                }
-            }
+        // ── Resource use (pair-specific patterns, then the global fallback)
+        if self.is_use_callee(&callee) {
+            self.emit_use_after_close(node_idx, info, state, events);
         }
 
         // ── Auth call ────────────────────────────────────────────────────
@@ -792,35 +1119,37 @@ impl DefaultTransfer<'_> {
             matches!(edge, Some(EdgeKind::True))
         };
 
-        // Resource null-check: `if (f)` or `if (!f)` where f is a tracked
-        // resource currently in OPEN state.  The "var is falsy" edge means
-        // the acquisition returned null/zero, no resource was actually
-        // produced, so subsequent close requirements do not apply on that
-        // path.  Clearing OPEN suppresses the spurious may-leak finding for
-        // the canonical NULL-safe close idiom in C / C++ / similar:
+        // Resource null-check: on the branch where a tracked handle is null
+        // (or its failure sentinel), the acquire produced nothing, so no
+        // close is owed on that path.  Covers the NULL-safe close idiom and
+        // the check-and-return idiom in every spelling the CFG builder
+        // recognises (`if (f)`, `if (!f)`, `f == NULL`, `NULL != f`,
+        // `f is None`, `$fh === false`, `fd < 0`):
         //
         //     FILE *f = fopen(path, "r");
-        //     if (f) fclose(f);
+        //     if (f == NULL) return -1;
+        //     ...
+        //     fclose(f);
         //
-        // Without this rule the false edge keeps OPEN, joins with the true
-        // edge's CLOSED at function exit, and produces a may-leak FP even
-        // though the code is correct.
-        //
-        // Heuristic conditions:
-        //   * condition is a single-variable truth check (no comparisons,
-        //     no calls, `condition_vars.len() == 1` and the trimmed text
-        //     equals that variable name).
-        //   * the var has OPEN in its lifecycle bitset.
-        //   * the edge represents "var is falsy" (= !is_positive_edge).
-        if !is_positive_edge && is_simple_truth_check(info) {
-            for var in &info.condition_vars {
-                if let Some(sym) = self.get_sym(info, var) {
-                    let lc = state.resource.get(sym);
-                    if lc.contains(ResourceLifecycle::OPEN) {
-                        state
-                            .resource
-                            .set(sym, lc.difference(ResourceLifecycle::OPEN));
-                    }
+        // Without this the null edge keeps OPEN, joins with the CLOSED of
+        // the success path at function exit, and reports a may-leak on
+        // correct code.
+        if let Some(nc) = &info.null_check {
+            if edge == Some(nc.null_edge())
+                && let Some(sym) = self.get_sym(info, &nc.var)
+            {
+                clear_open(state, sym);
+            }
+            // Go error companion: on the `err != nil` branch the paired
+            // acquire failed and its handle is the zero value.
+            if self.lang == Lang::Go
+                && edge == Some(nc.non_null_edge())
+                && let Some(err_sym) = self.get_sym(info, &nc.var)
+            {
+                let paired: smallvec::SmallVec<[SymbolId; 2]> =
+                    state.err_companions.resources_of(err_sym).collect();
+                for res in paired {
+                    clear_open(state, res);
                 }
             }
         }
@@ -899,6 +1228,17 @@ impl DefaultTransfer<'_> {
         if let Some(ref def) = info.taint.defines
             && let Some(def_sym) = self.get_sym(info, def)
         {
+            // `close(fd); fd = -1;` / `free(p); p = NULL;`: once a released
+            // handle's variable is overwritten with a constant it no longer
+            // names that handle, so a later guarded release
+            // (`if (fd >= 0) close(fd);`) is not a second close.  An OPEN
+            // handle keeps its state: overwriting it is a leak, not a reset.
+            let lc = state.resource.get(def_sym);
+            if info.taint.uses.is_empty() && !lc.is_empty() && !lc.contains(ResourceLifecycle::OPEN)
+            {
+                state.resource.set(def_sym, ResourceLifecycle::empty());
+                return;
+            }
             // SAFE-FOR-FIELD-LHS: when the LHS is a member expression
             // (struct field / object property), do NOT track the field as
             // a separate resource — the parent struct/object owns the
@@ -933,8 +1273,14 @@ impl DefaultTransfer<'_> {
             // in tests/fixtures/.../typescript/state/resource_class.ts —
             // that path remains untouched here because RHS-is-a-call
             // routes through `apply_call`, not `apply_assignment`).
-            if def.contains('.') || def.contains("->") {
-                for used in &info.taint.uses {
+            // A read-modify-write (`p += n`, `p++`) lists its own target as
+            // a use: the handle stays where it is, it does not move to itself.
+            // The same holds for an `escaping_store`: `*out = buf`,
+            // `g_cache = buf`, `this.in = s` written as `in = s` in Java,
+            // `handles[i] = f`.
+            let not_rmw_self = |u: &&String| !(info.rmw_assign && *u == def);
+            if def.contains('.') || def.contains("->") || info.escaping_store {
+                for used in info.taint.uses.iter().filter(not_rmw_self) {
                     if let Some(use_sym) = self.get_sym(info, used) {
                         let lc = state.resource.get(use_sym);
                         if lc.contains(ResourceLifecycle::OPEN) {
@@ -945,8 +1291,14 @@ impl DefaultTransfer<'_> {
                 }
                 return;
             }
+            // Reading a field of a handle (`desc = cursor.description`,
+            // `n = node->next`) yields a different value; the handle itself
+            // stays put.  Only a plain alias (`g = f`) moves it.
+            if info.member_field.is_some() {
+                return;
+            }
             // If the RHS is a tracked resource, transfer its state
-            for used in &info.taint.uses {
+            for used in info.taint.uses.iter().filter(not_rmw_self) {
                 if let Some(use_sym) = self.get_sym(info, used) {
                     let lc = state.resource.get(use_sym);
                     if lc.contains(ResourceLifecycle::OPEN) {
@@ -963,6 +1315,49 @@ impl DefaultTransfer<'_> {
 /// Public wrapper for `callee_matches` used by `build_resource_method_summaries`.
 pub fn callee_matches_pub(callee: &str, pattern: &str) -> bool {
     callee_matches(callee, pattern)
+}
+
+/// Whether `callee_lower` is an acquire for `pattern`.
+///
+/// Outside C/C++ an acquire must match at an identifier boundary, the same
+/// rule the cfg twin uses: `disconnect` / `reconnect` are not `connect`,
+/// `is_open` / `_ensure_open` / `subprocess.Popen` / `mock_open` are not
+/// `open`, `websocket` is not `socket`, `decode_cursor` is not `cursor`.
+/// A raw suffix match turned every one of those results into an OPEN
+/// handle that was "never closed".
+///
+/// C/C++ keep the suffix match on purpose: prefixed allocators and
+/// `*_open` / `*_close` families are the house style there (`xmalloc`,
+/// `zmalloc`, `curlx_calloc`, `pg_malloc`, `table_open`, `iconv_open`,
+/// `dlopen`), and the matching suffix release pairs them up.  Release
+/// matching stays lenient everywhere: it only ever clears OPEN, so it cannot
+/// produce a leak.
+pub(crate) fn acquire_callee_matches(lang: Lang, callee_lower: &str, pattern: &str) -> bool {
+    match lang {
+        Lang::C | Lang::Cpp => callee_matches(callee_lower, pattern),
+        _ => rules::callee_matches_at_boundary(callee_lower, &pattern.to_ascii_lowercase()),
+    }
+}
+
+/// Whether `callee_lower` is a use of a resource handle for `pattern`.
+///
+/// Outside C/C++ a bare pattern must start at a word boundary: `read` does
+/// not match `spawn_thread` or `threading.Thread`, and `write` does not
+/// match `overwrite`.  An underscore still counts as a boundary, so
+/// snake_case wrappers (`safe_write(f, ..)`) keep matching.  C/C++ keep the
+/// plain suffix match, like their acquires.
+fn use_callee_matches(lang: Lang, callee_lower: &str, pattern: &str) -> bool {
+    if matches!(lang, Lang::C | Lang::Cpp) || pattern.starts_with('.') {
+        return callee_matches(callee_lower, pattern);
+    }
+    let pattern_lower = pattern.to_ascii_lowercase();
+    let Some(prefix) = callee_lower.strip_suffix(pattern_lower.as_str()) else {
+        return false;
+    };
+    prefix
+        .chars()
+        .next_back()
+        .is_none_or(|c| !c.is_ascii_alphanumeric())
 }
 
 /// Check if a callee matches a pattern.
@@ -985,27 +1380,15 @@ fn is_guard_like(callee: &str) -> bool {
     GUARD_PREFIXES.iter().any(|p| callee.starts_with(p))
 }
 
-/// True iff the condition is a single-variable truth check (no comparison,
-/// no method call, no boolean composition), the bare `if (f)` or `if (!f)`
-/// shape used as a NULL-safe gate around resource access.
-///
-/// Conservative: requires `condition_vars` to have exactly one entry, and
-/// the de-negated `condition_text` to be exactly that variable name (with
-/// optional parens stripped).  Rejects `if (f != NULL)`, `if (f.method())`,
-/// `if (f && g)`, etc., which are not the simple truth-check idiom and may
-/// have different semantics for the false-branch resource state.
-fn is_simple_truth_check(info: &NodeInfo) -> bool {
-    if info.condition_vars.len() != 1 {
-        return false;
+/// Remove OPEN from a symbol's lifecycle (the path on which the handle was
+/// never produced).
+fn clear_open(state: &mut ProductState, sym: SymbolId) {
+    let lc = state.resource.get(sym);
+    if lc.contains(ResourceLifecycle::OPEN) {
+        state
+            .resource
+            .set(sym, lc.difference(ResourceLifecycle::OPEN));
     }
-    let var = &info.condition_vars[0];
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    let stripped = text.trim();
-    let stripped = stripped.trim_start_matches('!').trim();
-    let stripped = stripped.trim_matches(|c: char| c == '(' || c == ')').trim();
-    stripped == var
 }
 
 /// Detect Go `map[string]bool` allowlist lookups used as boolean guards.
@@ -1324,6 +1707,199 @@ mod tests {
         assert!(!callee_matches("send", ".send"));
     }
 
+    fn call_node(callee: &str, defines: Option<&str>, arg_uses: Vec<Vec<&str>>) -> NodeInfo {
+        NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: defines.map(String::from),
+                uses: arg_uses.iter().flatten().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some(callee.into()),
+                arg_uses: arg_uses
+                    .into_iter()
+                    .map(|a| a.into_iter().map(String::from).collect())
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn container_insert_positions_by_language() {
+        let pos = |lang, info: &NodeInfo| container_insert_arg_positions(lang, info).to_vec();
+        assert_eq!(
+            pos(Lang::Cpp, &call_node("v.push_back", None, vec![vec!["f"]])),
+            vec![0]
+        );
+        assert_eq!(
+            pos(
+                Lang::Cpp,
+                &call_node("v.push_back", None, vec![vec!["f->next", "f"]])
+            ),
+            Vec::<usize>::new(),
+            "an expression argument moves nothing"
+        );
+        assert_eq!(
+            pos(
+                Lang::Java,
+                &call_node("m.put", None, vec![vec!["k"], vec!["s"]])
+            ),
+            vec![0, 1]
+        );
+        assert_eq!(
+            pos(
+                Lang::JavaScript,
+                &call_node("cache.set", None, vec![vec!["fd"]])
+            ),
+            Vec::<usize>::new(),
+            "single-argument `set` is a setter, not a map insert"
+        );
+        assert_eq!(
+            pos(
+                Lang::Go,
+                &call_node("append", Some("fs"), vec![vec!["fs"], vec!["f"]])
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            pos(
+                Lang::Php,
+                &call_node("array_push", None, vec![vec!["a"], vec!["f"]])
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            pos(Lang::Cpp, &call_node("p.reset", None, vec![vec!["raw"]])),
+            vec![0]
+        );
+        assert_eq!(
+            pos(Lang::Python, &call_node("reset", None, vec![vec!["raw"]])),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            pos(Lang::Python, &call_node("send", None, vec![vec!["f"]])),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn container_insert_moves_open_handle() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("v");
+        let transfer = DefaultTransfer {
+            lang: Lang::Cpp,
+            resource_pairs: rules::resource_pairs(Lang::Cpp),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+        let (out, _) = transfer.apply(
+            NodeIndex::new(1),
+            &call_node("v.push_back", None, vec![vec!["f"]]),
+            None,
+            state,
+        );
+        assert_eq!(out.resource.get(sym_f), ResourceLifecycle::MOVED);
+    }
+
+    fn java_wrapper_node() -> NodeInfo {
+        // BufferedInputStream b = new BufferedInputStream(in);
+        let mut n = call_node("BufferedInputStream", Some("b"), vec![vec!["in"]]);
+        n.call.is_constructor = true;
+        n.call.ctor_owned_args = vec!["in".into()];
+        n
+    }
+
+    #[test]
+    fn java_wrapper_takes_ownership_only_when_closeable() {
+        let mut interner = SymbolInterner::new();
+        let sym_in = interner.intern("in");
+        let sym_b = interner.intern("b");
+        let closeable = CloseableWrappers {
+            names: ["b".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let empty = CloseableWrappers::default();
+        let gated = DefaultTransfer {
+            lang: Lang::Java,
+            resource_pairs: rules::resource_pairs(Lang::Java),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: Some(&closeable),
+        };
+        let ungated = DefaultTransfer {
+            closeable_wrappers: Some(&empty),
+            ..gated
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_in, ResourceLifecycle::OPEN);
+
+        let (handed, _) = gated.apply(NodeIndex::new(1), &java_wrapper_node(), None, state.clone());
+        assert_eq!(handed.resource.get(sym_in), ResourceLifecycle::MOVED);
+        assert_eq!(handed.resource.get(sym_b), ResourceLifecycle::OPEN);
+
+        // `new InputSource(in)` that is never closed: `in` stays the handle.
+        let (kept, _) = ungated.apply(NodeIndex::new(1), &java_wrapper_node(), None, state);
+        assert_eq!(kept.resource.get(sym_in), ResourceLifecycle::OPEN);
+        assert_eq!(kept.resource.get(sym_b), ResourceLifecycle::empty());
+    }
+
+    #[test]
+    fn acquire_matcher_requires_identifier_boundary_outside_c() {
+        let py = |c: &str, p: &str| acquire_callee_matches(Lang::Python, c, p);
+        assert!(!py("client.disconnect", "connect"));
+        assert!(!py("client.reconnect", "connect"));
+        assert!(!py("door.is_open", "open"));
+        assert!(!py("store._ensure_open", "open"));
+        assert!(!py("subprocess.popen", "open"));
+        assert!(!py("mock_open", "open"));
+        assert!(!py("factory.websocket", "socket"));
+        assert!(!py("decode_cursor", "cursor"));
+        assert!(py("open", "open"));
+        assert!(py("io.open", "open"));
+        assert!(py("psycopg2.connect", "connect"));
+        assert!(py("conn.cursor", "cursor"));
+        assert!(py("socket.socket", "socket.socket"));
+        assert!(py("os.fdopen", "fdopen"));
+
+        let java = |c: &str, p: &str| acquire_callee_matches(Lang::Java, c, p);
+        assert!(!java("h.closesocket", "Socket"));
+        assert!(java("sf.createsocket", "createSocket"));
+        assert!(java("conn.preparestatement", "prepareStatement"));
+
+        let rb = |c: &str, p: &str| acquire_callee_matches(Lang::Ruby, c, p);
+        assert!(!rb("file.reopen", "open"));
+        assert!(rb("io.popen", "IO.popen"));
+
+        assert!(!acquire_callee_matches(Lang::Rust, "dealloc", "alloc"));
+    }
+
+    #[test]
+    fn acquire_matcher_stays_lenient_for_c_family() {
+        for (callee, pattern) in [
+            ("xmalloc", "malloc"),
+            ("hi_malloc", "malloc"),
+            ("curlx_calloc", "calloc"),
+            ("table_open", "open"),
+        ] {
+            assert!(acquire_callee_matches(Lang::C, callee, pattern), "{callee}");
+            assert!(
+                acquire_callee_matches(Lang::Cpp, callee, pattern),
+                "{callee}"
+            );
+        }
+    }
+
     #[test]
     fn acquire_sets_open() {
         let mut interner = SymbolInterner::new();
@@ -1336,6 +1912,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -1373,6 +1950,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1412,6 +1990,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1452,6 +2031,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1477,6 +2057,96 @@ mod tests {
         let (_state, events) = transfer.apply(NodeIndex::new(3), &info, None, state);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, TransferEventKind::UseAfterClose);
+    }
+
+    /// Count use-after-close events `info` raises with `name` CLOSED.
+    fn uac_events(lang: Lang, name: &str, info: &NodeInfo) -> usize {
+        let mut interner = SymbolInterner::new();
+        let sym = interner.intern(name);
+        let transfer = DefaultTransfer {
+            lang,
+            resource_pairs: rules::resource_pairs(lang),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym, ResourceLifecycle::CLOSED);
+        let (_state, events) = transfer.apply(NodeIndex::new(1), info, None, state);
+        events
+            .iter()
+            .filter(|e| e.kind == TransferEventKind::UseAfterClose)
+            .count()
+    }
+
+    #[test]
+    fn use_after_close_needs_the_handle_itself_outside_raw_memory_langs() {
+        // `sys.stdout.write("%s" % f.name)`: `f` is only reached through an
+        // attribute of an argument.
+        let attr = call_node("sys.stdout.write", None, vec![vec!["f.name", "f", "name"]]);
+        assert_eq!(uac_events(Lang::Python, "f", &attr), 0);
+        // `fmt.Fprintf(os.Stderr, "%s", f.Name())`.
+        let go_attr = call_node(
+            "fmt.Fprintf",
+            None,
+            vec![
+                vec!["os.Stderr", "os", "Stderr"],
+                vec![],
+                vec!["f.Name", "f"],
+            ],
+        );
+        assert_eq!(uac_events(Lang::Go, "f", &go_attr), 0);
+
+        // Receiver of the matched method: `f.write("x")`.
+        let mut recv = call_node("f.write", None, vec![vec![]]);
+        recv.taint.uses.push("f".into());
+        assert_eq!(uac_events(Lang::Python, "f", &recv), 1);
+        // The handle passed whole: `fmt.Fprintf(f, "x")`.
+        let whole = call_node("fmt.Fprintf", None, vec![vec!["f"], vec![]]);
+        assert_eq!(uac_events(Lang::Go, "f", &whole), 1);
+        // A nested use call on the handle: `sys.stdout.write(f.read())`.
+        let mut nested = call_node("sys.stdout.write", None, vec![vec!["f.read", "f"]]);
+        nested.arg_callees = vec![Some("f.read".into())];
+        assert_eq!(uac_events(Lang::Python, "f", &nested), 1);
+    }
+
+    #[test]
+    fn use_after_close_counts_any_mention_in_c() {
+        // `strcpy(buf, n->name)` after `free(n)` reads freed memory.
+        let info = call_node(
+            "strcpy",
+            None,
+            vec![vec!["buf"], vec!["n->name", "n", "name"]],
+        );
+        assert_eq!(uac_events(Lang::C, "n", &info), 1);
+    }
+
+    #[test]
+    fn use_patterns_match_at_word_boundary_outside_c() {
+        assert!(use_callee_matches(Lang::Python, "os.read", "read"));
+        assert!(use_callee_matches(Lang::Python, "read", "read"));
+        assert!(use_callee_matches(Lang::Python, "safe_write", "write"));
+        assert!(use_callee_matches(
+            Lang::JavaScript,
+            "fs.readsync",
+            "readSync"
+        ));
+        assert!(use_callee_matches(Lang::Go, "f.write", ".write"));
+        assert!(!use_callee_matches(
+            Lang::Python,
+            "pool.spawn_thread",
+            "read"
+        ));
+        assert!(!use_callee_matches(
+            Lang::Python,
+            "threading.thread",
+            "read"
+        ));
+        assert!(!use_callee_matches(Lang::Python, "overwrite", "write"));
+        // C keeps the suffix match (`my_fread`, `xfread`).
+        assert!(use_callee_matches(Lang::C, "xfread", "fread"));
     }
 
     #[test]
@@ -1505,6 +2175,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1556,6 +2227,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1583,33 +2255,6 @@ mod tests {
     }
 
     #[test]
-    fn is_simple_truth_check_recognises_bare_identifier() {
-        let make = |text: &str, vars: Vec<&str>| NodeInfo {
-            kind: StmtKind::If,
-            ast: AstMeta::default(),
-            condition_text: Some(text.to_string()),
-            condition_vars: vars.into_iter().map(String::from).collect(),
-            ..Default::default()
-        };
-        // Plain `if (f)` truth check
-        assert!(is_simple_truth_check(&make("f", vec!["f"])));
-        // Negated form `if (!f)`
-        assert!(is_simple_truth_check(&make("!f", vec!["f"])));
-        // Parenthesised form `if ((f))`
-        assert!(is_simple_truth_check(&make("(f)", vec!["f"])));
-        // Negated parenthesised form `if (!(f))`
-        assert!(is_simple_truth_check(&make("!(f)", vec!["f"])));
-        // Negative: comparison
-        assert!(!is_simple_truth_check(&make("f != NULL", vec!["f"])));
-        // Negative: method call
-        assert!(!is_simple_truth_check(&make("f.is_valid()", vec!["f"])));
-        // Negative: composite condition
-        assert!(!is_simple_truth_check(&make("f && g", vec!["f", "g"])));
-        // Negative: empty vars
-        assert!(!is_simple_truth_check(&make("f", vec![])));
-    }
-
-    #[test]
     fn null_check_clears_open_on_false_edge() {
         let mut interner = SymbolInterner::new();
         let sym_f = interner.intern("f");
@@ -1621,6 +2266,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1628,9 +2274,13 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::If,
-            condition_text: Some("f".into()),
+            condition_text: Some("(f)".into()),
             condition_vars: vec!["f".into()],
             condition_negated: false,
+            null_check: Some(crate::cfg::NullCheck {
+                var: "f".into(),
+                null_on_true: false,
+            }),
             ..Default::default()
         };
 
@@ -1677,6 +2327,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -1685,9 +2336,13 @@ mod tests {
         // `if (!f)`, condition_negated=true, true-edge means f is null
         let info = NodeInfo {
             kind: StmtKind::If,
-            condition_text: Some("!f".into()),
+            condition_text: Some("(!f)".into()),
             condition_vars: vec!["f".into()],
             condition_negated: true,
+            null_check: Some(crate::cfg::NullCheck {
+                var: "f".into(),
+                null_on_true: true,
+            }),
             ..Default::default()
         };
 
@@ -1717,6 +2372,152 @@ mod tests {
                 .get(sym_f)
                 .contains(ResourceLifecycle::OPEN),
             "OPEN should be preserved on the non-null edge of `if (!f)` (false edge)"
+        );
+    }
+
+    #[test]
+    fn condition_without_null_check_keeps_open() {
+        // `if (f != g)` carries no null-check fact: neither edge may clear.
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        let transfer = DefaultTransfer {
+            lang: Lang::C,
+            resource_pairs: rules::resource_pairs(Lang::C),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+        let info = NodeInfo {
+            kind: StmtKind::If,
+            condition_text: Some("(f != g)".into()),
+            condition_vars: vec!["f".into(), "g".into()],
+            ..Default::default()
+        };
+        for edge in [EdgeKind::True, EdgeKind::False] {
+            let (out, _) = transfer.apply(NodeIndex::new(1), &info, Some(edge), state.clone());
+            assert_eq!(out.resource.get(sym_f), ResourceLifecycle::OPEN);
+        }
+    }
+
+    fn go_transfer(interner: &SymbolInterner) -> DefaultTransfer<'_> {
+        DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        }
+    }
+
+    fn go_open_node() -> NodeInfo {
+        // f, err := os.Open(p)
+        NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: Some("f".into()),
+                extra_defines: vec!["err".into()],
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("os.Open".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn go_err_check_node() -> NodeInfo {
+        // if err != nil
+        NodeInfo {
+            kind: StmtKind::If,
+            condition_text: Some("err != nil".into()),
+            condition_vars: vec!["err".into()],
+            null_check: Some(crate::cfg::NullCheck {
+                var: "err".into(),
+                null_on_true: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn go_err_companion_clears_open_on_err_branch() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("err");
+        let transfer = go_transfer(&interner);
+
+        let (state, _) = transfer.apply(
+            NodeIndex::new(0),
+            &go_open_node(),
+            None,
+            ProductState::initial(),
+        );
+        assert_eq!(state.resource.get(sym_f), ResourceLifecycle::OPEN);
+
+        let check = go_err_check_node();
+        let (err_branch, _) = transfer.apply(
+            NodeIndex::new(1),
+            &check,
+            Some(EdgeKind::True),
+            state.clone(),
+        );
+        assert!(
+            !err_branch
+                .resource
+                .get(sym_f)
+                .contains(ResourceLifecycle::OPEN),
+            "err != nil branch: os.Open failed, f holds nothing"
+        );
+        let (ok_branch, _) =
+            transfer.apply(NodeIndex::new(1), &check, Some(EdgeKind::False), state);
+        assert_eq!(ok_branch.resource.get(sym_f), ResourceLifecycle::OPEN);
+    }
+
+    #[test]
+    fn go_err_companion_dropped_when_err_reassigned() {
+        // f, err := os.Open(p); _, err = f.Write(b); if err != nil { ... }
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern("f");
+        interner.intern("err");
+        let transfer = go_transfer(&interner);
+
+        let (state, _) = transfer.apply(
+            NodeIndex::new(0),
+            &go_open_node(),
+            None,
+            ProductState::initial(),
+        );
+        let write = NodeInfo {
+            kind: StmtKind::Call,
+            taint: TaintMeta {
+                defines: Some("err".into()),
+                uses: vec!["f".into()],
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("f.Write".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (state, _) = transfer.apply(NodeIndex::new(1), &write, None, state);
+        let (err_branch, _) = transfer.apply(
+            NodeIndex::new(2),
+            &go_err_check_node(),
+            Some(EdgeKind::True),
+            state,
+        );
+        assert_eq!(
+            err_branch.resource.get(sym_f),
+            ResourceLifecycle::OPEN,
+            "the Write error says nothing about the open handle"
         );
     }
 
@@ -2038,6 +2839,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2108,6 +2910,7 @@ mod tests {
             resource_method_summaries: &summaries,
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let lock_info = NodeInfo {
@@ -2170,6 +2973,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mk_call = |callee: &str| NodeInfo {
@@ -2226,6 +3030,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2278,6 +3083,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&lock),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         for callee in ["c.writer.header().Lock", "Foo::bar::Lock", "c[i].mu.Lock"] {
             let info = NodeInfo {
@@ -2399,6 +3205,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2467,6 +3274,7 @@ mod tests {
             resource_method_summaries: &summaries,
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let lock_info = NodeInfo {
@@ -2521,6 +3329,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2564,6 +3373,7 @@ mod tests {
             resource_method_summaries: std::slice::from_ref(&acquire),
             ptr_proxy_hints: Some(&hints),
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
         let info = NodeInfo {
             kind: StmtKind::Call,
@@ -2591,6 +3401,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2631,6 +3442,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2670,6 +3482,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let mut state = ProductState::initial();
@@ -2709,6 +3522,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {
@@ -2744,6 +3558,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let info = NodeInfo {

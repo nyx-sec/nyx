@@ -1,0 +1,49 @@
+{
+  "description": "Python statements that nest calls around some operands. shlex.quote and int() cover only what they wrap; a helper summary keeps its unquoted parameter; nested source and allowlist helpers act as in their let-bound form.",
+  "tags": ["taint", "sanitizer", "nested-call", "fstring"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [27, 27],
+      "notes": "opts is not quoted"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [33, 33],
+      "notes": "both operands are quoted"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [39, 39],
+      "notes": "int(limit) does not cover name"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [44, 44],
+      "notes": "only the int conversion is interpolated"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [50, 50],
+      "notes": "quote_first quotes its first parameter only"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [54, 54],
+      "notes": "get_cmd returns a request parameter"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [58, 58],
+      "notes": "sort_column returns constants only"
+    }
+  ]
+}

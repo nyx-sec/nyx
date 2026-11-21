@@ -1,0 +1,25 @@
+{
+  "description": "A request parameter chosen as the method name of getMethod is unsafe reflection (the method-level twin of Class.forName(tainted)).  A literal method name and the servlet's own request.getMethod() are not.  The java.reflection.method_invoke pattern fires on the Method value either way, so it cannot tell the two apart.",
+  "tags": ["taint", "java", "reflection", "servlet"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [10, 10],
+      "must_match": true,
+      "notes": "request.getParameter(\"action\") selects the method"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [14, 21],
+      "must_not_match": true,
+      "notes": "constant method name, and HttpServletRequest.getMethod() takes no name"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "line_range": [14, 21],
+      "must_not_match": true,
+      "notes": "request.getMethod() is not a structural sink"
+    }
+  ]
+}

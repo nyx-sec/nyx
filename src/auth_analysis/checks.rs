@@ -1,7 +1,7 @@
 use super::config::AuthAnalysisRules;
 use super::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, OperationKind,
-    SensitiveOperation, ValueRef, ValueSourceKind,
+    SensitiveOperation, SinkClass, UnitRuntime, ValueRef, ValueSourceKind,
 };
 use crate::patterns::Severity;
 
@@ -90,6 +90,17 @@ fn check_ownership_gaps(
             if op.sink_class.is_some_and(|c| !c.is_auth_relevant()) {
                 continue;
             }
+            // An HTTP-client request made from a JS/TS helper that is not a
+            // route handler and does not sit in a server file is the browser
+            // calling its own backend.  The server end is where the check
+            // belongs.
+            if op.sink_class == Some(SinkClass::OutboundNetwork)
+                && matches!(lang, "javascript" | "typescript")
+                && unit.kind != AnalysisUnitKind::RouteHandler
+                && unit.runtime != UnitRuntime::Server
+            {
+                continue;
+            }
             // NextAuth callbacks are themselves the authentication
             // boundary, both reads and mutations inside them operate on
             // identity context, so suppress regardless of op kind.
@@ -103,7 +114,7 @@ fn check_ownership_gaps(
             let relevant_subjects: Vec<&ValueRef> = op
                 .subjects
                 .iter()
-                .filter(|s| is_relevant_target_subject(s, unit))
+                .filter(|s| is_relevant_target_subject(s, unit, lang))
                 .collect();
             if relevant_subjects.is_empty() {
                 continue;
@@ -144,6 +155,19 @@ fn check_ownership_gaps(
                     .iter()
                     .any(|s| is_actor_context_subject(s, unit));
                 if has_actor_co_subject {
+                    continue;
+                }
+                // Scope co-subject: the same call also binds the caller's
+                // scope entity (`GetLabelInRepoByID(ctx, repo.ID, labelID)`,
+                // `filter(organization_id=organization.id, id=env_id)`), so
+                // the lookup is confined to a scope the caller already holds.
+                // An unscoped `GetLabelByID(ctx, labelID)` has no such
+                // subject and still fires.
+                let has_scope_co_subject = op
+                    .subjects
+                    .iter()
+                    .any(|s| is_caller_scope_entity_subject(s, unit));
+                if has_scope_co_subject {
                     continue;
                 }
                 if !has_prior_subject_auth(unit, op, &relevant_subjects) {
@@ -423,22 +447,19 @@ fn has_prior_subject_auth(
 /// require the operation to be a row-fetch site to apply the
 /// exemption.
 fn has_row_fetch_exemption(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool {
-    // Find the row var (if any) declared at this op's line.
-    let row_var: Option<&str> = unit
+    // Row vars declared at this op's line.  One line can bind several rows
+    // (`const [a, b] = await Promise.all([A.find(x), B.find(y)])`).
+    let row_vars: Vec<&str> = unit
         .row_population_data
         .iter()
-        .find_map(|(var, (line, _))| {
-            if *line == op.line {
-                Some(var.as_str())
-            } else {
-                None
-            }
-        });
-    let Some(row_var) = row_var else {
+        .filter(|(_, bindings)| bindings.iter().any(|(line, _)| *line == op.line))
+        .map(|(var, _)| var.as_str())
+        .collect();
+    if row_vars.is_empty() {
         return false;
-    };
+    }
 
-    // Look for any non-login auth check whose subjects mention the row.
+    // Look for any non-login auth check whose subjects mention a row.
     // Match against the *root* of the subject's chain (`a.b.c` → `a`)
     // so an auth check on a row's nested field, e.g.
     // `is_mod_or_admin(pool, &user, comment_view.community.id)` ,
@@ -453,7 +474,7 @@ fn has_row_fetch_exemption(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool
         check
             .subjects
             .iter()
-            .any(|subj| chain_root(subj) == row_var)
+            .any(|subj| row_vars.contains(&chain_root(subj)))
     })
 }
 
@@ -562,8 +583,8 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
     let subject_populates: Vec<&str> = unit
         .row_population_data
         .iter()
-        .filter_map(|(row_var, (_line, args))| {
-            let matches_arg = args.iter().any(|arg| {
+        .filter_map(|(row_var, bindings)| {
+            let matches_arg = bindings.iter().flat_map(|(_line, args)| args).any(|arg| {
                 if canonical_subject_name(arg) == subject_key {
                     return true;
                 }
@@ -664,12 +685,54 @@ fn related_subject_base(subject: &ValueRef) -> Option<String> {
     }
 }
 
-fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &str) -> bool {
     is_id_like(subject)
         && !is_actor_context_subject(subject, unit)
         && !is_const_bound_subject(subject, unit)
         && !is_typed_bounded_subject(subject, unit)
         && !is_caller_scope_entity_subject(subject, unit)
+        && !is_package_level_subject(subject, unit)
+        && !is_model_selector_subject(subject, unit, lang)
+}
+
+/// `uid`, `targetUid`, `componentUID` outside a route handler.  In Strapi and
+/// similar codebases a `uid` names a content type (`api::article.article`),
+/// and the calls it feeds (`strapi.getModel(uid)`, `db.query(uid)`) select a
+/// model rather than a row.  A route handler's `uid` is a path or body value
+/// and stays a subject, as does any `uid` read off a request chain or copied
+/// from one.
+fn is_model_selector_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &str) -> bool {
+    if !matches!(lang, "javascript" | "typescript")
+        || unit.kind == AnalysisUnitKind::RouteHandler
+        || matches!(
+            subject.source_kind,
+            ValueSourceKind::RequestParam
+                | ValueSourceKind::RequestBody
+                | ValueSourceKind::RequestQuery
+                | ValueSourceKind::Session
+        )
+    {
+        return false;
+    }
+    let name = subject
+        .field
+        .as_deref()
+        .or(subject.base.as_deref())
+        .unwrap_or(&subject.name);
+    super::naming::is_uid_name(name) && !unit.var_alias_chain.contains_key(&subject.name)
+}
+
+/// True iff `subject` is rooted at a Go package-level name: an imported
+/// package (`common.LDAPUID`, `grid.GetByteBuffer()`) or a file const.  The
+/// unit builder already removed every name the function shadows, so what is
+/// left names a declaration and cannot carry a per-request value.
+fn is_package_level_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    if unit.package_names.is_empty() {
+        return false;
+    }
+    let chain = subject.base.as_deref().unwrap_or(subject.name.as_str());
+    let root = chain.split(['.', '[', '(']).next().unwrap_or(chain);
+    unit.package_names.contains(root)
 }
 
 /// True iff `subject` is a member-access of form `<entity>.id` /
@@ -709,10 +772,60 @@ fn is_caller_scope_entity_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bo
         return false;
     };
     let root = base.split('.').next().unwrap_or(base);
-    if !is_caller_scope_entity_name(root) {
+    if is_caller_scope_entity_name(root) && unit.params.iter().any(|p| p == root) {
+        return true;
+    }
+    is_request_context_scope_subject(base, root, unit)
+}
+
+/// `<ctx>.Repo.Repository.ID`, `<ctx>.Org.Organization.ID`,
+/// `<ctx>.Package.Owner.ID`: Go frameworks such as gitea resolve the repo,
+/// organisation or package owner named in the URL, and check the caller's
+/// access to it, before the handler runs.  The chain reads that scope entity
+/// off the request context.  A local copy of the entity (`repo :=
+/// ctx.Repo.Repository`) counts the same way.
+///
+/// Chains that pass through request payload (`ctx.Req.Form.ID`) do not.
+fn is_request_context_scope_subject(base: &str, root: &str, unit: &AnalysisUnit) -> bool {
+    if unit.request_roots.is_empty() || base.contains('(') || !unit.request_roots.contains(root) {
         return false;
     }
-    unit.params.iter().any(|p| p == root)
+    let rest: Vec<&str> = base.split('.').skip(1).collect();
+    if rest.is_empty() {
+        return is_request_scope_segment(root);
+    }
+    rest.iter().any(|seg| is_request_scope_segment(seg))
+        && !rest.iter().any(|seg| is_request_payload_segment(seg))
+}
+
+fn is_request_scope_segment(segment: &str) -> bool {
+    is_caller_scope_entity_name(segment)
+        || matches!(
+            segment.to_ascii_lowercase().as_str(),
+            "package" | "owner" | "contextuser"
+        )
+}
+
+fn is_request_payload_segment(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().as_str(),
+        "body"
+            | "form"
+            | "postform"
+            | "multipartform"
+            | "query"
+            | "params"
+            | "input"
+            | "data"
+            | "req"
+            | "request"
+            | "header"
+            | "headers"
+            | "url"
+            | "args"
+            | "json"
+            | "values"
+    )
 }
 
 /// Recognises parameter names that conventionally carry a *scope*
@@ -810,6 +923,15 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
         return true;
     }
 
+    // Go request-context actor: `ctx.Doer.ID`, `c.User.ID`.  The framework
+    // resolves the signed-in user onto the context before the handler runs.
+    if let Some(base) = subject.base.as_deref()
+        && is_request_context_actor_base(base, unit)
+        && subject.field.as_deref().is_some_and(is_self_actor_id_field)
+    {
+        return true;
+    }
+
     // A3: `V.id`-shape subjects where `V` is bound from a login-guard /
     // auth-check call (or from a typed self-actor extractor parameter)
     // are the caller's own id. `V.group_id` / `V.workspace_id` stay
@@ -818,7 +940,10 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
     if let Some(base) = subject.base.as_deref() {
         let root = base.split('.').next().unwrap_or(base);
         if unit.self_actor_vars.contains(root)
-            && subject.field.as_deref().is_some_and(is_self_actor_id_field)
+            && subject
+                .field
+                .as_deref()
+                .is_some_and(|f| is_self_actor_id_field(f) || is_actor_tenant_field(f))
         {
             return true;
         }
@@ -843,6 +968,48 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
                 | "createdby"
                 | "updatedby"
         )
+    )
+}
+
+/// `<root>.Doer`, `<root>.User`, `<root>.Session.User`: the authenticated
+/// actor read off a Go request context.
+fn is_request_context_actor_base(base: &str, unit: &AnalysisUnit) -> bool {
+    if unit.request_roots.is_empty() || base.contains('(') {
+        return false;
+    }
+    let mut segments = base.split('.');
+    let (Some(root), Some(_)) = (segments.next(), segments.next()) else {
+        return false;
+    };
+    unit.request_roots.contains(root)
+        && base
+            .rsplit('.')
+            .next()
+            .is_some_and(is_request_actor_segment)
+}
+
+pub(super) fn is_request_actor_segment(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().as_str(),
+        "doer" | "user" | "signeduser" | "currentuser" | "actor" | "authuser"
+    )
+}
+
+/// The authenticated actor's own tenant: `user.teamId`, `actor.organizationId`.
+/// Reading the caller's own team is not reaching for a foreign one, and a
+/// write stamped with it (`create({ userId: user.id, teamId: user.teamId })`)
+/// is confined to the caller's tenant.  `workspace_id` and `group_id` are left
+/// out on purpose: a user can belong to several, so the field is not
+/// necessarily the one the request names.
+fn is_actor_tenant_field(field: &str) -> bool {
+    let key: String = field
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    matches!(
+        key.as_str(),
+        "teamid" | "organizationid" | "orgid" | "tenantid" | "accountid"
     )
 }
 
@@ -878,11 +1045,15 @@ fn subject_identity_key(subject: &ValueRef) -> Option<String> {
 }
 
 fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
+    // `req.session.user.id` has base `req.session.user`; `req.session.userId`
+    // has base `req.session` and the whole chain is the entry the allowlist
+    // names.  Match either.
     subject.source_kind == ValueSourceKind::Session
-        && subject
+        && (subject
             .base
             .as_deref()
             .is_some_and(is_self_scoped_session_base)
+            || is_self_scoped_session_base(&subject.name))
 }
 
 fn is_self_scoped_session_base(base: &str) -> bool {
@@ -902,6 +1073,7 @@ fn is_self_scoped_session_base(base: &str) -> bool {
             | "ctx.session.currentUser"
             | "ctx.state.user"
             | "ctx.state.currentUser"
+            | "ctx.state.auth.user"
             // The caller's own id from the session is self-scoped: fetching
             // your own record with it is not IDOR (only a foreign,
             // request-supplied id is). The `.user` forms above missed the
@@ -1037,18 +1209,10 @@ fn is_id_like(subject: &ValueRef) -> bool {
 }
 
 /// String-level analogue of `is_id_like` for working with parameter
-/// names (which carry no `ValueRef` structure).  Mirrors the same
-/// suffix vocabulary so a parameter `doc_id` / `groupId` / `userIds`
-/// is recognised as an id-bearing input.
+/// names (which carry no `ValueRef` structure).  A parameter `doc_id` /
+/// `groupId` / `userIds` is recognised as an id-bearing input.
 fn is_id_like_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == "id"
-        || lower.ends_with("id")
-        || lower.ends_with("_id")
-        || lower.ends_with("ids")
-        || lower.contains("workspaceid")
-        || lower.contains("projectid")
-        || lower.contains("noteid")
+    super::naming::is_id_like_name(name)
 }
 
 /// True when the analysis unit shows positive evidence of receiving
@@ -1074,6 +1238,12 @@ fn is_id_like_name(name: &str) -> bool {
 fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>, lang: &str) -> bool {
     if unit.kind == AnalysisUnitKind::RouteHandler {
         return true;
+    }
+    // Browser code (React components, hooks, SPA helpers) cannot enforce
+    // authorization, so its calls into stores and SDKs are not unchecked
+    // data access.
+    if unit.runtime == UnitRuntime::Browser {
+        return false;
     }
     // Project-level web-framework gate.  When the project's manifest
     // was inspected and named no web framework matching the file's
@@ -1150,7 +1320,12 @@ fn is_external_input_param_name_for_lang(name: &str, lang: &str) -> bool {
     if name.starts_with("mock_") || name.starts_with("mocked_") {
         return false;
     }
-    if is_id_like_name(name) {
+    // In JS/TS a `uid` parameter is as likely a schema selector (Strapi's
+    // content-type UID) as a row id, so it does not mark a helper as an
+    // entry point on its own.
+    let uid_selector =
+        matches!(lang, "javascript" | "typescript") && super::naming::is_uid_name(name);
+    if is_id_like_name(name) && !uid_selector {
         return true;
     }
     let lower = name.to_ascii_lowercase();
@@ -1197,18 +1372,26 @@ fn is_external_input_param_name_for_lang(name: &str, lang: &str) -> bool {
 
 fn is_batch_collection(subject: &ValueRef) -> bool {
     subject.source_kind == ValueSourceKind::Identifier
-        && subject.name.to_ascii_lowercase().ends_with("ids")
+        && super::naming::is_id_collection_name(&subject.name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         auth_check_covers_subject, is_actor_context_subject, is_caller_scope_entity_name,
-        is_caller_scope_entity_subject, is_external_input_param_name, is_relevant_target_subject,
+        is_caller_scope_entity_subject, is_external_input_param_name,
+        is_external_input_param_name_for_lang, is_relevant_target_subject as relevant_in,
         unit_has_user_input_evidence,
     };
-    use crate::auth_analysis::model::{AnalysisUnit, AnalysisUnitKind, ValueRef, ValueSourceKind};
+    use crate::auth_analysis::model::{
+        AnalysisUnit, AnalysisUnitKind, UnitRuntime, ValueRef, ValueSourceKind,
+    };
     use std::collections::{HashMap, HashSet};
+
+    /// `is_relevant_target_subject` as the JS/TS pass calls it.
+    fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+        relevant_in(subject, unit, "typescript")
+    }
 
     fn empty_unit() -> AnalysisUnit {
         AnalysisUnit {
@@ -1234,6 +1417,9 @@ mod tests {
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
             is_nextauth_options_factory: false,
+            package_names: HashSet::new(),
+            runtime: UnitRuntime::Unknown,
+            request_roots: HashSet::new(),
         }
     }
 
@@ -1727,7 +1913,7 @@ mod tests {
         // `let community = Community::read(pool, data.community_id)?;` at line 10
         unit.row_population_data.insert(
             "community".to_string(),
-            (10, vec![member("data", "community_id")]),
+            vec![(10, vec![member("data", "community_id")])],
         );
         // Auth check at line 20 with `community` as a subject base.
         unit.auth_checks.push(AuthCheck {
@@ -1774,7 +1960,7 @@ mod tests {
         let mut unit = empty_unit();
         unit.row_population_data.insert(
             "community".to_string(),
-            (10, vec![member("data", "community_id")]),
+            vec![(10, vec![member("data", "community_id")])],
         );
         // No auth check pushed, exemption must NOT apply.
 
@@ -1800,7 +1986,7 @@ mod tests {
         let mut unit = empty_unit();
         unit.row_population_data.insert(
             "community".to_string(),
-            (10, vec![member("data", "community_id")]),
+            vec![(10, vec![member("data", "community_id")])],
         );
         // Login-only check on the row should NOT exempt the row-fetch
         //, login proves identity, not authorization.
@@ -1843,7 +2029,7 @@ mod tests {
         let mut unit = empty_unit();
         unit.row_population_data.insert(
             "community".to_string(),
-            (10, vec![member("data", "community_id")]),
+            vec![(10, vec![member("data", "community_id")])],
         );
         let check = AuthCheck {
             kind: AuthCheckKind::Membership,
@@ -1891,8 +2077,10 @@ mod tests {
         use crate::auth_analysis::model::{AuthCheck, AuthCheckKind};
 
         let mut unit = empty_unit();
-        unit.row_population_data
-            .insert("community".to_string(), (10, vec![plain("community_id")]));
+        unit.row_population_data.insert(
+            "community".to_string(),
+            vec![(10, vec![plain("community_id")])],
+        );
         let check = AuthCheck {
             kind: AuthCheckKind::Membership,
             callee: "check_community_mod_action".into(),
@@ -1930,7 +2118,7 @@ mod tests {
         let mut unit = empty_unit();
         unit.row_population_data.insert(
             "community".to_string(),
-            (10, vec![member("req", "community_id")]),
+            vec![(10, vec![member("req", "community_id")])],
         );
         unit.var_alias_chain
             .insert("community_id".to_string(), "req.community_id".to_string());
@@ -2031,5 +2219,150 @@ mod tests {
             &plain("dag_id"),
             &unit
         ));
+    }
+
+    fn session_member(base: &str, field: &str) -> ValueRef {
+        ValueRef {
+            source_kind: ValueSourceKind::Session,
+            ..member(base, field)
+        }
+    }
+
+    #[test]
+    fn session_user_id_chains_are_self_scoped() {
+        let unit = empty_unit();
+        for (base, field) in [
+            ("req.session", "userId"),
+            ("request.session", "uid"),
+            ("session", "userId"),
+            ("ctx.session", "userId"),
+            ("ctx.state.user", "id"),
+            ("ctx.state.auth.user", "id"),
+        ] {
+            assert!(
+                is_actor_context_subject(&session_member(base, field), &unit),
+                "{base}.{field}"
+            );
+        }
+        // A foreign id carried on the session is not the caller.
+        assert!(!is_actor_context_subject(
+            &session_member("req.session", "workspaceId"),
+            &unit
+        ));
+    }
+
+    #[test]
+    fn actor_tenant_fields_are_the_callers_own_tenant() {
+        let mut unit = empty_unit();
+        unit.self_actor_vars.insert("user".into());
+        assert!(is_actor_context_subject(&member("user", "teamId"), &unit));
+        assert!(is_actor_context_subject(
+            &member("user", "organization_id"),
+            &unit
+        ));
+        // A variable that is not the actor keeps its tenant ids relevant.
+        assert!(!is_actor_context_subject(
+            &member("target", "teamId"),
+            &unit
+        ));
+    }
+
+    #[test]
+    fn request_context_chains_resolve_scope_and_actor() {
+        let mut unit = empty_unit();
+        unit.request_roots.insert("ctx".into());
+        let repo_id = member("ctx.Repo.Repository", "ID");
+        assert!(is_caller_scope_entity_subject(&repo_id, &unit));
+        assert!(!is_relevant_target_subject(&repo_id, &unit));
+        assert!(is_caller_scope_entity_subject(
+            &member("ctx.Package.Owner", "ID"),
+            &unit
+        ));
+        // Payload chains and unrelated entities are not scope.
+        assert!(!is_caller_scope_entity_subject(
+            &member("ctx.Req.Form", "ID"),
+            &unit
+        ));
+        assert!(!is_caller_scope_entity_subject(
+            &member("ctx.Issue", "ID"),
+            &unit
+        ));
+        // Only request roots count.
+        assert!(!is_caller_scope_entity_subject(
+            &member("other.Repo.Repository", "ID"),
+            &unit
+        ));
+        // `ctx.Doer.ID` is the signed-in user.
+        assert!(is_actor_context_subject(&member("ctx.Doer", "ID"), &unit));
+        assert!(!is_actor_context_subject(&member("ctx.Issue", "ID"), &unit));
+        // A local copy of a scope entity read off the context.
+        unit.request_roots.insert("repo".into());
+        assert!(is_caller_scope_entity_subject(&member("repo", "ID"), &unit));
+    }
+
+    #[test]
+    fn package_level_names_are_not_subjects_unless_shadowed() {
+        let mut unit = empty_unit();
+        unit.package_names.insert("common".into());
+        unit.package_names.insert("storageRESTDiskID".into());
+        assert!(!is_relevant_target_subject(
+            &member("common", "LDAPUID"),
+            &unit
+        ));
+        assert!(!is_relevant_target_subject(
+            &plain("storageRESTDiskID"),
+            &unit
+        ));
+        // The unit builder removes shadowed names from the set, so an id on
+        // anything else stays a subject.
+        assert!(is_relevant_target_subject(&member("event", "ID"), &unit));
+    }
+
+    #[test]
+    fn uid_is_a_model_selector_outside_route_handlers() {
+        let mut unit = empty_unit();
+        assert!(!is_relevant_target_subject(&plain("uid"), &unit));
+        assert!(!is_relevant_target_subject(&plain("targetUid"), &unit));
+        // Only JS/TS read a `uid` as a schema selector.
+        assert!(relevant_in(&plain("uid"), &unit, "python"));
+        // A real identifier keeps its meaning.
+        assert!(is_relevant_target_subject(&plain("userId"), &unit));
+        assert!(is_relevant_target_subject(&plain("uuid"), &unit));
+        // A `uid` copied from a request chain stays a subject.
+        unit.var_alias_chain
+            .insert("uid".into(), "req.params.uid".into());
+        assert!(is_relevant_target_subject(&plain("uid"), &unit));
+        // So does one in a route handler.
+        let mut route = empty_unit();
+        route.kind = AnalysisUnitKind::RouteHandler;
+        assert!(is_relevant_target_subject(&plain("uid"), &route));
+    }
+
+    #[test]
+    fn browser_units_have_no_user_input_evidence() {
+        let mut unit = empty_unit();
+        unit.params.push("userId".into());
+        assert!(unit_has_user_input_evidence(&unit, None, "typescript"));
+        unit.runtime = UnitRuntime::Browser;
+        assert!(!unit_has_user_input_evidence(&unit, None, "typescript"));
+        // A registered route handler is never browser code.
+        unit.kind = AnalysisUnitKind::RouteHandler;
+        assert!(unit_has_user_input_evidence(&unit, None, "typescript"));
+    }
+
+    #[test]
+    fn uid_param_is_not_evidence_but_user_id_is() {
+        assert!(!is_external_input_param_name_for_lang("uid", "typescript"));
+        assert!(!is_external_input_param_name_for_lang(
+            "targetUid",
+            "javascript"
+        ));
+        assert!(is_external_input_param_name_for_lang(
+            "userId",
+            "typescript"
+        ));
+        assert!(is_external_input_param_name_for_lang("uuid", "typescript"));
+        // Other languages keep `uid` as an id.
+        assert!(is_external_input_param_name("uid"));
     }
 }

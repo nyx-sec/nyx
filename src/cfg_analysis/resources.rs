@@ -48,42 +48,6 @@ fn is_event_handler_register_shape(info: &crate::cfg::NodeInfo) -> bool {
     !second_uses.is_empty()
 }
 
-/// Match a callee against a resource acquire/release pattern at an identifier
-/// boundary.
-///
-/// A bare-identifier pattern (`connect`, `open`, `alloc`) matches only when the
-/// character immediately preceding the matched suffix in the callee is a name
-/// separator (not an identifier char).  So `disconnect` / `reconnect` do NOT
-/// match `connect`, `register_open` / `_ensure_open` do NOT match `open`, and
-/// Rust's release `dealloc` does NOT match acquire `alloc` — all of which the
-/// old raw `ends_with` conflated.  Patterns that already carry a leading
-/// separator (`.close`, `os.Open`) keep matching by plain suffix.
-fn callee_matches_pattern(callee_lower: &str, pattern_lower: &str) -> bool {
-    if callee_lower == pattern_lower {
-        return true;
-    }
-    if !callee_lower.ends_with(pattern_lower) {
-        return false;
-    }
-    // A pattern whose first char is a separator (`.`, `:`) carries its own
-    // left boundary — no preceding-char check needed (e.g. `f.Close` matches
-    // `.Close`).
-    if pattern_lower
-        .chars()
-        .next()
-        .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    // Bare-identifier pattern: require an identifier boundary before the match.
-    let prefix = &callee_lower[..callee_lower.len() - pattern_lower.len()];
-    match prefix.chars().next_back() {
-        Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
-        None => true,
-    }
-}
-
 /// Recognises Django / blinker / PyDispatcher signal registration —
 /// `post_save.connect(receiver, sender=Model, dispatch_uid="...")` — which
 /// shares the `connect` callee leaf with real DB acquires but registers an
@@ -160,15 +124,15 @@ fn find_acquire_nodes(
                 // Check exclusions first, if the callee matches an exclude
                 // pattern, it is NOT an acquire even if it also matches an
                 // acquire pattern (e.g. `freopen` ends with `fopen`).
-                let excluded = exclude_patterns
-                    .iter()
-                    .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()));
+                let excluded = exclude_patterns.iter().any(|p| {
+                    rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase())
+                });
                 if excluded {
                     return false;
                 }
-                acquire_patterns
-                    .iter()
-                    .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()))
+                acquire_patterns.iter().any(|p| {
+                    rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase())
+                })
             } else {
                 false
             }
@@ -187,7 +151,7 @@ fn find_release_nodes(ctx: &AnalysisContext, release_patterns: &[&str]) -> Vec<N
         let callee_lower = callee.to_ascii_lowercase();
         release_patterns
             .iter()
-            .any(|p| callee_matches_pattern(&callee_lower, &p.to_ascii_lowercase()))
+            .any(|p| rules::callee_matches_at_boundary(&callee_lower, &p.to_ascii_lowercase()))
     };
     ctx.cfg
         .node_indices()
@@ -243,16 +207,11 @@ fn release_on_all_exit_paths(
     all_paths_pass_through(ctx, acquire, exit, &release_set, acquire_var, extra_defines)
 }
 
-/// Identify whether a CFG edge is the "null-guard false edge" for the named
-/// acquired variable.  Returns `true` for the edge that, if traversed, means
-/// the resource handle is null/falsy and therefore not actually acquired.
-///
-/// Recognises:
-///   * `if (var)`, false edge means `var` is null
-///   * `if (!var)`, true edge means `var` is null
-///
-/// Rejects comparisons (`if (var != NULL)`), method calls
-/// (`if (var.is_valid())`), and composite conditions (`if (var && cond)`).
+/// Identify whether a CFG edge is the null edge of a null / failure test on
+/// the acquired variable (`if (f)`, `if (!f)`, `f == NULL`, `fd < 0`, ...).
+/// On that edge the resource handle was never produced, so the path owes no
+/// release.  Reads the structured [`crate::cfg::NullCheck`] the CFG builder
+/// attaches to the `If` node.
 fn is_null_guard_false_edge(
     ctx: &AnalysisContext,
     src: NodeIndex,
@@ -260,87 +219,49 @@ fn is_null_guard_false_edge(
     acquire_var: &str,
 ) -> bool {
     let info = &ctx.cfg[src];
-    if info.kind != StmtKind::If {
-        return false;
-    }
-    if info.condition_vars.len() != 1 || info.condition_vars[0] != acquire_var {
-        return false;
-    }
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    let stripped = text
-        .trim()
-        .trim_start_matches('!')
-        .trim()
-        .trim_matches(|c: char| c == '(' || c == ')')
-        .trim();
-    if stripped != acquire_var {
-        return false;
-    }
-    // Choose the null edge: false for plain truth check, true for negated.
-    let null_edge = if info.condition_negated {
-        EdgeKind::True
-    } else {
-        EdgeKind::False
-    };
-    edge_kind == null_edge
+    info.kind == StmtKind::If
+        && info
+            .null_check
+            .as_ref()
+            .is_some_and(|nc| nc.var == acquire_var && nc.null_edge() == edge_kind)
 }
 
 /// Recognise Go's err-companion guard: `if err != nil { return err }` where
 /// `err` is a companion define of the acquire (`f, err := os.Open(...)`).
-/// On the err-true edge the resource was never actually acquired (acquire
-/// returned the zero value), so the path is not a real leak path.
+/// On the err-non-nil edge the resource was never actually acquired (the
+/// acquire returned the zero value), so the path is not a real leak path.
 ///
-/// Returns `true` for the edge that takes the err-non-nil branch.  Match is
-/// strict: condition must reference exactly one var that lives in the
-/// acquire's `extra_defines`, condition_text must compare against `nil`, and
-/// the chosen edge must match the err-non-nil polarity.
+/// Returns `true` for the edge that takes the err-non-nil branch.  The
+/// caller only asks while `err` still holds the acquire's error (see the
+/// redefinition tracking in [`all_paths_pass_through`]).
 fn is_err_companion_guard_edge(
     ctx: &AnalysisContext,
     src: NodeIndex,
     edge_kind: EdgeKind,
     extra_defines: &[String],
 ) -> bool {
-    if extra_defines.is_empty() {
+    if extra_defines.is_empty() || ctx.lang != Lang::Go {
         return false;
     }
     let info = &ctx.cfg[src];
-    if info.kind != StmtKind::If {
-        return false;
-    }
-    if info.condition_vars.len() != 1 {
-        return false;
-    }
-    let cond_var = &info.condition_vars[0];
-    if !extra_defines.iter().any(|e| e == cond_var) {
-        return false;
-    }
-    let Some(text) = info.condition_text.as_deref() else {
-        return false;
-    };
-    // Normalise: drop spaces so `err!=nil` and `err != nil` both match.
-    let collapsed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    let var_eq_nil = format!("{cond_var}==nil");
-    let var_neq_nil = format!("{cond_var}!=nil");
-    // Polarity: `err != nil` → err-non-nil branch is the True edge;
-    //           `err == nil` → err-non-nil branch is the False edge.
-    let err_branch = if collapsed.contains(&var_neq_nil) {
-        if info.condition_negated {
-            EdgeKind::False
-        } else {
-            EdgeKind::True
-        }
-    } else if collapsed.contains(&var_eq_nil) {
-        if info.condition_negated {
-            EdgeKind::True
-        } else {
-            EdgeKind::False
-        }
-    } else {
-        return false;
-    };
-    edge_kind == err_branch
+    info.kind == StmtKind::If
+        && info
+            .null_check
+            .as_ref()
+            .is_some_and(|nc| extra_defines.contains(&nc.var) && nc.non_null_edge() == edge_kind)
+}
+
+/// True when `node` (other than the acquire itself) reassigns one of the
+/// acquire's error companions, after which an `err != nil` test no longer
+/// describes the acquire.
+fn redefines_err_companion(info: &crate::cfg::NodeInfo, extra_defines: &[String]) -> bool {
+    !extra_defines.is_empty()
+        && info
+            .taint
+            .defines
+            .iter()
+            .chain(info.taint.extra_defines.iter())
+            .any(|d| extra_defines.iter().any(|e| e == d))
 }
 
 /// Check if all paths from `from` to `to` pass through at least one node in `through`,
@@ -360,13 +281,15 @@ fn all_paths_pass_through(
         return true;
     }
 
-    // BFS, tracking whether we've passed through a required node
+    // BFS over (node, passed a release, err companion reassigned).  The
+    // third component keeps `_, err = f.Write(b); if err != nil { return err }`
+    // from being mistaken for the acquire's own failure branch.
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
-    queue.push_back((from, false));
-    visited.insert((from, false));
+    queue.push_back((from, false, false));
+    visited.insert((from, false, false));
 
-    while let Some((node, passed)) = queue.pop_front() {
+    while let Some((node, passed, err_redefined)) = queue.pop_front() {
         if node == to {
             if !passed {
                 return false; // Found a path to exit without passing through release
@@ -374,12 +297,17 @@ fn all_paths_pass_through(
             continue;
         }
 
+        let info = &ctx.cfg[node];
+        let err_redefined =
+            err_redefined || (node != from && redefines_err_companion(info, extra_defines));
+
         // Treat a Return-of-err-companion as a passing exit: in Go's
         // `f, err := os.Open(...); if err != nil { return err }` shape the
         // err-return path does not actually own a resource (acquire returned
         // the zero value), so reaching such a Return is not a leak.
-        let info = &ctx.cfg[node];
-        if info.kind == StmtKind::Return
+        if !err_redefined
+            && ctx.lang == Lang::Go
+            && info.kind == StmtKind::Return
             && !extra_defines.is_empty()
             && !info.taint.uses.is_empty()
             && info
@@ -391,7 +319,33 @@ fn all_paths_pass_through(
             continue;
         }
 
+        // Returning the handle (`return f`, `return f, nil`,
+        // `return &W{f: f}`) hands ownership to the caller, so this path owes
+        // no release.  Only escape positions count: `return f.read()` keeps
+        // `f` here and still needs a release.  The state engine's
+        // `returns_var` also counts any mention for C / C++ (see
+        // `state::transfer::return_hands_off`); this pass keeps to escape
+        // positions in every language, so C `return fgetc(f)` stays
+        // reported here as it was before returns were modelled.
+        if (info.kind == StmtKind::Return || info.implicit_return)
+            && acquire_var.is_some_and(|v| info.returned_idents.iter().any(|r| r == v))
+        {
+            continue;
+        }
+
         for edge in ctx.cfg.edges(node) {
+            // The builder can emit a plain Seq edge alongside the True /
+            // False edge into the same branch target (`if (!f) return -1;`).
+            // It carries no branch meaning, so skip it the way the state
+            // engine does; otherwise it would re-open the branch pruned below.
+            if *edge.weight() == EdgeKind::Seq
+                && ctx.cfg.edges(node).any(|e| {
+                    e.target() == edge.target()
+                        && matches!(e.weight(), EdgeKind::True | EdgeKind::False)
+                })
+            {
+                continue;
+            }
             // Prune null-guard-false edges: those represent "var is null",
             // a path on which the resource was never actually acquired.
             if let Some(var) = acquire_var
@@ -402,12 +356,14 @@ fn all_paths_pass_through(
             // Prune Go err-companion guard edges: `if err != nil { return err }`
             // after `f, err := os.Open(...)` takes the err branch on which the
             // resource handle is the zero value and was never acquired.
-            if is_err_companion_guard_edge(ctx, node, *edge.weight(), extra_defines) {
+            if !err_redefined
+                && is_err_companion_guard_edge(ctx, node, *edge.weight(), extra_defines)
+            {
                 continue;
             }
             let succ = edge.target();
             let new_passed = passed || through.contains(&succ);
-            let state = (succ, new_passed);
+            let state = (succ, new_passed, err_redefined);
             if visited.insert(state) {
                 queue.push_back(state);
             }
@@ -415,6 +371,32 @@ fn all_paths_pass_through(
     }
 
     true
+}
+
+/// True when the acquire is the value of a `return` statement
+/// (`return os.Open(p)`, `return new Foo()`, `return open(p)`): the handle is
+/// never bound locally and goes straight to the caller.  The CFG builder
+/// lowers such a return as a Call node followed by a Return node over the
+/// same statement span; the Return records which calls it returns directly.
+fn acquire_is_returned_value(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
+    let info = &ctx.cfg[acquire];
+    if info.taint.defines.is_some() {
+        return false;
+    }
+    let Some(callee) = info.call.callee.as_deref() else {
+        return false;
+    };
+    // Ruby `def open_log(p) File.open(p) end`: the acquire is itself the
+    // method's implicit return value.
+    if info.implicit_return && info.returned_call_callees.iter().any(|c| c == callee) {
+        return true;
+    }
+    ctx.cfg.neighbors(acquire).any(|succ| {
+        let ret = &ctx.cfg[succ];
+        ret.kind == StmtKind::Return
+            && ret.ast.span == info.ast.span
+            && ret.returned_call_callees.iter().any(|c| c == callee)
+    })
 }
 
 /// Check whether the acquired variable is stored into a struct field (ownership
@@ -425,7 +407,11 @@ fn all_paths_pass_through(
 ///
 /// If the variable is transferred, there is no leak, the receiving struct is
 /// responsible for the lifetime.
-fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
+fn is_ownership_transferred(
+    ctx: &AnalysisContext,
+    acquire: NodeIndex,
+    closeable_wrappers: &crate::state::transfer::CloseableWrappers,
+) -> bool {
     let acquired_var = match &ctx.cfg[acquire].taint.defines {
         Some(v) => v.clone(),
         None => return false,
@@ -454,6 +440,38 @@ fn is_ownership_transferred(ctx: &AnalysisContext, acquire: NodeIndex) -> bool {
                 .defines
                 .as_ref()
                 .is_some_and(|d| d == &acquired_var);
+
+        // `*out = var`, `g_cache = var`, `slots[i] = var`: the handle now
+        // lives in storage this function does not own.
+        if info.escaping_store && info.taint.uses.iter().any(|u| u == &acquired_var) {
+            return true;
+        }
+        // Handed to a collection (`list.add(s)`, `v.push_back(f)`), to a
+        // C++ smart pointer (`std::unique_ptr<T> p(raw)`, `p.reset(raw)`),
+        // or to a Java wrapper whose own lifetime is accounted for
+        // (`new BufferedInputStream(in)` later closed / returned / managed).
+        // Twin of the state-engine handoffs in `DefaultTransfer`.
+        if crate::state::transfer::container_insert_arg_positions(ctx.lang, info)
+            .iter()
+            .any(|&i| info.call.arg_uses[i][0] == acquired_var)
+        {
+            return true;
+        }
+        if info.call.ctor_owned_args.contains(&acquired_var) {
+            match ctx.lang {
+                Lang::Cpp => return true,
+                Lang::Java
+                    if info
+                        .taint
+                        .defines
+                        .as_deref()
+                        .is_some_and(|w| closeable_wrappers.names.contains(w)) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
 
         if references_var && start < end && end <= ctx.source_bytes.len() {
             let span_text = &ctx.source_bytes[start..end];
@@ -703,19 +721,17 @@ impl CfgAnalysis for ResourceMisuse {
         // covered by the connection's own lifecycle, so its standalone leak
         // is never a unique true positive — see
         // `rules::jdbc_statement_owning_connection`.  Computed once (structural
-        // CFG property); the empty set on non-Java is a no-op.
-        let local_connection_vars: HashSet<&str> = if ctx.lang == Lang::Java {
-            ctx.cfg
-                .node_weights()
-                .filter(|n| {
-                    n.kind == StmtKind::Call
-                        && rules::is_jdbc_connection_acquire(n.call.callee.as_deref())
-                })
-                .filter_map(|n| n.taint.defines.as_deref())
-                .collect()
-        } else {
-            HashSet::new()
-        };
+        // CFG property).  Python DB-API connections play the same role for
+        // the cursors opened on them; empty for every other language.
+        let local_connection_vars: HashSet<&str> = ctx
+            .cfg
+            .node_weights()
+            .filter(|n| {
+                n.kind == StmtKind::Call
+                    && rules::is_owning_connection_acquire(ctx.lang, n.call.callee.as_deref())
+            })
+            .filter_map(|n| n.taint.defines.as_deref())
+            .collect();
 
         // C/C++: struct-value container base names whose field-acquire
         // (`c.buf = malloc()`) provably does NOT transfer ownership — the
@@ -727,6 +743,9 @@ impl CfgAnalysis for ResourceMisuse {
         // Empty (no-op) for non-C/C++.
         let nonescaping_field_containers =
             crate::state::transfer::nonescaping_local_field_containers(ctx.cfg, ctx.lang);
+        // Java wrappers whose lifetime this body accounts for (see
+        // `state::transfer::closeable_wrapper_names`).
+        let closeable_wrappers = crate::state::transfer::closeable_wrapper_names(ctx.cfg, ctx.lang);
 
         for pair in pairs {
             let acquire_nodes = find_acquire_nodes(ctx, pair.acquire, pair.exclude_acquire);
@@ -773,10 +792,8 @@ impl CfgAnalysis for ResourceMisuse {
                 // connection this body does not track is KEPT.  Twin of the
                 // `state-resource-leak` suppression in `src/state/facts.rs`;
                 // interior-node sibling of the `result set` leaf gate above.
-                if ctx.lang == Lang::Java
-                    && let Some(owner) = rules::jdbc_statement_owning_connection(
-                        ctx.cfg[acquire].call.callee.as_deref(),
-                    )
+                if let Some(owner) =
+                    rules::derived_resource_owner(ctx.lang, ctx.cfg[acquire].call.callee.as_deref())
                     && local_connection_vars.contains(owner)
                 {
                     continue;
@@ -831,6 +848,17 @@ impl CfgAnalysis for ResourceMisuse {
                 {
                     continue;
                 }
+                // Acquire stored straight into a global, unqualified field,
+                // pointer target or container element (`g_buf = malloc(n)`,
+                // `*out = calloc(..)`).  Twin of the state-engine gate.
+                if ctx.cfg[acquire].escaping_store {
+                    continue;
+                }
+                // A factory that returns the acquire's result directly
+                // (`return os.Open(p)`) hands the handle to its caller.
+                if acquire_is_returned_value(ctx, acquire) {
+                    continue;
+                }
                 // Suppress resources with a deferred release (Go `defer f.Close()`).
                 // Defer guarantees cleanup on all exit paths including early returns.
                 if let Some(acquired_var) = ctx.cfg[acquire].taint.defines.as_deref() {
@@ -848,7 +876,7 @@ impl CfgAnalysis for ResourceMisuse {
                     &release_nodes,
                     exit,
                     post_doms.as_ref(),
-                ) && !is_ownership_transferred(ctx, acquire)
+                ) && !is_ownership_transferred(ctx, acquire, &closeable_wrappers)
                     && !is_consumed_by_owner(ctx, acquire)
                 {
                     // For mutex pairs, require an explicit .acquire()/.lock() call
@@ -1005,28 +1033,46 @@ mod tests {
     fn callee_boundary_rejects_disconnect_as_connect_acquire() {
         // `post_delete.disconnect(...)` shares the `connect` suffix but is a
         // teardown verb — must NOT match the `connect` acquire pattern.
-        assert!(!callee_matches_pattern("post_delete.disconnect", "connect"));
-        assert!(!callee_matches_pattern("client.reconnect", "connect"));
+        assert!(!rules::callee_matches_at_boundary(
+            "post_delete.disconnect",
+            "connect"
+        ));
+        assert!(!rules::callee_matches_at_boundary(
+            "client.reconnect",
+            "connect"
+        ));
         // Real Django signal / DB connects still match at the `.` boundary.
-        assert!(callee_matches_pattern("post_save.connect", "connect"));
-        assert!(callee_matches_pattern("engine.connect", "connect"));
-        assert!(callee_matches_pattern("connect", "connect"));
+        assert!(rules::callee_matches_at_boundary(
+            "post_save.connect",
+            "connect"
+        ));
+        assert!(rules::callee_matches_at_boundary(
+            "engine.connect",
+            "connect"
+        ));
+        assert!(rules::callee_matches_at_boundary("connect", "connect"));
     }
 
     #[test]
     fn callee_boundary_rejects_within_identifier_open_and_alloc() {
         // PIL `Image.register_open` and paperless `_ensure_open` end with
         // `open` but are single identifiers, not the `open` builtin.
-        assert!(!callee_matches_pattern("image.register_open", "open"));
-        assert!(!callee_matches_pattern("obj._ensure_open", "open"));
+        assert!(!rules::callee_matches_at_boundary(
+            "image.register_open",
+            "open"
+        ));
+        assert!(!rules::callee_matches_at_boundary(
+            "obj._ensure_open",
+            "open"
+        ));
         // Rust release `dealloc` must not match acquire `alloc`.
-        assert!(!callee_matches_pattern("dealloc", "alloc"));
+        assert!(!rules::callee_matches_at_boundary("dealloc", "alloc"));
         // Genuine `.open` acquires still match.
-        assert!(callee_matches_pattern("codecs.open", "open"));
-        assert!(callee_matches_pattern("open", "open"));
+        assert!(rules::callee_matches_at_boundary("codecs.open", "open"));
+        assert!(rules::callee_matches_at_boundary("open", "open"));
         // Separator-led patterns keep matching by plain suffix.
-        assert!(callee_matches_pattern("f.close", ".close"));
-        assert!(callee_matches_pattern("os.open", "os.open"));
+        assert!(rules::callee_matches_at_boundary("f.close", ".close"));
+        assert!(rules::callee_matches_at_boundary("os.open", "os.open"));
     }
 
     #[test]

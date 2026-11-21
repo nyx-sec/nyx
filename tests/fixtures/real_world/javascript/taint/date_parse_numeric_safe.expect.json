@@ -1,0 +1,13 @@
+{
+  "description": "Date.parse returns milliseconds since the epoch, so the value reaching exec is numeric. The bare `parse` suffix is only numeric for Rust str::parse and JS Date.parse; this pins the Date.parse exception.",
+  "tags": ["taint", "cmdi", "type-facts", "false-positive-guard"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [6, 7],
+      "notes": "Date.parse result is Int-typed; the shell sink stays suppressed"
+    }
+  ]
+}

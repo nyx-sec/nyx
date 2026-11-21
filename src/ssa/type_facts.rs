@@ -58,6 +58,15 @@ fn file_imports_match(pred: impl Fn(&str) -> bool) -> bool {
     })
 }
 
+/// Dotted path the active file-imports view binds `name` to. Only Python
+/// files publish this shape (`from M import n [as a]` maps to `M.n`,
+/// `import M as a` to `M`); label classification uses it to also try the
+/// module-qualified spelling of a bare imported callee. `None` when no view
+/// is published or `name` is not a recorded binding.
+pub(crate) fn file_import_path(name: &str) -> Option<String> {
+    FILE_IMPORTS_TLS.with(|cell| cell.borrow().as_ref().and_then(|m| m.get(name).cloned()))
+}
+
 /// Strip a leading `node:` prefix from a module specifier so gates can
 /// match `import x from "fs"` and `import x from "node:fs"` uniformly.
 fn strip_node_prefix(spec: &str) -> &str {
@@ -294,6 +303,13 @@ pub enum TypeKind {
     /// either the command (arg 0) or the environment array (arg 1), so the
     /// default all-args sink scan must cover every position.
     Runtime,
+    /// A Spring `JdbcTemplate` / `NamedParameterJdbcTemplate` (or their
+    /// `JdbcOperations` interfaces).  Only reached through a declared
+    /// field, parameter or local type, since Spring injects the template
+    /// rather than building it in the method.  The `JdbcTemplate.*` SQL
+    /// rules in `labels/java.rs` take the statement at arg 0 and treat the
+    /// rest as bind values, row mappers or result classes.
+    JdbcTemplate,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -353,6 +369,7 @@ impl TypeKind {
             Self::HibernateSession => Some("HibernateSession"),
             Self::ProcessBuilder => Some("ProcessBuilder"),
             Self::Runtime => Some("Runtime"),
+            Self::JdbcTemplate => Some("JdbcTemplate"),
             _ => None,
         }
     }
@@ -635,6 +652,24 @@ pub(crate) fn is_url_identity_field(field_name: &str) -> bool {
     )
 }
 
+/// Classes whose instance is the string or path value of its constructor
+/// arguments rather than an opaque wrapper object: `java.io.File` is the
+/// path, and `String` / `StringBuilder` / `StringBuffer` are the text.  The
+/// constructor cap narrowing in the SSA call transfer keeps string-shaped
+/// caps (FILE_IO, ...) on these, so `new File(base, name)` still carries the
+/// traversal into `new FileInputStream(f)`.  Stream classes such as
+/// `FileInputStream` are not values and are not listed.
+pub(crate) fn constructor_is_value_wrapper(lang: Lang, class: &str) -> bool {
+    let leaf = class.rsplit("::").next().unwrap_or(class);
+    let leaf = leaf.split('<').next().unwrap_or(leaf);
+    let leaf = leaf.rsplit('.').next().unwrap_or(leaf).trim();
+    match lang {
+        Lang::Java => matches!(leaf, "File" | "String" | "StringBuilder" | "StringBuffer"),
+        Lang::JavaScript | Lang::TypeScript => leaf == "String",
+        _ => false,
+    }
+}
+
 /// Infer a type from a constructor, factory, or allocator call.
 ///
 /// Maps known constructor/factory/allocator patterns to security-relevant
@@ -662,14 +697,23 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "OkHttpClient" | "WebClient" | "RestTemplate" => Some(TypeKind::HttpClient),
             "getConnection" => Some(TypeKind::DatabaseConnection),
             "MongoClient" => Some(TypeKind::DatabaseConnection),
-            // JDBC `conn.createStatement()` / `conn.prepareCall()` produce a
-            // `Statement` / `CallableStatement` whose `.execute(sql)` is a
-            // first-class SQL sink.  Mapped to `DatabaseConnection` so the
-            // type-qualified label `DatabaseConnection.execute` (in
-            // `labels/java.rs`) fires for `s.execute(query)` calls without
-            // widening the bare `execute` matcher.  Surfaced by
-            // GHSA-h8cj-hpmg-636v (Appsmith FilterDataServiceCE.dropTable).
-            "createStatement" | "prepareCall" => Some(TypeKind::DatabaseConnection),
+            // JDBC `conn.createStatement()` / `conn.prepareStatement(sql)` /
+            // `conn.prepareCall(sql)` produce a `Statement` /
+            // `PreparedStatement` / `CallableStatement` whose `.execute*`
+            // calls are first-class SQL sinks.  Mapped to
+            // `DatabaseConnection` so the type-qualified label
+            // `DatabaseConnection.execute` (in `labels/java.rs`) fires for
+            // `s.execute(query)` calls without widening the bare `execute`
+            // matcher.  A prepared statement carries the taint of the SQL
+            // text it was prepared from, so `conn.prepareStatement("..'" + p
+            // + "'")` followed by `ps.execute()` is reported; bind values set
+            // with `ps.setString(..)` never reach the SQL text, and a literal
+            // template carries no taint.  Surfaced by GHSA-h8cj-hpmg-636v
+            // (Appsmith FilterDataServiceCE.dropTable) and the OWASP
+            // Benchmark prepareStatement SQLi cases.
+            "createStatement" | "prepareStatement" | "prepareCall" => {
+                Some(TypeKind::DatabaseConnection)
+            }
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
             // Phase 13 — `java.nio.file.Paths.get(...)` returns a `Path`,
@@ -717,6 +761,19 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // sink when the receiver carries a hardening fact.
             "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
             | "createXMLReader" => Some(TypeKind::XmlParser),
+            // The parser factories themselves: StAX parses straight off the
+            // `XMLInputFactory`, and `dbf.newDocumentBuilder().parse(x)`
+            // reads as `dbf.parse`, so the factory is the receiver the
+            // config sidecar and the `XmlParser.*` sinks see.  dom4j's
+            // `new SAXReader()` is the parser.
+            "newInstance" | "newFactory" | "newDefaultFactory"
+                if callee.contains("DocumentBuilderFactory")
+                    || callee.contains("SAXParserFactory")
+                    || callee.contains("XMLInputFactory") =>
+            {
+                Some(TypeKind::XmlParser)
+            }
+            "SAXReader" => Some(TypeKind::XmlParser),
             // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
             // Mapping it to `XPathClient` lets the type-qualified resolver
             // pick up `xpath.evaluate(...)` against the existing
@@ -895,9 +952,11 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             }
         }
         Lang::Go => {
-            if callee.contains("http.") && matches!(suffix, "NewRequest" | "Get" | "Post") {
-                Some(TypeKind::HttpClient)
-            } else if callee.contains("sql.") && suffix == "Open" {
+            // `http.Get` / `http.Post` return a `*http.Response` and
+            // `http.NewRequest` a `*http.Request`; neither is a client.  A
+            // client value is typed from its declaration
+            // (`cfg::extract_decl_type_go`, `c *http.Client` formals).
+            if callee.contains("sql.") && suffix == "Open" {
                 Some(TypeKind::DatabaseConnection)
             } else if callee.contains("os.") && matches!(suffix, "Open" | "Create" | "OpenFile") {
                 Some(TypeKind::FileHandle)
@@ -1470,7 +1529,17 @@ fn parse_turbofish_arg(callee: &str) -> Option<&str> {
     Some(after.trim())
 }
 
-pub fn is_int_producing_callee(callee: &str) -> bool {
+/// True when `callee` is a call whose result is numeric in `lang`.
+///
+/// `lang` gates the one ambiguous suffix, bare `parse`.  Rust `str::parse` is
+/// numeric in most real code, so it keeps the `Int` default there (and on the
+/// lang-less `None` path).  Everywhere else a `.parse` method is a parser
+/// that returns an object or markup built from its input (`JSON.parse`,
+/// `url.parse`, `qs.parse`, `yaml.parse`, `marked.parse`, `Jsoup.parse`), so
+/// tagging it `Int` would hide every sink fed by the parsed value.  The one
+/// numeric exception outside Rust is JS `Date.parse`, which returns
+/// milliseconds since the epoch.
+pub fn is_int_producing_callee(lang: Option<Lang>, callee: &str) -> bool {
     // Rust `s.parse::<T>()` turbofish: an explicit `FromStr` target is ground
     // truth, so trust it over the conservative bare-`parse` → `Int` default.
     // A recognised numeric `T` → `Int`; a recognised non-numeric `T`
@@ -1509,6 +1578,22 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
     if crate::cfg::is_numeric_length_property(suffix) {
         return true;
     }
+    if suffix == "parse" {
+        // Rust: `.parse::<N>()` / `let n: u32 = s.parse()?` is conservative
+        // (most `str::parse` targets are numeric).  The callee text alone
+        // cannot tell `s.parse()` into a `u32` from one into a `PathBuf`;
+        // the turbofish branch above and the `let p: PathBuf` annotation in
+        // `analyze_types` override this default when the target is spelled
+        // out (`type_facts_suppress_int_typed_shell_arg` pins the u16 port
+        // case).
+        return match lang {
+            None | Some(Lang::Rust) => true,
+            Some(Lang::JavaScript | Lang::TypeScript) => {
+                trimmed == "Date.parse" || trimmed.ends_with(".Date.parse")
+            }
+            Some(_) => false,
+        };
+    }
     matches!(
         suffix,
         "parseInt" | "parseFloat" | "Number"        // JS/TS
@@ -1516,20 +1601,7 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
         | "parseLong" | "parseDouble" | "parseShort" // Java
         | "Atoi" | "ParseInt" | "ParseFloat"         // Go
         | "intval" | "floatval"                       // PHP
-        | "to_i" | "to_f"                             // Ruby
-        | "parse" // Rust: `.parse::<N>()` / `let n: u32 = s.parse()?` ,
-                  // conservative (most `str::parse` targets are numeric).
-                  //
-                  // KNOWN LIMITATION: the callee text alone cannot
-                  // distinguish `parse::<u32>()` from `parse::<PathBuf>()`
-                  // / `let p: PathBuf = s.parse()?`.  Tagging every `parse`
-                  // as `Int` keeps the tested precision behaviour
-                  // (`type_facts_suppress_int_typed_shell_arg`: a u16 port
-                  // into a shell arg is suppressed) at the cost of a rare
-                  // false negative on `let p: PathBuf = s.parse()?;
-                  // fs::read(p)`.  Distinguishing the two soundly requires
-                  // reading the let-binding type annotation into the type
-                  // lattice (tracked as a deep-fix; NOT inferable here).
+        | "to_i" | "to_f" // Ruby
     )
 }
 
@@ -1564,6 +1636,11 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
 ///   spaces, and shell metacharacters; the dot-separated FQCN is safe
 ///   for header / shell / SQL / file / HTML / SSRF sinks.
 ///
+/// * Go `strconv.Itoa` / `FormatInt` / `FormatUint` / `FormatBool` /
+///   `FormatFloat`, statically typed numeric / boolean formatters whose
+///   output is digits, a sign, `.`, an exponent, `true` / `false`, `NaN`
+///   or `Inf`.  Matched on the bare `strconv` package qualifier only.
+///
 /// Receiver shape match: also accepts the chained form
 /// `<expr>.getClass().getName()` whose collapsed callee text contains
 /// `.getClass()` followed by the class-name accessor.
@@ -1574,6 +1651,14 @@ pub fn is_safe_string_producing_callee(callee: &str) -> bool {
     // input.
     let after_colons = base.rsplit("::").next().unwrap_or(&base);
     if let Some((prefix, method)) = after_colons.rsplit_once('.') {
+        if prefix == "strconv"
+            && matches!(
+                method,
+                "Itoa" | "FormatInt" | "FormatUint" | "FormatBool" | "FormatFloat"
+            )
+        {
+            return true;
+        }
         let class_name = prefix.rsplit(['.', ' ']).next().unwrap_or(prefix);
         match (class_name, method) {
             (
@@ -1684,6 +1769,58 @@ pub fn classify_input_validator_callee(callee: &str) -> Option<InputValidatorPol
 /// Uses constant propagation results to seed types from known constants,
 /// then propagates through copies and phi nodes. Constructor/factory calls
 /// are mapped to security-relevant types when `lang` is provided.
+/// True when a numeric / safe-string producing Call op stands for a larger
+/// expression with another variable operand beside the call: the op's value
+/// is then that expression (typically a string concatenation), not the
+/// producer's number.  Operands wrapped by a producer of their own, and
+/// operands already typed numeric, keep the expression numeric.
+fn operand_beside_numeric_call(
+    cfg: &Cfg,
+    inst: &SsaInst,
+    body: &SsaBody,
+    facts: &HashMap<SsaValue, TypeFact>,
+    lang: Option<Lang>,
+) -> bool {
+    let SsaOp::Call { args, receiver, .. } = &inst.op else {
+        return false;
+    };
+    let Some(tree) = cfg
+        .node_weight(inst.cfg_node)
+        .and_then(|ni| ni.call.nested_calls.as_deref())
+    else {
+        return false;
+    };
+    let producer = |c: &str| is_int_producing_callee(lang, c) || is_safe_string_producing_callee(c);
+    args.iter().flatten().chain(receiver.iter()).any(|v| {
+        let numeric = facts
+            .get(v)
+            .is_some_and(|f| matches!(f.kind, TypeKind::Int | TypeKind::Bool));
+        !numeric
+            && body
+                .value_defs
+                .get(v.0 as usize)
+                .and_then(|d| d.var_name.as_deref())
+                .is_some_and(|n| tree.occurs_beside_anchor(n, producer))
+    })
+}
+
+/// Declared type of a Go binding that does not lower to a call:
+/// `var sb strings.Builder` (a `Nop`), `c := http.Client{}` (a `Const`),
+/// `c := &http.Client{Timeout: t}` (an `Assign` over the field values).
+/// The CFG node's `decl_type` ([`crate::cfg::NodeInfo::decl_type`]) is the
+/// ground truth for these; the operands of a composite literal say nothing
+/// about the type of the value it builds.  Calls consult `decl_type` in their
+/// own arm, after the constructor table.
+fn go_binding_decl_type(inst: &SsaInst, cfg: &Cfg, lang: Option<Lang>) -> Option<TypeKind> {
+    if lang != Some(Lang::Go)
+        || inst.var_name.is_none()
+        || !matches!(inst.op, SsaOp::Const(_) | SsaOp::Nop | SsaOp::Assign(_))
+    {
+        return None;
+    }
+    cfg.node_weight(inst.cfg_node)?.decl_type.clone()
+}
+
 pub fn analyze_types(
     body: &SsaBody,
     cfg: &Cfg,
@@ -1720,6 +1857,10 @@ pub fn analyze_types_with_param_types(
                 .is_some_and(|ni| ni.is_numeric_length_access)
             {
                 facts.insert(inst.value, TypeFact::from_kind(TypeKind::Int));
+                continue;
+            }
+            if let Some(dt) = go_binding_decl_type(inst, cfg, lang) {
+                facts.insert(inst.value, TypeFact::from_kind(dt));
                 continue;
             }
             let fact = match &inst.op {
@@ -1810,7 +1951,16 @@ pub fn analyze_types_with_param_types(
                         // constructors (`Client::new()` → `HttpClient`) still
                         // win the type-qualified resolution.
                         TypeFact::from_kind(dt)
-                    } else if is_int_producing_callee(callee_for_int) {
+                    } else if (is_int_producing_callee(lang, callee_for_int)
+                        || is_safe_string_producing_callee(callee))
+                        && operand_beside_numeric_call(cfg, inst, body, &facts, lang)
+                    {
+                        // `"... id=" + Integer.parseInt(id) + " AND name='" + name`:
+                        // the op stands for the whole concatenation, whose
+                        // value is a string carrying `name`, not the number
+                        // the anchor call returns.
+                        TypeFact::unknown()
+                    } else if is_int_producing_callee(lang, callee_for_int) {
                         TypeFact::from_kind(TypeKind::Int)
                     } else if is_safe_string_producing_callee(callee) {
                         // Numeric/boolean to-string converters and class-name
@@ -2058,10 +2208,12 @@ pub fn analyze_types_with_param_types(
                 // Preserve the Int fact pinned by the numeric-length-access
                 // detector in the first pass, copy propagation would replace
                 // it with the receiver's (usually Unknown) type and defeat the
-                // whole point of the accessor rule.
+                // whole point of the accessor rule.  A Go declared binding
+                // type is kept for the same reason.
                 if cfg
                     .node_weight(inst.cfg_node)
                     .is_some_and(|ni| ni.is_numeric_length_access)
+                    || go_binding_decl_type(inst, cfg, lang).is_some()
                 {
                     continue;
                 }
@@ -2240,6 +2392,36 @@ impl TypeHierarchy {
 /// path does not surface the twin false positive on the other.
 pub fn go_writer_is_non_response(kind: &TypeKind) -> bool {
     GoInterfaceTable::definitely_not(kind, "http.ResponseWriter")
+}
+
+/// Go response-writing sinks whose positional arg 0 is the `io.Writer`
+/// written to (`fmt.Fprintf(w, ...)`, `io.WriteString(w, s)`).  The writer,
+/// not the payload, decides whether the call renders into a response, so
+/// these are the callees the writer gates above apply to.
+pub fn is_go_writer_sink_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln" | "io.WriteString"
+    )
+}
+
+/// Go writer expressions that are never an `http.ResponseWriter`: the
+/// stdlib stdout / stderr / discard streams and gin's package-level
+/// `DefaultWriter` / `DefaultErrorWriter` (`io.Writer` aliases for
+/// `os.Stdout` / `os.Stderr`), qualified or bare.  A text match because the
+/// package-level vars have no local definition to carry a type fact.
+pub fn is_go_non_response_writer(text: &str) -> bool {
+    matches!(
+        text,
+        "os.Stderr"
+            | "os.Stdout"
+            | "io.Discard"
+            | "ioutil.Discard"
+            | "DefaultErrorWriter"
+            | "DefaultWriter"
+            | "gin.DefaultErrorWriter"
+            | "gin.DefaultWriter"
+    )
 }
 
 // ── Go Interface Satisfaction (bounded, conservative) ────────────────────
@@ -3232,6 +3414,50 @@ mod tests {
     }
 
     #[test]
+    fn constructor_type_java_jdbc_statements() {
+        for callee in [
+            "conn.createStatement",
+            "conn.prepareStatement",
+            "this.connection.prepareStatement",
+            "conn.prepareCall",
+        ] {
+            assert_eq!(
+                constructor_type(Lang::Java, callee),
+                Some(TypeKind::DatabaseConnection),
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_wrapper_constructors() {
+        for class in [
+            "File",
+            "java.io.File",
+            "String",
+            "StringBuilder",
+            "java.lang.StringBuffer",
+        ] {
+            assert!(constructor_is_value_wrapper(Lang::Java, class), "{class}");
+        }
+        // Stream and reader objects wrap a handle, not the path text, and
+        // unknown classes keep the SDK-wrapper narrowing.
+        for class in [
+            "FileInputStream",
+            "BufferedReader",
+            "Scanner",
+            "Stripe",
+            "ArrayList<String>",
+        ] {
+            assert!(!constructor_is_value_wrapper(Lang::Java, class), "{class}");
+        }
+        assert!(constructor_is_value_wrapper(Lang::JavaScript, "String"));
+        assert!(!constructor_is_value_wrapper(Lang::JavaScript, "Stripe"));
+        assert!(!constructor_is_value_wrapper(Lang::Python, "File"));
+        assert!(!constructor_is_value_wrapper(Lang::Go, "String"));
+    }
+
+    #[test]
     fn constructor_type_go_url() {
         assert_eq!(constructor_type(Lang::Go, "url.Parse"), Some(TypeKind::Url));
     }
@@ -3447,9 +3673,19 @@ mod tests {
             Some(TypeKind::HttpClient)
         );
         assert_eq!(
-            constructor_type(Lang::Go, "http.Get"),
-            Some(TypeKind::HttpClient)
+            constructor_type(Lang::Go, "sql.Open"),
+            Some(TypeKind::DatabaseConnection)
         );
+    }
+
+    #[test]
+    fn go_http_response_and_request_constructors_are_not_clients() {
+        // `http.Get` / `http.Post` return a `*http.Response`, `http.NewRequest`
+        // a `*http.Request`.  Typing either as a client would turn
+        // `resp.Header.Get(k)` into the `HttpClient.Get` SSRF sink.
+        for callee in ["http.Get", "http.Post", "http.NewRequest"] {
+            assert_eq!(constructor_type(Lang::Go, callee), None, "{callee}");
+        }
     }
 
     // ── DTO field-level taint ─────────────────────────────────────────────
@@ -3728,6 +3964,24 @@ mod tests {
         assert!(is_safe_string_producing_callee("loaded.getClass().getName"));
     }
 
+    #[test]
+    fn go_strconv_formatters_are_safe_string_producers() {
+        for callee in [
+            "strconv.Itoa",
+            "strconv.FormatInt",
+            "strconv.FormatUint",
+            "strconv.FormatBool",
+            "strconv.FormatFloat",
+        ] {
+            assert!(is_safe_string_producing_callee(callee), "{callee}");
+        }
+        // `Quote` keeps arbitrary input text, and a non-stdlib package that
+        // happens to export `Itoa` is not the stdlib formatter.
+        assert!(!is_safe_string_producing_callee("strconv.Quote"));
+        assert!(!is_safe_string_producing_callee("util.strconv.Itoa"));
+        assert!(!is_safe_string_producing_callee("conv.Itoa"));
+    }
+
     /// Bare Rust `.parse()` is generic over `FromStr` and the callee text
     /// alone cannot name the target, so it is tagged `Int` by default
     /// (precision: a u16 port into a shell arg is suppressed — pinned by
@@ -3741,34 +3995,109 @@ mod tests {
     #[test]
     fn rust_parse_is_int_producing_and_turbofish_forms_are_robust() {
         // Bare parse and its identity-peeled / receiver-qualified forms — Int.
-        assert!(is_int_producing_callee("parse"));
-        assert!(is_int_producing_callee("s.parse"));
-        assert!(is_int_producing_callee("parse().unwrap()"));
-        // Numeric turbofish forms — Int.
-        assert!(is_int_producing_callee("s.parse::<u32>()"));
-        assert!(is_int_producing_callee("s.parse::<i64>()"));
+        assert!(is_int_producing_callee(Some(Lang::Rust), "parse"));
+        assert!(is_int_producing_callee(Some(Lang::Rust), "s.parse"));
         assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "parse().unwrap()"
+        ));
+        // Numeric turbofish forms — Int.
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<u32>()"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<i64>()"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
             "contents.trim().parse::<u32>().expect(\"invalid pid\")"
         ));
         // Non-numeric turbofish forms — NOT Int (recall: the parsed value can
         // carry path / host metacharacters).
-        assert!(!is_int_producing_callee("s.parse::<PathBuf>()"));
-        assert!(!is_int_producing_callee("addr.parse::<IpAddr>().unwrap()"));
-        assert!(!is_int_producing_callee("u.parse::<Url>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "s.parse::<PathBuf>()"
+        ));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "addr.parse::<IpAddr>().unwrap()"
+        ));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "u.parse::<Url>()"
+        ));
         // Unrecognised explicit turbofish target — conservatively NOT Int.
-        assert!(!is_int_producing_callee("x.parse::<MyNewtype>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "x.parse::<MyNewtype>()"
+        ));
         // Boundary: a method that merely ends in `parse` must not match the
         // turbofish needle (`reparse::<u32>` is not `parse::<u32>`).
-        assert!(!is_int_producing_callee("v.reparse::<Foo>()"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::Rust),
+            "v.reparse::<Foo>()"
+        ));
+        // The lang-less path keeps the Rust default.
+        assert!(is_int_producing_callee(None, "s.parse"));
         // Other languages' numeric converters remain unconditional.
-        assert!(is_int_producing_callee("parseInt"));
-        assert!(is_int_producing_callee("Number"));
-        assert!(is_int_producing_callee("Atoi"));
-        assert!(is_int_producing_callee("strconv.ParseInt"));
-        assert!(is_int_producing_callee("x.to_i"));
+        assert!(is_int_producing_callee(Some(Lang::JavaScript), "parseInt"));
+        assert!(is_int_producing_callee(Some(Lang::JavaScript), "Number"));
+        assert!(is_int_producing_callee(Some(Lang::Go), "Atoi"));
+        assert!(is_int_producing_callee(Some(Lang::Go), "strconv.ParseInt"));
+        assert!(is_int_producing_callee(Some(Lang::Ruby), "x.to_i"));
         // Negative: a non-numeric-producing method must not be Int.
-        assert!(!is_int_producing_callee("toUpperCase"));
-        assert!(!is_int_producing_callee("trim"));
+        assert!(!is_int_producing_callee(
+            Some(Lang::JavaScript),
+            "toUpperCase"
+        ));
+        assert!(!is_int_producing_callee(Some(Lang::Rust), "trim"));
+    }
+
+    /// Outside Rust a `.parse` method is a parser that returns an object or
+    /// markup built from its input, not a number.  Tagging it `Int` hid every
+    /// sink fed by `JSON.parse` / `url.parse` / `yaml.parse` / `marked.parse`
+    /// / fastjson `JSON.parse` / `Jsoup.parse`.  JS `Date.parse` is the one
+    /// numeric exception (milliseconds since the epoch).
+    #[test]
+    fn bare_parse_is_int_only_for_rust_and_js_date_parse() {
+        for (lang, callee) in [
+            (Lang::JavaScript, "JSON.parse"),
+            (Lang::JavaScript, "url.parse"),
+            (Lang::JavaScript, "qs.parse"),
+            (Lang::TypeScript, "yaml.parse"),
+            (Lang::TypeScript, "marked.parse"),
+            (Lang::Python, "parser.parse"),
+            (Lang::Java, "JSON.parse"),
+            (Lang::Java, "Jsoup.parse"),
+            (Lang::Java, "LocalDate.parse"),
+            (Lang::Php, "Yaml::parse"),
+            (Lang::Ruby, "JSON.parse"),
+            (Lang::Cpp, "json::parse"),
+            (Lang::Go, "tmpl.parse"),
+        ] {
+            assert!(
+                !is_int_producing_callee(Some(lang), callee),
+                "{lang:?} `{callee}` must not be Int"
+            );
+        }
+        assert!(is_int_producing_callee(
+            Some(Lang::JavaScript),
+            "Date.parse"
+        ));
+        assert!(is_int_producing_callee(
+            Some(Lang::TypeScript),
+            "globalThis.Date.parse"
+        ));
+        assert!(!is_int_producing_callee(Some(Lang::Java), "Date.parse"));
+        // Rust keeps the bare-`parse` default (dropping it regressed the
+        // u16-port-into-shell precision case).
+        assert!(is_int_producing_callee(Some(Lang::Rust), "s.parse"));
+        assert!(is_int_producing_callee(
+            Some(Lang::Rust),
+            "port_str.parse().unwrap()"
+        ));
     }
 
     /// `rust_annotation_type_kind` maps `let x: T` / `parse::<T>` annotation

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,8 +17,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.URL.Query().Get("path")
-	data, _ := os.ReadFile(sanitizePath(path))
-	w.Write(data)
+	f, err := os.Open(sanitizePath(path))
+	if err != nil {
+		http.Error(w, "not found", 404)
+		return
+	}
+	defer f.Close()
+	io.Copy(w, f)
 }
 
 func is_authenticated(r *http.Request) bool {

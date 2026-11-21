@@ -1,0 +1,113 @@
+{
+  "description": "Interpolated query text with a trailing ? placeholder: the interpolated part is injectable even though the value is bound. A constant interpolation next to a bound user value stays quiet.",
+  "tags": [
+    "taint",
+    "sqli",
+    "parameterized",
+    "fstring",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "f-string interpolates sort into ORDER BY; only LIMIT is bound"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        19
+      ],
+      "evidence_contains": [],
+      "notes": "implicit concatenation containing an f-string part"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        22,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "call wrapped in an assignment keeps the narrowed sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        29,
+        33
+      ],
+      "notes": "constant interpolation plus bound user value: the bind value is not the injection vector"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        36,
+        40
+      ],
+      "notes": "constant parameterized query"
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        40
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern fires on any f-string execute"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        40
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        40
+      ],
+      "evidence_contains": [],
+      "notes": "noise: connection handles unrelated to SQL injection"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        40
+      ],
+      "evidence_contains": [],
+      "notes": "noise: connection handles unrelated to SQL injection"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "description": "System.out and System.err prints are console output, not a response.  They do not fire directly, through a log helper's summary, or as a structural sink, and System.out.println does not bind to the project's own println(PrintWriter, String) helper.  The response writer println keeps firing.",
+  "tags": ["taint", "java", "xss", "precision"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "line_range": [1, 14],
+      "must_not_match": true,
+      "notes": "console prints, directly and through log()"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [22, 27],
+      "must_not_match": true,
+      "notes": "WireFormat.println is never the target of System.out.println"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "line_range": [1, 14],
+      "must_not_match": true,
+      "notes": "console prints are not sinks for the structural rule either"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [19, 19],
+      "must_match": true,
+      "notes": "response writer println is a reflected XSS sink"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "description": "cfg-error-fallthrough reads `err == nil` as a success check: its error path is the else branch.  With no else (the best-effort idiom) there is no error handler to judge; an else that returns handles the error; an else that falls through into a dangerous call still fires.",
+  "tags": ["cfg", "go", "error-handling"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "severity": null,
+      "line_range": [11, 25],
+      "notes": "success checks without an else",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "severity": null,
+      "line_range": [27, 35],
+      "notes": "the else branch returns on error",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "severity": null,
+      "must_match": true,
+      "line_range": [37, 45],
+      "notes": "the else branch logs and falls through into exec.Command"
+    }
+  ]
+}

@@ -1,9 +1,8 @@
-use crate::cfg::{Cfg, EdgeKind, NodeInfo, StmtKind};
+use crate::cfg::{Cfg, StmtKind};
 use crate::labels::DataLabel;
 use petgraph::algo::dominators::{Dominators, simple_fast};
 use petgraph::graph::NodeIndex;
-use petgraph::prelude::*;
-use petgraph::visit::Bfs;
+use petgraph::visit::{Bfs, Reversed};
 use std::collections::HashSet;
 
 /// Compute forward dominators from entry.
@@ -11,12 +10,14 @@ pub fn compute_dominators(cfg: &Cfg, entry: NodeIndex) -> Dominators<NodeIndex> 
     simple_fast(cfg, entry)
 }
 
-/// Compute post-dominators by reversing all edges and computing dominators from exit.
-/// Returns None if no Exit node exists.
+/// Compute post-dominators: dominators from the Exit node over the graph with
+/// every edge reversed.  Returns None if no Exit node exists.
+///
+/// `Reversed` walks incoming edges in place, so this is O(N + E) with no copy
+/// of the graph and node indices stay the CFG's own.
 pub fn compute_post_dominators(cfg: &Cfg) -> Option<Dominators<NodeIndex>> {
     let exit = find_exit_node(cfg)?;
-    let reversed = build_reversed_graph(cfg);
-    Some(simple_fast(&reversed, exit))
+    Some(simple_fast(Reversed(cfg), exit))
 }
 
 /// Reachable node set via BFS from entry.
@@ -66,38 +67,6 @@ pub fn dominates(doms: &Dominators<NodeIndex>, dominator: NodeIndex, target: Nod
         current = idom;
     }
     false
-}
-
-/// Build a reversed copy of the graph (swap edge directions).
-fn build_reversed_graph(cfg: &Cfg) -> Graph<NodeInfo, EdgeKind> {
-    let mut rev = Graph::<NodeInfo, EdgeKind>::with_capacity(cfg.node_count(), cfg.edge_count());
-
-    // Clone nodes (preserving indices)
-    let mut index_map = Vec::with_capacity(cfg.node_count());
-    for idx in cfg.node_indices() {
-        let new_idx = rev.add_node(cfg[idx].clone());
-        index_map.push((idx, new_idx));
-    }
-
-    // Add edges in reverse direction
-    for edge in cfg.edge_references() {
-        let src = edge.source();
-        let tgt = edge.target();
-        // Find the new indices
-        let new_src = index_map
-            .iter()
-            .find(|(old, _)| *old == tgt)
-            .map(|(_, new)| *new)
-            .unwrap();
-        let new_tgt = index_map
-            .iter()
-            .find(|(old, _)| *old == src)
-            .map(|(_, new)| *new)
-            .unwrap();
-        rev.add_edge(new_src, new_tgt, *edge.weight());
-    }
-
-    rev
 }
 
 /// Compute shortest distance (in hops) from `from` to `to`.

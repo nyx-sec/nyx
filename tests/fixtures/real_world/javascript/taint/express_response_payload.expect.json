@@ -1,0 +1,55 @@
+{
+  "description": "Express response sinks check the written body, URL or header value only. Fluent chains (res.status(n).send) classify by their final method, and taint on the res object itself (res.locals, a fetch Response named res) is not a payload.",
+  "tags": ["taint", "xss", "open_redirect", "express"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "res.status(200).send(html) sends through res.send"
+    },
+    {
+      "rule_id": "taint-",
+      "must_match": true,
+      "line_range": [11, 11],
+      "notes": "res.status(302).redirect(url) redirects through res.redirect"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [16, 16],
+      "notes": "the body of res.set(...).send(q) is the send payload"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "must_not_match": true,
+      "line_range": [16, 16],
+      "notes": "the chain head res.set only receives constant header arguments; q reaches send, not a header"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [19, 28],
+      "notes": "a tainted res.locals field does not make res.json({ ok: true }) or res.redirect('/home') carry request data"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [32, 32],
+      "notes": "zero-arg res.json() on a fetch Response has no payload"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [37, 37],
+      "notes": "res.status(code).json() writes no body; the status argument is not a payload"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [37, 37],
+      "notes": "a response call without a body argument is not a sink"
+    }
+  ]
+}

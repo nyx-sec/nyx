@@ -1,0 +1,25 @@
+{
+  "description": "RegExp.prototype.exec, mongoose Query.exec() and redux-saga fork are not shell sinks; a destructured child_process exec in the same file still is.",
+  "tags": ["taint", "cmdi", "safe", "regex"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [9, 47],
+      "notes": "regex literal / RegExp object .exec on request data, mongoose .exec(), and a cookie-parsing loop are not command execution"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [9, 47],
+      "notes": "no shell sink exists in these handlers"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [52, 52],
+      "notes": "exec destructured from child_process inside the handler is still a shell sink (bare =exec gate)"
+    }
+  ]
+}

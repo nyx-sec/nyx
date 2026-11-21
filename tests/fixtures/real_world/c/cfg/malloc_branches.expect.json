@@ -42,15 +42,16 @@
       "notes": "malloc at line 12 not freed before return at line 17 \u2014 aspirational CFG finding"
     },
     {
-      "rule_id": "state-resource-leak-possible",
-      "severity": "LOW",
-      "must_match": true,
+      "rule_id": "resource-leak",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
       "line_range": [
         4,
-        7
+        9
       ],
       "evidence_contains": [],
-      "notes": "malloc at line 5 — buf is returned on success path but leaked on NULL-check path. Factory pattern correctly classifies as possible leak."
+      "notes": "No leak in duplicate_string: buf is NULL on the `buf == NULL` early return, so nothing was allocated on that path, and the success path returns buf to the caller. Previously expected state-resource-leak-possible here, which was the FP."
     },
     {
       "rule_id": "state-resource-leak-possible",

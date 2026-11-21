@@ -62,9 +62,14 @@ pub mod checks;
 pub mod config;
 pub mod extract;
 pub mod model;
+pub mod naming;
 pub mod persist;
+#[cfg(test)]
+mod precision_tests;
 pub mod router_facts;
 pub mod sql_semantics;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use crate::commands::scan::Diag;
 use crate::evidence::{Confidence, Evidence, SpanEvidence};
@@ -1159,7 +1164,7 @@ mod tests {
     use crate::auth_analysis::config::build_auth_rules;
     use crate::auth_analysis::model::{
         AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, CallSite,
-        OperationKind, SensitiveOperation, SinkClass,
+        OperationKind, SensitiveOperation, SinkClass, UnitRuntime,
     };
     use crate::ssa::type_facts::TypeKind;
     use crate::utils::config::Config;
@@ -1201,6 +1206,9 @@ mod tests {
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
             is_nextauth_options_factory: false,
+            package_names: HashSet::new(),
+            runtime: UnitRuntime::Unknown,
+            request_roots: HashSet::new(),
         }
     }
 
@@ -1317,6 +1325,9 @@ mod tests {
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
             is_nextauth_options_factory: false,
+            package_names: HashSet::new(),
+            runtime: UnitRuntime::Unknown,
+            request_roots: HashSet::new(),
         }
     }
 

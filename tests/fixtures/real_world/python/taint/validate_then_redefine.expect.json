@@ -1,0 +1,31 @@
+{
+  "description": "Validation recorded for a variable describes its current value: a re-read or an append of new request data is not validated, a strip of the validated value is, and a request read inlined beside an allowlisted operand is new data.",
+  "tags": ["taint", "validation", "redefinition"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [19, 19],
+      "notes": "value was re-read from the request after the check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [29, 29],
+      "notes": "request data is appended after the check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [39, 39],
+      "notes": "strip only transforms the validated value"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [50, 50],
+      "notes": "the limit parameter joins the query unvalidated"
+    }
+  ]
+}

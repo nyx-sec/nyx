@@ -1,0 +1,25 @@
+{
+  "description": "Error-check facts describe one value of err. A later `_, err = ...` is a new value whose own check is reachable, and `err == nil` / `err != nil` state opposite facts, so neither prunes the branch. Repeating the same check on the same value is still infeasible.",
+  "tags": ["taint", "predicate", "error-check", "go"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [17, 17],
+      "notes": "err was redefined by os.Stat; its error branch is reachable"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [28, 28],
+      "notes": "after `err == nil` returns, err is non-nil, so `err != nil` holds"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [39, 39],
+      "notes": "the first `err != nil` returned, so the second one cannot hold"
+    }
+  ]
+}

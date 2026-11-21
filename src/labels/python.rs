@@ -29,6 +29,11 @@ pub static RULES: &[LabelRule] = &[
             "request.rel_url",
             "request.query",
             "request.path",
+            // DRF / Starlette / FastAPI query and path parameters, Flask
+            // URL rule arguments.
+            "request.query_params",
+            "request.path_params",
+            "request.view_args",
             // Common alias: from flask import request as flask_request
             "flask_request.args",
             "flask_request.form",
@@ -146,6 +151,16 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // Autoescaping template renders: arg 0 is a template file name, so a
+    // tainted context value is escaped on output (Jinja2 and Django both
+    // autoescape by default).  `render_template_string` takes template
+    // source and stays a CODE_EXEC sink below; it never matches here
+    // because the suffix match is anchored at the end of the callee.
+    LabelRule {
+        matchers: &["render_template", "render_to_string"],
+        label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &["shlex.quote"],
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
@@ -224,11 +239,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["redirect"],
-        label: DataLabel::Sink(Cap::SSRF),
-        case_sensitive: false,
-    },
     // Django sinks
     LabelRule {
         matchers: &["HttpResponse", "mark_safe"],
@@ -241,8 +251,12 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: true,
     },
+    // `eval` stays a suffix matcher: `df.eval(expr)` and `redis.eval(script)`
+    // evaluate their argument.  `exec` is the builtin only (`=exec`); as a
+    // method name it is far more often an ORM call (SQLModel
+    // `session.exec(select(..))`) or a Qt event loop than code execution.
     LabelRule {
-        matchers: &["eval", "exec"],
+        matchers: &["eval", "=exec", "builtins.exec"],
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
     },
@@ -252,6 +266,9 @@ pub static RULES: &[LabelRule] = &[
             "os.popen",
             "subprocess.check_output",
             "subprocess.check_call",
+            // Both always run the command through /bin/sh.
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
         ],
         label: DataLabel::Sink(Cap::SHELL_ESCAPE),
         case_sensitive: false,
@@ -1363,6 +1380,62 @@ pub static GATED_SINKS: &[SinkGate] = &[
         },
     },
     SinkGate {
+        callee_matcher: "cur.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "cur.executemany",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "cursor.executescript",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "cur.executescript",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
         callee_matcher: "conn.execute",
         arg_index: 0,
         dangerous_values: &[],
@@ -1608,12 +1681,14 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "finally_clause"        => Kind::Block,
     "class_definition"      => Kind::Block,
     "decorated_definition"  => Kind::Block,
-    "match_statement"       => Kind::Block,
+    "match_statement"       => Kind::Switch,
     "case_clause"           => Kind::Block,
 
     // data-flow
     "call"                  => Kind::CallFn,
     "assignment"            => Kind::Assignment,
+    // `x += y`: read-modify-write, see `cfg::rmw_assignment`.
+    "augmented_assignment"  => Kind::Assignment,
     "expression_statement"  => Kind::CallWrapper,
     // tree-sitter-python emits `await x` as a named `await` node (no
     // `_expression` suffix, unlike JS/TS).  Map it to `AwaitForward` so

@@ -1,8 +1,9 @@
 use super::helpers::first_member_label;
 use super::{
-    AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
+    AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, NullCheck, StmtKind,
     build_cond_arith, collect_idents, connect_all, detect_eq_with_const, detect_negation,
-    has_call_descendant, member_expr_text, push_node, text_of, try_lower_jsx_dangerous_html,
+    has_call_descendant, member_expr_text, push_node, rmw_assignment, text_of,
+    try_lower_jsx_dangerous_html,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify};
 use crate::utils::snippet::truncate_at_char_boundary;
@@ -62,6 +63,192 @@ pub(super) fn get_boolean_operands<'a>(node: Node<'a>) -> Option<(Node<'a>, Node
         return Some((named[0], named[named.len() - 1]));
     }
     None
+}
+
+/// Peel one logical-not wrapper (`!x`, `not x`), returning its operand.
+fn peel_logical_not(node: Node) -> Option<Node> {
+    if !matches!(
+        node.kind(),
+        "unary_expression"
+            | "not_operator"
+            | "prefix_unary_expression"
+            | "unary_not"
+            | "unary_op_expression"
+            | "unary"
+    ) {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let is_not = node
+        .children(&mut cursor)
+        .any(|c| !c.is_named() && matches!(c.kind(), "!" | "not"));
+    if !is_not {
+        return None;
+    }
+    node.child_by_field_name("argument")
+        .or_else(|| node.child_by_field_name("operand"))
+        .or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).last()
+        })
+}
+
+/// Name of a bare variable operand, spelled the way `collect_idents` spells
+/// it so it matches `taint.defines` (PHP `$fh` becomes `fh`).
+fn null_check_operand_name(node: Node, code: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => text_of(node, code),
+        "variable_name" => text_of(node, code).map(|t| t.trim_start_matches('$').to_string()),
+        _ => None,
+    }
+}
+
+/// True for a literal that means "no handle": `NULL` / `nullptr` / `null` /
+/// `nil` / `None` / `undefined`, plus PHP `false` (what `fopen` and friends
+/// return on failure).
+fn is_null_like_literal(node: Node, lang: &str, code: &[u8]) -> bool {
+    match node.kind() {
+        "null" | "nullptr" | "null_literal" | "nil" | "none" | "undefined" => true,
+        // Older C/C++ grammar shapes and macro spellings surface as a plain
+        // identifier.
+        "identifier" if matches!(lang, "c" | "cpp") => {
+            matches!(text_of(node, code).as_deref(), Some("NULL" | "nullptr"))
+        }
+        "boolean" if lang == "php" => {
+            text_of(node, code).is_some_and(|t| t.eq_ignore_ascii_case("false"))
+        }
+        _ => false,
+    }
+}
+
+/// Integer value of a C/C++ literal operand (`0`, `-1`, `- 1`).
+fn c_int_literal(node: Node, code: &[u8]) -> Option<i64> {
+    match node.kind() {
+        "number_literal" => text_of(node, code)?.trim().parse().ok(),
+        "unary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            let arg = node.child_by_field_name("argument")?;
+            if op.kind() != "-" || arg.kind() != "number_literal" {
+                return None;
+            }
+            text_of(arg, code)?.trim().parse::<i64>().ok().map(|v| -v)
+        }
+        _ => None,
+    }
+}
+
+/// Split a two-operand comparison into `(left, operator, right)`.  Covers
+/// `binary_expression` (C-family, Go, Java, JS/TS, PHP, Rust), Ruby
+/// `binary`, and a single Python `comparison_operator` (`f is None`;
+/// chained `a < b < c` is rejected).
+fn comparison_parts<'a>(node: Node<'a>, code: &[u8]) -> Option<(Node<'a>, String, Node<'a>)> {
+    match node.kind() {
+        "binary_expression" | "binary" => {
+            let left = node.child_by_field_name("left")?;
+            let right = node.child_by_field_name("right")?;
+            let op = node.child_by_field_name("operator")?;
+            Some((left, text_of(op, code)?, right))
+        }
+        "comparison_operator" => {
+            let mut cursor = node.walk();
+            let operands: Vec<Node> = node.named_children(&mut cursor).collect();
+            if operands.len() != 2 {
+                return None;
+            }
+            let mut cursor = node.walk();
+            let ops: Vec<Node> = node
+                .children_by_field_name("operators", &mut cursor)
+                .collect();
+            if ops.len() != 1 {
+                return None;
+            }
+            Some((operands[0], text_of(ops[0], code)?, operands[1]))
+        }
+        _ => None,
+    }
+}
+
+/// Recognise a single-variable null / failure test in a branch condition.
+///
+/// Peels parentheses and logical-not (each `!` / `not` flips polarity), then
+/// accepts:
+///   * a bare variable: `if (f)`, `if not conn` (null when false);
+///   * `v ==/===/is <null>` (null when true) or `v !=/!==/is not <null>`
+///     (null when false), with the literal on either side;
+///   * C/C++ only, the integer failure sentinel of `open` / `socket` /
+///     `accept` / `dup`: `fd < 0`, `fd <= -1`, `fd == -1` (failure when true)
+///     and `fd >= 0`, `fd > -1`, `fd != -1` (failure when false).  A bare
+///     `== 0` is not a failure test (descriptor 0 is valid), so it is
+///     rejected.
+///
+/// Everything else (calls, field access, `&&` / `||`, `a == b`) yields
+/// `None`.
+pub(super) fn extract_null_check(cond: Node, lang: &str, code: &[u8]) -> Option<NullCheck> {
+    let mut node = cond;
+    let mut flip = false;
+    // Bounded: real conditions nest a handful of parens / nots at most.
+    for _ in 0..16 {
+        if node.kind() == "parenthesized_expression" {
+            node = node.named_child(0)?;
+            continue;
+        }
+        // C++ wraps the condition as `condition_clause` (`if (init; value)`).
+        if node.kind() == "condition_clause" {
+            node = node.child_by_field_name("value")?;
+            continue;
+        }
+        if let Some(inner) = peel_logical_not(node) {
+            node = inner;
+            flip = !flip;
+            continue;
+        }
+        break;
+    }
+
+    let (var, null_on_true) = if let Some(var) = null_check_operand_name(node, code) {
+        (var, false)
+    } else {
+        let (left, op, right) = comparison_parts(node, code)?;
+        let (mut left, mut right) = (unwrap_parens(left), unwrap_parens(right));
+        let mut op = op.split_whitespace().collect::<Vec<_>>().join(" ");
+        let c_family = matches!(lang, "c" | "cpp");
+        let right_is_lit = is_null_like_literal(right, lang, code)
+            || (c_family && c_int_literal(right, code).is_some());
+        if !right_is_lit {
+            // Literal on the left (`NULL == f`, `0 > fd`): swap operands and
+            // mirror the ordering operators.
+            std::mem::swap(&mut left, &mut right);
+            op = match op.as_str() {
+                "<" => ">".into(),
+                ">" => "<".into(),
+                "<=" => ">=".into(),
+                ">=" => "<=".into(),
+                _ => op,
+            };
+        }
+        let var = null_check_operand_name(left, code)?;
+        let null_on_true = if is_null_like_literal(right, lang, code) {
+            match op.as_str() {
+                "==" | "===" | "is" => true,
+                "!=" | "!==" | "is not" | "<>" => false,
+                _ => return None,
+            }
+        } else if c_family {
+            match (op.as_str(), c_int_literal(right, code)?) {
+                ("<", 0) | ("<=", -1) | ("==", -1) => true,
+                (">=", 0) | (">", -1) | ("!=", -1) => false,
+                _ => return None,
+            }
+        } else {
+            return None;
+        };
+        (var, null_on_true)
+    };
+
+    Some(NullCheck {
+        var,
+        null_on_true: null_on_true ^ flip,
+    })
 }
 
 /// Create a `StmtKind::If` node for a sub-condition in a boolean chain.
@@ -135,6 +322,7 @@ pub(super) fn push_condition_node<'a>(
         info.condition_text = text;
         info.condition_vars = vars;
         info.condition_negated = negated;
+        info.null_check = extract_null_check(cond_ast, lang, code);
         // Union the condition idents into `taint.uses` so branch-predicate
         // lookup keeps working without clobbering the call's own arg uses.
         for v in &uses_for_taint {
@@ -154,6 +342,7 @@ pub(super) fn push_condition_node<'a>(
         condition_text: text,
         condition_vars: vars,
         condition_negated: negated,
+        null_check: extract_null_check(cond_ast, lang, code),
         taint: crate::cfg::TaintMeta {
             uses: uses_for_taint,
             ..Default::default()
@@ -349,12 +538,10 @@ pub(super) fn build_ternary_diamond<'a>(
     call_ordinal: &mut u32,
     analysis_rules: Option<&LangAnalysisRules>,
 ) -> Vec<NodeIndex> {
-    let (Some(cond_field), Some(cons_field), Some(alt_field)) = (
-        ternary_ast.child_by_field_name("condition"),
-        ternary_ast.child_by_field_name("consequence"),
-        ternary_ast.child_by_field_name("alternative"),
-    ) else {
-        // Grammar mismatch: caller will fall through to the non-split path.
+    let Some((cond_field, cons_field, alt_field)) = ternary_parts(ternary_ast) else {
+        // Grammar mismatch (or PHP's `a ?: b` short form, which has no
+        // separate consequence): caller will fall through to the non-split
+        // path.
         return preds.to_vec();
     };
     let cond_ast = unwrap_parens(cond_field);
@@ -374,6 +561,7 @@ pub(super) fn build_ternary_diamond<'a>(
         analysis_rules,
     );
     g[cond_if].is_eq_with_const = detect_eq_with_const(cond_ast, lang);
+    g[cond_if].is_ternary_condition = true;
     // Capture the pure int-arith + comparison tree so `fold_constant_branches`
     // can prune a dead constant-condition arm of the ternary (e.g. Java
     // `(7*18)+num > 200 ? "const" : param` with `num` a known int constant),
@@ -454,7 +642,7 @@ pub(super) fn lower_ternary_branch<'a>(
     analysis_rules: Option<&LangAnalysisRules>,
 ) -> Vec<NodeIndex> {
     // Case 1: nested ternary.
-    if branch_ast.kind() == "ternary_expression" {
+    if ternary_parts(branch_ast).is_some() {
         return build_ternary_diamond(
             lhs_text.to_string(),
             lhs_labels.clone(),
@@ -554,10 +742,55 @@ pub(super) fn lower_ternary_branch<'a>(
     post_jsx
 }
 
+/// Conditional-expression node kinds lowered as a diamond: JS/TS/Java
+/// `ternary_expression`, Python / PHP `conditional_expression`, Ruby
+/// `conditional`.  Callers go through [`ternary_parts`], which also rejects
+/// the PHP `a ?: b` short form.
+fn is_ternary_node(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "ternary_expression" | "conditional_expression" | "conditional"
+    )
+}
+
+/// `(condition, consequence, alternative)` of a conditional expression.
+///
+/// * JS/TS/Java `ternary_expression` and Ruby `conditional`: `condition` /
+///   `consequence` / `alternative` fields.
+/// * PHP `conditional_expression`: `condition` / `body` / `alternative`;
+///   the `a ?: b` short form has no body and returns `None`.
+/// * Python `conditional_expression` (`a if c else b`) has no fields: the
+///   three named children are body, condition, alternative.
+pub(super) fn ternary_parts(node: Node) -> Option<(Node, Node, Node)> {
+    if !is_ternary_node(node) {
+        return None;
+    }
+    if let Some(cond) = node.child_by_field_name("condition") {
+        let cons = node
+            .child_by_field_name("consequence")
+            .or_else(|| node.child_by_field_name("body"))?;
+        let alt = node.child_by_field_name("alternative")?;
+        return Some((cond, cons, alt));
+    }
+    if node.kind() != "conditional_expression" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let parts: Vec<Node> = node
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() != "comment")
+        .collect();
+    match parts.as_slice() {
+        [body, cond, alt] => Some((*cond, *body, *alt)),
+        _ => None,
+    }
+}
+
 /// Extract `(lhs_ast, ternary_ast)` when `outer_ast` is an expression-statement
-/// or declaration whose single assignment/declarator's RHS is a ternary.
-/// Returns `None` for multi-declarator forms, for missing fields, and for
-/// any RHS that isn't a `ternary_expression` after `unwrap_parens`.
+/// or declaration whose single assignment/declarator's RHS is a conditional
+/// expression with all three parts ([`ternary_parts`]).  Returns `None` for
+/// multi-declarator forms, for missing fields, for the PHP `a ?: b` short
+/// form, and for any other RHS after `unwrap_parens`.
 pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
     let mut cursor = outer_ast.walk();
     let mut declarator_count = 0usize;
@@ -577,11 +810,14 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
                     continue;
                 };
                 let rhs = unwrap_parens(value);
-                if rhs.kind() == "ternary_expression" {
+                if ternary_parts(rhs).is_some() {
                     found = Some((name, rhs));
                 }
             }
-            "assignment_expression" => {
+            // JS/TS/Java/PHP `assignment_expression`, Python `assignment`.
+            // `x += c ? a : b` reads `x`; the diamond would rebind it as a
+            // plain `x = a | b`.
+            "assignment_expression" | "assignment" if rmw_assignment(child).is_none() => {
                 let (Some(left), Some(right)) = (
                     child.child_by_field_name("left"),
                     child.child_by_field_name("right"),
@@ -589,7 +825,7 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
                     continue;
                 };
                 let rhs = unwrap_parens(right);
-                if rhs.kind() == "ternary_expression" {
+                if ternary_parts(rhs).is_some() {
                     return Some((left, rhs));
                 }
             }
@@ -612,10 +848,33 @@ pub(super) fn classify_ternary_lhs(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
 
-    // Prefer full member-expression path; fall back to raw text.
+    // Prefer full member-expression path; fall back to raw text.  A PHP
+    // `$name` binds the SSA variable `name` (see `collect_idents`).
     let lhs_text = member_expr_text(lhs_ast, code)
         .or_else(|| text_of(lhs_ast, code))
         .unwrap_or_default();
+    let lhs_text = if lhs_ast.kind() == "variable_name" {
+        lhs_text.trim_start_matches('$').to_string()
+    } else {
+        lhs_text
+    };
+
+    // A Python / Ruby / PHP local (`query`, `@replies`, `$query`) is never
+    // a sink, whatever its name; only member targets (`self.headers[..]`)
+    // are worth classifying.  JS keeps bare names: `location = c ? a : b`
+    // navigates.
+    if matches!(lang, "python" | "ruby" | "php")
+        && matches!(
+            lhs_ast.kind(),
+            "identifier"
+                | "variable_name"
+                | "instance_variable"
+                | "class_variable"
+                | "global_variable"
+        )
+    {
+        return (lhs_text, labels);
+    }
 
     // Try the full dotted path first (e.g. "document.cookie"), then fall back
     // to the property alone (e.g. "innerHTML"), mirrors the LHS classification

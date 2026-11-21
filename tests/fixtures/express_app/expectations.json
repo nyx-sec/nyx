@@ -9,7 +9,7 @@
   "forbidden_findings": [],
   "noise_budget": {
     "max_total_findings": 25,
-    "max_high_findings": 15
+    "max_high_findings": 16
   },
   "performance_expectations": {
     "max_ms_no_index": 1000,

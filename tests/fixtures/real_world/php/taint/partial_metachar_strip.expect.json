@@ -1,0 +1,40 @@
+{
+  "description": "str_replace over ';' strips one shell metacharacter; the rest of the set still reaches system().",
+  "tags": [
+    "taint",
+    "sanitizer",
+    "replace",
+    "cmdi",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        2,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "';' removed, '|' and '&&' still reach the shell"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    }
+  ]
+}

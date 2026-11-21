@@ -364,7 +364,14 @@ fn build_chain(
     member_impacts: &[ImpactCategory],
 ) -> ChainFinding {
     let members: Vec<_> = path.iter().map(|e| e.finding.clone()).collect();
-    let stable_hash = ChainFinding::compute_stable_hash(&members, implied_impact);
+    let sink = ChainSink {
+        file: sink.location.file.clone(),
+        line: sink.location.line,
+        col: sink.location.col,
+        function_name: sink.function_name.clone(),
+        cap_bits: sink.cap_bits,
+    };
+    let stable_hash = ChainFinding::compute_stable_hash(&members, implied_impact, &sink);
     let owned_edges: Vec<ChainEdge> = path.iter().map(|e| (*e).clone()).collect();
     let score = score_path(member_impacts, implied_impact, &owned_edges);
     let severity = crate::output::severity::chain_severity(implied_impact, &owned_edges);
@@ -372,13 +379,7 @@ fn build_chain(
     ChainFinding {
         stable_hash,
         members,
-        sink: ChainSink {
-            file: sink.location.file.clone(),
-            line: sink.location.line,
-            col: sink.location.col,
-            function_name: sink.function_name.clone(),
-            cap_bits: sink.cap_bits,
-        },
+        sink,
         implied_impact,
         severity,
         score,
@@ -402,18 +403,20 @@ fn canonicalise(chains: &mut Vec<ChainFinding>) {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.stable_hash.cmp(&a.stable_hash))
             .then(b.implied_impact.cmp(&a.implied_impact))
+            .then_with(|| a.sink.order_key().cmp(&b.sink.order_key()))
     });
     // Drop duplicates: two chains with the same stable_hash and the
     // same terminal sink serialise byte-identically (stable_hash is a
-    // function of members + implied_impact, and the wire format
+    // function of members + implied_impact + sink, and the wire format
     // exposes only members, sink, impact, severity, score). They arise
     // when multiple entry-points share a (route, method) but are
     // otherwise unrelated (e.g. monorepos, or a scan covering multiple
     // small apps), each claiming the same finding via the route-only
-    // candidate filter in `find_chains_with_reach`. Keep the first
-    // occurrence after the sort above; the sort is total enough that
-    // the survivor is deterministic.
-    chains.dedup_by(|a, b| a.stable_hash == b.stable_hash && a.sink == b.sink);
+    // candidate filter in `find_chains_with_reach`.  Duplicates are not
+    // always adjacent after the score sort (a NaN score compares Equal to
+    // everything), so drop them by identity rather than with `dedup_by`.
+    let mut seen: std::collections::HashSet<(u64, ChainSink)> = std::collections::HashSet::new();
+    chains.retain(|c| seen.insert((c.stable_hash, c.sink.clone())));
 }
 
 // Manual Ord/PartialOrd for ImpactCategory so the canonicalise

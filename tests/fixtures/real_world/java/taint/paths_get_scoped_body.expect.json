@@ -1,0 +1,31 @@
+{
+  "description": "Paths.get is a static factory, not a load from a container named Paths.  In a Spring handler and in a helper reached through its summary (both lowered with scoped parameters) the path argument's taint reaches the file sink.  A lookup in a constant map stays a container load.",
+  "tags": ["taint", "java", "path-traversal", "spring", "summary"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [13, 13],
+      "must_match": true,
+      "notes": "Paths.get(file) then Files.delete"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [19, 19],
+      "must_match": true,
+      "notes": "Paths.get(base, file) then Files.readAllBytes"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [22, 26],
+      "must_not_match": true,
+      "notes": "REPORTS.get(kind) returns a constant path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [32, 32],
+      "must_match": true,
+      "notes": "servlet parameter reaches Files.readAllBytes through load()"
+    }
+  ]
+}

@@ -182,6 +182,79 @@ fn c_struct_field_nonescaping_local_leaks_but_escaping_stays_suppressed() {
 }
 
 #[test]
+fn c_pointer_bump_keeps_resource_open() {
+    // `cursor += 1` reads and writes `cursor`.  The read must not count as
+    // handing the allocation to another owner, or the leak disappears.
+    let leak_msgs: Vec<String> = state_diags_for("c_pointer_bump_leak.c")
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.message.clone().unwrap_or_default())
+        .collect();
+    assert!(
+        leak_msgs.iter().any(|m| m.contains("cursor")),
+        "bumped pointer `cursor` is never freed and must still leak.\n  Got: {leak_msgs:?}"
+    );
+}
+
+#[test]
+fn c_list_walk_cursor_does_not_leak() {
+    // `cur = cur->next` is a plain reassignment of the walker; the list
+    // itself is returned, so no leak is reported.
+    assert_no_state_findings("c_list_walk_no_leak.c");
+}
+
+// ── return inside try, release in finally / ensure ─────────────────────────
+//
+// `return` ends a path in the CFG, so a finally clause used to be skipped on
+// the return path: a resource closed there read as never closed, and a clause
+// every path returned through was unreachable.  The clause now runs on the
+// return path.
+
+#[test]
+fn return_in_try_with_close_in_finally_is_not_a_leak() {
+    for file in [
+        "java_return_in_try_finally_close.java",
+        "python_return_in_try_finally_close.py",
+        "js_return_in_try_finally_close.js",
+        "ruby_return_in_ensure_close.rb",
+        "php_return_in_try_finally_close.php",
+    ] {
+        assert_no_state_findings(file);
+    }
+}
+
+#[test]
+fn return_in_try_without_close_in_finally_still_leaks() {
+    for file in [
+        "java_return_in_try_finally_no_close.java",
+        "python_return_in_try_finally_no_close.py",
+        "js_return_in_try_finally_no_close.js",
+        "ruby_return_in_ensure_no_close.rb",
+    ] {
+        assert!(
+            has_rule_prefix(file, "state-resource-leak"),
+            "{file}: the finally clause does not close the resource, so the leak must remain.\n  Got: {:?}",
+            state_ids_for(file)
+        );
+    }
+}
+
+#[test]
+fn return_in_try_with_conditional_close_in_finally_may_leak() {
+    assert_has(
+        "java_return_in_try_finally_conditional_close.java",
+        "state-resource-leak-possible",
+    );
+}
+
+#[test]
+fn returned_resource_through_finally_keeps_ownership_transfer() {
+    // The synthetic tail of the finally copy carries the returned names, so
+    // the factory pattern still reads as ownership handed to the caller.
+    assert_no_state_findings("java_return_resource_through_finally.java");
+}
+
+#[test]
 fn state_analysis_disabled_via_flag() {
     let mut cfg = common::test_config(AnalysisMode::Full);
     cfg.scanner.enable_state_analysis = false;
@@ -1313,4 +1386,422 @@ fn auth_decorator_cpp_authenticated() {
         "auth_decorator_cpp_authenticated.cpp",
         "state-unauthed-access",
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Null / failure guards and returned handles
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Every leak finding (state or structural cfg twin) for a fixture.
+fn leak_ids_for(filename: &str) -> Vec<String> {
+    scan_all_fixtures()
+        .iter()
+        .filter(|d| d.path.contains(filename) && d.id.contains("resource-leak"))
+        .map(|d| format!("{}:{}", d.id, d.line))
+        .collect()
+}
+
+fn assert_no_leaks(filename: &str) {
+    let found = leak_ids_for(filename);
+    assert!(
+        found.is_empty(),
+        "Expected no resource-leak findings (state or cfg) in {filename}.\n  Got: {found:?}"
+    );
+}
+
+#[test]
+fn null_guard_early_return_clean() {
+    assert_no_leaks("null_guard_early_return_clean.c");
+}
+
+#[test]
+fn null_guard_fd_sentinel_clean() {
+    assert_no_leaks("null_guard_fd_sentinel_clean.c");
+}
+
+#[test]
+fn null_guard_factory_clean() {
+    assert_no_leaks("null_guard_factory_clean.c");
+}
+
+#[test]
+fn null_guard_later_return_still_leaks() {
+    assert_has(
+        "null_guard_later_return_leaks.c",
+        "state-resource-leak-possible",
+    );
+}
+
+#[test]
+fn cpp_nullptr_guard_clean() {
+    assert_no_leaks("cpp_nullptr_guard_clean.cpp");
+}
+
+#[test]
+fn python_none_guard_clean() {
+    assert_no_leaks("python_none_guard_clean.py");
+}
+
+#[test]
+fn php_fopen_false_guard_clean() {
+    assert_no_leaks("php_fopen_false_guard_clean.php");
+}
+
+#[test]
+fn js_fd_null_guard_clean() {
+    assert_no_leaks("js_fd_null_guard_clean.js");
+}
+
+#[test]
+fn java_finally_null_guard_clean() {
+    assert_no_leaks("java_finally_null_guard_clean.java");
+}
+
+#[test]
+fn go_err_guard_clean() {
+    assert_no_leaks("go_err_guard_clean.go");
+}
+
+#[test]
+fn go_err_reassigned_still_leaks() {
+    // Recall guard: only the acquire's own error proves the handle absent.
+    assert_has("go_err_reassigned_leak.go", "state-resource-leak-possible");
+}
+
+#[test]
+fn return_of_read_result_leaks_handle() {
+    let leaks: Vec<_> = state_diags_for("return_read_leak.py")
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .collect();
+    assert_eq!(
+        leaks.len(),
+        2,
+        "both `return f.read()` and `return len(f.readlines())` leak f.\n  Got: {:?}",
+        leak_ids_for("return_read_leak.py")
+    );
+}
+
+#[test]
+fn go_return_readall_leaks_handle() {
+    assert_has("go_return_readall_leak.go", "state-resource-leak");
+}
+
+#[test]
+fn factory_returns_handle_clean() {
+    assert_no_leaks("factory_returns_handle_clean.py");
+}
+
+#[test]
+fn java_factory_returns_handle_clean() {
+    assert_no_leaks("java_factory_returns_handle_clean.java");
+}
+
+#[test]
+fn ruby_implicit_return_clean() {
+    assert_no_leaks("ruby_implicit_return_clean.rb");
+}
+
+#[test]
+fn ruby_tail_read_still_leaks() {
+    assert_has("ruby_tail_read_leak.rb", "state-resource-leak");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Acquire matching at identifier boundaries
+// ═══════════════════════════════════════════════════════════════════════
+
+fn leak_lines(filename: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = state_diags_for(filename)
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.line)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn python_suffix_callees_are_not_acquires() {
+    // pipe_leak (os.popen) and real_leak (open) only.
+    assert_eq!(
+        leak_lines("python_non_acquire_suffix_callees.py"),
+        vec![41, 46],
+        "Got: {:?}",
+        leak_ids_for("python_non_acquire_suffix_callees.py")
+    );
+}
+
+#[test]
+fn ruby_suffix_callees_are_not_acquires() {
+    assert_eq!(
+        leak_lines("ruby_non_acquire_suffix_callees.rb"),
+        vec![15],
+        "Got: {:?}",
+        leak_ids_for("ruby_non_acquire_suffix_callees.rb")
+    );
+}
+
+#[test]
+fn java_suffix_callees_are_not_acquires() {
+    assert_eq!(
+        leak_lines("java_non_acquire_suffix_callees.java"),
+        vec![13],
+        "Got: {:?}",
+        leak_ids_for("java_non_acquire_suffix_callees.java")
+    );
+}
+
+#[test]
+fn c_prefixed_allocators_still_acquire() {
+    assert_eq!(
+        leak_lines("c_wrapper_allocator_leak.c"),
+        vec![9, 14],
+        "Got: {:?}",
+        leak_ids_for("c_wrapper_allocator_leak.c")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handles stored outside the body
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn c_outparam_store_clean() {
+    assert_no_leaks("c_outparam_store_clean.c");
+}
+
+#[test]
+fn c_global_store_clean() {
+    assert_no_leaks("c_global_store_clean.c");
+}
+
+#[test]
+fn c_late_init_local_still_leaks() {
+    // Recall guard for the local-declaration scan: `FILE *f; f = fopen(..)`.
+    assert_has("c_late_init_local_leak.c", "state-resource-leak");
+}
+
+#[test]
+fn go_package_var_init_clean() {
+    assert_no_leaks("go_package_var_init_clean.go");
+}
+
+#[test]
+fn java_field_store_clean() {
+    assert_no_leaks("java_field_store_clean.java");
+}
+
+#[test]
+fn java_local_declared_late_still_leaks() {
+    assert_has("java_local_declared_late_leak.java", "state-resource-leak");
+}
+
+#[test]
+fn cpp_member_store_clean() {
+    assert_no_leaks("cpp_member_store_clean.cpp");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Ownership handed to wrappers, smart pointers and containers
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn java_wrapper_stream_closed() {
+    assert_no_leaks("java_wrapper_stream_closed.java");
+}
+
+#[test]
+fn java_wrapper_stream_leak_still_fires() {
+    assert_has_prefix("java_wrapper_stream_leak.java", "state-resource-leak");
+}
+
+#[test]
+fn java_noncloseable_ctor_keeps_inner_stream() {
+    // `new InputSource(in)` does not own `in`; closing `in` is the release.
+    assert_no_leaks("java_noncloseable_ctor_inner_closed.java");
+}
+
+#[test]
+fn cpp_smart_ptr_adopts_raw() {
+    assert_no_leaks("cpp_smart_ptr_adopts_raw.cpp");
+}
+
+#[test]
+fn java_container_add_escape() {
+    assert_no_leaks("java_container_add_escape.java");
+}
+
+#[test]
+fn cpp_vector_push_back_escape() {
+    assert_no_leaks("cpp_vector_push_back_escape.cpp");
+}
+
+#[test]
+fn python_container_store_escape() {
+    assert_no_leaks("python_container_store_escape.py");
+}
+
+#[test]
+fn js_container_store_escape() {
+    assert_no_leaks("js_container_store_escape.js");
+}
+
+#[test]
+fn go_container_store_escape() {
+    assert_no_leaks("go_container_store_escape.go");
+}
+
+#[test]
+fn php_container_store_escape() {
+    assert_no_leaks("php_container_store_escape.php");
+}
+
+#[test]
+fn java_wrapper_over_managed_stream_clean() {
+    // try-with-resources already closes `out`; `sink` must not inherit it.
+    assert_no_leaks("java_wrapper_over_managed_stream.java");
+}
+
+#[test]
+fn python_attribute_read_does_not_alias_handle() {
+    let file = "python_attribute_read_keeps_handle.py";
+    assert_message_contains(file, "state-resource-leak", "`cursor`");
+    let on_desc = state_diags_for(file)
+        .iter()
+        .any(|d| d.message.as_deref().unwrap_or("").contains("`desc`"));
+    assert!(
+        !on_desc,
+        "`desc = cursor.description` is a read, not an alias: {:?}",
+        leak_ids_for(file)
+    );
+}
+
+#[test]
+fn go_lock_method_result_is_not_a_held_lock() {
+    assert_no_leaks("go_lock_method_returns_value.go");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handles kept on the receiver object
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn python_receiver_field_closed_by_sibling() {
+    assert_no_leaks("python_receiver_field_closed_clean.py");
+}
+
+#[test]
+fn python_receiver_field_never_closed_still_leaks() {
+    assert_has(
+        "python_receiver_field_never_closed.py",
+        "state-resource-leak",
+    );
+}
+
+#[test]
+fn php_receiver_field_closed_by_sibling() {
+    // `$this->conn = new mysqli(..)` used to define the bare `this`;
+    // close() releases the field.
+    assert_no_leaks("php_receiver_field_closed_clean.php");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Python DB-API cursors derived from a local connection
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn python_cursor_from_local_connection_clean() {
+    assert_no_leaks("python_cursor_from_local_connection.py");
+}
+
+#[test]
+fn python_cursor_connection_leak_reports_connection() {
+    let file = "python_cursor_connection_leak.py";
+    assert_message_contains(file, "state-resource-leak", "`conn`");
+    let on_cursor = state_diags_for(file)
+        .iter()
+        .any(|d| d.message.as_deref().unwrap_or("").contains("`cur`"));
+    assert!(
+        !on_cursor,
+        "the connection leak is the root, not the cursor: {:?}",
+        leak_ids_for(file)
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Handle variables reset after release
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fd_reset_after_close_is_not_double_close() {
+    assert_no_state_findings("fd_reset_after_close_clean.c");
+}
+
+#[test]
+fn double_close_without_reset_still_fires() {
+    assert_has("double_close_without_reset.c", "state-double-close");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Use after close: only the handle itself counts as a use
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn closed_handle_name_in_args_is_not_a_use() {
+    for file in [
+        "uac_handle_name_args.py",
+        "uac_handle_name_args.go",
+        "uac_handle_name_args.rb",
+        "uac_handle_name_args.java",
+        "uac_handle_name_args.js",
+    ] {
+        assert_absent(file, "state-use-after-close");
+    }
+}
+
+#[test]
+fn closed_handle_read_by_nested_call_fires() {
+    assert_has("uac_nested_use_arg.py", "state-use-after-close");
+}
+
+#[test]
+fn closed_handle_passed_whole_fires() {
+    assert_has("uac_whole_handle_arg.go", "state-use-after-close");
+}
+
+#[test]
+fn freed_pointer_field_read_fires() {
+    assert_has("uac_freed_field_read.c", "state-use-after-close");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Resource-method proxies: only methods that open / close their receiver
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn local_handle_function_is_not_a_receiver_proxy() {
+    for file in [
+        "proxy_local_handle_same_name.go",
+        "proxy_sibling_buffer_write.go",
+        "proxy_static_local_stream.java",
+    ] {
+        assert_absent(file, "state-use-after-close");
+        assert_absent(file, "state-double-close");
+    }
+}
+
+#[test]
+fn receiver_field_proxy_leak_still_fires() {
+    assert_message_contains("proxy_receiver_field_leak.py", "state-resource-leak", "`s`");
+    assert_message_contains(
+        "proxy_receiver_field_leak.java",
+        "state-resource-leak",
+        "`h`",
+    );
+}
+
+#[test]
+fn receiver_field_proxy_released_by_sibling_method() {
+    assert_no_leaks("proxy_receiver_field_balanced.py");
 }

@@ -1,0 +1,42 @@
+{
+  "description": "PHP `in_array(...) === false` and the Yoda `false === in_array(...)` put membership on the FALSE edge.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "sentinel",
+    "allowlist",
+    "cmdi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        3,
+        19
+      ],
+      "notes": "strict `=== false` and Yoda `false ===` both reject before the sink"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "must_not_match": true,
+      "line_range": [
+        3,
+        19
+      ],
+      "notes": "validated flow also keeps the AST pattern quiet"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        24,
+        25
+      ],
+      "notes": "sink runs on the not-in-list branch"
+    }
+  ]
+}

@@ -564,6 +564,53 @@ fn bench_const_propagate_large_go(c: &mut Criterion) {
     });
 }
 
+/// SCCP on a function whose join block has thousands of predecessors.
+///
+/// The fixture is a C `switch` with one `case N: x = N; break;` arm per
+/// constant, so the exit block's phi for `x` has one operand per arm and the
+/// join gains one incoming edge per arm.  Evaluating that phi from scratch for
+/// every new edge, with a linear executable-predecessor scan per operand, is
+/// cubic in the arm count (about 78 s for 3000 arms in a full scan before the
+/// fix); with edges queued once and operands absorbed one at a time it is
+/// linear.  A regression shows up here as a jump from microseconds to seconds.
+fn bench_const_propagate_wide_switch(c: &mut Criterion) {
+    use nyx_scanner::ssa;
+
+    let arms = 2000;
+    let mut src = String::from("int f(int sel) {\n    int x = 0;\n    switch (sel) {\n");
+    for i in 0..arms {
+        src.push_str(&format!("    case {i}: x = {i}; break;\n"));
+    }
+    src.push_str("    }\n    return x;\n}\n");
+    let dir = std::env::temp_dir().join("nyx_bench_wide_switch");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let fixture = dir.join("wide_switch.c");
+    std::fs::write(&fixture, src).expect("write fixture");
+
+    let cfg_obj = Config::default();
+    let (file_cfg, _lang) = nyx_scanner::ast::build_cfg_for_file(&fixture, &cfg_obj)
+        .expect("build cfg")
+        .expect("supported language");
+    let bodies: Vec<ssa::ir::SsaBody> = file_cfg
+        .bodies
+        .iter()
+        .filter_map(|body| {
+            let scope = body.meta.name.as_deref();
+            ssa::lower_to_ssa(&body.graph, body.entry, scope, scope.is_none()).ok()
+        })
+        .collect();
+
+    c.bench_function("const_propagate_wide_switch", |b| {
+        b.iter(|| {
+            let mut total_values = 0usize;
+            for body in &bodies {
+                total_values += ssa::const_prop::const_propagate(body).values.len();
+            }
+            total_values
+        });
+    });
+}
+
 /// `GlobalSummaries::lookup_same_lang` cost on a populated index.  The
 /// inner loop hashes `(Lang, String)` once per call, then `FuncKey` once
 /// per candidate via `by_key.get(k)`.  Pre-fix the four secondary
@@ -1105,6 +1152,7 @@ criterion_group!(
     bench_gitea_route_auth_edges_go,
     bench_collect_top_level_units_go,
     bench_const_propagate_large_go,
+    bench_const_propagate_wide_switch,
     bench_ssa_lower_large_go,
     bench_cfg_node_map_lookup,
     bench_global_summaries_lookup_same_lang_go,

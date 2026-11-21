@@ -1,0 +1,35 @@
+{
+  "description": "SSRF and data exfiltration through a *http.Client the code builds itself: a &http.Client{} literal, a zero-value var, and a formal declared *http.Client.  The client is typed from its declaration, so the HttpClient gates apply whatever the variable is named.",
+  "tags": ["taint", "ssrf", "data-exfil", "go", "http-client"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [11, 11],
+      "notes": "c := &http.Client{...}; c.Get(tainted)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [18, 18],
+      "notes": "var c http.Client; c.Head(tainted)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [23, 23],
+      "notes": "client *http.Client formal; client.Post(tainted, ...)"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_match": true,
+      "line_range": [29, 29],
+      "notes": "the Authorization header reaches c.Do through the request body"
+    }
+  ]
+}

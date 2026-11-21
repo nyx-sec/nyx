@@ -1,0 +1,14 @@
+{
+  "description": "Spring handler formals the framework fills with infrastructure (HttpServletResponse, HttpServletRequest, Principal, @AuthenticationPrincipal, Model, HttpSession) are not request input.  Constant response writes, cookies, the servlet context path and principal names must not produce taint flows.",
+  "tags": ["taint", "java", "spring", "entry-point", "precision"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "line_range": [1, 50],
+      "must_not_match": true,
+      "notes": "no formal in this controller is bound from the request"
+    }
+  ]
+}

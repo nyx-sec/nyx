@@ -1,0 +1,19 @@
+{
+  "description": "A plain copy aliases one value, not the name: rebinding or quoting the copy leaves the original as it was.",
+  "tags": ["taint", "alias", "copy-propagation"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [18, 18],
+      "notes": "user_cmd was rebound to the request value; cmd is still the constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [28, 28],
+      "notes": "only the copy y was quoted; x reaches os.system raw"
+    }
+  ]
+}

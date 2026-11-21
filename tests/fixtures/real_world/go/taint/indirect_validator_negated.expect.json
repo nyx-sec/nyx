@@ -1,0 +1,50 @@
+{
+  "description": "Go `ok := isValid(x); if !ok { return }` and the negated err-check `if !(err == nil) { return }`: the leading `!` moves the validated edge.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "indirect-validator",
+    "err-check"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        13,
+        21
+      ],
+      "notes": "`if !ok { return }` rejects before the sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        27,
+        28
+      ],
+      "notes": "sink inside `if !ok` runs exactly when validation failed"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        33,
+        41
+      ],
+      "notes": "`!(err == nil)` returns on parse failure, so `id` is numeric at the query"
+    },
+    {
+      "rule_id": "go.sqli.query_concat",
+      "must_not_match": true,
+      "line_range": [
+        40,
+        40
+      ],
+      "notes": "numeric id keeps the AST pattern quiet"
+    }
+  ]
+}

@@ -910,6 +910,7 @@ mod primary_sink_location_tests {
             /* guard_kind   */ None,
             /* uses_summary */ true,
             primary_sites,
+            /* inline_source */ false,
         );
         assert_eq!(events.len(), 1, "single site → single event");
         let event_site = events[0]
@@ -1141,8 +1142,12 @@ mod goto_succ_propagation_tests {
             "err != nil",
             "x == null",
             "scheme not in allowed",
-            "typeof x !== 'string'",
+            "typeof x !== 'number'",
             "isInvalidUrl(u)",
+            "(ALLOWED.includes(cmd) === false)",
+            "ALLOWED.indexOf(cmd) < 0",
+            "is_valid(x) is not True",
+            "ok === false",
             "p.contains(\"..\")",
             "user.isAdmin",
         ];
@@ -1164,7 +1169,20 @@ mod goto_succ_propagation_tests {
     /// Used to drive `apply_path_fact_branch_narrowing` without a full CFG.
     fn ssa_body_with_named_value(var_name: &str) -> SsaBody {
         SsaBody {
-            blocks: vec![],
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![SsaInst {
+                    value: SsaValue(0),
+                    op: SsaOp::Source,
+                    cfg_node: NodeIndex::new(0),
+                    var_name: Some(var_name.into()),
+                    span: (0, 1),
+                }],
+                terminator: Terminator::Return(None),
+                preds: smallvec![],
+                succs: smallvec![],
+            }],
             entry: BlockId(0),
             value_defs: vec![crate::ssa::ir::ValueDef {
                 var_name: Some(var_name.into()),
@@ -1298,12 +1316,13 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!path.contains(\"..\")"),
             &["path".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1332,12 +1351,13 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!filepath.IsLocal(p)"),
             &["p".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1380,6 +1400,315 @@ mod goto_succ_propagation_tests {
         let fabs = false_state.abstract_state.as_ref().unwrap();
         assert!(tabs.get(SsaValue(0)).path.is_top());
         assert!(fabs.get(SsaValue(0)).path.is_top());
+    }
+
+    fn tainted_state_with_abstract(caps: crate::labels::Cap) -> SsaTaintState {
+        let mut s = initial_state_with_abstract();
+        s.set(
+            SsaValue(0),
+            crate::taint::domain::VarTaint {
+                caps,
+                origins: smallvec![],
+                uses_summary: false,
+            },
+        );
+        s
+    }
+
+    #[test]
+    fn open_redirect_clears_only_after_both_url_facts() {
+        use crate::labels::Cap;
+        use crate::state::symbol::SymbolInterner;
+        use crate::taint::path_state::PredicateKind::{LeadingSlashCheck, ProtocolRelativeCheck};
+        let caps = Cap::OPEN_REDIRECT | Cap::SSRF;
+        let ssa = ssa_body_with_named_value("next");
+        let mut interner = SymbolInterner::new();
+        interner.intern("next");
+        let vars = ["next".to_string()];
+        let apply = |st: &mut SsaTaintState, kind, polarity| {
+            super::super::apply_branch_predicates(
+                st,
+                &vars,
+                kind,
+                polarity,
+                crate::taint::path_state::predicate_bit_negative_form(kind, ""),
+                &interner,
+                &ssa,
+                None,
+            )
+        };
+        let caps_of = |st: &SsaTaintState| st.get(SsaValue(0)).map(|t| t.caps);
+
+        // Leading slash alone: `//evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, true);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Not protocol-relative alone: `https://evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Both, in either order: only OPEN_REDIRECT is cleared.
+        for order in [
+            [(LeadingSlashCheck, true), (ProtocolRelativeCheck, false)],
+            [(ProtocolRelativeCheck, false), (LeadingSlashCheck, true)],
+        ] {
+            let mut st = tainted_state_with_abstract(caps);
+            for (kind, polarity) in order {
+                apply(&mut st, kind, polarity);
+            }
+            assert_eq!(caps_of(&st), Some(Cap::SSRF), "{order:?}");
+        }
+
+        // The reject edges never clear.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, false);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+    }
+
+    #[test]
+    fn path_rejection_single_axis_validates_nothing() {
+        // `if (name.includes("..")) return; db.query("..." + name)`: a path
+        // shape check says nothing about SQL / shell / HTML and, on one axis
+        // alone, nothing about FILE_IO either (`/etc/passwd` passes a `..`
+        // check).  No validation bit and no cap change on either arm.
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        for text in [
+            "name.includes(\"..\")",
+            "name.startsWith(\"/\")",
+            "\"..\" in name",
+            "strings.Contains(name, \"..\")",
+        ] {
+            let ssa = ssa_body_with_named_value("name");
+            let mut true_state = tainted_state_with_abstract(caps);
+            let mut false_state = tainted_state_with_abstract(caps);
+            super::super::apply_path_fact_branch_narrowing_with_aliases(
+                &mut true_state,
+                &mut false_state,
+                &super::super::classify_path_branch(text),
+                &["name".to_string()],
+                &ssa,
+                BlockId(0),
+                None,
+                false,
+            );
+            for st in [&true_state, &false_state] {
+                assert!(st.validated_must.is_empty(), "{text}: validated_must set");
+                assert!(st.validated_may.is_empty(), "{text}: validated_may set");
+                assert_eq!(st.get(SsaValue(0)).map(|t| t.caps), Some(caps), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn path_rejection_both_axes_clears_only_file_io() {
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        let ssa = ssa_body_with_named_value("name");
+
+        // `if (name.includes("..") || name.startsWith("/")) return;`
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            false,
+        );
+        assert_eq!(
+            false_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY),
+            "surviving arm keeps every non-FILE_IO cap"
+        );
+        assert!(false_state.validated_must.is_empty());
+        assert_eq!(true_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // `if (!(name.includes("..") || name.startsWith("/"))) { sink }`:
+        // the CFG reports the leading `!` as condition_negated, so the
+        // relative `..`-free arm is TRUE.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "!(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            true,
+        );
+        assert_eq!(
+            true_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY)
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // Two different subjects: neither is proven on both axes.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(name.includes(\"..\") || dir.startsWith(\"/\"))"),
+            &["dir".to_string(), "name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            false,
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+    }
+
+    #[test]
+    fn path_rejection_narrows_the_definition_reaching_the_branch() {
+        // block 0: p = source;  -> block 1: if (p.includes("..") || p.startsWith("/")) ...
+        // block 2 (false arm): p = req.query.b
+        // The check proves nothing about the new value, so only the
+        // definition live at the branch (v0) may be narrowed.
+        let inst = |v: u32| SsaInst {
+            value: SsaValue(v),
+            op: SsaOp::Source,
+            cfg_node: NodeIndex::new(v as usize),
+            var_name: Some("p".into()),
+            span: (0, 1),
+        };
+        let def = |b: u32| crate::ssa::ir::ValueDef {
+            var_name: Some("p".into()),
+            cfg_node: NodeIndex::new(0),
+            block: BlockId(b),
+        };
+        let mut ssa = ssa_body_with_named_value("p");
+        ssa.blocks = vec![
+            SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![inst(0)],
+                terminator: Terminator::Goto(BlockId(1)),
+                preds: smallvec![],
+                succs: smallvec![BlockId(1)],
+            },
+            SsaBlock {
+                id: BlockId(1),
+                phis: vec![],
+                body: vec![],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(0)],
+                succs: smallvec![BlockId(2)],
+            },
+            SsaBlock {
+                id: BlockId(2),
+                phis: vec![],
+                body: vec![inst(1)],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(1)],
+                succs: smallvec![],
+            },
+        ];
+        ssa.value_defs = vec![def(0), def(2)];
+
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(p.includes(\"..\") || p.startsWith(\"/\"))"),
+            &["p".to_string()],
+            &ssa,
+            BlockId(1),
+            None,
+            false,
+        );
+        let abs = false_state.abstract_state.as_ref().unwrap();
+        assert!(abs.get(SsaValue(0)).path.is_path_safe());
+        assert!(
+            abs.get(SsaValue(1)).path.is_top(),
+            "a redefinition after the check must not inherit the narrowed fact"
+        );
+    }
+
+    #[test]
+    fn branch_cond_sentinel_comparisons_set_semantic_negation() {
+        use crate::taint::path_state::PredicateKind;
+        // (text, expected kind, expected has_semantic_negation)
+        let cases = [
+            (
+                "(ALLOWED.includes(cmd) === false)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.includes(cmd) !== false",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED.indexOf(cmd) === -1)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.indexOf(cmd) !== -1",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED[cmd] === undefined)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(false === in_array($cmd, $allowed, true))",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(isValidName(cmd) === false)",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "is_valid_name(name) is False",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "isInvalidUrl(u) === false",
+                PredicateKind::ValidationCall,
+                false,
+            ),
+            // The `!=` belongs to the sentinel, not to a `typeof` test.
+            ("isinstance(x, int) != True", PredicateKind::TypeCheck, true),
+            (
+                "isinstance(x, int) == True",
+                PredicateKind::TypeCheck,
+                false,
+            ),
+            ("typeof x !== 'number'", PredicateKind::TypeCheck, true),
+            // A missing key and a `false` value look the same: validate
+            // neither edge.
+            ("(ALLOWED[cmd] === false)", PredicateKind::Unknown, false),
+        ];
+        for (text, kind, negated) in cases {
+            let class = super::super::classify_branch_cond(text);
+            assert_eq!(class.kind, kind, "{text}");
+            assert_eq!(class.has_semantic_negation, negated, "{text}");
+        }
+        assert_eq!(
+            super::super::classify_branch_cond("(ALLOWED[cmd] === false)").target_var,
+            None
+        );
     }
 
     #[test]
@@ -1663,6 +1992,93 @@ mod receiver_candidates_field_proj_tests {
             super::super::receiver_candidates_for_type_lookup(SsaValue(0), Some(&body), Lang::Go);
         // Cycle: only the start value is recorded; no infinite walk.
         assert_eq!(cands.as_slice(), &[SsaValue(0)]);
+    }
+
+    /// The walk crosses blocks: `c` is defined in block 0, the projection in
+    /// block 1, and the call in block 2. The value table names each defining
+    /// block, so the walk has to follow it rather than assume block 0.
+    #[test]
+    fn walk_follows_definitions_across_blocks() {
+        let mut interner = crate::ssa::ir::FieldInterner::default();
+        let f_id = interner.intern("client");
+        let inst = |value: u32, op: SsaOp| SsaInst {
+            value: SsaValue(value),
+            op,
+            cfg_node: NodeIndex::new(0),
+            var_name: None,
+            span: (0, 0),
+        };
+        let block = |id: u32, body: Vec<SsaInst>, succ: Option<u32>| SsaBlock {
+            id: BlockId(id),
+            phis: vec![],
+            body,
+            terminator: match succ {
+                Some(s) => Terminator::Goto(BlockId(s)),
+                None => Terminator::Return(None),
+            },
+            preds: smallvec![],
+            succs: succ.map(|s| smallvec![BlockId(s)]).unwrap_or_default(),
+        };
+        let def_in = |b: u32| ValueDef {
+            var_name: None,
+            cfg_node: NodeIndex::new(0),
+            block: BlockId(b),
+        };
+        let body = SsaBody {
+            blocks: vec![
+                block(0, vec![inst(0, SsaOp::Param { index: 0 })], Some(1)),
+                block(
+                    1,
+                    vec![inst(
+                        1,
+                        SsaOp::FieldProj {
+                            receiver: SsaValue(0),
+                            field: f_id,
+                            projected_type: None,
+                        },
+                    )],
+                    Some(2),
+                ),
+                block(
+                    2,
+                    vec![inst(
+                        2,
+                        SsaOp::Call {
+                            callee: "send".into(),
+                            callee_text: None,
+                            args: vec![],
+                            receiver: Some(SsaValue(1)),
+                        },
+                    )],
+                    None,
+                ),
+            ],
+            entry: BlockId(0),
+            value_defs: vec![def_in(0), def_in(1), def_in(2)],
+            cfg_node_map: Default::default(),
+            exception_edges: vec![],
+            field_interner: interner,
+            field_writes: Default::default(),
+            synthetic_externals: Default::default(),
+            slot_scoped_assigns: Default::default(),
+        };
+        let cands =
+            super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&body), Lang::Rust);
+        assert_eq!(cands.as_slice(), &[SsaValue(2), SsaValue(1), SsaValue(0)]);
+    }
+
+    /// A body whose value table names the wrong block still resolves, through
+    /// the whole-body fallback.
+    #[test]
+    fn walk_survives_a_value_table_that_names_the_wrong_block() {
+        let body = body_with_field_proj_chain();
+        let mut skewed = body.clone();
+        for vd in &mut skewed.value_defs {
+            vd.block = BlockId(7);
+        }
+        let cands =
+            super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&skewed), Lang::Go);
+        assert_eq!(cands.as_slice(), &[SsaValue(2), SsaValue(0)]);
     }
 }
 
@@ -2281,13 +2697,17 @@ mod field_write_tests {
             recording_summary: false,
         };
 
-        // Pre-seed `validated_must` on `src` so the synth Assign
-        // observes it at write time.
+        // Validate `src` right after its definition, as a guard on it
+        // would, so the synth Assign observes the bit at write time.  A
+        // bit seeded before the definition would describe no value of
+        // `src`: the definition itself drops it.
         let mut state = SsaTaintState::initial();
-        state.validated_must.insert(sym_src);
-        state.validated_may.insert(sym_src);
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
+            if inst.var_name.as_deref() == Some("src") {
+                state.validated_must.insert(sym_src);
+                state.validated_may.insert(sym_src);
+            }
         }
 
         // Cell records validated_must=true (rhs was must-validated).
@@ -2819,12 +3239,16 @@ mod container_elem_tests {
             recording_summary: false,
         };
 
-        // Seed `src` as validated_must before the push fires.
+        // Validate `src` right after its definition (before the push
+        // fires), as a guard on it would.  A bit seeded before the
+        // definition would describe no value of `src`.
         let mut state = SsaTaintState::initial();
-        state.validated_must.insert(sym_src);
-        state.validated_may.insert(sym_src);
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
+            if inst.var_name.as_deref() == Some("src") {
+                state.validated_must.insert(sym_src);
+                state.validated_may.insert(sym_src);
+            }
         }
 
         // Cell carries validated_must=true after push.
@@ -4196,5 +4620,256 @@ mod confinement_gate_tests {
         m.insert(key("compose_path", Lang::C), ret); // C, transfer is Go
         let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&m)));
         assert!(!g.return_confiner && !g.assert && !g.path_validator);
+    }
+
+    fn confiner_map(name: &str) -> std::collections::HashMap<FuncKey, SsaFuncSummary> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            key(name, Lang::Go),
+            SsaFuncSummary {
+                confines_path_return: true,
+                ..Default::default()
+            },
+        );
+        m
+    }
+
+    /// Inside a scope the gates come back as the scan would give them, for the
+    /// scoped map and for any other map, and the scope leaves nothing behind.
+    #[test]
+    fn scope_serves_the_scoped_map_and_scans_every_other() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let confining = confiner_map("compose_path");
+        let empty: std::collections::HashMap<FuncKey, SsaFuncSummary> =
+            std::collections::HashMap::new();
+
+        {
+            let _scope = ConfinementGatesScope::enter(Some(&confining), Lang::Go);
+            let scoped =
+                compute_confinement_gates(&transfer_with(&interner, &ls, Some(&confining)));
+            assert!(scoped.return_confiner);
+            // A different map is matched by address, so it is scanned, not
+            // handed the scoped map's answer.
+            let other = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&empty)));
+            assert!(!other.return_confiner);
+            // So is the same map under another language.
+            let mut c_transfer = transfer_with(&interner, &ls, Some(&confining));
+            c_transfer.lang = Lang::C;
+            assert!(!compute_confinement_gates(&c_transfer).return_confiner);
+        }
+        // Dropped: nothing is published any more.
+        assert!(CONFINEMENT_GATES_TLS.get().is_none());
+    }
+
+    #[test]
+    fn nested_scopes_restore_the_outer_one() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let outer_map = confiner_map("compose_path");
+        let inner_map: std::collections::HashMap<FuncKey, SsaFuncSummary> =
+            std::collections::HashMap::new();
+
+        let _outer = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+        let outer_published = CONFINEMENT_GATES_TLS.get();
+        {
+            let _inner = ConfinementGatesScope::enter(Some(&inner_map), Lang::Go);
+            let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&inner_map)));
+            assert!(!g.return_confiner);
+        }
+        assert_eq!(
+            CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)),
+            outer_published.map(|(a, l, _)| (a, l)),
+            "the outer scope is published again once the inner one drops"
+        );
+        let g = compute_confinement_gates(&transfer_with(&interner, &ls, Some(&outer_map)));
+        assert!(g.return_confiner);
+    }
+
+    /// A scope over a map the enclosing scope already holds changes nothing.
+    #[test]
+    fn re_entering_the_same_map_keeps_the_published_gates() {
+        let outer_map = confiner_map("compose_path");
+        let _outer = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+        let before = CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l));
+        {
+            let _again = ConfinementGatesScope::enter(Some(&outer_map), Lang::Go);
+            assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+        }
+        assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+        // No summaries: leaves the published entry alone.
+        let _none = ConfinementGatesScope::enter(None, Lang::Go);
+        assert_eq!(CONFINEMENT_GATES_TLS.get().map(|(a, l, _)| (a, l)), before);
+    }
+}
+
+// ── Per-run callee resolution memo ───────────────────────────────────────
+#[cfg(test)]
+mod resolve_memo_tests {
+    use super::super::*;
+    use crate::summary::ssa_summary::SsaFuncSummary;
+    use crate::symbol::{FuncKey, FuncKind};
+
+    fn transfer_with<'a>(
+        interner: &'a SymbolInterner,
+        local_summaries: &'a FuncSummaries,
+        summaries: &'a std::collections::HashMap<FuncKey, SsaFuncSummary>,
+        callbacks: &'a std::collections::HashMap<String, FuncKey>,
+    ) -> SsaTaintTransfer<'a> {
+        SsaTaintTransfer {
+            lang: Lang::JavaScript,
+            namespace: "app.js",
+            interner,
+            local_summaries,
+            global_summaries: None,
+            interop_edges: &[],
+            owner_body_id: crate::cfg::BodyId(0),
+            parent_body_id: None,
+            global_seed: None,
+            param_seed: None,
+            receiver_seed: None,
+            const_values: None,
+            type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
+            ssa_summaries: Some(summaries),
+            extra_labels: None,
+            base_aliases: None,
+            callee_bodies: None,
+            inline_cache: None,
+            context_depth: 0,
+            callback_bindings: Some(callbacks),
+            points_to: None,
+            dynamic_pts: None,
+            import_bindings: None,
+            promisify_aliases: None,
+            module_aliases: None,
+            static_map: None,
+            auto_seed_handler_params: false,
+            cross_file_bodies: None,
+            pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
+        }
+    }
+
+    /// A callee bound through `callback_bindings` resolves to its SSA summary,
+    /// which is enough to observe the memo without building a call graph.
+    fn fixtures() -> (
+        std::collections::HashMap<FuncKey, SsaFuncSummary>,
+        std::collections::HashMap<String, FuncKey>,
+    ) {
+        let real = FuncKey::from_parts(
+            Lang::JavaScript,
+            "app.js",
+            "",
+            "real",
+            Some(1),
+            None,
+            FuncKind::Function,
+        );
+        let mut summaries = std::collections::HashMap::new();
+        summaries.insert(
+            real.clone(),
+            SsaFuncSummary {
+                source_caps: Cap::ENV_VAR,
+                ..Default::default()
+            },
+        );
+        let mut callbacks = std::collections::HashMap::new();
+        callbacks.insert("cb".to_string(), real);
+        (summaries, callbacks)
+    }
+
+    #[test]
+    fn a_scope_answers_a_repeated_call_from_the_first_resolution() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let _scope = ResolveMemoScope::enter(&t);
+        let first = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        let again = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        assert!(
+            Rc::ptr_eq(&first, &again),
+            "same call site, same answer object"
+        );
+        assert_eq!(first.source_caps, Cap::ENV_VAR);
+
+        // Any input that differs is a different call site.
+        let other_arity = resolve_callee_hinted(&t, "cb", "caller", 3, Some(2)).expect("resolves");
+        let other_ordinal =
+            resolve_callee_hinted(&t, "cb", "caller", 4, Some(1)).expect("resolves");
+        let other_caller = resolve_callee_hinted(&t, "cb", "other", 3, Some(1)).expect("resolves");
+        for different in [&other_arity, &other_ordinal, &other_caller] {
+            assert!(!Rc::ptr_eq(&first, different));
+            assert_eq!(different.source_caps, first.source_caps);
+        }
+    }
+
+    #[test]
+    fn without_a_scope_every_call_resolves_afresh() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let a = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        let b = resolve_callee_hinted(&t, "cb", "caller", 3, Some(1)).expect("resolves");
+        assert!(!Rc::ptr_eq(&a, &b));
+        assert_eq!(a.source_caps, b.source_caps);
+    }
+
+    /// An inline analysis runs the callee body under its own transfer and its
+    /// own scope. While that is active, a lookup made with the outer transfer
+    /// is not served from the inner frame, and the outer frame is intact after.
+    #[test]
+    fn a_nested_run_has_its_own_frame() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let outer = transfer_with(&interner, &ls, &sums, &cbs);
+        let inner = transfer_with(&interner, &ls, &sums, &cbs);
+
+        let _outer_scope = ResolveMemoScope::enter(&outer);
+        let before = resolve_callee_hinted(&outer, "cb", "caller", 1, Some(1)).expect("resolves");
+        {
+            let _inner_scope = ResolveMemoScope::enter(&inner);
+            let in_inner_1 = resolve_callee_hinted(&inner, "cb", "caller", 1, Some(1)).unwrap();
+            let in_inner_2 = resolve_callee_hinted(&inner, "cb", "caller", 1, Some(1)).unwrap();
+            assert!(Rc::ptr_eq(&in_inner_1, &in_inner_2));
+            assert!(
+                !Rc::ptr_eq(&before, &in_inner_1),
+                "inner frame starts empty"
+            );
+            // The outer transfer is not the frame's owner now: no memo, no store.
+            let o1 = resolve_callee_hinted(&outer, "cb", "caller", 9, Some(1)).unwrap();
+            let o2 = resolve_callee_hinted(&outer, "cb", "caller", 9, Some(1)).unwrap();
+            assert!(!Rc::ptr_eq(&o1, &o2));
+        }
+        let after = resolve_callee_hinted(&outer, "cb", "caller", 1, Some(1)).expect("resolves");
+        assert!(
+            Rc::ptr_eq(&before, &after),
+            "outer frame survives the nested run"
+        );
+    }
+
+    #[test]
+    fn scope_frames_are_popped_on_drop() {
+        let interner = SymbolInterner::new();
+        let ls: FuncSummaries = std::collections::HashMap::new();
+        let (sums, cbs) = fixtures();
+        let t = transfer_with(&interner, &ls, &sums, &cbs);
+        let depth = || RESOLVE_MEMO.with(|m| m.borrow().len());
+        let base = depth();
+        {
+            let _a = ResolveMemoScope::enter(&t);
+            let _b = ResolveMemoScope::enter(&t);
+            assert_eq!(depth(), base + 2);
+        }
+        assert_eq!(depth(), base);
     }
 }

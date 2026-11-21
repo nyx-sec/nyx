@@ -652,4 +652,59 @@ impl SsaFuncSummary {
             .flat_map(|(_, sites)| sites.iter())
             .fold(Cap::empty(), |acc, s| acc | s.cap)
     }
+
+    /// Put the set-valued sink fields in one canonical order: one
+    /// `param_to_sink` entry per parameter with its sites deduped and
+    /// sorted by location, and `param_to_sink_param`,
+    /// `param_to_gate_filters` and `validated_params_to_return` sorted
+    /// without duplicates.
+    pub fn canonicalize(&mut self) {
+        let mut merged: Vec<(usize, SmallVec<[SinkSite; 1]>)> =
+            Vec::with_capacity(self.param_to_sink.len());
+        for (idx, sites) in std::mem::take(&mut self.param_to_sink) {
+            match merged.iter_mut().find(|(i, _)| *i == idx) {
+                Some((_, existing)) => crate::summary::union_sink_sites(existing, &sites),
+                None => {
+                    let mut deduped = SmallVec::new();
+                    crate::summary::union_sink_sites(&mut deduped, &sites);
+                    merged.push((idx, deduped));
+                }
+            }
+        }
+        for (_, sites) in &mut merged {
+            sites.sort_by(|a, b| a.dedup_key().cmp(&b.dedup_key()));
+        }
+        merged.sort_by_key(|(idx, _)| *idx);
+        self.param_to_sink = merged;
+
+        self.param_to_sink_param
+            .sort_by_key(|&(idx, pos, cap)| (idx, pos, cap.bits()));
+        self.param_to_sink_param.dedup();
+        self.param_to_gate_filters
+            .sort_by_key(|&(idx, cap)| (idx, cap.bits()));
+        self.param_to_gate_filters.dedup();
+        self.validated_params_to_return.sort_unstable();
+        self.validated_params_to_return.dedup();
+    }
+
+    /// Whether two summaries carry the same facts, ignoring the order (and
+    /// repeats) of the set-valued sink fields that [`Self::canonicalize`]
+    /// normalises.
+    ///
+    /// Extraction appends those fields in the order taint events arrive,
+    /// which follows the order of the callee summaries the events came
+    /// through.  In a recursive SCC the callee is the function itself or a
+    /// peer, so the order fed back through the recursive call can flip on
+    /// every fixed-point iteration; comparing with `==` then never sees
+    /// convergence.  The stored order is left alone because finding
+    /// emission picks its reported sink site by that order.
+    pub fn same_facts(&self, other: &SsaFuncSummary) -> bool {
+        if self == other {
+            return true;
+        }
+        let (mut a, mut b) = (self.clone(), other.clone());
+        a.canonicalize();
+        b.canonicalize();
+        a == b
+    }
 }

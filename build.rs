@@ -15,6 +15,8 @@ fn main() {
     // every host build has the same pinned-digest catalogue.
     emit_image_digests();
 
+    emit_source_id();
+
     // Only relevant when the serve feature is active.
     if std::env::var("CARGO_FEATURE_SERVE").is_err() {
         return;
@@ -67,6 +69,45 @@ fn main() {
             emit_placeholder_and_warn(dist_dir);
         }
     }
+}
+
+/// Emit `NYX_SOURCE_ID`: a hash of every file under `src/` plus
+/// `Cargo.lock`.  The analysis index keys its cached per-file summaries on
+/// it (see `Config::analysis_cache_key`), so a rebuilt binary whose engine
+/// code or grammar versions changed does not reuse summaries written by the
+/// previous build.  Development builds share one package version, so the
+/// version alone cannot tell them apart.
+fn emit_source_id() {
+    use std::hash::{Hash, Hasher};
+
+    fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.lock");
+    let mut files = Vec::new();
+    collect(Path::new("src"), &mut files);
+    files.push(Path::new("Cargo.lock").to_path_buf());
+    files.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for file in &files {
+        if let Ok(bytes) = std::fs::read(file) {
+            file.hash(&mut h);
+            bytes.hash(&mut h);
+        }
+    }
+    println!("cargo:rustc-env=NYX_SOURCE_ID={:016x}", h.finish());
 }
 
 fn emit_placeholder_and_warn(dist_dir: &Path) {

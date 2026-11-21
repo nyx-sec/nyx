@@ -226,14 +226,203 @@ pub struct ConstPropResult {
     pub unreachable_blocks: HashSet<BlockId>,
 }
 
+/// One place where a value is read: instruction `slot` of `block`, counting
+/// the block's phis first and its body instructions after them.  For a phi,
+/// `operand` is the index of the incoming edge that carries the value, so a
+/// changed value can be folded into the phi without rescanning its operands.
+/// Body instructions leave `operand` at 0.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct UseSite {
+    block: BlockId,
+    slot: u32,
+    operand: u32,
+}
+
+/// Per-value use lists in one flat allocation (`start[v]..end[v]` indexes
+/// `sites`).  Sites for a value are stored in block order, then slot order, so
+/// all the sites of one block are contiguous.
+struct UseIndex {
+    start: Vec<u32>,
+    end: Vec<u32>,
+    sites: Vec<UseSite>,
+}
+
+impl UseIndex {
+    fn build(body: &SsaBody, num_values: usize) -> Self {
+        let mut start = vec![0u32; num_values + 1];
+        for block in &body.blocks {
+            for inst in block.phis.iter().chain(block.body.iter()) {
+                inst_uses_each(inst, |used, _| {
+                    if let Some(n) = start.get_mut(used.0 as usize + 1) {
+                        *n += 1;
+                    }
+                });
+            }
+        }
+        for i in 0..num_values {
+            start[i + 1] += start[i];
+        }
+        // `start[v]` is now the first slot of v's bucket; `end` is the write
+        // cursor and ends up one past the last site actually kept.
+        let mut end: Vec<u32> = start[..num_values].to_vec();
+        let mut sites = vec![
+            UseSite {
+                block: BlockId(0),
+                slot: 0,
+                operand: 0
+            };
+            start[num_values] as usize
+        ];
+        for block in &body.blocks {
+            for (slot, inst) in block.phis.iter().chain(block.body.iter()).enumerate() {
+                inst_uses_each(inst, |used, operand| {
+                    let idx = used.0 as usize;
+                    if idx >= num_values {
+                        return;
+                    }
+                    let site = UseSite {
+                        block: block.id,
+                        slot: slot as u32,
+                        operand,
+                    };
+                    let cursor = end[idx] as usize;
+                    // An instruction that reads a value twice is one site.
+                    if cursor > start[idx] as usize && sites[cursor - 1] == site {
+                        return;
+                    }
+                    sites[cursor] = site;
+                    end[idx] += 1;
+                });
+            }
+        }
+        start.truncate(num_values);
+        UseIndex { start, end, sites }
+    }
+
+    #[inline]
+    fn of(&self, v: SsaValue) -> &[UseSite] {
+        let i = v.0 as usize;
+        match (self.start.get(i), self.end.get(i)) {
+            (Some(&s), Some(&e)) => &self.sites[s as usize..e as usize],
+            _ => &[],
+        }
+    }
+}
+
+/// Destinations with more executable predecessors than this answer
+/// "is this edge executable" from a hash set instead of scanning the list.
+const EDGE_LINEAR_LIMIT: usize = 8;
+
+/// Executable CFG edges, grouped by destination block.
+///
+/// Phi evaluation asks "is `(pred, this_block)` executable?" once per operand.
+/// Most blocks have one or two predecessors, where a scan of the short list
+/// beats hashing.  A wide join (a switch exit with one `break` per case) would
+/// make that scan quadratic per phi, so wide destinations get a hash index.
+struct ExecEdges {
+    preds: Vec<SmallVec<[BlockId; 2]>>,
+    wide: rustc_hash::FxHashSet<(u32, u32)>,
+}
+
+impl ExecEdges {
+    fn new(num_blocks: usize) -> Self {
+        ExecEdges {
+            preds: vec![SmallVec::new(); num_blocks],
+            wide: Default::default(),
+        }
+    }
+
+    #[inline]
+    fn contains(&self, from: BlockId, to: BlockId) -> bool {
+        match self.preds.get(to.0 as usize) {
+            Some(list) if list.len() <= EDGE_LINEAR_LIMIT => list.contains(&from),
+            Some(_) => self.wide.contains(&(from.0, to.0)),
+            None => false,
+        }
+    }
+
+    /// Record `from -> to`. Returns false when the edge was already known.
+    fn insert(&mut self, from: BlockId, to: BlockId) -> bool {
+        let Some(list) = self.preds.get_mut(to.0 as usize) else {
+            return false;
+        };
+        if list.len() <= EDGE_LINEAR_LIMIT {
+            if list.contains(&from) {
+                return false;
+            }
+            list.push(from);
+            if list.len() > EDGE_LINEAR_LIMIT {
+                for p in list.iter() {
+                    self.wide.insert((p.0, to.0));
+                }
+            }
+            true
+        } else if self.wide.insert((from.0, to.0)) {
+            list.push(from);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Which blocks and edges SCCP has found executable so far.
+struct Reach {
+    executable_blocks: Vec<bool>,
+    edges: ExecEdges,
+    /// Blocks sitting in `cfg_worklist` right now, so a join that gains many
+    /// incoming edges before it is popped is evaluated once, not once per edge.
+    queued: Vec<bool>,
+    /// Blocks whose goto, switch or return successors are all marked. Those
+    /// terminators do not depend on any value, so a second pass changes nothing.
+    terminator_done: Vec<bool>,
+    cfg_worklist: VecDeque<BlockId>,
+}
+
+impl Reach {
+    fn new(num_blocks: usize) -> Self {
+        Reach {
+            executable_blocks: vec![false; num_blocks],
+            edges: ExecEdges::new(num_blocks),
+            queued: vec![false; num_blocks],
+            terminator_done: vec![false; num_blocks],
+            cfg_worklist: VecDeque::new(),
+        }
+    }
+
+    fn enqueue(&mut self, block: BlockId) {
+        let idx = block.0 as usize;
+        if !self.queued[idx] {
+            self.queued[idx] = true;
+            self.cfg_worklist.push_back(block);
+        }
+    }
+
+    fn mark_edge_executable(&mut self, from: BlockId, to: BlockId) {
+        let to_idx = to.0 as usize;
+        if to_idx >= self.executable_blocks.len() || !self.edges.insert(from, to) {
+            return;
+        }
+        self.executable_blocks[to_idx] = true;
+        // Either the block just became reachable, or it already was and a new
+        // predecessor edge means its phis need to meet the new operand.
+        self.enqueue(to);
+    }
+}
+
 /// Run Sparse Conditional Constant Propagation on an SSA body.
 ///
 /// Internal storage is dense `Vec`-indexed by [`SsaValue`] / [`BlockId`] to
 /// avoid the per-lookup `SipHash` cost of `HashMap<SsaValue, _>` /
 /// `HashSet<(BlockId, BlockId)>` that previously dominated the inner
-/// fixed-point loop. The public [`ConstPropResult`] still exposes the
-/// `HashMap`-shaped contract; the conversion at the end of the function is
-/// O(num_values) and runs once.
+/// fixed-point loop. The result hands the dense lattice over as
+/// [`ConstValues`] without a conversion pass.
+///
+/// Cost is linear in the number of operand uses plus the lattice height times
+/// the number of uses: a changed value re-evaluates exactly the instructions
+/// that read it (per-instruction use lists), a phi absorbs a changed operand in
+/// constant time, and a block is queued at most once at a time however many
+/// incoming edges it gains.
 pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
     let num_blocks = body.blocks.len();
     let num_values = body.value_defs.len();
@@ -244,54 +433,30 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
     // pass at strictly lower cost (no hashing).
     let mut values: Vec<ConstLattice> = vec![ConstLattice::Top; num_values];
 
-    // Per-block executability and per-(dest, pred) executable-edge bitmap.
-    // Edges are stored as a per-destination list of executable predecessors
-    // — phi evaluation only ever asks "is `(pred, this_block)` executable?",
-    // so a tiny SmallVec scan over the dest's predecessors beats a
-    // `HashSet<(BlockId, BlockId)>::contains` (which hashes a 64-bit pair
-    // for every operand of every phi).
-    let mut executable_blocks: Vec<bool> = vec![false; num_blocks];
-    let mut executable_preds: Vec<SmallVec<[BlockId; 2]>> = vec![SmallVec::new(); num_blocks];
-
-    // Worklists
-    let mut cfg_worklist: VecDeque<BlockId> = VecDeque::new();
+    let mut reach = Reach::new(num_blocks);
     let mut ssa_worklist: VecDeque<SsaValue> = VecDeque::new();
 
     // Mark entry executable
-    executable_blocks[body.entry.0 as usize] = true;
-    cfg_worklist.push_back(body.entry);
+    reach.executable_blocks[body.entry.0 as usize] = true;
+    reach.enqueue(body.entry);
 
-    // Use-map: dense `Vec` indexed by `SsaValue.0`.  Populated in a single
-    // pass via the closure-based [`inst_uses_each`] helper, which avoids
-    // the heap allocation of the prior `inst_uses() -> Vec<SsaValue>`
-    // factory.
-    let mut use_sites: Vec<SmallVec<[BlockId; 2]>> = vec![SmallVec::new(); num_values];
-    for block in &body.blocks {
-        for inst in block.phis.iter().chain(block.body.iter()) {
-            inst_uses_each(inst, |used_val| {
-                let idx = used_val.0 as usize;
-                if idx < use_sites.len() {
-                    let bucket = &mut use_sites[idx];
-                    if bucket.last() != Some(&block.id) {
-                        bucket.push(block.id);
-                    }
-                }
-            });
-        }
-    }
+    // Use lists are built once, before either worklist runs, and never
+    // mutated, so the SSA worklist can borrow them while it mutates `values`.
+    let uses = UseIndex::build(body, num_values);
 
     // Process until both worklists are empty
     loop {
         let mut changed = false;
 
         // Process CFG worklist
-        while let Some(block_id) = cfg_worklist.pop_front() {
+        while let Some(block_id) = reach.cfg_worklist.pop_front() {
+            reach.queued[block_id.0 as usize] = false;
             let block = body.block(block_id);
 
             // Evaluate phis
             for phi in &block.phis {
                 if let SsaOp::Phi(operands) = &phi.op {
-                    let new_val = eval_phi(operands, &values, &executable_preds, block_id);
+                    let new_val = eval_phi(operands, &values, &reach.edges, block_id);
                     if changed_from(&values, phi.value, &new_val) {
                         store(&mut values, phi.value, new_val);
                         ssa_worklist.push_back(phi.value);
@@ -311,70 +476,63 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
             }
 
             // Process terminator: determine which successors are executable
-            process_terminator(
-                block,
-                body,
-                &values,
-                &mut executable_preds,
-                &mut executable_blocks,
-                &mut cfg_worklist,
-            );
+            process_terminator(block, body, &values, &mut reach);
         }
 
         // Process SSA worklist
         while let Some(val) = ssa_worklist.pop_front() {
-            let val_idx = val.0 as usize;
-            if val_idx >= use_sites.len() {
-                continue;
-            }
-            // Iterate the use-list by reference. `use_sites` is built once
-            // before the worklist and never mutated inside it, and it is a
-            // distinct allocation from `values` / `executable_*` / the
-            // worklists, so the borrow checker allows borrowing the block-id
-            // list immutably while `values` is mutated — the previous per-pop
-            // `SmallVec` clone (a heap allocation whenever a value is used in
-            // >2 blocks) was spurious.
-            for &block_id in &use_sites[val_idx] {
-                if !executable_blocks[block_id.0 as usize] {
+            let sites = uses.of(val);
+            let mut i = 0;
+            while i < sites.len() {
+                // All sites in one block are adjacent; handle them as a run.
+                let block_id = sites[i].block;
+                let run_end = i + sites[i..]
+                    .iter()
+                    .take_while(|s| s.block == block_id)
+                    .count();
+                let run = &sites[i..run_end];
+                i = run_end;
+
+                if !reach.executable_blocks[block_id.0 as usize] {
                     continue;
                 }
                 let block = body.block(block_id);
+                let phi_count = block.phis.len();
 
-                // Re-evaluate phis using this value
-                for phi in &block.phis {
-                    if let SsaOp::Phi(operands) = &phi.op
-                        && operands.iter().any(|(_, v)| *v == val)
-                    {
-                        let new_val = eval_phi(operands, &values, &executable_preds, block_id);
-                        if changed_from(&values, phi.value, &new_val) {
-                            store(&mut values, phi.value, new_val);
-                            ssa_worklist.push_back(phi.value);
-                            changed = true;
+                for site in run {
+                    let slot = site.slot as usize;
+                    let (inst, new_val) = if slot < phi_count {
+                        // Fold the changed operand into the phi. Values only
+                        // move down the lattice and executable edges only
+                        // grow, so meeting the new operand into the stored
+                        // phi value equals re-meeting every operand.
+                        let phi = &block.phis[slot];
+                        let SsaOp::Phi(operands) = &phi.op else {
+                            continue;
+                        };
+                        let Some(&(pred, _)) = operands.get(site.operand as usize) else {
+                            continue;
+                        };
+                        if !reach.edges.contains(pred, block_id) {
+                            continue;
                         }
+                        let merged = lookup_ref(&values, phi.value).meet(lookup_ref(&values, val));
+                        (phi, merged)
+                    } else {
+                        let inst = &block.body[slot - phi_count];
+                        (inst, eval_inst(inst, &values))
+                    };
+                    if changed_from(&values, inst.value, &new_val) {
+                        store(&mut values, inst.value, new_val);
+                        ssa_worklist.push_back(inst.value);
+                        changed = true;
                     }
                 }
 
-                // Re-evaluate body instructions using this value
-                for inst in &block.body {
-                    if inst_has_use(inst, val) {
-                        let new_val = eval_inst(inst, &values);
-                        if changed_from(&values, inst.value, &new_val) {
-                            store(&mut values, inst.value, new_val);
-                            ssa_worklist.push_back(inst.value);
-                            changed = true;
-                        }
-                    }
-                }
-
-                // Re-evaluate terminator if condition changed
-                process_terminator(
-                    block,
-                    body,
-                    &values,
-                    &mut executable_preds,
-                    &mut executable_blocks,
-                    &mut cfg_worklist,
-                );
+                // The branch condition resolves through `cfg_node_map`, not
+                // through a use list, so look at the terminator again after
+                // any instruction of the block was re-evaluated.
+                process_terminator(block, body, &values, &mut reach);
             }
         }
 
@@ -397,13 +555,11 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
         std::hint::black_box(&m);
     }
 
-    // Move the dense lattice into the public result with zero conversion —
-    // no per-value hashed insert (the old `HashMap<SsaValue, ConstLattice>`
-    // build was `O(num_values)` SipHash inserts per body, discarded next
-    // scan).  The unreachable-blocks set is small (often empty), so building
-    // it from a linear scan is fine.
+    // Move the dense lattice into the public result with zero conversion.
+    // The unreachable-blocks set is small (often empty), so building it from
+    // a linear scan is fine.
     let mut unreachable_blocks: HashSet<BlockId> = HashSet::new();
-    for (i, exec) in executable_blocks.iter().enumerate() {
+    for (i, exec) in reach.executable_blocks.iter().enumerate() {
         if !exec {
             unreachable_blocks.insert(BlockId(i as u32));
         }
@@ -473,26 +629,33 @@ fn store(values: &mut [ConstLattice], v: SsaValue, val: ConstLattice) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Phi operands `eval_phi` has looked at, so a test can pin its cost.
+    static PHI_OPERAND_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Evaluate a phi: meet of operands from executable predecessors.
 fn eval_phi(
     operands: &[(BlockId, SsaValue)],
     values: &[ConstLattice],
-    executable_preds: &[SmallVec<[BlockId; 2]>],
+    edges: &ExecEdges,
     this_block: BlockId,
 ) -> ConstLattice {
-    let preds = executable_preds
-        .get(this_block.0 as usize)
-        .map(|p| p.as_slice())
-        .unwrap_or(&[]);
     let mut result = ConstLattice::Top;
     for (pred_block, val) in operands {
-        if !preds.contains(pred_block) {
+        #[cfg(test)]
+        PHI_OPERAND_VISITS.with(|c| c.set(c.get() + 1));
+        if !edges.contains(*pred_block, this_block) {
             continue; // skip non-executable predecessors
         }
         // Borrow the operand's stored lattice instead of cloning it; `meet`
         // only reads `&other`, so a phi over `Str` operands no longer heap-
         // allocates one clone per incoming edge.
         result = result.meet(lookup_ref(values, *val));
+        if result == ConstLattice::Varying {
+            break; // absorbing: no later operand can change it
+        }
     }
     result
 }
@@ -527,34 +690,34 @@ fn eval_inst(inst: &SsaInst, values: &[ConstLattice]) -> ConstLattice {
     }
 }
 
-/// Apply a closure to every SSA value used by an instruction. Avoids the
-/// `Vec<SsaValue>` heap allocation that the previous `inst_uses(inst)`
-/// helper paid on every call (use-map build is O(num_insts), the prior
-/// path bottle-necked there).
+/// Apply a closure to every SSA value used by an instruction, along with the
+/// index of the phi operand that carries it (0 for every other instruction).
+/// Avoids the `Vec<SsaValue>` heap allocation that the previous
+/// `inst_uses(inst)` helper paid on every call.
 #[inline]
-fn inst_uses_each<F: FnMut(SsaValue)>(inst: &SsaInst, mut f: F) {
+fn inst_uses_each<F: FnMut(SsaValue, u32)>(inst: &SsaInst, mut f: F) {
     match &inst.op {
         SsaOp::Phi(operands) => {
-            for (_, v) in operands {
-                f(*v);
+            for (i, (_, v)) in operands.iter().enumerate() {
+                f(*v, i as u32);
             }
         }
         SsaOp::Assign(uses) => {
             for v in uses {
-                f(*v);
+                f(*v, 0);
             }
         }
         SsaOp::Call { args, receiver, .. } => {
             if let Some(rv) = receiver {
-                f(*rv);
+                f(*rv, 0);
             }
             for arg in args {
                 for v in arg {
-                    f(*v);
+                    f(*v, 0);
                 }
             }
         }
-        SsaOp::FieldProj { receiver, .. } => f(*receiver),
+        SsaOp::FieldProj { receiver, .. } => f(*receiver, 0),
         SsaOp::Source
         | SsaOp::Const(_)
         | SsaOp::Param { .. }
@@ -565,60 +728,14 @@ fn inst_uses_each<F: FnMut(SsaValue)>(inst: &SsaInst, mut f: F) {
     }
 }
 
-/// Zero-allocation predicate: does `inst` use `target` as an operand?
-/// Replaces the prior `inst_uses(inst).contains(&target)` shape, which
-/// allocated a fresh `Vec<SsaValue>` on every check inside the SCCP
-/// re-evaluation worklist.
-#[inline]
-fn inst_has_use(inst: &SsaInst, target: SsaValue) -> bool {
-    match &inst.op {
-        SsaOp::Phi(operands) => operands.iter().any(|(_, v)| *v == target),
-        SsaOp::Assign(uses) => uses.contains(&target),
-        SsaOp::Call { args, receiver, .. } => {
-            if let Some(rv) = receiver
-                && *rv == target
-            {
-                return true;
-            }
-            args.iter().any(|arg| arg.contains(&target))
-        }
-        SsaOp::FieldProj { receiver, .. } => *receiver == target,
-        SsaOp::Source
-        | SsaOp::Const(_)
-        | SsaOp::Param { .. }
-        | SsaOp::SelfParam
-        | SsaOp::CatchParam
-        | SsaOp::Nop
-        | SsaOp::Undef => false,
-    }
-}
-
 /// Process a block's terminator to determine successor executability.
 fn process_terminator(
     block: &SsaBlock,
     body: &SsaBody,
     values: &[ConstLattice],
-    executable_preds: &mut [SmallVec<[BlockId; 2]>],
-    executable_blocks: &mut [bool],
-    cfg_worklist: &mut VecDeque<BlockId>,
+    reach: &mut Reach,
 ) {
     match &block.terminator {
-        Terminator::Goto(_) => {
-            // `block.succs` is authoritative. For collapsed ≥3-way fanouts
-            // (see src/ssa/lower.rs `three_successor_collapse`) the terminator
-            // only records the first successor; marking just that one would
-            // leave the others unreachable for SCCP. Iterate succs so every
-            // CFG successor is marked executable.
-            for &target in &block.succs {
-                mark_edge_executable(
-                    block.id,
-                    target,
-                    executable_preds,
-                    executable_blocks,
-                    cfg_worklist,
-                );
-            }
-        }
         Terminator::Branch {
             cond,
             true_blk,
@@ -632,108 +749,40 @@ fn process_terminator(
                 .and_then(|v| lookup_ref(values, *v).as_bool());
 
             match cond_val {
-                Some(true) => {
-                    mark_edge_executable(
-                        block.id,
-                        *true_blk,
-                        executable_preds,
-                        executable_blocks,
-                        cfg_worklist,
-                    );
-                }
-                Some(false) => {
-                    mark_edge_executable(
-                        block.id,
-                        *false_blk,
-                        executable_preds,
-                        executable_blocks,
-                        cfg_worklist,
-                    );
-                }
+                Some(true) => reach.mark_edge_executable(block.id, *true_blk),
+                Some(false) => reach.mark_edge_executable(block.id, *false_blk),
                 None => {
                     // Unknown: both successors executable
-                    mark_edge_executable(
-                        block.id,
-                        *true_blk,
-                        executable_preds,
-                        executable_blocks,
-                        cfg_worklist,
-                    );
-                    mark_edge_executable(
-                        block.id,
-                        *false_blk,
-                        executable_preds,
-                        executable_blocks,
-                        cfg_worklist,
-                    );
+                    reach.mark_edge_executable(block.id, *true_blk);
+                    reach.mark_edge_executable(block.id, *false_blk);
                 }
             }
         }
-        Terminator::Switch {
-            scrutinee,
-            targets,
-            default,
-            case_values,
-        } => {
-            // Try to resolve scrutinee to a concrete integer literal; if
-            // we can match it against one of the case literals (not
-            // currently available on the SSA IR), mark just that target.
-            // Until per-case literals are threaded through, fall back to
-            // the sound "any successor executable" behavior, which mirrors
-            // the pre-Switch cascade.
-            let _ = (scrutinee, targets, default, case_values);
-            for &target in &block.succs {
-                mark_edge_executable(
-                    block.id,
-                    target,
-                    executable_preds,
-                    executable_blocks,
-                    cfg_worklist,
-                );
+        // Goto, Switch, Return and Unreachable all flow to `block.succs`,
+        // whatever the values are.
+        //
+        // `block.succs` is authoritative. For collapsed >=3-way fanouts
+        // (see src/ssa/lower.rs `three_successor_collapse`) a Goto only
+        // records the first successor; marking just that one would leave the
+        // others unreachable for SCCP. A Switch has no per-case literals
+        // threaded through yet, so every successor stays executable, which
+        // mirrors the pre-Switch cascade. Return/Unreachable keep their
+        // finally/cleanup continuation edges on `succs` too, so SCCP reaches
+        // downstream (e.g. finally) blocks.
+        Terminator::Goto(_)
+        | Terminator::Switch { .. }
+        | Terminator::Return(_)
+        | Terminator::Unreachable => {
+            let done = &mut reach.terminator_done[block.id.0 as usize];
+            if *done {
+                return;
             }
-        }
-        Terminator::Return(_) | Terminator::Unreachable => {
-            // `block.succs` is authoritative; the terminator is advisory.
-            // Finally/cleanup continuation edges live on `succs` even when
-            // the structured terminator is `Return`/`Unreachable`. Mark them
-            // executable so SCCP reaches downstream (e.g. finally) blocks.
+            *done = true;
             for &target in &block.succs {
-                mark_edge_executable(
-                    block.id,
-                    target,
-                    executable_preds,
-                    executable_blocks,
-                    cfg_worklist,
-                );
+                reach.mark_edge_executable(block.id, target);
             }
         }
     }
-}
-
-fn mark_edge_executable(
-    from: BlockId,
-    to: BlockId,
-    executable_preds: &mut [SmallVec<[BlockId; 2]>],
-    executable_blocks: &mut [bool],
-    cfg_worklist: &mut VecDeque<BlockId>,
-) {
-    let to_idx = to.0 as usize;
-    if to_idx >= executable_preds.len() {
-        return;
-    }
-    let preds = &mut executable_preds[to_idx];
-    if preds.contains(&from) {
-        return;
-    }
-    preds.push(from);
-    let was_already_exec = executable_blocks[to_idx];
-    if !was_already_exec {
-        executable_blocks[to_idx] = true;
-    }
-    // Always re-enqueue: either the block became newly reachable, or it
-    // already was but a new predecessor edge means phi operands need
-    // re-meeting against the now-executable predecessor.
-    cfg_worklist.push_back(to);
 }
 
 /// Apply constant propagation results: prune branches where condition is known constant.
@@ -1427,5 +1476,867 @@ mod tests {
         // (regression for fuzz crash-2f943c14: `'` triggered &s[1..0]).
         assert_eq!(ConstLattice::parse("'"), ConstLattice::Str("'".into()));
         assert_eq!(ConstLattice::parse("\""), ConstLattice::Str("\"".into()));
+    }
+
+    /// The pre-use-list SCCP, kept verbatim as an oracle. It rescans every
+    /// instruction of a use block per changed value and re-evaluates a phi from
+    /// scratch on every edge, so it is slow on big bodies but obviously right.
+    /// The production `const_propagate` must produce the same lattice and the
+    /// same unreachable set on every body.
+    mod reference {
+        use super::super::*;
+
+        pub(super) fn const_propagate_reference(body: &SsaBody) -> ConstPropResult {
+            let num_blocks = body.blocks.len();
+            let num_values = body.value_defs.len();
+
+            // Dense per-value lattice (`Vec` indexed by `SsaValue.0`).  All values
+            // are defined by exactly one inst (phi or body), so initialising the
+            // entire range to Top is equivalent to the previous per-inst insert
+            // pass at strictly lower cost (no hashing).
+            let mut values: Vec<ConstLattice> = vec![ConstLattice::Top; num_values];
+
+            // Per-block executability and per-(dest, pred) executable-edge bitmap.
+            // Edges are stored as a per-destination list of executable predecessors
+            // — phi evaluation only ever asks "is `(pred, this_block)` executable?",
+            // so a tiny SmallVec scan over the dest's predecessors beats a
+            // `HashSet<(BlockId, BlockId)>::contains` (which hashes a 64-bit pair
+            // for every operand of every phi).
+            let mut executable_blocks: Vec<bool> = vec![false; num_blocks];
+            let mut executable_preds: Vec<SmallVec<[BlockId; 2]>> =
+                vec![SmallVec::new(); num_blocks];
+
+            // Worklists
+            let mut cfg_worklist: VecDeque<BlockId> = VecDeque::new();
+            let mut ssa_worklist: VecDeque<SsaValue> = VecDeque::new();
+
+            // Mark entry executable
+            executable_blocks[body.entry.0 as usize] = true;
+            cfg_worklist.push_back(body.entry);
+
+            // Use-map: dense `Vec` indexed by `SsaValue.0`.  Populated in a single
+            // pass via the closure-based [`inst_uses_each`] helper, which avoids
+            // the heap allocation of the prior `inst_uses() -> Vec<SsaValue>`
+            // factory.
+            let mut use_sites: Vec<SmallVec<[BlockId; 2]>> = vec![SmallVec::new(); num_values];
+            for block in &body.blocks {
+                for inst in block.phis.iter().chain(block.body.iter()) {
+                    inst_uses_each_ref(inst, |used_val| {
+                        let idx = used_val.0 as usize;
+                        if idx < use_sites.len() {
+                            let bucket = &mut use_sites[idx];
+                            if bucket.last() != Some(&block.id) {
+                                bucket.push(block.id);
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Process until both worklists are empty
+            loop {
+                let mut changed = false;
+
+                // Process CFG worklist
+                while let Some(block_id) = cfg_worklist.pop_front() {
+                    let block = body.block(block_id);
+
+                    // Evaluate phis
+                    for phi in &block.phis {
+                        if let SsaOp::Phi(operands) = &phi.op {
+                            let new_val =
+                                eval_phi_ref(operands, &values, &executable_preds, block_id);
+                            if changed_from(&values, phi.value, &new_val) {
+                                store(&mut values, phi.value, new_val);
+                                ssa_worklist.push_back(phi.value);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    // Evaluate body instructions
+                    for inst in &block.body {
+                        let new_val = eval_inst(inst, &values);
+                        if changed_from(&values, inst.value, &new_val) {
+                            store(&mut values, inst.value, new_val);
+                            ssa_worklist.push_back(inst.value);
+                            changed = true;
+                        }
+                    }
+
+                    // Process terminator: determine which successors are executable
+                    process_terminator_ref(
+                        block,
+                        body,
+                        &values,
+                        &mut executable_preds,
+                        &mut executable_blocks,
+                        &mut cfg_worklist,
+                    );
+                }
+
+                // Process SSA worklist
+                while let Some(val) = ssa_worklist.pop_front() {
+                    let val_idx = val.0 as usize;
+                    if val_idx >= use_sites.len() {
+                        continue;
+                    }
+                    // Iterate the use-list by reference. `use_sites` is built once
+                    // before the worklist and never mutated inside it, and it is a
+                    // distinct allocation from `values` / `executable_*` / the
+                    // worklists, so the borrow checker allows borrowing the block-id
+                    // list immutably while `values` is mutated — the previous per-pop
+                    // `SmallVec` clone (a heap allocation whenever a value is used in
+                    // >2 blocks) was spurious.
+                    for &block_id in &use_sites[val_idx] {
+                        if !executable_blocks[block_id.0 as usize] {
+                            continue;
+                        }
+                        let block = body.block(block_id);
+
+                        // Re-evaluate phis using this value
+                        for phi in &block.phis {
+                            if let SsaOp::Phi(operands) = &phi.op
+                                && operands.iter().any(|(_, v)| *v == val)
+                            {
+                                let new_val =
+                                    eval_phi_ref(operands, &values, &executable_preds, block_id);
+                                if changed_from(&values, phi.value, &new_val) {
+                                    store(&mut values, phi.value, new_val);
+                                    ssa_worklist.push_back(phi.value);
+                                    changed = true;
+                                }
+                            }
+                        }
+
+                        // Re-evaluate body instructions using this value
+                        for inst in &block.body {
+                            if inst_has_use_ref(inst, val) {
+                                let new_val = eval_inst(inst, &values);
+                                if changed_from(&values, inst.value, &new_val) {
+                                    store(&mut values, inst.value, new_val);
+                                    ssa_worklist.push_back(inst.value);
+                                    changed = true;
+                                }
+                            }
+                        }
+
+                        // Re-evaluate terminator if condition changed
+                        process_terminator_ref(
+                            block,
+                            body,
+                            &values,
+                            &mut executable_preds,
+                            &mut executable_blocks,
+                            &mut cfg_worklist,
+                        );
+                    }
+                }
+
+                if !changed {
+                    break;
+                }
+            }
+
+            // Move the dense lattice into the public result with zero conversion —
+            // no per-value hashed insert (the old `HashMap<SsaValue, ConstLattice>`
+            // build was `O(num_values)` SipHash inserts per body, discarded next
+            // scan).  The unreachable-blocks set is small (often empty), so building
+            // it from a linear scan is fine.
+            let mut unreachable_blocks: HashSet<BlockId> = HashSet::new();
+            for (i, exec) in executable_blocks.iter().enumerate() {
+                if !exec {
+                    unreachable_blocks.insert(BlockId(i as u32));
+                }
+            }
+
+            ConstPropResult {
+                values: ConstValues(values),
+                unreachable_blocks,
+            }
+        }
+
+        // Evaluate a phi: meet of operands from executable predecessors.
+        fn eval_phi_ref(
+            operands: &[(BlockId, SsaValue)],
+            values: &[ConstLattice],
+            executable_preds: &[SmallVec<[BlockId; 2]>],
+            this_block: BlockId,
+        ) -> ConstLattice {
+            let preds = executable_preds
+                .get(this_block.0 as usize)
+                .map(|p| p.as_slice())
+                .unwrap_or(&[]);
+            let mut result = ConstLattice::Top;
+            for (pred_block, val) in operands {
+                if !preds.contains(pred_block) {
+                    continue; // skip non-executable predecessors
+                }
+                // Borrow the operand's stored lattice instead of cloning it; `meet`
+                // only reads `&other`, so a phi over `Str` operands no longer heap-
+                // allocates one clone per incoming edge.
+                result = result.meet(lookup_ref(values, *val));
+            }
+            result
+        }
+
+        // Apply a closure to every SSA value used by an instruction. Avoids the
+        // `Vec<SsaValue>` heap allocation that the previous `inst_uses(inst)`
+        // helper paid on every call (use-map build is O(num_insts), the prior
+        // path bottle-necked there).
+        #[inline]
+        fn inst_uses_each_ref<F: FnMut(SsaValue)>(inst: &SsaInst, mut f: F) {
+            match &inst.op {
+                SsaOp::Phi(operands) => {
+                    for (_, v) in operands {
+                        f(*v);
+                    }
+                }
+                SsaOp::Assign(uses) => {
+                    for v in uses {
+                        f(*v);
+                    }
+                }
+                SsaOp::Call { args, receiver, .. } => {
+                    if let Some(rv) = receiver {
+                        f(*rv);
+                    }
+                    for arg in args {
+                        for v in arg {
+                            f(*v);
+                        }
+                    }
+                }
+                SsaOp::FieldProj { receiver, .. } => f(*receiver),
+                SsaOp::Source
+                | SsaOp::Const(_)
+                | SsaOp::Param { .. }
+                | SsaOp::SelfParam
+                | SsaOp::CatchParam
+                | SsaOp::Nop
+                | SsaOp::Undef => {}
+            }
+        }
+
+        // Zero-allocation predicate: does `inst` use `target` as an operand?
+        // Replaces the prior `inst_uses(inst).contains(&target)` shape, which
+        // allocated a fresh `Vec<SsaValue>` on every check inside the SCCP
+        // re-evaluation worklist.
+        #[inline]
+        fn inst_has_use_ref(inst: &SsaInst, target: SsaValue) -> bool {
+            match &inst.op {
+                SsaOp::Phi(operands) => operands.iter().any(|(_, v)| *v == target),
+                SsaOp::Assign(uses) => uses.contains(&target),
+                SsaOp::Call { args, receiver, .. } => {
+                    if let Some(rv) = receiver
+                        && *rv == target
+                    {
+                        return true;
+                    }
+                    args.iter().any(|arg| arg.contains(&target))
+                }
+                SsaOp::FieldProj { receiver, .. } => *receiver == target,
+                SsaOp::Source
+                | SsaOp::Const(_)
+                | SsaOp::Param { .. }
+                | SsaOp::SelfParam
+                | SsaOp::CatchParam
+                | SsaOp::Nop
+                | SsaOp::Undef => false,
+            }
+        }
+
+        // Process a block's terminator to determine successor executability.
+        fn process_terminator_ref(
+            block: &SsaBlock,
+            body: &SsaBody,
+            values: &[ConstLattice],
+            executable_preds: &mut [SmallVec<[BlockId; 2]>],
+            executable_blocks: &mut [bool],
+            cfg_worklist: &mut VecDeque<BlockId>,
+        ) {
+            match &block.terminator {
+                Terminator::Goto(_) => {
+                    // `block.succs` is authoritative. For collapsed ≥3-way fanouts
+                    // (see src/ssa/lower.rs `three_successor_collapse`) the terminator
+                    // only records the first successor; marking just that one would
+                    // leave the others unreachable for SCCP. Iterate succs so every
+                    // CFG successor is marked executable.
+                    for &target in &block.succs {
+                        mark_edge_executable_ref(
+                            block.id,
+                            target,
+                            executable_preds,
+                            executable_blocks,
+                            cfg_worklist,
+                        );
+                    }
+                }
+                Terminator::Branch {
+                    cond,
+                    true_blk,
+                    false_blk,
+                    condition: _,
+                } => {
+                    // Try to resolve the condition to a known boolean
+                    let cond_val = body
+                        .cfg_node_map
+                        .get(cond)
+                        .and_then(|v| lookup_ref(values, *v).as_bool());
+
+                    match cond_val {
+                        Some(true) => {
+                            mark_edge_executable_ref(
+                                block.id,
+                                *true_blk,
+                                executable_preds,
+                                executable_blocks,
+                                cfg_worklist,
+                            );
+                        }
+                        Some(false) => {
+                            mark_edge_executable_ref(
+                                block.id,
+                                *false_blk,
+                                executable_preds,
+                                executable_blocks,
+                                cfg_worklist,
+                            );
+                        }
+                        None => {
+                            // Unknown: both successors executable
+                            mark_edge_executable_ref(
+                                block.id,
+                                *true_blk,
+                                executable_preds,
+                                executable_blocks,
+                                cfg_worklist,
+                            );
+                            mark_edge_executable_ref(
+                                block.id,
+                                *false_blk,
+                                executable_preds,
+                                executable_blocks,
+                                cfg_worklist,
+                            );
+                        }
+                    }
+                }
+                Terminator::Switch {
+                    scrutinee,
+                    targets,
+                    default,
+                    case_values,
+                } => {
+                    // Try to resolve scrutinee to a concrete integer literal; if
+                    // we can match it against one of the case literals (not
+                    // currently available on the SSA IR), mark just that target.
+                    // Until per-case literals are threaded through, fall back to
+                    // the sound "any successor executable" behavior, which mirrors
+                    // the pre-Switch cascade.
+                    let _ = (scrutinee, targets, default, case_values);
+                    for &target in &block.succs {
+                        mark_edge_executable_ref(
+                            block.id,
+                            target,
+                            executable_preds,
+                            executable_blocks,
+                            cfg_worklist,
+                        );
+                    }
+                }
+                Terminator::Return(_) | Terminator::Unreachable => {
+                    // `block.succs` is authoritative; the terminator is advisory.
+                    // Finally/cleanup continuation edges live on `succs` even when
+                    // the structured terminator is `Return`/`Unreachable`. Mark them
+                    // executable so SCCP reaches downstream (e.g. finally) blocks.
+                    for &target in &block.succs {
+                        mark_edge_executable_ref(
+                            block.id,
+                            target,
+                            executable_preds,
+                            executable_blocks,
+                            cfg_worklist,
+                        );
+                    }
+                }
+            }
+        }
+
+        fn mark_edge_executable_ref(
+            from: BlockId,
+            to: BlockId,
+            executable_preds: &mut [SmallVec<[BlockId; 2]>],
+            executable_blocks: &mut [bool],
+            cfg_worklist: &mut VecDeque<BlockId>,
+        ) {
+            let to_idx = to.0 as usize;
+            if to_idx >= executable_preds.len() {
+                return;
+            }
+            let preds = &mut executable_preds[to_idx];
+            if preds.contains(&from) {
+                return;
+            }
+            preds.push(from);
+            let was_already_exec = executable_blocks[to_idx];
+            if !was_already_exec {
+                executable_blocks[to_idx] = true;
+            }
+            // Always re-enqueue: either the block became newly reachable, or it
+            // already was but a new predecessor edge means phi operands need
+            // re-meeting against the now-executable predecessor.
+            cfg_worklist.push_back(to);
+        }
+    }
+
+    fn assert_matches_reference(body: &SsaBody, what: &str) {
+        let new = const_propagate(body);
+        let old = reference::const_propagate_reference(body);
+        assert_eq!(
+            new.values.len(),
+            old.values.len(),
+            "{what}: value table size differs"
+        );
+        for (v, cl) in old.values.iter() {
+            assert_eq!(
+                new.values.get(&v),
+                Some(cl),
+                "{what}: lattice differs for {v:?}"
+            );
+        }
+        assert_eq!(
+            new.unreachable_blocks, old.unreachable_blocks,
+            "{what}: unreachable blocks differ"
+        );
+    }
+
+    fn inst(value: u32, op: SsaOp) -> SsaInst {
+        SsaInst {
+            value: SsaValue(value),
+            op,
+            cfg_node: NodeIndex::new(value as usize),
+            var_name: None,
+            span: (0, 0),
+        }
+    }
+
+    fn konst(value: u32, text: &str) -> SsaInst {
+        inst(value, SsaOp::Const(Some(text.into())))
+    }
+
+    fn copy_of(value: u32, src: u32) -> SsaInst {
+        inst(value, SsaOp::Assign(SmallVec::from_elem(SsaValue(src), 1)))
+    }
+
+    fn phi_of(value: u32, operands: &[(u32, u32)]) -> SsaInst {
+        inst(
+            value,
+            SsaOp::Phi(
+                operands
+                    .iter()
+                    .map(|&(b, v)| (BlockId(b), SsaValue(v)))
+                    .collect(),
+            ),
+        )
+    }
+
+    fn blk(
+        id: u32,
+        phis: Vec<SsaInst>,
+        body: Vec<SsaInst>,
+        terminator: Terminator,
+        preds: &[u32],
+        succs: &[u32],
+    ) -> SsaBlock {
+        SsaBlock {
+            id: BlockId(id),
+            phis,
+            body,
+            terminator,
+            preds: preds.iter().map(|&b| BlockId(b)).collect(),
+            succs: succs.iter().map(|&b| BlockId(b)).collect(),
+        }
+    }
+
+    /// `n` values, value `i` defined at node `i` of block `blocks[i]`.
+    fn defs(owner: &[u32]) -> Vec<ValueDef> {
+        owner
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| ValueDef {
+                var_name: None,
+                cfg_node: NodeIndex::new(i),
+                block: BlockId(b),
+            })
+            .collect()
+    }
+
+    fn branch(cond_value: u32, t: u32, f: u32) -> Terminator {
+        Terminator::Branch {
+            cond: NodeIndex::new(cond_value as usize),
+            true_blk: BlockId(t),
+            false_blk: BlockId(f),
+            condition: None,
+        }
+    }
+
+    /// A switch-shaped body: block 0 fans out to `cases` blocks, each defines
+    /// one constant and jumps to a single exit block, whose phi joins them all.
+    /// `case_text(i)` is the constant of case `i`.
+    fn wide_join(cases: u32, case_text: impl Fn(u32) -> String) -> (SsaBody, SsaValue) {
+        let exit = cases + 1;
+        let mut blocks = Vec::new();
+        let succs: Vec<u32> = (1..=cases).collect();
+        blocks.push(blk(
+            0,
+            vec![],
+            vec![],
+            Terminator::Goto(BlockId(1)),
+            &[],
+            &succs,
+        ));
+        let mut owner = Vec::new();
+        let mut operands = Vec::new();
+        for i in 0..cases {
+            let b = i + 1;
+            blocks.push(blk(
+                b,
+                vec![],
+                vec![konst(i, &case_text(i))],
+                Terminator::Goto(BlockId(exit)),
+                &[0],
+                &[exit],
+            ));
+            owner.push(b);
+            operands.push((b, i));
+        }
+        let phi_value = cases;
+        owner.push(exit);
+        let preds: Vec<u32> = (1..=cases).collect();
+        blocks.push(blk(
+            exit,
+            vec![phi_of(phi_value, &operands)],
+            vec![],
+            Terminator::Return(None),
+            &preds,
+            &[],
+        ));
+        (make_body(blocks, defs(&owner)), SsaValue(phi_value))
+    }
+
+    #[test]
+    fn wide_join_phi_of_distinct_constants_is_varying() {
+        let (body, phi) = wide_join(300, |i| i.to_string());
+        let result = const_propagate(&body);
+        assert_eq!(result.values.get(&phi), Some(&ConstLattice::Varying));
+        assert!(result.unreachable_blocks.is_empty());
+        assert_matches_reference(&body, "wide join, distinct constants");
+    }
+
+    #[test]
+    fn wide_join_phi_of_equal_constants_stays_constant() {
+        let (body, phi) = wide_join(300, |_| "7".to_string());
+        let result = const_propagate(&body);
+        assert_eq!(result.values.get(&phi), Some(&ConstLattice::Int(7)));
+        assert_matches_reference(&body, "wide join, equal constants");
+    }
+
+    /// The join is evaluated once however many predecessors it has: the
+    /// operand visits are counted, so a regression to one re-evaluation per
+    /// incoming edge shows up as a quadratic count rather than as a slow test.
+    #[test]
+    fn wide_join_phi_visits_each_operand_a_bounded_number_of_times() {
+        let cases = 4000;
+        let (body, phi) = wide_join(cases, |_| "7".to_string());
+        PHI_OPERAND_VISITS.with(|c| c.set(0));
+        let result = const_propagate(&body);
+        let visits = PHI_OPERAND_VISITS.with(|c| c.get());
+        assert_eq!(result.values.get(&phi), Some(&ConstLattice::Int(7)));
+        assert!(
+            visits <= 2 * cases as usize,
+            "phi operands visited {visits} times for {cases} operands"
+        );
+    }
+
+    /// Operands arriving over a pruned edge are excluded from the meet, also
+    /// when the join is wide enough to use the hashed edge index.
+    #[test]
+    fn wide_join_ignores_operands_from_pruned_branch() {
+        // 0: v0 = true; if v0 -> 1 else 2
+        // 1: fans out to 12 live cases (consts 5), each jumps to 15
+        // 2: dead, jumps to 15 with a different constant
+        // 15: phi over the 12 live cases and the dead block
+        let live = 12u32;
+        let exit = 3 + live;
+        let mut blocks = vec![
+            blk(
+                0,
+                vec![],
+                vec![konst(0, "true"), copy_of(1, 0)],
+                branch(1, 1, 2),
+                &[],
+                &[1, 2],
+            ),
+            blk(
+                1,
+                vec![],
+                vec![],
+                Terminator::Goto(BlockId(3)),
+                &[0],
+                &(3..3 + live).collect::<Vec<_>>(),
+            ),
+            blk(
+                2,
+                vec![],
+                vec![konst(2, "99")],
+                Terminator::Goto(BlockId(exit)),
+                &[0],
+                &[exit],
+            ),
+        ];
+        let mut owner = vec![0, 0, 2];
+        let mut operands = vec![(2u32, 2u32)];
+        for i in 0..live {
+            let b = 3 + i;
+            let v = 3 + i;
+            blocks.push(blk(
+                b,
+                vec![],
+                vec![konst(v, "5")],
+                Terminator::Goto(BlockId(exit)),
+                &[1],
+                &[exit],
+            ));
+            owner.push(b);
+            operands.push((b, v));
+        }
+        let phi_value = 3 + live;
+        owner.push(exit);
+        let mut preds: Vec<u32> = (3..3 + live).collect();
+        preds.push(2);
+        blocks.push(blk(
+            exit,
+            vec![phi_of(phi_value, &operands)],
+            vec![],
+            Terminator::Return(None),
+            &preds,
+            &[],
+        ));
+        let body = make_body(blocks, defs(&owner));
+        let result = const_propagate(&body);
+        assert_eq!(
+            result.values.get(&SsaValue(phi_value)),
+            Some(&ConstLattice::Int(5)),
+            "the dead branch's 99 must not reach the join"
+        );
+        assert!(result.unreachable_blocks.contains(&BlockId(2)));
+        assert_matches_reference(&body, "wide join with a pruned predecessor");
+    }
+
+    /// A loop header phi first sees only the preheader value, so the branch on
+    /// it looks constant; the back edge then widens the phi and the exit edge
+    /// has to become executable.
+    #[test]
+    fn branch_on_phi_widened_by_back_edge_reaches_exit() {
+        // 0: v0 = true            -> 1
+        // 1: v1 = phi(0:v0, 2:v3); v2 = copy v1; if v2 -> 2 else 3
+        // 2: v3 = false           -> 1
+        // 3: return
+        let blocks = vec![
+            blk(
+                0,
+                vec![],
+                vec![konst(0, "true")],
+                Terminator::Goto(BlockId(1)),
+                &[],
+                &[1],
+            ),
+            blk(
+                1,
+                vec![phi_of(1, &[(0, 0), (2, 3)])],
+                vec![copy_of(2, 1)],
+                branch(2, 2, 3),
+                &[0, 2],
+                &[2, 3],
+            ),
+            blk(
+                2,
+                vec![],
+                vec![konst(3, "false")],
+                Terminator::Goto(BlockId(1)),
+                &[1],
+                &[1],
+            ),
+            blk(3, vec![], vec![], Terminator::Return(None), &[1], &[]),
+        ];
+        let body = make_body(blocks, defs(&[0, 1, 1, 2]));
+        let result = const_propagate(&body);
+        assert_eq!(
+            result.values.get(&SsaValue(1)),
+            Some(&ConstLattice::Varying)
+        );
+        assert_eq!(
+            result.values.get(&SsaValue(2)),
+            Some(&ConstLattice::Varying)
+        );
+        assert!(
+            result.unreachable_blocks.is_empty(),
+            "the exit must be reachable once the phi widens: {:?}",
+            result.unreachable_blocks
+        );
+        assert_matches_reference(&body, "loop header phi widened by the back edge");
+    }
+
+    /// A value read twice by one call and again by an instruction of a later
+    /// block and a phi: every reader must see the final lattice value.
+    #[test]
+    fn value_used_by_several_instructions_blocks_and_phis() {
+        // 0: v0 = "1"; v1 = call(v0, v0); v2 = copy v0; v3 = assign(v0, v2); if v2 -> 1 else 2
+        // 1: v4 = copy v0 -> 3
+        // 2: v5 = "1"     -> 3
+        // 3: v6 = phi(1:v4, 2:v5); v7 = copy v6
+        let blocks = vec![
+            blk(
+                0,
+                vec![],
+                vec![
+                    konst(0, "1"),
+                    inst(
+                        1,
+                        SsaOp::Call {
+                            callee: "f".into(),
+                            callee_text: None,
+                            args: vec![
+                                SmallVec::from_elem(SsaValue(0), 1),
+                                SmallVec::from_elem(SsaValue(0), 1),
+                            ],
+                            receiver: None,
+                        },
+                    ),
+                    copy_of(2, 0),
+                    inst(
+                        3,
+                        SsaOp::Assign(SmallVec::from_slice(&[SsaValue(0), SsaValue(2)])),
+                    ),
+                ],
+                branch(2, 1, 2),
+                &[],
+                &[1, 2],
+            ),
+            blk(
+                1,
+                vec![],
+                vec![copy_of(4, 0)],
+                Terminator::Goto(BlockId(3)),
+                &[0],
+                &[3],
+            ),
+            blk(
+                2,
+                vec![],
+                vec![konst(5, "1")],
+                Terminator::Goto(BlockId(3)),
+                &[0],
+                &[3],
+            ),
+            blk(
+                3,
+                vec![phi_of(6, &[(1, 4), (2, 5)])],
+                vec![copy_of(7, 6)],
+                Terminator::Return(None),
+                &[1, 2],
+                &[],
+            ),
+        ];
+        let body = make_body(blocks, defs(&[0, 0, 0, 0, 1, 2, 3, 3]));
+        let result = const_propagate(&body);
+        assert_eq!(result.values.get(&SsaValue(6)), Some(&ConstLattice::Int(1)));
+        assert_eq!(result.values.get(&SsaValue(7)), Some(&ConstLattice::Int(1)));
+        assert_eq!(
+            result.values.get(&SsaValue(3)),
+            Some(&ConstLattice::Varying)
+        );
+        assert_matches_reference(&body, "multi-use value");
+    }
+
+    /// One long straight-line block of copies chained off a constant, then a
+    /// widening phi after it; checks the per-instruction use lists on a body
+    /// where the old whole-block rescan was quadratic.
+    #[test]
+    fn long_straight_line_block_matches_reference() {
+        let n = 3000u32;
+        let mut body_insts = vec![konst(0, "3")];
+        for i in 1..n {
+            body_insts.push(copy_of(i, i - 1));
+        }
+        let blocks = vec![blk(
+            0,
+            vec![],
+            body_insts,
+            Terminator::Return(None),
+            &[],
+            &[],
+        )];
+        let owner = vec![0u32; n as usize];
+        let body = make_body(blocks, defs(&owner));
+        let result = const_propagate(&body);
+        assert_eq!(
+            result.values.get(&SsaValue(n - 1)),
+            Some(&ConstLattice::Int(3))
+        );
+        assert_matches_reference(&body, "long straight-line block");
+    }
+
+    /// Builds bodies from real source files in the benchmark corpus and checks
+    /// the production SCCP against the oracle on every function body.
+    #[test]
+    fn corpus_bodies_match_reference() {
+        use crate::utils::config::Config;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/benchmark/corpus");
+        let mut files = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let cfg = Config::default();
+        let mut bodies = 0usize;
+        let mut folded = 0usize;
+        for path in files {
+            let Ok(Some((file_cfg, _lang))) = crate::ast::build_cfg_for_file(&path, &cfg) else {
+                continue;
+            };
+            for b in &file_cfg.bodies {
+                let scope = b.meta.name.as_deref();
+                let Ok(ssa) = crate::ssa::lower_to_ssa(&b.graph, b.entry, scope, scope.is_none())
+                else {
+                    continue;
+                };
+                assert_matches_reference(&ssa, &path.display().to_string());
+                bodies += 1;
+                let r = const_propagate(&ssa);
+                if !r.unreachable_blocks.is_empty() {
+                    folded += 1;
+                }
+            }
+        }
+        assert!(
+            bodies > 200,
+            "expected a real corpus, lowered {bodies} bodies"
+        );
+        eprintln!(
+            "[const_prop] {bodies} corpus bodies matched the reference ({folded} with pruned blocks)"
+        );
     }
 }

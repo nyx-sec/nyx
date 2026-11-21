@@ -350,10 +350,18 @@ pub struct SsaTaintState {
     /// Per-SSA-value taint, sorted by SsaValue for O(n) merge-join.
     pub values: SmallVec<[(SsaValue, VarTaint); 16]>,
     /// Variables validated on ALL paths (intersection on join). Keyed by SymbolId.
+    ///
+    /// A bit speaks for the latest SSA value of that name: a definition that
+    /// does not read the old value clears it before the op runs (see
+    /// `kill_redefined_symbol_facts`), so `x = req.query.other` after a guard
+    /// on `x` starts unvalidated.
     pub validated_must: SmallBitSet,
     /// Variables validated on ANY path (union on join). Keyed by SymbolId.
     pub validated_may: SmallBitSet,
     /// Per-variable predicate summary (sorted by SymbolId, intersection on join).
+    /// Dropped for a name whenever it is redefined, and the bits state a fact
+    /// about the value (null, error present, empty) whichever operator the
+    /// condition used.
     pub predicates: SmallVec<[(SymbolId, PredicateSummary); 4]>,
     /// Per-heap-object taint: container contents taint tracked through
     /// abstract heap identity. Separate from `values` so container taint

@@ -15,7 +15,7 @@ mod c;
 mod cpp;
 mod go;
 mod java;
-mod javascript;
+pub(crate) mod javascript;
 mod php;
 mod python;
 pub(crate) mod ruby;
@@ -80,6 +80,24 @@ pub struct GatedLabelRule {
     pub label: DataLabel,
     pub case_sensitive: bool,
     pub gate: LabelGate,
+    /// Positional args that carry the payload when `label` is a `Sink`.
+    /// Same meaning as [`SinkGate::payload_args`]: the CFG post-pass copies
+    /// these onto the call node's `sink_payload_args`, so taint on the
+    /// receiver or on an options / callback argument does not reach the
+    /// sink.  `&[]` leaves every argument a payload.
+    pub payload_args: &'static [usize],
+}
+
+/// A [`GatedLabelRule`] hit: the label it contributes and the payload
+/// positions it restricts a `Sink` to (`&[]` for every argument).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedLabelMatch {
+    pub label: DataLabel,
+    pub payload_args: &'static [usize],
+    /// The rule matched only the head of a chained callee
+    /// (`execSync(cmd).toString` matching `execSync`), so `payload_args`
+    /// index the head call's arguments, not the outer call's.
+    pub chain_head: bool,
 }
 
 /// Per-file context consulted by [`classify_all_ctx`] when evaluating
@@ -201,6 +219,36 @@ pub struct SinkGate {
     /// [`GateActivation::Destination`] is used for destination-flow modeling
     /// (outbound HTTP clients etc.).
     pub activation: GateActivation,
+}
+
+impl SinkGate {
+    /// A gate that always fires and restricts the sink to the listed
+    /// positional args.  The common shape for an API whose receiver,
+    /// options object or callback is never the injected value
+    /// (`res.send(body)`, `vm.runInNewContext(code, sandbox)`): the gate's
+    /// `payload_args` propagate onto a matching flat sink, so the receiver
+    /// and the trailing arguments are not taint-checked.
+    pub const fn payload_positions(
+        callee_matcher: &'static str,
+        label: DataLabel,
+        case_sensitive: bool,
+        payload_args: &'static [usize],
+    ) -> Self {
+        SinkGate {
+            callee_matcher,
+            arg_index: 0,
+            dangerous_values: &[],
+            dangerous_prefixes: &[],
+            label,
+            case_sensitive,
+            payload_args,
+            keyword_name: None,
+            dangerous_kwargs: &[],
+            activation: GateActivation::Destination {
+                object_destination_fields: &[],
+            },
+        }
+    }
 }
 
 bitflags! {
@@ -404,12 +452,14 @@ pub struct ArgPropagation {
     pub to_args: &'static [usize],
 }
 
-/// Look up output-parameter positions for Source-labeled C/C++ functions.
-/// Returns argument indices that receive taint alongside the return value.
+/// Look up output-parameter positions for Source-labeled functions (C/C++
+/// input buffers, Go request binders).  Returns argument indices that
+/// receive the source taint.
 pub fn output_param_source_positions(lang: &str, callee: &str) -> Option<&'static [usize]> {
     let registry: &[(&str, &[usize])] = match lang {
         "c" => c::OUTPUT_PARAM_SOURCES,
         "cpp" => cpp::OUTPUT_PARAM_SOURCES,
+        "go" => go::OUTPUT_PARAM_SOURCES,
         _ => return None,
     };
     let normalized = callee
@@ -726,6 +776,7 @@ static EXCLUDES: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     m.insert("js", javascript::EXCLUDES);
     m.insert("typescript", typescript::EXCLUDES);
     m.insert("ts", typescript::EXCLUDES);
+    m.insert("java", java::EXCLUDES);
     m
 });
 
@@ -821,9 +872,9 @@ pub fn param_config(lang: &str) -> &'static ParamConfig {
 /// Lowercase names whose use as a JS/TS function parameter strongly suggests
 /// the binding carries attacker-controlled input (handler dispatch functions,
 /// controller methods, command wrappers).  When the taint engine enters a
-/// function whose formal parameter matches one of these names and no caller
-/// taint has been supplied, it auto-seeds the parameter as a `UserInput`
-/// source so sinks downstream of the parameter still fire.
+/// function with no known caller whose formal parameter matches one of these
+/// names, it auto-seeds the parameter as a `UserInput` source so sinks
+/// downstream of the parameter still fire.
 const JS_TS_HANDLER_PARAM_NAMES: &[&str] = &["userinput", "userid", "payload", "cmd", "input"];
 
 /// Check whether a JS/TS formal parameter name strongly implies user input.
@@ -1064,12 +1115,21 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
     if cl.contains("cookie") || cl.contains("session") {
         return SourceKind::Cookie;
     }
-    if cl.contains("header") {
+    // Go `*http.Request` header accessors (`r.Referer()`, `r.UserAgent()`)
+    // read a header without naming it.
+    if cl.contains("header") || cl.contains("referer") || cl.contains("useragent") {
         return SourceKind::Header;
     }
 
     // User input patterns
     if cl.contains("argv")
+        // Go request binders (`c.ShouldBindJSON(&in)`) and path wildcards
+        // (`r.PathValue("id")`).
+        || cl.contains("bind")
+        || cl.contains("pathvalue")
+        // Servlet `req.getReader()` reads the body.  Without this the "read"
+        // substring below files it under FileSystem.
+        || cl.ends_with("getreader")
         || cl.contains("stdin")
         || cl.contains("fgets")
         || cl.contains("scanf")
@@ -1394,6 +1454,134 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
     }
 }
 
+#[inline]
+fn is_python_lang(lang: &str) -> bool {
+    lang == "python" || lang == "py"
+}
+
+/// Python: the module-qualified spelling of `text` when its leading name is
+/// bound by `from M import n [as a]` or `import M as a` in the file being
+/// analysed (`from subprocess import check_output` makes `check_output(..)`
+/// into `subprocess.check_output`). `None` when the leading name is not an
+/// import binding or no file view is published.
+///
+/// Label rules are keyed on the qualified callee. The qualified spelling is
+/// classified in addition to the written one, so the written one keeps every
+/// label it had and an import can only add labels, never take them away.
+pub(crate) fn python_import_qualified(text: &str) -> Option<String> {
+    let end = text.find(['.', '(', '[', ' ']).unwrap_or(text.len());
+    let path = crate::ssa::type_facts::file_import_path(&text[..end])?;
+    Some(format!("{path}{}", &text[end..]))
+}
+
+// ── Declared-type receiver aliases ──────────────────────────────────────────
+//
+// Some receivers are only recognisable by their declared type: a Go
+// handler may name its `*http.Request` `r`, `req`, `httpReq` or anything
+// else, its `http.ResponseWriter` `w` or `rw`, its `*http.Client` anything,
+// and the flat suffix matchers cannot see the type.  While the CFG
+// builder walks a function body it pushes one frame per function scope,
+// mapping each formal parameter name to a canonical receiver prefix (or to
+// `None` when the formal has an unrecognised type, so an inner closure's
+// formal shadows an outer one of the same name).  `classify` /
+// `classify_all` then also classify the text with its root identifier
+// replaced by that prefix, so `req.Header.Get` additionally matches the
+// `Request.Header.Get` rule.  The stack is empty outside CFG construction,
+// which makes every other caller a no-op.
+/// One function scope's formals: `(name, canonical receiver prefix)`.
+pub(crate) type ReceiverAliasFrame = Vec<(String, Option<&'static str>)>;
+
+thread_local! {
+    static RECEIVER_ALIASES: std::cell::RefCell<Vec<ReceiverAliasFrame>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Pops the receiver-alias frame pushed by [`push_receiver_aliases`] when
+/// dropped, so an early return or unwind inside the body walk cannot leak a
+/// frame into the next function.
+pub(crate) struct ReceiverAliasScope {
+    pushed: bool,
+}
+
+impl Drop for ReceiverAliasScope {
+    fn drop(&mut self) {
+        if self.pushed {
+            RECEIVER_ALIASES.with(|s| {
+                s.borrow_mut().pop();
+            });
+        }
+    }
+}
+
+/// Enter a function scope whose formals are `frame` (`(name, prefix)`
+/// pairs).  A frame without any typed formal is only pushed when an outer
+/// scope is active, where it is still needed for shadowing.
+pub(crate) fn push_receiver_aliases(frame: ReceiverAliasFrame) -> ReceiverAliasScope {
+    RECEIVER_ALIASES.with(|s| {
+        let mut s = s.borrow_mut();
+        let has_alias = frame.iter().any(|(_, p)| p.is_some());
+        if frame.is_empty() || (!has_alias && s.is_empty()) {
+            return ReceiverAliasScope { pushed: false };
+        }
+        s.push(frame);
+        ReceiverAliasScope { pushed: true }
+    })
+}
+
+/// Drop every receiver-alias frame.  Called at the start and end of each
+/// file's CFG build so state never crosses files on a worker thread.
+pub(crate) fn clear_receiver_aliases() {
+    RECEIVER_ALIASES.with(|s| s.borrow_mut().clear());
+}
+
+/// Receiver prefix of the innermost formal named `name`, when it has one
+/// (`w` declared `http.ResponseWriter` → `HttpResponse`).  `None` outside
+/// CFG construction, for a name no frame binds, and for an untyped formal.
+pub(crate) fn receiver_alias_prefix(name: &str) -> Option<&'static str> {
+    RECEIVER_ALIASES.with(|s| {
+        s.borrow()
+            .iter()
+            .rev()
+            .find_map(|frame| frame.iter().find(|(n, _)| n == name))
+            .and_then(|(_, prefix)| *prefix)
+    })
+}
+
+/// Rewrite the root identifier of a member-access text (`req.Header.Get`)
+/// to the canonical prefix of the innermost formal that binds it
+/// (`Request.Header.Get`).  Returns `None` when no frame is active, the text
+/// has no `.` member access after a plain identifier root, or the binding
+/// formal has no recognised type.
+fn aliased_receiver_text(text: &str) -> Option<String> {
+    RECEIVER_ALIASES.with(|s| {
+        let s = s.borrow();
+        if s.is_empty() {
+            return None;
+        }
+        let dot = text.find('.')?;
+        let root = &text[..dot];
+        if root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return None;
+        }
+        for frame in s.iter().rev() {
+            if let Some((_, prefix)) = frame.iter().find(|(name, _)| name == root) {
+                return prefix
+                    .filter(|p| *p != root)
+                    .map(|p| format!("{p}{}", &text[dot..]));
+            }
+        }
+        None
+    })
+}
+
+/// Canonical receiver prefix for a Go formal parameter type
+/// (`*http.Request` → `Request`, `*gin.Context` → `GinContext`).  Shared by
+/// the CFG builder (label classification) and the auth extractor
+/// (request-typed parameter evidence).
+pub fn go_request_receiver_prefix(type_text: &str) -> Option<&'static str> {
+    go::request_receiver_prefix(type_text)
+}
+
 /// Try to classify a piece of syntax text.
 /// `lang` is the canonicalised language key ("rust", "javascript", ...).
 ///
@@ -1404,7 +1592,38 @@ fn unpack_matcher(matcher: &[u8]) -> (&[u8], bool) {
 /// rules before any prefix (`foo_`) match is attempted.  This prevents a
 /// greedy prefix like `sanitize_` from shadowing a more specific exact
 /// match like `sanitize_shell`.
+///
+/// When the text's root identifier is a formal with a declared request type
+/// (see [`push_receiver_aliases`]), the aliased text is tried when the
+/// literal text matches nothing.
 pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
+    let direct = classify_aliased(lang, text, extra);
+    if direct.is_some() || !is_python_lang(lang) {
+        return direct;
+    }
+    let qualified = python_import_qualified(text)?;
+    classify_aliased(lang, &qualified, extra)
+}
+
+/// [`classify_text`], retried on the receiver-aliased text when the literal
+/// text matches nothing.
+fn classify_aliased(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> Option<DataLabel> {
+    classify_text(lang, text, extra)
+        .filter(|label| {
+            !(lang == "go"
+                && matches!(label, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE))
+                && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix))
+        })
+        .or_else(|| {
+            aliased_receiver_text(text).and_then(|aliased| classify_text(lang, &aliased, extra))
+        })
+}
+
+fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
 
@@ -1490,8 +1709,47 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 ///
 /// Same two-pass (exact/suffix then prefix) structure as [`classify()`], but
 /// collects every match instead of returning on first hit.  Deduplicates
-/// exact `(variant, caps)` pairs.
+/// exact `(variant, caps)` pairs.  Labels of the receiver-aliased text (see
+/// [`push_receiver_aliases`]) are unioned in.
 pub fn classify_all(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = classify_all_aliased(lang, text, extra);
+    if is_python_lang(lang)
+        && let Some(qualified) = python_import_qualified(text)
+    {
+        for label in classify_all_aliased(lang, &qualified, extra) {
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+    }
+    out
+}
+
+/// [`classify_all_text`] plus the labels of the receiver-aliased text.
+fn classify_all_aliased(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = classify_all_text(lang, text, extra);
+    if lang == "go" && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix) {
+        out.retain(|l| !matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)));
+    }
+    if let Some(aliased) = aliased_receiver_text(text) {
+        for label in classify_all_text(lang, &aliased, extra) {
+            if !out.contains(&label) {
+                out.push(label);
+            }
+        }
+    }
+    out
+}
+
+fn classify_all_text(
     lang: &str,
     text: &str,
     extra: Option<&[RuntimeLabelRule]>,
@@ -1619,31 +1877,58 @@ fn classify_gated_into(
     ctx: Option<&ClassificationContext<'_>>,
     out: &mut SmallVec<[DataLabel; 2]>,
 ) {
+    for m in classify_gated_matches(lang, text, ctx) {
+        if !out.contains(&m.label) {
+            out.push(m.label);
+        }
+    }
+}
+
+/// Gated-rule pass that also reports each hit's payload positions, so a
+/// caller that attaches the label can restrict the sink to the same args
+/// a flat-rule [`SinkGate`] would (see [`GatedLabelRule::payload_args`]).
+/// Hits are deduped by label; the first rule to contribute a label wins.
+pub fn classify_gated_matches(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[GatedLabelMatch; 2]> {
+    let mut out: SmallVec<[GatedLabelMatch; 2]> = SmallVec::new();
     let gated = match GATED_LABEL_REGISTRY.get(lang).or_else(|| {
         let key = lang.to_ascii_lowercase();
         GATED_LABEL_REGISTRY.get(key.as_str())
     }) {
         Some(g) => *g,
-        None => return,
+        None => return out,
     };
     if gated.is_empty() {
-        return;
+        return out;
     }
 
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
     if is_excluded(lang, trimmed) {
-        return;
+        return out;
     }
     let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
     #[inline]
-    fn push_dedup(out: &mut SmallVec<[DataLabel; 2]>, label: DataLabel) {
-        if !out.contains(&label) {
-            out.push(label);
+    fn push_dedup(
+        out: &mut SmallVec<[GatedLabelMatch; 2]>,
+        rule: &GatedLabelRule,
+        chain_head: bool,
+    ) {
+        if !out.iter().any(|m| m.label == rule.label) {
+            out.push(GatedLabelMatch {
+                label: rule.label,
+                payload_args: rule.payload_args,
+                chain_head,
+            });
         }
     }
+    // `text` is a chain (`a(..).b`) whose head is what `trimmed` holds.
+    let chained = text.contains('(');
 
     // Pass 1: exact / suffix.
     for rule in gated {
@@ -1652,10 +1937,10 @@ fn classify_gated_into(
             if m.last() == Some(&b'_') {
                 continue;
             }
-            let matches = match_suffix_cs(trimmed, m, rule.case_sensitive)
-                || match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
-            if matches && gate_satisfied(&rule.gate, head, ctx) {
-                push_dedup(out, rule.label);
+            let on_chain = match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
+            let on_head = match_suffix_cs(trimmed, m, rule.case_sensitive);
+            if (on_head || on_chain) && gate_satisfied(&rule.gate, head, ctx) {
+                push_dedup(&mut out, rule, chained && !on_chain);
             }
         }
     }
@@ -1668,10 +1953,11 @@ fn classify_gated_into(
                     || starts_with_cs(full_norm_bytes, m, rule.case_sensitive))
                 && gate_satisfied(&rule.gate, head, ctx)
             {
-                push_dedup(out, rule.label);
+                push_dedup(&mut out, rule, false);
             }
         }
     }
+    out
 }
 
 /// Restricted payload-arg positions for known type-qualified sink callees.
@@ -1873,6 +2159,77 @@ pub fn classify_gated_sink_with_presence(
     kwarg_present: impl Fn(&str) -> bool,
     arg_present: impl Fn(usize) -> bool,
 ) -> SmallVec<[GateMatch; 2]> {
+    let mut out = gated_sink_matches(
+        lang,
+        callee_text,
+        &const_arg_at,
+        &const_keyword_arg,
+        &kwarg_present,
+        &arg_present,
+    );
+    // `from subprocess import run` calls `run(cmd, shell=True)`: gate it as
+    // `subprocess.run` too.
+    if is_python_lang(lang)
+        && let Some(qualified) = python_import_qualified(callee_text)
+    {
+        for m in gated_sink_matches(
+            lang,
+            &qualified,
+            &const_arg_at,
+            &const_keyword_arg,
+            &kwarg_present,
+            &arg_present,
+        ) {
+            if !out.contains(&m) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+fn gated_sink_matches(
+    lang: &str,
+    callee_text: &str,
+    const_arg_at: &impl Fn(usize) -> Option<String>,
+    const_keyword_arg: &impl Fn(&str) -> Option<String>,
+    kwarg_present: &impl Fn(&str) -> bool,
+    arg_present: &impl Fn(usize) -> bool,
+) -> SmallVec<[GateMatch; 2]> {
+    let out = classify_gated_sink_text(
+        lang,
+        callee_text,
+        &const_arg_at,
+        &const_keyword_arg,
+        &kwarg_present,
+        &arg_present,
+    );
+    if !out.is_empty() {
+        return out;
+    }
+    // A receiver formal with a declared type (`c *http.Client`) also matches
+    // the gates keyed on its canonical prefix (`HttpClient.Get`).
+    match aliased_receiver_text(callee_text) {
+        Some(aliased) => classify_gated_sink_text(
+            lang,
+            &aliased,
+            &const_arg_at,
+            &const_keyword_arg,
+            &kwarg_present,
+            &arg_present,
+        ),
+        None => out,
+    }
+}
+
+fn classify_gated_sink_text(
+    lang: &str,
+    callee_text: &str,
+    const_arg_at: &impl Fn(usize) -> Option<String>,
+    const_keyword_arg: &impl Fn(&str) -> Option<String>,
+    kwarg_present: &impl Fn(&str) -> bool,
+    arg_present: &impl Fn(usize) -> bool,
+) -> SmallVec<[GateMatch; 2]> {
     let mut out: SmallVec<[GateMatch; 2]> = SmallVec::new();
     let gates = match GATED_REGISTRY.get(lang).or_else(|| {
         let key = lang.to_ascii_lowercase();
@@ -2048,32 +2405,75 @@ pub fn bare_method_name(callee: &str) -> &str {
 /// `.` segments and no leading `<`), avoiding the heap allocation. Only
 /// pays for a `String` when the input actually needs rewriting; the hot
 /// classify path runs on every CFG node so the borrow case dominates.
+///
+/// The rewrite starts at the first offset where a left-to-right scan has
+/// to act: a `(` whose matching `)` ends the text or is followed by `.` (or
+/// that never closes), or a `<`.  One pass with a stack of open parens
+/// finds it, so callee texts that carry whole callback bodies
+/// (`wrap(function(){...}).then`) cost O(len) rather than O(len * nesting).
 fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => {
-                let mut depth = 1u32;
-                let mut j = i + 1;
-                while j < bytes.len() && depth > 0 {
-                    match bytes[j] {
-                        b'(' => depth += 1,
-                        b')' => depth -= 1,
-                        _ => {}
-                    }
-                    j += 1;
+    let mut open: SmallVec<[usize; 8]> = SmallVec::new();
+    let mut first_collapse = usize::MAX;
+    let mut first_angle = usize::MAX;
+    for (k, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => open.push(k),
+            b')' => {
+                if let Some(i) = open.pop()
+                    && (k + 1 >= bytes.len() || bytes[k + 1] == b'.')
+                {
+                    first_collapse = first_collapse.min(i);
                 }
-                if j >= bytes.len() || bytes[j] == b'.' {
-                    return std::borrow::Cow::Owned(normalize_chained_call_owned(text, i));
-                }
-                i += 1;
             }
-            b'<' => return std::borrow::Cow::Borrowed(&text[..i]),
-            _ => i += 1,
+            b'<' if first_angle == usize::MAX => {
+                first_angle = k;
+                // Nothing past this `<` can matter unless an open `(` before
+                // it may still close into a collapsing group.
+                if open.is_empty() {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
-    std::borrow::Cow::Borrowed(text)
+    // A `(` that never closes collapses like one closing at end of text.
+    if let Some(&i) = open.first() {
+        first_collapse = first_collapse.min(i);
+    }
+    if first_collapse < first_angle {
+        std::borrow::Cow::Owned(normalize_chained_call_owned(text, first_collapse))
+    } else if first_angle != usize::MAX {
+        std::borrow::Cow::Borrowed(&text[..first_angle])
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// Every `(` at or after `from` with the offset just past its matching `)`
+/// (`bytes.len()` when it never closes).  Returns the `(` offsets in
+/// ascending order and the parallel group ends, so a lookup is a binary
+/// search and memory is per paren, not per byte.
+fn paren_group_ends(bytes: &[u8], from: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut opens: Vec<usize> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
+    let mut stack: SmallVec<[usize; 8]> = SmallVec::new();
+    for (k, &b) in bytes.iter().enumerate().skip(from) {
+        match b {
+            b'(' => {
+                stack.push(opens.len());
+                opens.push(k);
+                ends.push(bytes.len());
+            }
+            b')' => {
+                if let Some(o) = stack.pop() {
+                    ends[o] = k + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    (opens, ends)
 }
 
 /// Slow path for `normalize_chained_call`: runs only when the input
@@ -2086,22 +2486,16 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
 /// contiguous slices to keep multi-byte UTF-8 sequences intact.
 fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
     let bytes = text.as_bytes();
+    let (paren_opens, paren_ends) = paren_group_ends(bytes, prefix_end);
     let mut result = String::with_capacity(text.len());
     result.push_str(&text[..prefix_end]);
     let mut i = prefix_end;
     while i < bytes.len() {
         match bytes[i] {
             b'(' => {
-                let mut depth = 1u32;
-                let mut j = i + 1;
-                while j < bytes.len() && depth > 0 {
-                    match bytes[j] {
-                        b'(' => depth += 1,
-                        b')' => depth -= 1,
-                        _ => {}
-                    }
-                    j += 1;
-                }
+                let j = paren_opens
+                    .binary_search(&i)
+                    .map_or(bytes.len(), |o| paren_ends[o]);
                 if j >= bytes.len() || bytes[j] == b'.' {
                     i = j;
                 } else {
@@ -2861,6 +3255,123 @@ mod tests {
         assert_eq!(r.as_ref(), "a.b");
     }
 
+    /// The quadratic scan `normalize_chained_call` used before it learned
+    /// to match parens in one pass.  Kept as the reference the linear
+    /// version must agree with byte for byte.
+    fn normalize_chained_call_reference(text: &str) -> String {
+        fn group_end(bytes: &[u8], i: usize) -> usize {
+            let mut depth = 1u32;
+            let mut j = i + 1;
+            while j < bytes.len() && depth > 0 {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            j
+        }
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        let mut prefix_end = None;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => {
+                    let j = group_end(bytes, i);
+                    if j >= bytes.len() || bytes[j] == b'.' {
+                        prefix_end = Some(i);
+                        break;
+                    }
+                    i += 1;
+                }
+                b'<' => return text[..i].to_string(),
+                _ => i += 1,
+            }
+        }
+        let Some(prefix_end) = prefix_end else {
+            return text.to_string();
+        };
+        let mut result = String::from(&text[..prefix_end]);
+        let mut i = prefix_end;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => {
+                    let j = group_end(bytes, i);
+                    if j >= bytes.len() || bytes[j] == b'.' {
+                        i = j;
+                    } else {
+                        result.push('(');
+                        i += 1;
+                    }
+                }
+                b'<' => break,
+                _ => {
+                    let start = i;
+                    while i < bytes.len() && !matches!(bytes[i], b'(' | b'<') {
+                        i += 1;
+                    }
+                    result.push_str(&text[start..i]);
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn normalize_chained_call_matches_reference_scan() {
+        // Hand-picked shapes: nested groups, unmatched and stray parens,
+        // `<` inside and after groups, callback bodies in the chain.
+        let cases = [
+            "",
+            "a",
+            "(",
+            ")",
+            "()",
+            "(.",
+            ").(",
+            "f(x)",
+            "f(x).g",
+            "f(g(x)).h(y)",
+            "f(g(x).h)(y)",
+            "f(a(b(c)))z",
+            "f(a(b(c)).d)z",
+            "f((x)",
+            "f(x))).g",
+            "a.b(c<d>).e",
+            "a<b>(c).d",
+            "a(b<c).d",
+            "a(b(c<d).e)f",
+            "items.filter(function(x){ return g(x).h; }).map",
+            "wrap(function(){ a(b(c)).d(); }).then",
+            "Vec::<u8>::new().len",
+            "s.parse::<u32>().unwrap",
+            "x.y().🦀_id(z).w",
+        ];
+        for c in cases {
+            assert_eq!(
+                normalize_chained_call(c).as_ref(),
+                normalize_chained_call_reference(c),
+                "input {c:?}"
+            );
+        }
+        // Every string up to length 6 over a small alphabet that exercises
+        // all the bytes the scan reacts to.
+        let alphabet = ['(', ')', '.', '<', 'a'];
+        for len in 0..=6u32 {
+            for code in 0..alphabet.len().pow(len) {
+                let s: String = (0..len)
+                    .map(|d| alphabet[(code / alphabet.len().pow(d)) % alphabet.len()])
+                    .collect();
+                assert_eq!(
+                    normalize_chained_call(&s).as_ref(),
+                    normalize_chained_call_reference(&s),
+                    "input {s:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn normalize_chained_call_preserves_utf8_after_collapse() {
         // Greek lowercase letters are 2-byte UTF-8 sequences.  The slow
@@ -3184,10 +3695,9 @@ mod tests {
 
     #[test]
     fn classify_go_user_client_get_is_not_ssrf_sink() {
-        // `client.Get` on a user-named *http.Client variable should NOT
-        // match, the Go SSRF set is restricted to the stdlib package
-        // helper `http.DefaultClient`. Type-aware resolution would be the
-        // path to a broader rule, not a bare-name match.
+        // `client.Get` on a user-named *http.Client variable does not match
+        // by name.  A client is reached through its declared type instead:
+        // the `HttpClient.*` gates (see `go_typed_client_gates_split_url_and_body`).
         let result = classify("go", "client.Get", None);
         assert_eq!(result, None);
     }
@@ -3932,22 +4442,150 @@ mod tests {
         let rules = go::framework_rules(&ctx);
         let extras = rules.to_vec();
 
-        assert_eq!(
-            classify("go", "c.String", Some(&extras)),
-            Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
-        );
+        // `c.HTML` / `c.HTMLBlob` write raw HTML.
         assert_eq!(
             classify("go", "c.HTML", Some(&extras)),
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
         assert_eq!(
-            classify("go", "c.JSON", Some(&extras)),
+            classify("go", "c.HTMLBlob", Some(&extras)),
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
+        // `c.String` is text/plain and `c.JSON` is HTML-escaped JSON.
+        assert_eq!(classify("go", "c.String", Some(&extras)), None);
+        assert_eq!(classify("go", "c.JSON", Some(&extras)), None);
 
         // Without Echo framework, these should not match
         let empty = go::framework_rules(&FrameworkContext::default());
-        assert_eq!(classify("go", "c.String", Some(&empty)), None);
+        assert_eq!(classify("go", "c.HTML", Some(&empty)), None);
+    }
+
+    #[test]
+    fn classify_go_gin_responses_are_not_html_sinks() {
+        use crate::utils::project::{DetectedFramework, FrameworkContext};
+
+        let ctx = FrameworkContext {
+            frameworks: vec![DetectedFramework::Gin],
+            inspected_langs: std::collections::HashSet::new(),
+        };
+        let extras = go::framework_rules(&ctx);
+        // `c.String` is text/plain; `c.HTML(code, name, obj)` executes a
+        // named html/template, which escapes `obj`.
+        assert_eq!(classify("go", "c.String", Some(&extras)), None);
+        assert_eq!(classify("go", "c.HTML", Some(&extras)), None);
+        assert_eq!(
+            classify("go", "c.Query", Some(&extras)),
+            Some(DataLabel::Source(Cap::all()))
+        );
+    }
+
+    #[test]
+    fn classify_go_response_writers_and_json_marshal() {
+        for writer in [
+            "fmt.Fprintf",
+            "fmt.Fprint",
+            "fmt.Fprintln",
+            "io.WriteString",
+        ] {
+            assert_eq!(
+                classify("go", writer, None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+                "{writer}"
+            );
+        }
+        assert_eq!(
+            classify("go", "HttpResponse.Write", None),
+            Some(DataLabel::Sink(Cap::HTML_ESCAPE))
+        );
+        // Bare `w.Write` has no label: only a typed receiver resolves.
+        assert_eq!(classify("go", "w.Write", None), None);
+        assert_eq!(
+            classify("go", "json.Marshal", None),
+            Some(DataLabel::Sanitizer(Cap::HTML_ESCAPE))
+        );
+        assert_eq!(classify("go", "json.Unmarshal", None), None);
+    }
+
+    #[test]
+    fn classify_go_router_params_are_sources() {
+        for src in ["mux.Vars", "chi.URLParam", "chi.URLParamFromCtx"] {
+            assert_eq!(
+                classify("go", src, None),
+                Some(DataLabel::Source(Cap::all())),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_go_command_context_and_serve_file_gates() {
+        let gate = |callee: &str| {
+            classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                .into_iter()
+                .map(|g| (g.label, g.payload_args.to_vec()))
+                .collect::<Vec<_>>()
+        };
+        // The context at arg 0 is not part of the command.
+        let cmd = gate("exec.CommandContext");
+        assert_eq!(cmd.len(), 1);
+        assert_eq!(cmd[0].0, DataLabel::Sink(Cap::SHELL_ESCAPE));
+        assert!(!cmd[0].1.contains(&0));
+        assert!(cmd[0].1.contains(&1) && cmd[0].1.contains(&2));
+        assert_eq!(
+            gate("http.ServeFile"),
+            vec![(DataLabel::Sink(Cap::FILE_IO), vec![2])]
+        );
+    }
+
+    #[test]
+    fn go_typed_client_gates_split_url_and_body() {
+        let gates = |callee: &str| {
+            let mut out: Vec<(DataLabel, Vec<usize>)> =
+                classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                    .into_iter()
+                    .map(|g| (g.label, g.payload_args.to_vec()))
+                    .collect();
+            out.sort_by_key(|(_, p)| p.clone());
+            out
+        };
+        assert_eq!(
+            gates("HttpClient.Post"),
+            vec![
+                (DataLabel::Sink(Cap::SSRF), vec![0]),
+                (DataLabel::Sink(Cap::DATA_EXFIL), vec![2]),
+            ]
+        );
+        assert_eq!(
+            gates("HttpClient.Do"),
+            vec![(DataLabel::Sink(Cap::DATA_EXFIL), vec![0])]
+        );
+        // Case-sensitive: a lowercase `.get` on an untyped receiver never
+        // matches, and the bare user-named receiver has no gate.
+        assert!(gates("httpclient.get").is_empty());
+        assert!(gates("client.Get").is_empty());
+    }
+
+    #[test]
+    fn go_typed_formals_alias_to_type_qualified_rules() {
+        clear_receiver_aliases();
+        {
+            let _frame = push_receiver_aliases(vec![
+                ("w".to_string(), Some("HttpResponse")),
+                ("c".to_string(), Some("HttpClient")),
+            ]);
+            assert_eq!(
+                classify("go", "w.Write", None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE))
+            );
+            let ssrf = classify_gated_sink("go", "c.Get", |_| None, |_| None, |_| false);
+            assert_eq!(ssrf.len(), 1);
+            assert_eq!(ssrf[0].label, DataLabel::Sink(Cap::SSRF));
+            assert_eq!(ssrf[0].payload_args, &[0]);
+            assert_eq!(receiver_alias_prefix("w"), Some("HttpResponse"));
+            assert_eq!(receiver_alias_prefix("other"), None);
+        }
+        assert_eq!(classify("go", "w.Write", None), None);
+        assert!(classify_gated_sink("go", "c.Get", |_| None, |_| None, |_| false).is_empty());
     }
 
     #[test]
@@ -3973,8 +4611,18 @@ mod tests {
             Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
         );
         assert_eq!(
+            classify("javascript", "ctx.response.body", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+        );
+        // A redirect navigates the browser (open redirect, not SSRF); header
+        // setters are CRLF-injection sinks, not XSS sinks.
+        assert_eq!(
             classify("javascript", "ctx.redirect", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
+        );
+        assert_eq!(
+            classify("javascript", "ctx.set", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HEADER_INJECTION)),
         );
 
         let empty = javascript::framework_rules(&FrameworkContext::default());
@@ -4001,7 +4649,11 @@ mod tests {
         );
         assert_eq!(
             classify("typescript", "reply.redirect", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
+        );
+        assert_eq!(
+            classify("typescript", "reply.header", Some(&extras)),
+            Some(DataLabel::Sink(Cap::HEADER_INJECTION)),
         );
 
         let empty = typescript::framework_rules(&FrameworkContext::default());
@@ -4110,5 +4762,214 @@ mod tests {
             classify("rust", "Redirect::to(next)", Some(&extras)),
             Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
+    }
+    fn sink_caps_of(labels: &[DataLabel]) -> Cap {
+        labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        })
+    }
+
+    #[test]
+    fn python_redirect_is_open_redirect_not_ssrf() {
+        let caps = sink_caps_of(&classify_all("python", "redirect", None));
+        assert!(caps.contains(Cap::OPEN_REDIRECT));
+        assert!(!caps.contains(Cap::SSRF));
+    }
+
+    #[test]
+    fn python_exec_is_a_sink_only_as_the_builtin() {
+        let sink = |text: &str| {
+            classify_all("python", text, None).contains(&DataLabel::Sink(Cap::CODE_EXEC))
+        };
+        assert!(sink("exec"));
+        assert!(sink("builtins.exec"));
+        // ORM and UI methods named `exec`.
+        assert!(!sink("session.exec"));
+        assert!(!sink("self.session.exec"));
+        assert!(!sink("QDialog.exec"));
+        // `eval` stays a suffix match: `df.eval` and `redis.eval` evaluate their argument.
+        assert!(sink("eval"));
+        assert!(sink("df.eval"));
+    }
+
+    #[test]
+    fn python_getoutput_helpers_are_shell_sinks() {
+        for callee in ["subprocess.getoutput", "subprocess.getstatusoutput"] {
+            assert!(
+                classify_all("python", callee, None).contains(&DataLabel::Sink(Cap::SHELL_ESCAPE)),
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_request_param_accessors_are_sources() {
+        for text in [
+            "request.query_params",
+            "request.path_params",
+            "request.view_args",
+            "self.request.query_params",
+        ] {
+            assert_eq!(
+                classify("python", text, None),
+                Some(DataLabel::Source(Cap::all())),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_render_calls_sanitize_html_but_template_source_does_not() {
+        let html = DataLabel::Sanitizer(Cap::HTML_ESCAPE);
+        assert!(classify_all("python", "render_template", None).contains(&html));
+        assert!(classify_all("python", "flask.render_template", None).contains(&html));
+        assert!(classify_all("python", "render_to_string", None).contains(&html));
+        let ssti = classify_all("python", "render_template_string", None);
+        assert!(!ssti.contains(&html));
+        assert!(ssti.contains(&DataLabel::Sink(Cap::CODE_EXEC)));
+    }
+
+    /// Publishes `imports` as the active Python import view while `f` runs.
+    fn with_python_imports<R>(imports: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+        let map: std::collections::HashMap<String, String> = imports
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        crate::ssa::type_facts::with_file_imports(Some(&map), f)
+    }
+
+    #[test]
+    fn python_from_import_names_classify_as_their_qualified_callee() {
+        // Without the view the bare names match nothing.
+        assert!(classify_all("python", "check_output", None).is_empty());
+        assert!(classify_all("python", "escape", None).is_empty());
+        with_python_imports(
+            &[
+                ("check_output", "subprocess.check_output"),
+                ("escape", "html.escape"),
+                ("quote", "shlex.quote"),
+                ("co", "subprocess.check_output"),
+                ("sp", "subprocess"),
+            ],
+            || {
+                let sink = |t: &str| sink_caps_of(&classify_all("python", t, None));
+                assert!(sink("check_output").contains(Cap::SHELL_ESCAPE));
+                // Aliased binding and aliased module.
+                assert!(sink("co").contains(Cap::SHELL_ESCAPE));
+                assert!(sink("sp.check_output").contains(Cap::SHELL_ESCAPE));
+                assert!(
+                    classify_all("python", "escape", None)
+                        .contains(&DataLabel::Sanitizer(Cap::HTML_ESCAPE))
+                );
+                assert!(
+                    classify_all("python", "quote", None)
+                        .contains(&DataLabel::Sanitizer(Cap::SHELL_ESCAPE))
+                );
+                // The written spelling keeps every label it had.
+                assert!(sink("subprocess.check_output").contains(Cap::SHELL_ESCAPE));
+                // Names that are not import bindings are unaffected.
+                assert!(classify_all("python", "helper", None).is_empty());
+                // `classify` agrees with `classify_all`.
+                assert_eq!(
+                    classify("python", "check_output", None),
+                    Some(DataLabel::Sink(Cap::SHELL_ESCAPE))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn python_import_view_does_not_leak_into_other_languages() {
+        with_python_imports(&[("check_output", "subprocess.check_output")], || {
+            assert!(classify_all("ruby", "check_output", None).is_empty());
+            assert!(classify_all("javascript", "check_output", None).is_empty());
+        });
+    }
+
+    #[test]
+    fn python_from_import_names_pick_up_gated_sinks() {
+        let gated = |text: &str, shell: &'static str| {
+            classify_gated_sink(
+                "python",
+                text,
+                |_| None,
+                move |kw| (kw == "shell").then(|| shell.to_string()),
+                |kw| kw == "shell",
+            )
+        };
+        assert!(gated("run", "True").is_empty());
+        with_python_imports(&[("run", "subprocess.run")], || {
+            assert!(!gated("run", "True").is_empty());
+            assert!(gated("run", "False").is_empty());
+        });
+    }
+
+    #[test]
+    fn go_request_receiver_alias_scopes_classification() {
+        clear_receiver_aliases();
+        assert_eq!(classify("go", "req.Header.Get", None), None);
+        {
+            let _outer = push_receiver_aliases(vec![
+                ("w".to_string(), None),
+                (
+                    "req".to_string(),
+                    go_request_receiver_prefix("*http.Request"),
+                ),
+            ]);
+            assert_eq!(
+                classify("go", "req.Header.Get", None),
+                Some(DataLabel::Source(Cap::all()))
+            );
+            assert!(
+                classify_all("go", "req.URL.Query().Get", None)
+                    .contains(&DataLabel::Source(Cap::all()))
+            );
+            // Bare identifiers and non-identifier roots are never aliased.
+            assert_eq!(aliased_receiver_text("req"), None);
+            assert_eq!(aliased_receiver_text("x := req.Body"), None);
+            {
+                // An inner closure formal of another type shadows `req`.
+                let _inner = push_receiver_aliases(vec![("req".to_string(), None)]);
+                assert_eq!(classify("go", "req.Header.Get", None), None);
+            }
+            assert_eq!(
+                aliased_receiver_text("req.Body").as_deref(),
+                Some("Request.Body")
+            );
+        }
+        assert_eq!(classify("go", "req.Header.Get", None), None);
+        // A frame without typed formals is not pushed onto an empty stack.
+        let untyped = push_receiver_aliases(vec![("req".to_string(), None)]);
+        assert!(!untyped.pushed);
+    }
+
+    #[test]
+    fn go_request_receiver_prefix_maps_declared_types() {
+        assert_eq!(go_request_receiver_prefix("*http.Request"), Some("Request"));
+        assert_eq!(go_request_receiver_prefix("http.Request"), Some("Request"));
+        assert_eq!(
+            go_request_receiver_prefix("* gin.Context"),
+            Some("GinContext")
+        );
+        assert_eq!(
+            go_request_receiver_prefix("echo.Context"),
+            Some("EchoContext")
+        );
+        assert_eq!(go_request_receiver_prefix("context.Context"), None);
+        assert_eq!(go_request_receiver_prefix("*http.Response"), None);
+    }
+
+    #[test]
+    fn go_binders_are_output_param_sources() {
+        assert_eq!(
+            output_param_source_positions("go", "c.ShouldBindJSON"),
+            Some(&[0usize][..])
+        );
+        assert_eq!(
+            output_param_source_positions("go", "ctx.BindQuery"),
+            Some(&[0usize][..])
+        );
+        assert_eq!(output_param_source_positions("go", "c.Query"), None);
     }
 }

@@ -1,0 +1,37 @@
+{
+  "description": "PHP file writes are path-traversal sinks on their path arguments only: file_put_contents arg 0, copy both paths, move_uploaded_file the destination; fwrite writes to a handle and is not a path sink.",
+  "tags": ["taint", "path-traversal", "php"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [3, 5],
+      "notes": "content written to fixed files / an open handle"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [10, 10],
+      "notes": "file_put_contents('/var/www/uploads/' . $_GET['name'], ...)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [11, 11],
+      "notes": "move_uploaded_file destination from $_POST"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "copy($_GET['from'], ...)"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [16, 16],
+      "notes": "upload moved to a fixed destination"
+    }
+  ]
+}

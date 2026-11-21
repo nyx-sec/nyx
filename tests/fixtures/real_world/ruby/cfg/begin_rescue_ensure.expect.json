@@ -28,11 +28,9 @@
     },
     {
       "rule_id": "state-resource-leak-possible",
-      "severity": "LOW",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [2, 2],
-      "evidence_contains": [],
-      "notes": "noise: state engine does not yet model Ruby ensure blocks; possible-leak is conservative — aspirational suppression"
+      "notes": "the ensure clause closes the file and runs on the return path of the begin body (regression guard)"
     },
     {
       "rule_id": "taint-unsanitised-flow",

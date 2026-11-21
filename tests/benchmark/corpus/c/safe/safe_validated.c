@@ -4,7 +4,7 @@
 
 int main() {
     char *path = getenv("FILE_PATH");
-    if (strstr(path, "..") != NULL) {
+    if (strstr(path, "..") != NULL || path[0] == '/') {
         return 1;
     }
     FILE *fp = fopen(path, "r");

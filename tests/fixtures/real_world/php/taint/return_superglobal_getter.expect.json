@@ -1,0 +1,49 @@
+{
+  "description": "A helper that returns $_GET['host'] is a source for its callers; a getter of a constant is not.",
+  "tags": [
+    "taint",
+    "interproc",
+    "getter",
+    "superglobal",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "requested_host returns $_GET['host']"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        15,
+        18
+      ],
+      "notes": "fixed_host returns a constant"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        10,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on system()"
+    }
+  ]
+}

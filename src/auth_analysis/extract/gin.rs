@@ -15,9 +15,7 @@ pub struct GinExtractor;
 
 impl AuthExtractor for GinExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
-        lang == "go"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Gin))
+        lang == "go" && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Gin))
     }
 
     fn extract(

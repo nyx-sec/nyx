@@ -14,38 +14,41 @@ import (
 // whether the SSA terminator uses the classic cascade or the
 // Terminator::Switch variant.
 //
-// The user input `r.URL.Query().Get("q")` taints `action` and then flows
-// into a different dangerous sink per switch case. Cases are mutually
-// exclusive (Go switch has no implicit fall-through) so the Switch
-// terminator is a natural fit.
+// The user input `r.URL.Query().Get("q")` picks the case and a second
+// input, `target`, flows into a different dangerous sink per switch case.
+// Switching on `action` itself would not do: inside `case "login":` the
+// value is the literal "login", so no case would carry attacker data.
+// Cases are mutually exclusive (Go switch has no implicit fall-through) so
+// the Switch terminator is a natural fit.
 
 var db *sql.DB
 
 func dispatch(w http.ResponseWriter, r *http.Request) {
 	action := r.URL.Query().Get("q")
+	target := r.URL.Query().Get("target")
 
 	switch action {
 	case "login":
-		// SQL injection — action flows into a raw query.
-		db.Query("SELECT * FROM users WHERE name = '" + action + "'")
+		// SQL injection — target flows into a raw query.
+		db.Query("SELECT * FROM users WHERE name = '" + target + "'")
 	case "ping":
 		// Command injection via exec.
-		exec.Command("sh", "-c", "ping "+action).Run()
+		exec.Command("sh", "-c", "ping "+target).Run()
 	case "render":
 		// XSS: reflected back to response writer.
-		fmt.Fprintf(w, "<div>%s</div>", action)
+		fmt.Fprintf(w, "<div>%s</div>", target)
 	case "read":
 		// Path traversal: open an attacker-controlled file.
-		os.Open(action)
+		os.Open(target)
 	case "env":
 		// Environment tampering.
-		os.Setenv(action, "1")
+		os.Setenv(target, "1")
 	case "log":
 		// Log injection via %s echo of tainted input.
-		fmt.Fprintf(os.Stderr, "%s", action)
+		fmt.Fprintf(os.Stderr, "%s", target)
 	case "stream":
 		// Additional SSRF-shaped HTTP fetch.
-		http.Get(action)
+		http.Get(target)
 	default:
 		fmt.Fprint(w, "unknown")
 	}

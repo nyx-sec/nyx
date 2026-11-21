@@ -437,12 +437,27 @@ engine version changed (<old> → <new>), rebuilding index
 If you see this once per upgrade it is working as intended. If you see it on
 every scan, the metadata row is not being persisted; file an issue.
 
+### Settings changes are handled automatically
+
+Cached summaries depend on more than a file's bytes. The index also records
+a key built from the settings that change per-file results: custom label
+rules (`[analysis.languages.*]`), engine and detector options, the analysis
+mode, `min_severity`, `include_nonprod`, the state/auth switches, the
+frameworks detected from project manifests, and the build of the binary
+itself (a hash of the engine sources, so rebuilt development binaries with
+the same version number count as different engines). When the key differs
+from the one stored in the index, the cached per-file results are dropped
+and every file is analysed again. The rebuild is logged at `info` level:
+
+```
+analysis settings changed, dropping cached summaries
+```
+
 ### Forcing a reindex
 
 Use `--index rebuild` to throw away the current project's cached summaries
-and re-run pass 1 against the current rules. Useful after editing
-`nyx.local` rules, after an upgrade that changed label definitions without
-changing the engine version, or when you want a known-clean baseline:
+and re-run pass 1 against the current rules. Useful when you want a
+known-clean baseline:
 
 ```bash
 nyx scan --index rebuild .

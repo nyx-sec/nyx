@@ -136,6 +136,11 @@ impl SymbolInterner {
             if let Some(ref d) = info.taint.defines {
                 interner.intern_scoped(scope, d);
             }
+            // Secondary defines (Go `f, err := os.Open(p)` binds `err`
+            // here) so the error-companion pairing can name them.
+            for d in &info.taint.extra_defines {
+                interner.intern_scoped(scope, d);
+            }
             for u in &info.taint.uses {
                 interner.intern_scoped(scope, u);
             }

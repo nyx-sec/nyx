@@ -1,0 +1,42 @@
+{
+  "description": "Reflected XSS through the direct writers on an http.ResponseWriter: w.Write, fmt.Fprint, fmt.Fprintln and io.WriteString.  The writer formal is recognised by its declared type, whatever it is named.",
+  "tags": ["taint", "xss", "go", "response-writer"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [11, 11],
+      "notes": "w.Write on a formal declared http.ResponseWriter"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [15, 15],
+      "notes": "rw.Write with the source inline in the argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [20, 20],
+      "notes": "fmt.Fprint to the response writer"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [25, 25],
+      "notes": "fmt.Fprintln to the response writer"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [30, 30],
+      "notes": "io.WriteString to the response writer"
+    }
+  ]
+}
