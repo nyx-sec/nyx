@@ -648,40 +648,27 @@ fn run_ssa_taint_internal(
     if let Some(ref mut entry_state) = block_states[ssa.entry.0 as usize] {
         if let Some(ref mut abs) = entry_state.abstract_state {
             if let Some(cv) = transfer.const_values {
-                // COW fork: only deep-copy the shared AbstractState when there
-                // are const values to seed (an entry block with no const-prop
-                // facts keeps sharing its `initial()` Arc).
-                let abs = Arc::make_mut(abs);
-                use crate::abstract_interp::{
-                    AbstractValue, BitFact, IntervalFact, PathFact, StringFact,
-                };
+                use crate::abstract_interp::{AbstractValue, ConstFacts};
                 use crate::ssa::const_prop::ConstLattice;
+                // The body's constants go into one table shared by every
+                // block's state, not into each state's own entries: they are
+                // fixed per body, so copying them would only crowd out the
+                // facts the flow derives.
+                let mut facts: Vec<(SsaValue, AbstractValue)> = Vec::new();
                 for (v, cl) in cv.iter() {
                     match cl {
-                        ConstLattice::Int(n) => {
-                            abs.set(
-                                v,
-                                AbstractValue {
-                                    interval: IntervalFact::exact(*n),
-                                    string: StringFact::top(),
-                                    bits: BitFact::from_const(*n),
-                                    path: PathFact::top(),
-                                },
-                            );
-                        }
-                        ConstLattice::Str(s) => {
-                            abs.set(
-                                v,
-                                AbstractValue {
-                                    interval: IntervalFact::top(),
-                                    string: StringFact::exact(s),
-                                    bits: BitFact::top(),
-                                    path: PathFact::top(),
-                                },
-                            );
-                        }
+                        ConstLattice::Int(n) => facts.push((v, int_const_value(*n))),
+                        ConstLattice::Str(s) => facts.push((v, string_const_value(s))),
                         _ => {}
                     }
+                }
+                if !facts.is_empty() {
+                    // COW fork: an entry block with no const-prop facts keeps
+                    // sharing its `initial()` Arc.
+                    let abs = Arc::make_mut(abs);
+                    let seeded = std::mem::replace(abs, AbstractState::empty())
+                        .with_constants(Arc::new(ConstFacts::from_facts(facts)));
+                    *abs = seeded;
                 }
             }
             // Static-map seeding is intentionally NOT fused into the
@@ -8050,6 +8037,46 @@ fn url_builder_path_fact(
         .unwrap_or_else(StringFact::top)
 }
 
+/// Abstract value of an integer constant.
+fn int_const_value(n: i64) -> crate::abstract_interp::AbstractValue {
+    use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
+    AbstractValue {
+        interval: IntervalFact::exact(n),
+        string: StringFact::top(),
+        bits: BitFact::from_const(n),
+        path: PathFact::top(),
+    }
+}
+
+/// Abstract value of a string constant.
+///
+/// The PathFact axes come from the *literal* content.  An empty string has no
+/// `..` segment and no absolute root, both axes proven safe, so a Const `""`
+/// (Python / JS / TS / Java rejection-arm sentinel) carries a path-safe fact
+/// even without a per-language allocator recogniser like Rust's
+/// `String::new()`.  Non-empty literals also surface their own
+/// dotdot/absolute axes when the literal text proves them.
+///
+/// The `Const` transfer and the body's constant table both build their facts
+/// here, so the table entry equals what the transfer would store and the
+/// state does not keep a copy of it.
+fn string_const_value(s: &str) -> crate::abstract_interp::AbstractValue {
+    use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
+    let mut pf = PathFact::top();
+    if !s.contains("..") {
+        pf = pf.with_dotdot_cleared();
+    }
+    if !(s.starts_with('/') || s.starts_with('\\')) {
+        pf = pf.with_absolute_cleared();
+    }
+    AbstractValue {
+        interval: IntervalFact::top(),
+        string: StringFact::exact(s),
+        bits: BitFact::top(),
+        path: pf,
+    }
+}
+
 /// Compute abstract values for an SSA instruction.
 ///
 /// Propagates interval and string domain facts forward through constants,
@@ -8077,42 +8104,12 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
     match &inst.op {
         SsaOp::Const(Some(text)) => {
             let trimmed = text.trim();
-            // Try integer
             if let Ok(n) = trimmed.parse::<i64>() {
-                abs.set(
-                    inst.value,
-                    AbstractValue {
-                        interval: IntervalFact::exact(n),
-                        string: StringFact::top(),
-                        bits: BitFact::from_const(n),
-                        path: PathFact::top(),
-                    },
-                );
+                abs.set(inst.value, int_const_value(n));
             } else if is_string_const(trimmed) {
-                let s = strip_string_quotes(trimmed);
-                // String literal: derive PathFact axes from the *literal*
-                // content.  An empty string has no `..` segment and no
-                // absolute root, both axes proven safe, so a Const `""`
-                // (Python / JS / TS / Java rejection-arm sentinel) carries a
-                // path-safe fact even without a per-language allocator
-                // recogniser like Rust's `String::new()`.  Non-empty
-                // literals also surface their own dotdot/absolute axes
-                // when the literal text proves them.
-                let mut pf = PathFact::top();
-                if !s.contains("..") {
-                    pf = pf.with_dotdot_cleared();
-                }
-                if !(s.starts_with('/') || s.starts_with('\\')) {
-                    pf = pf.with_absolute_cleared();
-                }
                 abs.set(
                     inst.value,
-                    AbstractValue {
-                        interval: IntervalFact::top(),
-                        string: StringFact::exact(&s),
-                        bits: BitFact::top(),
-                        path: pf,
-                    },
+                    string_const_value(&strip_string_quotes(trimmed)),
                 );
             }
             // Bool/Null/other: leave as Top
