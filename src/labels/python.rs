@@ -666,7 +666,8 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // produce a DATA_EXFIL finding.
     // Flask `send_from_directory(directory, path)` runs `path` through
     // werkzeug's `safe_join`, which rejects `..` and absolute paths, so only a
-    // tainted `directory` is a file-read sink.
+    // tainted `directory` is a file-read sink, given positionally or as
+    // the `directory=` keyword.
     SinkGate {
         callee_matcher: "send_from_directory",
         arg_index: 0,
@@ -678,7 +679,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: &["directory"],
         },
     },
     // `requests.get` / `head` and `httpx.get` / `head`: the URL is the first
