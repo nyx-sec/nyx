@@ -21,7 +21,7 @@
     },
     {
       "rule_id": "state-resource-leak",
-      "severity": "LOW",
+      "severity": "MEDIUM",
       "must_not_match": true,
       "line_range": [16, 16],
       "notes": "processUserFileSafe uses try/finally — state-resource-leak must NOT fire (regression guard for TS finally tracking)"

@@ -18,6 +18,15 @@
       ],
       "evidence_contains": [],
       "notes": "FileInputStream fis opened on line 5 and never closed before return on line 8"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        21
+      ],
+      "notes": "readAndClose returns inside try and closes in finally: the finally clause runs on the return path (regression guard)"
     }
   ]
 }

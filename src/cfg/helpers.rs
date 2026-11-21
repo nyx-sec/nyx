@@ -286,59 +286,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
     for c in n.children(&mut cursor) {
         match lookup(lang, c.kind()) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
-                let span = (c.start_byte(), c.end_byte());
-                // C++ new/delete: normalize callee before returning.
-                if lang == "cpp" && c.kind() == "new_expression" {
-                    return Some(("new".to_string(), span));
-                }
-                if lang == "cpp" && c.kind() == "delete_expression" {
-                    return Some(("delete".to_string(), span));
-                }
-                // Ruby backtick subshell: no `function` field, normalise to
-                // the synthetic callee so assignment-wrapped subshells classify.
-                if lang == "ruby" && c.kind() == "subshell" {
-                    return Some(("subshell".to_string(), span));
-                }
-                let ident = match lookup(lang, c.kind()) {
-                    Kind::CallFn => c
-                        .child_by_field_name("function")
-                        .or_else(|| c.child_by_field_name("method"))
-                        .or_else(|| c.child_by_field_name("name"))
-                        .or_else(|| c.child_by_field_name("type"))
-                        .or_else(|| c.child_by_field_name("constructor"))
-                        // Fallback for constructors whose grammar lacks field names
-                        // (e.g. PHP `object_creation_expression` has positional children).
-                        .or_else(|| find_constructor_type_child(c))
-                        .and_then(|f| {
-                            let unwrapped = unwrap_parens(f);
-                            if lookup(lang, unwrapped.kind()) == Kind::Function {
-                                Some(anon_fn_name(unwrapped.start_byte()))
-                            } else {
-                                text_of(f, code)
-                            }
-                        }),
-                    Kind::CallMethod => {
-                        let func = c
-                            .child_by_field_name("method")
-                            .or_else(|| c.child_by_field_name("name"))
-                            .and_then(|f| text_of(f, code));
-                        let recv = c
-                            .child_by_field_name("object")
-                            .or_else(|| c.child_by_field_name("receiver"))
-                            .or_else(|| c.child_by_field_name("scope"))
-                            .and_then(|f| root_receiver_text(f, lang, code));
-                        match (recv, func) {
-                            (Some(r), Some(f)) => Some(format!("{r}.{f}")),
-                            (_, Some(f)) => Some(f),
-                            _ => None,
-                        }
-                    }
-                    Kind::CallMacro => c
-                        .child_by_field_name("macro")
-                        .and_then(|f| text_of(f, code)),
-                    _ => None,
-                };
-                return ident.map(|s| (s, span));
+                return call_node_ident_with_span(c, lang, code);
             }
             Kind::Function => {
                 // Do not descend into nested function/lambda bodies ,
@@ -355,6 +303,83 @@ pub(crate) fn first_call_ident_with_span<'a>(
         }
     }
     None
+}
+
+/// [`first_call_ident_with_span`] that also accepts `n` being the call
+/// itself, as a bare call condition is (`if os.system(cmd):`, Go
+/// `if f(x) {`, Ruby `if system(cmd)`).
+pub(crate) fn call_ident_at_or_under<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Option<(String, (usize, usize))> {
+    match lookup(lang, n.kind()) {
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
+            call_node_ident_with_span(n, lang, code)
+        }
+        _ => first_call_ident_with_span(n, lang, code),
+    }
+}
+
+/// Callee identifier and byte span of the call / method / macro node `c`.
+fn call_node_ident_with_span<'a>(
+    c: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Option<(String, (usize, usize))> {
+    let span = (c.start_byte(), c.end_byte());
+    // C++ new/delete: normalize callee before returning.
+    if lang == "cpp" && c.kind() == "new_expression" {
+        return Some(("new".to_string(), span));
+    }
+    if lang == "cpp" && c.kind() == "delete_expression" {
+        return Some(("delete".to_string(), span));
+    }
+    // Ruby backtick subshell: no `function` field, normalise to
+    // the synthetic callee so assignment-wrapped subshells classify.
+    if lang == "ruby" && c.kind() == "subshell" {
+        return Some(("subshell".to_string(), span));
+    }
+    let ident = match lookup(lang, c.kind()) {
+        Kind::CallFn => c
+            .child_by_field_name("function")
+            .or_else(|| c.child_by_field_name("method"))
+            .or_else(|| c.child_by_field_name("name"))
+            .or_else(|| c.child_by_field_name("type"))
+            .or_else(|| c.child_by_field_name("constructor"))
+            // Fallback for constructors whose grammar lacks field names
+            // (e.g. PHP `object_creation_expression` has positional children).
+            .or_else(|| find_constructor_type_child(c))
+            .and_then(|f| {
+                let unwrapped = unwrap_parens(f);
+                if lookup(lang, unwrapped.kind()) == Kind::Function {
+                    Some(anon_fn_name(unwrapped.start_byte()))
+                } else {
+                    text_of(f, code)
+                }
+            }),
+        Kind::CallMethod => {
+            let func = c
+                .child_by_field_name("method")
+                .or_else(|| c.child_by_field_name("name"))
+                .and_then(|f| text_of(f, code));
+            let recv = c
+                .child_by_field_name("object")
+                .or_else(|| c.child_by_field_name("receiver"))
+                .or_else(|| c.child_by_field_name("scope"))
+                .and_then(|f| root_receiver_text(f, lang, code));
+            match (recv, func) {
+                (Some(r), Some(f)) => Some(format!("{r}.{f}")),
+                (_, Some(f)) => Some(f),
+                _ => None,
+            }
+        }
+        Kind::CallMacro => c
+            .child_by_field_name("macro")
+            .and_then(|f| text_of(f, code)),
+        _ => None,
+    };
+    ident.map(|s| (s, span))
 }
 
 /// Convenience wrapper around [`first_call_ident_with_span`] that discards
@@ -1002,6 +1027,253 @@ pub(crate) fn has_call_descendant(n: Node, lang: &str) -> bool {
         }
     }
     false
+}
+
+/// Read-modify-write view of an assignment-like node.
+///
+/// Covers compound assignment (`x += y`, PHP `$x .= $y`, `x ??= y`, Ruby
+/// `x ||= y`, Java/C/Go `x <<= y`) and increment / decrement (`i++`, `--i`,
+/// Go `i++` statements).  The new value of `target` depends on its old value,
+/// so the node both reads and writes `target`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RmwAssign<'a> {
+    /// The assigned place (`x`, `obj.f`, `arr[i]`, `*p`).
+    pub target: Node<'a>,
+    /// Right-hand operand; `None` for `++` / `--`.
+    pub value: Option<Node<'a>>,
+    /// Operator token (`"+="`, `".="`, `"||="`, `"++"`, ...).
+    pub op: &'static str,
+}
+
+impl RmwAssign<'_> {
+    /// `||=`, `&&=`, `??=`: the result is either the old value or the
+    /// right-hand side, never a combination of the two.
+    pub(crate) fn is_logical(&self) -> bool {
+        matches!(self.op, "||=" | "&&=" | "??=")
+    }
+}
+
+/// Recognise `n` as a read-modify-write assignment.  Purely structural:
+/// keyed on the grammar's node kind plus its operator token, so a plain
+/// `x = y` (no operator field, or operator `=`) and Go's `x := y`
+/// (`short_var_declaration`) never match.
+pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
+    match n.kind() {
+        "update_expression" | "inc_statement" | "dec_statement" => {
+            let target = n
+                .child_by_field_name("argument")
+                .or_else(|| n.named_child(0))?;
+            let op = match n.kind() {
+                "inc_statement" => "++",
+                "dec_statement" => "--",
+                _ => {
+                    let mut cursor = n.walk();
+                    n.children(&mut cursor)
+                        .map(|c| c.kind())
+                        .find(|k| matches!(*k, "++" | "--"))?
+                }
+            };
+            Some(RmwAssign {
+                target,
+                value: None,
+                op,
+            })
+        }
+        "augmented_assignment_expression"
+        | "augmented_assignment"
+        | "compound_assignment_expr"
+        | "operator_assignment"
+        | "assignment_expression"
+        | "assignment_statement" => {
+            let op = n.child_by_field_name("operator")?.kind();
+            if matches!(op, "=" | ":=") {
+                return None;
+            }
+            Some(RmwAssign {
+                target: n.child_by_field_name("left")?,
+                value: n.child_by_field_name("right"),
+                op,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The read-modify-write assignment a CFG statement node stands for: `n`
+/// itself (Go / Ruby statements, `for` update clauses) or the single named
+/// child of a statement wrapper (`expression_statement`), which is how JS,
+/// TS, Python, PHP, Rust, Java and C/C++ wrap a statement-level `x += y`.
+/// Only nodes the language's KINDS table maps to `Kind::Assignment` count,
+/// matching what `def_use` treats as a definition.
+pub(crate) fn rmw_statement<'a>(n: Node<'a>, lang: &str) -> Option<RmwAssign<'a>> {
+    let node = match lookup(lang, n.kind()) {
+        Kind::Assignment => n,
+        Kind::CallWrapper if n.named_child_count() == 1 => n.named_child(0)?,
+        _ => return None,
+    };
+    if lookup(lang, node.kind()) != Kind::Assignment {
+        return None;
+    }
+    rmw_assignment(node)
+}
+
+/// Names a read-modify-write node reads from its own target, in the order
+/// `def_use` places them at the front of `uses`.  A member target reads its
+/// dotted path only (`el.innerHTML`), never the bare receiver idents it
+/// decomposes into: `el.innerHTML += "<b>"` does not read `el` as a value.
+/// Other targets (`x`, `arr[i]`, `*p`) read every identifier they mention.
+pub(crate) fn rmw_target_reads(target: Node, code: &[u8]) -> Vec<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    match paths.pop() {
+        Some(path) => vec![path],
+        None => idents,
+    }
+}
+
+/// The variable a read-modify-write node defines: the dotted path of a
+/// member target, otherwise the first identifier (the container of
+/// `arr[i] += x`, never the index).
+pub(crate) fn rmw_target_define(target: Node, code: &[u8]) -> Option<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    paths.pop().or_else(|| idents.into_iter().next())
+}
+
+/// True when `n` is itself a call or contains one.
+pub(crate) fn subtree_has_call(n: Node, lang: &str) -> bool {
+    matches!(
+        lookup(lang, n.kind()),
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+    ) || has_call_descendant(n, lang)
+}
+
+/// Condition expression of an `if` / `while` / `do` / elif-style node: the
+/// `condition` field, or for a grammar that leaves it positional the first
+/// child that is not a keyword, brace or block.
+pub(crate) fn find_condition_subtree<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
+    ast.child_by_field_name("condition").or_else(|| {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor).find(|c| {
+            let k = c.kind();
+            !matches!(lookup(lang, k), Kind::Block | Kind::Trivia)
+                && !matches!(k, "if" | "else" | "let" | "{" | "}" | "(" | ")")
+        })
+    })
+}
+
+/// Binding pattern and iterable of a for-each loop: JS `for (x of xs)`,
+/// Python / C++ `for x in xs`, Java `for (T x : xs)`, Rust / Ruby
+/// `for x in xs`, Go `for k, v := range xs`, PHP `foreach ($xs as $v)`.
+/// Both are `None` for a C-style three-clause loop.
+pub(crate) fn for_each_parts<'a>(
+    ast: Node<'a>,
+    lang: &str,
+) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    let mut left = ast.child_by_field_name("left");
+    let mut right = ast.child_by_field_name("right");
+    // Go keeps the pattern and iterable on a `range_clause` child.
+    if left.is_none() && right.is_none() {
+        let mut cursor = ast.walk();
+        if let Some(rc) = ast
+            .children(&mut cursor)
+            .find(|c| c.kind() == "range_clause")
+        {
+            left = rc.child_by_field_name("left");
+            right = rc.child_by_field_name("right");
+        }
+    }
+    // Java `enhanced_for_statement` (`name` / `value`), Ruby `for` and Rust
+    // `for_expression` (`pattern` / `value`).
+    if left.is_none() && right.is_none() {
+        if let Some(v) = ast.child_by_field_name("value") {
+            left = ast
+                .child_by_field_name("name")
+                .or_else(|| ast.child_by_field_name("pattern"));
+            right = Some(v);
+        }
+    }
+    // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`: the
+    // iterable and binding are unnamed children either side of `as`.
+    if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
+        let mut cursor = ast.walk();
+        let kids: Vec<Node> = ast.children(&mut cursor).collect();
+        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
+            right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
+            left = kids[as_pos + 1..]
+                .iter()
+                .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
+                .copied();
+        }
+    }
+    (left, right)
+}
+
+/// What a control-flow header node evaluates.  See [`control_header_expr`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HeaderExpr<'a> {
+    /// Branch or loop condition: `if`, elif, `while`, `do`, the condition of
+    /// a C-style `for`.
+    Condition(Node<'a>),
+    /// Iterable of a for-each loop.
+    Iterable(Node<'a>),
+    /// Nothing to evaluate: Rust `loop`, `for (;;)`, the switch fallback
+    /// header.
+    Empty,
+}
+
+impl<'a> HeaderExpr<'a> {
+    pub(crate) fn node(self) -> Option<Node<'a>> {
+        match self {
+            HeaderExpr::Condition(n) | HeaderExpr::Iterable(n) => Some(n),
+            HeaderExpr::Empty => None,
+        }
+    }
+}
+
+/// Header expression of an `if` / elif / loop / `switch` statement.
+///
+/// The builder pushes a branch or loop header node over the whole statement,
+/// but the node stands for this expression only: the branches and the loop
+/// body are lowered as nodes of their own.  Labels, call metadata and uses on
+/// a header come from here, never from the body.  `None` when `ast` is not
+/// such a statement.
+pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<HeaderExpr<'a>> {
+    let cond = |n: Option<Node<'a>>| Some(n.map_or(HeaderExpr::Empty, HeaderExpr::Condition));
+    if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
+        return cond(ast.child_by_field_name("condition"));
+    }
+    match lookup(lang, ast.kind()) {
+        Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
+        Kind::For => {
+            if let (_, Some(iter)) = for_each_parts(ast, lang) {
+                return Some(HeaderExpr::Iterable(iter));
+            }
+            if let Some(c) = ast.child_by_field_name("condition") {
+                return cond(Some(c));
+            }
+            // Go: the `for_clause` condition, or the bare condition of
+            // `for cond {}`.
+            if lang != "go" {
+                return cond(None);
+            }
+            let mut cursor = ast.walk();
+            let go_cond = ast
+                .named_children(&mut cursor)
+                .find_map(|c| match c.kind() {
+                    "for_clause" => c.child_by_field_name("condition"),
+                    "block" | "comment" => None,
+                    _ => Some(c),
+                });
+            cond(go_cond)
+        }
+        // `build_switch` lowers the scrutinee ahead of the dispatch, so its
+        // fallback header has nothing left to evaluate.
+        Kind::InfiniteLoop | Kind::Switch => Some(HeaderExpr::Empty),
+        _ => None,
+    }
 }
 
 /// Recursively collect identifiers AND full dotted member-expression paths.

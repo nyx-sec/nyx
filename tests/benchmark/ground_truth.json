@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 674
+    "corpus_size": 737
   },
   "cases": [
     {
@@ -21384,6 +21384,2119 @@
       ],
       "disabled": false,
       "notes": "Patched counterpart of cve-ruby-2023-26153-vulnerable: the fix replaces YAML.load with JSON.parse (safe, data-only), so no deserialization sink fires."
+    },
+    {
+      "case_id": "js-cmdi-compound-assign-001",
+      "file": "javascript/cmdi/vuln_plus_assign_rhs.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "rhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += req.query.dir` must define cmd from its old value and the appended query value; the augmented assignment used to define nothing."
+    },
+    {
+      "case_id": "js-xss-compound-assign-001",
+      "file": "javascript/xss/vuln_plus_assign_html_builder.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "html-builder"
+      ],
+      "disabled": false,
+      "notes": "HTML built with `+=` around a request value and sent with res.send."
+    },
+    {
+      "case_id": "js-safe-compound-assign-001",
+      "file": "javascript/safe/safe_plus_assign_literal_only.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "killed-taint"
+      ],
+      "disabled": false,
+      "notes": "The tainted value is overwritten with a literal before `+=` appends another literal; nothing user-controlled reaches exec."
+    },
+    {
+      "case_id": "js-safe-compound-assign-002",
+      "file": "javascript/safe/safe_plus_assign_index_counter.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "prototype-pollution",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`counts[key] += 1` with a request key updates an existing slot and cannot replace Object.prototype; must not raise a prototype-pollution sink."
+    },
+    {
+      "case_id": "ts-cmdi-compound-assign-001",
+      "file": "typescript/cmdi/vuln_plus_assign_rhs.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "rhs-taint"
+      ],
+      "disabled": false,
+      "notes": "TypeScript `cmd += req.body.target` reaches exec."
+    },
+    {
+      "case_id": "py-sqli-compound-assign-001",
+      "file": "python/sqli/vuln_aug_assign_query_builder.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "aug-assign",
+        "query-builder"
+      ],
+      "disabled": false,
+      "notes": "`sql += \" AND name = '%s'\" % name` appends a request value to the query; augmented_assignment used to define nothing."
+    },
+    {
+      "case_id": "py-cmdi-compound-assign-001",
+      "file": "python/cmdi/vuln_aug_assign_keeps_taint.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "aug-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "Appending a literal flag with `+=` keeps the request value in cmd."
+    },
+    {
+      "case_id": "php-sqli-compound-assign-001",
+      "file": "php/sqli/vuln_concat_assign_query.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "language_specific",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "concat-assign",
+        "query-builder"
+      ],
+      "disabled": false,
+      "notes": "`$sql .= $_GET['id']` appends the request value to the WHERE clause."
+    },
+    {
+      "case_id": "php-xss-compound-assign-001",
+      "file": "php/xss/vuln_concat_assign_sanitized_suffix.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "language_specific",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "concat-assign",
+        "sanitizer-rhs"
+      ],
+      "disabled": false,
+      "notes": "Only the appended part is escaped; the raw name already in $out reaches echo. Pins that a sanitizer call on the right of `.=` does not clean the old value."
+    },
+    {
+      "case_id": "php-safe-compound-assign-001",
+      "file": "php/safe/safe_concat_assign_sanitized.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "language_specific",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "compound-assign",
+        "concat-assign",
+        "sanitizer-rhs"
+      ],
+      "disabled": false,
+      "notes": "The only request value appended with `.=` is escaped first."
+    },
+    {
+      "case_id": "rs-cmdi-compound-assign-001",
+      "file": "rust/cmdi/cmdi_compound_assign.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "compound-assign-expr",
+        "rhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += &user` appends the environment value to the shell command; compound_assignment_expr used to define nothing."
+    },
+    {
+      "case_id": "go-cmdi-compound-assign-001",
+      "file": "go/cmdi/vuln_plus_assign_keeps_taint.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += \" --verbose\"` used to lower as cmd = \" --verbose\", killing the query value."
+    },
+    {
+      "case_id": "go-safe-compound-assign-001",
+      "file": "go/safe/safe_plus_assign_literal_query.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "literal-only"
+      ],
+      "disabled": false,
+      "notes": "Query extended with `+=` from literals only."
+    },
+    {
+      "case_id": "java-cmdi-compound-assign-001",
+      "file": "java/cmdi/CmdiPlusAssignKeepsTaint.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += \" --verbose\"` used to lower as a literal overwrite, killing the request value."
+    },
+    {
+      "case_id": "java-cmdi-compound-assign-002",
+      "file": "java/cmdi/CmdiCounterBranch.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "const-fold"
+      ],
+      "disabled": false,
+      "notes": "`n += 1` from 5 used to become the constant 1, so `n > 5` folded false and the branch was pruned."
+    },
+    {
+      "case_id": "rb-cmdi-compound-assign-001",
+      "file": "ruby/cmdi/cmdi_plus_assign_keeps_taint.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "operator-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += ' --verbose'` used to lower as a literal overwrite, killing the param."
+    },
+    {
+      "case_id": "rb-cmdi-compound-assign-002",
+      "file": "ruby/cmdi/cmdi_or_assign_keeps_taint.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "operator-assign",
+        "or-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd ||= 'ls'` keeps the param when it is set."
+    },
+    {
+      "case_id": "c-cmdi-compound-assign-001",
+      "file": "c/cmdi/cmdi_pointer_plus_assign.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "pointer",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`p += 1` still points into the environment value."
+    },
+    {
+      "case_id": "cpp-cmdi-compound-assign-001",
+      "file": "cpp/cmdi/cmdi_string_plus_assign.cpp",
+      "language": "cpp",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "compound-assign",
+        "plus-assign",
+        "lhs-taint"
+      ],
+      "disabled": false,
+      "notes": "`cmd += \" --verbose\"` on a std::string keeps the environment value."
+    },
+    {
+      "case_id": "js-cmdi-update-expr-001",
+      "file": "javascript/cmdi/vuln_counter_increment_branch.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "const-fold"
+      ],
+      "disabled": false,
+      "notes": "`i++` used to leave i at its initial constant 0, so `i === 1` folded false and the exec branch was pruned."
+    },
+    {
+      "case_id": "js-cmdi-update-expr-002",
+      "file": "javascript/cmdi/vuln_for_loop_accumulate.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "for-loop",
+        "loop-carried"
+      ],
+      "disabled": false,
+      "notes": "Counted for loop accumulating request values. The `i++` update clause used to be a non-def, which left a self-referential loop phi that dropped the loop-carried taint."
+    },
+    {
+      "case_id": "js-safe-update-expr-001",
+      "file": "javascript/safe/safe_for_loop_accumulate_constants.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "update-expression",
+        "increment",
+        "for-loop"
+      ],
+      "disabled": false,
+      "notes": "Twin of js-cmdi-update-expr-002 accumulating constant names only."
+    },
+    {
+      "case_id": "java-cmdi-update-expr-001",
+      "file": "java/cmdi/CmdiIncrementBranch.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "const-fold"
+      ],
+      "disabled": false,
+      "notes": "`i++` used to leave i at 0, so `i == 1` folded false and the exec branch was pruned."
+    },
+    {
+      "case_id": "go-cmdi-update-expr-001",
+      "file": "go/cmdi/vuln_increment_branch.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "inc-statement"
+      ],
+      "disabled": false,
+      "notes": "Go `i++` statement as a real definition; the branch on `i == 1` stays reachable."
+    },
+    {
+      "case_id": "c-cmdi-update-expr-001",
+      "file": "c/cmdi/cmdi_pointer_increment.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "update-expression",
+        "increment",
+        "pointer"
+      ],
+      "disabled": false,
+      "notes": "`p++` keeps p pointing into the environment value."
+    },
+    {
+      "case_id": "rs-cmdi-match-arm-001",
+      "file": "rust/cmdi/cmdi_match_arm_stmt.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "match-arm",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "The sink sits inside an arm of a statement-level `match`; the whole match used to collapse into one node that only read the scrutinee."
+    },
+    {
+      "case_id": "rs-cmdi-match-arm-002",
+      "file": "rust/cmdi/cmdi_match_arm_binding.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "match-arm",
+        "pattern-binding",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "`Ok(cmd)` binds the value of the `env::var` scrutinee; the scrutinee call gets its own node and the arm binding reads it."
+    },
+    {
+      "case_id": "rs-cmdi-match-arm-003",
+      "file": "rust/cmdi/cmdi_match_return_arm.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "match-arm",
+        "return-arm",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "An earlier `\"quit\" => return` arm must not make the `_` arm unreachable; arms are exclusive alternatives, not a sequence."
+    },
+    {
+      "case_id": "rs-cmdi-unsafe-block-001",
+      "file": "rust/cmdi/cmdi_unsafe_block_stmt.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "unsafe-block",
+        "block-statement"
+      ],
+      "disabled": false,
+      "notes": "Source and sink both inside a statement-level `unsafe { .. }` block, which used to collapse into one node."
+    },
+    {
+      "case_id": "go-cmdi-select-001",
+      "file": "go/cmdi/cmdi_select_done_return.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "select",
+        "multi-way-branch",
+        "ctx-done"
+      ],
+      "disabled": false,
+      "notes": "`case <-ctx.Done(): return` in a `select` must not make the sibling case unreachable; `select` runs exactly one ready case."
+    },
+    {
+      "case_id": "go-sqli-switch-case-001",
+      "file": "go/sqli/sqli_switch_case_assign.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "switch",
+        "no-fallthrough",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "The tainted query built in the first case reaches the sink after the switch; later cases no longer run after it and overwrite it."
+    },
+    {
+      "case_id": "go-safe-switch-case-001",
+      "file": "go/safe/safe_switch_no_fallthrough.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "switch",
+        "no-fallthrough",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "Go cases do not fall through: the query tainted in the `search` case never reaches `db.Query` in the `list` case."
+    },
+    {
+      "case_id": "py-cmdi-match-001",
+      "file": "python/cmdi/cmdi_match_return_case.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "match-statement",
+        "return-case",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "A returning `case \"quit\"` must not make `case _` unreachable; match cases are exclusive alternatives."
+    },
+    {
+      "case_id": "py-safe-match-case-001",
+      "file": "python/safe/safe_match_case_isolated.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "match-statement",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "The query tainted in `case \"search\"` never reaches `db.execute` in `case _`; only one case runs."
+    },
+    {
+      "case_id": "rb-cmdi-case-when-001",
+      "file": "ruby/cmdi/cmdi_case_when_return.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "case-when",
+        "return-arm",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "A returning `when` branch must not make the `else` branch unreachable."
+    },
+    {
+      "case_id": "rb-safe-case-when-001",
+      "file": "ruby/safe/safe_case_when_isolated.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "case-when",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "The path tainted in `when \"custom\"` never reaches `File.read` in the `else` branch; only one branch runs."
+    },
+    {
+      "case_id": "java-cmdi-arrow-switch-001",
+      "file": "java/cmdi/CmdiArrowSwitch.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "arrow-switch",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "Sink in the body of an arrow `case X ->` rule, which used to be a single unlowered leaf."
+    },
+    {
+      "case_id": "java-sqli-labeled-loop-001",
+      "file": "java/sqli/SqliLabeledLoop.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "labeled-statement",
+        "loop"
+      ],
+      "disabled": false,
+      "notes": "Sink inside a labeled `outer: for` loop, which used to collapse into one leaf node."
+    },
+    {
+      "case_id": "java-safe-arrow-switch-001",
+      "file": "java/safe/SafeArrowSwitchReassign.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "arrow-switch",
+        "killed-taint",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "Every arrow rule (default included) overwrites the command with a literal before exec; Java's `default` label sits inside `switch_label`."
+    },
+    {
+      "case_id": "js-cmdi-switch-discriminant-001",
+      "file": "javascript/cmdi/vuln_switch_discriminant_exec.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "switch",
+        "discriminant-call"
+      ],
+      "disabled": false,
+      "notes": "The sink call is the switch discriminant; the discriminant is now lowered as its own call node."
+    },
+    {
+      "case_id": "py-cmdi-match-002",
+      "file": "python/cmdi/cmdi_match_capture.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "match-statement",
+        "pattern-binding",
+        "multi-way-branch"
+      ],
+      "disabled": false,
+      "notes": "`case str(cmd)` binds the value of the `request.args.get` subject; the subject call gets its own node and the capture reads it."
+    },
+    {
+      "case_id": "js-safe-if-header-001",
+      "file": "javascript/safe/safe_if_body_const_query.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "gated-sink",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "The `if` header stands for its condition only; the body's constant `db.query` must not label it and pair it with the tainted condition variable."
+    },
+    {
+      "case_id": "py-safe-if-header-001",
+      "file": "python/safe/safe_if_body_const_cursor.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A paren-less condition must not let the header's text run into the body and match the `cursor.execute` sink."
+    },
+    {
+      "case_id": "rb-safe-if-header-001",
+      "file": "ruby/safe/safe_if_body_const_execute.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "if-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A Ruby `if` header classified from the whole statement text matched the body's `connection.execute`."
+    },
+    {
+      "case_id": "rs-safe-loop-header-001",
+      "file": "rust/safe/safe_loop_body_const_command.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "loop-header",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "A Rust `loop` header evaluates nothing; it used to take the body's `Command::new` sink and every body identifier as uses."
+    },
+    {
+      "case_id": "py-cmdi-if-condition-001",
+      "file": "python/cmdi/cmdi_if_condition_call.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "if-header",
+        "condition-call"
+      ],
+      "disabled": false,
+      "notes": "The sink call is the bare `if` condition; header classification checks the condition node itself, not only its children."
+    },
+    {
+      "case_id": "rb-cmdi-if-condition-001",
+      "file": "ruby/cmdi/cmdi_if_condition_call.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "if-header",
+        "condition-call"
+      ],
+      "disabled": false,
+      "notes": "The sink call is the bare `if` condition."
+    },
+    {
+      "case_id": "c-cmdi-for-condition-001",
+      "file": "c/cmdi/cmdi_for_condition_fgets.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "loop-header",
+        "condition-call",
+        "output-param-source"
+      ],
+      "disabled": false,
+      "notes": "`fgets` in a three-clause `for` condition is an output-parameter source; loop-condition calls are classified like `if` / `while` ones."
+    },
+    {
+      "case_id": "go-cmdi-range-source-001",
+      "file": "go/cmdi/cmdi_range_query_values.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "loop-header",
+        "for-each",
+        "range"
+      ],
+      "disabled": false,
+      "notes": "A Go `range` header classifies on its iterable (an index into `r.URL.Query()`), so the loop binding carries the request taint."
+    },
+    {
+      "case_id": "js-cmdi-finally-return-001",
+      "file": "javascript/cmdi/cmdi_finally_after_return.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path, so its exec sink is reachable. It used to be an orphan: the sink was dropped and cfg-unreachable-sink fired instead."
+    },
+    {
+      "case_id": "py-cmdi-finally-return-001",
+      "file": "python/cmdi/cmdi_finally_after_return.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return",
+        "except"
+      ],
+      "disabled": false,
+      "notes": "Both the try body and the except handler return; the finally clause runs after either."
+    },
+    {
+      "case_id": "rb-cmdi-ensure-return-001",
+      "file": "ruby/cmdi/cmdi_ensure_after_return.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "begin-ensure",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The begin body returns; the ensure clause runs on that path."
+    },
+    {
+      "case_id": "php-cmdi-finally-return-001",
+      "file": "php/cmdi/cmdi_finally_after_return.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path."
+    },
+    {
+      "case_id": "java-cmdi-finally-return-001",
+      "file": "java/cmdi/CmdiFinallyAfterReturn.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "The try body returns; the finally clause runs on that path."
+    },
+    {
+      "case_id": "java-safe-finally-close-001",
+      "file": "java/safe/SafeReturnInTryCloseInFinally.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Returns in the try body and the catch handler run the finally clause, which closes the stream and the connection. The finally clause used to be skipped on return paths, so these read as leaks."
+    },
+    {
+      "case_id": "py-safe-finally-close-001",
+      "file": "python/safe/safe_return_in_try_close_in_finally.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Return inside try, close in finally (plain and with an early return)."
+    },
+    {
+      "case_id": "js-safe-finally-close-001",
+      "file": "javascript/safe/safe_return_in_try_close_in_finally.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "fs.openSync fd returned through try, closed in finally."
+    },
+    {
+      "case_id": "rb-safe-ensure-close-001",
+      "file": "ruby/safe/safe_return_in_ensure_close.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "begin-ensure",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Return inside begin and inside a method-level ensure body; the ensure clause closes the file."
+    },
+    {
+      "case_id": "java-vuln-finally-no-close-001",
+      "file": "java/safe/VulnReturnInTryNoCloseInFinally.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive",
+        "try-finally",
+        "return"
+      ],
+      "disabled": false,
+      "notes": "Recall guard: the finally clause runs on the return path but does not close the stream, so the leak must still be reported."
+    },
+    {
+      "case_id": "js-cmdi-catch-seed-001",
+      "file": "javascript/cmdi/cmdi_catch_sees_try_assignment.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "try-catch",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The handler reads `cmd` as the try body assigned it. Exception edges are stripped before renaming, so the handler used to be seeded with the definition closest to the entry (the constant default) once an earlier branch put the try body in a later block."
+    },
+    {
+      "case_id": "py-cmdi-catch-seed-001",
+      "file": "python/cmdi/cmdi_catch_sees_try_assignment.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "try-except",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The except handler reads `path` as the try body assigned it."
+    },
+    {
+      "case_id": "java-cmdi-catch-seed-001",
+      "file": "java/cmdi/CmdiCatchSeesTryAssignment.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "try-catch",
+        "reaching-definitions"
+      ],
+      "disabled": false,
+      "notes": "The catch handler reads `cmd` as the try body assigned it."
+    },
+    {
+      "case_id": "js-safe-catch-seed-001",
+      "file": "javascript/safe/safe_catch_constant_try_assignment.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "try-catch",
+        "reaching-definitions",
+        "constant-args"
+      ],
+      "disabled": false,
+      "notes": "Precision pair for js-cmdi-catch-seed-001: the try body only assigns another constant, so the handler's exec never sees request data."
     }
   ]
 }

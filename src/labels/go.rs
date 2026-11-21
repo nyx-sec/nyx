@@ -1255,7 +1255,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "expression_case"              => Kind::Block,
     "type_case"                    => Kind::Block,
     "default_case"                 => Kind::Block,
-    "select_statement"             => Kind::Block,
+    // `select` runs exactly one ready case; lowered like a switch.
+    "select_statement"             => Kind::Switch,
     "communication_case"           => Kind::Block,
     "go_statement"                 => Kind::Block,
     "defer_statement"              => Kind::Block,
@@ -1268,6 +1269,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // data-flow
     "call_expression"          => Kind::CallFn,
     "assignment_statement"     => Kind::Assignment,
+    // `i++` / `i--` statements: read-modify-write, see `cfg::rmw_assignment`.
+    "inc_statement"            => Kind::Assignment,
+    "dec_statement"            => Kind::Assignment,
     "short_var_declaration"    => Kind::CallWrapper,
     "expression_statement"     => Kind::CallWrapper,
     "var_declaration"          => Kind::CallWrapper,

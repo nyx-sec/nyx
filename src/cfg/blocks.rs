@@ -1,29 +1,32 @@
+use super::conditions::push_condition_node;
 use super::{
     AstMeta, BodyCfg, BodyId, CallMeta, Cfg, EdgeKind, FuncSummaries, NodeInfo, StmtKind,
-    TaintMeta, build_sub, collect_idents, connect_all, push_node, text_of,
+    TaintMeta, build_sub, collect_idents, collect_idents_with_paths, connect_all, emit_call_node,
+    first_member_label, has_call_descendant, push_node, text_of, unwrap_parens,
 };
-use crate::labels::{Kind, LangAnalysisRules, lookup};
+use crate::labels::{DataLabel, Kind, LangAnalysisRules, lookup};
 use petgraph::graph::NodeIndex;
 use tree_sitter::Node;
 
-/// True when the language has guaranteed-exclusive (non-fall-through) cases
-/// at the *case-level* shape `build_switch` sees here. Rust `match`, Go
-/// `switch`, and Java arrow-switches qualify; classic Java/C/C++/JS switches
-/// with fall-through do not. The check is per-language because Java mixes
-/// arrow and classic shapes, that's handled by inspecting the case kind in
-/// [`extract_case_literal_text`].
+/// True when the language's multi-way branch never falls through from one
+/// case into the next: Rust `match`, Go `switch` / `select`, Python `match`
+/// and Ruby `case`.  Classic C/C++/JS/TS/PHP switches and Java colon-form
+/// switches fall through; Java mixes both shapes, so it is decided per switch
+/// in [`switch_is_exclusive`].
 fn lang_has_exclusive_cases(lang: &str) -> bool {
-    matches!(lang, "rust" | "go")
+    matches!(lang, "rust" | "go" | "python" | "ruby")
 }
 
 /// True when *this specific switch* has guaranteed-exclusive (non-fall-through)
-/// cases, so it is safe to reorder the `default` arm to the cascade tail.
+/// cases, so it is safe to reorder the `default` arm to the cascade tail and
+/// to send each case's exits straight past the switch.
 ///
-/// Rust `match` and Go `switch` are always exclusive. Java mixes shapes: the
-/// arrow form (`switch_rule` cases, `case x -> ...`) is exclusive, but the
-/// classic colon form (`switch_block_statement_group`, `case x:` with implicit
-/// fall-through) is NOT. C/C++/JS/TS/PHP classic switches fall through and are
-/// never exclusive. Reordering `default` to the tail is only correct for the
+/// Rust `match`, Go `switch` / `select`, Python `match` and Ruby `case` are
+/// always exclusive. Java mixes shapes: the arrow form (`switch_rule` cases,
+/// `case x -> ...`) is exclusive, but the classic colon form
+/// (`switch_block_statement_group`, `case x:` with implicit fall-through) is
+/// NOT. C/C++/JS/TS/PHP classic switches fall through and are never
+/// exclusive. Reordering `default` to the tail is only correct for the
 /// exclusive shapes; doing it for fall-through switches connects the wrong
 /// case bodies in the source-order fall-through chain (both missed and phantom
 /// taint flows).
@@ -38,55 +41,68 @@ fn switch_is_exclusive(lang: &str, cases: &[(Node<'_>, bool)]) -> bool {
     false
 }
 
-/// Extract the scrutinee subtree from a switch-like AST node.
-///
-/// Returns the AST node referenced by the language's scrutinee field. Only
-/// fires for Rust `match`, Go `switch`, and Java `switch` statements, other
-/// languages return `None` so [`build_switch`] keeps its legacy behavior.
+/// True when `break` inside a case leaves the construct itself.  Rust
+/// `match`, Python `match` and Ruby `case` have no `break` of their own: a
+/// `break` in one of their arms leaves the enclosing loop.
+fn switch_owns_break(lang: &str) -> bool {
+    !matches!(lang, "rust" | "python" | "ruby")
+}
+
+/// True when the construct always runs exactly one of its arms, so the last
+/// arm doubles as the default and no no-match path leads past it.  Rust
+/// `match` is exhaustive, and Go `select` blocks until one case is ready.
+fn switch_is_exhaustive(ast: Node<'_>, lang: &str) -> bool {
+    matches!(
+        (lang, ast.kind()),
+        ("rust", "match_expression") | ("go", "select_statement")
+    )
+}
+
+/// The scrutinee expression of a switch-like node, with grouping parentheses
+/// stripped.  `None` when the construct has none (Go `select`, Ruby's
+/// subject-less `case`, unsupported grammars).
 fn extract_scrutinee_node<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
     let field = match lang {
-        "rust" => "value",
-        "go" => "value",
-        "java" => "condition",
+        "rust" | "go" | "javascript" | "typescript" | "tsx" | "ruby" => "value",
+        "python" => "subject",
+        "java" | "c" | "cpp" | "php" => "condition",
         _ => return None,
     };
-    ast.child_by_field_name(field)
+    ast.child_by_field_name(field).map(unwrap_parens)
 }
 
 /// Extract a single literal/path text from a case AST when the case is a
 /// plain mutually-exclusive literal pattern. Returns `None` for non-literal
-/// patterns (wildcards, OR-patterns, range patterns, guards) and for
-/// fall-through-shaped Java cases.
+/// patterns (wildcards, bindings, OR-patterns, range patterns, type patterns,
+/// guards) and for fall-through-shaped Java cases.
 fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> Option<String> {
     let kind = case.kind();
     match (lang, kind) {
         ("rust", "match_arm") => {
-            // Reject guarded arms, `match x { y if cond => ... }`.
-            if case.child_by_field_name("guard").is_some() {
+            // Reject guarded arms, `match x { y if cond => ... }`; the guard
+            // is the `condition` field of the `match_pattern`.
+            if case_guard(case, lang).is_some() {
                 return None;
             }
             let pattern = case.child_by_field_name("pattern")?;
-            // `match_pattern` wraps the real pattern as a child.
+            // `match_pattern` wraps the real pattern as its first named
+            // child.  A wildcard `_` has no named child at all.
             let inner = {
                 let mut cursor = pattern.walk();
-                pattern
-                    .children(&mut cursor)
-                    .find(|c| c.is_named())
-                    .unwrap_or(pattern)
+                pattern.named_children(&mut cursor).next()?
             };
-            // Reject patterns that are not plain literals/paths.
-            if matches!(
+            // Only plain literals and enum/const paths compare with `==`.
+            // A bare identifier is a binding (or a unit const we cannot tell
+            // apart from one), never a literal.
+            if !matches!(
                 inner.kind(),
-                "_" | "wildcard"
-                    | "range_pattern"
-                    | "or_pattern"
-                    | "tuple_struct_pattern"
-                    | "struct_pattern"
-                    | "ref_pattern"
-                    | "tuple_pattern"
-                    | "slice_pattern"
-                    | "captured_pattern"
-                    | "binding_pattern"
+                "string_literal"
+                    | "raw_string_literal"
+                    | "char_literal"
+                    | "integer_literal"
+                    | "negative_literal"
+                    | "boolean_literal"
+                    | "scoped_identifier"
             ) {
                 return None;
             }
@@ -135,11 +151,221 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
                 if saw_default || named_values.len() != 1 {
                     return None;
                 }
-                return text_of(named_values[0], code);
+                // `case String s ->` is a type pattern, not a value.
+                let value = named_values[0];
+                if value.kind() == "pattern" || value.kind().ends_with("_pattern") {
+                    return None;
+                }
+                return text_of(value, code);
             }
             None
         }
         _ => None,
+    }
+}
+
+/// The part of a case that runs when the case is chosen.  Rust arms,
+/// Python `case` clauses and Java arrow rules expose their body separately
+/// from the pattern; every other case kind is walked whole (its label nodes
+/// are harmless leaves).
+fn case_body<'a>(case: Node<'a>, lang: &str) -> Node<'a> {
+    let body = match (lang, case.kind()) {
+        ("rust", "match_arm") => case.child_by_field_name("value"),
+        ("python", "case_clause") => case.child_by_field_name("consequence"),
+        ("java", "switch_rule") => {
+            let mut cursor = case.walk();
+            case.named_children(&mut cursor)
+                .last()
+                .filter(|n| n.kind() != "switch_label")
+        }
+        _ => None,
+    };
+    body.unwrap_or(case)
+}
+
+/// The guard expression of a case (`Some(x) if x > 0 =>`, `case x if x:`,
+/// `case String s when s.isEmpty() ->`), if any.
+fn case_guard<'a>(case: Node<'a>, lang: &str) -> Option<Node<'a>> {
+    match (lang, case.kind()) {
+        ("rust", "match_arm") => case
+            .child_by_field_name("pattern")?
+            .child_by_field_name("condition"),
+        ("python", "case_clause") => case.child_by_field_name("guard")?.named_child(0),
+        ("java", "switch_rule") => {
+            let mut cursor = case.walk();
+            let label = case
+                .children(&mut cursor)
+                .find(|c| c.kind() == "switch_label")?;
+            let mut label_cursor = label.walk();
+            let guard = label
+                .children(&mut label_cursor)
+                .find(|c| c.kind() == "guard")?;
+            guard.named_child(0)
+        }
+        _ => None,
+    }
+}
+
+/// Names a case pattern binds from the scrutinee (`Ok(v)`, `case [a, *rest]`,
+/// `case String s ->`), in source order without duplicates.
+fn case_bindings(case: Node<'_>, lang: &str, code: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    match (lang, case.kind()) {
+        ("rust", "match_arm") => {
+            if let Some(pattern) = case.child_by_field_name("pattern") {
+                collect_rust_pattern_bindings(pattern, code, &mut out);
+            }
+        }
+        ("python", "case_clause") => {
+            let mut cursor = case.walk();
+            for child in case.children(&mut cursor) {
+                if child.kind() == "case_pattern" {
+                    collect_python_pattern_bindings(child, code, &mut out);
+                }
+            }
+        }
+        ("java", "switch_rule") => {
+            let mut cursor = case.walk();
+            if let Some(label) = case
+                .children(&mut cursor)
+                .find(|c| c.kind() == "switch_label")
+            {
+                let mut label_cursor = label.walk();
+                for child in label.children(&mut label_cursor) {
+                    if child.kind() == "pattern" {
+                        collect_java_pattern_bindings(child, code, &mut out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|name| seen.insert(name.clone()));
+    out
+}
+
+/// A bare identifier in a Rust pattern binds a new name unless it starts with
+/// an upper-case letter, which by convention is a unit variant or constant
+/// (`None`, `MAX`) matched against.
+fn is_rust_binding_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_lowercase() || c == '_')
+}
+
+/// Binding identifiers of a Rust pattern.  Paths, struct/variant names,
+/// field names, range bounds and the arm guard never bind.
+fn collect_rust_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
+    match n.kind() {
+        "identifier" => {
+            if let Some(name) = text_of(n, code)
+                && is_rust_binding_name(&name)
+                && name != "_"
+            {
+                out.push(name);
+            }
+        }
+        "shorthand_field_identifier" => {
+            if let Some(name) = text_of(n, code) {
+                out.push(name);
+            }
+        }
+        "scoped_identifier"
+        | "scoped_type_identifier"
+        | "type_identifier"
+        | "field_identifier"
+        | "range_pattern"
+        | "generic_type"
+        | "macro_invocation" => {}
+        _ => {
+            let mut cursor = n.walk();
+            for (i, child) in n.children(&mut cursor).enumerate() {
+                if matches!(
+                    n.field_name_for_child(i as u32),
+                    Some("type") | Some("condition")
+                ) {
+                    continue;
+                }
+                collect_rust_pattern_bindings(child, code, out);
+            }
+        }
+    }
+}
+
+/// Capture names of a Python `case` pattern.  A bare name captures; a dotted
+/// name (`Color.RED`), a class name, a keyword name and a mapping key are
+/// matched against, never bound.
+fn collect_python_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
+    match n.kind() {
+        "dotted_name" => {
+            if n.named_child_count() == 1
+                && let Some(id) = n.named_child(0)
+                && let Some(name) = text_of(id, code)
+            {
+                out.push(name);
+            }
+        }
+        "identifier" => {
+            // `*rest`, `**kw` and the alias of `pattern as name`.
+            if let Some(name) = text_of(n, code)
+                && name != "_"
+            {
+                out.push(name);
+            }
+        }
+        "class_pattern" => {
+            // `Point(x=0, y=yy)`: the class name is a direct `dotted_name`.
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                if child.kind() != "dotted_name" {
+                    collect_python_pattern_bindings(child, code, out);
+                }
+            }
+        }
+        "keyword_pattern" => {
+            // `y=yy`: the keyword is a direct `identifier`.
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                if child.kind() != "identifier" {
+                    collect_python_pattern_bindings(child, code, out);
+                }
+            }
+        }
+        "dict_pattern" => {
+            let mut cursor = n.walk();
+            for (i, child) in n.children(&mut cursor).enumerate() {
+                if n.field_name_for_child(i as u32) == Some("key") {
+                    continue;
+                }
+                collect_python_pattern_bindings(child, code, out);
+            }
+        }
+        _ => {
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                collect_python_pattern_bindings(child, code, out);
+            }
+        }
+    }
+}
+
+/// Variables a Java type or record pattern declares (`String s`,
+/// `Point(int x, var y)`).
+fn collect_java_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
+    if matches!(n.kind(), "type_pattern" | "record_pattern_component") {
+        let mut cursor = n.walk();
+        if let Some(name) = n
+            .named_children(&mut cursor)
+            .last()
+            .filter(|c| c.kind() == "identifier")
+            .and_then(|c| text_of(c, code))
+        {
+            out.push(name);
+            return;
+        }
+    }
+    let mut cursor = n.walk();
+    for child in n.named_children(&mut cursor) {
+        collect_java_pattern_bindings(child, code, out);
     }
 }
 
@@ -208,6 +434,186 @@ pub(super) fn extract_catch_param_name<'a>(
         }
         _ => None,
     }
+}
+
+//    finally / ensure on early exits
+
+thread_local! {
+    /// Nesting depth of early-exit `finally` copies being lowered next to a
+    /// normal-completion copy (see [`build_finally_paths`]).  The Function
+    /// arm of `build_sub` reads it through [`in_duplicate_finally_copy`].
+    static DUPLICATE_FINALLY_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// True while the second copy of a `finally` / `ensure` clause is being
+/// lowered.  A function or closure declared in the clause was already
+/// registered by the first copy, so its second declaration site gets only a
+/// placeholder node and no body of its own.
+pub(super) fn in_duplicate_finally_copy() -> bool {
+    DUPLICATE_FINALLY_DEPTH.with(|d| d.get() > 0)
+}
+
+struct DuplicateFinallyCopy;
+
+impl DuplicateFinallyCopy {
+    fn enter() -> Self {
+        DUPLICATE_FINALLY_DEPTH.with(|d| d.set(d.get() + 1));
+        DuplicateFinallyCopy
+    }
+}
+
+impl Drop for DuplicateFinallyCopy {
+    fn drop(&mut self) {
+        DUPLICATE_FINALLY_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+/// Return nodes at or after node index `first` that nothing leaves yet: the
+/// early exits of the try / catch bodies built since `first`.
+///
+/// A return rerouted through an inner `finally` already has its edge into
+/// that clause, so it is not collected again.  The inner clause's tail
+/// stands in for it (see [`build_finally_paths`]).
+fn collect_abrupt_returns(g: &Cfg, first: usize, enclosing_func: Option<&str>) -> Vec<NodeIndex> {
+    (first..g.node_count())
+        .map(NodeIndex::new)
+        .filter(|&idx| {
+            g[idx].kind == StmtKind::Return
+                && g[idx].ast.enclosing_func.as_deref() == enclosing_func
+                && g.neighbors(idx).next().is_none()
+        })
+        .collect()
+}
+
+/// Lower a `finally` / `ensure` clause on the paths that reach it.
+///
+/// Control reaches the clause by falling out of the try and catch bodies
+/// (`normal_preds`) and by returning from them.  `build_sub` ends a return's
+/// path, so without more work a return never ran the clause: its releases
+/// were invisible on the return path (resource-leak false positives), and a
+/// clause every path returns through had no predecessor at all (its sinks
+/// read as unreachable and were never analysed).
+///
+/// The clause is lowered once for the normal path, from `normal_preds`, and
+/// once more for the early exits, from the Return nodes built since
+/// `body_first_idx`.  Each such Return is marked `finally_return` and keeps
+/// one edge into the second copy, which ends in a synthetic `finally_tail`
+/// Return that carries the union of the returns' uses.  Nested clauses
+/// compose: the inner tail is collected by the outer clause as one more
+/// early exit, so inner cleanup runs before outer cleanup.
+///
+/// The first copy is skipped when nothing falls out of the bodies and some
+/// path returns, so no orphan copy is left behind.  Break, continue and
+/// throw leave a try without running its finally clause.
+///
+/// Returns the exits of the normal-path copy.
+#[allow(clippy::too_many_arguments)]
+fn build_finally_paths<'a>(
+    clause: Node<'a>,
+    normal_preds: &[NodeIndex],
+    body_first_idx: usize,
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    // Collect before either copy exists, so a return inside the clause itself
+    // is not rerouted through the clause it sits in.
+    let abrupt = collect_abrupt_returns(g, body_first_idx, enclosing_func);
+    let normal_copy_built = abrupt.is_empty() || !normal_preds.is_empty();
+
+    let normal_exits = if normal_copy_built {
+        build_sub(
+            clause,
+            normal_preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )
+    } else {
+        Vec::new()
+    };
+    if abrupt.is_empty() {
+        return normal_exits;
+    }
+
+    let mut tail_uses: Vec<String> = Vec::new();
+    for &ret in &abrupt {
+        for u in &g[ret].taint.uses {
+            if !tail_uses.contains(u) {
+                tail_uses.push(u.clone());
+            }
+        }
+        if g[ret].finally_tail {
+            // The inner clause's tail is an early exit of this clause too:
+            // it flows on into the copy below instead of returning.
+            g[ret].kind = StmtKind::Seq;
+            g[ret].finally_tail = false;
+            g[ret].taint.uses.clear();
+        } else {
+            g[ret].finally_return = true;
+        }
+    }
+
+    let copy_exits = {
+        let _guard = normal_copy_built.then(DuplicateFinallyCopy::enter);
+        build_sub(
+            clause,
+            &abrupt,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )
+    };
+    if !copy_exits.is_empty() {
+        let tail = g.add_node(NodeInfo {
+            kind: StmtKind::Return,
+            ast: AstMeta {
+                span: (clause.end_byte(), clause.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            taint: TaintMeta {
+                uses: tail_uses,
+                ..Default::default()
+            },
+            finally_tail: true,
+            ..Default::default()
+        });
+        connect_all(g, &copy_exits, tail, EdgeKind::Seq);
+    }
+    normal_exits
 }
 
 //    Ruby begin/rescue/ensure handler
@@ -434,9 +840,10 @@ pub(super) fn build_begin_rescue<'a>(
             ensure_preds.extend(&try_throw_targets);
         }
 
-        build_sub(
+        build_finally_paths(
             ensure_node,
             &ensure_preds,
+            try_body_first_idx,
             g,
             lang,
             code,
@@ -463,20 +870,27 @@ pub(super) fn build_begin_rescue<'a>(
 //    switch handler, multi-way dispatch with fallthrough
 
 /// True for AST kinds that wrap a single switch case body.
-pub(super) fn is_switch_case_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "switch_case"
-            | "switch_default"
-            | "case_statement"
-            | "default_statement"
-            | "expression_case"
-            | "default_case"
-            | "type_case"
-            | "type_switch_case"
-            | "communication_case"
-            | "switch_block_statement_group"
-    )
+pub(super) fn is_switch_case_kind(lang: &str, kind: &str) -> bool {
+    match lang {
+        "rust" => kind == "match_arm",
+        "python" => kind == "case_clause",
+        // Only consulted for direct children of a `case`, where `else` is the
+        // default arm.
+        "ruby" => matches!(kind, "when" | "else"),
+        "java" => matches!(kind, "switch_block_statement_group" | "switch_rule"),
+        _ => matches!(
+            kind,
+            "switch_case"
+                | "switch_default"
+                | "case_statement"
+                | "default_statement"
+                | "expression_case"
+                | "default_case"
+                | "type_case"
+                | "type_switch_case"
+                | "communication_case"
+        ),
+    }
 }
 
 /// True for AST kinds that always represent the switch's `default` arm.
@@ -489,33 +903,163 @@ pub(super) fn is_default_case_kind(kind: &str) -> bool {
     )
 }
 
-/// Detect a `default` keyword among the immediate children of a case-like AST
-/// node. Used for grammars (C/C++/Java) where `default:` is encoded as a child
-/// label of an otherwise generic `case_statement` / `switch_block_statement_group`.
-pub(super) fn case_has_default_label(case: Node<'_>) -> bool {
+/// Detect a `default` label in a case-like AST node.  C/C++ put the keyword
+/// among the case's own children; Java nests it in the `switch_label` child,
+/// and parses the `default` of `case null, default ->` as an identifier.
+pub(super) fn case_has_default_label(case: Node<'_>, code: &[u8]) -> bool {
     let mut cursor = case.walk();
     for child in case.children(&mut cursor) {
         let k = child.kind();
         if k == "default" || k == "default_label" {
             return true;
         }
+        if k == "switch_label" {
+            let mut label_cursor = child.walk();
+            let labelled_default = child.children(&mut label_cursor).any(|part| {
+                part.kind() == "default"
+                    || (part.kind() == "identifier"
+                        && part.utf8_text(code).is_ok_and(|t| t == "default"))
+            });
+            if labelled_default {
+                return true;
+            }
+        }
     }
     false
 }
 
-/// Build CFG for a switch statement.
+/// True when `case` is the arm taken when no other arm matches: an explicit
+/// `default`, Ruby `else`, or an unguarded catch-all pattern (Rust `_` /
+/// `name =>`, Python `case _:` / `case name:`).
+fn is_default_case(lang: &str, case: Node<'_>, code: &[u8]) -> bool {
+    match (lang, case.kind()) {
+        ("ruby", "else") => true,
+        ("rust", "match_arm") => {
+            case_guard(case, lang).is_none()
+                && case.child_by_field_name("pattern").is_some_and(|p| {
+                    let mut cursor = p.walk();
+                    let named: Vec<Node> = p.named_children(&mut cursor).collect();
+                    match named.as_slice() {
+                        // `_` is an anonymous token.
+                        [] => true,
+                        [only] => {
+                            only.kind() == "identifier"
+                                && text_of(*only, code).is_some_and(|t| is_rust_binding_name(&t))
+                        }
+                        _ => false,
+                    }
+                })
+        }
+        ("python", "case_clause") => {
+            if case_guard(case, lang).is_some() {
+                return false;
+            }
+            let mut cursor = case.walk();
+            let patterns: Vec<Node> = case
+                .children(&mut cursor)
+                .filter(|c| c.kind() == "case_pattern")
+                .collect();
+            let [pattern] = patterns.as_slice() else {
+                return false;
+            };
+            let mut pattern_cursor = pattern.walk();
+            let named: Vec<Node> = pattern.named_children(&mut pattern_cursor).collect();
+            match named.as_slice() {
+                [] => true,
+                [only] => only.kind() == "dotted_name" && only.named_child_count() == 1,
+                _ => false,
+            }
+        }
+        _ => is_default_case_kind(case.kind()) || case_has_default_label(case, code),
+    }
+}
+
+/// Go case whose last statement is `fallthrough`: control continues into the
+/// next case body even though Go cases are otherwise exclusive.
+fn case_ends_with_fallthrough(case: Node<'_>, lang: &str) -> bool {
+    fn last_stmt(n: Node<'_>) -> Option<Node<'_>> {
+        let mut cursor = n.walk();
+        n.named_children(&mut cursor)
+            .filter(|c| c.kind() != "comment")
+            .last()
+    }
+    if lang != "go" {
+        return false;
+    }
+    let list = {
+        let mut cursor = case.walk();
+        case.children(&mut cursor)
+            .find(|c| c.kind() == "statement_list")
+    };
+    let mut last = list.and_then(last_stmt);
+    while let Some(n) = last
+        && n.kind() == "labeled_statement"
+    {
+        last = last_stmt(n);
+    }
+    last.is_some_and(|n| n.kind() == "fallthrough_statement")
+}
+
+/// Node that binds a case pattern's names from the scrutinee value, emitted
+/// as the first node of the case.
+fn push_binding_node(
+    g: &mut Cfg,
+    span: (usize, usize),
+    names: Vec<String>,
+    uses: Vec<String>,
+    enclosing_func: Option<&str>,
+) -> NodeIndex {
+    let mut names = names.into_iter();
+    let defines = names.next();
+    g.add_node(NodeInfo {
+        kind: StmtKind::Seq,
+        taint: TaintMeta {
+            defines,
+            extra_defines: names.collect(),
+            uses,
+            ..Default::default()
+        },
+        ast: AstMeta {
+            span,
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    })
+}
+
+/// Synthetic pass-through node giving a branch edge a concrete target.
+fn push_pass_node(g: &mut Cfg, at: usize, enclosing_func: Option<&str>) -> NodeIndex {
+    g.add_node(NodeInfo {
+        kind: StmtKind::Seq,
+        ast: AstMeta {
+            span: (at, at),
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    })
+}
+
+/// Build CFG for a multi-way branch: C/C++/JS/TS/PHP/Java/Go `switch`, Go
+/// `select`, Rust `match`, Python `match` and Ruby `case`.
 ///
-/// The dispatch is decomposed into a chain of binary `StmtKind::If` headers
-///, one per non-default case, because the SSA terminator only models 0/1/2
+/// The scrutinee runs first and gets its own Call node when it contains a
+/// call (a Go `switch init; x` initializer runs before it).  The dispatch is
+/// then decomposed into a chain of binary `StmtKind::If` headers, one per
+/// non-default case, because the SSA terminator only models 0/1/2
 /// successors. A monolithic N-way header would otherwise be collapsed to
 /// `Goto(first)` and silently drop every other case. Each header's True edge
-/// reaches its case body; the False edge falls through to the next header (or
-/// the default body, if present, or the post-switch code).
+/// reaches its case; the False edge falls through to the next header (or the
+/// default body, if present, or the post-switch code).  A case whose pattern
+/// binds names (`Ok(v)`, `case [a, b]`, `case String s`) starts with a node
+/// defining them from the scrutinee, and a guarded case gets a second header
+/// for its guard whose False edge also continues the dispatch.
 ///
-/// Fall-through between adjacent case bodies (e.g. C/C++/Java/JS without
-/// `break`) is preserved by chaining the previous case's exits as additional
-/// predecessors of the next case's first node. `break` inside a case targets
-/// a fresh switch-scoped break list rather than the surrounding loop.
+/// In a fall-through switch (C/C++/JS/TS/PHP, Java colon form) the previous
+/// case's exits are chained as additional predecessors of the next case's
+/// first node.  In an exclusive one every case leaves the switch directly,
+/// except a Go case ending in `fallthrough`.  `break` inside a case targets a
+/// fresh switch-scoped break list, except in Rust/Python/Ruby where it
+/// belongs to the enclosing loop.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_switch<'a>(
     ast: Node<'a>,
@@ -528,7 +1072,7 @@ pub(super) fn build_switch<'a>(
     enclosing_func: Option<&str>,
     call_ordinal: &mut u32,
     analysis_rules: Option<&LangAnalysisRules>,
-    _break_targets: &mut Vec<NodeIndex>,
+    break_targets: &mut Vec<NodeIndex>,
     continue_targets: &mut Vec<NodeIndex>,
     throw_targets: &mut Vec<NodeIndex>,
     bodies: &mut Vec<BodyCfg>,
@@ -536,7 +1080,8 @@ pub(super) fn build_switch<'a>(
     current_body_id: BodyId,
 ) -> Vec<NodeIndex> {
     // Locate the case container. Most grammars expose it as field "body"
-    // (JS/TS, Java, C, C++); Go puts cases as direct children of the switch.
+    // (JS/TS, Java, C, C++, Rust, Python); Go puts cases as direct children
+    // of the switch, and Ruby `case` / Go `select` have no body at all.
     //
     // Per-language gotcha: Go's `expression_case` / `default_case` /
     // `type_case` / `communication_case` map to `Kind::Block` (so the case
@@ -546,13 +1091,22 @@ pub(super) fn build_switch<'a>(
     // and falls through to the empty-cases early return (CFG dead-end:
     // dispatch If has no False edge, every post-switch statement becomes
     // unreachable).  Skip case-kind nodes when picking the container so
-    // Go's flat "cases-as-direct-children" shape uses `ast` itself.
-    let body = ast.child_by_field_name("body").or_else(|| {
-        let mut c = ast.walk();
-        ast.children(&mut c).find(|n| {
-            matches!(lookup(lang, n.kind()), Kind::Block) && !is_switch_case_kind(n.kind())
+    // Go's flat "cases-as-direct-children" shape uses `ast` itself.  Ruby's
+    // `else` arm is a Block too, so `case` skips the fallback entirely.
+    let body = if matches!(
+        (lang, ast.kind()),
+        ("ruby", "case") | ("go", "select_statement")
+    ) {
+        None
+    } else {
+        ast.child_by_field_name("body").or_else(|| {
+            let mut c = ast.walk();
+            ast.children(&mut c).find(|n| {
+                matches!(lookup(lang, n.kind()), Kind::Block)
+                    && !is_switch_case_kind(lang, n.kind())
+            })
         })
-    });
+    };
     let container = body.unwrap_or(ast);
 
     // Collect case-like children in source order. Default goes through the
@@ -562,13 +1116,159 @@ pub(super) fn build_switch<'a>(
     {
         let mut cursor = container.walk();
         for case in container.children(&mut cursor) {
-            let k = case.kind();
-            if !is_switch_case_kind(k) {
+            if !is_switch_case_kind(lang, case.kind()) {
                 continue;
             }
-            let is_default = is_default_case_kind(k) || case_has_default_label(case);
-            cases.push((case, is_default));
+            cases.push((case, is_default_case(lang, case, code)));
         }
+    }
+
+    // `break` inside a case: a switch-scoped list, or the enclosing loop's.
+    let owns_break = switch_owns_break(lang);
+    let mut switch_breaks: Vec<NodeIndex> = Vec::new();
+
+    // Everything that runs before the dispatch: Go's `switch init; x`
+    // initializer, then the scrutinee.  A scrutinee with a call is lowered
+    // as its own Call node, so a source or sink in `match f(x)` or
+    // `switch (exec(x))` is analysed like any other call; a bare scrutinee
+    // only contributes its identifiers to the arms' pattern bindings.
+    let mut dispatch_preds: Vec<NodeIndex> = preds.to_vec();
+    if lang == "go"
+        && let Some(init) = ast.child_by_field_name("initializer")
+    {
+        dispatch_preds = build_sub(
+            init,
+            &dispatch_preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            if owns_break {
+                &mut switch_breaks
+            } else {
+                &mut *break_targets
+            },
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+    }
+    let scrutinee = extract_scrutinee_node(ast, lang);
+    // Go `switch t := v.(type)` binds `t` in every clause.
+    let go_alias: Vec<String> = if lang == "go" && ast.kind() == "type_switch_statement" {
+        let mut names = Vec::new();
+        if let Some(alias) = ast.child_by_field_name("alias") {
+            collect_idents(alias, code, &mut names);
+        }
+        names
+    } else {
+        Vec::new()
+    };
+    let needs_scrutinee_value = !go_alias.is_empty()
+        || cases
+            .iter()
+            .any(|(c, _)| !case_bindings(*c, lang, code).is_empty());
+    let mut scrutinee_uses: Vec<String> = Vec::new();
+    if let Some(scrut) = scrutinee {
+        // A scrutinee that reads a source member (`request.args.get("x")`,
+        // `request.json`) is a Source the same way that expression is on
+        // the right of an assignment.
+        let member_source = first_member_label(
+            scrut,
+            lang,
+            code,
+            analysis_rules.map(|r| r.extra_labels.as_slice()),
+        )
+        .filter(|l| matches!(l, DataLabel::Source(_)));
+        let scrut_is_call = matches!(
+            lookup(lang, scrut.kind()),
+            Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+        );
+        if scrut_is_call || has_call_descendant(scrut, lang) {
+            let (n, _) = emit_call_node(
+                scrut,
+                &dispatch_preds,
+                g,
+                lang,
+                code,
+                summaries,
+                file_path,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+                if owns_break {
+                    &mut switch_breaks
+                } else {
+                    &mut *break_targets
+                },
+                continue_targets,
+                throw_targets,
+                bodies,
+                next_body_id,
+                current_body_id,
+            );
+            if g[n].taint.labels.is_empty()
+                && let Some(label) = member_source
+            {
+                g[n].taint.labels.push(label);
+            }
+            // The bindings need a name for the scrutinee's value.
+            if let Some(def) = g[n].taint.defines.clone() {
+                scrutinee_uses.push(def);
+            } else if needs_scrutinee_value {
+                let synth = format!("__nyx_scrut_{}", n.index());
+                g[n].taint.defines = Some(synth.clone());
+                scrutinee_uses.push(synth);
+            }
+            dispatch_preds = vec![n];
+        } else {
+            let mut idents = Vec::new();
+            let mut paths = Vec::new();
+            collect_idents_with_paths(scrut, code, &mut idents, &mut paths);
+            scrutinee_uses.extend(paths);
+            scrutinee_uses.extend(idents);
+            // A source member scrutinee gets a value node of its own so the
+            // bindings read a Source-labelled definition.
+            if needs_scrutinee_value && let Some(label) = member_source {
+                let synth = format!("__nyx_scrut_{}", g.node_count());
+                let n = g.add_node(NodeInfo {
+                    kind: StmtKind::Seq,
+                    call: CallMeta {
+                        callee: text_of(scrut, code),
+                        ..Default::default()
+                    },
+                    taint: TaintMeta {
+                        labels: std::iter::once(label).collect(),
+                        defines: Some(synth.clone()),
+                        uses: std::mem::take(&mut scrutinee_uses),
+                        ..Default::default()
+                    },
+                    ast: AstMeta {
+                        span: (scrut.start_byte(), scrut.end_byte()),
+                        enclosing_func: enclosing_func.map(|s| s.to_string()),
+                    },
+                    ..Default::default()
+                });
+                connect_all(g, &dispatch_preds, n, EdgeKind::Seq);
+                dispatch_preds = vec![n];
+                scrutinee_uses = vec![synth];
+            }
+        }
+    }
+    if !go_alias.is_empty() {
+        let span = ast
+            .child_by_field_name("alias")
+            .map(|a| (a.start_byte(), a.end_byte()))
+            .unwrap_or((ast.start_byte(), ast.start_byte()));
+        let n = push_binding_node(g, span, go_alias, scrutinee_uses.clone(), enclosing_func);
+        connect_all(g, &dispatch_preds, n, EdgeKind::Seq);
+        dispatch_preds = vec![n];
     }
 
     // Grammar didn't expose recognisable case nodes, fall back to a single
@@ -584,8 +1284,7 @@ pub(super) fn build_switch<'a>(
             0,
             analysis_rules,
         );
-        connect_all(g, preds, header, EdgeKind::Seq);
-        let mut switch_breaks: Vec<NodeIndex> = Vec::new();
+        connect_all(g, &dispatch_preds, header, EdgeKind::Seq);
         let mut frontier = vec![header];
         let mut cursor = container.walk();
         for child in container.children(&mut cursor) {
@@ -600,7 +1299,11 @@ pub(super) fn build_switch<'a>(
                 enclosing_func,
                 call_ordinal,
                 analysis_rules,
-                &mut switch_breaks,
+                if owns_break {
+                    &mut switch_breaks
+                } else {
+                    &mut *break_targets
+                },
                 continue_targets,
                 throw_targets,
                 bodies,
@@ -613,9 +1316,26 @@ pub(super) fn build_switch<'a>(
         return exits;
     }
 
+    // Rust `match` and Go `select` always take one arm: with no explicit
+    // default, the last (unguarded) arm is the fallback, so no no-match path
+    // escapes past the construct.
+    if switch_is_exhaustive(ast, lang)
+        && !cases.iter().any(|(_, d)| *d)
+        && let Some(last) = cases.last_mut()
+        && case_guard(last.0, lang).is_none()
+    {
+        last.1 = true;
+    }
+
     // Whether this switch's cases are mutually exclusive (no fall-through).
-    // Only exclusive switches may have `default` reordered to the cascade tail.
+    // Only exclusive switches may have `default` reordered to the cascade
+    // tail, and only while no Go case falls through explicitly (that keeps
+    // the source order load-bearing).
     let is_exclusive = switch_is_exclusive(lang, &cases);
+    let any_explicit_fallthrough = cases
+        .iter()
+        .any(|(c, _)| case_ends_with_fallthrough(*c, lang));
+    let reorder_default = is_exclusive && !any_explicit_fallthrough;
 
     // Reorder so the default arm (if any) sits at the tail of the cascade.
     // Reordering case dispatch is semantically harmless ONLY for mutually
@@ -626,14 +1346,13 @@ pub(super) fn build_switch<'a>(
     // into it, so the source order MUST be preserved — reordering there breaks
     // the fall-through Seq layer and produces both missed and phantom flows.
     let default_pos = cases.iter().position(|(_, d)| *d);
-    if is_exclusive
+    if reorder_default
         && let Some(pos) = default_pos
         && pos != cases.len() - 1
     {
         let default_pair = cases.remove(pos);
         cases.push(default_pair);
     }
-    let has_default = default_pos.is_some();
 
     // For mutually-exclusive switch shapes (Rust match, Go switch, Java
     // arrow-switch), pre-extract the scrutinee text + idents so the synthetic
@@ -643,21 +1362,13 @@ pub(super) fn build_switch<'a>(
     // reachable behavior remains correct in that case.
     let supports_exclusive_cases = lang_has_exclusive_cases(lang) || lang == "java";
     let (scrutinee_text, scrutinee_idents) = if supports_exclusive_cases {
-        match extract_scrutinee_node(ast, lang) {
+        match scrutinee {
             Some(scrut) => {
                 let mut idents = Vec::new();
                 collect_idents(scrut, code, &mut idents);
                 idents.sort();
                 idents.dedup();
-                let text = text_of(scrut, code).map(|s| {
-                    // Java's `condition` field includes the surrounding parens.
-                    let trimmed = s.trim();
-                    if trimmed.starts_with('(') && trimmed.ends_with(')') {
-                        trimmed[1..trimmed.len() - 1].trim().to_string()
-                    } else {
-                        trimmed.to_string()
-                    }
-                });
+                let text = text_of(scrut, code).map(|s| s.trim().to_string());
                 // Keep only when the scrutinee is a single bare identifier;
                 // anything more complex falls back to no condition_text. This
                 // prevents synthesizing nonsense like `f(x) == 200`.
@@ -675,10 +1386,15 @@ pub(super) fn build_switch<'a>(
         (None, Vec::new())
     };
 
-    let mut switch_breaks: Vec<NodeIndex> = Vec::new();
     let mut fallthrough_exits: Vec<NodeIndex> = Vec::new();
-    let mut last_header_false: Option<NodeIndex> = None;
-    let mut chain_preds: Vec<NodeIndex> = preds.to_vec();
+    let mut exclusive_exits: Vec<NodeIndex> = Vec::new();
+    // Nodes whose "no case matched yet" path continues to the next dispatch
+    // target (Seq edges), and the subset of them that are branch headers and
+    // also need a False edge there.
+    let mut chain_preds: Vec<NodeIndex> = dispatch_preds;
+    let mut false_srcs: Vec<NodeIndex> = Vec::new();
+    // Set once a tail default has taken over the no-match path.
+    let mut no_match_consumed = false;
     // First node of the `default` body for a fall-through switch where the
     // default is NOT at the tail. The cumulative no-match path (the last
     // non-default header's False edge) is wired into it after the loop, so the
@@ -692,28 +1408,29 @@ pub(super) fn build_switch<'a>(
         // A `default` arm carries no discriminant test, so it never gets its
         // own dispatch If. For exclusive switches it has been reordered to the
         // tail (`is_last`); for fall-through switches it stays in source
-        // position (`!is_exclusive`) and is wired into the Seq fall-through
-        // chain instead of acting as a conditional branch.
-        let default_no_dispatch = is_default && (is_last || !is_exclusive);
+        // position and is wired into the Seq fall-through chain instead of
+        // acting as a conditional branch.
+        let default_no_dispatch = is_default && (is_last || !reorder_default);
 
-        // Default at the chain tail doesn't get its own dispatch If, the
-        // previous header's False edge already targets it directly.
-        let case_first_preds: Vec<NodeIndex> = if default_no_dispatch {
+        // Predecessors of the case's first node, the header whose True edge
+        // enters it, and the headers whose False edge does (tail default).
+        let mut entry: Vec<NodeIndex>;
+        let mut true_src: Option<NodeIndex> = None;
+        let mut false_into_case: Vec<NodeIndex> = Vec::new();
+        if default_no_dispatch {
             // Body entry = fall-through from the preceding case body.
-            let mut p = std::mem::take(&mut fallthrough_exits);
+            entry = std::mem::take(&mut fallthrough_exits);
             if is_last {
-                // Tail default: the previous header's False branch also lands
-                // here directly (legacy behavior preserved for exclusive
-                // switches and tail defaults).
-                p.extend(chain_preds.iter().copied());
-                last_header_false = chain_preds.first().copied();
+                // Tail default: the no-match path lands here.
+                entry.append(&mut chain_preds);
+                false_into_case = std::mem::take(&mut false_srcs);
+                no_match_consumed = true;
             }
             // For a non-tail (fall-through) default the dispatch chain must
-            // continue PAST it, so `chain_preds` / `last_header_false` are left
-            // untouched and the next case's dispatch header still receives the
-            // previous header's False edge. The cumulative no-match entry is
-            // recorded below once the body's first node is known.
-            p
+            // continue PAST it, so the chain is left untouched and the next
+            // case's dispatch header still receives the previous header's
+            // False edge. The cumulative no-match entry is recorded below once
+            // the body's first node is known.
         } else {
             // Normal case: synthesize a per-case dispatch header. We tie it
             // to the case AST so the node carries a useful span.
@@ -751,26 +1468,61 @@ pub(super) fn build_switch<'a>(
                 }
             }
             connect_all(g, &chain_preds, header, EdgeKind::Seq);
-            // If there was a previous header in the chain, that header's
-            // False edge needs to land on this header.
-            if let Some(prev) = last_header_false {
+            // The previous headers' False edges land on this header.
+            for &prev in &false_srcs {
                 g.add_edge(prev, header, EdgeKind::False);
             }
-
-            let mut p = vec![header];
-            p.append(&mut fallthrough_exits);
-            last_header_false = Some(header);
+            entry = vec![header];
+            entry.append(&mut fallthrough_exits);
             chain_preds = vec![header];
-            p
-        };
+            false_srcs = vec![header];
+            true_src = Some(header);
+        }
 
         // Snapshot the next node index so we can attach the True edge to
-        // the case body's first emitted node.
-        let body_first_idx = NodeIndex::new(g.node_count());
+        // the case's first emitted node.
+        let case_first_idx = NodeIndex::new(g.node_count());
 
+        // Pattern bindings run as soon as the arm is chosen, before its guard.
+        let bindings = case_bindings(case, lang, code);
+        if !bindings.is_empty() {
+            let pattern = case.child_by_field_name("pattern").or_else(|| {
+                let mut cursor = case.walk();
+                case.children(&mut cursor)
+                    .find(|c| matches!(c.kind(), "case_pattern" | "switch_label"))
+            });
+            let span = pattern
+                .map(|p| (p.start_byte(), p.end_byte()))
+                .unwrap_or((case.start_byte(), case.start_byte()));
+            let b = push_binding_node(g, span, bindings, scrutinee_uses.clone(), enclosing_func);
+            connect_all(g, &entry, b, EdgeKind::Seq);
+            entry = vec![b];
+        }
+
+        // A guarded case is a second test: guard False continues the dispatch.
+        let guard_header = case_guard(case, lang).map(|guard| {
+            let gh = push_condition_node(
+                g,
+                guard,
+                lang,
+                code,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+            );
+            connect_all(g, &entry, gh, EdgeKind::Seq);
+            gh
+        });
+        if let Some(gh) = guard_header {
+            entry = vec![gh];
+            chain_preds.push(gh);
+            false_srcs.push(gh);
+        }
+
+        let body_first_idx = NodeIndex::new(g.node_count());
         let exits = build_sub(
-            case,
-            &case_first_preds,
+            case_body(case, lang),
+            &entry,
             g,
             lang,
             code,
@@ -779,66 +1531,91 @@ pub(super) fn build_switch<'a>(
             enclosing_func,
             call_ordinal,
             analysis_rules,
-            &mut switch_breaks,
+            if owns_break {
+                &mut switch_breaks
+            } else {
+                &mut *break_targets
+            },
             continue_targets,
             throw_targets,
             bodies,
             next_body_id,
             current_body_id,
         );
+        // A case that emits no node (`_ => {}`, `case 1:` with an empty
+        // body) still needs a concrete branch target: without one the
+        // header's True/False labelling is lost and SSA folds both of its
+        // successors into one.  Same synthetic pass-through node the `if`
+        // lowering uses for a missing else.
+        let exits = if body_first_idx.index() == g.node_count() && exits == entry {
+            let pass = push_pass_node(g, case.end_byte(), enclosing_func);
+            connect_all(g, &entry, pass, EdgeKind::Seq);
+            vec![pass]
+        } else {
+            exits
+        };
 
-        // Wire the dispatch True edge from this header (or from the previous
-        // header for a tail-default) to the first node of the case body.
-        if body_first_idx.index() < g.node_count() {
-            let header_for_true = if default_no_dispatch {
-                if is_last {
-                    // Tail default: the previous header's False already lands
-                    // here via the EdgeKind::Seq inside `case_first_preds`; we
-                    // additionally emit a False edge directly so SSA labels the
-                    // branch.
-                    if let Some(prev) = last_header_false {
-                        g.add_edge(prev, body_first_idx, EdgeKind::False);
-                    }
-                } else {
-                    // Non-tail fall-through default: defer wiring the no-match
-                    // entry until the last non-default header's False edge is
-                    // known (after the loop). The body's only in-edge for now
-                    // is the source-order fall-through from the preceding case.
-                    pending_default_no_match = Some(body_first_idx);
+        // Wire the dispatch True edge from this header (or the False edges of
+        // the previous headers for a tail default) to the case's first node.
+        if case_first_idx.index() < g.node_count() {
+            if let Some(h) = true_src {
+                g.add_edge(h, case_first_idx, EdgeKind::True);
+            } else if is_last && default_no_dispatch {
+                // Tail default: the previous headers already reach it via the
+                // Seq edges from `entry`; the False edges let SSA label the
+                // branch.
+                for prev in false_into_case {
+                    g.add_edge(prev, case_first_idx, EdgeKind::False);
                 }
-                None
             } else {
-                // Last header in chain_preds is the only entry.
-                chain_preds.first().copied()
-            };
-            if let Some(h) = header_for_true {
-                g.add_edge(h, body_first_idx, EdgeKind::True);
+                // Non-tail fall-through default: defer wiring the no-match
+                // entry until the last non-default header's False edge is
+                // known (after the loop). The body's only in-edge for now
+                // is the source-order fall-through from the preceding case.
+                pending_default_no_match = Some(case_first_idx);
             }
         }
+        if let Some(gh) = guard_header
+            && body_first_idx.index() < g.node_count()
+        {
+            g.add_edge(gh, body_first_idx, EdgeKind::True);
+        }
 
-        fallthrough_exits = exits;
-        let _ = is_default;
+        // An exclusive case leaves the switch; a fall-through one continues
+        // into the next case body.
+        if is_exclusive && !case_ends_with_fallthrough(case, lang) {
+            exclusive_exits.extend(exits);
+        } else {
+            fallthrough_exits = exits;
+        }
     }
 
-    // Resolve the cumulative no-match (the last non-default header's False
-    // edge):
+    // Resolve the cumulative no-match path (the last headers' False edges):
     //   - If the `default` arm sits mid-chain (fall-through switch), the
-    //     no-match path enters the default body — wire the deferred False edge
-    //     into it. The default stayed in source position for the fall-through
-    //     Seq layer, so this is the only edge making it reachable on no-match.
-    //   - Otherwise, with no reachable default (no default arm, or it was the
-    //     tail and already consumed the False edge), the no-match path escapes
-    //     to the post-switch frontier.
+    //     no-match path enters the default body: wire the deferred False
+    //     edges into it. The default stayed in source position for the
+    //     fall-through Seq layer, so these are the only edges making it
+    //     reachable on no-match.
+    //   - Otherwise, unless a tail default already took it over, the
+    //     no-match path escapes to the post-switch frontier.
     let mut exits: Vec<NodeIndex> = switch_breaks;
+    exits.append(&mut exclusive_exits);
     exits.append(&mut fallthrough_exits);
     if let Some(default_first) = pending_default_no_match {
-        if let Some(prev) = last_header_false {
+        for &prev in &false_srcs {
             g.add_edge(prev, default_first, EdgeKind::False);
         }
-    } else if !has_default {
-        if let Some(prev) = last_header_false {
-            exits.push(prev);
+    } else if !no_match_consumed {
+        let pass = push_pass_node(g, ast.end_byte(), enclosing_func);
+        for &prev in &chain_preds {
+            let kind = if false_srcs.contains(&prev) {
+                EdgeKind::False
+            } else {
+                EdgeKind::Seq
+            };
+            g.add_edge(prev, pass, kind);
         }
+        exits.push(pass);
     }
     exits
 }
@@ -1083,9 +1860,10 @@ pub(super) fn build_try<'a>(
             finally_preds.extend(&try_throw_targets);
         }
 
-        let finally_exits = build_sub(
+        build_finally_paths(
             finally_node,
             &finally_preds,
+            try_body_first_idx,
             g,
             lang,
             code,
@@ -1100,8 +1878,7 @@ pub(super) fn build_try<'a>(
             bodies,
             next_body_id,
             current_body_id,
-        );
-        finally_exits
+        )
     } else {
         // No finally: return try normal exits + catch exits
         let mut exits = try_exits;

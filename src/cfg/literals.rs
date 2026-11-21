@@ -5,10 +5,14 @@
 //! const propagation.
 
 use super::conditions::unwrap_parens;
-use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
+use super::helpers::{
+    collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements,
+    find_condition_subtree, for_each_parts,
+};
 use super::{
-    anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
-    first_call_ident, root_receiver_text, text_of,
+    RmwAssign, anon_fn_name, collect_idents, collect_idents_with_paths,
+    find_constructor_type_child, first_call_ident, rmw_assignment, rmw_target_define,
+    rmw_target_reads, root_receiver_text, text_of,
 };
 use crate::labels::{Cap, Kind, lookup};
 use smallvec::SmallVec;
@@ -2448,6 +2452,25 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
+/// `(defines, uses)` of a read-modify-write assignment (`x += y`, `x ||= y`,
+/// `i++`).  The target is both the define and a use, and its reads come first
+/// in `uses` so SSA lowering sees `x' = op(x, y)` with the old value as the
+/// left operand.  A plain `x = y` takes the other `def_use` paths and never
+/// lists its target as a use.
+fn rmw_def_use(rmw: &RmwAssign, code: &[u8]) -> (Option<String>, Vec<String>) {
+    let defs = rmw_target_define(rmw.target, code);
+    let mut uses = rmw_target_reads(rmw.target, code);
+    if let Some(rhs) = rmw.value {
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        collect_idents_with_paths(rhs, code, &mut idents, &mut paths);
+        uses.extend(paths);
+        uses.extend(idents);
+        uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
+    }
+    (defs, uses)
+}
+
 /// Return `(defines, uses, extra_defines, array_pattern_indices,
 /// rhs_array_elements)` for the AST fragment `ast`.
 ///
@@ -2558,6 +2581,16 @@ pub(super) fn def_use(
                     // Only use left/right fields for actual assignment nodes, binary
                     // expressions also have left/right but are not definitions.
                     let is_assign = matches!(lookup(lang, child.kind()), Kind::Assignment);
+                    // `x += y;` / `x++;` wrapped in an expression statement.
+                    if is_assign
+                        && defs.is_none()
+                        && let Some(rmw) = rmw_assignment(child)
+                    {
+                        let (d, u) = rmw_def_use(&rmw, code);
+                        defs = d;
+                        uses.extend(u);
+                        continue;
+                    }
                     let child_name = child
                         .child_by_field_name("name")
                         .or_else(|| child.child_by_field_name("declarator"))
@@ -2649,6 +2682,10 @@ pub(super) fn def_use(
         // SSA lowering's destructure-promise rewrite can paint each
         // binding from the matching combinator argument.
         Kind::Assignment => {
+            if let Some(rmw) = rmw_assignment(ast) {
+                let (defs, uses) = rmw_def_use(&rmw, code);
+                return (defs, uses, Vec::new(), SmallVec::new(), SmallVec::new());
+            }
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
@@ -2718,7 +2755,7 @@ pub(super) fn def_use(
         // the value expression.  E.g. `if let Ok(cmd) = env::var("CMD")`
         // defines `cmd` and uses `env`, `var`, `CMD`.
         Kind::If | Kind::While => {
-            let cond = ast.child_by_field_name("condition");
+            let cond = find_condition_subtree(ast, lang);
             if let Some(c) = cond
                 && c.kind() == "let_condition"
             {
@@ -2739,84 +2776,46 @@ pub(super) fn def_use(
                 return (defs, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
-            let mut idents = Vec::new();
-            let mut paths = Vec::new();
-            collect_idents_with_paths(ast, code, &mut idents, &mut paths);
-            let mut uses = paths;
-            uses.extend(idents);
-            (None, uses, vec![], SmallVec::new(), SmallVec::new())
+            // The header reads its condition only: the branches and the loop
+            // body are lowered as nodes of their own.
+            (
+                None,
+                header_uses(cond, code),
+                vec![],
+                SmallVec::new(),
+                SmallVec::new(),
+            )
         }
+
+        Kind::InfiniteLoop => (None, vec![], vec![], SmallVec::new(), SmallVec::new()),
 
         // for-in / for-of / Python `for x in iter:` ─────────────────────────
         //
-        // Tree-sitter classifies these as `Kind::For` with a `left`/`right`
-        // field pair (binding pattern + iterable).  Without an explicit
-        // arm here, the default branch collects every ident as a `use` and
-        // never registers the iteration binding as a `define`, so taint
-        // entering the iterable does not propagate into the body's
-        // references to the binding (`for (const [a, b] of obj) { sink(a) }`
-        // would lose the flow at `a`).
+        // A for-each loop defines its binding from the iterable
+        // (`for_each_parts` maps every grammar's field layout, including Go's
+        // `range_clause`, Java `enhanced_for_statement` and PHP `foreach`).
+        // Without the define, taint entering the iterable never reaches the
+        // body's references to the binding (`for (const [a, b] of obj) {
+        // sink(a) }`, OWASP's `for (Cookie c : req.getCookies())`,
+        // CVE-2026-41422 daptin's Go `range c.QueryArray("col")`).
         //
-        // C-style `for_statement` has no `left`/`right` fields (it uses
-        // `initializer`/`condition`/`increment`), so this path falls through
-        // to the default-collecting behaviour for those, preserving today's
-        // semantics.
-        //
-        // Go's `for ident := range iter` shape places the binding pattern
-        // and iterable on a `range_clause` child of the `for_statement`
-        // rather than as direct fields.  Without the range_clause lookup
-        // below, taint from the iterable never reaches the loop binding
-        // (CVE-2026-41422 daptin: `c.QueryArray("col")` loop var `project`
-        // flows into `goqu.L(project)` SQL_QUERY sink).
+        // A C-style three-clause loop has neither part.  Its header reads the
+        // init / condition / update clauses but never the body: Go's
+        // `for_clause` and Java's `init` are not lowered as nodes of their
+        // own, so their identifiers stay on the header.
         Kind::For => {
-            let mut left = ast.child_by_field_name("left");
-            let mut right = ast.child_by_field_name("right");
+            let (left, right) = for_each_parts(ast, lang);
             if left.is_none() && right.is_none() {
-                let mut cursor = ast.walk();
-                for child in ast.children(&mut cursor) {
-                    if child.kind() == "range_clause" {
-                        left = child.child_by_field_name("left");
-                        right = child.child_by_field_name("right");
-                        break;
-                    }
-                }
-            }
-            // Java `enhanced_for_statement` binds the loop variable on the
-            // `name` field and the iterable on the `value` field; Ruby's
-            // `for x in coll` uses `pattern`/`value`.  Neither uses the
-            // JS/Python `left`/`right` convention, so without this mapping
-            // the loop binding was never recorded as a define and taint on
-            // the iterable could not reach the loop variable (OWASP's
-            // dominant `for (Cookie c : req.getCookies())` shape).
-            if left.is_none() && right.is_none() {
-                if let Some(v) = ast.child_by_field_name("value") {
-                    left = ast
-                        .child_by_field_name("name")
-                        .or_else(|| ast.child_by_field_name("pattern"));
-                    right = Some(v);
-                }
-            }
-            // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`:
-            // the iterable and binding are unnamed children separated by the
-            // `as` keyword (only `body` is a named field).  Map the binding
-            // onto `left` and the iterable onto `right` so the shared
-            // define/use logic below records the loop variable.
-            if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
-                let mut cursor = ast.walk();
-                let kids: Vec<Node> = ast.children(&mut cursor).collect();
-                if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
-                    right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
-                    left = kids[as_pos + 1..]
-                        .iter()
-                        .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
-                        .copied();
-                }
-            }
-            if left.is_none() && right.is_none() {
-                // C-style for, defer to default ident collection.
+                let body = ast.child_by_field_name("body");
                 let mut idents = Vec::new();
                 let mut paths = Vec::new();
-                collect_idents_with_paths(ast, code, &mut idents, &mut paths);
+                let mut cursor = ast.walk();
+                for child in ast.named_children(&mut cursor) {
+                    if Some(child) == body || lookup(lang, child.kind()) == Kind::Block {
+                        continue;
+                    }
+                    collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                }
                 let mut uses = paths;
                 uses.extend(idents);
                 return (None, uses, vec![], SmallVec::new(), SmallVec::new());
@@ -2848,6 +2847,16 @@ pub(super) fn def_use(
             (defs, uses, extra_defs, SmallVec::new(), SmallVec::new())
         }
 
+        // Python `elif` / PHP `elseif` guard nodes (their grammar kind maps
+        // to `Kind::Block`): the guard reads its condition, not its body.
+        _ if matches!(ast.kind(), "elif_clause" | "else_if_clause") => (
+            None,
+            header_uses(ast.child_by_field_name("condition"), code),
+            vec![],
+            SmallVec::new(),
+            SmallVec::new(),
+        ),
+
         // everything else – no definition, but may read vars
         _ => {
             let mut idents = Vec::new();
@@ -2858,6 +2867,19 @@ pub(super) fn def_use(
             (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
     }
+}
+
+/// Uses of a branch or loop header: the dotted paths and identifiers of its
+/// condition, none when it has no condition.
+fn header_uses(cond: Option<Node>, code: &[u8]) -> Vec<String> {
+    let Some(cond) = cond else {
+        return Vec::new();
+    };
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(cond, code, &mut idents, &mut paths);
+    paths.extend(idents);
+    paths
 }
 
 /// One match from [`extract_shell_array_payload_idents`].

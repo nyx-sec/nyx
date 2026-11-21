@@ -2,7 +2,8 @@ use super::helpers::first_member_label;
 use super::{
     AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
     build_cond_arith, collect_idents, connect_all, detect_eq_with_const, detect_negation,
-    has_call_descendant, member_expr_text, push_node, text_of, try_lower_jsx_dangerous_html,
+    has_call_descendant, member_expr_text, push_node, rmw_assignment, text_of,
+    try_lower_jsx_dangerous_html,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify};
 use crate::utils::snippet::truncate_at_char_boundary;
@@ -581,7 +582,9 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
                     found = Some((name, rhs));
                 }
             }
-            "assignment_expression" => {
+            // `x += c ? a : b` reads `x`; the diamond would rebind it as a
+            // plain `x = a | b`.
+            "assignment_expression" if rmw_assignment(child).is_none() => {
                 let (Some(left), Some(right)) = (
                     child.child_by_field_name("left"),
                     child.child_by_field_name("right"),

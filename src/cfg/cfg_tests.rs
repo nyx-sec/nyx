@@ -4831,3 +4831,1357 @@ app.get('/probe', (req, res) => {
         }
     }
 }
+
+// ── Read-modify-write assignments (`x += y`, `x ||= y`) ─────────────────
+
+fn rmw_all_nodes(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<NodeInfo> {
+    let fc = parse_to_file_cfg(src, lang_str, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// The single node that defines `var` from a read-modify-write.
+fn rmw_def_node(nodes: &[NodeInfo], var: &str) -> NodeInfo {
+    let defs: Vec<&NodeInfo> = nodes
+        .iter()
+        .filter(|n| n.rmw_assign && n.taint.defines.as_deref() == Some(var))
+        .collect();
+    assert_eq!(
+        defs.len(),
+        1,
+        "expected one read-modify-write def of `{var}`, got {defs:#?}"
+    );
+    defs[0].clone()
+}
+
+fn assert_compound_reads_target(src: &[u8], lang_str: &str, ts_lang: Language) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(
+        n.taint.uses.first().map(String::as_str),
+        Some("x"),
+        "{lang_str}: the target must be the first use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.uses.iter().any(|u| u == "y"),
+        "{lang_str}: the right-hand side must stay a use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.const_text.is_none(),
+        "{lang_str}: a compound assignment is not a literal def"
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_javascript() {
+    assert_compound_reads_target(
+        b"function f(y) { let x = 'a'; x += y; return x; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_typescript() {
+    assert_compound_reads_target(
+        b"function f(y: string) { let x = 'a'; x ??= y; return x; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_python() {
+    assert_compound_reads_target(
+        b"def f(y):\n    x = 'a'\n    x += y\n    return x\n",
+        "python",
+        Language::from(tree_sitter_python::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_php() {
+    assert_compound_reads_target(
+        b"<?php function f($y) { $x = 'a'; $x .= $y; return $x; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_rust() {
+    assert_compound_reads_target(
+        b"fn f(y: &str) -> String { let mut x = String::new(); x += y; x }",
+        "rust",
+        Language::from(tree_sitter_rust::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_java() {
+    assert_compound_reads_target(
+        b"class A { String f(String y) { String x = \"a\"; x += y; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_go() {
+    assert_compound_reads_target(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx += y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_c() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x += y; return x; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_cpp() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x <<= y; return x; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_ruby() {
+    assert_compound_reads_target(
+        b"def f(y)\n  x = 'a'\n  x ||= y\n  x\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+}
+
+/// A plain `x = y` must not start reading its own target.
+#[test]
+fn plain_assign_does_not_read_target() {
+    let nodes = rmw_all_nodes(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx = y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+    let n = nodes
+        .iter()
+        .find(|n| n.taint.defines.as_deref() == Some("x") && n.taint.uses == ["y"])
+        .expect("`x = y` should define x from y alone");
+    assert!(!n.rmw_assign);
+}
+
+/// `n += 1` keeps its literal operand as an Add, so SSA lowering builds
+/// `n' = n + 1` instead of a stale copy or the constant `1`.
+#[test]
+fn compound_assign_literal_operand_is_bin_op() {
+    let nodes = rmw_all_nodes(
+        b"class A { void f(int n) { n += 1; g(n); } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "n");
+    assert_eq!(n.taint.uses, vec!["n".to_string()]);
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+    assert_eq!(n.bin_op_const, Some(1));
+    assert!(n.taint.const_text.is_none());
+}
+
+/// The operator comes from the compound token, not from a binary
+/// expression inside the right-hand side.
+#[test]
+fn compound_assign_bin_op_ignores_rhs_operator() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String s, int a, int b) { s += a - b; return s; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(rmw_def_node(&nodes, "s").bin_op, Some(BinOp::Add));
+}
+
+/// Python `*=` / `%=` / `/=` work on strings and paths, so they must not
+/// type the result as an integer.
+#[test]
+fn compound_assign_python_overloaded_ops_have_no_bin_op() {
+    for op in ["*=", "%=", "/=", "|="] {
+        let src = format!("def f(s, y):\n    s {op} y\n    return s\n");
+        let nodes = rmw_all_nodes(
+            src.as_bytes(),
+            "python",
+            Language::from(tree_sitter_python::LANGUAGE),
+        );
+        assert_eq!(rmw_def_node(&nodes, "s").bin_op, None, "python `{op}`");
+    }
+}
+
+/// A member target reads its own dotted path only, never the receiver:
+/// `el.innerHTML += "<b>"` does not read `el` as a value.
+#[test]
+fn compound_assign_member_target_reads_path_only() {
+    let nodes = rmw_all_nodes(
+        b"function f(el) { el.innerHTML += '<b>x</b>'; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "el.innerHTML");
+    assert_eq!(n.taint.uses, vec!["el.innerHTML".to_string()]);
+}
+
+/// `q += fmt(x)` splits into the call (which neither reads nor defines
+/// `q`) and an unlabelled combine node `q = q + <call>` fed by the call.
+#[test]
+fn compound_assign_call_rhs_splits_off_combine_node() {
+    let src = b"function f(x) { let q = 'a'; q += fmt(x); return q; }";
+    let fc = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let body = &fc.bodies[1];
+    let g = &body.graph;
+    let call = g
+        .node_indices()
+        .find(|&i| g[i].call.callee.as_deref() == Some("fmt"))
+        .expect("call node for fmt");
+    assert!(g[call].taint.defines.is_none());
+    assert!(!g[call].taint.uses.iter().any(|u| u == "q"));
+    let succs: Vec<_> = g.neighbors(call).collect();
+    assert_eq!(
+        succs.len(),
+        1,
+        "call should flow only into the combine node"
+    );
+    let combine = &g[succs[0]];
+    assert!(combine.rmw_assign && combine.rmw_rhs_from_pred);
+    assert_eq!(combine.taint.defines.as_deref(), Some("q"));
+    assert_eq!(combine.taint.uses, vec!["q".to_string()]);
+    assert!(combine.taint.labels.is_empty());
+    assert_eq!(combine.bin_op, Some(BinOp::Add));
+}
+
+/// `conn ||= Conn.new(..)` stays a single node that defines the target, so
+/// the memoised-acquire idiom keeps its type and resource tracking.
+#[test]
+fn logical_assign_call_rhs_is_not_split() {
+    let nodes = rmw_all_nodes(
+        b"def f(dsn)\n  conn ||= PG::Connection.new(dsn)\n  conn\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "conn");
+    assert_eq!(n.kind, StmtKind::Call);
+    assert!(!n.rmw_rhs_from_pred);
+}
+
+/// Java `x += c ? a : b` must not take the ternary diamond, which rebinds
+/// the target as a plain overwrite.
+#[test]
+fn compound_assign_ternary_rhs_keeps_target() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String x, boolean c, String a, String b) { x += c ? a : b; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(n.taint.uses.first().map(String::as_str), Some("x"));
+    assert!(n.taint.uses.iter().any(|u| u == "a"));
+    assert!(n.taint.uses.iter().any(|u| u == "b"));
+}
+
+/// `counts[k] += 1` updates an existing slot; it is not a
+/// prototype-pollution write even with an attacker-chosen key.
+#[test]
+fn compound_subscript_write_is_not_prototype_pollution_sink() {
+    let nodes = rmw_all_nodes(
+        b"function f(req) { const counts = {}; counts[req.query.k] += 1; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !nodes.iter().any(|n| n
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::PROTOTYPE_POLLUTION)))),
+        "compound subscript store must not carry a PROTOTYPE_POLLUTION sink"
+    );
+}
+
+/// `i++` / `--i` define their operand from its old value plus one, so SSA
+/// lowering builds `i' = i + 1` instead of leaving `i` unchanged.
+fn assert_update_defines_operand(
+    src: &[u8],
+    lang_str: &str,
+    ts_lang: Language,
+    var: &str,
+    op: BinOp,
+) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, var);
+    assert_eq!(n.taint.uses, vec![var.to_string()], "{lang_str}");
+    assert_eq!(n.bin_op, Some(op), "{lang_str}");
+    assert_eq!(n.bin_op_const, Some(1), "{lang_str}");
+    assert!(n.taint.const_text.is_none(), "{lang_str}");
+}
+
+#[test]
+fn update_expr_defines_operand_javascript() {
+    assert_update_defines_operand(
+        b"function f() { let i = 0; i++; return i; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_typescript() {
+    assert_update_defines_operand(
+        b"function f(): number { let i = 0; --i; return i; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        "i",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_java() {
+    assert_update_defines_operand(
+        b"class A { int f() { int i = 0; i++; return i; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_c() {
+    assert_update_defines_operand(
+        b"char *f(char *p) { ++p; return p; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+        "p",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_cpp() {
+    assert_update_defines_operand(
+        b"int f() { int n = 3; n--; return n; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+        "n",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_php() {
+    assert_update_defines_operand(
+        b"<?php function f() { $i = 0; $i++; return $i; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_go() {
+    for (stmt, op) in [("i++", BinOp::Add), ("i--", BinOp::Sub)] {
+        let src = format!("package main\nfunc f() int {{\n\ti := 0\n\t{stmt}\n\treturn i\n}}\n");
+        assert_update_defines_operand(
+            src.as_bytes(),
+            "go",
+            Language::from(tree_sitter_go::LANGUAGE),
+            "i",
+            op,
+        );
+    }
+}
+
+/// The `for` update clause is a real definition, so the loop header gets a
+/// phi joining the initial value and the incremented one.
+#[test]
+fn for_update_clause_defines_counter() {
+    let nodes = rmw_all_nodes(
+        b"function f(xs) { for (let i = 0; i < xs.length; i++) { g(xs[i]); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "i");
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+}
+
+//   Multi-way branches: match / select / case / arrow switch
+
+/// The Call node whose callee is exactly `callee`.
+fn call_named(cfg: &Cfg, callee: &str) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .unwrap_or_else(|| panic!("expected a Call node for `{callee}`"))
+}
+
+/// Nodes reachable from `from` over forward (Seq/True/False) edges,
+/// skipping `blocked` nodes.
+fn forward_reach(
+    cfg: &Cfg,
+    from: NodeIndex,
+    blocked: &[NodeIndex],
+) -> std::collections::HashSet<NodeIndex> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![from];
+    while let Some(n) = stack.pop() {
+        if blocked.contains(&n) || !seen.insert(n) {
+            continue;
+        }
+        for e in cfg.edges(n) {
+            if matches!(e.weight(), EdgeKind::Seq | EdgeKind::True | EdgeKind::False) {
+                stack.push(e.target());
+            }
+        }
+    }
+    seen
+}
+
+fn rust_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "rust", Language::from(tree_sitter_rust::LANGUAGE))
+}
+
+fn go_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "go", Language::from(tree_sitter_go::LANGUAGE))
+}
+
+fn java_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+}
+
+/// Go cases never fall through on their own: case 1's exits leave the
+/// switch instead of entering case 2's body.
+#[test]
+fn go_switch_cases_do_not_fall_through() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\tcase 2:\n\t\tb()\n\t}\n\tafter()\n}\n",
+    );
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(
+        !reach.contains(&call_named(&cfg, "b")),
+        "case 1 must not fall into case 2"
+    );
+    assert!(
+        reach.contains(&call_named(&cfg, "after")),
+        "case 1 must exit the switch"
+    );
+}
+
+/// An explicit `fallthrough` still chains into the next case body.
+#[test]
+fn go_switch_explicit_fallthrough_chains_next_case() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(reach.contains(&call_named(&cfg, "b")));
+}
+
+/// `fallthrough` into a default that sits mid-switch: the default keeps its
+/// source position, is entered from case 1 and on no-match, and does not
+/// fall into the case after it.
+#[test]
+fn go_switch_explicit_fallthrough_into_mid_default() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tdefault:\n\t\td()\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let (a, b, d) = (
+        call_named(&cfg, "a"),
+        call_named(&cfg, "b"),
+        call_named(&cfg, "d"),
+    );
+    assert!(forward_reach(&cfg, a, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, d, &[]).contains(&b));
+    assert!(
+        forward_reach(&cfg, entry, &[a]).contains(&d),
+        "default must be reachable on the no-match path"
+    );
+}
+
+/// `select` runs exactly one case: a returning case does not make the code
+/// after the select unreachable, and cases do not flow into each other.
+#[test]
+fn go_select_cases_are_exclusive() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(ch chan int, done chan bool) {\n\tselect {\n\tcase <-done:\n\t\treturn\n\tcase <-ch:\n\t\ta()\n\t}\n\tafter()\n}\n",
+    );
+    let after = call_named(&cfg, "after");
+    assert!(forward_reach(&cfg, entry, &[]).contains(&after));
+    assert!(forward_reach(&cfg, call_named(&cfg, "a"), &[]).contains(&after));
+    // The last case is the fallback, so the only dispatch test is case 1's.
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// The Go switch initializer and a call in the tag expression both get
+/// CFG nodes ahead of the dispatch.
+#[test]
+fn go_switch_init_and_call_tag_are_lowered() {
+    let (cfg, _) =
+        go_cfg(b"package p\nfunc f() {\n\tswitch x := g(); h(x) {\n\tcase 1:\n\t\ta()\n\t}\n}\n");
+    let g_node = call_named(&cfg, "g");
+    assert_eq!(cfg[g_node].taint.defines.as_deref(), Some("x"));
+    let h = call_named(&cfg, "h");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&h));
+    assert!(forward_reach(&cfg, h, &[]).contains(&call_named(&cfg, "a")));
+}
+
+/// `switch t := v.(type)` binds `t` from `v` for every clause.
+#[test]
+fn go_type_switch_alias_is_bound() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(v interface{}) {\n\tswitch t := v.(type) {\n\tcase string:\n\t\tuse(t)\n\t}\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "t").expect("alias binding node");
+    assert_eq!(bind.taint.uses, vec!["v".to_string()]);
+}
+
+/// A statement-level `match` lowers to one dispatch header per non-default
+/// arm, every arm body gets its own nodes, and arms do not flow into each
+/// other.
+#[test]
+fn rust_match_stmt_builds_dispatch_cascade() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: u8) {\n    match m {\n        1 => a(),\n        2 => { b(); }\n        _ => c(),\n    }\n    after();\n}\n",
+    );
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == 1".to_string()), "got {conds:?}");
+}
+
+/// `match` is exhaustive: the last arm is the fallback, so control cannot
+/// reach the code after the match without running one of the arms.
+#[test]
+fn rust_match_last_arm_is_default() {
+    let (cfg, entry) = rust_cfg(
+        b"fn f(r: Result<u8, u8>) {\n    match r {\n        Ok(v) => a(v),\n        Err(e) => b(e),\n    }\n    after();\n}\n",
+    );
+    let (a, b) = (call_named(&cfg, "a"), call_named(&cfg, "b"));
+    assert!(forward_reach(&cfg, entry, &[]).contains(&call_named(&cfg, "after")));
+    assert!(
+        !forward_reach(&cfg, entry, &[a, b]).contains(&call_named(&cfg, "after")),
+        "no no-match path may skip both arms"
+    );
+}
+
+/// Pattern bindings are defined from the scrutinee at the start of the arm.
+#[test]
+fn rust_match_arm_binding_defines_from_scrutinee() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(r: Result<String, E>) {\n    match r {\n        Ok(Foo { x, y: z }) => sink(x, z),\n        _ => {}\n    }\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "x").expect("binding node for x");
+    assert_eq!(bind.taint.extra_defines, vec!["z".to_string()]);
+    assert_eq!(bind.taint.uses, vec!["r".to_string()]);
+    let sink = call_named(&cfg, "sink");
+    let bind_idx = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .unwrap();
+    assert!(forward_reach(&cfg, bind_idx, &[]).contains(&sink));
+}
+
+/// A call scrutinee gets its own Call node, and its value reaches the arm
+/// bindings through a synthetic name.
+#[test]
+fn rust_match_call_scrutinee_gets_own_node() {
+    let (cfg, _) = rust_cfg(
+        b"fn f() {\n    match env::var(\"X\") {\n        Ok(v) => run(v),\n        Err(_) => {}\n    }\n}\n",
+    );
+    let scrut = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n].kind == StmtKind::Call
+                && cfg[n]
+                    .call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.contains("env::var"))
+        })
+        .expect("scrutinee Call node");
+    let synth = cfg[scrut].taint.defines.clone().expect("synthetic define");
+    assert!(synth.starts_with("__nyx_scrut_"));
+    let bind = find_node_defining(&cfg, "v").expect("binding node for v");
+    assert_eq!(bind.taint.uses, vec![synth]);
+}
+
+/// A guarded arm is a second test: its guard header carries the guard as
+/// its condition, and the guard's False edge continues the dispatch.
+#[test]
+fn rust_match_guard_gets_its_own_branch() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(x: Option<String>) {\n    match x {\n        Some(v) if ok(&v) => a(v),\n        _ => b(),\n    }\n}\n",
+    );
+    let guard = if_nodes(&cfg)
+        .into_iter()
+        .find(|&n| cfg[n].condition_text.as_deref() == Some("ok(&v)"))
+        .expect("guard header");
+    let a = call_named(&cfg, "a");
+    let b = call_named(&cfg, "b");
+    assert!(
+        cfg.edges(guard)
+            .any(|e| matches!(e.weight(), EdgeKind::False))
+    );
+    assert!(forward_reach(&cfg, guard, &[a]).contains(&b));
+    // The binding runs before the guard reads it.
+    let bind = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("v"))
+        .expect("binding node");
+    assert!(forward_reach(&cfg, bind, &[]).contains(&guard));
+}
+
+/// `break` inside a match arm leaves the enclosing loop, not the match.
+#[test]
+fn rust_match_break_in_arm_targets_loop_exit() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(rx: R) {\n    loop {\n        match rx.recv() {\n            Ok(m) => h(m),\n            Err(_) => break,\n        }\n        tick();\n    }\n    after();\n}\n",
+    );
+    let brk = cfg
+        .node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Break)
+        .expect("break node");
+    let reach = forward_reach(&cfg, brk, &[]);
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    assert!(
+        !reach.contains(&call_named(&cfg, "tick")),
+        "break must skip the rest of the loop body"
+    );
+}
+
+/// `let y = match ..` keeps its single-node lowering.
+#[test]
+fn rust_let_match_stays_single_node() {
+    let (cfg, _) = rust_cfg(b"fn f(m: u8) {\n    let y = match m { 1 => a(), _ => b() };\n}\n");
+    assert!(if_nodes(&cfg).is_empty());
+    assert!(find_node_defining(&cfg, "y").is_some());
+}
+
+/// Statement-level `unsafe { .. }` and bare `{ .. }` blocks are walked, so
+/// the calls inside them get their own nodes.
+#[test]
+fn rust_stmt_unsafe_and_bare_blocks_are_walked() {
+    let (cfg, _) = rust_cfg(b"fn f() {\n    unsafe { a(); }\n    { b(); }\n}\n");
+    let a = call_named(&cfg, "a");
+    assert!(forward_reach(&cfg, a, &[]).contains(&call_named(&cfg, "b")));
+}
+
+/// An arm that emits no node still gets a branch target, so the header keeps
+/// distinct True and False successors.
+#[test]
+fn empty_match_arm_keeps_branch_labels() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: &str) {\n    match m {\n        \"q\" => return,\n        _ => {}\n    }\n    after();\n}\n",
+    );
+    let [header] = if_nodes(&cfg)[..] else {
+        panic!("expected one dispatch header");
+    };
+    let true_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::True))
+        .map(|e| e.target());
+    let false_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::False))
+        .map(|e| e.target());
+    assert!(true_tgt.is_some() && false_tgt.is_some() && true_tgt != false_tgt);
+    assert!(forward_reach(&cfg, false_tgt.unwrap(), &[]).contains(&call_named(&cfg, "after")));
+}
+
+/// Python `match`: cases are exclusive, `case _` is the default, and a
+/// capture pattern binds from the subject.
+#[test]
+fn python_match_cases_exclusive_with_bindings() {
+    let src = b"def f(m, d):\n    match m:\n        case \"a\":\n            x = 1\n        case str(v):\n            run(v)\n        case _:\n            other()\n    after()\n";
+    let (cfg, _) = parse_and_build(src, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let x_def = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .expect("x = 1");
+    let reach = forward_reach(&cfg, x_def, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "run")));
+    assert!(!reach.contains(&call_named(&cfg, "other")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let bind = find_node_defining(&cfg, "v").expect("capture binding");
+    assert_eq!(bind.taint.uses, vec!["m".to_string()]);
+}
+
+/// Ruby `case`/`when`/`else`: `else` is the default arm and `when` arms
+/// are exclusive.
+#[test]
+fn ruby_case_when_else_is_default() {
+    let src = b"def f(m)\n  case m\n  when \"a\" then a()\n  when \"b\" then b()\n  else c()\n  end\n  after()\nend\n";
+    let (cfg, _) = parse_and_build(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+}
+
+/// Java arrow rules are recognised as cases: their bodies are lowered
+/// statement by statement and do not fall into the next rule.
+#[test]
+fn java_arrow_switch_rule_bodies_lowered() {
+    let src = b"class S { void m(String m, String p) {\n  switch (m) {\n    case \"a\" -> Runtime.getRuntime().exec(p);\n    case \"b\" -> { x = 1; foo(x); }\n    default -> bar();\n  }\n} }\n";
+    let (cfg, _) = java_cfg(src);
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let exec = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains("exec"))
+        })
+        .expect("exec Call node");
+    let reach = forward_reach(&cfg, exec, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "foo")));
+    assert!(!reach.contains(&call_named(&cfg, "bar")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == \"a\"".to_string()), "got {conds:?}");
+}
+
+/// Java's `default` sits inside the `switch_label`; the colon form must
+/// still treat it as the default arm (no dispatch header of its own).
+#[test]
+fn java_colon_switch_default_detected() {
+    let (cfg, _) =
+        java_cfg(b"class S { void m(int x) { switch (x) { case 1: a(); break; default: c(); } } }");
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// `case String s ->` binds `s` and synthesizes no `==` condition.
+#[test]
+fn java_type_pattern_case_binds_without_condition() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(Object o) { switch (o) { case String s -> use(s); default -> {} } } }",
+    );
+    let bind = find_node_defining(&cfg, "s").expect("pattern binding");
+    assert_eq!(bind.taint.uses, vec!["o".to_string()]);
+    assert!(
+        if_nodes(&cfg)
+            .iter()
+            .all(|&n| cfg[n].condition_text.is_none())
+    );
+}
+
+/// `outer: for (..) { .. }` walks the labeled loop.
+#[test]
+fn java_labeled_for_walks_body() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(String[] ids) { outer: for (String id : ids) { st.executeUpdate(id); } } }",
+    );
+    assert!(cfg.node_indices().any(|n| {
+        cfg[n]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("executeUpdate"))
+    }));
+}
+
+/// A call in a JS switch discriminant gets its own Call node.
+#[test]
+fn js_switch_call_discriminant_lowered() {
+    let (cfg, _) = parse_and_build(
+        b"function f(x) { switch (g(x)) { case 1: a(); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let g_node = call_named(&cfg, "g");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&call_named(&cfg, "a")));
+}
+
+//   Branch and loop headers: classified from the condition only
+
+fn lang_cfg(lang: &str, src: &[u8]) -> (Cfg, NodeIndex) {
+    let ts_lang = match lang {
+        "javascript" => Language::from(tree_sitter_javascript::LANGUAGE),
+        "python" => Language::from(tree_sitter_python::LANGUAGE),
+        "ruby" => Language::from(tree_sitter_ruby::LANGUAGE),
+        "rust" => Language::from(tree_sitter_rust::LANGUAGE),
+        "go" => Language::from(tree_sitter_go::LANGUAGE),
+        "java" => Language::from(tree_sitter_java::LANGUAGE),
+        "c" => Language::from(tree_sitter_c::LANGUAGE),
+        "php" => Language::from(tree_sitter_php::LANGUAGE_PHP),
+        other => panic!("unsupported test language {other}"),
+    };
+    parse_and_build(src, lang, ts_lang)
+}
+
+fn header_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| matches!(cfg[n].kind, StmtKind::If | StmtKind::Loop))
+        .collect()
+}
+
+fn has_sink(info: &NodeInfo) -> bool {
+    info.taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(_)))
+}
+
+/// A sink call in a branch or loop body labels its own node, never the
+/// header: neither the gated-sink walk nor the statement text may reach
+/// into the body.
+#[test]
+fn header_nodes_do_not_take_labels_from_the_body() {
+    let cases: &[(&str, &[u8], &str)] = &[
+        (
+            "javascript",
+            b"function h(req, db) { const f = req.query.f; if (f === \"y\") { db.query(\"SELECT 1\"); } }",
+            "db.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { let n = req.query.n; while (n > 0) { fetch(\"https://x\"); n--; } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, cp) { const flag = req.query.f; do { cp.exec(\"ls\"); } while (flag); }",
+            "cp.exec",
+        ),
+        (
+            "javascript",
+            b"function h(req, pool) { const id = req.query.id; for (let i = 0; i < id.length; i++) { pool.query(\"SELECT now()\"); } }",
+            "pool.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, exec) { const c = req.query.c; if (c) exec(\"ls\"); }",
+            "exec",
+        ),
+        (
+            "python",
+            b"def h(self, flag):\n    if flag:\n        self.cursor.execute(\"select 1\")\n",
+            "self.cursor.execute",
+        ),
+        (
+            "python",
+            b"def h(event):\n    if event == \"a\":\n        pass\n    elif event == \"push\":\n        requests.post(\"https://h\", json={})\n",
+            "requests.post",
+        ),
+        (
+            "python",
+            b"def h(cmd):\n    while cmd:\n        subprocess.run(cmd, shell=True)\n        break\n",
+            "subprocess.run",
+        ),
+        (
+            "ruby",
+            b"def h(mode)\n  if mode == \"x\"\n    User.connection.execute(\"SELECT 1\")\n  end\nend\n",
+            "execute",
+        ),
+        (
+            "ruby",
+            b"def h(payload)\n  unless payload =~ /a/\n    x = 1\n  else\n    STDOUT.print(payload)\n  end\nend\n",
+            "STDOUT.print",
+        ),
+        (
+            "rust",
+            b"fn h(p: &str, flag: bool) { if flag { std::fs::remove_file(p).unwrap(); } }",
+            "std::fs::remove_file",
+        ),
+        (
+            "c",
+            b"int main(int argc, char **argv) { if (argc > 1) { execv(\"/bin/ls\", argv); } return 0; }",
+            "execv",
+        ),
+        (
+            "go",
+            b"package main\nfunc h(flag bool) {\n\tif flag {\n\t\texec.Command(\"ls\").Run()\n\t}\n}\n",
+            "exec.Command",
+        ),
+    ];
+    for (lang, src, body_callee) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        let headers = header_nodes(&cfg);
+        assert!(!headers.is_empty(), "{lang}: no header node");
+        for h in headers {
+            let info = &cfg[h];
+            assert!(
+                info.taint.labels.is_empty(),
+                "{lang}: header took labels {:?} from its body",
+                info.taint.labels
+            );
+            assert!(info.call.callee.is_none(), "{lang}: {:?}", info.call.callee);
+            assert!(info.call.sink_payload_args.is_none(), "{lang}");
+            assert!(info.call.gate_filters.is_empty(), "{lang}");
+        }
+        assert!(
+            cfg.node_indices().any(|n| cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains(body_callee))),
+            "{lang}: the body call `{body_callee}` lost its node"
+        );
+    }
+}
+
+/// A Rust `loop {}` header evaluates nothing: no uses, no labels.
+#[test]
+fn rust_loop_header_is_empty() {
+    let (cfg, _) = rust_cfg(
+        b"fn h(name: String) { loop { std::process::Command::new(\"ls\").status().unwrap(); println!(\"{}\", name); break; } }",
+    );
+    let headers = header_nodes(&cfg);
+    assert_eq!(headers.len(), 1);
+    let info = &cfg[headers[0]];
+    assert!(info.taint.uses.is_empty(), "{:?}", info.taint.uses);
+    assert!(info.taint.labels.is_empty());
+}
+
+/// Header uses are the condition's identifiers.  A C-style `for` keeps its
+/// init / update clauses (Go and Java do not lower them separately) but
+/// never the body.
+#[test]
+fn header_uses_come_from_the_condition() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(f, q, db) { if (f === \"y\") { db.query(q); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert_eq!(cfg[h].taint.uses, vec!["f".to_string()]);
+
+    let (cfg, _) = lang_cfg(
+        "python",
+        b"def h(a, mode, payload):\n    if a:\n        pass\n    elif mode == \"x\":\n        send(payload)\n",
+    );
+    for h in header_nodes(&cfg) {
+        assert!(
+            !cfg[h].taint.uses.contains(&"payload".to_string()),
+            "{:?}",
+            cfg[h].taint.uses
+        );
+    }
+
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(n int, body string) {\n\tfor i := 0; i < n; i++ {\n\t\tuse(body)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    let uses = &cfg[h].taint.uses;
+    assert!(uses.contains(&"i".to_string()) && uses.contains(&"n".to_string()));
+    assert!(!uses.contains(&"body".to_string()), "{uses:?}");
+}
+
+/// Header work is proportional to the condition, not the nested body: the
+/// uses summed over a long else-if chain stay linear in its length.
+#[test]
+fn else_if_chain_header_uses_are_linear() {
+    let mut src = String::from("function h(x, y) {\n");
+    for i in 0..20 {
+        let kw = if i == 0 { "if" } else { "} else if" };
+        src.push_str(&format!("  {kw} (x === {i}) {{\n    y = g{i}(y);\n"));
+    }
+    src.push_str("  }\n}\n");
+    let (cfg, _) = lang_cfg("javascript", src.as_bytes());
+    let headers: Vec<_> = if_nodes(&cfg);
+    assert_eq!(headers.len(), 20);
+    let total: usize = headers.iter().map(|&h| cfg[h].taint.uses.len()).sum();
+    assert_eq!(total, 20, "each header reads only `x`");
+}
+
+/// Calls in the condition still classify the header: an output-parameter
+/// source (`fgets`) in `if`, `while`, `do .. while` and a C-style `for`, a
+/// bare call condition (Python, Ruby), an elif condition, and an `if let`
+/// value.
+#[test]
+fn header_condition_calls_still_classify() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "c",
+            b"void f(void) { char buf[10]; if (!fgets(buf, 10, stdin)) return; system(buf); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; while (fgets(buf, 10, stdin)) { system(buf); } }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; do { puts(\"x\"); } while (!fgets(buf, 10, stdin)); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; for (; fgets(buf, 10, stdin); ) { system(buf); } }",
+        ),
+        ("python", b"def h(cmd):\n    if os.system(cmd):\n        pass\n"),
+        (
+            "python",
+            b"def h(cmd):\n    if cmd == \"a\":\n        pass\n    elif os.system(cmd):\n        pass\n",
+        ),
+        ("ruby", b"def h(cmd)\n  if system(cmd)\n    x = 1\n  end\nend\n"),
+        (
+            "rust",
+            b"fn h() { if let Ok(c) = std::env::var(\"X\") { run(c); } }",
+        ),
+    ];
+    for (lang, src) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        assert!(
+            header_nodes(&cfg)
+                .iter()
+                .any(|&h| !cfg[h].taint.labels.is_empty()),
+            "{lang}: condition call lost its label:\n{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+}
+
+/// A gated sink in the condition (`await axios.get(url)`) gates on the
+/// condition call itself, with its own argument positions.
+#[test]
+fn header_condition_gated_sink_uses_condition_call() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"async function h(url) { if (await axios.get(url)) { log(1); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(has_sink(&cfg[h]), "{:?}", cfg[h].taint.labels);
+    assert_eq!(cfg[h].call.callee.as_deref(), Some("axios.get"));
+    assert_eq!(cfg[h].call.arg_uses, vec![vec!["url".to_string()]]);
+}
+
+/// A for-each header classifies on its iterable, in every language.
+#[test]
+fn for_each_header_classifies_iterable() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(req) { for (const x of req.body) { use(x); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+
+    // Go: the iterable is `range_clause.right`; an index iterable
+    // classifies on its base call.
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tfor _, v := range r.URL.Query()[\"c\"] {\n\t\tuse(v)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+    let info = &cfg[h];
+    assert!(
+        info.taint.defines.as_deref() == Some("v")
+            || info.taint.extra_defines.contains(&"v".into())
+    );
+}
+
+//   try / finally and begin / ensure on early exits
+
+fn exit_node(cfg: &Cfg) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Exit)
+        .expect("function body has an Exit node")
+}
+
+fn return_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].kind == StmtKind::Return)
+        .collect()
+}
+
+fn calls_named(cfg: &Cfg, callee: &str) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .collect()
+}
+
+fn reachable_from_entry(cfg: &Cfg, entry: NodeIndex) -> usize {
+    let mut bfs = petgraph::visit::Bfs::new(cfg, entry);
+    let mut n = 0;
+    while bfs.next(cfg).is_some() {
+        n += 1;
+    }
+    n
+}
+
+/// `return` in the try body runs the finally clause before leaving: the
+/// clause is reachable (it used to be an orphan when every path returned),
+/// the return reaches the exit only through it, and the clause is lowered
+/// once, not once per path.
+#[test]
+fn return_in_try_runs_finally_in_every_language() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "javascript",
+            b"function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "java",
+            b"class C { int f() { try { return a(); } finally { cleanup(); } } }",
+        ),
+        (
+            "python",
+            b"def f():\n    try:\n        return a()\n    finally:\n        cleanup()\n",
+        ),
+        (
+            "php",
+            b"<?php function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "ruby",
+            b"def f\n  begin\n    return a()\n  ensure\n    cleanup()\n  end\nend\n",
+        ),
+        // Method-level `ensure` without a `begin`.
+        ("ruby", b"def f\n  return a()\nensure\n  cleanup()\nend\n"),
+    ];
+    for (lang, src) in cases {
+        let (cfg, entry) = lang_cfg(lang, src);
+        let src_text = String::from_utf8_lossy(src);
+        assert_eq!(
+            reachable_from_entry(&cfg, entry),
+            cfg.node_count(),
+            "{lang}: orphan node:\n{src_text}"
+        );
+        let cleanup = calls_named(&cfg, "cleanup");
+        assert_eq!(cleanup.len(), 1, "{lang}: finally lowered once\n{src_text}");
+        let cleanup = cleanup[0];
+
+        let exit = exit_node(&cfg);
+        let (tails, real): (Vec<NodeIndex>, Vec<NodeIndex>) = return_nodes(&cfg)
+            .into_iter()
+            .partition(|&r| cfg[r].finally_tail);
+        assert_eq!((real.len(), tails.len()), (1, 1), "{lang}\n{src_text}");
+        let (ret, tail) = (real[0], tails[0]);
+        assert!(cfg[ret].finally_return, "{lang}");
+        assert!(
+            !cfg.contains_edge(ret, exit),
+            "{lang}: the return left the function without running the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, ret, &[]).contains(&cleanup),
+            "{lang}: the return does not reach the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, cleanup, &[]).contains(&tail),
+            "{lang}: the finally clause does not reach the tail"
+        );
+        assert!(
+            cfg.contains_edge(tail, exit),
+            "{lang}: tail must reach Exit"
+        );
+    }
+}
+
+/// A return in a catch handler runs the clause too, and with every path
+/// returning there is no normal-path copy left over.
+#[test]
+fn return_in_catch_runs_finally_once() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { return b(); } finally { c(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    assert_eq!(calls_named(&cfg, "c").len(), 1);
+    let exit = exit_node(&cfg);
+    let c = calls_named(&cfg, "c")[0];
+    let rerouted: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_return)
+        .collect();
+    assert_eq!(rerouted.len(), 2);
+    for r in rerouted {
+        assert!(!cfg.contains_edge(r, exit));
+        assert!(forward_reach(&cfg, r, &[]).contains(&c));
+    }
+}
+
+/// A return on only some paths: the clause exists on the normal path and on
+/// the return path, and both reach the exit.
+#[test]
+fn partial_return_runs_finally_on_both_paths() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f(x) { try { if (x) { return a(); } b(); } finally { c(); } d(); }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let copies = calls_named(&cfg, "c");
+    assert_eq!(copies.len(), 2, "normal-path copy and early-exit copy");
+    let exit = exit_node(&cfg);
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .expect("the return is rerouted");
+    let reached_from_ret = forward_reach(&cfg, ret, &[]);
+    let early = copies
+        .iter()
+        .copied()
+        .find(|c| reached_from_ret.contains(c))
+        .unwrap();
+    let normal = copies.iter().copied().find(|&c| c != early).unwrap();
+    // The code after the try follows the normal copy only.
+    let d = call_named(&cfg, "d");
+    assert!(forward_reach(&cfg, normal, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, early, &[]).contains(&d));
+    assert!(forward_reach(&cfg, early, &[]).contains(&exit));
+}
+
+/// The inner clause runs before the outer one on the return path.
+#[test]
+fn nested_finally_runs_inner_before_outer() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { try { return a(); } finally { inner(); } } finally { outer(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let (inner, outer) = (call_named(&cfg, "inner"), call_named(&cfg, "outer"));
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .unwrap();
+    assert!(forward_reach(&cfg, ret, &[]).contains(&inner));
+    assert!(
+        !forward_reach(&cfg, ret, &[inner]).contains(&outer),
+        "the outer clause ran without the inner one"
+    );
+    assert!(forward_reach(&cfg, inner, &[]).contains(&outer));
+    // Only the outermost tail is a Return: the inner tail flows on.
+    let tails: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_tail)
+        .collect();
+    assert_eq!(tails.len(), 1);
+    assert!(forward_reach(&cfg, outer, &[]).contains(&tails[0]));
+}
+
+/// A return inside the clause is the clause's own and is not rerouted
+/// through the clause it sits in.
+#[test]
+fn return_inside_finally_is_not_rerouted() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } finally { return b(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let exit = exit_node(&cfg);
+    let own: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| !cfg[r].finally_return && !cfg[r].finally_tail)
+        .collect();
+    assert!(!own.is_empty());
+    for r in own {
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// Without a finally clause nothing changes: the return goes to the exit.
+#[test]
+fn return_without_finally_keeps_exit_edge() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { b(); } }",
+    );
+    let exit = exit_node(&cfg);
+    for r in return_nodes(&cfg) {
+        assert!(!cfg[r].finally_return && !cfg[r].finally_tail);
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// The tail returns what the original returns returned, so ownership of a
+/// returned resource still reads as handed to the caller.
+#[test]
+fn finally_tail_carries_the_returned_names() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f(r) { try { if (r) { return r; } return s; } finally { audit(); } }",
+    );
+    let tail = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_tail)
+        .unwrap();
+    let mut uses = cfg[tail].taint.uses.clone();
+    uses.sort();
+    assert_eq!(uses, vec!["r".to_string(), "s".to_string()]);
+}
+
+/// A function declared in the clause is registered once even though the
+/// clause is lowered for two paths.
+#[test]
+fn closure_in_duplicated_finally_has_one_body() {
+    let src = b"function f(x) { try { if (x) { return a(); } b(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    // top level, f, and the closure
+    assert_eq!(file_cfg.bodies.len(), 3);
+    let spans: std::collections::HashSet<_> = file_cfg
+        .bodies
+        .iter()
+        .skip(1)
+        .map(|b| b.meta.span)
+        .collect();
+    assert_eq!(spans.len(), 2, "no body is registered twice");
+}
+
+/// With every path returning there is no normal-path copy, so a closure in
+/// the clause is still registered by the early-exit copy.
+#[test]
+fn closure_in_only_finally_copy_is_registered() {
+    let src = b"function f() { try { return a(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert_eq!(file_cfg.bodies.len(), 3);
+}

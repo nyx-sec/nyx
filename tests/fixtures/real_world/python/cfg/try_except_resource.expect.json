@@ -34,14 +34,21 @@
     },
     {
       "rule_id": "state-resource-leak",
-      "severity": "MEDIUM",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [
         4,
         4
       ],
-      "evidence_contains": [],
-      "notes": "noise: resource leak finding \u2014 secondary to primary fixture purpose"
+      "notes": "conn is closed in the finally clause, which runs on the return path of the try body (regression guard)"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "must_not_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "notes": "same: a return inside try must not hide the close in finally"
     },
     {
       "rule_id": "state-resource-leak",

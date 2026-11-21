@@ -581,7 +581,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "begin"                 => Kind::Try,
     "rescue"                => Kind::Block,
     "ensure"                => Kind::Block,
-    "case"                  => Kind::Block,
+    // `case`/`when`/`else` lowers through `build_switch`; `case ... in`
+    // pattern matching is a separate `case_match` node.
+    "case"                  => Kind::Switch,
     "when"                  => Kind::Block,
     "class"                 => Kind::Block,
     "module"                => Kind::Block,
@@ -593,8 +595,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "assignment"            => Kind::Assignment,
     // Ruby augmented assignment (`x ||= y`, `x += y`, `x <<= y`, …).  Shares
     // the `left`/`right` fields with `assignment`; modelling it as an
-    // Assignment makes the LHS depend on the RHS for taint/type purposes
-    // (sound: `x op= y` always reads `y` into `x`).  Covers the memoised-
+    // Assignment makes the LHS depend on the RHS for taint/type purposes.
+    // `x op= y` reads both `x` and `y`, so `def_use` also lists the target
+    // as a use (see `cfg::rmw_assignment`).  Covers the memoised-
     // connection idiom `@@conn ||= PG::Connection.new(...)` (CVE-2026-42087).
     "operator_assignment"   => Kind::Assignment,
     "method"                => Kind::Function,

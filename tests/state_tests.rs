@@ -182,6 +182,79 @@ fn c_struct_field_nonescaping_local_leaks_but_escaping_stays_suppressed() {
 }
 
 #[test]
+fn c_pointer_bump_keeps_resource_open() {
+    // `cursor += 1` reads and writes `cursor`.  The read must not count as
+    // handing the allocation to another owner, or the leak disappears.
+    let leak_msgs: Vec<String> = state_diags_for("c_pointer_bump_leak.c")
+        .into_iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.message.clone().unwrap_or_default())
+        .collect();
+    assert!(
+        leak_msgs.iter().any(|m| m.contains("cursor")),
+        "bumped pointer `cursor` is never freed and must still leak.\n  Got: {leak_msgs:?}"
+    );
+}
+
+#[test]
+fn c_list_walk_cursor_does_not_leak() {
+    // `cur = cur->next` is a plain reassignment of the walker; the list
+    // itself is returned, so no leak is reported.
+    assert_no_state_findings("c_list_walk_no_leak.c");
+}
+
+// ── return inside try, release in finally / ensure ─────────────────────────
+//
+// `return` ends a path in the CFG, so a finally clause used to be skipped on
+// the return path: a resource closed there read as never closed, and a clause
+// every path returned through was unreachable.  The clause now runs on the
+// return path.
+
+#[test]
+fn return_in_try_with_close_in_finally_is_not_a_leak() {
+    for file in [
+        "java_return_in_try_finally_close.java",
+        "python_return_in_try_finally_close.py",
+        "js_return_in_try_finally_close.js",
+        "ruby_return_in_ensure_close.rb",
+        "php_return_in_try_finally_close.php",
+    ] {
+        assert_no_state_findings(file);
+    }
+}
+
+#[test]
+fn return_in_try_without_close_in_finally_still_leaks() {
+    for file in [
+        "java_return_in_try_finally_no_close.java",
+        "python_return_in_try_finally_no_close.py",
+        "js_return_in_try_finally_no_close.js",
+        "ruby_return_in_ensure_no_close.rb",
+    ] {
+        assert!(
+            has_rule_prefix(file, "state-resource-leak"),
+            "{file}: the finally clause does not close the resource, so the leak must remain.\n  Got: {:?}",
+            state_ids_for(file)
+        );
+    }
+}
+
+#[test]
+fn return_in_try_with_conditional_close_in_finally_may_leak() {
+    assert_has(
+        "java_return_in_try_finally_conditional_close.java",
+        "state-resource-leak-possible",
+    );
+}
+
+#[test]
+fn returned_resource_through_finally_keeps_ownership_transfer() {
+    // The synthetic tail of the finally copy carries the returned names, so
+    // the factory pattern still reads as ownership handed to the caller.
+    assert_no_state_findings("java_return_resource_through_finally.java");
+}
+
+#[test]
 fn state_analysis_disabled_via_flag() {
     let mut cfg = common::test_config(AnalysisMode::Full);
     cfg.scanner.enable_state_analysis = false;

@@ -1109,6 +1109,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "switch_expression"            => Kind::Switch,
     "switch_block"                 => Kind::Block,
     "switch_block_statement_group" => Kind::Block,
+    // Arrow case `case X -> body`; `build_switch` lowers only the body.
+    "switch_rule"                  => Kind::Block,
+    // `outer: for (..) {..}`: walk the labeled statement instead of
+    // collapsing it into one leaf node (mirrors go.rs / c.rs / cpp.rs).
+    "labeled_statement"            => Kind::Block,
     "try_statement"                => Kind::Try,
     "try_with_resources_statement" => Kind::Try,
     "resource_specification"       => Kind::Block,
@@ -1123,6 +1128,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "method_invocation"            => Kind::CallMethod,
     "object_creation_expression"   => Kind::CallFn,
     "assignment_expression"        => Kind::Assignment,
+    // `i++` / `--i`: read-modify-write, see `cfg::rmw_assignment`.
+    "update_expression"            => Kind::Assignment,
     "local_variable_declaration"   => Kind::CallWrapper,
     "expression_statement"         => Kind::CallWrapper,
     "cast_expression"              => Kind::Seq,
@@ -1134,6 +1141,7 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "("  => Kind::Trivia, ")"  => Kind::Trivia,
     "{"  => Kind::Trivia, "}"  => Kind::Trivia,
     "\n" => Kind::Trivia,
+    "->" => Kind::Trivia,
     "import_declaration"           => Kind::Trivia,
     "package_declaration"          => Kind::Trivia,
 };

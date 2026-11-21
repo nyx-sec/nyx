@@ -416,14 +416,10 @@ impl CfgAnalysis for IncompleteErrorHandling {
             let info = &ctx.cfg[idx];
 
             // Look for If nodes whose CONDITION involves "err" or "error".
-            // `info.taint.uses` for an If node contains identifiers from the
-            // whole if statement (condition + body), see
-            // `cfg::literals::extract_defs_uses_extra_defs` Kind::If branch
-            //, so checking it would misfire on `if (!res.ok) { ... const
-            // err = await … ; return … }` shapes whose body happens to
-            // mention `err` even though the condition doesn't.  Use
-            // `info.condition_vars`, which is populated strictly from the
-            // condition subtree (`extract_condition_raw`).
+            // Use `info.condition_vars` (bare identifiers of the condition,
+            // from `extract_condition_raw`) rather than `info.taint.uses`,
+            // which also carries dotted paths and, on a switch dispatch
+            // header, the identifiers of the whole case.
             if info.kind != StmtKind::If {
                 continue;
             }

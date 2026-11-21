@@ -314,6 +314,13 @@ fn lower_to_ssa_inner(
 
     // 6. Rename variables (dominator tree preorder walk)
     let dom_tree_children = build_dom_tree_children(num_blocks, &doms, &block_graph);
+    let mut handler_seeds = HandlerSeeds::new(
+        cfg,
+        &blocks_nodes,
+        &block_of_node,
+        &block_succs,
+        &raw_exception_edges,
+    );
     let (
         mut ssa_blocks,
         mut value_defs,
@@ -334,6 +341,7 @@ fn lower_to_ssa_inner(
         formal_params,
         with_params,
         &nop_nodes,
+        &mut handler_seeds,
     );
 
     // 6b. Fill any missing phi operands with a shared Undef sentinel so
@@ -402,7 +410,7 @@ fn lower_to_ssa_inner(
     // downstream findings carry "SSA lowering bailed" provenance, and fall
     // through to the existing orphan handling above, which lowers orphan
     // (catch) subtrees with a locally-built dominator tree and seeds them from
-    // the most entry-dominating reaching definitions.
+    // the definitions live at their exception sources.
     check_catch_block_reachability_gated(&body);
 
     Ok(body)
@@ -413,9 +421,9 @@ fn lower_to_ssa_inner(
 ///
 /// The current lowering's orphan handling (`process_block` fallback in
 /// `rename_variables`) lowers orphan (catch) subtrees via a locally-built
-/// dominator tree and seeds them from the most entry-dominating reaching
-/// definitions, so blocks without predecessors are still renamed and
-/// populated. That keeps catch-block analysis usable but masks CFG-builder
+/// dominator tree and seeds them from the definitions live at their
+/// exception sources (see `HandlerSeeds`), so blocks without predecessors are
+/// still renamed and populated. That keeps catch-block analysis usable but masks CFG-builder
 /// bugs: this gate surfaces them.
 fn check_catch_block_reachability_gated(body: &SsaBody) {
     let result = super::invariants::check_catch_block_reachability(body);
@@ -561,8 +569,13 @@ fn form_blocks(
     // here so block-level adjacency reflects real control flow; the SSA
     // terminator for the containing block becomes Return / Unreachable
     // instead of Goto(exit).
-    let is_terminating =
-        |n: NodeIndex| -> bool { matches!(cfg[n].kind, StmtKind::Return | StmtKind::Throw) };
+    //
+    // A Return that runs a `finally` clause first (`finally_return`) is the
+    // exception: the CFG gives it no edge to the exit, only the edge into the
+    // clause's early-exit copy.  That edge is real flow and stays.
+    let is_terminating = |n: NodeIndex| -> bool {
+        matches!(cfg[n].kind, StmtKind::Return | StmtKind::Throw) && !cfg[n].finally_return
+    };
 
     for &(src, tgt, kind) in filtered_edges {
         if is_terminating(src) {
@@ -589,9 +602,11 @@ fn form_blocks(
         if in_deg == 0 && node != entry {
             is_leader.insert(node);
         }
-        // Node following a multi-exit node
+        // Node following a multi-exit node.  The clause copy a return runs
+        // starts its own block, so the Return stays the last node of its
+        // block and keeps its return value.
         let succs = successors.get(&node).map(|s| s.len()).unwrap_or(0);
-        if succs > 1 {
+        if succs > 1 || (succs > 0 && cfg[node].finally_return) {
             for &(tgt, _) in successors.get(&node).unwrap_or(&vec![]) {
                 is_leader.insert(tgt);
             }
@@ -888,6 +903,26 @@ fn reorder_external_vars(external: Vec<String>, formal_params: &[String]) -> Vec
     result
 }
 
+/// Right-hand operand of the combine node of a split read-modify-write
+/// assignment (`q += fmt(x)`, see `cfg::split_rmw_call`): the SSA value of
+/// the call node that is the combine node's only non-exception predecessor.
+/// The call node dominates the combine node, so it is already lowered.
+fn rmw_call_operand(
+    cfg: &Cfg,
+    node: NodeIndex,
+    cfg_node_map: &crate::ssa::ir::CfgNodeMap,
+) -> Option<SsaValue> {
+    let mut preds = cfg
+        .edges_directed(node, Direction::Incoming)
+        .filter(|e| !matches!(e.weight(), EdgeKind::Exception))
+        .map(|e| e.source());
+    let pred = preds.next()?;
+    if preds.next().is_some() {
+        return None;
+    }
+    cfg_node_map.get(&pred).copied()
+}
+
 /// Collect variable definitions per block: var_name → set of block indices.
 /// Nodes in `nop_nodes` are skipped (they won't define variables in SSA).
 fn collect_var_defs(
@@ -1012,6 +1047,189 @@ fn compute_entry_reachable(num_blocks: usize, block_succs: &[Vec<usize>]) -> Vec
     reachable
 }
 
+/// Reaching definitions for catch handlers.
+///
+/// Exception edges are stripped before renaming, so a handler is an orphan
+/// block that the dominator walk never enters.  Its variable stacks are
+/// seeded from here instead.  While the main walk (and the walks of the
+/// handlers themselves) pass each node that can raise into a handler, the
+/// values on top of the variable stacks are recorded for that handler.  When
+/// the handler is renamed, a variable that was live at its exception sources
+/// resolves to those values: one value directly, several through an `Assign`
+/// that merges them (a phi without predecessors).
+struct HandlerSeeds {
+    /// Exception-raising CFG node -> SSA blocks of the handlers it can enter.
+    sources: FxHashMap<NodeIndex, SmallVec<[usize; 2]>>,
+    /// Variable names the handler domains read, sorted.  Only these are
+    /// recorded, which keeps the work proportional to what a handler can see.
+    names: Vec<String>,
+    /// Per handler block: variable -> values on top of its stack at each
+    /// exception source, in value order.
+    live: Vec<BTreeMap<String, BTreeSet<SsaValue>>>,
+    /// Per handler block: the blocks holding its exception sources.
+    source_blocks: Vec<Vec<usize>>,
+}
+
+impl HandlerSeeds {
+    fn new(
+        cfg: &Cfg,
+        blocks_nodes: &[Vec<NodeIndex>],
+        block_of_node: &FxHashMap<NodeIndex, usize>,
+        block_succs: &[Vec<usize>],
+        exception_edges: &[(NodeIndex, NodeIndex)],
+    ) -> Self {
+        let num_blocks = blocks_nodes.len();
+        let mut sources: FxHashMap<NodeIndex, SmallVec<[usize; 2]>> = FxHashMap::default();
+        let mut source_blocks: Vec<Vec<usize>> = Vec::new();
+        for &(src, handler) in exception_edges {
+            let (Some(&src_blk), Some(&handler_blk)) =
+                (block_of_node.get(&src), block_of_node.get(&handler))
+            else {
+                continue;
+            };
+            let hs = sources.entry(src).or_default();
+            if !hs.contains(&handler_blk) {
+                hs.push(handler_blk);
+            }
+            if source_blocks.is_empty() {
+                source_blocks = vec![Vec::new(); num_blocks];
+            }
+            if !source_blocks[handler_blk].contains(&src_blk) {
+                source_blocks[handler_blk].push(src_blk);
+            }
+        }
+        if sources.is_empty() {
+            return HandlerSeeds {
+                sources,
+                names: Vec::new(),
+                live: Vec::new(),
+                source_blocks,
+            };
+        }
+
+        // Names read anywhere a handler can see: blocks that only an
+        // exception edge reaches, and everything they lead to.
+        let entry_reachable = compute_entry_reachable(num_blocks, block_succs);
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (blk, nodes) in blocks_nodes.iter().enumerate() {
+            if entry_reachable[blk] {
+                continue;
+            }
+            for &node in nodes {
+                collect_read_names(&cfg[node], &mut names);
+            }
+        }
+        HandlerSeeds {
+            sources,
+            names: names.into_iter().collect(),
+            live: vec![BTreeMap::new(); num_blocks],
+            source_blocks,
+        }
+    }
+
+    /// Record the values live before `node` raises, for every handler it can
+    /// enter.  Called before the node's own definitions are pushed: when it
+    /// raises, those never happen.
+    fn record(&mut self, node: NodeIndex, var_stacks: &FxHashMap<String, Vec<SsaValue>>) {
+        let Some(handlers) = self.sources.get(&node) else {
+            return;
+        };
+        for name in &self.names {
+            let Some(&top) = var_stacks.get(name).and_then(|s| s.last()) else {
+                continue;
+            };
+            for &h in handlers {
+                self.live[h].entry(name.clone()).or_default().insert(top);
+            }
+        }
+    }
+
+    /// Order in which to rename the orphan handler `entries`: a handler whose
+    /// exception sources sit inside another handler comes after it, so the
+    /// outer handler's definitions are recorded before they are read.  Ties
+    /// and cycles fall back to block order.
+    fn handler_order(
+        &self,
+        entries: &[usize],
+        block_succs: &[Vec<usize>],
+        entry_reachable: &[bool],
+    ) -> Vec<usize> {
+        if self.source_blocks.is_empty() || entries.len() < 2 {
+            return entries.to_vec();
+        }
+        // Blocks each entry leads to without leaving the orphan domain.
+        let domain_of = |entry: usize| -> FxHashSet<usize> {
+            let mut seen: FxHashSet<usize> = FxHashSet::default();
+            let mut stack = vec![entry];
+            seen.insert(entry);
+            while let Some(b) = stack.pop() {
+                for &s in &block_succs[b] {
+                    if !entry_reachable[s] && seen.insert(s) {
+                        stack.push(s);
+                    }
+                }
+            }
+            seen
+        };
+        let domains: Vec<FxHashSet<usize>> = entries.iter().map(|&e| domain_of(e)).collect();
+        // deps[i]: entries (by index) whose domain holds a source of entries[i].
+        let deps: Vec<Vec<usize>> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| {
+                (0..entries.len())
+                    .filter(|&j| {
+                        j != i
+                            && self.source_blocks[e]
+                                .iter()
+                                .any(|sb| domains[j].contains(sb))
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut done = vec![false; entries.len()];
+        let mut order = Vec::with_capacity(entries.len());
+        while order.len() < entries.len() {
+            let next = (0..entries.len())
+                .find(|&i| !done[i] && deps[i].iter().all(|&d| done[d]))
+                .or_else(|| (0..entries.len()).find(|&i| !done[i]))
+                .expect("an entry is left");
+            done[next] = true;
+            order.push(entries[next]);
+        }
+        order
+    }
+}
+
+/// Variable names a CFG node reads, plus the root of each dotted path.
+fn collect_read_names(info: &crate::cfg::NodeInfo, names: &mut BTreeSet<String>) {
+    let mut add = |n: &str| {
+        names.insert(n.to_string());
+        if let Some((root, _)) = n.split_once('.') {
+            names.insert(root.to_string());
+        }
+    };
+    for u in &info.taint.uses {
+        add(u);
+    }
+    for group in &info.call.arg_uses {
+        for u in group {
+            add(u);
+        }
+    }
+    if let Some(r) = &info.call.receiver {
+        add(r);
+    }
+    for v in &info.condition_vars {
+        add(v);
+    }
+    if let Some(callee) = &info.call.callee {
+        if let Some((root, _)) = callee.split_once('.') {
+            names.insert(root.to_string());
+        }
+    }
+}
+
 /// Build a dominator-tree children list restricted to the orphan domain.
 ///
 /// The main `simple_fast` walk is rooted at block 0 and never reaches orphan
@@ -1099,6 +1317,7 @@ fn rename_variables(
     formal_params: &[String],
     with_params: bool,
     nop_nodes: &FxHashSet<NodeIndex>,
+    handler_seeds: &mut HandlerSeeds,
 ) -> (
     Vec<SsaBlock>,
     Vec<ValueDef>,
@@ -1208,6 +1427,7 @@ fn rename_variables(
         field_interner: &mut crate::ssa::ir::FieldInterner,
         field_writes: &mut FxHashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
         slot_scoped_assigns: &mut FxHashSet<SsaValue>,
+        seeds: &mut HandlerSeeds,
     ) {
         let block_id = BlockId(block_idx as u32);
 
@@ -1225,6 +1445,7 @@ fn rename_variables(
         // 2. Process body nodes
         for &node in &blocks_nodes[block_idx] {
             let info = &cfg[node];
+            seeds.record(node, var_stacks);
 
             // Helper: build Call args from arg_uses, falling back to info.taint.uses
             let build_call_args = |info: &crate::cfg::NodeInfo,
@@ -1381,6 +1602,23 @@ fn rename_variables(
                     .iter()
                     .filter_map(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
                     .collect();
+                // Combine node of a split `q += fmt(x)`: the right-hand
+                // operand is the value of the call node feeding it.
+                if info.rmw_rhs_from_pred
+                    && let Some(rhs_v) = rmw_call_operand(cfg, node, cfg_node_map)
+                {
+                    uses.push(rhs_v);
+                }
+                // Value of a read-modify-write target before this node
+                // (`x` in `x += " -l"`), `None` when it has no reaching def.
+                let rmw_target_v = if info.rmw_assign {
+                    info.taint
+                        .uses
+                        .first()
+                        .and_then(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
+                } else {
+                    None
+                };
                 // Inject Const for binary expression literal operand.
                 // When a binary expression has one identifier and one numeric literal
                 // (e.g., `flags & 0x07`), the literal isn't in `uses`. Inject a
@@ -1398,6 +1636,30 @@ fn rename_variables(
                         span: info.ast.span,
                     };
                     ssa_blocks[block_idx].body.push(const_inst);
+                    value_defs.push(ValueDef {
+                        var_name: None,
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    uses.push(const_v);
+                }
+                // A read-modify-write whose right-hand side resolved to no
+                // value (`s += " -l"`, `x ||= "dflt"`, `n += 1.5`) would be a
+                // one-operand Assign, which const-prop and copy-prop read as
+                // a plain copy of the old value: `s = "a"; s += "b"` would
+                // fold to "a" and `n = 0; n += 2` to 0.  Add an opaque
+                // operand so the result is a fresh value that still carries
+                // the old value's taint.
+                if rmw_target_v.is_some_and(|t| uses.as_slice() == [t]) {
+                    let const_v = SsaValue(*next_value);
+                    *next_value += 1;
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: const_v,
+                        op: SsaOp::Const(None),
+                        cfg_node: node,
+                        var_name: None,
+                        span: info.ast.span,
+                    });
                     value_defs.push(ValueDef {
                         var_name: None,
                         cfg_node: node,
@@ -1995,7 +2257,13 @@ fn rename_variables(
         let succs = &block_succs[block_idx];
         let last_node = *blocks_nodes[block_idx].last().unwrap();
 
-        ssa_blocks[block_idx].terminator = if succs.is_empty() {
+        // A block that returns through a `finally` clause ends in the return
+        // terminator like any other return, but keeps its successor: the
+        // clause copy it runs next (see `NodeInfo::finally_return`).
+        let returns_through_finally = blocks_nodes[block_idx]
+            .iter()
+            .any(|&n| cfg[n].kind == StmtKind::Return && cfg[n].finally_return);
+        ssa_blocks[block_idx].terminator = if succs.is_empty() || returns_through_finally {
             // A block with no successors at the block level is one of:
             //   (1) a block containing a Throw, terminates with an
             //       exception; no normal fall-through.
@@ -2016,7 +2284,11 @@ fn rename_variables(
                 .iter()
                 .any(|&n| cfg[n].kind == StmtKind::Throw);
 
-            if has_throw_node && return_node.is_none() {
+            if blocks_nodes[block_idx].iter().any(|&n| cfg[n].finally_tail) {
+                // The end of a clause copy a return ran through.  The value
+                // was returned by the original Return block.
+                Terminator::Unreachable
+            } else if has_throw_node && return_node.is_none() {
                 // Throw terminates control flow with an exception.  No
                 // structured Throw terminator exists today; downstream
                 // analyses rely on `exception_edges` (recorded separately)
@@ -2233,6 +2505,7 @@ fn rename_variables(
                 field_interner,
                 field_writes,
                 slot_scoped_assigns,
+                seeds,
             );
         }
 
@@ -2351,6 +2624,7 @@ fn rename_variables(
         &mut field_interner,
         &mut field_writes,
         &mut slot_scoped_assigns,
+        handler_seeds,
     );
 
     // Process orphan blocks (e.g. catch blocks disconnected after exception edge removal).
@@ -2372,30 +2646,22 @@ fn rename_variables(
     let entry_reachable = compute_entry_reachable(num_blocks, block_succs);
     let has_orphans = (1..num_blocks).any(|bid| !entry_reachable[bid]);
     if has_orphans {
-        // Seed var_stacks with the definitions that actually *reach* the catch.
+        // Baseline seed for variables no exception source recorded: the
+        // definition closest to the entry.
         //
-        // The previous implementation rebuilt var_stacks from *all* blocks in
-        // ascending block-id order and took `.last()`, i.e. the highest-block-id
-        // def.  For a variable defined before the `try` (block 0) and re-killed
-        // *after* the `try`/`catch` join (a later, higher-id block — e.g.
-        // `x = "safe"` post-catch), `.last()` picked that post-join kill, which
-        // does NOT reach the handler.  A catch-side `sink(x)` then resolved to
-        // the killed constant instead of the pre-`try` (possibly tainted) value
-        // — a false negative.  (The doc comment further up claiming this is a
-        // sound "all definitions" widening was inaccurate.)
+        // The stacks are rebuilt from the *entry-reachable* blocks (orphan
+        // blocks are renamed below, not used as a seed) in DESCENDING block-id
+        // order, so `.last()` lands on the LOWEST-id, most entry-dominating
+        // definition of each variable.  Block 0 dominates every block,
+        // including the handler, so it wins over a reassignment after the
+        // try/catch join, which does not reach the handler (an ascending
+        // rebuild resolved a handler-side `sink(x)` to such a post-join kill and
+        // masked the pre-try, possibly tainted, value).  A variable defined
+        // only inside the `try` body still keeps a `try`-side definition.
         //
-        // We restrict the rebuild to *entry-reachable* blocks (orphan-domain
-        // blocks are renamed below, not used as a seed) and iterate them in
-        // DESCENDING block-id order so `.last()` lands on the LOWEST-id — i.e.
-        // most entry-dominating — definition of each variable.  Block 0 (which
-        // dominates every block, including the catch) therefore wins over any
-        // post-join reassignment, fixing the reported false negative, while a
-        // variable defined only inside the `try` body still keeps a `try`-side
-        // definition (rather than being dropped), avoiding a new false negative.
-        // Exact reaching-definition resolution for variables redefined along the
-        // protected region would require the pre-strip exception-edge structure,
-        // which isn't available here; this ordering is the conservative
-        // approximation.
+        // Each handler then overrides this for every variable that was live at
+        // one of its exception sources (see `HandlerSeeds`), which is exact for
+        // variables redefined along the protected region.
         var_stacks.clear();
         for bid in (0..num_blocks).rev() {
             if !entry_reachable[bid] {
@@ -2417,30 +2683,80 @@ fn rename_variables(
         let orphan_dom_children =
             build_orphan_dom_tree_children(num_blocks, block_succs, block_preds, &entry_reachable);
 
-        for bid in 1..num_blocks {
-            // Orphan *entries* are orphan-domain blocks with no predecessors
-            // (their only inbound edges were exception edges, now stripped).
-            if !entry_reachable[bid] && block_preds[bid].is_empty() {
-                process_block(
-                    bid,
-                    cfg,
-                    blocks_nodes,
-                    block_succs,
-                    block_preds,
-                    phi_placements,
-                    &orphan_dom_children,
-                    filtered_edges,
-                    &mut var_stacks,
-                    &mut ssa_blocks,
-                    &mut phi_values,
-                    &mut value_defs,
-                    &mut cfg_node_map,
-                    &mut next_value,
-                    nop_nodes,
-                    &mut field_interner,
-                    &mut field_writes,
-                    &mut slot_scoped_assigns,
-                );
+        // Orphan *entries* are orphan-domain blocks with no predecessors
+        // (their only inbound edges were exception edges, now stripped).
+        let entries: Vec<usize> = (1..num_blocks)
+            .filter(|&bid| !entry_reachable[bid] && block_preds[bid].is_empty())
+            .collect();
+        for bid in handler_seeds.handler_order(&entries, block_succs, &entry_reachable) {
+            // Seed the variables live at this handler's exception sources.
+            let live = handler_seeds
+                .live
+                .get_mut(bid)
+                .map(std::mem::take)
+                .unwrap_or_default();
+            let mut undo: Vec<(String, usize)> = Vec::with_capacity(live.len());
+            let mut merges: Vec<SsaInst> = Vec::new();
+            for (name, vals) in &live {
+                let value = if vals.len() == 1 {
+                    vals.iter().copied().next().expect("one value")
+                } else {
+                    // Several definitions reach the handler: merge them in a
+                    // pred-less phi substitute so no real phi needs operands
+                    // for an edge the block graph does not have.
+                    let merged = SsaValue(next_value);
+                    next_value += 1;
+                    let anchor = blocks_nodes[bid][0];
+                    value_defs.push(ValueDef {
+                        var_name: Some(name.clone()),
+                        cfg_node: anchor,
+                        block: BlockId(bid as u32),
+                    });
+                    merges.push(SsaInst {
+                        value: merged,
+                        op: SsaOp::Assign(vals.iter().copied().collect()),
+                        cfg_node: anchor,
+                        var_name: Some(name.clone()),
+                        span: cfg[anchor].ast.span,
+                    });
+                    merged
+                };
+                undo.push((name.clone(), var_stacks.get(name).map_or(0, Vec::len)));
+                var_stacks.entry(name.clone()).or_default().push(value);
+            }
+            if !merges.is_empty() {
+                merges.append(&mut ssa_blocks[bid].body);
+                ssa_blocks[bid].body = merges;
+            }
+
+            process_block(
+                bid,
+                cfg,
+                blocks_nodes,
+                block_succs,
+                block_preds,
+                phi_placements,
+                &orphan_dom_children,
+                filtered_edges,
+                &mut var_stacks,
+                &mut ssa_blocks,
+                &mut phi_values,
+                &mut value_defs,
+                &mut cfg_node_map,
+                &mut next_value,
+                nop_nodes,
+                &mut field_interner,
+                &mut field_writes,
+                &mut slot_scoped_assigns,
+                handler_seeds,
+            );
+
+            for (name, depth) in undo {
+                if depth == 0 {
+                    var_stacks.remove(&name);
+                } else if let Some(stack) = var_stacks.get_mut(&name) {
+                    stack.truncate(depth);
+                }
             }
         }
     }
@@ -3099,11 +3415,10 @@ mod tests {
         //   src --Exception--> catch(e) → sink(x)                       (orphan)
         // `src` branches (b1/b2) so it ends block 0; the `kill` join is a
         // higher-id block.  The buggy ascending+`.last()` rebuild seeded the
-        // catch with the Const kill; the fixed descending rebuild seeds the
-        // most entry-dominating def (the block-0 Source).  A degenerate
-        // straight-line `src→kill` (single coalesced block) is a separate,
-        // documented limitation — exact within-block reaching defs need the
-        // pre-strip exception-point structure, unavailable post-lowering.
+        // catch with the Const kill; the handler seed records the value live
+        // at the exception source (the block-0 Source).  The straight-line
+        // `src→kill` shape, one coalesced block, is covered by
+        // `orphan_catch_sees_value_live_at_the_exception_source`.
         let mut cfg: Cfg = Graph::new();
         let entry = cfg.add_node(make_node(StmtKind::Entry));
         // Pure source (no callee) so it lowers to `SsaOp::Source` and defines x.
@@ -5160,5 +5475,210 @@ mod tests {
         );
         // No phis (nothing converged), no value_defs except possibly
         // entry sentinels. We just assert it lowered without panic.
+    }
+    /// Lower the first function body of JavaScript `src`.
+    fn lower_js_fn(src: &str) -> (crate::cfg::FileCfg, SsaBody) {
+        use crate::cfg::build_cfg;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_javascript::LANGUAGE,
+            ))
+            .unwrap();
+        let tree = parser.parse(src.as_bytes(), None).unwrap();
+        let file_cfg = build_cfg(&tree, src.as_bytes(), "javascript", "test.js", None);
+        let body = &file_cfg.bodies[1];
+        let ssa = lower_to_ssa(&body.graph, body.entry, None, true).expect("lowering succeeds");
+        (file_cfg, ssa)
+    }
+
+    fn block_of_call(file_cfg: &crate::cfg::FileCfg, ssa: &SsaBody, callee: &str) -> usize {
+        let cfg = &file_cfg.bodies[1].graph;
+        let node = cfg
+            .node_indices()
+            .find(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+            .unwrap_or_else(|| panic!("no call node for {callee}"));
+        ssa.blocks
+            .iter()
+            .position(|b| b.body.iter().any(|i| i.cfg_node == node))
+            .unwrap_or_else(|| panic!("{callee} is in no block"))
+    }
+
+    /// A return that runs a `finally` clause first ends its block with the
+    /// return terminator, keeps its return value, and has the clause copy as
+    /// a successor.  The copy ends in an unreachable block: the value was
+    /// already returned.
+    #[test]
+    fn return_through_finally_keeps_terminator_and_clause_successor() {
+        let (file_cfg, ssa) =
+            lower_js_fn("function f(x) { try { return g(x); } finally { cleanup(); } }");
+        assert!(
+            crate::ssa::invariants::check_structural_invariants(&ssa).is_empty(),
+            "{:?}",
+            crate::ssa::invariants::check_structural_invariants(&ssa)
+        );
+        let ret = block_of_call(&file_cfg, &ssa, "g");
+        let clause = block_of_call(&file_cfg, &ssa, "cleanup");
+        assert_ne!(ret, clause, "the clause must start its own block");
+        assert!(
+            matches!(ssa.blocks[ret].terminator, Terminator::Return(Some(_))),
+            "{:?}",
+            ssa.blocks[ret].terminator
+        );
+        assert_eq!(
+            ssa.blocks[ret].succs.as_slice(),
+            &[BlockId(clause as u32)],
+            "the return block continues into the clause"
+        );
+        assert!(
+            matches!(ssa.blocks[clause].terminator, Terminator::Unreachable),
+            "{:?}",
+            ssa.blocks[clause].terminator
+        );
+        // The only Return terminator is the original return.
+        let returns = ssa
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, Terminator::Return(_)))
+            .count();
+        assert_eq!(returns, 1);
+    }
+
+    /// Two returns share the early-exit copy; the copy joins them with a phi
+    /// and the blocks stay structurally valid.
+    #[test]
+    fn two_returns_through_finally_join_at_the_clause() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(x) { let v = 'a'; try { if (x) { v = h(); return 1; } return 2; } finally { use(v); } }",
+        );
+        assert!(
+            crate::ssa::invariants::check_structural_invariants(&ssa).is_empty(),
+            "{:?}",
+            crate::ssa::invariants::check_structural_invariants(&ssa)
+        );
+        let clause = block_of_call(&file_cfg, &ssa, "use");
+        assert_eq!(ssa.blocks[clause].preds.len(), 2);
+        assert!(
+            ssa.blocks[clause]
+                .phis
+                .iter()
+                .any(|p| p.var_name.as_deref() == Some("v")),
+            "v has two reaching definitions at the clause"
+        );
+        for b in &ssa.blocks[clause].preds {
+            assert!(matches!(
+                ssa.blocks[b.0 as usize].terminator,
+                Terminator::Return(_)
+            ));
+        }
+    }
+    /// CFG nodes that define the values passed to the first call of `callee`,
+    /// following merge `Assign`s down to their operands.
+    fn arg_def_nodes(ssa: &SsaBody, callee: &str) -> Vec<NodeIndex> {
+        let args: Vec<SsaValue> = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.body.iter())
+            .find_map(|i| match &i.op {
+                SsaOp::Call {
+                    callee: c, args, ..
+                } if c == callee => Some(args.iter().flatten().copied().collect()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no call to {callee}"));
+        let mut out = Vec::new();
+        let mut stack = args;
+        while let Some(v) = stack.pop() {
+            let def = ssa
+                .blocks
+                .iter()
+                .flat_map(|b| b.phis.iter().chain(b.body.iter()))
+                .find(|i| i.value == v)
+                .expect("value has a defining instruction");
+            match &def.op {
+                SsaOp::Assign(ops) if def.var_name.is_some() && ops.len() > 1 => {
+                    stack.extend(ops.iter().copied());
+                }
+                _ => out.push(def.cfg_node),
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn defines(cfg: &Cfg, name: &str) -> Vec<NodeIndex> {
+        cfg.node_indices()
+            .filter(|&n| cfg[n].taint.defines.as_deref() == Some(name))
+            .collect()
+    }
+
+    /// A handler resolves a variable to the value live where the protected
+    /// code can raise, not to the definition closest to the entry.
+    #[test]
+    fn handler_sees_try_body_definition_after_an_earlier_branch() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let cmd = 'ls'; if (req.v) { log('v'); } try { cmd = req.query.cmd; work(); } catch (e) { exec(cmd); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "cmd");
+        let try_def = *defs.last().expect("the try body defines cmd");
+        assert_eq!(arg_def_nodes(&ssa, "exec"), vec![try_def]);
+    }
+
+    /// The straight-line shape, where the pre-try value and the in-try
+    /// reassignment share one block: the handler sees the value live at the
+    /// call that can raise, which is the one before the reassignment.
+    #[test]
+    fn orphan_catch_sees_value_live_at_the_exception_source() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let x = req.query.x; try { work(); x = 'safe'; } catch (e) { sink(x); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "x");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(
+            arg_def_nodes(&ssa, "sink"),
+            vec![defs[0]],
+            "work() raises before x is reassigned"
+        );
+    }
+
+    /// Two reaching definitions at different exception sources merge.
+    #[test]
+    fn handler_merges_definitions_from_several_exception_sources() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(c) { let x = 'a'; try { first(); x = 'b'; second(); } catch (e) { sink(x); } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "x");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(arg_def_nodes(&ssa, "sink"), defs);
+        assert!(crate::ssa::invariants::check_structural_invariants(&ssa).is_empty());
+    }
+
+    /// A handler inside another handler sees the outer handler's locals.
+    #[test]
+    fn nested_handler_sees_outer_handler_definition() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { try { a(); } catch (e) { const c = req.query.c; try { b(); } catch (e2) { exec(c); } } }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "c");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(arg_def_nodes(&ssa, "exec"), defs);
+    }
+
+    /// A variable defined only after the try, or never reaching a source, is
+    /// not invented in the handler: it keeps the baseline resolution.
+    #[test]
+    fn handler_keeps_baseline_for_unrecorded_variables() {
+        let (file_cfg, ssa) = lower_js_fn(
+            "function f(req) { let a = req.query.a; try { work(); } catch (e) { sink(a); } a = 'post'; }",
+        );
+        let cfg = &file_cfg.bodies[1].graph;
+        let defs = defines(cfg, "a");
+        assert_eq!(arg_def_nodes(&ssa, "sink"), vec![defs[0]]);
+        assert!(crate::ssa::invariants::check_structural_invariants(&ssa).is_empty());
     }
 }
