@@ -782,12 +782,22 @@ static EXCLUDES: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
 
 /// Check whether `text` matches a per-language exclusion pattern.
 pub(crate) fn is_excluded(lang: &str, trimmed: &[u8]) -> bool {
-    let excludes = match EXCLUDES.get(lang).or_else(|| {
-        let key = lang.to_ascii_lowercase();
-        EXCLUDES.get(key.as_str())
-    }) {
-        Some(e) => *e,
-        None => return false,
+    // Direct match for the canonical lowercase keys (no hashing); the map
+    // lookup stays as the fallback for any other spelling.
+    let excludes = match lang {
+        "rust" | "rs" | "go" | "python" | "py" | "c" | "cpp" | "php" | "ruby" | "rb" => {
+            return false;
+        }
+        "javascript" | "js" => javascript::EXCLUDES,
+        "typescript" | "ts" => typescript::EXCLUDES,
+        "java" => java::EXCLUDES,
+        _ => match EXCLUDES.get(lang).or_else(|| {
+            let key = lang.to_ascii_lowercase();
+            EXCLUDES.get(key.as_str())
+        }) {
+            Some(e) => *e,
+            None => return false,
+        },
     };
     for &pat in excludes {
         if match_suffix_cs(trimmed, pat.as_bytes(), false) {
@@ -1732,7 +1742,12 @@ fn classify_all_aliased(
     extra: Option<&[RuntimeLabelRule]>,
 ) -> SmallVec<[DataLabel; 2]> {
     let mut out = classify_all_text(lang, text, extra);
-    if lang == "go" && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix) {
+    if lang == "go"
+        && out
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)))
+        && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix)
+    {
         out.retain(|l| !matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)));
     }
     if let Some(aliased) = aliased_receiver_text(text) {
