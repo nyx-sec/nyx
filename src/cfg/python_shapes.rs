@@ -258,13 +258,47 @@ fn has_no_raw_sql_call(node: Node, code: &[u8]) -> bool {
         .all(|c| has_no_raw_sql_call(c, code))
 }
 
+/// True for a model class or a dotted name that reads one of its columns
+/// (`User`, `User.id`, `models.User.name`): every segment is an identifier and one of them is a
+/// class name. A lowercase-only chain (`form.sort`, `request.args`) can hold
+/// a string, which a clause method would splice into SQL text.
+fn is_column_reference(node: Node, code: &[u8]) -> bool {
+    let mut has_class = false;
+    let mut cur = node;
+    loop {
+        match cur.kind() {
+            "attribute" => {
+                let (Some(obj), Some(attr)) = (
+                    cur.child_by_field_name("object"),
+                    cur.child_by_field_name("attribute"),
+                ) else {
+                    return false;
+                };
+                has_class |= code[attr.byte_range()]
+                    .first()
+                    .is_some_and(u8::is_ascii_uppercase);
+                cur = obj;
+            }
+            "identifier" => {
+                has_class |= code[cur.byte_range()]
+                    .first()
+                    .is_some_and(u8::is_ascii_uppercase);
+                return has_class;
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// True for an argument of a statement clause that is a column expression:
 /// comparisons (their operands are bound values), boolean combinations,
-/// column references and calls over those. A bare string is raw SQL text, so
-/// it is not one.
+/// model column references and calls over those. A bare string, or a bare
+/// variable that may hold one, is raw SQL text (`order_by(sort)`,
+/// `where(cond)`), so it is not one.
 fn is_column_expression(node: Node, code: &[u8]) -> bool {
     match node.kind() {
-        "identifier" | "attribute" | "integer" | "float" | "true" | "false" | "none" => true,
+        "attribute" | "identifier" => is_column_reference(node, code),
+        "integer" | "float" | "true" | "false" | "none" => true,
         "comparison_operator" => has_no_raw_sql_call(node, code),
         "parenthesized_expression"
         | "not_operator"
@@ -276,10 +310,23 @@ fn is_column_expression(node: Node, code: &[u8]) -> bool {
             node.named_children(&mut cursor)
                 .all(|c| is_column_expression(c, code))
         }
+        // `User.id + 1`, `User.score * weight`: arithmetic on a column
+        // binds the other operand. `%` is excluded because `tmpl % value` is
+        // string formatting, and an expression with no column operand is not
+        // known to be SQL at all.
         "binary_operator" => {
+            let is_mod = node
+                .child_by_field_name("operator")
+                .is_some_and(|o| &code[o.byte_range()] == b"%");
             let mut cursor = node.walk();
-            node.named_children(&mut cursor)
-                .all(|c| c.kind() != "string" && is_column_expression(c, code))
+            let operands: Vec<Node> = node.named_children(&mut cursor).collect();
+            !is_mod
+                && operands.iter().any(|c| is_column_expression(*c, code))
+                && operands.iter().all(|c| {
+                    c.kind() != "string"
+                        && c.kind() != "concatenated_string"
+                        && has_no_raw_sql_call(*c, code)
+                })
         }
         "call" => {
             let Some(leaf) = call_leaf(node, code) else {
@@ -358,8 +405,12 @@ fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
                 )
             } else if STATEMENT_METHODS.contains(&leaf) {
                 match object.kind() {
-                    "call" => is_statement_call(object, code, false),
-                    "identifier" => variable_receiver && VARIABLE_STATEMENT_METHODS.contains(&leaf),
+                    "call" => is_statement_call(object, code, variable_receiver),
+                    "identifier" => {
+                        variable_receiver
+                            && VARIABLE_STATEMENT_METHODS.contains(&leaf)
+                            && variable_holds_bound_statement(object, code)
+                    }
                     _ => false,
                 }
             } else {
@@ -368,7 +419,136 @@ fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
         }
         _ => false,
     };
-    rooted && call_args_are_column_expressions(call, code)
+    rooted && clause_args_are_bound(call, code)
+}
+
+/// True when every argument of a statement or clause call is bound by the
+/// driver rather than spliced into the SQL text.
+fn clause_args_are_bound(call: Node, code: &[u8]) -> bool {
+    if matches!(call_leaf(call, code), Some("limit" | "offset")) {
+        // SQLAlchemy turns the argument into a bound integer parameter.
+        has_no_raw_sql_call(call, code)
+    } else {
+        call_args_are_column_expressions(call, code)
+    }
+}
+
+/// The scope a variable is looked up in: the nearest enclosing function, or
+/// the module.
+fn enclosing_scope(node: Node) -> Node {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        if parent.kind() == "function_definition" {
+            return parent;
+        }
+        cur = parent;
+    }
+    cur
+}
+
+/// True when `ident` is a name read as a statement and every binding of that
+/// name in its scope is a bound statement: at least one plain assignment from
+/// a rooted statement call (`stmt = select(User)`), the others continuing it
+/// (`stmt = stmt.where(..)`).
+///
+/// A clause added to a statement keeps whatever the statement already holds,
+/// so the clause only gets a sanitizer when nothing raw can have reached the
+/// variable. Any other binding (a parameter, a loop target, `+=`, an
+/// unpacking, a statement that splices `text(..)`) leaves the variable
+/// unknown and the clause unsanitised.
+fn variable_holds_bound_statement(ident: Node, code: &[u8]) -> bool {
+    let name = &code[ident.byte_range()];
+    let scope = enclosing_scope(ident);
+    let mut has_root = false;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for c in n.named_children(&mut cursor) {
+            stack.push(c);
+        }
+        match n.kind() {
+            "assignment" => {
+                let Some(left) = n.child_by_field_name("left") else {
+                    continue;
+                };
+                if left.kind() == "identifier" && &code[left.byte_range()] == name {
+                    let Some(right) = n.child_by_field_name("right") else {
+                        return false;
+                    };
+                    if !is_statement_call(right, code, false) {
+                        // `stmt = stmt.where(..)`: the receiver is the same
+                        // variable, which this loop is already checking.
+                        let continues_self = chain_continues_variable(right, name, code);
+                        if !continues_self {
+                            return false;
+                        }
+                    } else {
+                        has_root = true;
+                    }
+                } else if binds_name(left, name, code) {
+                    return false;
+                }
+            }
+            "augmented_assignment" | "named_expression" | "for_statement" | "for_in_clause" => {
+                let target = n
+                    .child_by_field_name("left")
+                    .or_else(|| n.child_by_field_name("name"));
+                if target.is_some_and(|t| binds_name(t, name, code)) {
+                    return false;
+                }
+            }
+            "parameters"
+            | "lambda_parameters"
+            | "as_pattern"
+            | "global_statement"
+            | "nonlocal_statement"
+            | "import_statement"
+            | "import_from_statement"
+            | "delete_statement"
+                if binds_name(n, name, code) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    has_root
+}
+
+/// True when `call` is a chain of clause calls whose innermost receiver is
+/// the variable `name` and whose arguments are all bound
+/// (`stmt.where(..).limit(n)`).
+fn chain_continues_variable(call: Node, name: &[u8], code: &[u8]) -> bool {
+    let mut cur = call;
+    loop {
+        if cur.kind() != "call"
+            || !call_leaf(cur, code).is_some_and(|l| VARIABLE_STATEMENT_METHODS.contains(&l))
+            || !clause_args_are_bound(cur, code)
+        {
+            return false;
+        }
+        let Some(object) = cur
+            .child_by_field_name("function")
+            .and_then(|f| f.child_by_field_name("object"))
+        else {
+            return false;
+        };
+        match object.kind() {
+            "identifier" => return &code[object.byte_range()] == name,
+            "call" => cur = object,
+            _ => return false,
+        }
+    }
+}
+
+/// True when an identifier equal to `name` occurs anywhere under `node`.
+fn binds_name(node: Node, name: &[u8], code: &[u8]) -> bool {
+    if node.kind() == "identifier" && &code[node.byte_range()] == name {
+        return true;
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .any(|c| binds_name(c, name, code))
 }
 
 /// The first positional argument of `call`, unwrapping nothing.
@@ -811,8 +991,19 @@ mod cfg_tests {
                 "stmt = select(User).where(User.name == name).order_by(User.id).limit(10)",
                 "limit",
             ),
-            ("stmt = stmt.where(User.age > limit)", "where"),
-            ("stmt = stmt.filter_by(name=name)", "filter_by"),
+            (
+                "stmt = select(User)\n    stmt = stmt.where(User.age > limit)",
+                "where",
+            ),
+            (
+                "stmt = select(User)\n    stmt = stmt.filter_by(name=name)",
+                "filter_by",
+            ),
+            (
+                "stmt = select(User).order_by(User.id)\n    stmt = stmt.limit(limit).offset(uid)",
+                "offset",
+            ),
+            ("stmt = select(User).where(User.score + limit > 1)", "where"),
             (
                 "stmt = update(User).where(User.id == uid).values(name=name)",
                 "values",
@@ -826,9 +1017,8 @@ mod cfg_tests {
                 "where",
             ),
         ] {
-            let src = format!(
-                "{imports}def f(name, limit, uid, q, stmt):\n    {body}\n    return stmt\n"
-            );
+            let src =
+                format!("{imports}def f(name, limit, uid, q):\n    {body}\n    return stmt\n");
             assert!(all_sanitize(&src, leaf, Cap::SQL_QUERY), "{body}");
         }
     }
@@ -845,12 +1035,40 @@ mod cfg_tests {
             "stmt = select(User).order_by(request.args.get('sort'))",
             // An arbitrary function may return SQL text.
             "stmt = select(User).where(build_condition(name))",
+            // A variable that may hold a string is SQL text as a whole clause.
+            "stmt = select(User).order_by(sort)",
+            "stmt = select(User).group_by(sort)",
+            "stmt = select(User).where(cond)",
+            "stmt = select(User).where(cond % name)",
+            "stmt = select(User).where(sort + name)",
             // Not a statement: `join` on a string, no receiver chain.
             "stmt = ', '.join(parts)",
         ] {
-            let src =
-                format!("{imports}def f(name, sort, parts, stmt):\n    {body}\n    return stmt\n");
+            let src = format!(
+                "{imports}def f(name, sort, parts, cond, stmt):\n    {body}\n    return stmt\n"
+            );
             assert!(no_node_sanitizes(&src, Cap::SQL_QUERY), "{body}");
+        }
+    }
+
+    #[test]
+    fn clause_on_a_statement_variable_needs_a_bound_history() {
+        let imports = "from sqlalchemy import select, text\n";
+        // The clause is only neutralised when every binding of the variable is
+        // a bound statement; anything else may already hold raw SQL.
+        for body in [
+            // A parameter.
+            "stmt = stmt.where(User.id == name)",
+            // A raw splice earlier in the chain.
+            "stmt = select(User).where(text(f\"n = '{name}'\"))\n    stmt = stmt.where(User.id == 1)",
+            // Rebound to text.
+            "stmt = select(User)\n    stmt = text(name)\n    stmt = stmt.where(User.id == 1)",
+            "stmt = select(User)\n    stmt += text(name)\n    stmt = stmt.where(User.id == 1)",
+            // A loop target.
+            "stmt = select(User)\n    for stmt in parts:\n        stmt = stmt.where(User.id == 1)",
+        ] {
+            let src = format!("{imports}def f(name, parts, stmt):\n    {body}\n    return stmt\n");
+            assert!(none_sanitize(&src, "where", Cap::SQL_QUERY), "{body}");
         }
     }
 
