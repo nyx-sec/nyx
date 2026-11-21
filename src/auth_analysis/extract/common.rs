@@ -5178,6 +5178,8 @@ fn matches_session_context(chain: &[String]) -> bool {
         || (lower.len() >= 2
             && matches!(lower[0].as_str(), "req" | "request")
             && matches!(lower[1].as_str(), "session" | "user" | "currentuser"))
+        // Flask's `g.user`, set by a `before_request` hook.
+        || (lower.len() >= 2 && lower[0] == "g" && lower[1] == "user")
         || (lower.len() >= 3
             && lower[0] == "self"
             && matches!(lower[1].as_str(), "request" | "session" | "current_user")
