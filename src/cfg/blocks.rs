@@ -559,10 +559,16 @@ fn build_finally_paths<'a>(
     }
 
     let mut tail_uses: Vec<String> = Vec::new();
+    let mut tail_returned: Vec<String> = Vec::new();
     for &ret in &abrupt {
         for u in &g[ret].taint.uses {
             if !tail_uses.contains(u) {
                 tail_uses.push(u.clone());
+            }
+        }
+        for n in &g[ret].returned_idents {
+            if !tail_returned.contains(n) {
+                tail_returned.push(n.clone());
             }
         }
         if g[ret].finally_tail {
@@ -571,6 +577,7 @@ fn build_finally_paths<'a>(
             g[ret].kind = StmtKind::Seq;
             g[ret].finally_tail = false;
             g[ret].taint.uses.clear();
+            g[ret].returned_idents.clear();
         } else {
             g[ret].finally_return = true;
         }
@@ -608,6 +615,7 @@ fn build_finally_paths<'a>(
                 uses: tail_uses,
                 ..Default::default()
             },
+            returned_idents: tail_returned,
             finally_tail: true,
             ..Default::default()
         });
