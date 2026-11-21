@@ -7726,3 +7726,32 @@ fn java_php_member_lhs_defines_whole_path() {
         "the index is read, not assigned"
     );
 }
+
+#[test]
+fn nested_sanitizer_does_not_replace_a_gated_sink_callee() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    let src = "import subprocess, html\ndef h(name):\n    subprocess.Popen(['sh', '-c', html.escape(name)])\n";
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "python", py);
+    let node = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .find(|n| {
+            n.call
+                .outer_callee
+                .as_deref()
+                .or(n.call.callee.as_deref())
+                .is_some_and(|c| c.ends_with("Popen"))
+        })
+        .expect("Popen call node");
+    // The gated sink keeps its callee, so its gate still classifies it.
+    assert_eq!(node.call.callee.as_deref(), Some("subprocess.Popen"));
+    assert!(
+        node.taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE))),
+        "{:?}",
+        node.taint.labels
+    );
+}

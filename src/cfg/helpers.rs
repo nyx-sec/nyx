@@ -526,7 +526,25 @@ pub(crate) fn find_classifiable_inner_call<'a>(
     code: &'a [u8],
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> Option<(String, DataLabel, Node<'a>)> {
-    find_inner_call_impl(n, lang, code, extra, false)
+    find_inner_call_impl(n, lang, code, extra, |_| true)
+}
+
+/// Like [`find_classifiable_inner_call`], but recurses PAST nested calls that
+/// classify as a `Sanitizer`, returning only a nested `Source` or `Sink`.
+/// Used when the outer call is a gated sink: it has no flat label, so it looks
+/// unclassified, but a sanitizer in its arguments
+/// (`subprocess.Popen(["sh", "-c", html.escape(name)])`) cleans only its own
+/// result.  Made the node's callee, it would drop the gate; the sink check
+/// applies it to the operands it wraps through the nested-call tree.
+pub(crate) fn find_inner_source_or_sink_call<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<(String, DataLabel, Node<'a>)> {
+    find_inner_call_impl(n, lang, code, extra, |l| {
+        !matches!(l, DataLabel::Sanitizer(_))
+    })
 }
 
 /// Like [`find_classifiable_inner_call`], but ONLY returns a nested call that
@@ -544,21 +562,21 @@ pub(crate) fn find_inner_sink_call<'a>(
     code: &'a [u8],
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> Option<(String, DataLabel, Node<'a>)> {
-    find_inner_call_impl(n, lang, code, extra, true)
+    find_inner_call_impl(n, lang, code, extra, |l| matches!(l, DataLabel::Sink(_)))
 }
 
 /// Shared walker for [`find_classifiable_inner_call`] /
-/// [`find_inner_sink_call`].  When `require_sink` is set, a non-`Sink`
-/// classification does not terminate the search: the walk continues into the
-/// call's arguments so a deeper sink is still found.
+/// [`find_inner_source_or_sink_call`] / [`find_inner_sink_call`].  A
+/// classification that `accept` rejects does not
+/// terminate the search: the walk continues into the call's arguments so a
+/// deeper accepted call is still found.
 fn find_inner_call_impl<'a>(
     n: Node<'a>,
     lang: &str,
     code: &'a [u8],
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
-    require_sink: bool,
+    accept: fn(&DataLabel) -> bool,
 ) -> Option<(String, DataLabel, Node<'a>)> {
-    let accept = |lbl: &DataLabel| !require_sink || matches!(lbl, DataLabel::Sink(_));
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
         // Do not descend into Kind::Function nodes, they will be extracted
@@ -660,12 +678,12 @@ fn find_inner_call_impl<'a>(
                     }
                 }
                 // Recurse into arguments of this call
-                if let Some(found) = find_inner_call_impl(c, lang, code, extra, require_sink) {
+                if let Some(found) = find_inner_call_impl(c, lang, code, extra, accept) {
                     return Some(found);
                 }
             }
             _ => {
-                if let Some(found) = find_inner_call_impl(c, lang, code, extra, require_sink) {
+                if let Some(found) = find_inner_call_impl(c, lang, code, extra, accept) {
                     return Some(found);
                 }
             }

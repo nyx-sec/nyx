@@ -46,9 +46,9 @@ use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_c
 use helpers::{
     call_fn_callee_text, call_ident_at_or_under, collect_nested_function_nodes,
     collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, first_call_ident_with_span, first_callback_sink_call, first_member_label,
-    first_member_text, is_raii_factory, is_subscript_kind, root_member_receiver,
-    subscript_components, subscript_lhs_node,
+    find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
+    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
+    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -3375,10 +3375,25 @@ pub(super) fn push_node<'a>(
         // path / query / command argument, so the inner sink must still fire.
         // e.g. `JSON.parse(await fsp.readFile(tainted))` (vite CVE-2026-39365
         // FILE_IO path traversal hidden under the JSON_PARSE sanitizer),
-        // `escapeHtml(db.query(tainted))`.  `require_sink` makes the search
-        // skip the non-sink outer match and keep walking into its arguments.
+        // `escapeHtml(db.query(tainted))`.  `find_inner_sink_call` skips the
+        // non-sink outer match and keeps walking into its arguments.
+        //
+        // A gated sink (`subprocess.Popen`, `requests.get`) carries no flat
+        // label, so it reaches here unclassified.  A sanitizer nested in its
+        // arguments cleans only its own result, so it must not take over the
+        // callee (the gate below would no longer match, and the sink with
+        // it); a nested source or sink still does.  The sink check applies
+        // the sanitizer to the operands it wraps through the nested-call
+        // tree.
         let inner = if labels.is_empty() {
-            find_classifiable_inner_call(ast, lang, code, extra)
+            let outer_is_gated_sink = !text.is_empty()
+                && !crate::labels::classify_gated_sink(lang, &text, |_| None, |_| None, |_| false)
+                    .is_empty();
+            if outer_is_gated_sink {
+                find_inner_source_or_sink_call(ast, lang, code, extra)
+            } else {
+                find_classifiable_inner_call(ast, lang, code, extra)
+            }
         } else {
             find_inner_sink_call(ast, lang, code, extra)
         };
