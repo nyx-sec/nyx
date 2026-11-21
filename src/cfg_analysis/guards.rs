@@ -346,6 +346,32 @@ pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: Nod
     {
         return false;
     }
+    // Destination-narrowed gates whose object-literal destination fields hold
+    // no identifier (`pool.query({ text: 'SELECT ... $1', values: [id] })`,
+    // Apollo `client.query({ query, variables })`, which has no SQL text field
+    // at all) read nothing at their payload positions.  Every sink cap on the
+    // node must belong to such a gate.
+    let filters = &info.call.gate_filters;
+    if !filters.is_empty()
+        && filters
+            .iter()
+            .all(|f| f.destination_uses.as_ref().is_some_and(|u| u.is_empty()))
+    {
+        let gated = filters
+            .iter()
+            .fold(crate::labels::Cap::empty(), |acc, f| acc | f.label_caps);
+        let sink_caps =
+            info.taint
+                .labels
+                .iter()
+                .fold(crate::labels::Cap::empty(), |acc, l| match l {
+                    crate::labels::DataLabel::Sink(c) => acc | *c,
+                    _ => acc,
+                });
+        if gated.contains(sink_caps) {
+            return true;
+        }
+    }
     // `arg_string_literals` is aligned with positional arguments (keyword /
     // named args are skipped during extraction), matching the positional
     // indices carried in `sink_payload_args`.  Every payload position must

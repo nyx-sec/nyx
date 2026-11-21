@@ -241,8 +241,13 @@ pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option
 ///   `{root_receiver}.{method}` text the method-call languages already build.
 ///   The intermediate links' own arguments are not part of the rewritten
 ///   call.
+/// * A TypeORM / MikroORM query-builder chain
+///   `repo.createQueryBuilder('u').leftJoin(..).where` becomes
+///   `QueryBuilder.where` when every link after `createQueryBuilder(..)` is
+///   a method in [`crate::labels::javascript::QUERY_BUILDER_CHAIN_METHODS`]
+///   (methods that return the builder).
 ///
-/// `None` when neither shape applies.
+/// `None` when no shape applies.
 pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     let func = unwrap_parens(func);
     if func.kind() != "member_expression" {
@@ -259,6 +264,9 @@ pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     }
     if let Some(module) = js_required_module_name(object, code) {
         return Some(format!("{module}.{method}"));
+    }
+    if js_is_query_builder_chain(object, code) {
+        return Some(format!("QueryBuilder.{method}"));
     }
 
     let fluent = crate::labels::javascript::FLUENT_RESPONSE_METHODS;
@@ -289,6 +297,40 @@ pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// True when the call `link` yields a query builder: it is a
+/// `createQueryBuilder(..)` call, or a builder-returning method
+/// ([`crate::labels::javascript::QUERY_BUILDER_CHAIN_METHODS`]) called on
+/// one.
+fn js_is_query_builder_chain(link: Node, code: &[u8]) -> bool {
+    let chain = crate::labels::javascript::QUERY_BUILDER_CHAIN_METHODS;
+    let mut link = link;
+    for _ in 0..32 {
+        let Some(func) = link.child_by_field_name("function").map(unwrap_parens) else {
+            return false;
+        };
+        if func.kind() != "member_expression" {
+            return false;
+        }
+        let Some(method) = func
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))
+        else {
+            return false;
+        };
+        if method == "createQueryBuilder" {
+            return true;
+        }
+        if !chain.contains(&method.as_str()) {
+            return false;
+        }
+        match func.child_by_field_name("object").map(unwrap_parens) {
+            Some(receiver) if receiver.kind() == "call_expression" => link = receiver,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Module name of a `require('<name>')` call, with any `node:` scheme
@@ -689,9 +731,19 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
     code: &'a [u8],
     ctx: &crate::labels::ClassificationContext<'_>,
 ) -> Option<(String, crate::labels::GatedLabelMatch, (usize, usize))> {
+    // A loop / `if` body and any nested block hold statements that are CFG
+    // nodes of their own: a `for (const f of req.body.items)` header must not
+    // take the gated sink of a call in its body.
+    let body_ids: SmallVec<[usize; 3]> = ["body", "consequence", "alternative"]
+        .iter()
+        .filter_map(|f| n.child_by_field_name(f))
+        .map(|b| b.id())
+        .collect();
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
-        if lookup(lang, c.kind()) == Kind::Function {
+        if matches!(lookup(lang, c.kind()), Kind::Function | Kind::Block)
+            || body_ids.contains(&c.id())
+        {
             continue;
         }
         if matches!(

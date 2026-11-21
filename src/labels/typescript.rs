@@ -510,11 +510,11 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         },
         payload_args: &[],
     },
-    // Phase 07 — Drizzle `sql` template-tag builder. See
-    // `labels/javascript.rs::GATED_LABEL_RULES` for the two callee
-    // shapes covered (`sql\`...\`` and `sql.raw(...)`).
+    // Phase 07: Drizzle `sql.raw(...)`.  See
+    // `labels/javascript.rs::GATED_LABEL_RULES`: the `sql` tag binds its
+    // substitutions as parameters and is not a sink.
     GatedLabelRule {
-        matchers: &["=sql", "sql.raw"],
+        matchers: &["sql.raw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
@@ -1049,7 +1049,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: super::javascript::SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1063,7 +1063,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: super::javascript::SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1077,7 +1077,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: super::javascript::SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1091,7 +1091,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: super::javascript::SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate::payload_positions("db.exec", DataLabel::Sink(Cap::SQL_QUERY), false, &[0]),
@@ -1106,7 +1106,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: super::javascript::SQL_DRIVER_TEXT_FIELDS,
         },
     },
     // `nunjucks.renderString(src, ctx)` — Nunjucks SSTI sink.  Only the
@@ -1410,6 +1410,80 @@ pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate::payload_positions(
         "window.setInterval",
         DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    // ── Query-builder raw SQL text (TypeORM / MikroORM) ──────────────────
+    // See javascript.rs.
+    SinkGate::payload_positions(
+        "QueryBuilder.where",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.andWhere",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orWhere",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.having",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.andHaving",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orHaving",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orderBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addOrderBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.groupBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addGroupBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.select",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addSelect",
+        DataLabel::Sink(Cap::SQL_QUERY),
         true,
         &[0],
     ),

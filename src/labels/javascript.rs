@@ -373,9 +373,11 @@ pub static RULES: &[LabelRule] = &[
     },
     // ORM / query builder raw-SQL entry points.
     //
-    // `$queryRaw` / `$executeRaw` are tagged-template forms; the SQL is
-    // assembled from a template literal so taint reaching arg 0 is the
-    // injection vector and modeling them as flat sinks is correct.
+    // `$queryRaw` / `$executeRaw` are flat sinks for the call form, but the
+    // tagged-template form (`prisma.$queryRaw\`... ${x}\``) sends every
+    // substitution as a bind parameter.  The CFG limits the tagged form to
+    // substitutions that splice raw text (`${Prisma.raw(x)}`), see
+    // `cfg::apply_js_sql_template_params`.
     //
     // `$queryRawUnsafe` / `$executeRawUnsafe` accept positional bind
     // parameters: `tx.$queryRawUnsafe(sqlTemplate, p1, p2, ...)` binds
@@ -660,6 +662,67 @@ pub(crate) const FLUENT_RESPONSE_METHODS: &[&str] = &[
     "removeHeader",
 ];
 
+/// TypeORM / MikroORM `QueryBuilder` methods that return the builder, so
+/// `repo.createQueryBuilder('u').leftJoin(..).where(cond)` calls `where` on
+/// the builder.  The CFG callee canonicaliser rewrites such chains to
+/// `QueryBuilder.<method>` (`cfg::helpers::js_canonical_callee`).
+pub(crate) const QUERY_BUILDER_CHAIN_METHODS: &[&str] = &[
+    "select",
+    "addSelect",
+    "from",
+    "where",
+    "andWhere",
+    "orWhere",
+    "having",
+    "andHaving",
+    "orHaving",
+    "orderBy",
+    "addOrderBy",
+    "groupBy",
+    "addGroupBy",
+    "leftJoin",
+    "leftJoinAndSelect",
+    "innerJoin",
+    "innerJoinAndSelect",
+    "leftJoinAndMapOne",
+    "leftJoinAndMapMany",
+    "innerJoinAndMapOne",
+    "innerJoinAndMapMany",
+    "setParameter",
+    "setParameters",
+    "skip",
+    "take",
+    "limit",
+    "offset",
+    "withDeleted",
+    "distinct",
+    "distinctOn",
+    "cache",
+    "setLock",
+    "useTransaction",
+];
+
+/// Query-builder methods that put their first argument into the SQL text
+/// verbatim: a condition string (`where("u.name = '" + x + "'")`), a column
+/// or expression (`orderBy(x)`, `select(x)`).  Bind values go in the
+/// separate parameters object (arg 1), and an object, `Brackets` or
+/// callback first argument is built by the ORM from parameters; the CFG gate
+/// pass drops the sink for those shapes.
+pub(crate) const QUERY_BUILDER_SQL_TEXT_METHODS: &[&str] = &[
+    "where",
+    "andWhere",
+    "orWhere",
+    "having",
+    "andHaving",
+    "orHaving",
+    "orderBy",
+    "addOrderBy",
+    "groupBy",
+    "addGroupBy",
+    "select",
+    "addSelect",
+];
+
 /// Timers that compile a string first argument (`setTimeout('run()', 10)`).
 /// Their `GATED_SINKS` entries only apply when arg 0 is a string by
 /// construction (`cfg::literals::js_arg_is_string_valued`): a callback
@@ -674,6 +737,14 @@ pub(crate) const STRING_EVALUATING_TIMERS: &[&str] = &["setTimeout", "setInterva
 /// pass keeps their `PROTOTYPE_POLLUTION` gates for that shape alone
 /// (`cfg::literals::js_arg_is_prototype_object`).
 pub(crate) const SHALLOW_ASSIGN_MERGES: &[&str] = &["Object.assign"];
+
+/// SQL text fields of the driver config-object call form:
+/// `pool.query({ text, values, name })` (pg) and
+/// `connection.query({ sql, values, timeout })` (mysql / mysql2).  The
+/// `values` array is bound as parameters, so when arg 0 is an object
+/// literal only these fields carry injectable SQL.  Any other object
+/// (Apollo's `client.query({ query, variables })`) has none.
+pub(crate) const SQL_DRIVER_TEXT_FIELDS: &[&str] = &["text", "sql"];
 
 /// Node `child_process` entry points that spawn a process.  Shared by the
 /// JS and TS import-gated shell rules.
@@ -848,14 +919,14 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         },
         payload_args: &[],
     },
-    // Phase 07 — Drizzle `sql` template-tag builder.  Two shapes:
-    //   - `sql.raw(x)`              → callee text "sql.raw" (member call)
-    //   - `sql\`SELECT ${x}\``       → callee text "sql"      (tag call)
-    // Both leading-identifier-gate against the imported `sql` symbol from
-    // `drizzle-orm`. `=sql` is exact-only so unrelated `.sql()` methods do
-    // not collide; `sql.raw` carries its own member-access matcher.
+    // Phase 07: Drizzle `sql.raw(x)` splices `x` into the query text.  The
+    // `sql\`SELECT ${x}\`` tag itself binds `x` as a parameter and is not a
+    // sink; a `sql.raw` call inside it is found as a nested sink, and the
+    // CFG treats the tag's result as SQL-safe
+    // (`cfg::apply_js_sql_template_params`).  Gated on the `sql` import
+    // from `drizzle-orm`.
     GatedLabelRule {
-        matchers: &["=sql", "sql.raw"],
+        matchers: &["sql.raw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
@@ -1430,7 +1501,9 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // above) so both the taint scan and the const-arg suppression restrict
     // to the SQL string.  Suffix-match (no `=` sigil) so
     // `queryInterface.sequelize.query`, `db.knex.raw`, `this.#db.knex.raw`,
-    // etc. all qualify.
+    // etc. all qualify.  The driver gates also accept the config-object form
+    // (`pool.query({ text, values })`), where only the SQL text fields are
+    // payload (`SQL_DRIVER_TEXT_FIELDS`).
     SinkGate {
         callee_matcher: "sequelize.query",
         arg_index: 0,
@@ -1470,7 +1543,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1484,7 +1557,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1498,7 +1571,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate {
@@ -1512,7 +1585,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: SQL_DRIVER_TEXT_FIELDS,
         },
     },
     SinkGate::payload_positions("db.exec", DataLabel::Sink(Cap::SQL_QUERY), false, &[0]),
@@ -1527,7 +1600,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
-            object_destination_fields: &[],
+            object_destination_fields: SQL_DRIVER_TEXT_FIELDS,
         },
     },
     // `nunjucks.renderString(src, ctx)` — Nunjucks SSTI sink.  Only the
@@ -1868,6 +1941,86 @@ pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate::payload_positions(
         "window.setInterval",
         DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    // ── Query-builder raw SQL text (TypeORM / MikroORM) ──────────────────
+    //
+    // `repo.createQueryBuilder('u').where(\`u.name = '${name}'\`)` and the
+    // other `QUERY_BUILDER_SQL_TEXT_METHODS` reach these gates through the
+    // `QueryBuilder.<method>` canonical callee.  Arg 0 is SQL text; the
+    // parameters object at arg 1 is bound.  Gate-only (no flat rule) so the
+    // CFG gate pass can drop the sink for an object / `Brackets` / callback
+    // condition.
+    SinkGate::payload_positions(
+        "QueryBuilder.where",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.andWhere",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orWhere",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.having",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.andHaving",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orHaving",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.orderBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addOrderBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.groupBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addGroupBy",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.select",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "QueryBuilder.addSelect",
+        DataLabel::Sink(Cap::SQL_QUERY),
         true,
         &[0],
     ),
@@ -2320,6 +2473,47 @@ mod tests {
                     "{lang}: {callee} must not be an XSS sink, got {labels:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn sql_driver_gates_check_config_object_sql_text_only() {
+        for lang in ["javascript", "typescript"] {
+            for callee in [
+                "pool.query",
+                "client.query",
+                "connection.query",
+                "db.execute",
+            ] {
+                let gates = classify_gated_sink(lang, callee, |_| None, |_| None, |_| false);
+                let sql = gates
+                    .iter()
+                    .find(|g| g.label == DataLabel::Sink(Cap::SQL_QUERY))
+                    .unwrap_or_else(|| panic!("{lang}: {callee} gate"));
+                assert_eq!(sql.payload_args, &[0]);
+                assert_eq!(sql.object_destination_fields, &["text", "sql"]);
+            }
+        }
+    }
+
+    #[test]
+    fn query_builder_text_methods_are_gated_sql_sinks() {
+        for lang in ["javascript", "typescript"] {
+            for callee in [
+                "QueryBuilder.where",
+                "QueryBuilder.andWhere",
+                "QueryBuilder.orderBy",
+                "QueryBuilder.select",
+            ] {
+                assert_eq!(
+                    gated_payload(lang, callee),
+                    Some(vec![0]),
+                    "{lang}: {callee}"
+                );
+            }
+            // The builder's terminal methods and bare `where` are not sinks.
+            assert_eq!(gated_payload(lang, "QueryBuilder.getMany"), None);
+            assert_eq!(gated_payload(lang, "where"), None);
         }
     }
 

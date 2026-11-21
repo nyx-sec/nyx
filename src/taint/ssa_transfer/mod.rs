@@ -6654,8 +6654,16 @@ pub(super) fn transfer_inst(
                     // result, only the receiver and the query text do.
                     let (use_caps, use_origins) = match sql_query_payload_positions(info) {
                         Some(payload) => {
-                            let (mut caps, mut origins) =
-                                collect_args_taint(args, &None, state, &payload);
+                            let (mut caps, mut origins) = match sql_query_text_field_names(info) {
+                                // Config-object form
+                                // (`pool.query({ text, values })`): only the
+                                // SQL text fields of the object are the
+                                // query, `values` is bound.
+                                Some(names) => {
+                                    collect_named_args_taint(args, state, ssa, &payload, &names)
+                                }
+                                None => collect_args_taint(args, &None, state, &payload),
+                            };
                             if let Some(taint) = receiver.as_ref().and_then(|rv| state.get(*rv)) {
                                 caps |= taint.caps;
                                 for orig in &taint.origins {
@@ -7690,9 +7698,22 @@ pub(super) fn transfer_inst(
                                         .unwrap_or(false)
                             })
                         };
+                    // Request-bound formal (`@Query('q') q`, `@Body() dto`) or
+                    // a field path rooted at one (`dto.cmd`): the framework
+                    // fills it from the request whatever its name.
+                    let root = var_name.split('.').next().unwrap_or(var_name);
+                    // Only TypeScript decorators set the flag for this seed;
+                    // other languages fill it for their own routing and the
+                    // seeding passes for those read it elsewhere.
+                    let is_request_bound = matches!(transfer.lang, Lang::TypeScript)
+                        && transfer
+                            .param_route_capture
+                            .is_some_and(|flags| flags.iter().any(|f| *f))
+                        && request_bound_formal(ssa, transfer, root);
                     if crate::labels::is_js_ts_handler_param_name(var_name)
                         || root_is_handler
                         || is_destructured_request_field
+                        || is_request_bound
                     {
                         let origin = TaintOrigin {
                             node: inst.cfg_node,
@@ -10304,6 +10325,58 @@ fn sql_query_payload_positions(info: &NodeInfo) -> Option<Vec<usize>> {
     (!positions.is_empty()).then_some(positions)
 }
 
+/// Identifiers read by the SQL text fields of an object-literal query
+/// argument (`pool.query({ text: sql, values })` gives `["sql"]`), when every
+/// SQL gate of the call narrows its destination to such fields.  `None` for a
+/// call whose SQL argument is not an object-literal config.
+fn sql_query_text_field_names(info: &NodeInfo) -> Option<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    let mut any = false;
+    for gate in info
+        .call
+        .gate_filters
+        .iter()
+        .filter(|g| g.label_caps.intersects(Cap::SQL_QUERY))
+    {
+        names.extend(gate.destination_uses.as_ref()?.iter().cloned());
+        any = true;
+    }
+    any.then_some(names)
+}
+
+/// Taint of the arguments at `positions` restricted to values whose variable
+/// name is in `names`, the same narrowing the sink check applies for a
+/// destination-filtered gate.
+fn collect_named_args_taint(
+    args: &[SmallVec<[SsaValue; 2]>],
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+    positions: &[usize],
+    names: &[String],
+) -> (Cap, SmallVec<[TaintOrigin; 2]>) {
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    for &pos in positions {
+        for &v in args.get(pos).into_iter().flatten() {
+            let named = ssa
+                .def_of(v)
+                .var_name
+                .as_deref()
+                .is_some_and(|vn| names.iter().any(|n| n == vn));
+            if !named {
+                continue;
+            }
+            if let Some(taint) = state.get(v) {
+                caps |= taint.caps;
+                for orig in &taint.origins {
+                    push_origin_bounded(&mut origins, *orig);
+                }
+            }
+        }
+    }
+    (caps, origins)
+}
+
 /// Collect taint from call arguments.
 ///
 /// `args` contains **positional arguments only**, the receiver is a separate
@@ -11277,6 +11350,27 @@ fn is_body_model_field(ssa: &SsaBody, transfer: &SsaTaintTransfer, value: SsaVal
                             | crate::ssa::type_facts::TypeKind::Object
                     )
                 })
+    })
+}
+
+/// True when `name` is a real formal of the body (not a synthetic external)
+/// whose `param_route_capture` flag marks it as filled from the request.
+fn request_bound_formal(ssa: &SsaBody, transfer: &SsaTaintTransfer, name: &str) -> bool {
+    let Some(flags) = transfer.param_route_capture else {
+        return false;
+    };
+    let eb = &ssa.blocks[ssa.entry.0 as usize];
+    eb.phis.iter().chain(eb.body.iter()).any(|i| match i.op {
+        SsaOp::Param { index } => {
+            flags.get(index).copied().unwrap_or(false)
+                && !ssa.synthetic_externals.contains(&i.value)
+                && ssa
+                    .value_defs
+                    .get(i.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                    == Some(name)
+        }
+        _ => false,
     })
 }
 

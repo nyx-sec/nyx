@@ -74,18 +74,19 @@ use imports::{
 use literals::has_sql_placeholders;
 use literals::{
     ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer, extract_arg_callees,
-    extract_arg_string_literals, extract_arg_uses, extract_const_keyword_arg,
-    extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
-    extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
-    extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
-    find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
+    destination_field_reading_source, detect_go_replace_call_sanitizer,
+    detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
+    extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
+    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
+    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
+    find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
     java_chain_arg0_kind_for_method, js_arg_is_prototype_object, js_arg_is_string_valued,
-    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    js_positional_arity, js_shell_option_argv_positions, parameterized_query_shape,
-    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
+    js_arg_is_structured_condition, js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner,
+    js_orm_query_arg0_is_uid_ref, js_positional_arity, js_shell_option_argv_positions,
+    js_sql_template_raw_splices, parameterized_query_shape, ruby_chain_arg0_for_method,
+    walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -1405,17 +1406,20 @@ pub struct BodyMeta {
     /// machine consumes this to seed the entry `AuthLevel` for privileged-sink
     /// checks. Empty for top-level and for functions without auth markers.
     pub auth_decorators: Vec<String>,
-    /// Per-formal "bound from the request" flag. Same length as `params`.
+    /// Per-formal request-binding flag. Same length as `params`.
     /// For Python and Ruby, `true` at position `i` iff the formal name
     /// appears as a path capture in a framework routing decorator on this
     /// function (Flask `@app.route("/users/<name>")`, blueprint-prefixed
     /// `@bp.get("/u/<int:id>")`, FastAPI / Starlette verb decorators,
     /// Sinatra `:name` segments). For Java, `true` iff the formal carries a
     /// Spring / JAX-RS binding annotation or has a non-infrastructure type
-    /// (see `params::java_formal_is_request_bound`). The entry-kind seeding
-    /// pass consults this so only request-bound formals (not implicit
-    /// globals, DI handles or injected response / session objects) are
-    /// painted as adversary input. Empty for top-level bodies.
+    /// (see `params::java_formal_is_request_bound`). For TypeScript, `true`
+    /// iff the formal carries a request-binding parameter decorator (NestJS
+    /// `@Query('q') q`, `@Body() dto`). The entry-kind seeding pass consults
+    /// this so only request-bound formals (not implicit globals, DI handles
+    /// or injected response / session objects) are painted as adversary
+    /// input, and the JS/TS handler-param auto-seed paints the decorated
+    /// TypeScript formals. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
 }
 
@@ -3194,6 +3198,25 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // A loop over a member read whose prefix is the Source
+    // (`for (const id of req.body.ids)`, Python `for x in request.json['a']`):
+    // the iterator text ends in a field name that no suffix matcher knows,
+    // so classify it by its member path, as a declaration's right-hand side
+    // would be.
+    if labels.is_empty()
+        && ((matches!(lang, "javascript" | "typescript" | "tsx")
+            && ast.kind() == "for_in_statement")
+            || (lang == "python" && ast.kind() == "for_statement"))
+        && let Some(right) = ast.child_by_field_name("right")
+        && matches!(
+            right.kind(),
+            "member_expression" | "subscript_expression" | "attribute" | "subscript"
+        )
+        && let Some(src @ DataLabel::Source(_)) = first_member_label(right, lang, code, extra)
+    {
+        labels.push(src);
+    }
+
     // Rust chain-text classification.  The default `text` for a Rust
     // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
     // is the leftmost identifier after walking through every nested
@@ -3426,8 +3449,19 @@ pub(super) fn push_node<'a>(
     //
     // This covers both direct `Kind::Assignment` nodes and `Kind::CallWrapper`
     // nodes (expression_statement) that wrap an assignment.
-    let unlabelled_before_target_check = labels.is_empty();
-    if labels.is_empty() {
+    //
+    // JS/TS: a Source label the RHS call contributed
+    // (`location.href = location.hash.substring(1)`, where the string method
+    // on a source classifies as one) gives way to a sink target.  The node's
+    // sink check reads the pre-emitted RHS member source
+    // (`pre_emit_sink_assignment_sources`) instead; a node that kept the
+    // Source label would lower to a source definition with no sink check.
+    // A Sanitizer or Sink from the RHS still wins.
+    let rhs_source_only = matches!(lang, "javascript" | "typescript" | "tsx")
+        && !labels.is_empty()
+        && labels.iter().all(|l| matches!(l, DataLabel::Source(_)));
+    let unlabelled_before_target_check = labels.is_empty() || rhs_source_only;
+    if labels.is_empty() || rhs_source_only {
         let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
             Some(ast)
         } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
@@ -3441,49 +3475,13 @@ pub(super) fn push_node<'a>(
 
         if let Some(assign) = assign_node
             && let Some(lhs) = assign.child_by_field_name("left")
+            && let Some(l) = classify_assignment_lhs(lhs, lang, code, extra)
+            && (!rhs_source_only || matches!(l, DataLabel::Sink(_)))
         {
-            // Try full member expression first (e.g. "location.href"), more
-            // specific and avoids false positives on `a.href`.
-            if let Some(full) = member_expr_text(lhs, code) {
-                if let Some(l) = classify(lang, &full, extra) {
-                    labels.push(l);
-                }
+            if rhs_source_only {
+                labels.clear();
             }
-            // Fall back to property-only (e.g. "innerHTML") for sinks that
-            // don't need object context.
-            if labels.is_empty()
-                && let Some(prop) = lhs.child_by_field_name("property")
-                && let Some(prop_text) = text_of(prop, code)
-            {
-                if let Some(l) = classify(lang, &prop_text, extra) {
-                    labels.push(l);
-                }
-            }
-            // Subscript-set form: `response.headers["X-Foo"] = bar`
-            // (Ruby `element_reference`, JS/TS `subscript_expression`,
-            // Python `subscript`).  The LHS has no `property` field, so
-            // walk into the subscript's `object` and try classifying its
-            // member-expression text (e.g. `response.headers`).  This
-            // lets header-injection sinks fire on the bare bracket form
-            // alongside the `set_header` / `headers_mut.insert` method
-            // shapes already covered above.
-            if labels.is_empty()
-                && matches!(
-                    lhs.kind(),
-                    "subscript_expression" | "subscript" | "element_reference"
-                )
-            {
-                let obj = lhs
-                    .child_by_field_name("object")
-                    .or_else(|| lhs.child_by_field_name("value"))
-                    .or_else(|| lhs.child(0));
-                if let Some(obj_node) = obj
-                    && let Some(obj_text) = member_expr_text(obj_node, code)
-                    && let Some(l) = classify(lang, &obj_text, extra)
-                {
-                    labels.push(l);
-                }
-            }
+            labels.push(l);
         }
     }
     // The label now belongs to the assignment target, not to the call `text`
@@ -3657,14 +3655,24 @@ pub(super) fn push_node<'a>(
     //   * that inner callee actually matches a gate matcher for this lang
     //
     // Motivated by CVE-2025-64430 (Parse Server SSRF).
-    if labels.is_empty()
+    //
+    // A Source the node picked up only from a member read inside the call
+    // (`.where(req.query.name).getMany()`, hoisted by the block above) does
+    // not make the outer call a classified callee: the chain is rebound and
+    // the hoisted Source stays on the node.
+    let only_hoisted_source = text_from_member_label
+        && !labels.is_empty()
+        && labels.iter().all(|l| matches!(l, DataLabel::Source(_)));
+    if (labels.is_empty() || only_hoisted_source)
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
             .or_else(|| find_chained_inner_call(outer, lang, code))
         && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
     {
         call_ast = Some(inner);
-        outer_callee = Some(text.clone());
+        if !only_hoisted_source {
+            outer_callee = Some(text.clone());
+        }
         text = inner_callee_text;
         inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
     }
@@ -3828,6 +3836,21 @@ pub(super) fn push_node<'a>(
                     {
                         continue;
                     }
+                    // A query-builder condition given as an object, a
+                    // `Brackets` group or a callback is built from bound
+                    // parameters, not spliced in as SQL text.
+                    if matches!(lang, "javascript" | "typescript" | "tsx")
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY))
+                        && gate_callee_text
+                            .strip_prefix("QueryBuilder.")
+                            .is_some_and(|m| {
+                                crate::labels::javascript::QUERY_BUILDER_SQL_TEXT_METHODS
+                                    .contains(&m)
+                            })
+                        && js_arg_is_structured_condition(cn, 0)
+                    {
+                        continue;
+                    }
                     // A shallow `Object.assign(target, src)` pollutes a shared
                     // prototype only when `target` is one.
                     if matches!(lang, "javascript" | "typescript" | "tsx")
@@ -3882,6 +3905,20 @@ pub(super) fn push_node<'a>(
                                 code,
                             ) {
                                 all_pairs.extend(pairs);
+                                // An inline member Source in a destination
+                                // field is bound to the argument's synthetic
+                                // source; keep a placeholder that
+                                // `apply_arg_source_bindings` resolves.
+                                if let Some(field) = destination_field_reading_source(
+                                    cn,
+                                    pos,
+                                    gm.object_destination_fields,
+                                    lang,
+                                    code,
+                                    extra,
+                                ) {
+                                    all_pairs.push((field, arg_source_placeholder(pos)));
+                                }
                                 had_object_match = true;
                                 break;
                             }
@@ -4006,6 +4043,24 @@ pub(super) fn push_node<'a>(
                 f.payload_args.retain(|&p| p < arity);
             }
         }
+    }
+
+    // Tagged SQL templates bind their substitutions as parameters; see
+    // `apply_js_sql_template_params`.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4))
+    {
+        apply_js_sql_template_params(
+            cn,
+            code,
+            &mut SinkSlots {
+                labels: &mut labels,
+                payload_args: &mut sink_payload_args,
+                gate_filters: &mut gate_filters,
+                destination_uses: &mut destination_uses,
+                reaching_uses: &mut sink_reaching_uses,
+            },
+        );
     }
 
     // ── Inline shell-array sink synthesis ────────────────────────────────
@@ -7124,6 +7179,269 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// Label of an assignment target (`el.innerHTML`, `location.href`,
+/// `res.headers['X']`).  The full member path is tried first (`location.href`,
+/// more specific and avoids false positives on `a.href`), then the property
+/// alone (`innerHTML`) for sinks that need no object context, then, for the
+/// subscript-set form (`response.headers["X-Foo"] = bar`: Ruby
+/// `element_reference`, JS/TS `subscript_expression`, Python `subscript`),
+/// the subscript's object path (`response.headers`), so header-injection
+/// sinks fire on the bracket form alongside the `set_header` method shapes.
+fn classify_assignment_lhs(
+    lhs: Node,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<DataLabel> {
+    if let Some(full) = member_expr_text(lhs, code)
+        && let Some(l) = classify(lang, &full, extra)
+    {
+        return Some(l);
+    }
+    if let Some(prop) = lhs.child_by_field_name("property")
+        && let Some(prop_text) = text_of(prop, code)
+        && let Some(l) = classify(lang, &prop_text, extra)
+    {
+        return Some(l);
+    }
+    if matches!(
+        lhs.kind(),
+        "subscript_expression" | "subscript" | "element_reference"
+    ) {
+        let obj = lhs
+            .child_by_field_name("object")
+            .or_else(|| lhs.child_by_field_name("value"))
+            .or_else(|| lhs.child(0));
+        if let Some(obj_node) = obj
+            && let Some(obj_text) = member_expr_text(obj_node, code)
+            && let Some(l) = classify(lang, &obj_text, extra)
+        {
+            return Some(l);
+        }
+    }
+    None
+}
+
+/// JS/TS: pre-emit Source nodes for member-expression sources read on the
+/// right-hand side of an assignment whose target is a sink
+/// (`el.innerHTML = location.hash`, `location.href = '/' + req.query.next`,
+/// `window.location.href = location.hash.substring(1)`).  `push_node` labels
+/// such a node with the target's Sink, which leaves no room for a Source on
+/// the same node, so without these nodes the sink only saw the untainted
+/// `location` / `req` roots.  Returns the effective predecessors and the
+/// synthetic names to append to the assignment's uses.
+///
+/// Arguments of calls on the right-hand side are not searched: a call's own
+/// arguments are pre-emitted by [`pre_emit_arg_source_nodes`] when the call
+/// is the node's call, and a nested call may be a sanitizer
+/// (`DOMPurify.sanitize(location.hash)`).  A call's receiver chain is
+/// searched, so `location.hash.substring(1)` counts.
+fn pre_emit_sink_assignment_sources(
+    g: &mut Cfg,
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    analysis_rules: Option<&LangAnalysisRules>,
+    preds: &[NodeIndex],
+) -> (SmallVec<[NodeIndex; 4]>, Vec<String>) {
+    let mut effective_preds: SmallVec<[NodeIndex; 4]> = SmallVec::from_slice(preds);
+    let mut names: Vec<String> = Vec::new();
+    if !matches!(lang, "javascript" | "typescript" | "tsx") {
+        return (effective_preds, names);
+    }
+    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        Some(ast)
+    } else {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor)
+            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+    };
+    let Some(assign) = assign else {
+        return (effective_preds, names);
+    };
+    let (Some(lhs), Some(rhs)) = (
+        assign.child_by_field_name("left"),
+        assign.child_by_field_name("right"),
+    ) else {
+        return (effective_preds, names);
+    };
+    let extra = analysis_rules.and_then(|r| {
+        if r.extra_labels.is_empty() {
+            None
+        } else {
+            Some(r.extra_labels.as_slice())
+        }
+    });
+    if !matches!(
+        classify_assignment_lhs(lhs, lang, code, extra),
+        Some(DataLabel::Sink(_))
+    ) {
+        return (effective_preds, names);
+    }
+    let mut found: Vec<(Node, Cap, String)> = Vec::new();
+    collect_rhs_member_sources(rhs, lang, code, extra, &mut found);
+    for (i, (node, caps, source_text)) in found.into_iter().enumerate() {
+        let synth_name = format!("__nyx_src_{}_rhs{}", g.node_count(), i);
+        let src_idx = g.add_node(NodeInfo {
+            kind: StmtKind::Seq,
+            call: CallMeta {
+                callee: Some(source_text),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels: smallvec::smallvec![DataLabel::Source(caps)],
+                defines: Some(synth_name.clone()),
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span: (node.start_byte(), node.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &effective_preds, src_idx, EdgeKind::Seq);
+        effective_preds.clear();
+        effective_preds.push(src_idx);
+        names.push(synth_name);
+    }
+    (effective_preds, names)
+}
+
+/// `location` properties that name the page's own origin.
+const LOCATION_ORIGIN_PARTS: &[&str] = &["origin", "host", "hostname", "port", "protocol"];
+
+/// True for `location.origin + location.pathname`.  The origin carries the
+/// scheme and the full host, and a pathname always starts with `/`, so the
+/// host of the resulting URL is fixed and the value cannot navigate off site.
+fn is_location_origin_plus_pathname(n: Node, code: &[u8]) -> bool {
+    let is_location_part = |node: Node, part: &str| {
+        let node = unwrap_parens(node);
+        node.kind() == "member_expression"
+            && node
+                .child_by_field_name("property")
+                .and_then(|p| text_of(p, code))
+                .as_deref()
+                == Some(part)
+            && node.child_by_field_name("object").is_some_and(|o| {
+                matches!(
+                    member_expr_text(o, code).as_deref(),
+                    Some("location" | "window.location" | "document.location" | "self.location")
+                )
+            })
+    };
+    let op_is_plus = n
+        .child_by_field_name("operator")
+        .and_then(|o| text_of(o, code))
+        .as_deref()
+        == Some("+");
+    op_is_plus
+        && n.child_by_field_name("left")
+            .is_some_and(|l| is_location_part(l, "origin"))
+        && n.child_by_field_name("right")
+            .is_some_and(|r| is_location_part(r, "pathname"))
+}
+
+/// Member reads under `n` that classify as a taint Source by their own
+/// path (`location.hash`, `req.body.next` via its `req.body` prefix), with
+/// the matched source path.  Does not enter call arguments or function
+/// literals; see [`pre_emit_sink_assignment_sources`].
+fn collect_rhs_member_sources<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    out: &mut Vec<(Node<'a>, Cap, String)>,
+) {
+    match n.kind() {
+        "member_expression" => {
+            // `location.origin + location.pathname`: the site's own origin
+            // components are not attacker input, and treating the whole
+            // `location` object as the Source would flag same-origin
+            // navigation.
+            if let (Some(obj), Some(prop)) = (
+                n.child_by_field_name("object"),
+                n.child_by_field_name("property"),
+            ) && matches!(
+                member_expr_text(obj, code).as_deref(),
+                Some("location" | "window.location" | "document.location" | "self.location")
+            ) && text_of(prop, code).is_some_and(|p| LOCATION_ORIGIN_PARTS.contains(&p.as_str()))
+            {
+                return;
+            }
+            if let Some(full) = member_expr_text(n, code) {
+                let mut candidate = full.as_str();
+                loop {
+                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra) {
+                        out.push((n, caps, candidate.to_string()));
+                        return;
+                    }
+                    match candidate.rsplit_once('.') {
+                        Some((prefix, _)) => candidate = prefix,
+                        None => break,
+                    }
+                }
+            }
+            if let Some(obj) = n.child_by_field_name("object") {
+                collect_rhs_member_sources(obj, lang, code, extra, out);
+            }
+        }
+        "subscript_expression" => {
+            if let Some(DataLabel::Source(caps)) = first_member_label(n, lang, code, extra) {
+                let text = first_member_text(n, code).unwrap_or_default();
+                out.push((n, caps, text));
+            } else if let Some(obj) = n.child_by_field_name("object") {
+                collect_rhs_member_sources(obj, lang, code, extra, out);
+            }
+        }
+        "call_expression" | "new_expression" => {
+            if let Some(f) = n
+                .child_by_field_name("function")
+                .or_else(|| n.child_by_field_name("constructor"))
+            {
+                collect_rhs_member_sources(f, lang, code, extra, out);
+            }
+        }
+        "arrow_function" | "function_expression" | "function" | "class" => {}
+        "binary_expression" if is_location_origin_plus_pathname(n, code) => {}
+        _ => {
+            let mut cursor = n.walk();
+            for child in n.named_children(&mut cursor) {
+                collect_rhs_member_sources(child, lang, code, extra, out);
+            }
+        }
+    }
+}
+
+/// JS/TS: the gated sink `push_node` rebinds a call node to when its outermost
+/// call is unclassified and a call further up the receiver chain is a gated
+/// sink (`QueryBuilder.where` under `.getMany()`, `http.get` under `.on(..)`).
+/// `None` when the outermost call is not rebound, so [`pre_emit_arg_source_nodes`]
+/// and `push_node` agree on which call's arguments the node carries.
+fn js_rebound_chain_sink_call<'a>(
+    outer: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<Node<'a>> {
+    if !matches!(lang, "javascript" | "typescript" | "tsx") {
+        return None;
+    }
+    let (inner, inner_text) = find_chained_gated_sink_call(outer, lang, code)?;
+    if inner.id() == outer.id()
+        || classify_gated_sink(lang, &inner_text, |_| None, |_| None, |_| false).is_empty()
+    {
+        return None;
+    }
+    let outer_text = outer
+        .child_by_field_name("function")
+        .and_then(|f| call_fn_callee_text(f, lang, code))?;
+    let outer_text: String = outer_text.chars().filter(|c| !c.is_whitespace()).collect();
+    classify_all(lang, &outer_text, extra)
+        .is_empty()
+        .then_some(inner)
+}
+
 /// Step 1 (`pre_emit_arg_source_nodes`): scan the AST, create Source nodes,
 /// wire them to `preds`, and return (effective_preds, synth_bindings,
 /// uses_only_synth_names).
@@ -7161,9 +7479,14 @@ fn pre_emit_arg_source_nodes(
         }
     });
 
-    let Some(call_ast) = find_call_node(ast, lang) else {
+    let Some(outer_call) = find_call_node(ast, lang) else {
         return (effective_preds, bindings, uses_only);
     };
+    // A JS/TS method chain whose sink sits in the middle
+    // (`repo.createQueryBuilder('u').where(<cond>).getMany()`): `push_node`
+    // reads the argument positions from that inner call, so the sources are
+    // bound there too.
+    let call_ast = js_rebound_chain_sink_call(outer_call, lang, code, extra).unwrap_or(outer_call);
     let Some(args_node) = call_ast.child_by_field_name("arguments") else {
         return (effective_preds, bindings, uses_only);
     };
@@ -7369,12 +7692,60 @@ fn pre_emit_arg_source_nodes(
 /// the Call node's `arg_uses` and `uses`.  `uses_only` synth names are
 /// appended only to `taint.uses`, used for chain-inner-arg sources whose
 /// synth value is not a positional outer-call argument.
+/// Destination-filter placeholder for the synthetic source bound to
+/// positional argument `pos`; see [`apply_arg_source_bindings`].
+fn arg_source_placeholder(pos: usize) -> String {
+    format!("__nyx_argsrc_{pos}")
+}
+
 fn apply_arg_source_bindings(
     g: &mut Cfg,
     call_node: NodeIndex,
     bindings: &[(usize, String)],
     uses_only: &[String],
 ) {
+    // Destination filters name the synthetic source of an argument whose
+    // destination field reads a member Source through a placeholder: swap in
+    // the real binding, and drop placeholders no binding resolved.
+    let call = &mut g[call_node].call;
+    let resolve = |uses: &mut Option<Vec<String>>, fields: &mut Vec<String>| {
+        let Some(list) = uses.as_mut() else {
+            return;
+        };
+        let parallel = fields.len() == list.len();
+        let mut i = 0;
+        while i < list.len() {
+            if !list[i].starts_with("__nyx_argsrc_") {
+                i += 1;
+                continue;
+            }
+            match bindings
+                .iter()
+                .find(|(pos, _)| list[i] == arg_source_placeholder(*pos))
+            {
+                Some((_, synth)) => {
+                    list[i] = synth.clone();
+                    i += 1;
+                }
+                None => {
+                    list.remove(i);
+                    if parallel {
+                        fields.remove(i);
+                    }
+                }
+            }
+        }
+    };
+    resolve(&mut call.destination_uses, &mut Vec::new());
+    for f in call.gate_filters.iter_mut() {
+        resolve(&mut f.destination_uses, &mut f.destination_fields);
+    }
+    // A synthetic source feeds the node, so its payload is not all literal
+    // even when the node's own call only passes literals
+    // (`location.href = location.hash.substring(1)`).
+    if !bindings.is_empty() || !uses_only.is_empty() {
+        g[call_node].all_args_literal = false;
+    }
     for (pos, synth_name) in bindings {
         let arg_uses = &mut g[call_node].call.arg_uses;
         if *pos < arg_uses.len() {
@@ -9562,11 +9933,21 @@ pub(super) fn build_sub<'a>(
             // `res.redirect(req.body.returnTo)`).  Created BEFORE the Call
             // node so they get lower indices, see doc comment on
             // `pre_emit_arg_source_nodes` for why this ordering matters.
-            let (effective_preds, src_bindings, src_uses_only) = if kind == StmtKind::Call {
+            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call {
                 pre_emit_arg_source_nodes(g, ast, lang, code, enclosing_func, analysis_rules, preds)
             } else {
                 (SmallVec::from_slice(preds), Vec::new(), Vec::new())
             };
+            let (effective_preds, rhs_sources) = pre_emit_sink_assignment_sources(
+                g,
+                ast,
+                lang,
+                code,
+                enclosing_func,
+                analysis_rules,
+                &effective_preds,
+            );
+            src_uses_only.extend(rhs_sources);
 
             let node = push_node(
                 g,
@@ -9802,6 +10183,15 @@ pub(super) fn build_sub<'a>(
             } else {
                 0
             };
+            let (effective_preds, rhs_sources) = pre_emit_sink_assignment_sources(
+                g,
+                ast,
+                lang,
+                code,
+                enclosing_func,
+                analysis_rules,
+                preds,
+            );
             let n = push_node(
                 g,
                 kind,
@@ -9812,7 +10202,8 @@ pub(super) fn build_sub<'a>(
                 ord,
                 analysis_rules,
             );
-            connect_all(g, preds, n, EdgeKind::Seq);
+            apply_arg_source_bindings(g, n, &[], &rhs_sources);
+            connect_all(g, &effective_preds, n, EdgeKind::Seq);
             // `q += fmt(x)`: evaluate the call, then combine with the old `q`.
             let n = split_rmw_call(g, n, ast, lang, code);
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
@@ -10257,6 +10648,158 @@ fn apply_promisify_labels(
                 }
             }
         }
+    }
+}
+
+/// Mutable sink metadata of a node under construction in `push_node`.
+struct SinkSlots<'a> {
+    labels: &'a mut SmallVec<[DataLabel; 2]>,
+    payload_args: &'a mut Option<Vec<usize>>,
+    gate_filters: &'a mut Vec<GateFilter>,
+    destination_uses: &'a mut Option<Vec<String>>,
+    reaching_uses: &'a mut Option<Vec<String>>,
+}
+
+impl SinkSlots<'_> {
+    /// Remove `cap` from every sink label and gate filter, dropping the ones
+    /// left empty.
+    fn strip_sink_cap(&mut self, cap: Cap) {
+        let mut stripped: SmallVec<[DataLabel; 2]> = SmallVec::new();
+        for l in self.labels.drain(..) {
+            match l {
+                DataLabel::Sink(c) if c.intersects(cap) => {
+                    let rest = c & !cap;
+                    if !rest.is_empty() && !stripped.contains(&DataLabel::Sink(rest)) {
+                        stripped.push(DataLabel::Sink(rest));
+                    }
+                }
+                other => stripped.push(other),
+            }
+        }
+        *self.labels = stripped;
+        self.gate_filters.retain_mut(|f| {
+            f.label_caps &= !cap;
+            !f.label_caps.is_empty()
+        });
+        if !self.labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            *self.payload_args = None;
+            *self.destination_uses = None;
+            self.gate_filters.clear();
+        }
+    }
+
+    fn sink_caps(&self) -> Cap {
+        self.labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        })
+    }
+}
+
+/// JS/TS tagged SQL templates.  A tag such as `prisma.$queryRaw` or the
+/// drizzle / `Prisma.sql` `sql` tag sends each `${}` substitution as a bind
+/// parameter, so neither the tagged call nor a SQL sink that receives it
+/// (`db.execute(sql`...`)`) is an injection vector unless a substitution
+/// splices raw text (`${Prisma.raw(col)}`, `${sql.raw(col)}`), see
+/// [`js_sql_template_raw_splices`].
+///
+/// * The node's own call is a tagged SQL template: its SQL sink is limited
+///   to the substitutions holding a raw splice, or dropped when there are
+///   none.  A raw splice in an `sql` builder tag (which no flat rule labels)
+///   makes it a sink; an `sql` builder without one returns a fragment that is
+///   safe to hand to any executor, so its result is marked SQL-sanitised.
+/// * A SQL sink whose payload arguments are all tagged SQL templates checks
+///   only the identifiers inside their raw splices.
+fn apply_js_sql_template_params(call: Node, code: &[u8], slots: &mut SinkSlots<'_>) {
+    if let Some((positions, _)) = js_sql_template_raw_splices(call, code) {
+        let has_sql_sink = slots.sink_caps().contains(Cap::SQL_QUERY);
+        let is_builder = call
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|t| {
+                let leaf = t.rsplit('.').next().unwrap_or(&t).trim();
+                leaf.eq_ignore_ascii_case("sql")
+            });
+        if positions.is_empty() {
+            if has_sql_sink {
+                slots.strip_sink_cap(Cap::SQL_QUERY);
+            }
+            if is_builder {
+                slots.labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
+            }
+            return;
+        }
+        if !has_sql_sink {
+            slots.labels.push(DataLabel::Sink(Cap::SQL_QUERY));
+        }
+        if slots.sink_caps() == Cap::SQL_QUERY {
+            let narrowed: Vec<usize> = match slots.payload_args.as_ref() {
+                Some(existing) => positions
+                    .into_iter()
+                    .filter(|p| existing.contains(p))
+                    .collect(),
+                None => positions,
+            };
+            *slots.payload_args = Some(narrowed.clone());
+            slots.gate_filters.clear();
+            *slots.destination_uses = None;
+            if narrowed.is_empty() {
+                slots.strip_sink_cap(Cap::SQL_QUERY);
+            }
+        }
+        return;
+    }
+
+    // A SQL sink fed by tagged templates: `db.execute(sql`...`)`.
+    if !slots.sink_caps().contains(Cap::SQL_QUERY) {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    if args.kind() != "arguments" {
+        return;
+    }
+    let arg_nodes: Vec<Node> = {
+        let mut cursor = args.walk();
+        args.named_children(&mut cursor).collect()
+    };
+    let positions: Vec<usize> = match slots.payload_args.as_ref() {
+        Some(p) => p.clone(),
+        None => (0..arg_nodes.len()).collect(),
+    };
+    let mut raw_idents: Vec<String> = Vec::new();
+    let mut saw_template = false;
+    for pos in positions {
+        let Some(arg) = arg_nodes.get(pos) else {
+            continue;
+        };
+        if let Some((_, idents)) = js_sql_template_raw_splices(*arg, code) {
+            saw_template = true;
+            raw_idents.extend(idents);
+            continue;
+        }
+        // Any other payload argument that reads a variable may carry SQL
+        // text of its own; leave the sink alone.
+        let mut idents = Vec::new();
+        collect_idents(*arg, code, &mut idents);
+        if !idents.is_empty() {
+            return;
+        }
+    }
+    if !saw_template {
+        return;
+    }
+    if raw_idents.is_empty() {
+        slots.strip_sink_cap(Cap::SQL_QUERY);
+    } else if slots.sink_caps() == Cap::SQL_QUERY {
+        *slots.reaching_uses = Some(match slots.reaching_uses.take() {
+            Some(existing) => raw_idents
+                .into_iter()
+                .filter(|u| existing.contains(u))
+                .collect(),
+            None => raw_idents,
+        });
     }
 }
 
