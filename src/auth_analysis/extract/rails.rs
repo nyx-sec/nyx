@@ -44,9 +44,21 @@ impl AuthExtractor for RailsExtractor {
 #[derive(Clone)]
 struct FilterDirective {
     call: CallSite,
-    only: Vec<String>,
-    except: Vec<String>,
+    only: ActionList,
+    except: ActionList,
     skip: bool,
+}
+
+/// What an `only:` or `except:` option names.
+#[derive(Clone, Default, PartialEq, Debug)]
+enum ActionList {
+    /// The option is not there.
+    #[default]
+    Absent,
+    /// A literal list of actions: `[:a, :b]`, `%i[a b]`, `%w[a b]`, `:a`.
+    Named(Vec<String>),
+    /// The option is there but is not a literal list (`only: ACTIONS`).
+    Unresolved,
 }
 
 fn collect_nodes(
@@ -201,11 +213,24 @@ fn maybe_collect_controller(
 fn class_filter_directives(body: Node<'_>, bytes: &[u8]) -> Vec<FilterDirective> {
     let mut filters = Vec::new();
     for child in named_children(body) {
+        // A macro with no arguments (`load_and_authorize_resource`) parses as
+        // a bare identifier, not a call.
+        if child.kind() == "identifier" {
+            let name = text(child, bytes);
+            if is_resource_macro(&name) {
+                filters.extend(parse_resource_macro(child, bytes, &name));
+            }
+            continue;
+        }
         if child.kind() != "call" {
             continue;
         }
         let callee = call_name(child, bytes);
         let directive_name = bare_method_name(&callee);
+        if is_resource_macro(directive_name) {
+            filters.extend(parse_resource_macro(child, bytes, directive_name));
+            continue;
+        }
         if !matches_name(directive_name, "before_action")
             && !matches_name(directive_name, "prepend_before_action")
             && !matches_name(directive_name, "skip_before_action")
@@ -221,6 +246,63 @@ fn class_filter_directives(body: Node<'_>, bytes: &[u8]) -> Vec<FilterDirective>
     filters
 }
 
+/// CanCanCan class macros.  `load_and_authorize_resource` and
+/// `authorize_resource` add an authorization check to every action they cover;
+/// the `skip_` forms take it away again.
+fn is_resource_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "load_and_authorize_resource"
+            | "authorize_resource"
+            | "skip_load_and_authorize_resource"
+            | "skip_authorize_resource"
+    )
+}
+
+/// One directive for a CanCanCan macro.  Leading symbols name the resource
+/// (`load_and_authorize_resource :note`), so only the `only:` / `except:`
+/// options matter here.  The check is recorded under the macro's own name so
+/// `auth_check_from_call_site` classifies it.
+fn parse_resource_macro(node: Node<'_>, bytes: &[u8], name: &str) -> Vec<FilterDirective> {
+    let skip = name.starts_with("skip_");
+    let call_name = name.trim_start_matches("skip_");
+    let (only, except) = node
+        .child_by_field_name("arguments")
+        .map(|arguments| filter_scope(&named_children(arguments), bytes))
+        .unwrap_or_default();
+    vec![FilterDirective {
+        call: CallSite {
+            name: call_name.to_string(),
+            args: Vec::new(),
+            span: span(node),
+            args_value_refs: Vec::new(),
+        },
+        only,
+        except,
+        skip,
+    }]
+}
+
+/// The `only:` and `except:` options among a directive's arguments.
+fn filter_scope(args: &[Node<'_>], bytes: &[u8]) -> (ActionList, ActionList) {
+    let mut only = ActionList::Absent;
+    let mut except = ActionList::Absent;
+    for arg in args {
+        if arg.kind() != "pair" {
+            continue;
+        }
+        let key = text(arg.child_by_field_name("key").unwrap_or(*arg), bytes);
+        let normalized = strip_quotes(&key).trim_start_matches(':').to_string();
+        let value = arg.child_by_field_name("value").unwrap_or(*arg);
+        match normalized.as_str() {
+            "only" => only = action_list(value, bytes),
+            "except" => except = action_list(value, bytes),
+            _ => {}
+        }
+    }
+    (only, except)
+}
+
 fn parse_filter_directive(node: Node<'_>, bytes: &[u8], skip: bool) -> Vec<FilterDirective> {
     let Some(arguments) = node.child_by_field_name("arguments") else {
         return Vec::new();
@@ -231,18 +313,9 @@ fn parse_filter_directive(node: Node<'_>, bytes: &[u8], skip: bool) -> Vec<Filte
     }
 
     let mut filters = Vec::new();
-    let mut only = Vec::new();
-    let mut except = Vec::new();
+    let (only, except) = filter_scope(&args, bytes);
     for arg in &args {
         if arg.kind() == "pair" {
-            let key = text(arg.child_by_field_name("key").unwrap_or(*arg), bytes);
-            let normalized = strip_quotes(&key).trim_start_matches(':').to_string();
-            let value = arg.child_by_field_name("value").unwrap_or(*arg);
-            if normalized == "only" {
-                only = symbol_list(value, bytes);
-            } else if normalized == "except" {
-                except = symbol_list(value, bytes);
-            }
             continue;
         }
         filters.extend(filter_calls_from_arg(*arg, bytes));
@@ -291,7 +364,8 @@ fn applicable_filters(filters: &[FilterDirective], action: &str) -> Vec<CallSite
             continue;
         }
         if filter.skip {
-            middleware.retain(|existing: &CallSite| existing.name != filter.call.name);
+            middleware
+                .retain(|existing: &CallSite| !same_filter(&existing.name, &filter.call.name));
         } else if !middleware
             .iter()
             .any(|existing: &CallSite| existing.name == filter.call.name)
@@ -302,23 +376,59 @@ fn applicable_filters(filters: &[FilterDirective], action: &str) -> Vec<CallSite
     middleware
 }
 
-fn filter_applies(filter: &FilterDirective, action: &str) -> bool {
-    (filter.only.is_empty() || filter.only.iter().any(|name| name == action))
-        && !filter.except.iter().any(|name| name == action)
+/// `skip_authorize_resource` also removes `load_and_authorize_resource`, the
+/// way CanCanCan treats the two as one authorization step.
+fn same_filter(a: &str, b: &str) -> bool {
+    a == b || (is_resource_macro(a) && is_resource_macro(b))
 }
 
-fn symbol_list(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
+/// Does the directive cover `action`?
+///
+/// An option that is present but not a literal list (`only: ACTIONS`) cannot
+/// be read, so the guard is credited only where it provably applies: a
+/// filter with such an option covers no action, and a `skip_` directive with
+/// one is taken to remove the guard from every action it might reach.
+fn filter_applies(filter: &FilterDirective, action: &str) -> bool {
+    let in_only = match &filter.only {
+        ActionList::Absent => true,
+        ActionList::Named(names) => names.iter().any(|name| name == action),
+        ActionList::Unresolved => filter.skip,
+    };
+    let in_except = match &filter.except {
+        ActionList::Absent => false,
+        ActionList::Named(names) => names.iter().any(|name| name == action),
+        ActionList::Unresolved => !filter.skip,
+    };
+    in_only && !in_except
+}
+
+/// Read a literal list of action names.  `%i[a b]` is a `symbol_array` of
+/// `bare_symbol` nodes and `%w[a b]` a `string_array` of `bare_string` nodes;
+/// `[:a, :b]` is an `array` of symbols or strings.
+fn action_list(node: Node<'_>, bytes: &[u8]) -> ActionList {
+    let mut names = Vec::new();
+    if collect_action_names(node, bytes, &mut names) {
+        ActionList::Named(names)
+    } else {
+        ActionList::Unresolved
+    }
+}
+
+fn collect_action_names(node: Node<'_>, bytes: &[u8], names: &mut Vec<String>) -> bool {
     match node.kind() {
-        "simple_symbol" | "hash_key_symbol" | "identifier" | "string" => vec![
-            strip_quotes(&text(node, bytes))
-                .trim_start_matches(':')
-                .to_string(),
-        ],
-        "array" => named_children(node)
+        "simple_symbol" | "hash_key_symbol" | "bare_symbol" | "string" | "bare_string" => {
+            names.push(
+                strip_quotes(&text(node, bytes))
+                    .trim_start_matches(':')
+                    .to_string(),
+            );
+            true
+        }
+        "array" | "symbol_array" | "string_array" => named_children(node)
             .into_iter()
-            .flat_map(|child| symbol_list(child, bytes))
-            .collect(),
-        _ => Vec::new(),
+            .all(|child| collect_action_names(child, bytes, names)),
+        "comment" => true,
+        _ => false,
     }
 }
 

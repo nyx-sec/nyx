@@ -790,6 +790,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             authorization_check_names: vec![
                 "authorize".into(),
                 "authorize!".into(),
+                // CanCanCan class macro: authorizes every action it covers.
+                "load_and_authorize_resource".into(),
                 "check_membership".into(),
                 "check_membership!".into(),
                 "has_membership".into(),
