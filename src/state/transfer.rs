@@ -1169,12 +1169,7 @@ impl DefaultTransfer<'_> {
             };
 
             // Auth-related condition
-            let auth_rules = rules::auth_rules(self.lang);
-            let is_auth_cond = auth_rules.iter().any(|rule| {
-                rule.matchers
-                    .iter()
-                    .any(|m| condition_contains_auth_token(cond_inner, m))
-            });
+            let is_auth_cond = condition_is_auth_test(cond_inner, self.lang);
             if is_auth_cond {
                 let is_admin = ADMIN_PATTERNS
                     .iter()
@@ -1420,6 +1415,17 @@ fn is_go_map_boolean_guard(cond: &str) -> bool {
         && inside
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+}
+
+/// Whether `cond` (already lowercased) names an authentication or
+/// authorization check of `lang`: one of the call matchers, or a predicate that
+/// is only meaningful as a condition.
+pub(crate) fn condition_is_auth_test(cond: &str, lang: Lang) -> bool {
+    rules::auth_rules(lang)
+        .iter()
+        .flat_map(|rule| rule.matchers.iter())
+        .chain(rules::auth_condition_matchers(lang))
+        .any(|m| condition_contains_auth_token(cond, m))
 }
 
 /// Check if condition text contains an auth/admin matcher at a word boundary.

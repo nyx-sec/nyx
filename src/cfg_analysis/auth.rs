@@ -1,5 +1,4 @@
 use super::dominators::{self, dominates};
-use super::rules;
 use super::{
     AnalysisContext, CfgAnalysis, CfgFinding, Confidence, is_auth_call, is_entry_point_func,
     is_sink,
@@ -176,7 +175,6 @@ fn find_auth_nodes(ctx: &AnalysisContext) -> Vec<NodeIndex> {
 ///
 /// [`condition_contains_auth_token`]: crate::state::transfer::condition_contains_auth_token
 fn find_auth_condition_guards(ctx: &AnalysisContext) -> Vec<NodeIndex> {
-    let auth_rules = rules::auth_rules(ctx.lang);
     let mut guards = Vec::new();
     for idx in ctx.cfg.node_indices() {
         let info = &ctx.cfg[idx];
@@ -204,11 +202,7 @@ fn find_auth_condition_guards(ctx: &AnalysisContext) -> Vec<NodeIndex> {
         if !is_bare_truth_test(inner) {
             continue;
         }
-        let is_auth_test = auth_rules.iter().any(|rule| {
-            rule.matchers
-                .iter()
-                .any(|m| crate::state::transfer::condition_contains_auth_token(inner, m))
-        });
+        let is_auth_test = crate::state::transfer::condition_is_auth_test(inner, ctx.lang);
         if !is_auth_test {
             continue;
         }

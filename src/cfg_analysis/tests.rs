@@ -831,6 +831,30 @@ function handle_delete(req, res) {
 }
 
 #[test]
+fn passport_is_authenticated_is_a_condition_matcher_not_a_call_matcher() {
+    use crate::cfg_analysis::rules;
+    use crate::state::transfer::condition_is_auth_test;
+    // `req.isAuthenticated()` guards only where a branch tests it: it is not
+    // among the matchers that make a call statement an auth call.
+    let call_matchers = rules::auth_rules(Lang::JavaScript)
+        .iter()
+        .flat_map(|rule| rule.matchers.iter());
+    assert!(!call_matchers.into_iter().any(|m| *m == "isAuthenticated"));
+    assert!(condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::JavaScript
+    ));
+    assert!(condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::TypeScript
+    ));
+    assert!(!condition_is_auth_test(
+        "req.isauthenticated()",
+        Lang::Python
+    ));
+}
+
+#[test]
 fn auth_gap_auth_call_inside_the_condition_is_a_guard() {
     let src = br#"
 function handle_delete(req, res) {
