@@ -10220,6 +10220,24 @@ fn apply_gated_label_rules(
     for body in bodies.iter_mut() {
         let indices: Vec<NodeIndex> = body.graph.node_indices().collect();
         for idx in indices {
+            // The nested-call record was built before the import view
+            // existed, so its per-call label facts miss the import-gated
+            // rules (`cp.exec(f(x))` with `cp = require('child_process')`).
+            if let Some(tree) = body.graph[idx].call.nested_calls.as_deref_mut() {
+                for call in tree.calls.iter_mut().filter(|c| !c.callee.is_empty()) {
+                    for m in crate::labels::classify_gated_matches(lang, &call.callee, Some(&ctx)) {
+                        if m.chain_head {
+                            continue;
+                        }
+                        call.labelled = true;
+                        match m.label {
+                            crate::labels::DataLabel::Source(bits) => call.label_source |= bits,
+                            crate::labels::DataLabel::Sanitizer(bits) => call.label_strip |= bits,
+                            crate::labels::DataLabel::Sink(_) => call.label_sink = true,
+                        }
+                    }
+                }
+            }
             let Some(callee) = body.graph[idx].call.callee.clone() else {
                 continue;
             };
