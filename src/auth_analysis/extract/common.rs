@@ -37,10 +37,8 @@ pub fn collect_top_level_units(
     model: &mut AuthorizationModel,
 ) {
     let file_meta = FileMeta::scan(root, bytes);
-    for idx in 0..root.named_child_count() {
-        let Some(child) = root.named_child(idx as u32) else {
-            continue;
-        };
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
         collect_top_level_from_node(child, bytes, rules, model, &file_meta);
     }
 }
@@ -930,6 +928,11 @@ pub fn build_function_unit_with_meta(
     let is_go = rules.is_go_lang();
     if is_go {
         state.request_roots = Some(go_scope::request_root_params(definition, bytes));
+        if let Some(meta) = file_meta
+            && !meta.package_names.is_empty()
+        {
+            state.shadow_probe = Some(go_scope::ShadowProbe::new(&meta.package_names));
+        }
     }
     collect_unit_state(node, bytes, rules, &mut state);
     let runtime = match file_meta {
@@ -944,13 +947,11 @@ pub fn build_function_unit_with_meta(
     };
     let (package_names, request_roots) = if is_go {
         let roots = state.request_roots.take().unwrap_or_default();
-        let names = match file_meta {
-            Some(meta) if !meta.package_names.is_empty() => {
-                let declared = go_scope::declared_names(definition, bytes);
-                meta.package_names.difference(&declared).cloned().collect()
-            }
-            _ => HashSet::new(),
-        };
+        let names = state
+            .shadow_probe
+            .take()
+            .map(go_scope::ShadowProbe::finish)
+            .unwrap_or_default();
         (names, roots)
     } else {
         (HashSet::new(), HashSet::new())
@@ -1211,7 +1212,9 @@ fn is_nextauth_adapter_distinctive_method_name(name: &str) -> bool {
 }
 
 #[derive(Default)]
-struct UnitState {
+struct UnitState<'a> {
+    /// Go: tracks which package-level names the unit redeclares.
+    shadow_probe: Option<go_scope::ShadowProbe<'a>>,
     call_sites: Vec<CallSite>,
     auth_checks: Vec<AuthCheck>,
     operations: Vec<SensitiveOperation>,
@@ -1309,6 +1312,9 @@ fn collect_unit_state(
 ) {
     if state.request_roots.is_some() {
         track_go_request_roots(node, bytes, state);
+    }
+    if let Some(probe) = state.shadow_probe.as_mut() {
+        probe.note(node, bytes);
     }
     if matches!(
         node.kind(),
@@ -1453,7 +1459,15 @@ fn collect_unit_state(
         &mut state.value_refs,
     );
 
-    for idx in 0..node.named_child_count() {
+    let count = node.named_child_count();
+    if count > WIDE_NODE {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            collect_unit_state(child, bytes, rules, state);
+        }
+        return;
+    }
+    for idx in 0..count {
         let Some(child) = node.named_child(idx as u32) else {
             continue;
         };
@@ -1754,22 +1768,25 @@ fn is_inline_function(node: Node<'_>) -> bool {
 /// `<router>.<verb>("/path", handler)`: an HTTP verb method whose first
 /// argument is a path literal and whose last argument is a handler.
 fn is_route_registration_call(callee: &str, args: &[Node<'_>], bytes: &[u8]) -> bool {
-    let method = bare_method_name(callee).to_ascii_lowercase();
-    if !matches!(
-        method.as_str(),
-        "get"
-            | "post"
-            | "put"
-            | "delete"
-            | "patch"
-            | "head"
-            | "options"
-            | "any"
-            | "all"
-            | "handle"
-            | "handlefunc"
-    ) || !callee.contains('.')
-        || args.len() < 2
+    if args.len() < 2 || !callee.contains('.') {
+        return false;
+    }
+    let method = bare_method_name(callee);
+    if ![
+        "get",
+        "post",
+        "put",
+        "delete",
+        "patch",
+        "head",
+        "options",
+        "any",
+        "all",
+        "handle",
+        "handlefunc",
+    ]
+    .iter()
+    .any(|verb| method.eq_ignore_ascii_case(verb))
     {
         return false;
     }
@@ -5544,14 +5561,24 @@ pub fn function_definition_node(node: Node<'_>) -> Node<'_> {
 }
 
 pub fn named_children(node: Node<'_>) -> Vec<Node<'_>> {
-    let mut children = Vec::new();
-    for idx in 0..node.named_child_count() {
+    let count = node.named_child_count();
+    if count > WIDE_NODE {
+        // One cursor pass: `named_child(i)` re-walks from the first child, so
+        // an index loop is quadratic in the node's width.
+        let mut cursor = node.walk();
+        return node.named_children(&mut cursor).collect();
+    }
+    let mut children = Vec::with_capacity(count);
+    for idx in 0..count {
         if let Some(child) = node.named_child(idx as u32) {
             children.push(child);
         }
     }
     children
 }
+
+/// Child count above which a cursor walk beats indexed `named_child` calls.
+const WIDE_NODE: usize = 8;
 
 pub fn text(node: Node<'_>, bytes: &[u8]) -> String {
     // `slice_str` takes the pre-validated source fast path (O(1) boundary slice)
@@ -5608,13 +5635,13 @@ fn accessor_call_value_ref(
         }
         "PostForm" | "FormValue" | "DefaultPostForm" => Some(ValueSourceKind::RequestBody),
         "Get" | "GetString" | "MustGet" | "getAttribute" => Some(ValueSourceKind::Session),
-        _ if chain.first().is_some_and(|segment| {
-            matches!(
-                segment.to_ascii_lowercase().as_str(),
-                "invitation" | "token" | "invite"
-            )
-        }) && method.starts_with("get")
-            && method.len() > 3 =>
+        _ if method.starts_with("get")
+            && method.len() > 3
+            && chain.first().is_some_and(|segment| {
+                ["invitation", "token", "invite"]
+                    .iter()
+                    .any(|name| segment.eq_ignore_ascii_case(name))
+            }) =>
         {
             Some(ValueSourceKind::TokenField)
         }

@@ -205,9 +205,9 @@ pub(super) fn value_is_in_memory(node: Node<'_>, bytes: &[u8]) -> bool {
             let Some(function) = node.child_by_field_name("function") else {
                 return false;
             };
-            let callee = text(function, bytes);
+            let callee = node_str(function, bytes);
             // Strip explicit type arguments: `mapset.NewSet[int64]`.
-            let callee = callee.split('[').next().unwrap_or(&callee);
+            let callee = callee.split('[').next().unwrap_or(callee);
             let last = callee.rsplit('.').next().unwrap_or(callee);
             callee == "make" || IN_MEMORY_CONSTRUCTORS.contains(&last)
         }
@@ -328,19 +328,86 @@ fn collect_consts(decl: Node<'_>, bytes: &[u8], out: &mut HashSet<String>) {
 /// Every name a function declares for itself: parameters, results, receiver,
 /// `:=` and `var` bindings, `range` variables.  A package-level name that
 /// appears here is shadowed inside the function.
+#[cfg(test)]
 pub(super) fn declared_names(definition: Node<'_>, bytes: &[u8]) -> HashSet<String> {
     let mut out = HashSet::new();
-    declared_names_visit(definition, bytes, &mut out);
+    declared_names_visit(definition, bytes, &mut |name| {
+        out.insert(name.to_string());
+    });
     out
 }
 
-fn declared_names_visit(node: Node<'_>, bytes: &[u8], out: &mut HashSet<String>) {
+/// Collects, during the unit's single AST walk, which package-level names the
+/// function redeclares.  Replaces a second whole-body walk per function.
+pub(super) struct ShadowProbe<'a> {
+    names: &'a HashSet<String>,
+    shadowed: HashSet<&'a str>,
+}
+
+impl<'a> ShadowProbe<'a> {
+    pub(super) fn new(names: &'a HashSet<String>) -> Self {
+        Self {
+            names,
+            shadowed: HashSet::new(),
+        }
+    }
+
+    /// Inspect one node; descendants are the caller's job.
+    pub(super) fn note(&mut self, node: Node<'_>, bytes: &[u8]) {
+        if !declares_names(node.kind_id()) {
+            return;
+        }
+        let (names, shadowed) = (self.names, &mut self.shadowed);
+        declared_names_in_node(node, bytes, &mut |name| {
+            if let Some(hit) = names.get(name) {
+                shadowed.insert(hit.as_str());
+            }
+        });
+    }
+
+    /// The package names the function does not redeclare.
+    pub(super) fn finish(self) -> HashSet<String> {
+        if self.shadowed.is_empty() {
+            return self.names.clone();
+        }
+        self.names
+            .iter()
+            .filter(|name| !self.shadowed.contains(name.as_str()))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Cheap id-based pre-filter for the kinds `declared_names_in_node` reads.
+fn declares_names(kind_id: u16) -> bool {
+    static IDS: std::sync::OnceLock<[u16; 7]> = std::sync::OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+        [
+            "parameter_declaration",
+            "variadic_parameter_declaration",
+            "var_spec",
+            "const_spec",
+            "short_var_declaration",
+            "range_clause",
+            "receive_statement",
+        ]
+        .map(|kind| lang.id_for_node_kind(kind, true))
+    });
+    ids.contains(&kind_id)
+}
+
+fn node_str<'a>(node: Node<'_>, bytes: &'a [u8]) -> &'a str {
+    crate::cfg::slice_str(bytes, node.start_byte(), node.end_byte()).unwrap_or("")
+}
+
+fn declared_names_in_node(node: Node<'_>, bytes: &[u8], sink: &mut impl FnMut(&str)) {
     match node.kind() {
         "parameter_declaration" | "variadic_parameter_declaration" | "var_spec" | "const_spec" => {
             let mut cursor = node.walk();
             for name in node.children_by_field_name("name", &mut cursor) {
                 if name.kind() == "identifier" {
-                    out.insert(text(name, bytes));
+                    sink(node_str(name, bytes));
                 }
             }
         }
@@ -348,15 +415,22 @@ fn declared_names_visit(node: Node<'_>, bytes: &[u8], out: &mut HashSet<String>)
             if let Some(left) = node.child_by_field_name("left") {
                 for target in expression_items(left) {
                     if target.kind() == "identifier" {
-                        out.insert(text(target, bytes));
+                        sink(node_str(target, bytes));
                     }
                 }
             }
         }
         _ => {}
     }
-    for child in named_children(node) {
-        declared_names_visit(child, bytes, out);
+}
+
+#[cfg(test)]
+fn declared_names_visit(node: Node<'_>, bytes: &[u8], sink: &mut impl FnMut(&str)) {
+    declared_names_in_node(node, bytes, sink);
+    for idx in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(idx as u32) {
+            declared_names_visit(child, bytes, sink);
+        }
     }
 }
 
