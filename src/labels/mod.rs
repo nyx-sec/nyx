@@ -1630,6 +1630,7 @@ fn classify_aliased(
 }
 
 fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
+    let text = &*strip_turbofish_for(lang, text);
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
 
@@ -1765,6 +1766,7 @@ fn classify_all_text(
     text: &str,
     extra: Option<&[RuntimeLabelRule]>,
 ) -> SmallVec<[DataLabel; 2]> {
+    let text = &*strip_turbofish_for(lang, text);
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
 
@@ -1916,6 +1918,7 @@ pub fn classify_gated_matches(
         return out;
     }
 
+    let text = &*strip_turbofish_for(lang, text);
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
     if is_excluded(lang, trimmed) {
@@ -2255,6 +2258,7 @@ fn classify_gated_sink_text(
     // `httpx.AsyncClient().post` matches a gate matcher of
     // `httpx.AsyncClient.post`.  Mirrors the normalisation applied by
     // `classify` for flat label rules.
+    let callee_text = &*strip_turbofish_for(lang, callee_text);
     let callee_bytes = callee_text.as_bytes();
     let normalized = normalize_chained_call(callee_text);
     let normalized_bytes = normalized.as_bytes();
@@ -2391,6 +2395,105 @@ fn classify_gated_sink_text(
         }
     }
     out
+}
+
+/// Drop Rust generic-argument groups (`::<..>`) from a callee text.
+///
+/// `sqlx::query_as::<_, User>(&q)` is the same call as `sqlx::query_as(&q)` for
+/// classification, but the head split at `<` leaves `sqlx::query_as::`, whose
+/// trailing `::` defeats every suffix matcher.  A following path segment stays,
+/// so `Foo::<T>::new` becomes `Foo::new`.  An unterminated group truncates the
+/// text, which matches what the `<` split did before.  Borrows when the text
+/// has no `::<`.
+fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
+    let Some(first) = text.find("::<") else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0usize;
+    let mut at = first;
+    loop {
+        out.push_str(&text[copied..at]);
+        // A turbofish on a method (`res.json::<T>()`, `row.get::<_, T>(0)`)
+        // selects a return type; the callee is still the plain method and its
+        // text must keep truncating at the `<`, as before.  `Response::json<T>`
+        // is a decoder, not the actix response builder `.json(value)` that a
+        // bare `json` sink rule models.  Only path calls such as
+        // `sqlx::query_as::<_, User>` are normalised.
+        if segment_is_method(&text[..at]) {
+            out.push_str(&text[at..]);
+            return std::borrow::Cow::Owned(out);
+        }
+        let mut depth = 1u32;
+        let mut j = at + 3;
+        while j < bytes.len() && depth > 0 {
+            match bytes[j] {
+                b'<' => depth += 1,
+                // `->` inside a `fn(..) -> T` argument is not a closer.
+                b'>' if bytes[j - 1] != b'-' => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        if depth > 0 {
+            return std::borrow::Cow::Owned(out);
+        }
+        copied = j;
+        match text[copied..].find("::<") {
+            Some(off) => at = copied + off,
+            None => {
+                out.push_str(&text[copied..]);
+                return std::borrow::Cow::Owned(out);
+            }
+        }
+    }
+}
+
+/// `toml::from_str::<Box<dyn Plugin>>` selects the concrete type from the
+/// document (typetag style), unlike the same call into a concrete struct.
+/// Rewrite that one shape to `toml::from_str@dyn` so a dedicated DESERIALIZE
+/// rule can match it while the typed-config form stays unclassified.  `stripped`
+/// is `text` with its turbofish removed.
+fn polymorphic_decoder_alias(text: &str, stripped: &str) -> Option<String> {
+    let head = stripped.split('(').next().unwrap_or("").trim();
+    if !matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) && !head.ends_with("::toml::from_str")
+        && !head.ends_with("::ron::from_str")
+    {
+        return None;
+    }
+    let generic = &text[text.find("::<")?..];
+    let generic = generic.split('(').next().unwrap_or(generic);
+    let is_dyn = generic
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == "dyn");
+    is_dyn.then(|| format!("{head}@dyn"))
+}
+
+/// Whether the path segment ending `before` is reached through a `.`, i.e. is
+/// a method call rather than a `::` path segment.
+fn segment_is_method(before: &str) -> bool {
+    let seg_start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |i| i + 1);
+    before[..seg_start].ends_with('.')
+}
+
+/// [`strip_turbofish`] for Rust, a borrow for every other language.
+#[inline]
+fn strip_turbofish_for<'a>(lang: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
+    if lang == "rust" || lang == "rs" {
+        let stripped = strip_turbofish(text);
+        match polymorphic_decoder_alias(text, &stripped) {
+            Some(alias) => std::borrow::Cow::Owned(alias),
+            None => stripped,
+        }
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
 }
 
 /// Public wrapper for `normalize_chained_call` so callers outside the module
@@ -2999,6 +3102,7 @@ mod tests {
     /// every rule in registry order, exactly as the old inner loops did. Pins
     /// the `LabelIndex` dispatch against the naive scan.
     fn ref_classify(lang: &str, text: &str) -> Option<DataLabel> {
+        let text = &*strip_turbofish_for(lang, text);
         let head = text.split(['(', '<']).next().unwrap_or("");
         let trimmed = head.trim().as_bytes();
         if is_excluded(lang, trimmed) {
@@ -3039,6 +3143,7 @@ mod tests {
 
     /// Reference (pre-index) linear built-in `classify_all`.
     fn ref_classify_all(lang: &str, text: &str) -> SmallVec<[DataLabel; 2]> {
+        let text = &*strip_turbofish_for(lang, text);
         let head = text.split(['(', '<']).next().unwrap_or("");
         let trimmed = head.trim().as_bytes();
         let mut out: SmallVec<[DataLabel; 2]> = SmallVec::new();
@@ -3119,6 +3224,8 @@ mod tests {
             "Some::Path::to::thing",
             "OPEN",
             "Execute",
+            "sqlx::query_as::<_, User>(&q).fetch_all",
+            "Foo::<T>::new",
         ];
         for lang in langs {
             let rules = match REGISTRY.get(lang) {
@@ -4982,5 +5089,61 @@ mod tests {
             Some(&[0usize][..])
         );
         assert_eq!(output_param_source_positions("go", "c.Query"), None);
+    }
+
+    #[test]
+    fn strip_turbofish_removes_generic_groups() {
+        use std::borrow::Cow;
+        let s = |t: &str| strip_turbofish(t).into_owned();
+        assert_eq!(s("a::b::<T>(x)"), "a::b(x)");
+        assert_eq!(s("Foo::<T>::new"), "Foo::new");
+        assert_eq!(s("f::<Vec<u8>>"), "f");
+        assert_eq!(s("f::<fn() -> u8>(x)"), "f(x)");
+        assert_eq!(
+            s("sqlx::query_as::<_, User>(&q).fetch_all"),
+            "sqlx::query_as(&q).fetch_all"
+        );
+        assert_eq!(s("a::<X>::b::<Y>(z)"), "a::b(z)");
+        // Unterminated group truncates, like the old `<` split.
+        assert_eq!(s("a::b::<Vec<u8"), "a::b");
+        assert!(matches!(strip_turbofish("a::b(x)"), Cow::Borrowed(_)));
+        assert!(matches!(
+            strip_turbofish_for("go", "a::<b>(x)"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn rust_turbofish_calls_classify_like_the_plain_call() {
+        let has_sink = |text: &str, cap: Cap| {
+            classify_all("rust", text, None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+        };
+        assert!(has_sink(
+            "sqlx::query_as::<_, User>(&q).fetch_all",
+            Cap::SQL_QUERY
+        ));
+        assert!(has_sink("sqlx::query_scalar::<_, i64>", Cap::SQL_QUERY));
+        assert!(has_sink("serde_yaml::from_str::<Value>", Cap::DESERIALIZE));
+        assert!(has_sink("bincode::deserialize::<Cfg>", Cap::DESERIALIZE));
+        assert!(has_sink("std::fs::read_to_string::<&str>", Cap::FILE_IO));
+        // Generic calls that are not labelled stay unlabelled.
+        assert!(classify_all("rust", "Vec::<u8>::new", None).is_empty());
+        assert!(classify_all("rust", "x.collect::<Vec<_>>", None).is_empty());
+        assert!(classify_all("rust", "s.parse::<u32>", None).is_empty());
+        // A method turbofish keeps truncating at the `<`: `res.json::<T>()`
+        // decodes a client response and is not a response-builder sink.
+        assert_eq!(strip_turbofish("res.json::<T>(x)"), "res.json::<T>(x)");
+        assert_eq!(strip_turbofish("a::b.c::<T>(x)"), "a::b.c::<T>(x)");
+        // The gated lookup sees the plain callee too.
+        let gates = classify_gated_sink(
+            "rust",
+            "std::fs::write::<&str>",
+            |_| None,
+            |_| None,
+            |_| false,
+        );
+        assert!(!gates.is_empty());
     }
 }

@@ -3906,21 +3906,58 @@ pub(super) fn push_node<'a>(
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
 
+    // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
+    // only unwrap the result, so the arguments that matter for gate payload
+    // positions belong to the call underneath.  Without this the outermost
+    // call carries no arguments and a typed-receiver SQL sink scans every use,
+    // including the bound parameters.
+    //
+    // The receiver of the peeled call is not examined by the literal-argument
+    // check, so a rebind never counts as "all arguments literal".
+    let mut rust_call_rebound = false;
+    if lang == "rust"
+        && let Some(outer) = call_ast
+        && let Some(inner) = peel_rust_result_unwrap(outer, code)
+    {
+        call_ast = Some(inner);
+        rust_call_rebound = true;
+    }
+
+    // Rust `sqlx::query(sql).bind(v).fetch_all(pool)` takes the same route: the
+    // head classifies as the SQL sink and the outermost call is `.fetch_all`.
+    //
     // Python `conn.execute(sql, params).fetchall()` classifies on its head
     // (`conn.execute`, the text before the first `(`), so the node already has
     // its Sink label while the outermost call is the zero-arg `.fetchall()`.
     // The gate's payload positions and the literal-SQL check refer to the sink
     // call's arguments, so rebind to that call the way the block below does
     // for an unclassified outer call.
-    if lang == "python"
+    if matches!(lang, "python" | "rust")
         && text.contains('(')
         && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
         && inner.id() != outer.id()
-        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+        && {
+            let inner_gates =
+                classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false);
+            // Rust: the outer sink keeps its own arguments unless the inner
+            // gate is the same sink class (`sqlx::query(sql).bind(v)`).  A
+            // different-cap inner gate (`File::create(p).unwrap().write_all(..)`)
+            // must not displace the outer sink's argument scan.
+            !inner_gates.is_empty()
+                && (lang != "rust"
+                    || inner_gates.iter().any(|g| match g.label {
+                        DataLabel::Sink(c) => labels.iter().any(|l| match l {
+                            DataLabel::Sink(oc) => !(*oc & c).is_empty(),
+                            _ => false,
+                        }),
+                        _ => false,
+                    }))
+        }
     {
         call_ast = Some(inner);
+        rust_call_rebound |= lang == "rust";
         outer_callee = Some(text.clone());
         text = inner_callee_text;
         inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
@@ -4901,7 +4938,7 @@ pub(super) fn push_node<'a>(
     };
 
     // Check whether all arguments are syntactic literals (for taint sink suppression).
-    let all_args_literal = if kind == StmtKind::Call {
+    let all_args_literal = if kind == StmtKind::Call && !rust_call_rebound {
         call_ast
             .map(|cn| has_only_literal_args(cn, code))
             .unwrap_or(false)
@@ -9900,9 +9937,18 @@ pub(super) fn build_sub<'a>(
             // `w http.ResponseWriter`, `c *http.Client`) classify under their
             // canonical receiver prefix while this body (and any closure
             // nested in it) is built.
-            let receiver_aliases = (lang == "go").then(|| {
-                crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
-            });
+            //
+            // Rust `conn: &Connection` formals take the `DatabaseConnection`
+            // prefix the same way.
+            let receiver_aliases = match lang {
+                "go" => Some(crate::labels::push_receiver_aliases(
+                    params::go_receiver_alias_frame(ast, code),
+                )),
+                "rust" => Some(crate::labels::push_receiver_aliases(
+                    params::rust_receiver_alias_frame(ast, code),
+                )),
+                _ => None,
+            };
 
             let mut fn_call_ordinal: u32 = 0;
             let mut fn_breaks = Vec::new();
@@ -11627,3 +11673,34 @@ pub(crate) fn export_summaries(
 
 #[cfg(test)]
 mod cfg_tests;
+
+/// For a Rust `recv_call(..).unwrap()` / `.expect(..)`, the receiver call.
+///
+/// Peels repeated unwraps (`f(..).unwrap().expect(..)` is unusual but legal)
+/// and returns `None` when `call` is not an unwrap or its receiver is not
+/// itself a call.
+fn peel_rust_result_unwrap<'a>(call: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
+    let mut cur = call;
+    let mut peeled = false;
+    loop {
+        if cur.kind() != "call_expression" {
+            break;
+        }
+        let function = cur.child_by_field_name("function")?;
+        if function.kind() != "field_expression" {
+            break;
+        }
+        let method = function.child_by_field_name("field")?;
+        let name = method.utf8_text(code).ok()?;
+        if !matches!(name, "unwrap" | "expect") {
+            break;
+        }
+        let recv = function.child_by_field_name("value")?;
+        if recv.kind() != "call_expression" {
+            break;
+        }
+        cur = recv;
+        peeled = true;
+    }
+    peeled.then_some(cur)
+}

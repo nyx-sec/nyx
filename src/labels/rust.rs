@@ -272,8 +272,18 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // `toml::from_str` and `ron::from_str` into a concrete type are left out on
+    // purpose: like `serde_json::from_str` they have no polymorphic
+    // instantiation surface, and reporting them would flag every config loader.
+    // A `dyn` turbofish (`toml::from_str::<Box<dyn Plugin>>`) is attacker-chosen
+    // type selection, so the label layer rewrites that shape to the `@dyn`
+    // spellings below.
     LabelRule {
         matchers: &[
+            "toml::from_str@dyn",
+            "toml::from_slice@dyn",
+            "ron::from_str@dyn",
+            "ron::from_bytes@dyn",
             "serde_yaml::from_str",
             "serde_yaml::from_slice",
             "serde_yaml::from_reader",
@@ -282,8 +292,6 @@ pub static RULES: &[LabelRule] = &[
             "rmp_serde::from_slice",
             "rmp_serde::from_read",
             "ciborium::from_reader",
-            "ron::from_str",
-            "toml::from_str",
         ],
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
@@ -415,7 +423,35 @@ pub static GATED_SINKS: &[SinkGate] = &[
     file_io_path_gate("File::create"),
     file_io_path_gate_two("fs::rename"),
     file_io_path_gate_two("fs::copy"),
+    // ── SQL text argument confinement ────────────────────────────────────
+    //
+    // `sqlx::query(sql).bind(v).fetch_all(pool)` is a builder chain: the SQL
+    // text is the constructor's arg 0 and every `.bind(v)` value is a bound
+    // parameter, which the database never parses as SQL.  The flat
+    // `Sink(SQL_QUERY)` label records no payload position, so a tainted
+    // `.bind(v)` value (or the pool) was treated as injected SQL.  These gates
+    // carry the same capability and confine the sink to arg 0.
+    sql_text_gate("sqlx::query"),
+    sql_text_gate("sqlx::query_as"),
+    sql_text_gate("sqlx::query_scalar"),
+    sql_text_gate("diesel::sql_query"),
+    // Typed driver connections (`rusqlite`, `postgres`, JDBC-like handles):
+    // `conn.execute(sql, params![v])`.  The second argument is the
+    // bound-parameter set, never SQL text.
+    sql_text_gate("DatabaseConnection.execute"),
+    sql_text_gate("DatabaseConnection.query"),
+    sql_text_gate("DatabaseConnection.query_row"),
+    sql_text_gate("DatabaseConnection.prepare"),
 ];
+
+/// A `Sink(SQL_QUERY)` gate that confines the sink scan to the SQL text, which
+/// is arg 0 of the query constructor.  See the `GATED_SINKS` doc block.
+const fn sql_text_gate(matcher: &'static str) -> SinkGate {
+    SinkGate {
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        ..file_io_path_gate(matcher)
+    }
+}
 
 /// A `Sink(FILE_IO)` gate that confines the sink scan to the single
 /// path-argument position (arg 0).  See the `GATED_SINKS` doc block for the
@@ -710,6 +746,23 @@ mod tests {
         // source, and sink inside inline modules.
         assert_eq!(KINDS.get("mod_item"), Some(&Kind::Block));
         assert_ne!(KINDS.get("mod_item"), Some(&Kind::Trivia));
+    }
+
+    #[test]
+    fn typed_text_config_parsers_are_not_deserialize_sinks() {
+        let sinks_deser = |callee: &str| {
+            classify_all("rust", callee, None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::DESERIALIZE)))
+        };
+        assert!(!sinks_deser("toml::from_str"));
+        assert!(!sinks_deser("toml::from_str::<Opt>"));
+        assert!(sinks_deser("toml::from_str::<Box<dyn Plugin>>"));
+        assert!(sinks_deser("ron::from_str::<Box<dyn Plugin>>"));
+        assert!(!sinks_deser("ron::from_str"));
+        assert!(!sinks_deser("serde_json::from_str"));
+        assert!(sinks_deser("serde_yaml::from_str"));
+        assert!(sinks_deser("bincode::deserialize"));
     }
 
     /// RUSTSEC-2022-0072 (hyper-staticfile): the patched fix routes the
