@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 898
+    "corpus_size": 915
   },
   "cases": [
     {
@@ -28709,6 +28709,492 @@
       ],
       "disabled": false,
       "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
+    },
+    {
+      "case_id": "py-auth-r9-001",
+      "file": "python/auth/vuln_orm_get_ownership.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "token-lookup"
+      ],
+      "disabled": false,
+      "notes": "`Document.objects.get(id=doc_id)` is an ORM read. The qualified token-lookup pattern no longer matches every `.get()`, so the missing owner check is reported and no token flow is claimed."
+    },
+    {
+      "case_id": "py-auth-r9-002",
+      "file": "python/auth/safe_request_json_get.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "token-lookup"
+      ],
+      "disabled": false,
+      "notes": "`request.json.get(\"title\")` reads a dictionary and is not an invitation-token lookup."
+    },
+    {
+      "case_id": "py-auth-r9-003",
+      "file": "python/auth/safe_flask_login_scoped.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`owner=current_user`, `owner_id=current_user.id` and `current_user.docs.filter_by(..)` all scope the query to the signed-in user."
+    },
+    {
+      "case_id": "py-auth-r9-004",
+      "file": "python/auth/vuln_django_login_only_view.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "decorators"
+      ],
+      "disabled": false,
+      "notes": "`@login_required` proves identity, not ownership; the foreign id still reaches the query."
+    },
+    {
+      "case_id": "py-auth-r9-005",
+      "file": "python/auth/safe_django_permission_required_view.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "decorators"
+      ],
+      "disabled": false,
+      "notes": "View decorators authorize the function when the route is registered in another file."
+    },
+    {
+      "case_id": "py-auth-r9-006",
+      "file": "python/auth/vuln_drf_apiview_no_permissions.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "drf"
+      ],
+      "disabled": false,
+      "notes": "A DRF `APIView.delete` registered from `urls.py` is a handler; it deletes by a path id with no permission classes."
+    },
+    {
+      "case_id": "py-auth-r9-007",
+      "file": "python/auth/safe_django_is_authenticated_property.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-auth-gap",
+        "state-unauthed-access"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "`if not request.user.is_authenticated: return ..` guards the open() that follows."
+    },
+    {
+      "case_id": "rb-auth-r9-001",
+      "file": "ruby/auth/vuln_rails_only_percent_i.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "rails-filters"
+      ],
+      "disabled": false,
+      "notes": "`only: %i[update destroy]` limits the filter to those actions; `archive` is unguarded."
+    },
+    {
+      "case_id": "rb-auth-r9-002",
+      "file": "ruby/auth/safe_rails_current_user_scoped.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.auth.missing_ownership_check",
+        "rb.auth.stale_authorization"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`current_user.id` keys and `current_user.notes` association queries are scoped to the caller."
+    },
+    {
+      "case_id": "js-auth-r9-001",
+      "file": "javascript/auth/vuln_request_owner_id.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "actor",
+        "owner-pin"
+      ],
+      "disabled": false,
+      "notes": "`ownerId` read from `req.query` or `req.body` is chosen by the caller; it neither pins the lookup nor makes the write safe."
+    },
+    {
+      "case_id": "js-auth-r9-002",
+      "file": "javascript/auth/safe_req_user_object.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`owner: req.user` and `ownerId: req.user.id` pin the lookup to the caller."
+    },
+    {
+      "case_id": "js-auth-r9-003",
+      "file": "javascript/auth/safe_passport_is_authenticated.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-auth-gap",
+        "state-unauthed-access"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "Passport's `req.isAuthenticated()` in a negated early return guards the delete."
+    },
+    {
+      "case_id": "js-auth-r9-004",
+      "file": "javascript/auth/vuln_auth_rejection_falls_through.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-auth-gap"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-unauthed-access"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "The unauthenticated branch redirects without returning, so the delete runs for everyone."
+    },
+    {
+      "case_id": "rs-auth-r9-001",
+      "file": "rust/auth/safe_axum_route_layer.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check",
+        "rs.auth.admin_route_missing_admin_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "axum-layers"
+      ],
+      "disabled": false,
+      "notes": "`route_layer` wraps the routes added before it: the owner layer covers both routes and the admin layer the first."
+    },
+    {
+      "case_id": "rs-auth-r9-002",
+      "file": "rust/auth/vuln_axum_route_after_layer.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "axum-layers"
+      ],
+      "disabled": false,
+      "notes": "The notes route is added after `route_layer`, so the owner layer does not wrap it."
+    },
+    {
+      "case_id": "rs-auth-r9-003",
+      "file": "rust/auth/vuln_actix_to_route.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "actix-routes"
+      ],
+      "disabled": false,
+      "notes": "`cfg.route(path, web::delete().to(handler))` registers the handler, which deletes by a path id with no check."
+    },
+    {
+      "case_id": "java-auth-r9-001",
+      "file": "java/auth/SafeSpringMultilinePreAuthorize.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "spring-annotations"
+      ],
+      "disabled": false,
+      "notes": "A `@PreAuthorize` that wraps over several lines is still the method's authorization check."
     }
   ]
 }
