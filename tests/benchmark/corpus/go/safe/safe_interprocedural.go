@@ -8,7 +8,11 @@ import (
 )
 
 func sanitizePath(p string) string {
-	return filepath.Clean(p)
+	// Cleaning a rooted path folds every `..` against `/`, so the join cannot
+	// leave the base directory.
+	clean := filepath.Clean("/" + p)
+	joined := filepath.Join("/srv/data", clean)
+	return joined
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +21,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.URL.Query().Get("path")
-	f, err := os.Open(sanitizePath(path))
+	safe := sanitizePath(path)
+	f, err := os.Open(safe)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return

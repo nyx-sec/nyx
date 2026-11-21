@@ -1245,6 +1245,8 @@ fn clone_preserves_all_sub_structs() {
             sink_reaching_uses: Some(vec!["a".into()]),
             kwargs: vec![("shell".into(), vec!["True".into()])],
             arg_string_literals: vec![Some("lit".into())],
+            arg_string_prefixes: vec![None],
+            arg_bare_names: 0b1,
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
@@ -7724,5 +7726,456 @@ fn java_php_member_lhs_defines_whole_path() {
         java_arr,
         vec![(Some("arr".to_string()), vec![])],
         "the index is read, not assigned"
+    );
+}
+
+// ── URL string prefixes ─────────────────────────────────────────────────────
+
+/// `string_prefix` of the first node (any body) whose callee ends with
+/// `callee_suffix`, or of the node that defines `defines`.
+fn url_prefix_of(
+    src: &str,
+    lang_str: &str,
+    ts_lang: Language,
+    callee_suffix: Option<&str>,
+    defines: Option<&str>,
+) -> Option<String> {
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), lang_str, ts_lang);
+    for body in &file_cfg.bodies {
+        for idx in body.graph.node_indices() {
+            let info = &body.graph[idx];
+            let by_callee = callee_suffix
+                .is_some_and(|s| info.call.callee.as_deref().is_some_and(|c| c.ends_with(s)));
+            let by_def = defines.is_some_and(|d| info.taint.defines.as_deref() == Some(d));
+            if (by_callee || by_def) && info.string_prefix.is_some() {
+                return info.string_prefix.clone();
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn url_prefix_reads_the_left_spine_of_a_concat_chain() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "function h(id) { axios.get('https://h.example/items/' + id + '/details'); }",
+            "javascript",
+            js,
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { url := \"https://h.example/items/\" + id + \"/d\"; http.Get(url) }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_go_var_and_const_declarations() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { var url = \"https://h.example/items/\" + id; http.Get(url) }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_the_url_argument_not_the_first() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { req, _ := http.NewRequest(\"GET\", \"https://h.example/items/\"+id, nil); _ = req }",
+            "go",
+            go,
+            Some("NewRequest"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_format_calls() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { url := fmt.Sprintf(\"https://h.example/items/%s\", id); _ = url }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = 'https://h.example/items/{}'.format(i)\n",
+            "python",
+            py.clone(),
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = 'https://h.example/items/%s' % i\n",
+            "python",
+            py.clone(),
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = f'https://h.example/items/{i}'\n",
+            "python",
+            py,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let java = Language::from(tree_sitter_java::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "class A { void h(String id) { String u = String.format(\"https://h.example/items/%s\", id); } }",
+            "java",
+            java,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_php_call_arguments_and_interpolation() {
+    let php = Language::from(tree_sitter_php::LANGUAGE_PHP);
+    assert_eq!(
+        url_prefix_of(
+            "<?php function h($c) { file_get_contents('https://h.example/w?city=' . $c); }",
+            "php",
+            php.clone(),
+            Some("file_get_contents"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/w?city=")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "<?php function h($id) { $u = \"https://h.example/items/{$id}\"; }",
+            "php",
+            php,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_does_not_read_interpolated_hosts() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    // The host is interpolated: the literal head is only the scheme.
+    let p = url_prefix_of(
+        "def h(host):\n    u = f'https://{host}/x/'\n",
+        "python",
+        py,
+        None,
+        Some("u"),
+    );
+    assert_eq!(p.as_deref(), Some("https://"));
+}
+
+#[test]
+fn url_prefix_resolves_module_level_string_constants() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    let src = |body: &str| {
+        format!("const API = 'https://api.example.com/';\nfunction h(p) {{ {body} }}\n")
+    };
+    assert_eq!(
+        url_prefix_of(
+            &src("axios.get(API + p);"),
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            &src("axios.get(`${API}users/${p}`);"),
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/users/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            &src("const url = API + p;"),
+            "javascript",
+            js.clone(),
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+    // A URL sink takes the bare constant itself.
+    assert_eq!(
+        url_prefix_of(&src("axios.get(API);"), "javascript", js, Some("get"), None).as_deref(),
+        Some("https://api.example.com/")
+    );
+}
+
+#[test]
+fn url_prefix_ignores_constants_that_are_not_unique_definitions() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // Reassigned at module level.
+    assert_eq!(
+        url_prefix_of(
+            "let API = 'https://api.example.com/';\nAPI = process.argv[2];\nfunction h(p) { axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Shadowed by a local of the same name.
+    assert_eq!(
+        url_prefix_of(
+            "const API = 'https://api.example.com/';\nfunction h(p) { const API = p; axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Shadowed by a parameter.
+    assert_eq!(
+        url_prefix_of(
+            "const API = 'https://api.example.com/';\nfunction h(API, p) { axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Not a string literal.
+    assert_eq!(
+        url_prefix_of(
+            "const API = process.env.API;\nfunction h(p) { axios.get(API + p); }",
+            "javascript",
+            js,
+            Some("get"),
+            None
+        ),
+        None
+    );
+}
+
+#[test]
+fn url_prefix_resolves_python_and_go_module_constants() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "API = 'https://api.example.com/v1/'\ndef h(c):\n    requests.get(API + c)\n",
+            "python",
+            py.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/v1/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "API = 'https://api.example.com/v1/'\ndef h(c):\n    u = f'{API}city/{c}'\n",
+            "python",
+            py,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://api.example.com/v1/city/")
+    );
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nconst apiBase = \"https://api.example.com/\"\nfunc h(id string) { http.Get(apiBase + id) }",
+            "go",
+            go,
+            Some("Get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+}
+
+#[test]
+fn url_prefix_does_not_read_through_a_call_inside_a_concatenation() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // `wrap` can return any string, so its argument's head is not the head of
+    // the concatenation.
+    assert_eq!(
+        url_prefix_of(
+            "function h(p) { axios.get(wrap('https://h.example/') + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // A format call is read: its result starts with the format's head.
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { http.Get(fmt.Sprintf(\"https://h.example/%s\", id) + \"/d\") }",
+            "go",
+            go,
+            Some("Get"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/")
+    );
+}
+
+#[test]
+fn ruby_file_level_local_is_not_a_module_prefix() {
+    let rb = Language::from(tree_sitter_ruby::LANGUAGE);
+    // A file-level local is not visible inside `def`: there `api` is a
+    // method call, so it says nothing about the URL.
+    assert_eq!(
+        url_prefix_of(
+            "api = 'https://api.example.com/'\ndef h(id)\n  u = api + id\nend\n",
+            "ruby",
+            rb,
+            None,
+            Some("u")
+        ),
+        None
+    );
+}
+
+#[test]
+fn arg_bare_names_marks_name_arguments_only() {
+    let mask_of = |src: &str, lang_str: &str, ts_lang: Language, callee_suffix: &str| {
+        let file_cfg = parse_to_file_cfg(src.as_bytes(), lang_str, ts_lang);
+        file_cfg
+            .bodies
+            .iter()
+            .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+            .find(|n| {
+                n.call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.ends_with(callee_suffix))
+            })
+            .map(|n| n.call.arg_bare_names)
+            .expect("call node")
+    };
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    // "/var/data" (literal), c (name), cfg.Dir (member path), c + "/x"
+    // (expression), p[1:] (slice).
+    assert_eq!(
+        mask_of(
+            "package p\nfunc h(c string, p string) { filepath.Join(\"/var/data\", c, cfg.Dir, c + \"/x\", p[1:]) }",
+            "go",
+            go,
+            "Join"
+        ),
+        0b00110
+    );
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    // Keyword arguments do not take a position.
+    assert_eq!(
+        mask_of(
+            "def h(base, p):\n    urljoin(base, (p), timeout=t)\n",
+            "python",
+            py,
+            "urljoin"
+        ),
+        0b11
+    );
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(
+        mask_of(
+            "function h(p) { new URL(p.slice(1), base); }",
+            "javascript",
+            js,
+            "URL"
+        ),
+        0b10
+    );
+}
+
+#[test]
+fn nested_sanitizer_does_not_replace_a_gated_sink_callee() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    let src = "import subprocess, html\ndef h(name):\n    subprocess.Popen(['sh', '-c', html.escape(name)])\n";
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "python", py);
+    let node = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .find(|n| {
+            n.call
+                .outer_callee
+                .as_deref()
+                .or(n.call.callee.as_deref())
+                .is_some_and(|c| c.ends_with("Popen"))
+        })
+        .expect("Popen call node");
+    // The gated sink keeps its callee, so its gate still classifies it.
+    assert_eq!(node.call.callee.as_deref(), Some("subprocess.Popen"));
+    assert!(
+        node.taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE))),
+        "{:?}",
+        node.taint.labels
     );
 }

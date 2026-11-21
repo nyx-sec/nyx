@@ -29,7 +29,7 @@ func dispatch(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "login":
-		// SQL injection — target flows into a raw query.
+		// SQL injection: target flows into a raw query.
 		db.Query("SELECT * FROM users WHERE name = '" + target + "'")
 	case "ping":
 		// Command injection via exec.

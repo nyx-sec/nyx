@@ -370,6 +370,81 @@ pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: Nod
     })
 }
 
+/// True when the base argument of a URL builder call is an absolute URL
+/// (`scheme://host`) given either as a string literal at the call or as a
+/// local whose every definition in the function is such a literal
+/// (`const base = "https://api.example.com"; new URL(path, base)`).
+fn builder_base_is_absolute_literal(
+    ctx: &AnalysisContext,
+    builder: NodeIndex,
+    base_idx: usize,
+) -> bool {
+    let info = &ctx.cfg[builder];
+    let pins_origin = |base: &str| {
+        crate::abstract_interp::string_domain::prefix_locks_origin(&format!(
+            "{}/",
+            base.trim_end_matches('/')
+        ))
+    };
+    if let Some(lit) = info
+        .call
+        .arg_string_literals
+        .get(base_idx)
+        .and_then(|s| s.as_deref())
+    {
+        return pins_origin(lit);
+    }
+    let Some([name]) = info.call.arg_uses.get(base_idx).map(|u| u.as_slice()) else {
+        return false;
+    };
+    let func = info.ast.enclosing_func.as_deref();
+    let defs: Vec<NodeIndex> = ctx
+        .cfg
+        .node_indices()
+        .filter(|&i| {
+            ctx.cfg[i].taint.defines.as_deref() == Some(name.as_str())
+                && ctx.cfg[i].ast.enclosing_func.as_deref() == func
+        })
+        .collect();
+    let all_literal = defs.iter().all(|&i| {
+        ctx.cfg[i].taint.const_text.as_deref().is_some_and(|text| {
+            let t = text.trim();
+            t.len() >= 2
+                && matches!(t.as_bytes()[0], b'"' | b'\'' | b'`')
+                && t.as_bytes()[0] == t.as_bytes()[t.len() - 1]
+                && pins_origin(&t[1..t.len() - 1])
+        })
+    });
+    all_literal && defs_cover_every_path(ctx, &defs, builder)
+}
+
+/// True when every path from the entry to `use_node` passes through one of
+/// `defs`.  A name that is also a parameter, or that is only re-bound under a
+/// condition (`if (!url) { url = "https://h/" + id }`), has a path on which
+/// the caller's value reaches the use without meeting a definition, so an
+/// "every definition is locked" check proves nothing without this.
+fn defs_cover_every_path(ctx: &AnalysisContext, defs: &[NodeIndex], use_node: NodeIndex) -> bool {
+    if defs.is_empty() {
+        return false;
+    }
+    let blocked: HashSet<NodeIndex> = defs.iter().copied().collect();
+    if blocked.contains(&ctx.entry) {
+        return true;
+    }
+    let mut seen: HashSet<NodeIndex> = HashSet::new();
+    let mut stack = vec![ctx.entry];
+    while let Some(n) = stack.pop() {
+        if n == use_node {
+            return false;
+        }
+        if !seen.insert(n) {
+            continue;
+        }
+        stack.extend(ctx.cfg.neighbors(n).filter(|m| !blocked.contains(m)));
+    }
+    true
+}
+
 /// Suppress a `cfg-unguarded-sink` SSRF finding when the sink's URL operand
 /// is origin-locked: it is the result of a `new URL(path, base)` /
 /// `urljoin(base, path)` / `url.JoinPath(base, …)` builder whose base
@@ -379,7 +454,9 @@ pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: Nod
 /// Mirrors the taint engine's `StringFact::from_url_with_base` prefix-lock
 /// (`url_builder_arg_indices` + `is_string_safe_for_ssrf`): the taint engine
 /// stays silent on this shape, so the parallel structural finding is a false
-/// positive.  The base is recognised as either a string literal recorded on
+/// positive.  Like the taint side, a resolving builder (everything except Go
+/// `JoinPath`) locks only when the path argument is provably a relative
+/// reference.  The base is recognised as either a string literal recorded on
 /// the builder node (`arg_string_literals[base_idx]`) or a const-bound
 /// identifier whose SSA operand resolves to a concrete string.
 fn sink_url_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
@@ -408,7 +485,7 @@ fn sink_url_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap
             let Some(callee) = info.call.callee.as_deref() else {
                 return false;
             };
-            let Some((_path_idx, base_idx)) = crate::ssa::type_facts::url_builder_arg_indices(
+            let Some((path_idx, base_idx)) = crate::ssa::type_facts::url_builder_arg_indices(
                 ctx.lang,
                 callee,
                 info.call.outer_callee.as_deref(),
@@ -416,11 +493,32 @@ fn sink_url_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap
             ) else {
                 return false;
             };
-            info.call
+            if !builder_base_is_absolute_literal(ctx, idx, base_idx) {
+                return false;
+            }
+            if crate::ssa::type_facts::url_builder_appends_path(ctx.lang) {
+                return true;
+            }
+            // Reference resolution: the base's host survives only a path
+            // that is provably a relative reference, so a bare tainted path
+            // (`new URL(req.query.p, BASE)`) stays unlocked.
+            use crate::abstract_interp::string_domain::{
+                exact_is_host_preserving_reference, prefix_is_host_preserving_reference,
+            };
+            match info
+                .call
                 .arg_string_literals
-                .get(base_idx)
+                .get(path_idx)
                 .and_then(|s| s.as_deref())
-                .is_some()
+            {
+                Some(lit) => exact_is_host_preserving_reference(lit),
+                None => info
+                    .call
+                    .arg_string_prefixes
+                    .get(path_idx)
+                    .and_then(|s| s.as_deref())
+                    .is_some_and(prefix_is_host_preserving_reference),
+            }
         })
     })
 }
@@ -3708,49 +3806,61 @@ fn redirect_url_arg_is_literal(info: &crate::cfg::NodeInfo, src: &[u8]) -> bool 
         )
 }
 
-/// Check if this sink is an internal redirect: a redirect call (SSRF or
-/// OPEN_REDIRECT sink) whose URL is server-relative or pinned to a fixed
-/// origin, not an attacker-controlled URL.  The URL may be inline or a
-/// variable whose every same-function definition before the sink carries
-/// such a prefix (`const target = `/users/${id}`; res.redirect(target)`).
-fn is_internal_redirect(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
-    if !sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
+/// Check if this sink's URL is pinned to a fixed origin: a redirect call whose
+/// target is server-relative or literal, or an outbound request whose URL
+/// starts with a constant `scheme://host/` (or `/path`) prefix.  The URL may
+/// be inline or a variable whose every same-function definition before the
+/// sink carries such a prefix (`const target = `/users/${id}`;
+/// res.redirect(target)`, `url := "https://h/items/" + id; http.Get(url)`).
+///
+/// Mirrors the taint engine's `is_string_safe_for_ssrf` prefix-lock, so the
+/// structural finding does not outlive the taint finding it duplicates.  The
+/// URL argument is the sink's lowest payload position (`http.NewRequest`
+/// takes it second), else the first argument that holds an identifier.
+fn url_target_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    let url_caps = Cap::SSRF | Cap::OPEN_REDIRECT;
+    // A sink that carries another cap as well (a request body is DATA_EXFIL)
+    // keeps its structural finding: the URL lock says nothing about the body.
+    if !sink_caps.intersects(url_caps) || !sink_caps.difference(url_caps).is_empty() {
         return false;
     }
     let info = &ctx.cfg[sink];
     if redirect_target_origin_locked(info, ctx.source_bytes) {
         return true;
     }
-    let is_redirect = info.call.callee.as_deref().is_some_and(|c| {
-        let c = c.to_ascii_lowercase();
-        c.ends_with("redirect") || c.ends_with("redirect_to")
-    });
-    let Some([url_var]) = info
+    let callee = info.call.callee.as_deref();
+    let locks = |prefix: &str| {
+        crate::abstract_interp::string_domain::prefix_locks_origin_for(callee, prefix)
+    };
+    if info.string_prefix.as_deref().is_some_and(locks) {
+        return true;
+    }
+    let url_idx = info
         .call
-        .arg_uses
-        .iter()
-        .find(|uses| !uses.is_empty())
+        .sink_payload_args
+        .as_deref()
+        .and_then(|p| p.iter().copied().filter(|&i| i != usize::MAX).min())
+        .or_else(|| info.call.arg_uses.iter().position(|uses| !uses.is_empty()));
+    let Some([url_var]) = url_idx
+        .and_then(|i| info.call.arg_uses.get(i))
         .map(|uses| uses.as_slice())
     else {
         return false;
     };
-    if !is_redirect {
-        return false;
-    }
     let sink_func = info.ast.enclosing_func.as_deref();
-    let mut defs = ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).filter(|n| {
-        n.taint.defines.as_deref() == Some(url_var.as_str())
-            && n.ast.enclosing_func.as_deref() == sink_func
-            && n.ast.span.0 < info.ast.span.0
-    });
-    let mut any = false;
-    let all_locked = defs.all(|n| {
-        any = true;
-        n.string_prefix
-            .as_deref()
-            .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
-    });
-    any && all_locked
+    let defs: Vec<NodeIndex> = ctx
+        .cfg
+        .node_indices()
+        .filter(|&i| {
+            let n = &ctx.cfg[i];
+            n.taint.defines.as_deref() == Some(url_var.as_str())
+                && n.ast.enclosing_func.as_deref() == sink_func
+                && n.ast.span.0 < info.ast.span.0
+        })
+        .collect();
+    defs.iter()
+        .all(|&i| ctx.cfg[i].string_prefix.as_deref().is_some_and(locks))
+        && defs_cover_every_path(ctx, &defs, sink)
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.
@@ -4055,9 +4165,9 @@ impl CfgAnalysis for UnguardedSink {
                 continue;
             }
 
-            // Internal redirects: res.redirect(`/path/...`) with a path-prefix
-            // argument are server-relative, not attacker-controlled URLs.
-            if is_internal_redirect(ctx, *sink, sink_caps) {
+            // Fixed-origin URLs: res.redirect(`/path/...`) is server-relative,
+            // and a request to `https://host/...${x}` cannot leave the host.
+            if url_target_origin_locked(ctx, *sink, sink_caps) {
                 continue;
             }
 

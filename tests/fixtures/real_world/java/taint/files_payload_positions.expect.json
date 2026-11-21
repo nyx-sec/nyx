@@ -1,0 +1,40 @@
+{
+  "description": "java.nio.file.Files verbs open the path in their first argument. A request-chosen charset or request text written into a fixed file is not a path-traversal payload; a request-chosen path is.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "gated-sink"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "the request names the file"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "the request chooses only the charset"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "request text written into a fixed file"
+    }
+  ]
+}

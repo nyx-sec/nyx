@@ -1,0 +1,41 @@
+{
+  "description": "A sanitizer nested in the arguments of an unlabelled outer call (`subprocess.Popen` is a gated sink with no flat label) cleans only its own result. It must not replace the call's callee, or the gate is lost: html.escape and basename leave shell syntax in place, so the Popen sink still fires; shlex.quote is the shell sanitizer and keeps the call clean.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "gated-sink",
+    "nested-call"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "html.escape nested in a Popen argv still reaches the shell"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "basename nested in a Popen argv still reaches the shell"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "shlex.quote nested in the argv is the shell sanitizer"
+    }
+  ]
+}

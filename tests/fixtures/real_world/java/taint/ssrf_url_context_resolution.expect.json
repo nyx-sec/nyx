@@ -1,0 +1,41 @@
+{
+  "description": "Java `new URL(context, spec)` resolves `spec` against the context URL: an absolute or protocol-relative spec replaces the host. A fixed `v1/` head is a relative reference under it.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "url-builder",
+    "origin-lock"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "attacker spec can leave the host"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        15,
+        21
+      ],
+      "notes": "relative spec keeps the host"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        15,
+        21
+      ],
+      "notes": "the structural rule agrees with the taint lock"
+    }
+  ]
+}

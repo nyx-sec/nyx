@@ -1,0 +1,41 @@
+{
+  "description": "PHP file_get_contents with a constant `scheme://host/` head: single-quoted concatenation in the call argument, double-quoted interpolation, and the same through a variable. A request-parameter URL still fires.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "prefix-lock",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        2,
+        19
+      ],
+      "notes": "host fixed by a literal head"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        2,
+        19
+      ],
+      "notes": "the structural rule reads the same prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "request parameter is the whole URL"
+    }
+  ]
+}

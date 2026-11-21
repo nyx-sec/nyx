@@ -1,0 +1,114 @@
+{
+  "description": "Python path normalisers are not containment. realpath, normpath, abspath and Path.resolve each need a root check (startswith / is_relative_to) or, for normpath, a rejection of a leading `..` and of an absolute path; basename keeps only the leaf.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "normpath",
+    "realpath"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "realpath alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "realpath then startswith(root) then abort"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        32,
+        32
+      ],
+      "notes": "normpath keeps a leading .."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        43,
+        43
+      ],
+      "notes": "normpath, reject absolute, join: ../../etc survives"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        54,
+        54
+      ],
+      "notes": "normalized path rejected on a leading .. and on /"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        64,
+        64
+      ],
+      "notes": "normpath then startswith(root)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        72,
+        72
+      ],
+      "notes": "abspath alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        82,
+        82
+      ],
+      "notes": "abspath then startswith(root)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        90,
+        90
+      ],
+      "notes": "Path.resolve alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        100,
+        100
+      ],
+      "notes": "resolve then is_relative_to"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        108,
+        108
+      ],
+      "notes": "basename keeps only the final component"
+    }
+  ]
+}

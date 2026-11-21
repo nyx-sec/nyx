@@ -1,0 +1,60 @@
+{
+  "description": "Node path normalisers are not containment. `path.normalize` keeps a leading `..` (reject it, or check the root), `path.resolve` needs a root check, and `path.basename` keeps only the leaf.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "normalize",
+    "basename"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "normalize keeps a leading ..; only the absolute path is rejected"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "normalized path rejected on a leading .. and on an absolute path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        25,
+        25
+      ],
+      "notes": "resolve alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "basename keeps only the final component"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        37,
+        37
+      ],
+      "notes": "basename through a synchronous read"
+    }
+  ]
+}

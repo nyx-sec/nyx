@@ -1,0 +1,41 @@
+{
+  "description": "Body constants live in a table shared by every block's abstract state instead of its entries, so a handler with many constants keeps room for the facts the flow derives (here the `https://host/` prefix that locks the SSRF sink).",
+  "tags": [
+    "taint",
+    "ssrf",
+    "abstract-interp",
+    "state-budget"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        91,
+        91
+      ],
+      "notes": "host fixed by the literal head, past 64 constants"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        91,
+        91
+      ],
+      "notes": "the structural rule reads the same prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        97,
+        97
+      ],
+      "notes": "whole URL from the request"
+    }
+  ]
+}

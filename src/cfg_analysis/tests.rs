@@ -3408,3 +3408,64 @@ fn resource_java_returned_wrapper_not_leak() {
         0
     );
 }
+
+fn js_unguarded_sink_lines(src: &[u8]) -> Vec<usize> {
+    unguarded_sink_file(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    )
+    .into_iter()
+    .map(|(line, _)| line)
+    .collect()
+}
+
+#[test]
+fn unguarded_sink_ssrf_lock_needs_a_definition_on_every_path() {
+    // `url` is the caller's value unless the branch rebinds it, so the only
+    // locked definition does not cover the path that skips the branch.
+    let src = b"function fetchReport(req, url) {
+  if (!url) {
+    url = `https://reports.example.com/${req.query.id}`;
+  }
+  return axios.get(url);
+}
+";
+    assert!(js_unguarded_sink_lines(src).contains(&5));
+}
+
+#[test]
+fn unguarded_sink_ssrf_lock_holds_when_every_branch_rebinds() {
+    let src = b"function fetchReport(req) {
+  let url = `https://reports.example.com/a/${req.query.id}`;
+  if (req.query.b) {
+    url = `https://reports.example.com/b/${req.query.id}`;
+  }
+  return axios.get(url);
+}
+";
+    assert_eq!(js_unguarded_sink_lines(src), Vec::<usize>::new());
+}
+
+#[test]
+fn unguarded_sink_url_builder_base_default_is_not_a_lock() {
+    // A conditionally defaulted parameter is still caller-controlled.
+    let src = b"function fetchUnder(req, base) {
+  if (!base) base = 'https://api.example.com';
+  const target = new URL(req.query.p, base);
+  return axios.get(target);
+}
+";
+    assert!(js_unguarded_sink_lines(src).contains(&4));
+}
+
+#[test]
+fn unguarded_sink_url_builder_base_constant_is_a_lock() {
+    let src = b"function fetchUnder(req) {
+  const base = 'https://api.example.com';
+  const target = new URL('v1/' + req.query.p, base);
+  return axios.get(target);
+}
+";
+    assert_eq!(js_unguarded_sink_lines(src), Vec::<usize>::new());
+}

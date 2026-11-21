@@ -1,0 +1,50 @@
+{
+  "description": "Constant `scheme://host/` heads survive the shapes real Go code uses: `:=` and `var` declarations, left-nested concatenation, `fmt.Sprintf`, the URL at argument 1 of `http.NewRequest`, a module-level constant base, and `url.JoinPath`. A bare request-parameter URL still fires.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "prefix-lock",
+    "go"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        11,
+        62
+      ],
+      "notes": "host fixed by a literal head, module constant or JoinPath"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        11,
+        62
+      ],
+      "notes": "the structural rule reads the same prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        68,
+        68
+      ],
+      "notes": "request parameter is the whole URL"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        75,
+        75
+      ],
+      "notes": "request parameter is the NewRequest URL"
+    }
+  ]
+}

@@ -108,6 +108,15 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // `path.basename` keeps only the final component, so a request value
+    // reduced to it cannot climb out of the directory it is joined under.
+    // `path.posix.basename` splits on `/` alone, so on a Windows host a
+    // `..\` component survives it; it is not listed.
+    LabelRule {
+        matchers: &["path.basename", "path.win32.basename"],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: false,
+    },
     // he library, HTML entity encoding
     LabelRule {
         matchers: &["he.encode", "he.escape"],

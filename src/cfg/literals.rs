@@ -1586,6 +1586,18 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
                     None
                 }
             });
+            // Go `const x = "lit"`: the value is a one-element expression
+            // list.  Only `const` is unwrapped; `x := "lit"` and `var x =
+            // "lit"` keep their existing, non-constant lowering.
+            let child_val = child_val.map(|v| {
+                if child.kind() == "const_spec" && v.kind() == "expression_list" {
+                    v.named_child(0)
+                        .filter(|_| v.named_child_count() == 1)
+                        .unwrap_or(v)
+                } else {
+                    v
+                }
+            });
             if let Some(val) = child_val {
                 if is_syntactic_literal(val, code) {
                     return text_of(val, code);
@@ -1602,8 +1614,16 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
     if matches!(lookup(lang, ast.kind()), Kind::Return) {
         let mut cursor = ast.walk();
         for child in ast.named_children(&mut cursor) {
-            if is_syntactic_literal(child, code) {
-                return text_of(child, code);
+            // Go wraps the returned values in an `expression_list`; a single
+            // literal in it (`return ""`) is the whole return value, a tuple
+            // (`return "", err`) is not.
+            let value = if child.kind() == "expression_list" && child.named_child_count() == 1 {
+                child.named_child(0).unwrap_or(child)
+            } else {
+                child
+            };
+            if is_syntactic_literal(value, code) {
+                return text_of(value, code);
             }
         }
     }
@@ -2486,6 +2506,106 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
     result
 }
 
+/// Constant leading text of each positional argument of `call_node`, parallel
+/// to [`extract_arg_string_literals`] and `arg_uses`.  `Some(prefix)` when the
+/// argument is a string being built from a literal head (`"https://h/" + id`,
+/// a template literal, an f-string, a format call) and `None` for plain
+/// literals (those are in `arg_string_literals`) and everything else.
+pub(super) fn extract_arg_string_prefixes(
+    call_node: Node,
+    lang: &str,
+    code: &[u8],
+) -> Vec<Option<String>> {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "spread_element"
+            || kind == "dictionary_splat"
+            || kind == "list_splat"
+            || kind == "splat_argument"
+            || kind == "hash_splat_argument"
+        {
+            return Vec::new();
+        }
+        if kind == "keyword_argument" || kind == "named_argument" {
+            continue;
+        }
+        result.push(super::arg_prefix_of_expression(child, lang, code));
+    }
+    if result.iter().all(Option::is_none) {
+        return Vec::new();
+    }
+    result
+}
+
+/// Positional arguments of `call_node` that are exactly a name, as the bit
+/// mask stored in `CallMeta::arg_bare_names`.  Indexed like
+/// [`extract_arg_uses`]: keyword arguments are skipped and a splat clears the
+/// whole mask, since positions after it are unknown.
+pub(super) fn extract_arg_bare_name_mask(call_node: Node) -> u64 {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return 0;
+    };
+    let mut mask = 0u64;
+    let mut pos = 0usize;
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if matches!(
+            kind,
+            "spread_element"
+                | "dictionary_splat"
+                | "list_splat"
+                | "splat_argument"
+                | "hash_splat_argument"
+        ) {
+            return 0;
+        }
+        if kind == "keyword_argument" || kind == "named_argument" {
+            continue;
+        }
+        if pos < 64 && is_bare_name(child) {
+            mask |= 1 << pos;
+        }
+        pos += 1;
+    }
+    mask
+}
+
+/// True when `node` is an identifier or a member path made only of
+/// identifiers, after peeling parentheses and PHP's `argument` wrapper.
+fn is_bare_name(node: Node) -> bool {
+    let mut cur = node;
+    while matches!(cur.kind(), "argument" | "parenthesized_expression") {
+        match cur.named_child(0) {
+            Some(inner) if cur.named_child_count() == 1 => cur = inner,
+            _ => return false,
+        }
+    }
+    match cur.kind() {
+        "identifier" | "variable_name" | "constant" => true,
+        "member_expression"
+        | "selector_expression"
+        | "attribute"
+        | "field_access"
+        | "field_expression"
+        | "member_access_expression" => {
+            let mut w = cur.walk();
+            cur.named_children(&mut w).all(|c| {
+                matches!(
+                    c.kind(),
+                    "property_identifier" | "field_identifier" | "identifier" | "name"
+                ) || is_bare_name(c)
+            })
+        }
+        _ => false,
+    }
+}
+
 /// Strip surrounding quotes from a syntactic string literal, resolving the
 /// `string_content` child for Rust-style two-level string nodes.  Returns the
 /// raw inner text (no escape-sequence processing), sufficient for whitelist
@@ -3151,6 +3271,28 @@ pub(super) fn js_positional_arity(call_node: Node) -> Option<usize> {
             return None;
         }
         arity += 1;
+    }
+    Some(arity)
+}
+
+/// Positional argument count of a Python call, or `None` when a `*args` /
+/// `**kwargs` splat can supply arguments the call text does not show.
+/// Keyword arguments do not count.
+pub(super) fn python_positional_arity(call_node: Node) -> Option<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Some(0);
+    };
+    if args.kind() != "argument_list" {
+        return None;
+    }
+    let mut cursor = args.walk();
+    let mut arity = 0;
+    for arg in args.named_children(&mut cursor) {
+        match arg.kind() {
+            "list_splat" | "dictionary_splat" => return None,
+            "keyword_argument" | "comment" => {}
+            _ => arity += 1,
+        }
     }
     Some(arity)
 }

@@ -1,0 +1,41 @@
+{
+  "description": "Flask `send_from_directory`: only a tainted `directory`, positional or keyword, is a file-read sink; werkzeug's safe_join confines `path`.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "flask",
+    "keyword-args"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "notes": "tainted directory passed positionally"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "notes": "tainted directory passed as directory="
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        22,
+        31
+      ],
+      "notes": "tainted path argument is confined by safe_join"
+    }
+  ]
+}

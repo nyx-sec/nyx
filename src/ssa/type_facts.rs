@@ -1241,6 +1241,15 @@ pub(crate) fn url_builder_arg_indices(
     }
 }
 
+/// True when the `(base, path)` builder appends its path arguments as path
+/// segments instead of resolving them as a URL reference.  Go `url.JoinPath`
+/// does: no element can change the host, so the base origin stays pinned.
+/// The other builders resolve a reference, where an absolute or
+/// protocol-relative path replaces the host.
+pub(crate) fn url_builder_appends_path(lang: Lang) -> bool {
+    lang == Lang::Go
+}
+
 /// Check if a callee is a known integer/numeric-producing function.
 ///
 /// Conservative list: only includes functions whose return type is unambiguously
@@ -1261,6 +1270,13 @@ pub(crate) fn url_builder_arg_indices(
 /// For `Connection::open("app.db").unwrap` the pipeline is:
 /// normalize → `Connection::open.unwrap` → peel → `Connection::open`.
 pub fn peel_identity_suffix(callee: &str) -> String {
+    peel_suffix_with(callee, is_identity_method)
+}
+
+/// [`peel_identity_suffix`] with a caller-chosen set of peelable trailing
+/// methods, for consumers that see through more adapters than the type facts
+/// do (`map_err`, `context`).
+pub fn peel_suffix_with(callee: &str, peelable: impl Fn(&str) -> bool) -> String {
     let mut cur = crate::labels::normalize_chained_call_for_classify(callee);
     // Also strip any trailing paren group (e.g. `Connection::open("app.db")`
     // with no subsequent segment) so the base text ends at the constructor.
@@ -1269,7 +1285,7 @@ pub fn peel_identity_suffix(callee: &str) -> String {
     }
     while let Some(dot_idx) = cur.rfind('.') {
         let tail = &cur[dot_idx + 1..];
-        if !is_identity_method(tail) {
+        if !peelable(tail) {
             break;
         }
         cur.truncate(dot_idx);

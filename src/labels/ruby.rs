@@ -62,6 +62,12 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // `File.basename` keeps only the final component.
+    LabelRule {
+        matchers: &["File.basename"],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: false,
+    },
     // Type coercion sanitizers
     LabelRule {
         matchers: &["to_i", "to_f"],
