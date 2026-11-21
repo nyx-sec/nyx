@@ -155,11 +155,12 @@ pub fn extract_authorization_model(
     model
 }
 
-/// Copy the authorization-bearing middleware of Express, Koa, Fastify, Gin and
-/// Echo routes onto the handler unit as route-level checks, the way the
-/// Flask, Django, Spring and Rails extractors already do for decorators and
-/// filters.  `router.get('/docs/:id', checkOwnership, handler)` authorizes
-/// the whole handler, but the call is opaque to the per-subject coverage walk.
+/// Copy the authorization-bearing middleware of Express, Koa, Fastify, Gin,
+/// Echo, axum and actix-web routes onto the handler unit as route-level
+/// checks, the way the Flask, Django, Spring and Rails extractors already do
+/// for decorators and filters.  `router.get('/docs/:id', checkOwnership,
+/// handler)` authorizes the whole handler, but the call is opaque to the
+/// per-subject coverage walk.
 ///
 /// A handler registered on several routes keeps only the checks every
 /// registration carries: one bare registration leaves it reachable without
@@ -185,6 +186,8 @@ fn inject_route_level_middleware(model: &mut AuthorizationModel, rules: &AuthAna
                 | Framework::Fastify
                 | Framework::Gin
                 | Framework::Echo
+                | Framework::Axum
+                | Framework::ActixWeb
         ) {
             continue;
         }

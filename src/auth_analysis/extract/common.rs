@@ -5447,6 +5447,17 @@ pub fn call_name(node: Node<'_>, bytes: &[u8]) -> String {
     }
 }
 
+/// Receiver of a method call, given the call's `function` node.
+///
+/// The grammars disagree on the field name: tree-sitter-rust spells
+/// `a.b(..)` as `field_expression(value: a, field: b)`, JavaScript uses
+/// `object`, Go `operand`, and some grammars `argument`.
+pub fn method_call_receiver(function: Node<'_>) -> Option<Node<'_>> {
+    ["value", "object", "operand", "argument"]
+        .into_iter()
+        .find_map(|field| function.child_by_field_name(field))
+}
+
 pub fn member_target(node: Node<'_>, bytes: &[u8]) -> Option<(String, String)> {
     let object = node
         .child_by_field_name("object")

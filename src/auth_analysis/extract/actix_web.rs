@@ -1,10 +1,12 @@
 use super::AuthExtractor;
 use super::axum::{
-    GuardFramework, apply_aliases, apply_typed_extractor_guards_to_units, dedup_call_sites,
-    expanded_guard_call_sites, guard_calls_for_handler, inject_guard_checks, rust_param_aliases,
+    GuardFramework, apply_aliases, apply_typed_extractor_guards_to_units, chained_call_args_after,
+    dedup_call_sites, expanded_guard_call_sites, guard_calls_for_handler, inject_guard_checks,
+    rust_param_aliases,
 };
 use super::common::{
-    attach_route_handler, call_name, named_children, resolve_handler_node, string_literal_value,
+    attach_route_handler, call_name, method_call_receiver, named_children, resolve_handler_node,
+    string_literal_value,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{
@@ -65,14 +67,17 @@ fn maybe_collect_route(
         return;
     }
 
-    let receiver = node.child_by_field_name("function").and_then(|function| {
-        function
-            .child_by_field_name("object")
-            .or_else(|| function.child_by_field_name("argument"))
-    });
-    let receiver_spec = receiver
+    let receiver = node
+        .child_by_field_name("function")
+        .and_then(method_call_receiver);
+    let mut receiver_spec = receiver
         .map(|r| parse_service_receiver(r, bytes))
         .unwrap_or_default();
+    // `.wrap(..)` and `.guard(..)` cover everything the scope or resource
+    // serves, whether they come before or after the `.route(..)` call.
+    receiver_spec
+        .middleware_calls
+        .extend(enclosing_wrap_calls(node, bytes));
 
     let Some(arguments) = node.child_by_field_name("arguments") else {
         return;
@@ -166,11 +171,9 @@ fn parse_service_receiver(node: Node<'_>, bytes: &[u8]) -> ReceiverSpec {
 
     let name = call_name(node, bytes);
     let method = name.rsplit('.').next().unwrap_or_default();
-    let receiver = node.child_by_field_name("function").and_then(|function| {
-        function
-            .child_by_field_name("object")
-            .or_else(|| function.child_by_field_name("argument"))
-    });
+    let receiver = node
+        .child_by_field_name("function")
+        .and_then(method_call_receiver);
     let mut spec = receiver
         .map(|receiver| parse_service_receiver(receiver, bytes))
         .unwrap_or_default();
@@ -208,6 +211,13 @@ fn parse_service_receiver(node: Node<'_>, bytes: &[u8]) -> ReceiverSpec {
     spec
 }
 
+/// `.wrap(..)` and `.guard(..)` calls chained after the route call, on the
+/// same scope or resource.  Actix applies them to every route the scope
+/// serves, whatever their order.
+fn enclosing_wrap_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
+    chained_call_args_after(node, bytes, &["wrap", "guard"])
+}
+
 struct BuilderSpec<'tree> {
     method: HttpMethod,
     handler_expr: Node<'tree>,
@@ -218,11 +228,9 @@ fn parse_route_builder<'tree>(node: Node<'tree>, bytes: &[u8]) -> Option<Builder
     let name = call_name(node, bytes);
     let method = name.rsplit('.').next().unwrap_or_default();
     if matches!(method, "to" | "guard") {
-        let receiver = node.child_by_field_name("function").and_then(|function| {
-            function
-                .child_by_field_name("object")
-                .or_else(|| function.child_by_field_name("argument"))
-        })?;
+        let receiver = node
+            .child_by_field_name("function")
+            .and_then(method_call_receiver)?;
         let mut spec = parse_route_builder(receiver, bytes)?;
         if method == "to" {
             let args = node
