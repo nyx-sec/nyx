@@ -6698,3 +6698,120 @@ fn nested_calls_marks_whole_argument_calls() {
         .expect("inner call");
     assert!(!inner.exact_arg, "String(x) is one operand of the argument");
 }
+
+/// Outgoing non-exception edge count of the first Call node whose callee is
+/// `callee`, across every body of `src`.
+fn call_fallthrough_count(src: &[u8], lang: &str, ts_lang: Language, callee: &str) -> usize {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    for body in &fc.bodies {
+        let g = &body.graph;
+        if let Some(n) = g
+            .node_indices()
+            .find(|&i| g[i].kind == StmtKind::Call && g[i].call.callee.as_deref() == Some(callee))
+        {
+            return g
+                .edges(n)
+                .filter(|e| !matches!(e.weight(), EdgeKind::Exception))
+                .count();
+        }
+    }
+    panic!("no call to {callee}");
+}
+
+#[test]
+fn python_flask_abort_import_dead_ends_the_call() {
+    let ts = || Language::from(tree_sitter_python::LANGUAGE);
+    let src = b"from flask import request, abort\ndef h():\n    x = request.args.get('x')\n    if x not in A:\n        abort(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(src, "python", ts(), "abort"), 0);
+
+    let aliased = b"from werkzeug.exceptions import abort as deny\ndef h(x):\n    if x not in A:\n        deny(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(aliased, "python", ts(), "deny"), 0);
+
+    let qualified =
+        b"import flask\ndef h(x):\n    if x not in A:\n        flask.abort(400)\n    run(x)\n";
+    assert_eq!(
+        call_fallthrough_count(qualified, "python", ts(), "flask.abort"),
+        0
+    );
+}
+
+#[test]
+fn python_local_abort_without_framework_import_falls_through() {
+    let ts = Language::from(tree_sitter_python::LANGUAGE);
+    let src = b"def abort(c):\n    print(c)\ndef h(x):\n    if x not in A:\n        abort(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(src, "python", ts, "abort"), 1);
+}
+
+#[test]
+fn php_wp_die_and_namespaced_abort_dead_end() {
+    let ts = || Language::from(tree_sitter_php::LANGUAGE_PHP);
+    let src = b"<?php\nfunction h($c) {\n  if (!in_array($c, ['a'], true)) { wp_die('bad'); }\n  system($c);\n}\n";
+    assert_eq!(call_fallthrough_count(src, "php", ts(), "wp_die"), 0);
+    let ns = b"<?php\nnamespace App;\nfunction h($c) {\n  if (!in_array($c, ['a'], true)) { \\abort(403); }\n  system($c);\n}\n";
+    let fc = parse_to_file_cfg(ns, "php", ts());
+    let callee = fc
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter_map(|n| n.call.callee.clone())
+        .find(|c| c.ends_with("abort"))
+        .expect("abort call");
+    assert_eq!(call_fallthrough_count(ns, "php", ts(), &callee), 0);
+}
+
+#[test]
+fn koa_ctx_throw_dead_ends_the_call() {
+    let ts = Language::from(tree_sitter_javascript::LANGUAGE);
+    let src = b"async function h(ctx) {\n  const c = ctx.query.c;\n  if (!A.includes(c)) { ctx.throw(400, 'bad'); }\n  run(c);\n}\n";
+    assert_eq!(
+        call_fallthrough_count(src, "javascript", ts, "ctx.throw"),
+        0
+    );
+}
+
+/// Condition texts of every `If` node in `src`, across all bodies.
+fn if_condition_texts(src: &[u8], lang: &str, ts_lang: Language) -> Vec<String> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::If)
+        .filter_map(|n| n.condition_text.clone())
+        .collect()
+}
+
+#[test]
+fn conditional_expression_assignments_lower_to_a_diamond() {
+    let py = b"def h(s):\n    sort = s if s in SORTABLE else 'name'\n    run(sort)\n";
+    let conds = if_condition_texts(py, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c == "s in SORTABLE"),
+        "python: {conds:?}"
+    );
+
+    let rb = b"def h\n  sort = SORTABLE.include?(params[:sort]) ? params[:sort] : 'created_at'\n  run(sort)\nend\n";
+    let conds = if_condition_texts(rb, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c.starts_with("SORTABLE.include?")),
+        "ruby: {conds:?}"
+    );
+
+    let php = b"<?php\nfunction h($a) {\n  $sort = in_array($_GET['s'], $a, true) ? $_GET['s'] : 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(php, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(
+        conds.iter().any(|c| c.starts_with("in_array(")),
+        "php: {conds:?}"
+    );
+
+    // PHP `a ?: b` has no separate consequence and stays a plain assignment.
+    let short = b"<?php\nfunction h() {\n  $sort = $_GET['s'] ?: 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(conds.is_empty(), "php short ternary: {conds:?}");
+    let fc = parse_to_file_cfg(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    let defines_sort = fc
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .any(|n| n.taint.defines.as_deref() == Some("sort"));
+    assert!(defines_sort, "php short ternary assignment was dropped");
+}

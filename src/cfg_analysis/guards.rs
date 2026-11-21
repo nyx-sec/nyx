@@ -2691,6 +2691,178 @@ pub(super) fn suffix_matches_at_leaf_boundary(callee_lower: &str, suffix: &str) 
     matches!(prev, b'.' | b'_' | b':')
 }
 
+/// Branch conditions that pin one variable to a fixed set of values, with
+/// the variables they pin:
+///
+/// * an equality test against a literal (`dir === 'asc'`, part of a
+///   `dir === 'asc' || dir === 'desc'` chain);
+/// * the presence result of a Go map lookup (`_, ok := allowed[cmd]; if
+///   !ok`), which pins the key and the value binding.
+///
+/// Unlike [`find_guard_nodes`] these only guard a sink that reads one of the
+/// pinned variables, so an unrelated `if (mode === 'debug')` above a sink
+/// does not hide it.  The returned node is the first node on the pinning
+/// edge (the equal / present side), and only when every way into it is a
+/// pinning edge for the same variable: the body of `a === 'x' || a === 'y'`
+/// qualifies, the body of `a === 'x' || flag` and the code after
+/// `if (a === 'x') log()` do not.
+fn find_value_pinning_guards(ctx: &AnalysisContext) -> Vec<(NodeIndex, SmallVec<[String; 2]>)> {
+    use petgraph::Direction;
+    use petgraph::visit::EdgeRef;
+
+    let pins: Vec<(NodeIndex, SmallVec<[String; 2]>, NodeIndex)> = ctx
+        .cfg
+        .node_indices()
+        .filter_map(|idx| {
+            let (vars, on_true) = pinned_edge(idx, ctx)?;
+            Some((idx, vars, branch_successor(idx, on_true, ctx)?))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (_, vars, succ) in &pins {
+        let only_pinned_entries = ctx.cfg.edges_directed(*succ, Direction::Incoming).all(|e| {
+            pins.iter().any(|(p, pv, ps)| {
+                *p == e.source() && ps == succ && pv.iter().any(|v| vars.contains(v))
+            })
+        });
+        if only_pinned_entries && !out.iter().any(|(n, _)| n == succ) {
+            out.push((*succ, vars.clone()));
+        }
+    }
+    out
+}
+
+/// The node an `If` node's TRUE (or FALSE) branch starts at.  The builder
+/// marks the then-branch with an explicit TRUE edge; the other side is a
+/// FALSE edge or, for an `if` without `else`, the plain fall-through to the
+/// next statement.  `None` when the other side is ambiguous.
+fn branch_successor(cond: NodeIndex, on_true: bool, ctx: &AnalysisContext) -> Option<NodeIndex> {
+    use crate::cfg::EdgeKind;
+    use petgraph::visit::EdgeRef;
+    let target_of = |kind: EdgeKind| {
+        ctx.cfg
+            .edges(cond)
+            .find(|e| *e.weight() == kind)
+            .map(|e| e.target())
+    };
+    let true_succ = target_of(EdgeKind::True);
+    if on_true {
+        return true_succ;
+    }
+    if let Some(f) = target_of(EdgeKind::False) {
+        return Some(f);
+    }
+    let mut others = ctx
+        .cfg
+        .edges(cond)
+        .filter(|e| *e.weight() == EdgeKind::Seq)
+        .map(|e| e.target())
+        .filter(|t| Some(*t) != true_succ);
+    let first = others.next()?;
+    others.all(|t| t == first).then_some(first)
+}
+
+/// The variables an `If` node pins and whether they are pinned on its TRUE
+/// branch: the equal side of `x == 'lit'`, the present side of a Go
+/// comma-ok lookup.
+fn pinned_edge(idx: NodeIndex, ctx: &AnalysisContext) -> Option<(SmallVec<[String; 2]>, bool)> {
+    let info = &ctx.cfg[idx];
+    if info.kind != StmtKind::If {
+        return None;
+    }
+    let cond_text = info.condition_text.as_deref()?;
+    if classify_condition(cond_text) == PredicateKind::Comparison
+        && let Some((target, op_is_eq)) =
+            crate::taint::path_state::equality_literal_guard(cond_text)
+        && info.condition_vars.iter().any(|v| *v == target)
+    {
+        return Some((
+            SmallVec::from_elem(target, 1),
+            op_is_eq != info.condition_negated,
+        ));
+    }
+    let lookup = cond_membership_lookup(idx, ctx)?;
+    let mut vars: SmallVec<[String; 2]> = SmallVec::new();
+    vars.push(lookup.key.clone());
+    vars.extend(lookup.value_var.clone());
+    Some((vars, !info.condition_negated))
+}
+
+/// The map lookup whose presence result is this condition's single
+/// variable (`ok` in `_, ok := allowed[cmd]; if !ok`).  Same-function
+/// definitions textually before the condition, or the `if` statement's own
+/// initializer (a direct CFG predecessor inside its span), taking the last
+/// one, like [`cond_indirect_validator_callee`].
+fn cond_membership_lookup<'c>(
+    cond: NodeIndex,
+    ctx: &'c AnalysisContext,
+) -> Option<&'c crate::cfg::MembershipLookup> {
+    let info = &ctx.cfg[cond];
+    let [var_name] = info.condition_vars.as_slice() else {
+        return None;
+    };
+    let cond_func = info.ast.enclosing_func.as_deref();
+    let mut best: Option<(usize, &crate::cfg::MembershipLookup)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        let Some(lookup) = n.membership_lookup.as_ref() else {
+            continue;
+        };
+        let before_cond = n.ast.span.0 < info.ast.span.0 || ctx.cfg.find_edge(nidx, cond).is_some();
+        if lookup.result_var != *var_name
+            || n.ast.enclosing_func.as_deref() != cond_func
+            || !before_cond
+        {
+            continue;
+        }
+        if best.is_none_or(|(s, _)| n.ast.span.0 > s) {
+            best = Some((n.ast.span.0, lookup));
+        }
+    }
+    best.map(|(_, l)| l)
+}
+
+/// The node `cond`'s TRUE (or FALSE) branch starts at, when `cond` is its
+/// only way in.
+fn sole_successor_on_edge(
+    cond: NodeIndex,
+    on_true: bool,
+    ctx: &AnalysisContext,
+) -> Option<NodeIndex> {
+    use petgraph::Direction;
+    use petgraph::visit::EdgeRef;
+    let succ = branch_successor(cond, on_true, ctx)?;
+    ctx.cfg
+        .edges_directed(succ, Direction::Incoming)
+        .all(|e| e.source() == cond)
+        .then_some(succ)
+}
+
+/// True when the `//` test at `cond` has a leading-`/` test on the same
+/// value elsewhere in the same function (the other half of the inline
+/// relative-URL check).
+fn has_leading_slash_partner(cond: NodeIndex, ctx: &AnalysisContext) -> bool {
+    use crate::taint::path_state::classify_condition_with_target;
+    let info = &ctx.cfg[cond];
+    let Some((_, Some(target))) = info
+        .condition_text
+        .as_deref()
+        .map(classify_condition_with_target)
+    else {
+        return false;
+    };
+    let func = info.ast.enclosing_func.as_deref();
+    ctx.cfg.node_indices().any(|i| {
+        let n = &ctx.cfg[i];
+        n.kind == StmtKind::If
+            && n.ast.enclosing_func.as_deref() == func
+            && n.condition_text.as_deref().is_some_and(|t| {
+                classify_condition_with_target(t)
+                    == (PredicateKind::LeadingSlashCheck, Some(target.clone()))
+            })
+    })
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -2780,6 +2952,23 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                     // gated on its non-null result is same-origin.  Scope to
                     // OPEN_REDIRECT.  Motivated by CVE-2026-42259 (Saltcorn).
                     result.push((idx, Cap::OPEN_REDIRECT));
+                } else if kind == PredicateKind::RelativeUrlValidated
+                    || (kind == PredicateKind::ProtocolRelativeCheck
+                        && has_leading_slash_partner(idx, ctx))
+                {
+                    // Inline relative-URL check: a leading `/` plus a
+                    // rejection of protocol-relative `//host` keeps a
+                    // redirect on-site.  The split form registers on the
+                    // `//` test when the same function also tests the same
+                    // value for a leading `/`.  The guard is the first node
+                    // on the passing edge (TRUE for the conjunction, FALSE
+                    // for a `//` test), so a redirect inside the reject
+                    // branch stays unguarded.
+                    let passes_on_true =
+                        (kind == PredicateKind::RelativeUrlValidated) != info.condition_negated;
+                    if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
+                        result.push((succ, Cap::OPEN_REDIRECT));
+                    }
                 } else if matches!(
                     kind,
                     PredicateKind::ShellMetaValidated | PredicateKind::BoundedLength
@@ -3296,54 +3485,118 @@ fn chain_callee_fragments_with_text<'a>(
     frags
 }
 
-/// Check if the source bytes at a given span contain a redirect call whose
-/// argument starts with a path prefix (`/...`), indicating a server-relative
-/// path rather than an attacker-controlled URL.
+/// True when a redirect-style sink's target is a plain string literal, or
+/// starts with a constant prefix that pins the origin
+/// (`res.redirect(`/users/${id}`)`, `redirect_to "/users/#{id}"`,
+/// `redirect("https://app.example/" + p)`).  The prefix is the AST-derived
+/// [`crate::cfg::NodeInfo::string_prefix`], so a bare `"/" + next` (which
+/// `next = "/evil.com"` turns into `//evil.com`) does not count.
 ///
 /// Reused by both `cfg-unguarded-sink` suppression and taint finding filtering.
-pub(crate) fn has_redirect_path_prefix(source_bytes: &[u8], span: (usize, usize)) -> bool {
-    let (start, end) = span;
-    if start >= source_bytes.len() || end > source_bytes.len() {
-        return false;
-    }
-    let text = &source_bytes[start..end];
-    // Search for the argument portion after the first '('
-    if let Some(paren_pos) = text.iter().position(|&b| b == b'(') {
-        let after_paren = &text[paren_pos + 1..];
-        let trimmed = after_paren
-            .iter()
-            .skip_while(|&&b| b == b' ' || b == b'\n' || b == b'\t')
-            .copied()
-            .collect::<Vec<_>>();
-        // Template literal: `/ ...
-        if trimmed.starts_with(b"`/") {
-            return true;
-        }
-        // String literal: "/ ... or '/ ...
-        if trimmed.starts_with(b"\"/") || trimmed.starts_with(b"'/") {
-            return true;
-        }
-    }
-    false
+pub(crate) fn redirect_target_origin_locked(info: &crate::cfg::NodeInfo, src: &[u8]) -> bool {
+    info.call.callee.as_deref().is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.ends_with("redirect") || c.ends_with("redirect_to")
+    }) && (redirect_url_arg_is_literal(info, src)
+        || info
+            .string_prefix
+            .as_deref()
+            .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin))
 }
 
-/// Check if this sink is an internal redirect, a `res.redirect` (SSRF sink)
-/// whose argument is a template literal or string starting with `/`, indicating
-/// a server-relative path rather than an attacker-controlled URL.
-fn is_internal_redirect(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
-    if !sink_caps.contains(Cap::SSRF) {
+/// The URL argument of a redirect call is a plain quoted string: the first
+/// argument, or the second after a numeric status (`res.redirect(301,
+/// '/home')`).  A literal target is chosen by the developer, whatever taint
+/// the receiver carries.  Read from the call's own source text: f-strings,
+/// template literals and double-quoted text with `#{..}` / `$` interpolation
+/// are not literals, and a callee that is an inner call of the statement
+/// (`get '/x', to: redirect { .. }`) does not count.
+fn redirect_url_arg_is_literal(info: &crate::cfg::NodeInfo, src: &[u8]) -> bool {
+    if info.call.outer_callee.is_some() {
         return false;
     }
-    let sink_info = &ctx.cfg[sink];
-    let callee = match &sink_info.call.callee {
-        Some(c) => c.as_str(),
-        None => return false,
+    let (start, end) = info.call.callee_span.unwrap_or(info.ast.span);
+    let Some(text) = src.get(start..end) else {
+        return false;
     };
-    // Only applies to redirect calls
-    if !callee.ends_with("redirect") && !callee.ends_with("Redirect") {
+    let Some(open) = text.iter().position(|&b| b == b'(') else {
+        return false;
+    };
+    let mut rest = text[open + 1..].trim_ascii_start();
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 {
+        let after = rest[digits..].trim_ascii_start();
+        let Some(after_comma) = after.strip_prefix(b",") else {
+            return false;
+        };
+        rest = after_comma.trim_ascii_start();
+    }
+    let Some(&quote) = rest.first() else {
+        return false;
+    };
+    if quote != b'"' && quote != b'\'' {
         return false;
     }
-    has_redirect_path_prefix(ctx.source_bytes, sink_info.ast.span)
+    let mut i = 1;
+    while i < rest.len() && rest[i] != quote {
+        i += if rest[i] == b'\\' { 2 } else { 1 };
+    }
+    if i >= rest.len() {
+        return false;
+    }
+    let content = &rest[1..i];
+    let interpolated =
+        quote == b'"' && (content.windows(2).any(|w| w == b"#{") || content.contains(&b'$'));
+    !interpolated
+        && matches!(
+            rest[i + 1..].trim_ascii_start().first(),
+            Some(b',') | Some(b')')
+        )
+}
+
+/// Check if this sink is an internal redirect: a redirect call (SSRF or
+/// OPEN_REDIRECT sink) whose URL is server-relative or pinned to a fixed
+/// origin, not an attacker-controlled URL.  The URL may be inline or a
+/// variable whose every same-function definition before the sink carries
+/// such a prefix (`const target = `/users/${id}`; res.redirect(target)`).
+fn is_internal_redirect(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    if !sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    if redirect_target_origin_locked(info, ctx.source_bytes) {
+        return true;
+    }
+    let is_redirect = info.call.callee.as_deref().is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.ends_with("redirect") || c.ends_with("redirect_to")
+    });
+    let Some([url_var]) = info
+        .call
+        .arg_uses
+        .iter()
+        .find(|uses| !uses.is_empty())
+        .map(|uses| uses.as_slice())
+    else {
+        return false;
+    };
+    if !is_redirect {
+        return false;
+    }
+    let sink_func = info.ast.enclosing_func.as_deref();
+    let mut defs = ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).filter(|n| {
+        n.taint.defines.as_deref() == Some(url_var.as_str())
+            && n.ast.enclosing_func.as_deref() == sink_func
+            && n.ast.span.0 < info.ast.span.0
+    });
+    let mut any = false;
+    let all_locked = defs.all(|n| {
+        any = true;
+        n.string_prefix
+            .as_deref()
+            .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
+    });
+    any && all_locked
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.
@@ -3361,6 +3614,7 @@ impl CfgAnalysis for UnguardedSink {
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
         let sink_nodes = dominators::find_sink_nodes(ctx.cfg);
         let guard_nodes = find_guard_nodes(ctx);
+        let pinning_guards = find_value_pinning_guards(ctx);
 
         let mut findings = Vec::new();
 
@@ -3385,6 +3639,12 @@ impl CfgAnalysis for UnguardedSink {
                 let guard_func = ctx.cfg[*guard_idx].ast.enclosing_func.as_deref();
                 (*guard_caps & sink_caps) != Cap::empty()
                     && guard_func == sink_func
+                    && dominates(&doms, *guard_idx, *sink)
+            }) || pinning_guards.iter().any(|(guard_idx, vars)| {
+                ctx.cfg[*guard_idx].ast.enclosing_func.as_deref() == sink_func
+                    && vars
+                        .iter()
+                        .any(|v| sink_info.taint.uses.iter().any(|u| u == v))
                     && dominates(&doms, *guard_idx, *sink)
             });
 

@@ -2027,19 +2027,16 @@ impl<'a> ParsedFile<'a> {
             let body_cfg = &self.file_cfg.body(finding.body_id).graph;
 
             // Suppress internal redirect taint findings: res.redirect(`/path/...`)
-            // with a path-prefix argument is server-relative, not an open redirect.
+            // with an origin-locking prefix is server-relative, not an open
+            // redirect.
             let sink_info = &body_cfg[finding.sink];
-            let sink_has_ssrf = sink_info
-                .taint
-                .labels
-                .iter()
-                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SSRF)));
-            if sink_has_ssrf
-                && let Some(ref callee) = sink_info.call.callee
-                && (callee.ends_with("redirect") || callee.ends_with("Redirect"))
-                && crate::cfg_analysis::guards::has_redirect_path_prefix(
+            let sink_is_url = sink_info.taint.labels.iter().any(
+                |l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)),
+            );
+            if sink_is_url
+                && crate::cfg_analysis::guards::redirect_target_origin_locked(
+                    sink_info,
                     self.source.bytes,
-                    sink_info.ast.span,
                 )
             {
                 continue;

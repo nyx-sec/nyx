@@ -2339,7 +2339,20 @@ pub(super) fn summarise_return_predicates(state: &SsaTaintState) -> (u64, u8, u8
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    if state.predicates.is_empty() && state.validated_must.is_empty() {
+    use crate::taint::domain::INTERPROC_PREDICATE_BITS;
+
+    // URL-shape bits stay inside the body (see `INTERPROC_PREDICATE_BITS`);
+    // a variable that only carries those is not tracked here.
+    let interproc = |kt: u8, kf: u8| {
+        let (mkt, mkf) = (kt & INTERPROC_PREDICATE_BITS, kf & INTERPROC_PREDICATE_BITS);
+        ((mkt | mkf) != 0 || (kt | kf) == 0).then_some((mkt, mkf))
+    };
+    if state
+        .predicates
+        .iter()
+        .all(|(_, s)| interproc(s.known_true, s.known_false).is_none())
+        && state.validated_must.is_empty()
+    {
         return (0, 0, 0);
     }
 
@@ -2351,7 +2364,7 @@ pub(super) fn summarise_return_predicates(state: &SsaTaintState) -> (u64, u8, u8
     let mut sorted: smallvec::SmallVec<[(u32, u8, u8); 4]> = state
         .predicates
         .iter()
-        .map(|(id, s)| (id.0, s.known_true, s.known_false))
+        .filter_map(|(id, s)| interproc(s.known_true, s.known_false).map(|(kt, kf)| (id.0, kt, kf)))
         .collect();
     sorted.sort_by_key(|(id, _, _)| *id);
     for (id, kt, kf) in &sorted {
@@ -2900,5 +2913,30 @@ mod tests {
         assert_eq!(kt, 0b0000_0001);
         // Intersection of known_false: 0b100 & 0b1100 = 0b100.
         assert_eq!(kf, 0b0000_0100);
+    }
+
+    /// The URL-shape bits (leading slash / protocol-relative) only pair up
+    /// inside one body; they stay out of return-path summaries.
+    #[test]
+    fn summarise_return_predicates_masks_url_shape_bits() {
+        let url_only = PredicateSummary {
+            known_true: 1 << crate::taint::domain::PRED_BIT_LEADING_SLASH,
+            known_false: 1 << crate::taint::domain::PRED_BIT_PROTOCOL_RELATIVE,
+        };
+        let mut state = SsaTaintState::initial();
+        state.predicates.push((SymbolId(1), url_only));
+        assert_eq!(summarise_return_predicates(&state), (0, 0, 0));
+
+        let mut mixed = SsaTaintState::initial();
+        mixed.predicates.push((
+            SymbolId(1),
+            PredicateSummary {
+                known_true: 0b0000_0001,
+                known_false: 0,
+            },
+        ));
+        let baseline = summarise_return_predicates(&mixed);
+        mixed.predicates.push((SymbolId(2), url_only));
+        assert_eq!(summarise_return_predicates(&mixed), baseline);
     }
 }

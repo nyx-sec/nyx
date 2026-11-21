@@ -115,7 +115,8 @@ impl SmallBitSet {
 /// join = intersection of bits (must-hold semantics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PredicateSummary {
-    /// Bitmask: bit 0=NullCheck, 1=EmptyCheck, 2=ErrorCheck
+    /// Bitmask: bit 0=NullCheck, 1=EmptyCheck, 2=ErrorCheck,
+    /// 3=LeadingSlashCheck, 4=ProtocolRelativeCheck
     pub known_true: u8,
     pub known_false: u8,
 }
@@ -146,13 +147,25 @@ impl PredicateSummary {
     }
 }
 
-/// Map a whitelisted PredicateKind to its bit index (0-2).
+/// [`PredicateKind::LeadingSlashCheck`] bit.
+pub const PRED_BIT_LEADING_SLASH: u8 = 3;
+/// [`PredicateKind::ProtocolRelativeCheck`] bit.
+pub const PRED_BIT_PROTOCOL_RELATIVE: u8 = 4;
+/// Bits that take part in function summaries and caller/callee path
+/// compatibility.  The URL-shape bits only pair up within one body to
+/// decide an OPEN_REDIRECT clear, and are masked out of everything
+/// interprocedural.
+pub const INTERPROC_PREDICATE_BITS: u8 = 0b0000_0111;
+
+/// Map a whitelisted PredicateKind to its bit index (0-4).
 /// Returns None for non-whitelisted kinds.
 pub fn predicate_kind_bit(kind: PredicateKind) -> Option<u8> {
     match kind {
         PredicateKind::NullCheck => Some(0),
         PredicateKind::EmptyCheck => Some(1),
         PredicateKind::ErrorCheck => Some(2),
+        PredicateKind::LeadingSlashCheck => Some(PRED_BIT_LEADING_SLASH),
+        PredicateKind::ProtocolRelativeCheck => Some(PRED_BIT_PROTOCOL_RELATIVE),
         _ => None,
     }
 }

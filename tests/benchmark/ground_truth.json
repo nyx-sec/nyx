@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 780
+    "corpus_size": 825
   },
   "cases": [
     {
@@ -6238,7 +6238,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fopen"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fopen; a `..` check alone would still allow absolute paths (see c-path_traversal-dotdot-only-001)"
     },
     {
       "case_id": "c-safe-007",
@@ -7034,7 +7034,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fopen"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fopen; a `..` check alone would still allow absolute paths (see c-path_traversal-dotdot-only-001)"
     },
     {
       "case_id": "cpp-safe-007",
@@ -7676,7 +7676,7 @@
         "path-check"
       ],
       "disabled": false,
-      "notes": "Path validated against traversal before fs::read_to_string"
+      "notes": "Path rejected when it contains `..` or starts with `/` before fs::read_to_string; a `..` check alone would still allow absolute paths (see rs-path-dotdot-only-001)"
     },
     {
       "case_id": "rs-safe-005",
@@ -25050,6 +25050,1418 @@
       ],
       "disabled": false,
       "notes": "withName stores its argument in a field of the object it returns; the field read at the sink is tainted"
+    },
+    {
+      "case_id": "js-sqli-dotdot-guard-001",
+      "file": "javascript/sqli/sqli_dotdot_guard_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "A `name.includes('..')` early return is a path-shape check. It must not validate `name` for the SQL sink; before the fix it marked `name` validated for every cap."
+    },
+    {
+      "case_id": "js-xss-slash-guard-001",
+      "file": "javascript/xss/xss_leading_slash_guard_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "leading-slash",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "Rejecting a leading `/` proves nothing about HTML metacharacters; the reflected value must still fire."
+    },
+    {
+      "case_id": "js-path_traversal-dotdot-only-001",
+      "file": "javascript/path_traversal/path_traversal_dotdot_only_absolute.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Only `..` is rejected, so `?name=/etc/passwd` still reads an arbitrary file. FILE_IO needs both the `..` and the absolute-path axis."
+    },
+    {
+      "case_id": "js-safe-path-reject-both-axes-001",
+      "file": "javascript/safe/safe_path_reject_dotdot_and_absolute.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Rejecting both `..` and a leading `/` leaves a relative, `..`-free path; the read must stay silent."
+    },
+    {
+      "case_id": "js-cmdi-typeof-string-guard-001",
+      "file": "javascript/cmdi/cmdi_typeof_string_guard.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "typeof",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`typeof cmd !== 'string'` only rejects query-string arrays; every shell payload is a string."
+    },
+    {
+      "case_id": "js-safe-typeof-and-digit-regex-001",
+      "file": "javascript/safe/safe_typeof_string_and_digit_regex.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "type-check",
+        "regex-literal",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The anchored digit regex literal `/^[0-9]+$/.test(id)` is the validator; the typeof string check alone is not."
+    },
+    {
+      "case_id": "py-cmdi-dotdot-guard-001",
+      "file": "python/cmdi/cmdi_dotdot_guard_only.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "`\"..\" in name` early return does not remove shell metacharacters. Before the fix the check validated `name` for every cap and also hid the AST pattern."
+    },
+    {
+      "case_id": "py-cmdi-isinstance-str-guard-001",
+      "file": "python/cmdi/cmdi_isinstance_str_guard.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "isinstance",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`isinstance(cmd, str)` is true for every payload; only scalar types (int, float, bool, UUID) validate."
+    },
+    {
+      "case_id": "php-cmdi-is-string-guard-001",
+      "file": "php/cmdi/cmdi_is_string_guard.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "php.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "is_string",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`is_string($cmd)` is true for every query-string payload."
+    },
+    {
+      "case_id": "rb-cmdi-is-a-string-guard-001",
+      "file": "ruby/cmdi/cmdi_is_a_string_guard.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "type-check",
+        "is_a",
+        "not-a-validator"
+      ],
+      "disabled": false,
+      "notes": "`cmd.is_a?(String)` is true for every param payload; the sink inside the branch must fire."
+    },
+    {
+      "case_id": "go-cmdi-contains-dotdot-guard-001",
+      "file": "go/cmdi/cmdi_contains_dotdot_guard.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "go.cmdi.exec_command"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "wrong-cap"
+      ],
+      "disabled": false,
+      "notes": "`strings.Contains(name, \"..\")` tests the subject against a literal needle; it is neither an allowlist nor shell validation."
+    },
+    {
+      "case_id": "c-path_traversal-dotdot-only-001",
+      "file": "c/path_traversal/path_traversal_dotdot_only_getenv.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart of c-safe-006: only `..` is rejected, so FILE_PATH=/etc/shadow still opens."
+    },
+    {
+      "case_id": "rs-path-dotdot-only-001",
+      "file": "rust/path_traversal/path_traversal_dotdot_only_env.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "dotdot",
+        "absolute-path"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart of rs-safe-004: only `..` is rejected, so an absolute FILE_PATH still reads."
+    },
+    {
+      "case_id": "js-path_traversal-reassigned-between-checks-001",
+      "file": "javascript/path_traversal/path_traversal_reassigned_between_checks.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "The `..` check covers the first value of `name`; the reassigned value only passes the leading-`/` check. Path narrowing must apply to the definition that reaches each check, not the latest definition of the same name."
+    },
+    {
+      "case_id": "py-safe-flask-abort-allowlist-001",
+      "file": "python/safe/safe_flask_abort_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "flask-abort"
+      ],
+      "disabled": false,
+      "notes": "`abort()` imported from flask never returns, so the shell sink is reachable only after the allowlist check held."
+    },
+    {
+      "case_id": "py-cmdi-flask-abort-presence-only-001",
+      "file": "python/cmdi/cmdi_flask_abort_presence_only.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "terminator",
+        "flask-abort",
+        "presence-check"
+      ],
+      "disabled": false,
+      "notes": "`if not cmd: abort(400)` only rejects an empty value; the terminator must not turn a presence check into validation."
+    },
+    {
+      "case_id": "py-cmdi-local-abort-helper-001",
+      "file": "python/cmdi/cmdi_local_abort_helper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "terminator",
+        "local-helper"
+      ],
+      "disabled": false,
+      "notes": "A locally defined `abort` that only logs returns normally; without a flask/werkzeug import it is not a terminator and the rejected value reaches the shell."
+    },
+    {
+      "case_id": "php-safe-wp-die-is-numeric-001",
+      "file": "php/safe/safe_wp_die_is_numeric.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "type-check",
+        "terminator",
+        "wp-die"
+      ],
+      "disabled": false,
+      "notes": "WordPress `wp_die()` exits, so the query runs only on the `is_numeric` path."
+    },
+    {
+      "case_id": "php-safe-laravel-abort-allowlist-001",
+      "file": "php/safe/safe_laravel_abort_allowlist.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "laravel-abort",
+        "namespaced"
+      ],
+      "disabled": false,
+      "notes": "Laravel `\\abort(403)` in a namespaced controller throws an HttpException; the command runs only after the strict `in_array` allowlist held."
+    },
+    {
+      "case_id": "js-safe-koa-ctx-throw-allowlist-001",
+      "file": "javascript/safe/safe_koa_ctx_throw_allowlist.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "koa"
+      ],
+      "disabled": false,
+      "notes": "Koa `ctx.throw()` always throws an HttpError, so execSync only sees allowlisted commands."
+    },
+    {
+      "case_id": "rb-safe-sinatra-halt-allowlist-001",
+      "file": "ruby/safe/safe_sinatra_halt_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "terminator",
+        "sinatra-halt"
+      ],
+      "disabled": false,
+      "notes": "Sinatra `halt` throws :halt and ends the request; the backtick command runs only for allowlisted values."
+    },
+    {
+      "case_id": "js-safe-equality-literal-allowlist-001",
+      "file": "javascript/safe/safe_equality_literal_allowlist.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`dir !== 'asc' && dir !== 'desc'` returns early, so the ORDER BY value is one of two literals."
+    },
+    {
+      "case_id": "js-sqli-equality-not-equal-edge-001",
+      "file": "javascript/sqli/sqli_equality_not_equal_edge.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "equality",
+        "wrong-edge"
+      ],
+      "disabled": false,
+      "notes": "The query runs on the `dir !== 'asc'` edge, where dir is anything but the literal."
+    },
+    {
+      "case_id": "py-safe-equality-literal-allowlist-001",
+      "file": "python/safe/safe_equality_literal_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`order != 'asc' and order != 'desc'` returns early, so the ORDER BY value is a literal."
+    },
+    {
+      "case_id": "go-safe-equality-literal-allowlist-001",
+      "file": "go/safe/safe_equality_literal_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "early-return"
+      ],
+      "disabled": false,
+      "notes": "`dir != \"asc\" && dir != \"desc\"` returns early, so the ORDER BY value is a literal."
+    },
+    {
+      "case_id": "php-safe-equality-literal-allowlist-001",
+      "file": "php/safe/safe_equality_literal_allowlist.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "equality",
+        "strict-equality"
+      ],
+      "disabled": false,
+      "notes": "Strict `!==` comparisons against two literals with `exit` pin $dir before the query."
+    },
+    {
+      "case_id": "php-sqli-loose-numeric-equality-001",
+      "file": "php/sqli/sqli_loose_numeric_equality.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "equality",
+        "php-loose-comparison"
+      ],
+      "disabled": false,
+      "notes": "Loose `$n == 0` is not a literal pin: before PHP 8 a string such as \"0 OR 1=1\" compares equal to 0."
+    },
+    {
+      "case_id": "go-safe-commaok-allowlist-001",
+      "file": "go/safe/safe_commaok_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "comma-ok",
+        "map-lookup"
+      ],
+      "disabled": false,
+      "notes": "Comma-ok map lookups (`_, ok := m[k]`, `ok := m[k]`, `v, ok := m[k]`) gate the sinks the same way the inline `!m[k]` form does; the mapped value is read from a constant map."
+    },
+    {
+      "case_id": "go-cmdi-commaok-inverted-001",
+      "file": "go/cmdi/cmdi_commaok_inverted.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "comma-ok",
+        "wrong-edge"
+      ],
+      "disabled": false,
+      "notes": "The command runs only when the key is NOT in the allowlist."
+    },
+    {
+      "case_id": "go-cmdi-commaok-request-map-001",
+      "file": "go/cmdi/cmdi_commaok_request_map.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "comma-ok",
+        "request-map"
+      ],
+      "disabled": false,
+      "notes": "Presence in the request's own query map is not an allowlist."
+    },
+    {
+      "case_id": "go-safe-slices-contains-allowlist-001",
+      "file": "go/safe/safe_slices_contains_allowlist.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "slices-contains"
+      ],
+      "disabled": false,
+      "notes": "`slices.Contains(allowed, cmd)` tests cmd (argument 1) against the fixed list."
+    },
+    {
+      "case_id": "go-cmdi-slices-contains-inverted-001",
+      "file": "go/cmdi/cmdi_slices_contains_inverted.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "slices-contains",
+        "denylist"
+      ],
+      "disabled": false,
+      "notes": "A denylist membership test that returns on a match lets every other command through."
+    },
+    {
+      "case_id": "rs-safe-allowlist-contains-borrow-001",
+      "file": "rust/safe/safe_allowlist_contains_borrow.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "borrow"
+      ],
+      "disabled": false,
+      "notes": "`ALLOWED.contains(&cmd.as_str())` tests cmd itself; the borrow and view are peeled for the guard target."
+    },
+    {
+      "case_id": "py-safe-conditional-expression-allowlist-001",
+      "file": "python/safe/safe_conditional_expression_allowlist.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "`sort = s if s in SORTABLE else 'name'`: the conditional expression is a branch, so the request value reaches ORDER BY only on the allowlisted arm."
+    },
+    {
+      "case_id": "py-sqli-conditional-expression-inverted-001",
+      "file": "python/sqli/sqli_conditional_expression_inverted.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "wrong-arm"
+      ],
+      "disabled": false,
+      "notes": "`s if s not in SORTABLE else 'name'` picks the request value exactly when it is not allowlisted."
+    },
+    {
+      "case_id": "rb-safe-ternary-order-allowlist-001",
+      "file": "ruby/safe/safe_ternary_order_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "Ruby `cond ? requested : 'created_at'` is lowered as a branch, so `Post.order(sort)` sees an allowlisted column."
+    },
+    {
+      "case_id": "rb-sqli-ternary-inverted-allowlist-001",
+      "file": "ruby/sqli/sqli_ternary_inverted_allowlist.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "wrong-arm"
+      ],
+      "disabled": false,
+      "notes": "The ternary picks the request value on the not-allowlisted arm."
+    },
+    {
+      "case_id": "php-safe-ternary-in-array-sort-001",
+      "file": "php/safe/safe_ternary_in_array_sort.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "allowlist",
+        "conditional-expression"
+      ],
+      "disabled": false,
+      "notes": "PHP `in_array(..., true) ? $requested : 'name'` is lowered as a branch, so the query sees an allowlisted column."
+    },
+    {
+      "case_id": "js-open_redirect-leading-slash-only-001",
+      "file": "javascript/open_redirect/redirect_leading_slash_only.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "open-redirect",
+        "leading-slash",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "`startsWith('/')` alone accepts `//evil.example` and `/\\evil.example`."
+    },
+    {
+      "case_id": "js-safe-inline-relative-redirect-001",
+      "file": "javascript/safe/safe_inline_relative_redirect.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "leading-slash",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "Leading `/` required and `//` / `/\\` rejected before the redirect."
+    },
+    {
+      "case_id": "js-safe-redirect-path-prefix-001",
+      "file": "javascript/safe/safe_redirect_path_prefix.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "Fixed `/users/` prefix (template and status-code forms) keeps the redirect on this origin."
+    },
+    {
+      "case_id": "js-open_redirect-bare-slash-prefix-001",
+      "file": "javascript/open_redirect/redirect_bare_slash_prefix.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "open-redirect",
+        "prefix-lock",
+        "protocol-relative"
+      ],
+      "disabled": false,
+      "notes": "A bare `/` prefix becomes `//evil.example` when the request value starts with `/`."
+    },
+    {
+      "case_id": "rb-safe-redirect-path-prefix-001",
+      "file": "ruby/safe/safe_redirect_path_prefix.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "`redirect_to \"/users/#{id}\"` cannot leave the origin."
+    },
+    {
+      "case_id": "py-safe-redirect-fstring-path-prefix-001",
+      "file": "python/safe/safe_redirect_fstring_path_prefix.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open-redirect",
+        "prefix-lock",
+        "f-string"
+      ],
+      "disabled": false,
+      "notes": "f-string with a fixed `/users/` prefix keeps the redirect on this origin."
+    },
+    {
+      "case_id": "php-cmdi-short-ternary-default-001",
+      "file": "php/cmdi/cmdi_short_ternary_default.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "conditional-expression",
+        "short-ternary"
+      ],
+      "disabled": false,
+      "notes": "The PHP `a ?: b` short form has no separate consequence and stays a plain assignment, so the request value still reaches system()."
     }
   ]
 }

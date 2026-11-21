@@ -55,7 +55,7 @@ pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 use conditions::{
     build_condition_chain, build_ternary_diamond, classify_ternary_lhs,
     detect_rust_let_match_guard, emit_rust_match_guard_if, find_ternary_rhs_wrapper,
-    is_boolean_operator, unwrap_parens,
+    is_boolean_operator, ternary_parts, unwrap_parens,
 };
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
@@ -66,8 +66,8 @@ pub(crate) use helpers::{
     subtree_has_call, text_of,
 };
 use imports::{
-    extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
-    rust_bare_join_crate_prefix,
+    collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
+    extract_promisify_aliases, rust_bare_join_crate_prefix,
 };
 #[cfg(test)]
 use literals::has_sql_placeholders;
@@ -175,6 +175,12 @@ thread_local! {
     pub(crate) static LOCAL_RECEIVER_TYPES:
         RefCell<HashMap<(usize, String), crate::ssa::type_facts::TypeKind>>
         = RefCell::new(HashMap::new());
+    /// Per-file set of local names bound to a never-returning Python
+    /// framework helper (`from flask import abort`, `... import abort as
+    /// deny`).  Populated at the top of [`build_cfg`] for Python and read
+    /// by `params::is_terminator_call`.
+    pub(crate) static PYTHON_NORETURN_IMPORTS: RefCell<std::collections::HashSet<String>>
+        = RefCell::new(std::collections::HashSet::new());
 }
 
 /// Walk every function-kind node in the tree.  Within each function
@@ -1096,6 +1102,34 @@ pub struct NodeInfo {
     /// a Rust format-macro sink, so non-format nodes are unperturbed.
     #[serde(default)]
     pub format_macro_method_idents: Vec<String>,
+
+    /// Go map-membership lookup bound to a boolean result: `_, ok := m[k]`,
+    /// `v, ok := m[k]`, or `ok := m[k]` on a `map[K]bool`.  Lets the taint
+    /// engine treat `if !ok { return }` as the same allowlist check as the
+    /// inline `if !m[k] { return }`.  `None` everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_lookup: Option<MembershipLookup>,
+
+    /// True for the `If` node `build_ternary_diamond` creates for the
+    /// condition of `x = c ? a : b` / `x = a if c else b`.  Both arms yield
+    /// a value, so rules about a branch that should have returned
+    /// (`cfg-error-fallthrough`) do not apply to it.
+    #[serde(default)]
+    pub is_ternary_condition: bool,
+}
+
+/// A `map[key]` read whose presence result lands in `result_var`.  See
+/// [`NodeInfo::membership_lookup`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MembershipLookup {
+    /// Variable holding the presence boolean (`ok`).
+    pub result_var: String,
+    /// The map being indexed; a bare identifier.
+    pub base: String,
+    /// The key under test; a bare identifier.
+    pub key: String,
+    /// The value binding of the two-target form (`v` in `v, ok := m[k]`).
+    pub value_var: Option<String>,
 }
 
 impl NodeInfo {
@@ -1887,10 +1921,16 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
             .or_else(|| ast.child_by_field_name("argument_list"));
         if let Some(args_node) = args {
             let mut w = args_node.walk();
-            if let Some(first) = args_node.named_children(&mut w).next() {
-                if let Some(p) = prefix_of_expression(first, code) {
-                    return Some(p);
-                }
+            let positional: Vec<Node> = args_node.named_children(&mut w).collect();
+            // Express `res.redirect(301, url)`: skip a leading numeric
+            // status so the URL argument's prefix is read.
+            let url_arg = match positional.as_slice() {
+                [status, url] if matches!(status.kind(), "number" | "integer") => Some(*url),
+                [first, ..] => Some(*first),
+                [] => None,
+            };
+            if let Some(p) = url_arg.and_then(|a| prefix_of_expression(a, code)) {
+                return Some(p);
             }
         }
     }
@@ -2075,7 +2115,11 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
     let is_interp_string = cur.kind() == "string" && has_string_interpolation(cur);
     if is_fstring || is_interp_string {
         let mut w = cur.walk();
-        let first = cur.named_children(&mut w).next()?;
+        // tree-sitter-python wraps the literal in `string_start` /
+        // `string_end` tokens; skip the opening one.
+        let first = cur
+            .named_children(&mut w)
+            .find(|c| c.kind() != "string_start")?;
         if matches!(first.kind(), "string_content" | "string_fragment") {
             let raw = text_of(first, code)?;
             let trimmed = strip_string_quotes_loose(&raw);
@@ -4431,6 +4475,12 @@ pub(super) fn push_node<'a>(
         decl_type: extract_decl_type(ast, lang, code),
         numeric_confined_uses,
         format_macro_method_idents,
+        membership_lookup: if lang == "go" {
+            extract_go_membership_lookup(ast, code)
+        } else {
+            None
+        },
+        is_ternary_condition: false,
     });
 
     debug!(
@@ -4760,6 +4810,42 @@ fn extract_decl_type_go(ast: Node, code: &[u8]) -> Option<crate::ssa::type_facts
     }?;
     let ty_text = go_constructor_type_text(rhs, code)?;
     params::go_writer_type_to_kind(&ty_text)
+}
+
+/// `_, ok := m[k]` / `v, ok := m[k]` / `ok := m[k]` where `m` and `k` are
+/// bare identifiers.  Type assertions (`x.(T)`), channel receives, multi-value
+/// right-hand sides and literal keys return `None`.
+fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLookup> {
+    if !matches!(ast.kind(), "short_var_declaration" | "assignment_statement") {
+        return None;
+    }
+    let index = first_go_expr(ast.child_by_field_name("right")?)?;
+    if index.kind() != "index_expression" {
+        return None;
+    }
+    let base = index.child_by_field_name("operand")?;
+    let key = index.child_by_field_name("index")?;
+    if base.kind() != "identifier" || key.kind() != "identifier" {
+        return None;
+    }
+    let left = ast.child_by_field_name("left")?;
+    let mut cursor = left.walk();
+    let targets: Vec<Node> = left.named_children(&mut cursor).collect();
+    if targets.iter().any(|t| t.kind() != "identifier") {
+        return None;
+    }
+    let named = |n: Node| text_of(n, code).filter(|t| t != "_");
+    let (result_var, value_var) = match targets.as_slice() {
+        [value, ok] => (named(*ok)?, named(*value)),
+        [ok] => (named(*ok)?, None),
+        _ => return None,
+    };
+    Some(MembershipLookup {
+        result_var,
+        base: text_of(base, code)?,
+        key: text_of(key, code)?,
+        value_var,
+    })
 }
 
 /// First concrete expression inside an `expression_list` (or the node itself
@@ -8089,14 +8175,14 @@ pub(super) fn build_sub<'a>(
                 );
             }
 
-            // JS/TS/Java ternary-RHS split: `var x = c ? a : b;` and
-            // `obj.prop = c ? a : b;` lower to a real diamond CFG so the
-            // condition is control-flow (not a data-flow `uses` entry).
-            // Java uses the same `ternary_expression` AST kind; routing it
-            // through the diamond lets `fold_constant_branches` prune dead
-            // constant-condition arms (`cond ? "const" : param`) the same way
-            // it does for the if-form.
-            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
+            // Ternary-RHS split: `var x = c ? a : b;`, `obj.prop = c ? a : b;`,
+            // Python `x = a if c else b`, PHP `$x = c ? a : b;` lower to a
+            // real diamond CFG so the condition is control-flow (not a
+            // data-flow `uses` entry) and an allowlist test in it guards the
+            // arm it selects.  Routing Java through the diamond also lets
+            // `fold_constant_branches` prune dead constant-condition arms
+            // (`cond ? "const" : param`) the same way it does for the if-form.
+            if ternary_split_lang(lang)
                 && let Some((lhs_ast, ternary_ast)) = find_ternary_rhs_wrapper(ast)
             {
                 let (lhs_text, lhs_labels) =
@@ -8334,9 +8420,10 @@ pub(super) fn build_sub<'a>(
 
         // Assignment that may contain a call (Python `x = os.getenv(...)`, Ruby `x = gets()`)
         Kind::Assignment => {
-            // JS/TS/Java ternary-RHS split, same rationale as the CallWrapper
-            // branch.  Not for `x += c ? a : b`, which reads `x`.
-            if matches!(lang, "javascript" | "typescript" | "tsx" | "java")
+            // Ternary-RHS split, same rationale as the CallWrapper branch
+            // (Ruby `x = c ? a : b` is a bare `assignment` statement).  Not for
+            // `x += c ? a : b`, which reads `x`.
+            if ternary_split_lang(lang)
                 && rmw_assignment(ast).is_none()
                 && let (Some(left), Some(right)) = (
                     ast.child_by_field_name("left"),
@@ -8344,7 +8431,7 @@ pub(super) fn build_sub<'a>(
                 )
             {
                 let rhs = unwrap_parens(right);
-                if rhs.kind() == "ternary_expression" {
+                if ternary_parts(rhs).is_some() {
                     let (lhs_text, lhs_labels) =
                         classify_ternary_lhs(left, lang, code, analysis_rules);
                     return build_ternary_diamond(
@@ -8473,6 +8560,15 @@ pub(super) fn build_sub<'a>(
     }
 }
 
+/// Languages whose `x = cond ? a : b` assignments lower to a CFG diamond
+/// (see `conditions::build_ternary_diamond`).
+fn ternary_split_lang(lang: &str) -> bool {
+    matches!(
+        lang,
+        "javascript" | "typescript" | "tsx" | "java" | "python" | "ruby" | "php"
+    )
+}
+
 /// Build an intraprocedural CFG and return (graph, entry_node).
 ///
 /// * Walks the Tree‑Sitter AST.
@@ -8514,6 +8610,13 @@ pub(crate) fn build_cfg<'a>(
     // misses.  Java-only today; the helper is lang-agnostic, gated on
     // `constructor_type` recognising the RHS callee.
     populate_local_receiver_types(tree, lang, code);
+    // bind the local names of `from flask import abort` (and friends) so
+    // the builder dead-ends those calls like `sys.exit`.
+    if lang == "python" {
+        PYTHON_NORETURN_IMPORTS.with(|cell| {
+            *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
+        });
+    }
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -8660,6 +8763,7 @@ pub(crate) fn build_cfg<'a>(
     DTO_CLASSES.with(|cell| cell.borrow_mut().clear());
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+    PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
 
     // collect every
     // declared inheritance / impl / implements relationship in the

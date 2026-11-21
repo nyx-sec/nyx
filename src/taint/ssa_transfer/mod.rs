@@ -1250,7 +1250,7 @@ pub(super) fn transfer_block(
 
 /// Text-only PathFact classification of a branch condition.
 ///
-/// Split out of [`apply_path_fact_branch_narrowing_with_interner`] so the
+/// Split out of [`apply_path_fact_branch_narrowing_with_aliases`] so the
 /// state-independent text classification (`classify_path_rejection_axes` /
 /// `classify_path_assertion` / `cond_has_pre_negated_islocal_clause`, all
 /// pure `&str -> _`) can be computed once per branch node and reused across
@@ -1299,27 +1299,64 @@ struct BranchCondClass {
     kind: PredicateKind,
     target_var: Option<String>,
     /// Semantic negation not captured by AST-level `condition_negated`
-    /// (Python `not in`, TypeCheck `!==`/`!=`, negative-polarity validator).
+    /// (Python `not in`, TypeCheck `!==`/`!=`, negative-polarity validator,
+    /// a predicate compared against a falsy sentinel).
     has_semantic_negation: bool,
     /// For null / empty / error checks, whether the text states the negated
     /// form (`x != null`, `err == nil`); `None` when no single predicate bit
     /// describes the condition.  See
     /// [`crate::taint::path_state::predicate_bit_negative_form`].
     bit_negated: Option<bool>,
+    /// Boolean / index sentinel comparison wrapping the condition's atom.
+    /// Computed for the predicate kinds above and for `Comparison`, where
+    /// `ok === false` on an indirect validator result needs it.
+    sentinel: crate::taint::path_state::SentinelPolarity,
+    /// `x == 'lit'` / `x != 5` on a bare variable: the variable and whether
+    /// the operator is `==` (see
+    /// [`crate::taint::path_state::equality_literal_guard`]).  Only set for
+    /// [`PredicateKind::Comparison`].
+    eq_guard: Option<(String, bool)>,
     path: PathBranchClass,
 }
 
 /// Compute the (state-independent) classification of a branch condition.
 /// Result is memoized per condition node — see [`BranchCondClass`].
 fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
-    let (kind, target_var) = classify_condition_with_target(cond_text);
+    use crate::taint::path_state::{SentinelPolarity, sentinel_comparison_polarity};
+
+    let (mut kind, mut target_var) = classify_condition_with_target(cond_text);
+    // A predicate compared against a sentinel (`ALLOWED.includes(x) ===
+    // false`, `isValid(x) == False`, `A.indexOf(x) === -1`,
+    // `M[x] === undefined`) is classified by its inner atom; the comparison
+    // decides which edge the atom holds on.
+    let predicate_kind = matches!(
+        kind,
+        PredicateKind::ValidationCall
+            | PredicateKind::AllowlistCheck
+            | PredicateKind::TypeCheck
+            | PredicateKind::RelativeUrlValidated
+            | PredicateKind::LeadingSlashCheck
+            | PredicateKind::ProtocolRelativeCheck
+            | PredicateKind::ShellMetaValidated
+    );
+    let sentinel = if predicate_kind || kind == PredicateKind::Comparison {
+        sentinel_comparison_polarity(cond_text)
+    } else {
+        SentinelPolarity::NoComparison
+    };
+    if predicate_kind && sentinel == SentinelPolarity::Opaque {
+        kind = PredicateKind::Unknown;
+        target_var = None;
+    }
     // `has_semantic_negation` only consults the lowercased text for the
     // AllowlistCheck / TypeCheck kinds, so compute the (allocating) lowercase
-    // lazily — most conditions are neither and skip it entirely.  The boolean
-    // result is identical to the prior unconditional-lowercase `||` chain.
-    let has_semantic_negation = match kind {
+    // lazily: most conditions are neither and skip it entirely.
+    let base_negation = match kind {
         PredicateKind::AllowlistCheck => cond_text.to_ascii_lowercase().contains(" not in "),
-        PredicateKind::TypeCheck => {
+        // The `!=` scan stands in for `typeof x !== 'number'`.  When the
+        // `!=` belongs to a sentinel comparison (`isinstance(x, int) !=
+        // True`) the sentinel already accounts for it.
+        PredicateKind::TypeCheck if sentinel == SentinelPolarity::NoComparison => {
             let lower = cond_text.to_ascii_lowercase();
             lower.contains("!==") || lower.contains("!=")
         }
@@ -1329,11 +1366,20 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         _ => false,
     };
     let bit_negated = crate::taint::path_state::predicate_bit_negative_form(kind, cond_text);
+    let has_semantic_negation =
+        base_negation ^ (predicate_kind && sentinel == SentinelPolarity::Flip);
+    let eq_guard = if kind == PredicateKind::Comparison {
+        crate::taint::path_state::equality_literal_guard(cond_text)
+    } else {
+        None
+    };
     BranchCondClass {
         kind,
         target_var,
         has_semantic_negation,
         bit_negated,
+        sentinel,
+        eq_guard,
         path: classify_path_branch(cond_text),
     }
 }
@@ -1516,6 +1562,21 @@ fn compute_succ_states(
                     transfer.base_aliases,
                 );
 
+                // `dir === 'asc'`: on the equal edge `dir` holds the literal.
+                // A `dir === 'asc' || dir === 'desc'` chain is split into one
+                // branch per clause, so the validated_must intersection at
+                // the join gives exactly the allowlist semantics.
+                if let Some((target, op_is_eq)) = &class.eq_guard {
+                    apply_equality_literal_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        target,
+                        *op_is_eq,
+                        cond_info,
+                        transfer.interner,
+                    );
+                }
+
                 // PathFact branch narrowing, language-agnostic.  The
                 // text-level rejection patterns recognised by
                 // `classify_path_rejection_atom` cover the common idioms
@@ -1535,13 +1596,14 @@ fn compute_succ_states(
                 // Rust positive-assertion `prefix_lock` recognition still
                 // fires regardless of language; for non-Rust languages the
                 // assertion classifier returns `None` for unfamiliar shapes.
-                apply_path_fact_branch_narrowing_with_interner(
+                apply_path_fact_branch_narrowing_with_aliases(
                     &mut true_state,
                     &mut false_state,
                     &class.path,
                     &effective_vars,
                     ssa,
-                    Some(transfer.interner),
+                    block.id,
+                    transfer.base_aliases,
                     effective_negated,
                 );
 
@@ -1563,6 +1625,7 @@ fn compute_succ_states(
                         &mut false_state,
                         cond_text,
                         &cond_info.condition_vars,
+                        cond_info.condition_negated,
                         ssa,
                         block.id,
                         transfer.interner,
@@ -1584,6 +1647,42 @@ fn compute_succ_states(
                 // Motivated by Novu CVE GHSA-4x48-cgf9-q33f
                 // (`const ssrfError = await validateUrlSsrf(child.webhookUrl);
                 //   if (ssrfError) throw …;`).
+                //
+                // `ok === false` / `ok == True` classify as Comparison; the
+                // boolean sentinel says which edge holds the truthy result.
+                let bool_sentinel = kind == PredicateKind::Comparison
+                    && matches!(
+                        class.sentinel,
+                        crate::taint::path_state::SentinelPolarity::Flip
+                            | crate::taint::path_state::SentinelPolarity::Same
+                    );
+                if bool_sentinel {
+                    apply_input_validator_branch_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        cond_text,
+                        &cond_info.condition_vars,
+                        cond_info.condition_negated
+                            ^ (class.sentinel == crate::taint::path_state::SentinelPolarity::Flip),
+                        ssa,
+                        block.id,
+                        transfer.interner,
+                    );
+                }
+                // Go comma-ok allowlist: `_, ok := allowed[cmd]; if !ok`.
+                if matches!(kind, PredicateKind::Unknown | PredicateKind::NullCheck) {
+                    apply_membership_result_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        exit_state,
+                        cond_info,
+                        condition.as_deref(),
+                        ssa,
+                        cfg,
+                        block.id,
+                        transfer.interner,
+                    );
+                }
                 if matches!(
                     kind,
                     PredicateKind::Unknown | PredicateKind::NullCheck | PredicateKind::ErrorCheck
@@ -1593,6 +1692,7 @@ fn compute_succ_states(
                         &mut false_state,
                         cond_text,
                         &cond_info.condition_vars,
+                        cond_info.condition_negated,
                         ssa,
                         block.id,
                         transfer.interner,
@@ -1797,9 +1897,11 @@ fn apply_branch_predicates(
     }
 
     // RelativeUrlValidated: TRUE branch is the validated path
-    // (`x.startsWith("/")` succeeded → `x` cannot redirect off-host).
-    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks
-    // (XSS / SQLi / FILE_IO) downstream still fire on residual taint.
+    // (`x.startsWith("/") && !x.startsWith("//")` held → `x` cannot
+    // redirect off-host).  Cap-aware: clear `Cap::OPEN_REDIRECT` only;
+    // non-redirect sinks (XSS / SQLi / FILE_IO) downstream still fire on
+    // residual taint.  The split form is handled after the predicate bits
+    // below.
     if kind == PredicateKind::RelativeUrlValidated && polarity {
         for var in condition_vars {
             clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
@@ -1870,6 +1972,124 @@ fn apply_branch_predicates(
             }
         }
     }
+
+    // Split relative-URL check: `if (!x.startsWith('/') || x.startsWith('//'))
+    // return;` (or the `&&` form) is two branches.  Clear OPEN_REDIRECT once
+    // this path has seen both "starts with /" and "does not start with //";
+    // either fact alone leaves `//evil.com` possible.
+    if matches!(
+        kind,
+        PredicateKind::LeadingSlashCheck | PredicateKind::ProtocolRelativeCheck
+    ) {
+        use crate::taint::domain::{PRED_BIT_LEADING_SLASH, PRED_BIT_PROTOCOL_RELATIVE};
+        for var in condition_vars {
+            let Some(sym) = interner.get(var) else {
+                continue;
+            };
+            let Ok(idx) = state.predicates.binary_search_by_key(&sym, |(id, _)| *id) else {
+                continue;
+            };
+            let p = state.predicates[idx].1;
+            if p.known_true & (1 << PRED_BIT_LEADING_SLASH) != 0
+                && p.known_false & (1 << PRED_BIT_PROTOCOL_RELATIVE) != 0
+            {
+                clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
+            }
+        }
+    }
+}
+
+/// Branch on the presence result of a map lookup (`_, ok := allowed[cmd];
+/// if !ok { return }`): on the edge where `ok` holds, the key is in the map,
+/// which is the same allowlist fact the inline `if !allowed[cmd]` gives.
+/// The value binding of `v, ok := allowed[cmd]` is validated too, since it
+/// was read out of that map.
+///
+/// The `ok` definition is the one reaching the branch (the pre-lowered
+/// `BoolTest` operand when present), and it must be a CFG node stamped with
+/// [`crate::cfg::MembershipLookup`].  A map that carries taint itself
+/// (`q := r.URL.Query(); _, ok := q[k]`) is a presence check on request
+/// data, not an allowlist, and narrows nothing.
+#[allow(clippy::too_many_arguments)]
+fn apply_membership_result_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    exit_state: &SsaTaintState,
+    cond_info: &NodeInfo,
+    condition: Option<&constraint::ConditionExpr>,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    block: BlockId,
+    interner: &SymbolInterner,
+) {
+    let [result_name] = cond_info.condition_vars.as_slice() else {
+        return;
+    };
+    let result_val = match condition {
+        Some(constraint::ConditionExpr::BoolTest { var }) => Some(*var),
+        _ => reaching_def_at_block_end(result_name, ssa, block),
+    };
+    let Some(def) = result_val.and_then(|v| ssa.value_defs.get(v.0 as usize)) else {
+        return;
+    };
+    if def.var_name.as_deref() != Some(result_name.as_str()) {
+        return;
+    }
+    let Some(lookup) = cfg
+        .node_weight(def.cfg_node)
+        .and_then(|n| n.membership_lookup.as_ref())
+    else {
+        return;
+    };
+    if lookup.result_var != *result_name {
+        return;
+    }
+    if reaching_def_at_block_end(&lookup.base, ssa, block)
+        .is_some_and(|b| exit_state.get(b).is_some())
+    {
+        return;
+    }
+    let present = if cond_info.condition_negated {
+        false_state
+    } else {
+        true_state
+    };
+    for name in std::iter::once(&lookup.key).chain(lookup.value_var.as_ref()) {
+        if let Some(sym) = interner.get(name) {
+            present.validated_must.insert(sym);
+            present.validated_may.insert(sym);
+        }
+    }
+}
+
+/// Mark `target` validated on the edge where `target == <literal>` holds.
+///
+/// `target` must be one of the condition's own variables; there is no
+/// all-vars fallback, so a comparison on something else (`x.length === 5`)
+/// validates nothing.  `condition_negated` covers `!(x === 'a')` forms the
+/// CFG has already unwrapped.
+fn apply_equality_literal_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    target: &str,
+    op_is_eq: bool,
+    cond_info: &NodeInfo,
+    interner: &SymbolInterner,
+) {
+    if !cond_info.condition_vars.iter().any(|v| v == target) {
+        return;
+    }
+    let Some(sym) = interner.get(target) else {
+        return;
+    };
+    let equal_on_true = op_is_eq != cond_info.condition_negated;
+    let st = if equal_on_true {
+        true_state
+    } else {
+        false_state
+    };
+    st.validated_must.insert(sym);
+    st.validated_may.insert(sym);
 }
 
 /// Clear `cap` from the taint of `var` and every SSA value that aliases it
@@ -2017,6 +2237,9 @@ fn null_check_true_branch_is_success(lower: &str) -> bool {
 /// * `err == nil` / `err == None` / `error == nil` / `is_ok()` → TRUE branch
 /// * `err != nil` / `error != nil` / `is_err()`               → FALSE branch
 ///
+/// and swapped when `condition_negated` reports a leading `!` / `not`
+/// (`!r.is_ok()`).
+///
 /// Strict-additive: when the condition does not match the err-check shape,
 /// the defining op is not a Call, the callee is not recognised as a
 /// validator, or the arg has no SSA-level var_name to mark, the function
@@ -2026,6 +2249,7 @@ fn apply_validation_err_check_narrowing(
     false_state: &mut SsaTaintState,
     cond_text: &str,
     condition_vars: &[String],
+    condition_negated: bool,
     ssa: &SsaBody,
     block: BlockId,
     interner: &SymbolInterner,
@@ -2036,9 +2260,12 @@ fn apply_validation_err_check_narrowing(
     }
     // Determine which branch corresponds to "err is null / Ok / no error".
     // Defaults to FALSE for `err != nil`-style; flips to TRUE for
-    // `err == nil`-style and `is_ok()`.
+    // `err == nil`-style and `is_ok()`.  The text test reads the condition
+    // under any leading `!` / `not`, which the CFG strips into
+    // `condition_negated` without changing which edge is TRUE, so a
+    // negated condition (`!(err == nil)`, `!r.is_ok()`) swaps the edge.
     let lower = cond_text.to_ascii_lowercase();
-    let success_branch_is_true = null_check_true_branch_is_success(&lower);
+    let success_branch_is_true = null_check_true_branch_is_success(&lower) ^ condition_negated;
 
     // Resolve `err`'s reaching SSA value (last def in this or earlier block).
     // We restrict to single-var conditions to avoid mis-attributing
@@ -2123,7 +2350,7 @@ fn apply_validation_err_check_narrowing(
 /// // BooleanTrueIsValid
 /// const ok = isValidPath(p);
 /// if (!ok) throw …;
-/// // → p is validated on the !ok==false (true value of ok) branch
+/// // → p is validated on the FALSE edge of `!ok` (ok truthy)
 /// ```
 ///
 /// Resolves `condition_vars[0]` to its reaching SSA def, checks that
@@ -2136,7 +2363,9 @@ fn apply_validation_err_check_narrowing(
 /// `success_branch_is_true` heuristics as
 /// [`apply_validation_err_check_narrowing`]) and is then flipped for
 /// `BooleanTrueIsValid` validators (a truthy result means "valid", so
-/// the *true* branch carries the validation).
+/// the *true* branch carries the validation).  `condition_negated` (a
+/// leading `!` / `not`, or an `ok === false` sentinel folded in by the
+/// caller) swaps the result once more.
 ///
 /// Strict-additive: when no condition var matches, the def isn't a
 /// Call, the callee isn't a recognised validator, or no arg has an
@@ -2146,6 +2375,7 @@ fn apply_input_validator_branch_narrowing(
     false_state: &mut SsaTaintState,
     cond_text: &str,
     condition_vars: &[String],
+    condition_negated: bool,
     ssa: &SsaBody,
     block: BlockId,
     interner: &SymbolInterner,
@@ -2198,6 +2428,9 @@ fn apply_input_validator_branch_narrowing(
         InputValidatorPolarity::ErrorReturning => cond_text_says_null_branch_is_true,
         InputValidatorPolarity::BooleanTrueIsValid => !cond_text_says_null_branch_is_true,
     };
+    // The text heuristic describes the condition under any leading `!` /
+    // `not`; `if (!ok) throw` holds `ok` truthy on the FALSE edge.
+    let success_branch_is_true = success_branch_is_true ^ condition_negated;
 
     // Collect candidate input-arg variable names.  Conservative, every
     // SSA value across every positional arg group, looked up by
@@ -3008,6 +3241,36 @@ fn resolve_var_to_ssa_value(var_name: &str, ssa: &SsaBody, block: BlockId) -> Op
     best_in_block.or(best_outside)
 }
 
+/// The SSA value of `var_name` that is live at the end of `block`: the last
+/// definition in the block (body, then phis), else the first one found
+/// walking predecessors breadth-first.  SSA places a phi wherever two
+/// definitions meet, so every backward path from `block` hits the same
+/// reaching definition first and the walk order does not matter.
+/// Returns `None` when no definition is reachable (an orphan catch block,
+/// a free variable), in which case callers narrow nothing.
+fn reaching_def_at_block_end(var_name: &str, ssa: &SsaBody, block: BlockId) -> Option<SsaValue> {
+    let mut queue: VecDeque<BlockId> = VecDeque::new();
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    queue.push_back(block);
+    while let Some(b) = queue.pop_front() {
+        if !seen.insert(b) {
+            continue;
+        }
+        let Some(blk) = ssa.blocks.get(b.0 as usize) else {
+            continue;
+        };
+        let defines = |inst: &&SsaInst| inst.var_name.as_deref() == Some(var_name);
+        if let Some(inst) = blk.body.iter().rev().find(defines) {
+            return Some(inst.value);
+        }
+        if let Some(inst) = blk.phis.iter().rev().find(defines) {
+            return Some(inst.value);
+        }
+        queue.extend(blk.preds.iter().copied());
+    }
+    None
+}
+
 /// Apply Rust path-rejection / path-assertion branch narrowing to the
 /// true/false branch states produced by `compute_succ_states`.
 ///
@@ -3031,24 +3294,26 @@ fn apply_path_fact_branch_narrowing(
     effective_vars: &[String],
     ssa: &SsaBody,
 ) {
-    apply_path_fact_branch_narrowing_with_interner(
+    apply_path_fact_branch_narrowing_with_aliases(
         true_state,
         false_state,
         &classify_path_branch(cond_text),
         effective_vars,
         ssa,
+        BlockId(0),
         None,
         false,
     );
 }
 
-fn apply_path_fact_branch_narrowing_with_interner(
+fn apply_path_fact_branch_narrowing_with_aliases(
     true_state: &mut SsaTaintState,
     false_state: &mut SsaTaintState,
     class: &PathBranchClass,
     effective_vars: &[String],
     ssa: &SsaBody,
-    interner: Option<&SymbolInterner>,
+    block: BlockId,
+    base_aliases: Option<&crate::ssa::alias::BaseAliasResult>,
     negated: bool,
 ) {
     use crate::abstract_interp::PathFact;
@@ -3082,44 +3347,43 @@ fn apply_path_fact_branch_narrowing_with_interner(
     let rejection_pre_negated = class.rejection_pre_negated;
     let rejection_safe_is_true = negated && !rejection_pre_negated;
 
-    // Mark validated_may on the safe arm when a path-rejection
-    // pattern fires.  Mirrors the AllowlistCheck quirk that already
-    // marks validated on the rejection-arm via `apply_branch_predicates`
-    // for languages whose `.contains(...)` / membership idiom hits the
-    // AllowlistCheck classifier, but normalises behaviour for shapes
-    // like C `strstr(path, "..") != NULL` that hit the NullCheck arm
-    // first and never get a chance to mark validation through the
-    // allowlist path.
-    if !rejection_axes.is_empty()
-        && let Some(intern) = interner
-    {
+    // A path-shape rejection says nothing about SQL, shell, HTML or any
+    // other sink class, so it never marks the variable validated.  When
+    // the condition rejects both `..` segments and absolute paths, the
+    // surviving value is a relative, `..`-free path, which is the same
+    // two-axis test `PathFact::is_path_traversal_safe` applies at the
+    // sink.  Clear `Cap::FILE_IO` from the taint in that case so the
+    // proof survives shapes the abstract state cannot follow (C
+    // out-param copies such as `strncpy(buf, path, n)`).  A single axis
+    // (`..` only, or `/` only) leaves taint untouched and FILE_IO is
+    // decided by the PathFact narrowing below.  Restricted to a single
+    // condition variable: with `a.includes("..") || b.startsWith("/")`
+    // neither variable is proven safe on both axes.
+    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot);
+    let rejects_absolute = rejection_axes
+        .iter()
+        .any(|a| matches!(a, PathRejection::AbsoluteSlash | PathRejection::IsAbsolute));
+    if rejects_dotdot && rejects_absolute && effective_vars.len() == 1 {
         let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
             &mut *true_state
         } else {
             &mut *false_state
         };
-        for var in effective_vars {
-            if let Some(sym) = intern.get(var) {
-                safe_state.validated_may.insert(sym);
-                safe_state.validated_must.insert(sym);
-            }
-        }
+        clear_cap_alias_aware(
+            safe_state,
+            &effective_vars[0],
+            Cap::FILE_IO,
+            ssa,
+            base_aliases,
+        );
     }
 
-    // Collect SSA values whose `var_name` appears in `effective_vars`.  We
-    // pick the *highest-index* matching value (latest definition by SSA
-    // ordering, closest to the current program point).  Absent an
-    // explicit name table, iterating `ssa.value_defs` is the only way to
-    // recover the mapping from name → SsaValue.
+    // Narrow the SSA value of each condition variable that reaches the
+    // branch.  A later redefinition (`p = req.query.b` after the check) is
+    // a different value and must not inherit the narrowed fact.
     let mut targets: smallvec::SmallVec<[SsaValue; 2]> = smallvec::SmallVec::new();
     for var_name in effective_vars {
-        let mut latest: Option<SsaValue> = None;
-        for (idx, vd) in ssa.value_defs.iter().enumerate() {
-            if vd.var_name.as_deref() == Some(var_name.as_str()) {
-                latest = Some(SsaValue(idx as u32));
-            }
-        }
-        if let Some(v) = latest {
+        if let Some(v) = reaching_def_at_block_end(var_name, ssa, block) {
             targets.push(v);
         }
     }
@@ -3165,7 +3429,7 @@ fn apply_path_fact_branch_narrowing_with_interner(
     // For polarity-blind atoms like `!path.contains("..")` the classifier
     // ignores the leading `!` but AST-level negation flips the safe arm
     // to TRUE.  Use the same `rejection_safe_is_true` resolution as the
-    // validated-marker block above so soundness is consistent.
+    // FILE_IO clear above so soundness is consistent.
     let rejection_state: &mut SsaTaintState = if rejection_safe_is_true {
         &mut *true_state
     } else {
@@ -11792,6 +12056,10 @@ fn propagate_taint_to_aliases(
                     }
                     None
                 })
+                // A literal or declaration-only definition of an alias name (the
+                // `'name'` arm of `order = ok ? s : 'name'`) holds no data from the
+                // tainted value, so it is never a copy target.
+                .filter(|v| !matches!(op_for_value(ssa, *v), Some(SsaOp::Const(_) | SsaOp::Nop)))
                 .collect()
         };
 
@@ -12353,8 +12621,8 @@ fn is_abstract_safe_for_sink(
         return false;
     }
 
-    // SSRF, string prefix with locked host
-    if sink_caps.intersects(Cap::SSRF) {
+    // SSRF / open redirect, string prefix with locked origin
+    if sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
         // Inline template-literal prefix attached to the CFG node directly
         // (covers sinks whose URL is a template literal argument without an
         // intermediate Assign to seed the abstract domain).
@@ -12497,8 +12765,9 @@ fn is_call_abstract_safe(
     cfg: &Cfg,
     lang: Lang,
 ) -> bool {
-    // SSRF, check if the URL argument (first arg) has a safe prefix.
-    if sink_caps.intersects(Cap::SSRF) {
+    // SSRF / open redirect, check if the URL argument (first arg) has a
+    // prefix that locks the origin.
+    if sink_caps.intersects(Cap::SSRF | Cap::OPEN_REDIRECT) {
         // Inline template-literal prefix from the call AST itself
         // (e.g. `axios.get(\`https://host/…${x}\`)` has no intermediate Assign
         // to seed a StringFact, check the node-attached prefix directly).
@@ -13006,45 +13275,14 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
             .is_some_and(safe_prefix)
 }
 
-/// SSRF safety: prefix includes scheme + full host + path separator.
-///
-/// Soundness: if the prefix contains `scheme://host/`, the attacker cannot
-/// control the destination host. They can only influence the path/query,
-/// which is not SSRF.
+/// URL-sink safety (SSRF and open redirect): the known prefix pins the
+/// origin, either `scheme://host/` or a same-origin `/path` that cannot be
+/// widened into `//host` (see
+/// [`crate::abstract_interp::string_domain::prefix_locks_origin`]).
 fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
-    let prefix = match &sf.prefix {
-        Some(p) => p.as_str(),
-        None => return false,
-    };
-    // Absolute-path prefix (e.g. "/projects/..."), internal redirect, not open redirect.
-    // The leading "/" locks the path to the same origin; the attacker cannot control the scheme
-    // or host, so this is not an SSRF vector.
-    //
-    // Exception: a bare "/" lock is NOT safe.  When the only constant is a
-    // single "/" and the attacker-controlled suffix begins with another "/",
-    // the full value is "//evil.com/..." — a protocol-relative URL that
-    // browsers and common HTTP clients fetch from the attacker's host.
-    // Likewise a prefix already starting with "//" is protocol-relative.
-    // Require a fixed non-slash second character so the leading-slash lock
-    // cannot be widened into "//host".
-    if prefix.starts_with('/') {
-        let mut chars = prefix.chars();
-        chars.next(); // consume leading '/'
-        match chars.next() {
-            // "/x..." with x != '/': same-origin path lock, safe.
-            Some(c) if c != '/' => return true,
-            // "//..." protocol-relative, or bare "/" that a tainted "/host"
-            // suffix can turn protocol-relative: not safe.
-            _ => return false,
-        }
-    }
-    if let Some(after_scheme) = prefix.find("://") {
-        let host_and_rest = &prefix[after_scheme + 3..];
-        if let Some(slash_pos) = host_and_rest.find('/') {
-            return slash_pos > 0; // non-empty host + path separator
-        }
-    }
-    false
+    sf.prefix
+        .as_deref()
+        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by
@@ -14380,8 +14618,8 @@ fn effective_param_sanitizer(
     let mut caller_kt: u8 = 0;
     let mut caller_kf: u8 = 0;
     for (_, pred) in &state.predicates {
-        caller_kt |= pred.known_true;
-        caller_kf |= pred.known_false;
+        caller_kt |= pred.known_true & crate::taint::domain::INTERPROC_PREDICATE_BITS;
+        caller_kf |= pred.known_false & crate::taint::domain::INTERPROC_PREDICATE_BITS;
     }
 
     let mut compatible: smallvec::SmallVec<[&_; 2]> = smallvec::SmallVec::new();

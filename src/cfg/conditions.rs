@@ -350,12 +350,10 @@ pub(super) fn build_ternary_diamond<'a>(
     call_ordinal: &mut u32,
     analysis_rules: Option<&LangAnalysisRules>,
 ) -> Vec<NodeIndex> {
-    let (Some(cond_field), Some(cons_field), Some(alt_field)) = (
-        ternary_ast.child_by_field_name("condition"),
-        ternary_ast.child_by_field_name("consequence"),
-        ternary_ast.child_by_field_name("alternative"),
-    ) else {
-        // Grammar mismatch: caller will fall through to the non-split path.
+    let Some((cond_field, cons_field, alt_field)) = ternary_parts(ternary_ast) else {
+        // Grammar mismatch (or PHP's `a ?: b` short form, which has no
+        // separate consequence): caller will fall through to the non-split
+        // path.
         return preds.to_vec();
     };
     let cond_ast = unwrap_parens(cond_field);
@@ -375,6 +373,7 @@ pub(super) fn build_ternary_diamond<'a>(
         analysis_rules,
     );
     g[cond_if].is_eq_with_const = detect_eq_with_const(cond_ast, lang);
+    g[cond_if].is_ternary_condition = true;
     // Capture the pure int-arith + comparison tree so `fold_constant_branches`
     // can prune a dead constant-condition arm of the ternary (e.g. Java
     // `(7*18)+num > 200 ? "const" : param` with `num` a known int constant),
@@ -455,7 +454,7 @@ pub(super) fn lower_ternary_branch<'a>(
     analysis_rules: Option<&LangAnalysisRules>,
 ) -> Vec<NodeIndex> {
     // Case 1: nested ternary.
-    if branch_ast.kind() == "ternary_expression" {
+    if ternary_parts(branch_ast).is_some() {
         return build_ternary_diamond(
             lhs_text.to_string(),
             lhs_labels.clone(),
@@ -555,10 +554,55 @@ pub(super) fn lower_ternary_branch<'a>(
     post_jsx
 }
 
+/// Conditional-expression node kinds lowered as a diamond: JS/TS/Java
+/// `ternary_expression`, Python / PHP `conditional_expression`, Ruby
+/// `conditional`.  Callers go through [`ternary_parts`], which also rejects
+/// the PHP `a ?: b` short form.
+fn is_ternary_node(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "ternary_expression" | "conditional_expression" | "conditional"
+    )
+}
+
+/// `(condition, consequence, alternative)` of a conditional expression.
+///
+/// * JS/TS/Java `ternary_expression` and Ruby `conditional`: `condition` /
+///   `consequence` / `alternative` fields.
+/// * PHP `conditional_expression`: `condition` / `body` / `alternative`;
+///   the `a ?: b` short form has no body and returns `None`.
+/// * Python `conditional_expression` (`a if c else b`) has no fields: the
+///   three named children are body, condition, alternative.
+pub(super) fn ternary_parts(node: Node) -> Option<(Node, Node, Node)> {
+    if !is_ternary_node(node) {
+        return None;
+    }
+    if let Some(cond) = node.child_by_field_name("condition") {
+        let cons = node
+            .child_by_field_name("consequence")
+            .or_else(|| node.child_by_field_name("body"))?;
+        let alt = node.child_by_field_name("alternative")?;
+        return Some((cond, cons, alt));
+    }
+    if node.kind() != "conditional_expression" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let parts: Vec<Node> = node
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() != "comment")
+        .collect();
+    match parts.as_slice() {
+        [body, cond, alt] => Some((*cond, *body, *alt)),
+        _ => None,
+    }
+}
+
 /// Extract `(lhs_ast, ternary_ast)` when `outer_ast` is an expression-statement
-/// or declaration whose single assignment/declarator's RHS is a ternary.
-/// Returns `None` for multi-declarator forms, for missing fields, and for
-/// any RHS that isn't a `ternary_expression` after `unwrap_parens`.
+/// or declaration whose single assignment/declarator's RHS is a conditional
+/// expression with all three parts ([`ternary_parts`]).  Returns `None` for
+/// multi-declarator forms, for missing fields, for the PHP `a ?: b` short
+/// form, and for any other RHS after `unwrap_parens`.
 pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
     let mut cursor = outer_ast.walk();
     let mut declarator_count = 0usize;
@@ -578,13 +622,14 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
                     continue;
                 };
                 let rhs = unwrap_parens(value);
-                if rhs.kind() == "ternary_expression" {
+                if ternary_parts(rhs).is_some() {
                     found = Some((name, rhs));
                 }
             }
+            // JS/TS/Java/PHP `assignment_expression`, Python `assignment`.
             // `x += c ? a : b` reads `x`; the diamond would rebind it as a
             // plain `x = a | b`.
-            "assignment_expression" if rmw_assignment(child).is_none() => {
+            "assignment_expression" | "assignment" if rmw_assignment(child).is_none() => {
                 let (Some(left), Some(right)) = (
                     child.child_by_field_name("left"),
                     child.child_by_field_name("right"),
@@ -592,7 +637,7 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
                     continue;
                 };
                 let rhs = unwrap_parens(right);
-                if rhs.kind() == "ternary_expression" {
+                if ternary_parts(rhs).is_some() {
                     return Some((left, rhs));
                 }
             }
@@ -615,10 +660,33 @@ pub(super) fn classify_ternary_lhs(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
 
-    // Prefer full member-expression path; fall back to raw text.
+    // Prefer full member-expression path; fall back to raw text.  A PHP
+    // `$name` binds the SSA variable `name` (see `collect_idents`).
     let lhs_text = member_expr_text(lhs_ast, code)
         .or_else(|| text_of(lhs_ast, code))
         .unwrap_or_default();
+    let lhs_text = if lhs_ast.kind() == "variable_name" {
+        lhs_text.trim_start_matches('$').to_string()
+    } else {
+        lhs_text
+    };
+
+    // A Python / Ruby / PHP local (`query`, `@replies`, `$query`) is never
+    // a sink, whatever its name; only member targets (`self.headers[..]`)
+    // are worth classifying.  JS keeps bare names: `location = c ? a : b`
+    // navigates.
+    if matches!(lang, "python" | "ruby" | "php")
+        && matches!(
+            lhs_ast.kind(),
+            "identifier"
+                | "variable_name"
+                | "instance_variable"
+                | "class_variable"
+                | "global_variable"
+        )
+    {
+        return (lhs_text, labels);
+    }
 
     // Try the full dotted path first (e.g. "document.cookie"), then fall back
     // to the property alone (e.g. "innerHTML"), mirrors the LHS classification

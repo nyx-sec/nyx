@@ -187,10 +187,72 @@ fn java_spring_mvc_redirect_prefix_with_tainted_url_fires() {
 
 #[test]
 fn java_inline_relative_check_sanitizes() {
-    // Inline `target.startsWith("/")` guard with no named helper; the
-    // RelativeUrlValidated predicate strips OPEN_REDIRECT on the true
-    // branch so `res.sendRedirect(target)` is not flagged.
+    // Inline `startsWith("/") && !startsWith("//")` guard with no named
+    // helper: once the path has seen both facts OPEN_REDIRECT is stripped,
+    // so `res.sendRedirect(target)` is not flagged.
     assert_clean("java", "SafeInlineRelative.java");
+}
+
+#[test]
+fn java_inline_slash_only_check_fires() {
+    // `startsWith("/")` alone still accepts protocol-relative `//host`.
+    assert_unsafe("java", "UnsafeInlineSlashOnly.java");
+}
+
+#[test]
+fn javascript_inline_slash_only_check_fires() {
+    assert_unsafe("javascript", "unsafe_inline_slash_only.js");
+}
+
+#[test]
+fn javascript_inline_relative_checks_sanitize() {
+    // `&&` form, early-return `||` form, and the reversed clause order.
+    assert_clean("javascript", "safe_inline_relative.js");
+}
+
+#[test]
+fn python_inline_slash_only_check_fires() {
+    assert_unsafe("python", "unsafe_inline_slash_only.py");
+}
+
+#[test]
+fn python_inline_relative_checks_sanitize() {
+    assert_clean("python", "safe_inline_relative.py");
+}
+
+#[test]
+fn javascript_same_origin_path_prefix_sanitizes() {
+    // Template, concatenation, `res.redirect(status, url)` and a
+    // template bound to a variable, all with a fixed `/users/` prefix.
+    assert_clean("javascript", "safe_path_prefix_redirect.js");
+}
+
+#[test]
+fn javascript_bare_slash_prefix_fires() {
+    // `'/' + next` with `next = "/evil.example"` is protocol-relative.
+    assert_unsafe("javascript", "unsafe_bare_slash_prefix.js");
+}
+
+#[test]
+fn javascript_status_code_is_not_the_target() {
+    // `res.redirect(303, next)`: the literal status must not count as a
+    // constant redirect target.
+    assert_unsafe("javascript", "unsafe_status_redirect.js");
+}
+
+#[test]
+fn ruby_bare_slash_interpolation_fires() {
+    assert_unsafe("ruby", "unsafe_bare_slash_interp.rb");
+}
+
+#[test]
+fn ruby_same_origin_path_prefix_sanitizes() {
+    assert_clean("ruby", "safe_path_prefix_redirect.rb");
+}
+
+#[test]
+fn python_same_origin_fstring_prefix_sanitizes() {
+    assert_clean("python", "safe_path_prefix_redirect.py");
 }
 
 #[test]

@@ -420,7 +420,10 @@ impl CfgAnalysis for IncompleteErrorHandling {
             // from `extract_condition_raw`) rather than `info.taint.uses`,
             // which also carries dotted paths and, on a switch dispatch
             // header, the identifiers of the whole case.
-            if info.kind != StmtKind::If {
+            // A conditional expression (`msg = error > 0 ? ko : ok`) picks a
+            // value on both arms; there is no branch that should have
+            // returned.
+            if info.kind != StmtKind::If || info.is_ternary_condition {
                 continue;
             }
 

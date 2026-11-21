@@ -1,0 +1,41 @@
+{
+  "description": "Indirect validator results tested through `!ok` / `ok === false` / `!err`: the leading negation (or false sentinel) moves the validated edge, so early returns are safe and sinks on the failure branch fire.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "indirect-validator",
+    "cmdi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        6,
+        23
+      ],
+      "notes": "`!ok` and `ok === false` return before the sink on validation failure"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "sink inside `if (!ok)` runs exactly when validation failed"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        42,
+        42
+      ],
+      "notes": "`if (!err) return` leaves the error case to reach the sink"
+    }
+  ]
+}

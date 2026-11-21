@@ -1142,8 +1142,12 @@ mod goto_succ_propagation_tests {
             "err != nil",
             "x == null",
             "scheme not in allowed",
-            "typeof x !== 'string'",
+            "typeof x !== 'number'",
             "isInvalidUrl(u)",
+            "(ALLOWED.includes(cmd) === false)",
+            "ALLOWED.indexOf(cmd) < 0",
+            "is_valid(x) is not True",
+            "ok === false",
             "p.contains(\"..\")",
             "user.isAdmin",
         ];
@@ -1165,7 +1169,20 @@ mod goto_succ_propagation_tests {
     /// Used to drive `apply_path_fact_branch_narrowing` without a full CFG.
     fn ssa_body_with_named_value(var_name: &str) -> SsaBody {
         SsaBody {
-            blocks: vec![],
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![SsaInst {
+                    value: SsaValue(0),
+                    op: SsaOp::Source,
+                    cfg_node: NodeIndex::new(0),
+                    var_name: Some(var_name.into()),
+                    span: (0, 1),
+                }],
+                terminator: Terminator::Return(None),
+                preds: smallvec![],
+                succs: smallvec![],
+            }],
             entry: BlockId(0),
             value_defs: vec![crate::ssa::ir::ValueDef {
                 var_name: Some(var_name.into()),
@@ -1299,12 +1316,13 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!path.contains(\"..\")"),
             &["path".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1333,12 +1351,13 @@ mod goto_succ_propagation_tests {
         let mut true_state = initial_state_with_abstract();
         let mut false_state = initial_state_with_abstract();
 
-        super::super::apply_path_fact_branch_narrowing_with_interner(
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
             &mut true_state,
             &mut false_state,
             &super::super::classify_path_branch("!filepath.IsLocal(p)"),
             &["p".to_string()],
             &ssa,
+            BlockId(0),
             None,
             true,
         );
@@ -1381,6 +1400,306 @@ mod goto_succ_propagation_tests {
         let fabs = false_state.abstract_state.as_ref().unwrap();
         assert!(tabs.get(SsaValue(0)).path.is_top());
         assert!(fabs.get(SsaValue(0)).path.is_top());
+    }
+
+    fn tainted_state_with_abstract(caps: crate::labels::Cap) -> SsaTaintState {
+        let mut s = initial_state_with_abstract();
+        s.set(
+            SsaValue(0),
+            crate::taint::domain::VarTaint {
+                caps,
+                origins: smallvec![],
+                uses_summary: false,
+            },
+        );
+        s
+    }
+
+    #[test]
+    fn open_redirect_clears_only_after_both_url_facts() {
+        use crate::labels::Cap;
+        use crate::state::symbol::SymbolInterner;
+        use crate::taint::path_state::PredicateKind::{LeadingSlashCheck, ProtocolRelativeCheck};
+        let caps = Cap::OPEN_REDIRECT | Cap::SSRF;
+        let ssa = ssa_body_with_named_value("next");
+        let mut interner = SymbolInterner::new();
+        interner.intern("next");
+        let vars = ["next".to_string()];
+        let apply = |st: &mut SsaTaintState, kind, polarity| {
+            super::super::apply_branch_predicates(st, &vars, kind, polarity, None, &interner, &ssa, None)
+        };
+        let caps_of = |st: &SsaTaintState| st.get(SsaValue(0)).map(|t| t.caps);
+
+        // Leading slash alone: `//evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, true);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Not protocol-relative alone: `https://evil.com` still passes.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+
+        // Both, in either order: only OPEN_REDIRECT is cleared.
+        for order in [
+            [(LeadingSlashCheck, true), (ProtocolRelativeCheck, false)],
+            [(ProtocolRelativeCheck, false), (LeadingSlashCheck, true)],
+        ] {
+            let mut st = tainted_state_with_abstract(caps);
+            for (kind, polarity) in order {
+                apply(&mut st, kind, polarity);
+            }
+            assert_eq!(caps_of(&st), Some(Cap::SSRF), "{order:?}");
+        }
+
+        // The reject edges never clear.
+        let mut st = tainted_state_with_abstract(caps);
+        apply(&mut st, LeadingSlashCheck, false);
+        apply(&mut st, ProtocolRelativeCheck, false);
+        assert_eq!(caps_of(&st), Some(caps));
+    }
+
+    #[test]
+    fn path_rejection_single_axis_validates_nothing() {
+        // `if (name.includes("..")) return; db.query("..." + name)`: a path
+        // shape check says nothing about SQL / shell / HTML and, on one axis
+        // alone, nothing about FILE_IO either (`/etc/passwd` passes a `..`
+        // check).  No validation bit and no cap change on either arm.
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        for text in [
+            "name.includes(\"..\")",
+            "name.startsWith(\"/\")",
+            "\"..\" in name",
+            "strings.Contains(name, \"..\")",
+        ] {
+            let ssa = ssa_body_with_named_value("name");
+            let mut true_state = tainted_state_with_abstract(caps);
+            let mut false_state = tainted_state_with_abstract(caps);
+            super::super::apply_path_fact_branch_narrowing_with_aliases(
+                &mut true_state,
+                &mut false_state,
+                &super::super::classify_path_branch(text),
+                &["name".to_string()],
+                &ssa,
+                BlockId(0),
+                None,
+                false,
+            );
+            for st in [&true_state, &false_state] {
+                assert!(st.validated_must.is_empty(), "{text}: validated_must set");
+                assert!(st.validated_may.is_empty(), "{text}: validated_may set");
+                assert_eq!(st.get(SsaValue(0)).map(|t| t.caps), Some(caps), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn path_rejection_both_axes_clears_only_file_io() {
+        use crate::labels::Cap;
+        let caps = Cap::SQL_QUERY | Cap::FILE_IO;
+        let ssa = ssa_body_with_named_value("name");
+
+        // `if (name.includes("..") || name.startsWith("/")) return;`
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            false,
+        );
+        assert_eq!(
+            false_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY),
+            "surviving arm keeps every non-FILE_IO cap"
+        );
+        assert!(false_state.validated_must.is_empty());
+        assert_eq!(true_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // `if (!(name.includes("..") || name.startsWith("/"))) { sink }`:
+        // the CFG reports the leading `!` as condition_negated, so the
+        // relative `..`-free arm is TRUE.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch(
+                "!(name.includes(\"..\") || name.startsWith(\"/\"))",
+            ),
+            &["name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            true,
+        );
+        assert_eq!(
+            true_state.get(SsaValue(0)).map(|t| t.caps),
+            Some(Cap::SQL_QUERY)
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+
+        // Two different subjects: neither is proven on both axes.
+        let mut true_state = tainted_state_with_abstract(caps);
+        let mut false_state = tainted_state_with_abstract(caps);
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(name.includes(\"..\") || dir.startsWith(\"/\"))"),
+            &["dir".to_string(), "name".to_string()],
+            &ssa,
+            BlockId(0),
+            None,
+            false,
+        );
+        assert_eq!(false_state.get(SsaValue(0)).map(|t| t.caps), Some(caps));
+    }
+
+    #[test]
+    fn path_rejection_narrows_the_definition_reaching_the_branch() {
+        // block 0: p = source;  -> block 1: if (p.includes("..") || p.startsWith("/")) ...
+        // block 2 (false arm): p = req.query.b
+        // The check proves nothing about the new value, so only the
+        // definition live at the branch (v0) may be narrowed.
+        let inst = |v: u32| SsaInst {
+            value: SsaValue(v),
+            op: SsaOp::Source,
+            cfg_node: NodeIndex::new(v as usize),
+            var_name: Some("p".into()),
+            span: (0, 1),
+        };
+        let def = |b: u32| crate::ssa::ir::ValueDef {
+            var_name: Some("p".into()),
+            cfg_node: NodeIndex::new(0),
+            block: BlockId(b),
+        };
+        let mut ssa = ssa_body_with_named_value("p");
+        ssa.blocks = vec![
+            SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![inst(0)],
+                terminator: Terminator::Goto(BlockId(1)),
+                preds: smallvec![],
+                succs: smallvec![BlockId(1)],
+            },
+            SsaBlock {
+                id: BlockId(1),
+                phis: vec![],
+                body: vec![],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(0)],
+                succs: smallvec![BlockId(2)],
+            },
+            SsaBlock {
+                id: BlockId(2),
+                phis: vec![],
+                body: vec![inst(1)],
+                terminator: Terminator::Return(None),
+                preds: smallvec![BlockId(1)],
+                succs: smallvec![],
+            },
+        ];
+        ssa.value_defs = vec![def(0), def(2)];
+
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+        super::super::apply_path_fact_branch_narrowing_with_aliases(
+            &mut true_state,
+            &mut false_state,
+            &super::super::classify_path_branch("(p.includes(\"..\") || p.startsWith(\"/\"))"),
+            &["p".to_string()],
+            &ssa,
+            BlockId(1),
+            None,
+            false,
+        );
+        let abs = false_state.abstract_state.as_ref().unwrap();
+        assert!(abs.get(SsaValue(0)).path.is_path_safe());
+        assert!(
+            abs.get(SsaValue(1)).path.is_top(),
+            "a redefinition after the check must not inherit the narrowed fact"
+        );
+    }
+
+    #[test]
+    fn branch_cond_sentinel_comparisons_set_semantic_negation() {
+        use crate::taint::path_state::PredicateKind;
+        // (text, expected kind, expected has_semantic_negation)
+        let cases = [
+            (
+                "(ALLOWED.includes(cmd) === false)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.includes(cmd) !== false",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED.indexOf(cmd) === -1)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "ALLOWED.indexOf(cmd) !== -1",
+                PredicateKind::AllowlistCheck,
+                false,
+            ),
+            (
+                "(ALLOWED[cmd] === undefined)",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(false === in_array($cmd, $allowed, true))",
+                PredicateKind::AllowlistCheck,
+                true,
+            ),
+            (
+                "(isValidName(cmd) === false)",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "is_valid_name(name) is False",
+                PredicateKind::ValidationCall,
+                true,
+            ),
+            (
+                "isInvalidUrl(u) === false",
+                PredicateKind::ValidationCall,
+                false,
+            ),
+            // The `!=` belongs to the sentinel, not to a `typeof` test.
+            ("isinstance(x, int) != True", PredicateKind::TypeCheck, true),
+            (
+                "isinstance(x, int) == True",
+                PredicateKind::TypeCheck,
+                false,
+            ),
+            ("typeof x !== 'number'", PredicateKind::TypeCheck, true),
+            // A missing key and a `false` value look the same: validate
+            // neither edge.
+            ("(ALLOWED[cmd] === false)", PredicateKind::Unknown, false),
+        ];
+        for (text, kind, negated) in cases {
+            let class = super::super::classify_branch_cond(text);
+            assert_eq!(class.kind, kind, "{text}");
+            assert_eq!(class.has_semantic_negation, negated, "{text}");
+        }
+        assert_eq!(
+            super::super::classify_branch_cond("(ALLOWED[cmd] === false)").target_var,
+            None
+        );
     }
 
     #[test]

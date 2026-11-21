@@ -34,16 +34,29 @@ pub enum PredicateKind {
     /// and the **false branch is the validated path**.  Use inverted polarity
     /// when applying branch predicates.
     ShellMetaValidated,
-    /// Inline relative-URL validation: `x.startsWith("/")` / `x.starts_with("/")`
-    /// / `x.startswith("/")` / `strpos(x, "/") === 0`.  The TRUE branch
-    /// constrains `x` to a relative path (no scheme, no `//host`), which is
-    /// the standard inline form of an open-redirect sanitiser when the
-    /// developer didn't extract a named helper.  Cap-aware: clears
-    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch
-    /// so non-redirect sinks downstream still fire on the residual taint.
-    /// Mirrors [`ShellMetaValidated`](Self::ShellMetaValidated) but with
-    /// non-inverted polarity (true branch is the validated path).
+    /// Inline relative-URL validation held in one undecomposed condition:
+    /// `x.startsWith("/") && !x.startsWith("//")`.  The TRUE branch
+    /// constrains `x` to a same-origin path (leading `/`, no `//host`).
+    /// Cap-aware: clears [`crate::labels::Cap::OPEN_REDIRECT`] only on the
+    /// validated branch so non-redirect sinks downstream still fire on the
+    /// residual taint.  The usual split form (one branch per clause) is
+    /// tracked by [`LeadingSlashCheck`](Self::LeadingSlashCheck) and
+    /// [`ProtocolRelativeCheck`](Self::ProtocolRelativeCheck) instead.
     RelativeUrlValidated,
+    /// One half of the inline relative-URL check: `x.startsWith("/")`,
+    /// `x.starts_with("/")`, `x.startswith("/")`, `strpos($x, "/") === 0`,
+    /// `x[0] === '/'`.  On its own it proves nothing about the host:
+    /// `//evil.com` and `/\evil.com` start with `/` and browsers resolve both
+    /// as protocol-relative.  The branch sets a predicate bit, and
+    /// OPEN_REDIRECT is cleared only once
+    /// [`ProtocolRelativeCheck`](Self::ProtocolRelativeCheck) has also been
+    /// seen false on the same path.
+    LeadingSlashCheck,
+    /// `x.startsWith("//")` / `x.startsWith("/\\")` / `x[1] === '/'`.  The
+    /// TRUE branch is the protocol-relative (reject) case; the FALSE branch
+    /// proves the value has no authority prefix.  Pairs with
+    /// [`LeadingSlashCheck`](Self::LeadingSlashCheck).
+    ProtocolRelativeCheck,
     /// Inline URL-parse + host-allowlist validation:
     /// `new URL(x).host === ALLOWED` (JS/TS),
     /// `urlparse(x).netloc == ALLOWED` (Python),
@@ -191,9 +204,10 @@ fn extract_first_string_arg(after_open: &str) -> Option<String> {
 /// that is an allowlist check, not a rejection.
 fn extract_python_in_needle(text: &str) -> Option<String> {
     let pos = text.find(" in ")?;
-    let left = text[..pos].trim();
+    let left = text[..pos].trim().trim_start_matches('(').trim();
     // Strip leading `!` / `not` for rejection contexts
     let left = left.strip_prefix('!').unwrap_or(left).trim();
+    let left = left.strip_prefix("not ").unwrap_or(left).trim();
     let bytes = left.as_bytes();
     let quote = *bytes.first()?;
     if quote != b'"' && quote != b'\'' {
@@ -331,103 +345,147 @@ fn split_top_level_args(args_part: &str) -> Vec<&str> {
     out
 }
 
-fn is_leading_slash_check(text: &str) -> bool {
+/// Every leading-prefix test in `text`, as `(needle, negated)`:
+/// `.startsWith(N)` / `.starts_with(N)` / `.startswith(N)` (all occurrences),
+/// `strpos($x, N) === 0` / `mb_strpos`, and the subscript forms
+/// `x[0] === '/'` (needle `/`) and `x[1] === '/'` (needle `//`).  `negated`
+/// is set when the test is directly preceded by `!` / `not`, which is how a
+/// clause of a conjunction says "does not start with".
+fn leading_prefix_tests(text: &str) -> smallvec::SmallVec<[(String, bool); 2]> {
     let lower = text.to_ascii_lowercase();
-    // Method-call form: `.startswith("/")` covers JS/TS/Java (`startsWith`
-    // lower-cases to `startswith`), Python (`startswith`), Rust
-    // (`starts_with` → `starts_with` after lower).  Keep the variants
-    // explicit so we don't miss the underscore form.
+    let mut out: smallvec::SmallVec<[(String, bool); 2]> = smallvec::SmallVec::new();
     for method in [".startswith(", ".starts_with("] {
-        if let Some(idx) = lower.find(method) {
+        for (idx, _) in lower.match_indices(method) {
             let args_start = idx + method.len();
             if let Some(needle) = extract_first_string_arg(&lower[args_start..]) {
-                if needle == "/" {
-                    return true;
-                }
+                out.push((needle, prefix_test_negated(&lower[..idx])));
             }
         }
     }
-    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0` — leading-
-    // slash detection via offset-zero substring match.  Both equality
+    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0`: leading-
+    // prefix detection via offset-zero substring match.  Both equality
     // forms (`===`, `==`) accepted; the `0` literal is the load-bearing
-    // bit.  Conservative: requires the closing `=== 0` form; bare
-    // `strpos(...)` (truthy check) is not recognised.
+    // bit.  Bare `strpos(...)` (truthy check) is not recognised.
     for prefix in ["strpos(", "mb_strpos("] {
-        if let Some(start) = lower.find(prefix) {
-            let after = &lower[start + prefix.len()..];
-            // Find the closing paren of the strpos call.
-            let mut depth = 1usize;
-            let bytes = after.as_bytes();
-            let mut close = None;
-            let mut i = 0;
-            while i < bytes.len() {
-                match bytes[i] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(i);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            let Some(close) = close else { continue };
-            let args = &after[..close];
-            // Need at least one comma so we have two args.
-            let mut depth = 0i32;
-            let mut comma = None;
-            for (j, ch) in args.char_indices() {
-                match ch {
-                    '(' | '[' | '{' => depth += 1,
-                    ')' | ']' | '}' => depth -= 1,
-                    ',' if depth == 0 => {
-                        comma = Some(j);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let Some(comma) = comma else { continue };
-            let second = args[comma + 1..].trim();
-            // Strip optional surrounding parens / quotes.
-            let needle = second.trim_matches(|c: char| c == '"' || c == '\'');
-            if needle != "/" {
+        for (start, _) in lower.match_indices(prefix) {
+            if prefix == "strpos(" && lower[..start].ends_with("mb_") {
                 continue;
             }
-            // Tail after the strpos `)` should compare against 0 with
-            // `===` / `==`.  Allow whitespace.
+            let after = &lower[start + prefix.len()..];
+            let Some(needle) = call_arg(after, 1) else {
+                continue;
+            };
+            let needle = needle.trim_matches(|c: char| c == '"' || c == '\'');
+            let Some(close) = matching_call_close(after) else {
+                continue;
+            };
             let tail = after[close + 1..].trim_start();
-            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("==")) {
-                if rest.trim() == "0" {
-                    return true;
+            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("=="))
+                && rest.trim_start().starts_with('0')
+                && !rest.trim_start()[1..].starts_with(|c: char| c.is_ascii_digit())
+            {
+                let negated = prefix_test_negated(&lower[..start]);
+                out.push((needle.replace("\\\\", "\\"), negated));
+            }
+        }
+    }
+    // Direct subscript form: `<X>[0] === '/'` / `<X>[1] == "/"`, with or
+    // without spaces around the operator.
+    for (index, needle) in [("[0]", "/"), ("[1]", "//")] {
+        for op in ["===", "=="] {
+            for probe in [format!("{index} {op}"), format!("{index}{op}")] {
+                for (idx, _) in lower.match_indices(probe.as_str()) {
+                    let after = lower[idx + probe.len()..].trim_start();
+                    if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                        out.push((needle.to_string(), prefix_test_negated(&lower[..idx])));
+                    }
                 }
             }
         }
     }
-    // Direct subscript form: `<X>[0] === '/'` / `<X>[0] == "/"`.
-    // Conservative: the literal `[0]` immediately followed by an
-    // equality op and a single-char `/` literal.
-    for op in ["===", "=="] {
-        let probe = format!("[0] {}", op);
-        if let Some(idx) = lower.find(&probe) {
-            let after = lower[idx + probe.len()..].trim_start();
-            if after.starts_with("'/'") || after.starts_with("\"/\"") {
-                return true;
+    out
+}
+
+/// Byte index of the `)` closing a call whose argument list starts at
+/// `args_part`.
+fn matching_call_close(args_part: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (i, b) in args_part.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
             }
-        }
-        // Without spaces around the operator: `[0]==='/'`.
-        let probe_tight = format!("[0]{}", op);
-        if let Some(idx) = lower.find(&probe_tight) {
-            let after = lower[idx + probe_tight.len()..].trim_start();
-            if after.starts_with("'/'") || after.starts_with("\"/\"") {
-                return true;
-            }
+            _ => {}
         }
     }
-    false
+    None
+}
+
+/// True when the prefix test whose receiver ends `before` is negated on its
+/// own (`!x.startsWith(..)`, `not x.startswith(..)`): the clause of the
+/// enclosing condition it belongs to starts with a negation.
+fn prefix_test_negated(before: &str) -> bool {
+    let clause = before
+        .rsplit(['&', '|', '(', ','])
+        .next()
+        .unwrap_or(before)
+        .trim_start();
+    let clause = clause
+        .rsplit(" and ")
+        .next()
+        .unwrap_or(clause)
+        .rsplit(" or ")
+        .next()
+        .unwrap_or(clause)
+        .trim_start();
+    clause.starts_with('!') || clause.starts_with("not ")
+}
+
+/// `//` and `/\` both make a browser treat the rest as a host.
+fn is_protocol_relative_needle(needle: &str) -> bool {
+    matches!(needle, "//" | "/\\")
+}
+
+/// `x.startsWith("/")` and friends as a single test (see
+/// [`PredicateKind::LeadingSlashCheck`]).
+fn is_leading_slash_check(text: &str) -> bool {
+    leading_prefix_tests(text).iter().any(|(n, _)| n == "/")
+}
+
+/// `x.startsWith("//")` / `x.startsWith("/\\")` / `x[1] === '/'`, where every
+/// prefix test in the text is a protocol-relative one.
+fn is_protocol_relative_check(text: &str) -> bool {
+    let tests = leading_prefix_tests(text);
+    !tests.is_empty() && tests.iter().all(|(n, _)| is_protocol_relative_needle(n))
+}
+
+/// A condition with a top-level boolean connective, which the CFG would
+/// normally have split into one branch per clause.
+fn has_boolean_connective(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("&&")
+        || lower.contains("||")
+        || lower.contains(" and ")
+        || lower.contains(" or ")
+}
+
+/// The whole relative-URL check in one conjunction:
+/// `x.startsWith("/") && !x.startsWith("//")` (optionally also rejecting
+/// `/\`).  The TRUE edge holds both facts.
+fn is_relative_url_conjunction(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("||") || lower.contains(" or ") {
+        return false;
+    }
+    if !(lower.contains("&&") || lower.contains(" and ")) {
+        return false;
+    }
+    let tests = leading_prefix_tests(text);
+    tests.iter().any(|(n, neg)| n == "/" && !neg) && tests.iter().any(|(n, neg)| n == "//" && *neg)
 }
 
 /// Check whether `text` is an inline URL-parse + host-allowlist validation.
@@ -772,6 +830,11 @@ fn parse_leading_uint(s: &str) -> Option<u64> {
 /// (`..`, `<script>`, etc.) that the shell-metachar carve-out deliberately
 /// excludes. Conservative: only fires when the first argument parses as a
 /// string literal, so `ALLOWED.includes(value)` (identifier arg) is untouched.
+///
+/// Two spellings put the needle somewhere other than the first method
+/// argument and are matched separately: the Python operator form
+/// `"<lit>" in x` and the Go free functions `strings.Contains(x, "<lit>")` /
+/// `bytes.Contains(x, "<lit>")`.
 fn is_literal_needle_membership(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     for method in [
@@ -791,45 +854,51 @@ fn is_literal_needle_membership(text: &str) -> bool {
             }
         }
     }
+    if extract_python_in_needle(text).is_some() {
+        return true;
+    }
+    // `"<lit>" not in x` asks the same question with the opposite polarity;
+    // it is still a test on `x`, not an allowlist that validates it.
+    if let Some(pos) = text.find(" not in ") {
+        let left = text[..pos].trim().trim_start_matches('(').trim();
+        if extract_first_string_arg(left).is_some_and(|lit| lit.len() + 2 == left.len()) {
+            return true;
+        }
+    }
+    for func in ["strings.contains(", "bytes.contains("] {
+        if let Some(idx) = lower.find(func) {
+            let args = split_top_level_args(&text[idx + func.len()..]);
+            if args.len() == 2 && extract_first_string_arg(args[1]).is_some() {
+                return true;
+            }
+        }
+    }
     false
 }
 
-/// Detect the *negated* `indexOf`/`search`/`find` membership idiom whose TRUE
-/// branch is the NOT-in-list (reject) path:
+/// Detect the *negated* `search` / `find` membership idiom whose TRUE branch is
+/// the NOT-found (reject) path:
 ///
-/// * `ALLOWED.indexOf(x) === -1` / `== -1` (JS/TS — not found)
-/// * `ALLOWED.indexOf(x) < 0` (not found)
 /// * `s.find(x) == -1` (Python `str.find` / C++ `std::string::find` use
 ///   `npos`/`-1` for absent; `< 0` covers the common int form)
+/// * `s.search(x) < 0` (JS string search)
 ///
-/// Genuine allowlist membership classifies as [`PredicateKind::AllowlistCheck`]
-/// whose generic mechanic marks the receiver/arg validated on the TRUE branch.
-/// That polarity is only correct for the *positive* form
-/// (`indexOf(x) !== -1` / `>= 0` — found ⇒ in list ⇒ validated). For the
-/// `=== -1` / `< 0` form the TRUE branch means NOT-in-list, so marking the var
-/// validated there is inverted: it suppresses a genuine finding on the
-/// reject-then-sink shape and an FP on the correctly-guarded `=== -1; return`
-/// shape. The polarity-inversion machinery in `apply_branch_predicates`
-/// (mod.rs) only flips for Python `not in` / TypeCheck `!=`, not for indexOf
-/// result comparisons, so we conservatively drop these to
-/// [`PredicateKind::Unknown`] — neither branch is over-validated and the sink
-/// finding survives. The positive `!== -1` / `>= 0` form is intentionally left
-/// to fall through to `AllowlistCheck`, where the existing polarity is correct.
+/// These search a string, not a collection, so even the positive form proves
+/// little; the negated form is dropped to [`PredicateKind::Unknown`] so
+/// neither branch is validated.  `ALLOWED.indexOf(x) === -1` is a genuine
+/// collection membership test and is not claimed here: it classifies as
+/// [`PredicateKind::AllowlistCheck`] and [`sentinel_comparison_polarity`]
+/// puts the validation on the found branch.
 fn is_negated_indexof_membership(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    // Require an index-of / find-style search method whose result is being
-    // compared.  `.indexof(` covers JS/TS `indexOf` and Java `indexOf`;
-    // `.find(` / `.search(` cover Python/C++/JS string searches.
-    let has_index_search =
-        lower.contains(".indexof(") || lower.contains(".search(") || lower.contains(".find(");
+    let has_index_search = lower.contains(".search(") || lower.contains(".find(");
     if !has_index_search {
         return false;
     }
     // Strip whitespace so spacing variants (`=== -1`, `===-1`, `< 0`) collapse
     // to a single canonical form.
     let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-    // Positive (found ⇒ in list) forms keep correct AllowlistCheck polarity —
-    // do NOT claim them here.
+    // Positive (found) forms keep the AllowlistCheck classification.
     if compact.contains("!==-1")
         || compact.contains("!=-1")
         || compact.contains(">=0")
@@ -837,11 +906,253 @@ fn is_negated_indexof_membership(text: &str) -> bool {
     {
         return false;
     }
-    // Negated (not-found ⇒ reject) forms: inverted polarity, drop to Unknown.
     compact.contains("===-1")
         || compact.contains("==-1")
         || compact.contains("<0")
         || compact.contains("<=-1")
+}
+
+/// How a trailing comparison against a sentinel literal changes the polarity
+/// of the predicate atom it wraps.  See [`sentinel_comparison_polarity`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SentinelPolarity {
+    /// No single top-level comparison against a sentinel literal.
+    NoComparison,
+    /// The comparison keeps the atom's polarity (`f(x) === true`,
+    /// `A.indexOf(x) !== -1`, `M[x] !== undefined`).
+    Same,
+    /// The comparison inverts it (`f(x) === false`, `f(x) is not True`,
+    /// `A.indexOf(x) === -1`, `M[x] === undefined`).
+    Flip,
+    /// A sentinel whose meaning is ambiguous for this atom
+    /// (`M[x] === false` cannot tell a missing key from a `false` value,
+    /// `A.indexOf(x) === 0`).  Callers should validate neither branch.
+    Opaque,
+}
+
+/// Classify a branch condition of the form `<atom> <op> <sentinel>` (or the
+/// Yoda form `<sentinel> <op> <atom>`), where the atom is the predicate the
+/// rest of the classifier recognises: a call (`isValid(x)`,
+/// `ALLOWED.includes(x)`, `in_array($x, $a)`), an `indexOf` result, a map
+/// lookup (`ALLOWED[x]`), or a bare identifier.
+///
+/// [`classify_condition`] classifies such text by the inner atom, so without
+/// this the TRUE edge of `ALLOWED.includes(cmd) === false` would be treated
+/// as the validated one.  A whole-condition `!( ... )` / `not ...` is
+/// peeled first because the CFG already reports it as `condition_negated`;
+/// a `!` bound to the atom alone (`!isValid(x) === true`) is folded in here.
+///
+/// Sentinels are `true`, `false`, `undefined`, `-1` and `0`, matched case
+/// insensitively (Python `True` / `False`).  `null` / `None` / `nil` are left
+/// to the null-check classifier.  Conditions with a top-level `&&` / `||`,
+/// or with more than one comparison, return
+/// [`SentinelPolarity::NoComparison`].
+pub fn sentinel_comparison_polarity(text: &str) -> SentinelPolarity {
+    use crate::abstract_interp::path_domain::{strip_leading_not, strip_outer_parens};
+
+    let mut t = strip_outer_parens(text.trim());
+    if let Some(rest) = strip_leading_not(t) {
+        let rest = rest.trim_start();
+        let python_not = !t.trim_start().starts_with('!');
+        let inner = strip_outer_parens(rest);
+        if python_not || inner.len() < rest.len() {
+            t = inner;
+        }
+    }
+
+    let Some((lhs, op, rhs)) = split_single_comparison(t) else {
+        return SentinelPolarity::NoComparison;
+    };
+    let (atom, sentinel, op) = match (sentinel_literal(rhs), sentinel_literal(lhs)) {
+        (Some(s), None) => (lhs, s, op),
+        (None, Some(s)) => (rhs, s, mirror_comparison(op)),
+        _ => return SentinelPolarity::NoComparison,
+    };
+
+    let (atom, local_not) = match atom.strip_prefix('!') {
+        Some(rest) if !rest.starts_with('=') => (rest.trim(), true),
+        _ => (atom, false),
+    };
+
+    let eq = matches!(op, "==" | "===" | "is");
+    let ne = matches!(op, "!=" | "!==" | "is not");
+    let lower_atom = atom.to_ascii_lowercase();
+
+    let base = if lower_atom.contains(".indexof(") {
+        match (op, sentinel) {
+            ("==" | "===", "-1") | ("<", "0") | ("<=", "-1") => SentinelPolarity::Flip,
+            ("!=" | "!==", "-1") | (">=", "0") | (">", "-1") => SentinelPolarity::Same,
+            _ => SentinelPolarity::Opaque,
+        }
+    } else if is_index_lookup_atom(atom) {
+        match sentinel {
+            "undefined" if eq => SentinelPolarity::Flip,
+            "undefined" if ne => SentinelPolarity::Same,
+            "true" if eq => SentinelPolarity::Same,
+            "true" if ne => SentinelPolarity::Flip,
+            _ => SentinelPolarity::Opaque,
+        }
+    } else if atom.contains('(') || is_identifier(atom) {
+        // Boolean predicate result: a call or a variable holding one.
+        // Numeric sentinels on a call (`strpos($x, "/") === 0`) belong to
+        // other idioms and are left alone.
+        match sentinel {
+            "true" if eq => SentinelPolarity::Same,
+            "true" if ne => SentinelPolarity::Flip,
+            "false" if eq => SentinelPolarity::Flip,
+            "false" if ne => SentinelPolarity::Same,
+            "undefined" if atom.contains('(') => SentinelPolarity::Opaque,
+            _ => SentinelPolarity::NoComparison,
+        }
+    } else {
+        SentinelPolarity::NoComparison
+    };
+
+    match (base, local_not) {
+        (SentinelPolarity::Flip, true) => SentinelPolarity::Same,
+        (SentinelPolarity::Same, true) => SentinelPolarity::Flip,
+        (other, _) => other,
+    }
+}
+
+/// Normalise a sentinel operand: `true` / `false` / `undefined` / `-1` /
+/// `0`, case-insensitive.  Returns `None` for anything else.
+fn sentinel_literal(operand: &str) -> Option<&'static str> {
+    let compact: String = operand.chars().filter(|c| !c.is_whitespace()).collect();
+    match compact.to_ascii_lowercase().as_str() {
+        "true" => Some("true"),
+        "false" => Some("false"),
+        "undefined" => Some("undefined"),
+        "-1" => Some("-1"),
+        "0" => Some("0"),
+        _ => None,
+    }
+}
+
+/// Swap the operand order of a comparison operator (`a < b` == `b > a`).
+fn mirror_comparison(op: &'static str) -> &'static str {
+    match op {
+        "<" => ">",
+        ">" => "<",
+        "<=" => ">=",
+        ">=" => "<=",
+        other => other,
+    }
+}
+
+/// `IDENT[IDENT]`, the map-lookup atom also accepted by
+/// [`is_index_membership_check`].
+fn is_index_lookup_atom(atom: &str) -> bool {
+    let Some(open) = atom.find('[') else {
+        return false;
+    };
+    let Some(inner) = atom[open + 1..].strip_suffix(']') else {
+        return false;
+    };
+    is_identifier(atom[..open].trim()) && is_identifier(inner.trim())
+}
+
+/// Split `text` into `(lhs, op, rhs)` when it holds exactly one comparison
+/// operator outside parens, brackets and string literals, and no top-level
+/// `&&` / `||` / `and` / `or`.  `->` and `=>` are not comparisons.
+fn split_single_comparison(text: &str) -> Option<(&str, &'static str, &str)> {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote: Option<u8> = None;
+    let mut found: Option<(usize, usize, &'static str)> = None;
+    let mut i = 0usize;
+    let word_at = |i: usize, w: &[u8]| -> bool {
+        i > 0
+            && bytes[i - 1] == b' '
+            && bytes.len() > i + w.len()
+            && bytes[i..i + w.len()].eq_ignore_ascii_case(w)
+            && bytes[i + w.len()] == b' '
+    };
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if depth == 0 {
+            if word_at(i, b"and") || word_at(i, b"or") {
+                return None;
+            }
+            let two = bytes.get(i..i + 2);
+            if two == Some(b"&&") || two == Some(b"||") {
+                return None;
+            }
+        }
+        let op: Option<(&'static str, usize)> = match b {
+            b'"' | b'\'' | b'`' => {
+                in_quote = Some(b);
+                None
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                None
+            }
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                None
+            }
+            _ if depth != 0 => None,
+            b'=' | b'!' if bytes.get(i + 1) == Some(&b'=') => {
+                let strict = bytes.get(i + 2) == Some(&b'=');
+                match (b, strict) {
+                    (b'=', true) => Some(("===", 3)),
+                    (b'=', false) => Some(("==", 2)),
+                    (_, true) => Some(("!==", 3)),
+                    (_, false) => Some(("!=", 2)),
+                }
+            }
+            b'<' | b'>' => {
+                let prev = if i > 0 { bytes[i - 1] } else { b' ' };
+                if b == b'>' && (prev == b'-' || prev == b'=') {
+                    None
+                } else if bytes.get(i + 1) == Some(&b'=') {
+                    Some((if b == b'<' { "<=" } else { ">=" }, 2))
+                } else if bytes.get(i + 1) == Some(&b) {
+                    // `<<` / `>>` shifts are not comparisons; skip both bytes.
+                    i += 1;
+                    None
+                } else {
+                    Some((if b == b'<' { "<" } else { ">" }, 1))
+                }
+            }
+            b'i' | b'I' if depth == 0 && word_at(i, b"is") => {
+                if word_at(i + 3, b"not") {
+                    Some(("is not", 6))
+                } else {
+                    Some(("is", 2))
+                }
+            }
+            _ => None,
+        };
+        if let Some((op, len)) = op {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((i, len, op));
+            i += len;
+            continue;
+        }
+        i += 1;
+    }
+    let (pos, len, op) = found?;
+    let lhs = text[..pos].trim();
+    let rhs = text[pos + len..].trim();
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    Some((lhs, op, rhs))
 }
 
 /// Value-first membership predicate free functions: `f(value, collection)`
@@ -888,6 +1199,231 @@ fn membership_fn_leaf_normalised(text: &str) -> Option<String> {
 fn is_value_first_membership_fn(text: &str) -> bool {
     membership_fn_leaf_normalised(text)
         .is_some_and(|leaf| VALUE_FIRST_MEMBERSHIP_FNS.contains(&leaf.as_str()))
+}
+
+/// PHP `ctype_*` checks whose accepted alphabet excludes shell, SQL and
+/// path metacharacters.  `ctype_punct` / `ctype_print` / `ctype_graph`
+/// accept `;`, `'`, `/` and friends, so they are not validators.
+const SAFE_CTYPE_FNS: &[&str] = &[
+    "ctype_digit(",
+    "ctype_alnum(",
+    "ctype_alpha(",
+    "ctype_xdigit(",
+    "ctype_upper(",
+    "ctype_lower(",
+];
+
+/// `typeof` results that pin a JS value to something that cannot carry a
+/// string payload: a non-string scalar, or a function (request data, JSON
+/// and query strings never produce one).
+const SAFE_TYPEOF_RESULTS: &[&str] = &["number", "bigint", "boolean", "function"];
+
+/// Python classes (last dotted segment, lowercased) whose instances render
+/// as plain numbers / booleans / UUIDs.
+const SCALAR_PY_CLASSES: &[&str] = &[
+    "int", "float", "bool", "complex", "decimal", "uuid", "number", "integral", "real", "rational",
+    "fraction",
+];
+
+/// Java / JS classes (last dotted segment, lowercased) for `instanceof`.
+/// `Character` is left out: a single quote is enough to break SQL.
+const SCALAR_INSTANCEOF_CLASSES: &[&str] = &[
+    "number",
+    "integer",
+    "long",
+    "short",
+    "byte",
+    "double",
+    "float",
+    "boolean",
+    "biginteger",
+    "bigdecimal",
+    "uuid",
+    "atomicinteger",
+    "atomiclong",
+];
+
+/// Ruby classes (last `::` segment, lowercased) for `is_a?` / `kind_of?`.
+const SCALAR_RUBY_CLASSES: &[&str] = &[
+    "integer",
+    "numeric",
+    "float",
+    "fixnum",
+    "bignum",
+    "rational",
+    "bigdecimal",
+    "complex",
+    "trueclass",
+    "falseclass",
+];
+
+/// True when every runtime type test in `lower` (already lowercased) pins
+/// the value to one of the types listed above.  A condition mixing such a
+/// test with any other type test, or a type test whose type cannot be
+/// read, does not qualify.
+fn type_check_proves_scalar(lower: &str) -> bool {
+    let mut saw_test = false;
+
+    if lower.contains("is_string(") {
+        return false;
+    }
+
+    if lower.contains("typeof ") {
+        // Every quoted literal in the condition must be a safe `typeof`
+        // result; this also covers the reversed `'number' === typeof x`.
+        let literals = quoted_literals(lower);
+        if literals.is_empty() || !literals.iter().all(|lit| SAFE_TYPEOF_RESULTS.contains(lit)) {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for (idx, _) in lower.match_indices("isinstance(") {
+        let args = split_top_level_args(&lower[idx + "isinstance(".len()..]);
+        let Some(classes) = args.get(1) else {
+            return false;
+        };
+        let classes = classes.trim().trim_start_matches('(').trim_end_matches(')');
+        let all_scalar = classes
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .all(|c| SCALAR_PY_CLASSES.contains(&c.rsplit('.').next().unwrap_or(c)));
+        if classes.trim().is_empty() || !all_scalar {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for (idx, _) in lower.match_indices(" instanceof ") {
+        let after = lower[idx + " instanceof ".len()..].trim_start();
+        let class: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let leaf = class.rsplit('.').next().unwrap_or("");
+        if !SCALAR_INSTANCEOF_CLASSES.contains(&leaf) {
+            return false;
+        }
+        saw_test = true;
+    }
+
+    for method in [".is_a?(", ".kind_of?("] {
+        for (idx, _) in lower.match_indices(method) {
+            let Some(class) = first_call_arg(&lower[idx + method.len()..]) else {
+                return false;
+            };
+            let leaf = class.rsplit("::").next().unwrap_or(class).trim();
+            if !SCALAR_RUBY_CLASSES.contains(&leaf) {
+                return false;
+            }
+            saw_test = true;
+        }
+    }
+
+    saw_test
+}
+
+/// For a JS/TS regex-literal allowlist test, `/^[0-9]+$/.test(x)` (with an
+/// optional leading `!` / wrapping parens), return the tested argument `x`.
+///
+/// The literal must be anchored at both ends and its body must restrict the
+/// alphabet: no `.` wildcard outside a class, no negated class `[^...]` and
+/// no `\S` / `\W` / `\D`.  `/^.*$/` or an unanchored `/[0-9]/` proves nothing
+/// about the rest of the value.  The receiver-name rule in
+/// [`classify_condition`] (`SAFE_REGEX.test(x)`) covers named patterns;
+/// this covers inline literals, whose body is visible.
+fn anchored_regex_literal_test_arg(text: &str) -> Option<String> {
+    let t = text.trim().trim_start_matches(['(', '!', ' ', '\t']);
+    let bytes = t.as_bytes();
+    if bytes.first() != Some(&b'/') {
+        return None;
+    }
+    // Find the closing `/` of the literal: skip escapes and `/` inside a
+    // character class.
+    let mut i = 1usize;
+    let mut in_class = false;
+    let close = loop {
+        let b = *bytes.get(i)?;
+        match b {
+            b'\\' => i += 1,
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'/' if !in_class => break i,
+            _ => {}
+        }
+        i += 1;
+    };
+    let body = &t[1..close];
+    let rest = t[close + 1..].trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let args = rest.strip_prefix(".test(")?;
+    let anchored = body.len() >= 2
+        && body.starts_with('^')
+        && body.ends_with('$')
+        && !body[..body.len() - 1].ends_with('\\');
+    if !anchored || !regex_body_restricts_alphabet(body) {
+        return None;
+    }
+    let arg = first_call_arg(args)?.trim();
+    is_identifier(arg).then(|| arg.to_string())
+}
+
+/// True when a regex body has no construct that matches an open-ended
+/// alphabet (see [`anchored_regex_literal_test_arg`]).
+fn regex_body_restricts_alphabet(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    let mut in_class = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if matches!(bytes.get(i + 1), Some(b'S' | b'W' | b'D')) {
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+            b'[' if !in_class => {
+                if bytes.get(i + 1) == Some(&b'^') {
+                    return false;
+                }
+                in_class = true;
+            }
+            b']' => in_class = false,
+            b'.' if !in_class => return false,
+            _ => {}
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Contents of every `'...'`, `"..."` and `` `...` `` literal in `text`.
+fn quoted_literals(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q == b'"' || q == b'\'' || q == b'`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != q {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            out.push(&text[start..j]);
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Classify a raw condition text into a [`PredicateKind`].
@@ -962,12 +1498,22 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // ── Inline relative-URL validation ──────────────────────────────────
     //
     // `x.startsWith("/")` (JS/TS/Java/Kotlin), `x.starts_with("/")` (Rust),
-    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP).
-    // The TRUE branch constrains `x` to a leading-slash relative path —
-    // the canonical inline open-redirect sanitiser.  Matched BEFORE
-    // AllowlistCheck (which would otherwise capture `.starts_with(`).
-    if is_leading_slash_check(text) {
+    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP), and the
+    // protocol-relative rejection `x.startsWith("//")`.  A leading slash
+    // alone does not keep a redirect on-site (`//evil.com`), so the two
+    // tests are separate kinds whose facts meet on the path; only a
+    // single-text conjunction of both is the full check.  A compound text
+    // in any other shape is left to the generic classifier.
+    if is_relative_url_conjunction(text) {
         return PredicateKind::RelativeUrlValidated;
+    }
+    if !has_boolean_connective(text) {
+        if is_protocol_relative_check(text) {
+            return PredicateKind::ProtocolRelativeCheck;
+        }
+        if is_leading_slash_check(text) {
+            return PredicateKind::LeadingSlashCheck;
+        }
     }
 
     // ── Host-allowlist URL-parse validation ─────────────────────────────
@@ -1053,17 +1599,13 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     }
 
     // ── Type-check guards ──────────────────────────────────────────────
-    if lower.contains("typeof ")
-        || lower.contains("isinstance(")
-        || lower.contains(" instanceof ")
-        || lower.contains(".matches(")
+    //
+    // Value-shape checks that pin the value to a digit / alnum alphabet.
+    if lower.contains(".matches(")
         || lower.contains("is_numeric(")
         || lower.contains("is_int(")
-        || lower.contains("is_string(")
         || lower.contains("is_float(")
-        || lower.contains("ctype_")
-        || lower.contains(".is_a?(")
-        || lower.contains(".kind_of?(")
+        || SAFE_CTYPE_FNS.iter().any(|f| lower.contains(f))
         // Rust character-class validation: `.chars().all(|c| c.is_ascii_*())`
         // and similar per-character validations.  Presence of `is_ascii_`
         // inside an `.all(…)` / `.iter().all(…)` call is a strong validation
@@ -1073,6 +1615,25 @@ pub fn classify_condition(text: &str) -> PredicateKind {
         || (lower.contains(".all(") && lower.contains("is_numeric("))
     {
         return PredicateKind::TypeCheck;
+    }
+    // Runtime type tests validate only when the tested type cannot carry
+    // an injection payload (a non-string scalar, or a JS function).  `typeof x === 'string'` /
+    // `isinstance(x, str)` / `x instanceof String` / `is_string($x)` /
+    // `x.is_a?(String)` describe the type every payload already has; in
+    // Express they mostly reject `qs` arrays.  Those return Unknown here
+    // (not Comparison) so neither branch is validated.
+    if lower.contains("typeof ")
+        || lower.contains("isinstance(")
+        || lower.contains(" instanceof ")
+        || lower.contains("is_string(")
+        || lower.contains(".is_a?(")
+        || lower.contains(".kind_of?(")
+    {
+        return if type_check_proves_scalar(&lower) {
+            PredicateKind::TypeCheck
+        } else {
+            PredicateKind::Unknown
+        };
     }
 
     // ── Bounded-length rejection ─────────────────────────────────────────
@@ -1090,6 +1651,13 @@ pub fn classify_condition(text: &str) -> PredicateKind {
 
     // ── Call-based kinds (require `(` to be present) ─────────────────────
     if lower.contains('(') {
+        // Inline anchored regex literal: `/^[0-9]+$/.test(x)`.  Checked on
+        // the case-preserved text (`\S` and `\s` differ) and before the
+        // callee split below, which stops at the first `(` and would cut
+        // a regex containing a group.
+        if anchored_regex_literal_test_arg(text).is_some() {
+            return PredicateKind::ValidationCall;
+        }
         // Strip leading wrappers (parens, `!`, whitespace) before locating
         // the callee token.  Without this, idiomatic forms like
         // `(!validate(x))` (TypeScript / JS) or `not validate(x)` (Python)
@@ -1320,7 +1888,9 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             let target = extract_validation_target(text);
             (kind, target)
         }
-        PredicateKind::RelativeUrlValidated => {
+        PredicateKind::RelativeUrlValidated
+        | PredicateKind::LeadingSlashCheck
+        | PredicateKind::ProtocolRelativeCheck => {
             // Receiver of `.startsWith("/")` / `.startswith("/")` /
             // `.starts_with("/")`, or first arg of `strpos($x, "/")`.
             // Same machinery as ShellMetaValidated.
@@ -1344,8 +1914,9 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
         PredicateKind::Comparison => {
             // `x === '/login'`, `x == 5`, `null != obj`, when exactly one
             // side is a literal, extract the identifier side as the target.
-            // Downstream `apply_branch_predicates` uses this to mark the
-            // variable as `validated_may` on the true (equal) branch.
+            // This only narrows which condition vars the branch touches;
+            // the equal-edge validation itself comes from
+            // [`equality_literal_guard`].
             let target = extract_comparison_target(text);
             (kind, target)
         }
@@ -1362,7 +1933,8 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
 /// - `null != obj` → `Some("obj")`
 /// - `x === y` → `None` (neither side is a literal)
 /// - `'a' == 'b'` → `None` (both sides are literals)
-/// - `obj.field == 3` → `None` (not a bare identifier)
+/// - `obj.field == 3` → `Some("obj.field")` ([`is_identifier`] accepts
+///   dots; the consumer only uses it when it names a condition var)
 ///
 /// Best-effort text analysis, kept conservative to avoid false validation.
 fn extract_comparison_target(text: &str) -> Option<String> {
@@ -1412,23 +1984,96 @@ fn is_comparison_literal(s: &str) -> bool {
         return true;
     }
 
-    // Numeric literal: optional sign + digits, optional decimal point.
-    let mut chars = s.chars();
-    let first = chars.next().unwrap();
-    let rest_start = if first == '-' || first == '+' {
-        match chars.next() {
-            Some(c) => c,
-            None => return false,
-        }
-    } else {
-        first
-    };
-    if !rest_start.is_ascii_digit() {
-        return false;
+    is_numeric_literal(s)
+}
+
+/// A single equality test of a bare variable against a constant literal:
+/// `dir === 'asc'`, `order != "desc"`, `$n === 5`, `'asc' == dir`.
+///
+/// Returns `(variable, op_is_eq)`.  On the edge where the values are equal
+/// the variable holds the literal, so an `a == 'x' || a == 'y'` chain (which
+/// the CFG splits into one branch per clause) is an inline allowlist.
+///
+/// Conservative on purpose:
+/// * the variable must be a plain identifier (an optional PHP `$` is
+///   stripped), not a member path like `x.length`;
+/// * the literal must be a plain string (no `${..}` / `#{..}` / PHP `"$x"`
+///   interpolation) or a number; `null` / `true` / `false` and friends are
+///   other idioms;
+/// * PHP loose `==` against a number is rejected, since before PHP 8
+///   `"1 OR 1=1" == 1` holds;
+/// * a whole-condition `!` / `not` returns `None` rather than guessing.
+pub fn equality_literal_guard(text: &str) -> Option<(String, bool)> {
+    use crate::abstract_interp::path_domain::{strip_leading_not, strip_outer_parens};
+
+    let t = strip_outer_parens(text.trim());
+    if strip_leading_not(t).is_some() {
+        return None;
     }
-    s.chars()
-        .skip(if first == '-' || first == '+' { 1 } else { 0 })
-        .all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+    let (lhs, op, rhs) = split_single_comparison(t)?;
+    let op_is_eq = match op {
+        "==" | "===" => true,
+        "!=" | "!==" => false,
+        _ => return None,
+    };
+    let strict = op.len() == 3;
+    let (ident, literal) = match (equality_literal(lhs), equality_literal(rhs)) {
+        (None, Some(lit)) => (lhs.trim(), lit),
+        (Some(lit), None) => (rhs.trim(), lit),
+        _ => return None,
+    };
+    let (ident, php_var) = match ident.strip_prefix('$') {
+        Some(rest) => (rest, true),
+        None => (ident, false),
+    };
+    if !is_identifier(ident) || ident.contains('.') {
+        return None;
+    }
+    if php_var && !strict && literal == EqLiteral::Number {
+        return None;
+    }
+    Some((ident.to_string(), op_is_eq))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EqLiteral {
+    String,
+    Number,
+}
+
+/// A constant string or numeric literal operand of an equality test.
+fn equality_literal(operand: &str) -> Option<EqLiteral> {
+    let s = operand.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let q = bytes[0];
+        if matches!(q, b'"' | b'\'' | b'`') && bytes[bytes.len() - 1] == q {
+            let inner = &s[1..s.len() - 1];
+            if inner.contains(q as char) || inner.contains("${") || inner.contains("#{") {
+                return None;
+            }
+            // PHP / shell style `"$name"` interpolation.
+            let dollar_var = q == b'"'
+                && inner
+                    .split('$')
+                    .skip(1)
+                    .any(|rest| rest.starts_with(|c: char| c.is_alphabetic() || c == '_'));
+            if dollar_var {
+                return None;
+            }
+            return Some(EqLiteral::String);
+        }
+    }
+    is_numeric_literal(s).then_some(EqLiteral::Number)
+}
+
+/// Optional sign, then digits with optional `.` / `_` separators.
+fn is_numeric_literal(s: &str) -> bool {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    digits.starts_with(|c: char| c.is_ascii_digit())
+        && digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
 /// Count positional arguments in a call-shaped condition text.
@@ -1477,10 +2122,17 @@ fn count_call_args(text: &str) -> Option<usize> {
 /// `(!ALLOWED.includes(cmd))` where naïve `strip_suffix(')')` would leave
 /// `cmd)` and lose the argument.
 fn first_call_arg(args_part: &str) -> Option<&str> {
+    call_arg(args_part, 0)
+}
+
+/// The `n`th top-level argument of the call whose argument list starts at
+/// `args_part` (just after the opening paren).  Same scan as
+/// [`first_call_arg`].
+fn call_arg(args_part: &str, n: usize) -> Option<&str> {
     let bytes = args_part.as_bytes();
     let mut depth: usize = 1;
     let mut end: Option<usize> = None;
-    let mut first_comma: Option<usize> = None;
+    let mut commas: smallvec::SmallVec<[usize; 4]> = smallvec::SmallVec::new();
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -1493,7 +2145,7 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
                     break;
                 }
             }
-            b',' if depth == 1 && first_comma.is_none() => first_comma = Some(i),
+            b',' if depth == 1 => commas.push(i),
             b'"' | b'\'' => {
                 let quote = b;
                 i += 1;
@@ -1513,8 +2165,9 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
         i += 1;
     }
     let end = end?;
-    let cut = first_comma.unwrap_or(end);
-    Some(args_part[..cut].trim())
+    let from = if n == 0 { 0 } else { *commas.get(n - 1)? + 1 };
+    let to = commas.get(n).copied().unwrap_or(end);
+    Some(args_part[from..to].trim())
 }
 
 /// Extract the validated variable from a condition text.
@@ -1523,6 +2176,9 @@ fn first_call_arg(args_part: &str) -> Option<&str> {
 /// - Function call: `validate(x, ...)` → `"x"`
 /// - Method call: `x.validate(...)` → `"x"`
 fn extract_validation_target(text: &str) -> Option<String> {
+    if let Some(arg) = anchored_regex_literal_test_arg(text) {
+        return Some(arg);
+    }
     let trimmed = text.trim();
 
     // Strip leading wrappers (parens, `!`, `not `) so idiomatic forms like
@@ -1616,10 +2272,18 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
         if let Some(pos) = lower.find(method) {
             let args_start = pos + method.len();
             let args_part = &trimmed[args_start..];
-            if let Some(first_arg) = first_call_arg(args_part) {
-                let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
-                if !first_arg.is_empty() && is_identifier(first_arg) {
-                    return Some(first_arg.to_string());
+            // Go's generic `slices.Contains(list, v)` (and the samber/lo and
+            // go-funk equivalents) is a package function: the collection is
+            // argument 0 and the value under test argument 1.
+            let pkg_second = (*method == ".contains(" && is_go_collection_pkg(&lower[..pos]))
+                .then(|| call_arg(args_part, 1))
+                .flatten();
+            let value_arg = pkg_second.or_else(|| first_call_arg(args_part));
+            if let Some(arg) = value_arg {
+                let arg = strip_borrow_and_view(arg);
+                let arg = arg.strip_prefix('$').unwrap_or(arg);
+                if !arg.is_empty() && is_identifier(arg) {
+                    return Some(arg.to_string());
                 }
             }
         }
@@ -1687,6 +2351,43 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
     }
 
     None
+}
+
+/// True when `before` (the text up to a `.contains(` call) ends in a bare Go
+/// collection-helper package name rather than a receiver value.
+fn is_go_collection_pkg(before: &str) -> bool {
+    let start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .map_or(0, |i| i + 1);
+    matches!(&before[start..], "slices" | "lo" | "funk")
+}
+
+/// Peel borrows and identity views off a membership argument so the value
+/// under test lines up with its variable name: Rust `&x`, `&mut x`, `*x`,
+/// `&x.as_str()`, `x.as_ref()`, `x.to_string()`.  Conversions that change
+/// the value (`trim`, `to_lowercase`) are left alone, so the argument is no
+/// longer a bare identifier and no target is extracted.
+fn strip_borrow_and_view(arg: &str) -> &str {
+    let mut a = arg.trim();
+    loop {
+        let before = a;
+        a = a.strip_prefix("&mut ").unwrap_or(a).trim_start();
+        a = a.trim_start_matches(['&', '*']).trim_start();
+        for view in [
+            ".as_str()",
+            ".as_ref()",
+            ".to_string()",
+            ".as_slice()",
+            ".as_bytes()",
+        ] {
+            if let Some(rest) = a.strip_suffix(view) {
+                a = rest.trim_end();
+            }
+        }
+        if a == before {
+            return a;
+        }
+    }
 }
 
 /// Detect map-membership style indexing such as `allowed[cmd]` without
@@ -2307,21 +3008,44 @@ mod tests {
     // silencing a real reject-then-sink finding and producing an FP on the
     // correctly-guarded `=== -1; return; sink` shape).  Drop to Unknown.
     #[test]
-    fn classify_negated_indexof_eq_minus_one_not_allowlist() {
+    fn classify_negated_indexof_eq_minus_one_is_flipped_allowlist() {
+        // Membership is still the atom; the `=== -1` comparison puts it on
+        // the FALSE edge (see `sentinel_comparison_polarity`).
+        for text in ["ALLOWED.indexOf(cmd) === -1", "ALLOWED.indexOf(cmd) == -1"] {
+            assert_eq!(
+                classify_condition_with_target(text),
+                (PredicateKind::AllowlistCheck, Some("cmd".to_string())),
+                "{text}"
+            );
+            assert_eq!(
+                sentinel_comparison_polarity(text),
+                SentinelPolarity::Flip,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_negated_indexof_lt_zero_is_flipped_allowlist() {
         assert_eq!(
-            classify_condition("ALLOWED.indexOf(cmd) === -1"),
-            PredicateKind::Unknown
+            classify_condition("allowed.indexOf(x) < 0"),
+            PredicateKind::AllowlistCheck
         );
         assert_eq!(
-            classify_condition("ALLOWED.indexOf(cmd) == -1"),
-            PredicateKind::Unknown
+            sentinel_comparison_polarity("allowed.indexOf(x) < 0"),
+            SentinelPolarity::Flip
         );
     }
 
     #[test]
-    fn classify_negated_indexof_lt_zero_not_allowlist() {
+    fn classify_negated_string_find_stays_unknown() {
+        // String search, not collection membership.
         assert_eq!(
-            classify_condition("allowed.indexOf(x) < 0"),
+            classify_condition("s.find(x) == -1"),
+            PredicateKind::Unknown
+        );
+        assert_eq!(
+            classify_condition("s.search(x) < 0"),
             PredicateKind::Unknown
         );
     }
@@ -2414,6 +3138,95 @@ mod tests {
         let (k2, t2) = classify_condition_with_target("!stringInSlice(host, allowed)");
         assert_eq!(k2, PredicateKind::AllowlistCheck);
         assert_eq!(t2.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn relative_url_checks_split_into_two_facts() {
+        use PredicateKind::*;
+        let cases = [
+            ("next.startsWith('/')", LeadingSlashCheck),
+            ("!next.startsWith('/')", LeadingSlashCheck),
+            ("x.starts_with(\"/\")", LeadingSlashCheck),
+            ("not nxt.startswith(\"/\")", LeadingSlashCheck),
+            ("strpos($x, '/') === 0", LeadingSlashCheck),
+            ("u[0] === '/'", LeadingSlashCheck),
+            ("next.startsWith('//')", ProtocolRelativeCheck),
+            ("next.startsWith('/\\\\')", ProtocolRelativeCheck),
+            ("u[1] === '/'", ProtocolRelativeCheck),
+            ("strpos($x, '//') === 0", ProtocolRelativeCheck),
+            // the whole check in one undecomposed conjunction
+            (
+                "x.startsWith('/') && !x.startsWith('//')",
+                RelativeUrlValidated,
+            ),
+            (
+                "!(x.startsWith('/') && !x.startsWith('//'))",
+                RelativeUrlValidated,
+            ),
+            (
+                "nxt.startswith('/') and not nxt.startswith('//')",
+                RelativeUrlValidated,
+            ),
+        ];
+        for (text, want) in cases {
+            assert_eq!(classify_condition(text), want, "{text}");
+        }
+        // Compound texts that are not the full check are not a URL fact.
+        for text in [
+            "!(x.startsWith('/') || x.startsWith('//'))",
+            "x.startsWith('/') && x.length < 100",
+            "!x.startsWith('/') || x.startsWith('//')",
+        ] {
+            let k = classify_condition(text);
+            assert!(
+                !matches!(
+                    k,
+                    LeadingSlashCheck | ProtocolRelativeCheck | RelativeUrlValidated
+                ),
+                "{text}: {k:?}"
+            );
+        }
+        // Targets resolve to the receiver.
+        assert_eq!(
+            classify_condition_with_target("!next.startsWith('//')")
+                .1
+                .as_deref(),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn membership_target_go_package_contains_and_rust_borrows() {
+        // Go `slices.Contains(list, v)`: the value is the second argument.
+        for text in [
+            "!slices.Contains(allowed, x)",
+            "slices.Contains(allowed, x)",
+            "!lo.Contains(allowed, x)",
+        ] {
+            let (k, t) = classify_condition_with_target(text);
+            assert_eq!(k, PredicateKind::AllowlistCheck, "{text}");
+            assert_eq!(t.as_deref(), Some("x"), "{text}");
+        }
+        // A method on a receiver keeps its first argument.
+        let (_, t) = classify_condition_with_target("allowed.contains(x)");
+        assert_eq!(t.as_deref(), Some("x"));
+        let (_, t) = classify_condition_with_target("myslices.Contains(x)");
+        assert_eq!(t.as_deref(), Some("x"));
+        // Rust borrows and identity views resolve to the variable.
+        for text in [
+            "!ALLOWED.contains(&x)",
+            "!ALLOWED.contains(&x.as_str())",
+            "ALLOWED.contains(&mut x)",
+            "ALLOWED.contains(*x)",
+            "ALLOWED.contains(x.as_ref())",
+        ] {
+            let (k, t) = classify_condition_with_target(text);
+            assert_eq!(k, PredicateKind::AllowlistCheck, "{text}");
+            assert_eq!(t.as_deref(), Some("x"), "{text}");
+        }
+        // A value-changing conversion is not the variable itself.
+        let (_, t) = classify_condition_with_target("ALLOWED.contains(&x.trim())");
+        assert_eq!(t, None);
     }
 
     #[test]
@@ -2589,16 +3402,22 @@ mod tests {
     #[test]
     fn classify_instanceof_is_type_check() {
         assert_eq!(
-            classify_condition("x instanceof String"),
+            classify_condition("x instanceof Integer"),
             PredicateKind::TypeCheck
+        );
+        // A String instance is exactly what an injection payload is, so the
+        // check validates nothing.
+        assert_eq!(
+            classify_condition("x instanceof String"),
+            PredicateKind::Unknown
         );
     }
 
     #[test]
     fn target_instanceof_x_string() {
         let (kind, target) = classify_condition_with_target("x instanceof String");
-        assert_eq!(kind, PredicateKind::TypeCheck);
-        assert_eq!(target.as_deref(), Some("x"));
+        assert_eq!(kind, PredicateKind::Unknown);
+        assert_eq!(target, None);
     }
 
     #[test]
@@ -3078,5 +3897,182 @@ mod ghsa_h8cj_hpmg_636v_tests {
             classify_condition_with_target("strncmp(buf[0], home, strlen(home))").1,
             None
         );
+    }
+
+    // ── Runtime type tests: only scalar types validate ───────────────────
+
+    #[test]
+    fn type_tests_validate_only_scalar_types() {
+        let scalar = [
+            "typeof x !== 'number'",
+            "'number' === typeof x",
+            "typeof flag === \"boolean\"",
+            "typeof cb === 'function'",
+            "isinstance(x, (int, float))",
+            "not isinstance(u, uuid.UUID)",
+            "x instanceof Integer",
+            "x instanceof java.lang.Long",
+            "x.is_a?(Integer)",
+            "!x.kind_of?(Numeric)",
+            "is_numeric($x)",
+            "ctype_digit($x)",
+        ];
+        for text in scalar {
+            assert_eq!(classify_condition(text), PredicateKind::TypeCheck, "{text}");
+        }
+        let non_scalar = [
+            "typeof x !== 'string'",
+            "typeof x === 'object'",
+            "typeof x === 'number' || typeof x === 'string'",
+            "isinstance(x, str)",
+            "isinstance(x, (int, str))",
+            "x instanceof String",
+            "is_string($x)",
+            "!is_string($cmd)",
+            "x.is_a?(String)",
+            "x.kind_of?(Hash)",
+        ];
+        for text in non_scalar {
+            assert_eq!(classify_condition(text), PredicateKind::Unknown, "{text}");
+        }
+        // `ctype_punct` / `ctype_print` accept metacharacters.
+        assert_ne!(
+            classify_condition("ctype_punct($x)"),
+            PredicateKind::TypeCheck
+        );
+        assert_ne!(
+            classify_condition("ctype_print($x)"),
+            PredicateKind::TypeCheck
+        );
+    }
+
+    // ── Literal-needle tests are not allowlists ──────────────────────────
+
+    #[test]
+    fn literal_needle_operator_and_go_forms_are_not_allowlists() {
+        for text in [
+            "\"..\" in name",
+            "'x' in host",
+            "\"admin\" not in name",
+            "strings.Contains(name, \"..\")",
+            "bytes.Contains(body, \"<script\")",
+        ] {
+            assert_eq!(classify_condition(text), PredicateKind::Unknown, "{text}");
+        }
+        // Genuine membership keeps its classification.
+        assert_eq!(
+            classify_condition_with_target("cmd in ALLOWED"),
+            (PredicateKind::AllowlistCheck, Some("cmd".to_string()))
+        );
+        assert_eq!(
+            classify_condition_with_target("cmd not in ALLOWED"),
+            (PredicateKind::AllowlistCheck, Some("cmd".to_string()))
+        );
+    }
+
+    // ── Inline anchored regex literal validators ─────────────────────────
+
+    #[test]
+    fn anchored_regex_literal_test_is_validation_call() {
+        for (text, target) in [
+            ("!/^[0-9]+$/.test(id)", "id"),
+            ("/^[a-z_]+$/i.test(name)", "name"),
+            ("(!/^(ls|pwd)$/.test(cmd))", "cmd"),
+            ("/^\\d{1,6}$/.test(n)", "n"),
+        ] {
+            assert_eq!(
+                classify_condition_with_target(text),
+                (PredicateKind::ValidationCall, Some(target.to_string())),
+                "{text}"
+            );
+        }
+        for text in [
+            "/[0-9]/.test(id)",
+            "/^[0-9]+/.test(id)",
+            "/^.*$/.test(id)",
+            "/^[^;]+$/.test(id)",
+            "/^\\S+$/.test(id)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::ValidationCall,
+                "{text}"
+            );
+        }
+    }
+
+    // ── Sentinel comparison polarity ─────────────────────────────────────
+
+    #[test]
+    fn equality_literal_guard_table() {
+        let some = |v: &str, eq: bool| Some((v.to_string(), eq));
+        // (text, expected)
+        let cases: &[(&str, Option<(String, bool)>)] = &[
+            ("(dir === 'asc')", some("dir", true)),
+            ("dir !== 'asc'", some("dir", false)),
+            ("order != \"desc\"", some("order", false)),
+            ("'asc' == dir", some("dir", true)),
+            ("$dir !== 'asc'", some("dir", false)),
+            ("$n === 5", some("n", true)),
+            ("x == 5", some("x", true)),
+            // PHP loose `==` against a number: "1 OR 1=1" == 1 before PHP 8
+            ("$n == 5", None),
+            ("x.length === 5", None),
+            ("x === `${y}`", None),
+            ("x == \"#{y}\"", None),
+            ("$x == \"a$y\"", None),
+            ("x === true", None),
+            ("x == null", None),
+            ("x === y", None),
+            ("!(x === 'a')", None),
+            ("x === 'a' || y === 'b'", None),
+            ("x >= 5", None),
+            ("x is 'a'", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(&equality_literal_guard(text), want, "{text}");
+        }
+    }
+
+    #[test]
+    fn sentinel_comparison_polarity_table() {
+        use SentinelPolarity::*;
+        let cases = [
+            ("(ALLOWED.includes(cmd) === false)", Flip),
+            ("(isValidName(cmd) === false)", Flip),
+            ("is_valid_name(name) == False", Flip),
+            ("is_valid_name(name) is False", Flip),
+            ("is_valid(x) is not True", Flip),
+            ("(false === in_array($cmd, $allowed, true))", Flip),
+            ("(ALLOWED[cmd] === undefined)", Flip),
+            ("(ALLOWED[cmd] !== true)", Flip),
+            ("(ALLOWED.indexOf(cmd) === -1)", Flip),
+            ("ALLOWED.indexOf(cmd) < 0", Flip),
+            ("-1 === ALLOWED.indexOf(cmd)", Flip),
+            ("(!isValidName(cmd) === true)", Flip),
+            ("!(isValidName(cmd) === false)", Flip),
+            ("not is_valid(x) == False", Flip),
+            ("ok === false", Flip),
+            ("ALLOWED.includes(cmd) !== false", Same),
+            ("(ALLOWED[cmd] !== undefined)", Same),
+            ("ALLOWED.indexOf(cmd) >= 0", Same),
+            ("ALLOWED.indexOf(cmd) > -1", Same),
+            ("(!isValidName(cmd) === false)", Same),
+            ("isinstance(x, int) == True", Same),
+            ("(ALLOWED[cmd] === false)", Opaque),
+            ("ALLOWED.indexOf(cmd) === 0", Opaque),
+            ("typeof x !== 'string'", NoComparison),
+            ("isValid(x === false)", NoComparison),
+            ("a && isValid(x) === false", NoComparison),
+            ("isValid(x) === false || other", NoComparison),
+            ("ALLOWED.includes(cmd)", NoComparison),
+            ("strpos($x, '/') === 0", NoComparison),
+            ("$obj->isValid() === false", Flip),
+            ("count === 0", NoComparison),
+            ("x == null", NoComparison),
+        ];
+        for (text, want) in cases {
+            assert_eq!(sentinel_comparison_polarity(text), want, "{text}");
+        }
     }
 }
