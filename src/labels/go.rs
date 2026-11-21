@@ -145,8 +145,14 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::URL_ENCODE),
         case_sensitive: false,
     },
+    // `filepath.Base` keeps only the final element.  `path.Base` splits on
+    // `/` alone, so on a Windows host a `..\` component survives it; it is not
+    // listed.
+    // `filepath.Clean` is lexical and leaves `../../x` alone, so it is a
+    // PathFact primitive that a `strings.HasPrefix` containment check clears,
+    // not a sanitiser.
     LabelRule {
-        matchers: &["filepath.Clean", "filepath.Base"],
+        matchers: &["filepath.Base"],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
     },

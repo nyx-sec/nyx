@@ -1,0 +1,59 @@
+{
+  "description": "PHP `realpath` is a path primitive, not a sanitiser: it needs a prefix check against the base (`str_starts_with`, or `strpos(...) === 0`). `basename` keeps only the leaf.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "realpath"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "notes": "realpath alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "realpath then str_starts_with(base)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "realpath then strpos(base) === 0"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        38,
+        38
+      ],
+      "notes": "basename keeps only the leaf"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        50,
+        50
+      ],
+      "notes": "loose strpos comparison: false != 0 is false, so an outside path passes"
+    }
+  ]
+}

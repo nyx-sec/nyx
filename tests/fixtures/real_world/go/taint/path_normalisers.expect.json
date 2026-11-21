@@ -1,0 +1,95 @@
+{
+  "description": "Go `filepath.Clean` is lexical and not a sanitiser; a root check (`strings.HasPrefix`) on a cleaned or joined path is the containment test, a rooted Clean joined under a literal base cannot climb out, and `filepath.Base` keeps only the leaf.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "filepath-clean"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "Clean keeps a leading ..; Join under a base does not stop it"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "notes": "Clean alone"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        33,
+        33
+      ],
+      "notes": "Clean then HasPrefix(root)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        44,
+        44
+      ],
+      "notes": "Join then HasPrefix(root)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        53,
+        53
+      ],
+      "notes": "rooted Clean joined under a literal base"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        61,
+        61
+      ],
+      "notes": "Base keeps only the final element"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        69,
+        69
+      ],
+      "notes": "a rooted Clean on its own is any absolute path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        77,
+        77
+      ],
+      "notes": "Join alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        86,
+        86
+      ],
+      "notes": "TrimPrefix drops the root, so the cleaned value is relative again"
+    }
+  ]
+}

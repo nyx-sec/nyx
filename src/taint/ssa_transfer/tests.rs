@@ -1305,6 +1305,178 @@ mod goto_succ_propagation_tests {
         );
     }
 
+    /// A branch state whose value 0 carries `fact`.
+    fn state_with_path_fact(fact: crate::abstract_interp::PathFact) -> SsaTaintState {
+        let mut s = initial_state_with_abstract();
+        std::sync::Arc::make_mut(s.abstract_state.as_mut().unwrap()).set(
+            SsaValue(0),
+            crate::abstract_interp::AbstractValue::with_path_fact(fact),
+        );
+        s
+    }
+
+    fn lexically_normalized_fact() -> crate::abstract_interp::PathFact {
+        let mut f = crate::abstract_interp::PathFact::top();
+        f.normalized = crate::abstract_interp::Tri::Yes;
+        f
+    }
+
+    #[test]
+    fn prefix_lock_on_a_normalized_path_clears_dotdot() {
+        // `p = normpath(x); if p.startswith(ROOT): sink(p)`.  A normalized
+        // path holds `..` only as leading components, and a path that starts
+        // with ROOT does not.
+        let ssa = ssa_body_with_named_value("p");
+        for (cond, root) in [
+            ("p.startswith(\"/srv/files/\")", "/srv/files/"),
+            (
+                "p.startswith(base)",
+                crate::abstract_interp::path_domain::OPAQUE_PREFIX_LOCK,
+            ),
+        ] {
+            let mut true_state = state_with_path_fact(lexically_normalized_fact());
+            let mut false_state = state_with_path_fact(lexically_normalized_fact());
+            super::super::apply_path_fact_branch_narrowing(
+                &mut true_state,
+                &mut false_state,
+                cond,
+                &["p".to_string()],
+                &ssa,
+            );
+            let fact = true_state
+                .abstract_state
+                .as_ref()
+                .unwrap()
+                .get(SsaValue(0))
+                .path;
+            assert_eq!(fact.prefix_lock.as_deref(), Some(root), "{cond}");
+            assert_eq!(fact.dotdot, crate::abstract_interp::Tri::No, "{cond}");
+            assert!(fact.is_path_traversal_safe(), "{cond}");
+        }
+    }
+
+    #[test]
+    fn prefix_lock_on_a_raw_path_keeps_dotdot_unknown() {
+        // Without normalization `/srv/files/../../etc` also starts with the
+        // root, so the lock alone proves nothing about `..`.
+        let ssa = ssa_body_with_named_value("p");
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+        super::super::apply_path_fact_branch_narrowing(
+            &mut true_state,
+            &mut false_state,
+            "p.startswith(\"/srv/files/\")",
+            &["p".to_string()],
+            &ssa,
+        );
+        let fact = true_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert_eq!(fact.dotdot, crate::abstract_interp::Tri::Maybe);
+        assert!(!fact.is_path_traversal_safe());
+    }
+
+    #[test]
+    fn prefix_lock_rooted_at_dotdot_clears_nothing() {
+        let ssa = ssa_body_with_named_value("p");
+        let mut true_state = state_with_path_fact(lexically_normalized_fact());
+        let mut false_state = state_with_path_fact(lexically_normalized_fact());
+        super::super::apply_path_fact_branch_narrowing(
+            &mut true_state,
+            &mut false_state,
+            "p.startswith(\"../uploads\")",
+            &["p".to_string()],
+            &ssa,
+        );
+        let fact = true_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert_eq!(fact.dotdot, crate::abstract_interp::Tri::Maybe);
+    }
+
+    #[test]
+    fn leading_dotdot_rejection_clears_dotdot_only_when_normalized() {
+        // `p = normpath(x); if p.startswith('..'): reject; sink(p)`.
+        let ssa = ssa_body_with_named_value("p");
+        let mut true_state = state_with_path_fact(lexically_normalized_fact());
+        let mut false_state = state_with_path_fact(lexically_normalized_fact());
+        super::super::apply_path_fact_branch_narrowing(
+            &mut true_state,
+            &mut false_state,
+            "p.startswith('..')",
+            &["p".to_string()],
+            &ssa,
+        );
+        let surviving = false_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert_eq!(surviving.dotdot, crate::abstract_interp::Tri::No);
+        let rejected = true_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert_eq!(rejected.dotdot, crate::abstract_interp::Tri::Maybe);
+
+        // The same test on a raw path says nothing about `a/../../b`.
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+        super::super::apply_path_fact_branch_narrowing(
+            &mut true_state,
+            &mut false_state,
+            "p.startswith('..')",
+            &["p".to_string()],
+            &ssa,
+        );
+        let surviving = false_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert_eq!(surviving.dotdot, crate::abstract_interp::Tri::Maybe);
+    }
+
+    #[test]
+    fn strpos_not_zero_locks_the_false_branch() {
+        // `if (strpos($real, $base) !== 0) { die(); } include($real);`
+        let ssa = ssa_body_with_named_value("real");
+        let mut true_state = state_with_path_fact(lexically_normalized_fact());
+        let mut false_state = state_with_path_fact(lexically_normalized_fact());
+        super::super::apply_path_fact_branch_narrowing(
+            &mut true_state,
+            &mut false_state,
+            "strpos($real, $base) !== 0",
+            &["real".to_string()],
+            &ssa,
+        );
+        let surviving = false_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert!(surviving.prefix_lock.is_some());
+        assert_eq!(surviving.dotdot, crate::abstract_interp::Tri::No);
+        let rejected = true_state
+            .abstract_state
+            .as_ref()
+            .unwrap()
+            .get(SsaValue(0))
+            .path;
+        assert!(rejected.prefix_lock.is_none());
+    }
+
     #[test]
     fn path_fact_negated_contains_dotdot_narrows_true_branch() {
         // `if !path.contains("..") { return; } sink(path);` — the surviving

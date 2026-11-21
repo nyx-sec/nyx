@@ -223,35 +223,10 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: true,
     },
-    // Phase 13 — `Path.normalize()` collapses `.` / `..` segments and
-    // is the canonical Java path-traversal sanitiser when paired with
-    // a `startsWith(base)` containment check (not modelled here; the
-    // sanitiser rule clears the FILE_IO cap on the call's return,
-    // which is sufficient for the cap-based gate to suppress the
-    // sink finding).  Case-sensitive: `Path.normalize` is unique to
-    // `java.nio.file.Path`; bare `normalize` would over-fire on
-    // `Locale.normalize`, `BigDecimal.normalize`, etc.
-    LabelRule {
-        matchers: &[
-            "Path.normalize",
-            // Canonical Java path-traversal sanitiser idiom:
-            // `base.resolve(name).normalize()`.  CFG paren-strip yields
-            // callee text `<receiver>.resolve.normalize`; the bare 2-call
-            // `resolve.normalize` suffix is unique to `java.nio.file.Path`
-            // (no overload across the supported corpus produces the same
-            // chain text).  Case-sensitive on the leaf chain to avoid
-            // colliding with non-path `.resolve()`-then-`.normalize()`
-            // shapes in unrelated grammars.
-            "resolve.normalize",
-            // Receiver-bound shape `Paths.get(p).normalize()` — the
-            // `Paths.get` constructor mapping in `ssa/type_facts.rs` types
-            // the receiver as `FileHandle`, so the type-qualified resolver
-            // rewrites `<v>.normalize` → `FileHandle.normalize` here.
-            "FileHandle.normalize",
-        ],
-        label: DataLabel::Sanitizer(Cap::FILE_IO),
-        case_sensitive: true,
-    },
+    // `Path.normalize()` is lexical: `base.resolve("../../x").normalize()` is
+    // `/x`, so it does not confine a path and is not a sanitiser.  It is a
+    // path primitive in the PathFact domain, cleared by a `startsWith(base)`
+    // containment check.
     // HTTP response reflected-XSS sinks.  `println` / `print` / `write` are
     // the servlet response-writer output verbs; `write` is the dominant form
     // in real servlets (`response.getWriter().write(html)`).  All three are

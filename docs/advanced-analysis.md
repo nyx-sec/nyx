@@ -41,8 +41,15 @@ structural invariant ("rooted under SOME prefix") instead. This closes
 the Ruby `File.expand_path + start_with?(root)`, Python
 `os.path.realpath + .startswith(root)`, and JS
 `path.resolve + .startsWith(root)` shapes. `classify_path_assertion`
-recognises JS `.startsWith(...)`, Python `.startswith(...)`, Ruby
-`.start_with?(...)` (paren and paren-less), and Go `strings.HasPrefix(...)`.
+recognises JS `.startsWith(...)`, Python `.startswith(...)` and
+`.is_relative_to(...)`, Ruby `.start_with?(...)` (paren and paren-less), Go
+`strings.HasPrefix(...)`, and PHP `str_starts_with(...)` and
+`strpos(...) === 0`. Lexical normalisers (`normpath`, `path.normalize`,
+`filepath.Clean`, `Path.normalize`, `cleanpath`) only mark a path
+normalized: a leading `..` of a relative path survives them, so they clear
+`..` only on a rooted input, or after a prefix lock or a `startswith("..")`
+rejection on the normalized value. `basename` takes the final component and
+is the one path primitive that is also a plain sanitiser.
 Branch narrowing flips lock attachment under condition negation
 (`if !target.startsWith(ROOT) { return; }` attaches the lock to the
 surviving block, not the rejection arm).

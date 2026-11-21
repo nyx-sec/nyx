@@ -3409,10 +3409,26 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     // decided by the PathFact narrowing below.  Restricted to a single
     // condition variable: with `a.includes("..") || b.startsWith("/")`
     // neither variable is proven safe on both axes.
-    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot);
+    //
+    // `startswith("..")` rejects the `..` axis only for a lexically
+    // normalized value, whose `..` components are all leading; the reaching
+    // definition's PathFact says whether that holds.
     let rejects_absolute = rejection_axes
         .iter()
         .any(|a| matches!(a, PathRejection::AbsoluteSlash | PathRejection::IsAbsolute));
+    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot)
+        || (rejection_axes.contains(&PathRejection::LeadingDotDot)
+            && effective_vars.len() == 1
+            && reaching_def_at_block_end(&effective_vars[0], ssa, block).is_some_and(|v| {
+                let safe_state: &SsaTaintState = if rejection_safe_is_true {
+                    true_state
+                } else {
+                    false_state
+                };
+                safe_state.abstract_state.as_ref().is_some_and(|abs| {
+                    abs.get(v).path.normalized == crate::abstract_interp::Tri::Yes
+                })
+            }));
     if rejects_dotdot && rejects_absolute && effective_vars.len() == 1 {
         let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
             &mut *true_state
@@ -3456,15 +3472,31 @@ fn apply_path_fact_branch_narrowing_with_aliases(
                 PathRejection::AbsoluteSlash | PathRejection::IsAbsolute => {
                     fact.absolute = crate::abstract_interp::Tri::No;
                 }
+                // Lexical normalisation leaves `..` only at the start of a
+                // relative path, so a normalized value that does not start
+                // with `..` has none.  Any other value may still hold one
+                // in the middle.
+                PathRejection::LeadingDotDot => {
+                    if fact.normalized == crate::abstract_interp::Tri::Yes {
+                        fact.dotdot = crate::abstract_interp::Tri::No;
+                    }
+                }
                 PathRejection::None => {}
             }
         }
     };
 
-    // Apply assertion (positive): true branch narrows prefix_lock.
-    let narrow_true = |fact: &mut PathFact| {
-        if let PathAssertion::PrefixLock(root) = assertion {
-            let updated = fact.clone().with_prefix_lock(root);
+    // Apply assertion (positive): the branch where it holds narrows
+    // prefix_lock.
+    let narrow_assertion = |fact: &mut PathFact| {
+        if let PathAssertion::PrefixLock(root) | PathAssertion::PrefixLockUnless(root) = assertion {
+            let mut updated = fact.clone().with_prefix_lock(root);
+            // A lexically normalized path holds `..` only as leading
+            // components, and a path that starts with a root that is not
+            // itself `..` has none.
+            if updated.normalized == crate::abstract_interp::Tri::Yes && !root.starts_with("..") {
+                updated.dotdot = crate::abstract_interp::Tri::No;
+            }
             *fact = updated;
         }
     };
@@ -3503,15 +3535,18 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     // actually holds on the *false* CFG edge, where the sink is reached.
     // Flip the destination state in that case so the lock attaches to
     // the surviving block.
-    let assertion_state = if negated {
-        &mut *false_state
-    } else {
+    // `PrefixLockUnless` (`strpos($p, $root) !== 0`) holds on the opposite
+    // edge.
+    let holds_on_true = !negated ^ matches!(assertion, PathAssertion::PrefixLockUnless(_));
+    let assertion_state = if holds_on_true {
         &mut *true_state
+    } else {
+        &mut *false_state
     };
     for v in &targets {
         if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
-            narrow_true(&mut av.path);
+            narrow_assertion(&mut av.path);
             if !av.is_top() {
                 Arc::make_mut(abs).set(*v, av);
             }
@@ -8396,17 +8431,47 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                 .as_ref()
                 .copied()
                 .or_else(|| args.first().and_then(|g| g.first().copied()));
-            let input_fact = input_val
+            let mut input_fact = input_val
                 .map(|v| abs.get(v).path)
                 .unwrap_or_else(PathFact::top);
+            // A value that starts with `/` is rooted, whether the text is a
+            // tracked variable (`"/" + name`) or the call's own first argument
+            // (`filepath.Clean("/" + name)`).  The node describes the call
+            // only when the SSA call is the node's own call, not one nested in
+            // an argument of the statement's outer call.
+            if input_fact.absolute == crate::abstract_interp::Tri::Maybe {
+                let rooted = |p: &str| p.starts_with('/') || p.starts_with('\\');
+                // The value read is the call's own first argument, and only
+                // when that argument is exactly a name: `p[1:]` or a call on
+                // `p` drops the leading `/` that `p`'s prefix shows.
+                let by_value = receiver.is_none()
+                    && bare_name_arg(info, callee, args, 0)
+                        .is_some_and(|v| abs.get(v).string.prefix.as_deref().is_some_and(rooted));
+                let by_arg = node_describes_call(info, callee)
+                    && info
+                        .call
+                        .arg_string_prefixes
+                        .first()
+                        .and_then(|p| p.as_deref())
+                        .is_some_and(rooted);
+                if by_value || by_arg {
+                    input_fact.absolute = crate::abstract_interp::Tri::Yes;
+                }
+            }
 
             // Primary path-producing primitives, per-language dispatch.
             let lang_unwrapped = lang.expect("guard ensures lang.is_some()");
-            if let Some(pf) = crate::abstract_interp::path_domain::classify_path_primitive_for_lang(
-                lang_unwrapped,
-                callee,
-                &input_fact,
-            ) {
+            if let Some(pf) =
+                segment_join_under_rooted_base(lang_unwrapped, callee, info, args, abs)
+            {
+                abs.set(inst.value, AbstractValue::with_path_fact(pf));
+            } else if let Some(pf) =
+                crate::abstract_interp::path_domain::classify_path_primitive_for_lang(
+                    lang_unwrapped,
+                    callee,
+                    &input_fact,
+                )
+            {
                 abs.set(inst.value, AbstractValue::with_path_fact(pf));
             } else if matches!(lang, Some(Lang::Rust)) {
                 // Rust-specific: `.replace(...)` sanitiser, variant-wrapper
@@ -8581,6 +8646,66 @@ fn node_describes_call(info: &NodeInfo, callee: &str) -> bool {
         .callee
         .as_deref()
         .is_some_and(|node_callee| leaf(node_callee) == leaf(callee))
+}
+
+/// PathFact of `filepath.Join(base, elems...)` / `path.join(base, elems...)`
+/// when `base` is a rooted literal and no later element can carry a `..`.
+///
+/// These joins treat every later argument as a path segment and clean the
+/// result, so the result stays under `base`: an absolute element does not
+/// replace it (unlike Python's `os.path.join`), and `..` is the only way out.
+/// `filepath.Join("/var/data", filepath.Clean("/" + name))` and
+/// `filepath.Join("/var/data", filepath.Base(name))` qualify; a bare request
+/// value does not, and keeps the classifier's `normalized`-only fact.
+fn segment_join_under_rooted_base(
+    lang: Lang,
+    callee: &str,
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+) -> Option<crate::abstract_interp::PathFact> {
+    use crate::abstract_interp::{PathFact, Tri};
+    let is_segment_join = match lang {
+        Lang::Go => matches!(callee, "filepath.Join" | "path.Join"),
+        Lang::JavaScript | Lang::TypeScript => {
+            matches!(callee, "path.join" | "path.posix.join")
+        }
+        _ => false,
+    };
+    if !is_segment_join || !node_describes_call(info, callee) {
+        return None;
+    }
+    let base = info.call.arg_string_literals.first()?.as_deref()?;
+    if !base.starts_with('/') || base.split('/').any(|seg| seg == "." || seg == "..") {
+        return None;
+    }
+    let positional = info.call.arg_uses.len();
+    if positional < 2 {
+        return None;
+    }
+    // Each element is its own path segment run, so a `..` can only come from
+    // inside one element.  A non-literal element must be exactly a name whose
+    // fact rules `..` out: `clean + "/.."` has the same single SSA use as
+    // `clean` but not its fact.
+    for i in 1..positional {
+        let literal = info
+            .call
+            .arg_string_literals
+            .get(i)
+            .and_then(|l| l.as_deref());
+        let ok = match literal {
+            Some(l) => !l.contains(".."),
+            None => bare_name_arg(info, callee, args, i)
+                .is_some_and(|v| abs.get(v).path.dotdot == Tri::No),
+        };
+        if !ok {
+            return None;
+        }
+    }
+    let mut fact = PathFact::top().with_dotdot_cleared().with_prefix_lock(base);
+    fact.normalized = Tri::Yes;
+    fact.absolute = Tri::Yes;
+    Some(fact)
 }
 
 /// Structural check: does `callee` look like a Rust scoped identifier
