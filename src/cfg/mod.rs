@@ -3628,11 +3628,16 @@ pub(super) fn push_node<'a>(
     // positions belong to the call underneath.  Without this the outermost
     // call carries no arguments and a typed-receiver SQL sink scans every use,
     // including the bound parameters.
+    //
+    // The receiver of the peeled call is not examined by the literal-argument
+    // check, so a rebind never counts as "all arguments literal".
+    let mut rust_call_rebound = false;
     if lang == "rust"
         && let Some(outer) = call_ast
         && let Some(inner) = peel_rust_result_unwrap(outer, code)
     {
         call_ast = Some(inner);
+        rust_call_rebound = true;
     }
 
     // Rust `sqlx::query(sql).bind(v).fetch_all(pool)` takes the same route: the
@@ -3650,9 +3655,26 @@ pub(super) fn push_node<'a>(
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
         && inner.id() != outer.id()
-        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+        && {
+            let inner_gates =
+                classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false);
+            // Rust: the outer sink keeps its own arguments unless the inner
+            // gate is the same sink class (`sqlx::query(sql).bind(v)`).  A
+            // different-cap inner gate (`File::create(p).unwrap().write_all(..)`)
+            // must not displace the outer sink's argument scan.
+            !inner_gates.is_empty()
+                && (lang != "rust"
+                    || inner_gates.iter().any(|g| match g.label {
+                        DataLabel::Sink(c) => labels.iter().any(|l| match l {
+                            DataLabel::Sink(oc) => !(*oc & c).is_empty(),
+                            _ => false,
+                        }),
+                        _ => false,
+                    }))
+        }
     {
         call_ast = Some(inner);
+        rust_call_rebound |= lang == "rust";
         outer_callee = Some(text.clone());
         text = inner_callee_text;
         inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
@@ -4539,7 +4561,7 @@ pub(super) fn push_node<'a>(
     };
 
     // Check whether all arguments are syntactic literals (for taint sink suppression).
-    let all_args_literal = if kind == StmtKind::Call {
+    let all_args_literal = if kind == StmtKind::Call && !rust_call_rebound {
         call_ast
             .map(|cn| has_only_literal_args(cn, code))
             .unwrap_or(false)
@@ -9203,9 +9225,18 @@ pub(super) fn build_sub<'a>(
             // `w http.ResponseWriter`, `c *http.Client`) classify under their
             // canonical receiver prefix while this body (and any closure
             // nested in it) is built.
-            let receiver_aliases = (lang == "go").then(|| {
-                crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
-            });
+            //
+            // Rust `conn: &Connection` formals take the `DatabaseConnection`
+            // prefix the same way.
+            let receiver_aliases = match lang {
+                "go" => Some(crate::labels::push_receiver_aliases(
+                    params::go_receiver_alias_frame(ast, code),
+                )),
+                "rust" => Some(crate::labels::push_receiver_aliases(
+                    params::rust_receiver_alias_frame(ast, code),
+                )),
+                _ => None,
+            };
 
             let mut fn_call_ordinal: u32 = 0;
             let mut fn_breaks = Vec::new();

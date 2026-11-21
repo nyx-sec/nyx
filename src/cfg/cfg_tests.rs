@@ -7726,3 +7726,30 @@ fn java_php_member_lhs_defines_whole_path() {
         "the index is read, not assigned"
     );
 }
+
+/// Callee text and `all_args_literal` of every Rust call node.
+fn rust_call_literal_flags(src: &[u8]) -> Vec<(String, bool)> {
+    let (cfg, _) = rust_cfg(src);
+    cfg.node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            Some((info.call.callee.clone()?, info.all_args_literal))
+        })
+        .collect()
+}
+
+/// `.unwrap()` is rebound to the call underneath for gate payload positions,
+/// but the literal-argument check never sees the receiver of that call.  A
+/// literal argument list on a possibly tainted receiver must not read as
+/// "all arguments literal", or the sink would be suppressed.
+#[test]
+fn rust_unwrap_rebind_never_counts_as_all_literal() {
+    let flags = rust_call_literal_flags(
+        b"fn f(h: Handle) { h.run(\"literal\").unwrap(); h.run(\"literal\"); }",
+    );
+    let unwrapped = flags
+        .iter()
+        .find(|(c, _)| c.contains("unwrap"))
+        .expect("unwrap call node");
+    assert!(!unwrapped.1, "peeled call must stay not-all-literal");
+}
