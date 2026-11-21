@@ -61,6 +61,8 @@ pub mod caller_scope;
 pub mod checks;
 pub mod config;
 pub mod extract;
+#[cfg(test)]
+mod framework_tests;
 pub mod model;
 pub mod naming;
 pub mod persist;

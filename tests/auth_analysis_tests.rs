@@ -52,6 +52,27 @@ fn assert_has(filename: &str, rule_id: &str) {
     );
 }
 
+/// Sorted, de-duplicated lines of `rule_id` findings in `filename`.
+fn lines_for(filename: &str, rule_id: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = auth_diags_for(filename)
+        .iter()
+        .filter(|diag| diag.id == rule_id)
+        .map(|diag| diag.line)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+fn assert_lines(filename: &str, rule_id: &str, expected: &[usize]) {
+    assert_eq!(
+        lines_for(filename, rule_id),
+        expected,
+        "{rule_id} lines in {filename}.\n  Got: {:?}",
+        auth_ids_for(filename)
+    );
+}
+
 fn assert_absent(filename: &str, rule_id: &str) {
     assert!(
         auth_diags_for(filename)
@@ -1197,5 +1218,266 @@ fn real_id_params_still_flag() {
     assert_has(
         "idlike_real_id_missing.py",
         "py.auth.missing_ownership_check",
+    );
+}
+
+// --- Token lookups match their receiver ------------------------------------
+
+/// `Document.objects.get(id=doc_id)` is an ORM read, not an invitation lookup.
+#[test]
+fn python_orm_get_is_an_ownership_read() {
+    assert_lines(
+        "py_orm_get_missing.py",
+        "py.auth.missing_ownership_check",
+        &[7],
+    );
+    assert_absent(
+        "py_orm_get_missing.py",
+        "py.auth.token_override_without_validation",
+    );
+}
+
+/// `request.json.get("title")` reads a dictionary.
+#[test]
+fn python_request_json_get_is_not_a_token_lookup() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "py_plain_get_not_token_lookup.py");
+}
+
+#[test]
+fn ruby_find_by_is_an_ownership_read_not_a_token_lookup() {
+    assert_lines(
+        "rb_find_by_missing.rb",
+        "rb.auth.missing_ownership_check",
+        &[3, 8],
+    );
+    assert_absent(
+        "rb_find_by_missing.rb",
+        "rb.auth.token_override_without_validation",
+    );
+}
+
+// --- Actor identity ---------------------------------------------------------
+
+#[test]
+fn rails_current_user_scoping_is_clean() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "rb_current_user_scoped_clean.rb");
+}
+
+#[test]
+fn rails_foreign_user_id_still_flags() {
+    assert_lines(
+        "rb_foreign_user_id_missing.rb",
+        "rb.auth.missing_ownership_check",
+        &[5, 9],
+    );
+}
+
+#[test]
+fn flask_login_current_user_forms_are_clean() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "py_flask_login_actor_clean.py");
+}
+
+#[test]
+fn flask_query_without_the_caller_still_flags() {
+    assert_has(
+        "py_flask_login_foreign_missing.py",
+        "py.auth.missing_ownership_check",
+    );
+}
+
+#[test]
+fn django_request_user_object_and_association_are_clean() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "py_django_request_user_clean.py");
+}
+
+#[test]
+fn express_req_user_object_is_clean() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "js_req_user_object_clean.js");
+}
+
+/// `ownerId: req.query.ownerId` is chosen by the caller, so it pins nothing.
+#[test]
+fn request_supplied_owner_id_is_not_the_actor() {
+    assert_lines(
+        "js_request_owner_id_missing.js",
+        "js.auth.missing_ownership_check",
+        &[5, 10],
+    );
+    assert_no_auth_diags_for(scan_all_fixtures(), "js_session_owner_id_clean.js");
+}
+
+// --- Rails filter options ---------------------------------------------------
+
+#[test]
+fn rails_only_percent_i_guards_only_the_listed_actions() {
+    assert_lines(
+        "rails_only_percent_i_missing.rb",
+        "rb.auth.missing_ownership_check",
+        &[10],
+    );
+}
+
+#[test]
+fn rails_except_percent_i_guards_the_other_actions() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "rails_except_percent_i_clean.rb");
+}
+
+#[test]
+fn rails_skip_before_action_only_unguards_the_listed_actions() {
+    assert_lines(
+        "rails_skip_only_percent_i.rb",
+        "rb.auth.missing_ownership_check",
+        &[11],
+    );
+}
+
+#[test]
+fn rails_cancan_macros_authorize_the_actions_they_cover() {
+    assert_lines(
+        "rails_cancan_macros.rb",
+        "rb.auth.missing_ownership_check",
+        &[10],
+    );
+    assert_no_auth_diags_for(scan_all_fixtures(), "rails_load_and_authorize_clean.rb");
+}
+
+#[test]
+fn rails_policy_scope_read_is_owner_scoped() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "rails_policy_scope_clean.rb");
+}
+
+// --- Django decorators and class views --------------------------------------
+
+#[test]
+fn django_view_decorators_apply_without_a_path_in_the_file() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "django_decorated_views_clean.py");
+}
+
+#[test]
+fn django_login_only_decorator_still_flags_a_foreign_id() {
+    assert_lines(
+        "django_login_only_view_missing.py",
+        "py.auth.missing_ownership_check",
+        &[9],
+    );
+}
+
+#[test]
+fn drf_views_without_permissions_are_analysed() {
+    assert_lines(
+        "drf_apiview_missing.py",
+        "py.auth.missing_ownership_check",
+        &[10, 16],
+    );
+}
+
+#[test]
+fn drf_object_permission_classes_authorize_the_view() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "drf_permission_classes_clean.py");
+}
+
+#[test]
+fn drf_login_only_permission_classes_still_flag() {
+    assert_lines(
+        "drf_login_only_permission_classes_missing.py",
+        "py.auth.missing_ownership_check",
+        &[12],
+    );
+}
+
+// --- axum and actix-web route builders --------------------------------------
+
+#[test]
+fn axum_route_layer_covers_the_routes_before_it() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "axum_route_layer_clean.rs");
+}
+
+#[test]
+fn axum_route_added_after_a_layer_is_not_covered() {
+    assert_lines(
+        "axum_route_added_after_layer_missing.rs",
+        "rs.auth.missing_ownership_check",
+        &[15],
+    );
+}
+
+#[test]
+fn axum_layer_before_any_route_covers_nothing() {
+    assert_lines(
+        "axum_layer_before_route_missing.rs",
+        "rs.auth.missing_ownership_check",
+        &[11],
+    );
+}
+
+#[test]
+fn axum_method_router_layer_covers_its_handler() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "axum_method_router_layer_clean.rs");
+}
+
+#[test]
+fn actix_to_route_registers_the_handler() {
+    assert_lines(
+        "actix_to_route_missing.rs",
+        "rs.auth.missing_ownership_check",
+        &[5],
+    );
+}
+
+#[test]
+fn actix_wrap_covers_the_routes_of_its_scope() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "actix_wrap_owner_clean.rs");
+    assert_no_auth_diags_for(scan_all_fixtures(), "actix_wrap_admin_scope_clean.rs");
+}
+
+#[test]
+fn actix_login_only_wrap_is_neither_ownership_nor_admin() {
+    assert_lines(
+        "actix_login_only_wrap_missing.rs",
+        "rs.auth.missing_ownership_check",
+        &[7],
+    );
+    assert_has(
+        "actix_login_only_admin_scope_missing.rs",
+        "rs.auth.admin_route_missing_admin_check",
+    );
+}
+
+// --- Role guards ------------------------------------------------------------
+
+#[test]
+fn spring_multi_line_pre_authorize_is_read() {
+    assert_lines(
+        "SpringMultilineAnnotations.java",
+        "java.auth.missing_ownership_check",
+        &[36],
+    );
+}
+
+#[test]
+fn spring_has_any_role_with_an_admin_role_authorizes() {
+    assert_lines(
+        "SpringHasAnyRole.java",
+        "java.auth.missing_ownership_check",
+        &[26, 32, 38],
+    );
+}
+
+#[test]
+fn spring_has_any_role_decides_the_admin_route_rule() {
+    assert_lines(
+        "SpringAdminPathHasAnyRole.java",
+        "java.auth.admin_route_missing_admin_check",
+        &[11, 23],
+    );
+}
+
+#[test]
+fn js_role_middleware_naming_an_admin_role_is_an_admin_guard() {
+    assert_no_auth_diags_for(scan_all_fixtures(), "js_role_middleware_admin_clean.js");
+    assert_lines(
+        "js_role_middleware_non_admin_missing.js",
+        "js.auth.admin_route_missing_admin_check",
+        &[4, 8, 12],
     );
 }
