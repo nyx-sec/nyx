@@ -2812,7 +2812,7 @@ fn pinned_edge(idx: NodeIndex, ctx: &AnalysisContext) -> Option<(SmallVec<[Strin
     if classify_condition(cond_text) == PredicateKind::Comparison
         && let Some((target, op_is_eq)) =
             crate::taint::path_state::equality_literal_guard(cond_text)
-        && info.condition_vars.iter().any(|v| *v == target)
+        && info.condition_vars.contains(&target)
     {
         return Some((
             SmallVec::from_elem(target, 1),

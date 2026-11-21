@@ -3785,33 +3785,29 @@ fn inline_analyse_callee_with_seeds(
             receiver_var,
             arity: arity_hint,
         };
-        match gs.resolve_callee_unique(&query) {
-            Some(key) => {
-                let xfile_bodies = transfer.cross_file_bodies?;
-                let body = xfile_bodies.get(&key)?;
-                // Indexed-scan bodies deserialized from SQLite
-                // arrive with `body_graph: None`, but the load path
-                // ([`rebuild_body_graph`] in `load_all_ssa_bodies`)
-                // synthesizes a proxy `Cfg` from `node_meta` so the taint
-                // engine can index `cfg[inst.cfg_node]` uniformly.  A
-                // body that still has neither a real graph nor any
-                // rehydrated metadata is structurally unusable, skip it.
-                if body.body_graph.is_none() {
-                    tracing::debug!(
-                        callee = %normalized,
-                        "cross-file inline miss: body has no body_graph and no node_meta"
-                    );
-                    return None;
-                }
-                tracing::debug!(
-                    callee = %normalized,
-                    namespace = %key.namespace,
-                    "cross-file inline hit: using GlobalSummaries.bodies_by_key"
-                );
-                (key, body)
-            }
-            None => return None,
+        let key = gs.resolve_callee_unique(&query)?;
+        let xfile_bodies = transfer.cross_file_bodies?;
+        let body = xfile_bodies.get(&key)?;
+        // Indexed-scan bodies deserialized from SQLite
+        // arrive with `body_graph: None`, but the load path
+        // ([`rebuild_body_graph`] in `load_all_ssa_bodies`)
+        // synthesizes a proxy `Cfg` from `node_meta` so the taint
+        // engine can index `cfg[inst.cfg_node]` uniformly.  A
+        // body that still has neither a real graph nor any
+        // rehydrated metadata is structurally unusable, skip it.
+        if body.body_graph.is_none() {
+            tracing::debug!(
+                callee = %normalized,
+                "cross-file inline miss: body has no body_graph and no node_meta"
+            );
+            return None;
         }
+        tracing::debug!(
+            callee = %normalized,
+            namespace = %key.namespace,
+            "cross-file inline hit: using GlobalSummaries.bodies_by_key"
+        );
+        (key, body)
     };
 
     // Skip very large function bodies

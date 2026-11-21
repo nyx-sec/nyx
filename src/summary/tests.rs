@@ -5397,7 +5397,7 @@ mod resolve_callee_oracle_tests {
                             n += 1;
                             // Leave gaps so some names are unique in a namespace,
                             // some ambiguous and some missing.
-                            if (n * 7 + arity as u32) % 3 == 0 {
+                            if (n * 7 + arity as u32).is_multiple_of(3) {
                                 continue;
                             }
                             let kind = if container.is_empty() {
