@@ -415,19 +415,20 @@ impl AuthAnalysisRules {
     }
 
     pub fn is_admin_guard(&self, name: &str, args: &[String]) -> bool {
+        // `hasAnyRole('ADMIN', 'USER')` lets a holder of any listed role in,
+        // so the list is only as strong as its weakest role.
+        if matches_name(name, "hasAnyRole") || matches_name(name, "hasAnyAuthority") {
+            return every_role_is_privileged(args);
+        }
         if matches_name(name, "PreAuthorize")
             || matches_name(name, "Secured")
             || matches_name(name, "RolesAllowed")
             || matches_name(name, "hasRole")
             || matches_name(name, "hasAuthority")
         {
-            return args.iter().any(|arg| {
-                let lower = strip_quotes(arg).to_ascii_lowercase();
-                lower.contains("admin")
-                    || lower.contains("role_admin")
-                    || lower.contains("manage")
-                    || lower.contains("superuser")
-            });
+            return args
+                .iter()
+                .any(|arg| names_privileged_role(&strip_quotes(arg)));
         }
 
         if self
@@ -444,6 +445,14 @@ impl AuthAnalysisRules {
                 .is_some_and(|arg| strip_quotes(arg).eq_ignore_ascii_case("admin"))
         {
             return true;
+        }
+
+        // Role middleware that takes the accepted roles as arguments:
+        // `authorize('admin')`, `checkRole(['admin'])`, `restrictTo('admin')`.
+        // Like `hasAnyRole`, it admits a holder of any listed role, so every
+        // listed role has to be privileged.
+        if is_role_gate_name(name) {
+            return every_role_is_privileged(args);
         }
 
         if matches_name(name, "permission_required")
@@ -469,7 +478,9 @@ impl AuthAnalysisRules {
         if matches_name(name, "isAuthenticated")
             || matches_name(name, "authenticated")
             || matches_name(name, "hasRole")
+            || matches_name(name, "hasAnyRole")
             || matches_name(name, "hasAuthority")
+            || matches_name(name, "hasAnyAuthority")
             || matches_name(name, "Secured")
             || matches_name(name, "RolesAllowed")
             || matches_name(name, "PreAuthorize")
@@ -1839,6 +1850,51 @@ pub fn matches_name(name: &str, pattern: &str) -> bool {
     canon_has_prefix(name_last, pattern_last)
 }
 
+/// Names of role-gating middleware: the roles they accept are arguments, so
+/// the call is an admin guard only when those arguments name admin roles.
+fn is_role_gate_name(name: &str) -> bool {
+    ["authorize", "checkRole", "requireRoles", "restrictTo"]
+        .iter()
+        .any(|gate| matches_name(name, gate))
+}
+
+/// A role or authority name that only privileged users hold: `ADMIN`,
+/// `ROLE_ADMIN`, `MANAGER`, `superuser`.
+fn names_privileged_role(role: &str) -> bool {
+    let lower = role.to_ascii_lowercase();
+    lower.contains("admin") || lower.contains("manage") || lower.contains("superuser")
+}
+
+/// True when the arguments name at least one role and every role they name is
+/// privileged.  A role is a string literal, alone or inside an array literal
+/// (`'admin'`, `['admin', 'owner']`); an argument with no string literal
+/// (`Roles.ADMIN`) is one role spelled by its expression.
+fn every_role_is_privileged(args: &[String]) -> bool {
+    let mut roles = Vec::new();
+    for arg in args {
+        let literals = string_literals(arg);
+        if literals.is_empty() {
+            roles.push(arg.trim().to_string());
+        } else {
+            roles.extend(literals);
+        }
+    }
+    !roles.is_empty() && roles.iter().all(|role| names_privileged_role(role))
+}
+
+/// Contents of the `'..'`, `".."` and backtick literals in `text`.
+fn string_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if matches!(ch, '\'' | '"' | '`') {
+            let literal: String = chars.by_ref().take_while(|c| *c != ch).collect();
+            out.push(literal);
+        }
+    }
+    out
+}
+
 pub fn strip_quotes(input: &str) -> String {
     input
         .trim()
@@ -1852,6 +1908,46 @@ pub fn strip_quotes(input: &str) -> String {
 mod tests {
     use super::build_auth_rules;
     use crate::utils::config::{AuthAnalysisConfig, Config, LanguageAnalysisConfig};
+
+    #[test]
+    fn role_gates_are_admin_guards_only_for_an_admin_role() {
+        let rules = build_auth_rules(&Config::default(), "javascript");
+        let admin = |name: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            rules.is_admin_guard(name, &args)
+        };
+        assert!(admin("authorize", &["'admin'"]));
+        assert!(admin("checkRole", &["['admin']"]));
+        assert!(admin("checkRole", &["['admin', 'superadmin']"]));
+        assert!(admin("restrictTo", &["\"admin\""]));
+        assert!(admin("authorize", &["Roles.ADMIN"]));
+        assert!(!admin("authorize", &["'viewer'"]));
+        assert!(!admin("checkRole", &["['viewer']"]));
+        assert!(!admin("authorize", &[]));
+        // Any listed role is let in, so one ordinary role is enough to make
+        // the gate a non-admin one.
+        assert!(!admin("checkRole", &["['admin', 'viewer']"]));
+        assert!(!admin("restrictTo", &["'admin'", "'user'"]));
+        // An ownership call that happens to share the name is not a role gate.
+        assert!(!admin("authorize", &["req.user", "doc"]));
+    }
+
+    #[test]
+    fn has_any_role_follows_has_role() {
+        let rules = build_auth_rules(&Config::default(), "java");
+        let args =
+            |values: &[&str]| -> Vec<String> { values.iter().map(|v| v.to_string()).collect() };
+        assert!(rules.is_admin_guard("hasAnyRole", &args(&["ADMIN", "MANAGER"])));
+        assert!(rules.is_admin_guard("hasAnyAuthority", &args(&["ROLE_ADMIN"])));
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&["USER", "EDITOR"])));
+        // `hasAnyRole('ADMIN', 'USER')` lets every user in.
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&["ADMIN", "USER"])));
+        assert!(!rules.is_admin_guard("hasAnyAuthority", &args(&["ROLE_ADMIN", "ROLE_USER"])));
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&[])));
+        // A role list is a login-level guard even when it names no admin role.
+        assert!(rules.is_login_guard("hasAnyRole"));
+        assert!(rules.is_login_guard("hasAnyAuthority"));
+    }
 
     #[test]
     fn typescript_uses_javascript_rule_prefix() {

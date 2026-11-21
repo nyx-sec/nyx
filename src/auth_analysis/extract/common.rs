@@ -4901,6 +4901,29 @@ pub fn auth_check_from_call_site(
     })
 }
 
+/// How much a set of route-level checks proves, in the order the auth rules
+/// ask for it: 0 nothing, 1 login, 2 authorization of the row, 3 admin.  An
+/// admin guard also satisfies the ownership rule, so it ranks above an
+/// ownership check.
+///
+/// Used to keep only the weakest alternative of a disjunction (`A or B` in
+/// SpEL, `A | B` between DRF permission classes): the request gets through
+/// when either holds, so neither alone can be claimed.
+pub fn guarantee_level(calls: &[CallSite], rules: &AuthAnalysisRules) -> u8 {
+    calls
+        .iter()
+        .filter_map(|call| auth_check_from_call_site(call, 0, rules))
+        .map(|check| match check.kind {
+            AuthCheckKind::AdminGuard => 3,
+            AuthCheckKind::LoginGuard
+            | AuthCheckKind::TokenExpiry
+            | AuthCheckKind::TokenRecipient => 1,
+            _ => 2,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Value-refs of the subtree rooted at `node`.
 ///
 /// `roots` is the Go request-root set of the enclosing unit (`None` for every
