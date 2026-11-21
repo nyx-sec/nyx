@@ -57,10 +57,20 @@ pub fn prefix_locks_origin(prefix: &str) -> bool {
 /// A leading `/` there names a local file, not a path on the current origin.
 pub fn opens_local_paths(callee: &str) -> bool {
     let leaf = callee.rsplit(['\\', ':', '.']).next().unwrap_or(callee);
-    matches!(
-        leaf.to_ascii_lowercase().as_str(),
-        "file_get_contents" | "fopen" | "readfile" | "file" | "open" | "open_uri"
-    )
+    match leaf.to_ascii_lowercase().as_str() {
+        "file_get_contents" | "fopen" | "readfile" | "file" => true,
+        // Only Ruby's `open`, `Kernel.open`, `URI.open` and
+        // `OpenURI.open_uri`. Other receivers (`window.open`) navigate
+        // instead of reading a file.
+        "open" | "open_uri" => {
+            let receiver = callee[..callee.len() - leaf.len()].trim_end_matches(['.', ':']);
+            matches!(
+                receiver.to_ascii_lowercase().as_str(),
+                "" | "kernel" | "uri" | "openuri"
+            )
+        }
+        _ => false,
+    }
 }
 
 /// [`prefix_locks_origin`] for a URL sink called as `callee`: a same-origin
@@ -1185,6 +1195,8 @@ mod tests {
             "fopen",
             "\\file_get_contents",
             "URI.open",
+            "URI::open",
+            "Kernel.open",
             "open",
             "OpenURI.open_uri",
         ] {
@@ -1198,6 +1210,9 @@ mod tests {
             );
         }
         assert!(prefix_locks_origin_for(Some("axios.get"), "/api/"));
+        // A browser navigation sink named `open` stays same-origin locked.
+        assert!(prefix_locks_origin_for(Some("window.open"), "/reports/"));
+        assert!(prefix_locks_origin_for(Some("File.open"), "/reports/"));
         assert!(prefix_locks_origin_for(None, "/api/"));
         assert!(!prefix_locks_origin_for(None, "//evil.com/"));
     }
