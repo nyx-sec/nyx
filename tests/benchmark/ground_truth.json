@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 898
+    "corpus_size": 906
   },
   "cases": [
     {
@@ -28709,6 +28709,230 @@
       ],
       "disabled": false,
       "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
+    },
+    {
+      "case_id": "js-ssrf-new-url-attacker-path-001",
+      "file": "javascript/ssrf/ssrf_new_url_attacker_path.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "url-builder"
+      ],
+      "disabled": false,
+      "notes": "`new URL(path, base)` resolves the path as a reference: an absolute or protocol-relative value replaces the base's host."
+    },
+    {
+      "case_id": "py-ssrf-urljoin-attacker-path-001",
+      "file": "python/ssrf/ssrf_urljoin_attacker_path.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "url-builder"
+      ],
+      "disabled": false,
+      "notes": "`urljoin(base, path)` resolves the path as a reference; `//evil/x` replaces the host."
+    },
+    {
+      "case_id": "js-safe-ssrf-url-builder-relative-head-001",
+      "file": "javascript/safe/safe_ssrf_url_builder_relative_head.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "url-builder",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A fixed `/v1/` head makes the path an absolute-path reference that keeps the base host."
+    },
+    {
+      "case_id": "js-safe-ssrf-module-const-base-001",
+      "file": "javascript/safe/safe_ssrf_module_const_base.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "module-constant",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A module-level constant host, a template literal that opens with it, and a left-nested concatenation all fix the host."
+    },
+    {
+      "case_id": "py-safe-ssrf-urljoin-relative-head-001",
+      "file": "python/safe/safe_ssrf_urljoin_relative_head.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "url-builder",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A fixed `v1/` head makes the path a relative reference under the base."
+    },
+    {
+      "case_id": "py-safe-ssrf-fstring-and-params-001",
+      "file": "python/safe/safe_ssrf_fstring_and_params.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "fstring",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "An f-string with a fixed `scheme://host/` head, a constant endpoint with a tainted `params=`, and a module-level constant base."
+    },
+    {
+      "case_id": "go-safe-ssrf-prefix-shapes-001",
+      "file": "go/safe/safe_ssrf_prefix_shapes.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`var` declaration with a left-nested concatenation, a Sprintf URL at argument 1 of NewRequest, and a module-level constant base."
+    },
+    {
+      "case_id": "php-safe-ssrf-concat-prefix-001",
+      "file": "php/safe/safe_ssrf_concat_prefix.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Concatenation in the call argument and double-quoted interpolation with a fixed `scheme://host/` head."
     }
   ]
 }

@@ -5945,9 +5945,12 @@ pub(super) fn transfer_inst(
                 && state.abstract_state.as_ref().is_some_and(|abs| {
                     args.first().is_some_and(|first_arg| {
                         !first_arg.is_empty()
-                            && first_arg
-                                .iter()
-                                .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+                            && first_arg.iter().all(|v| {
+                                is_string_safe_for_ssrf(
+                                    &abs.get(*v).string,
+                                    info.call.callee.as_deref(),
+                                )
+                            })
                     })
                 });
             let url_is_hardcoded_safe =
@@ -8003,13 +8006,48 @@ fn url_builder_concrete_base(
     {
         return Some(s.to_string());
     }
-    let bv = args.get(base_idx).and_then(|g| g.first().copied())?;
+    // A base built by a call can be anything the callee returns, and a group
+    // with several values is an expression over several names: neither is
+    // the single constant the domain below describes.
+    if info.arg_callees.get(base_idx).is_some_and(Option::is_some) {
+        return None;
+    }
+    let bv = match args.get(base_idx) {
+        Some(group) if group.len() == 1 => group[0],
+        _ => return None,
+    };
     let dom = abs.get(bv).string.domain?;
     if dom.len() == 1 {
         Some(dom.into_iter().next().expect("len==1 guards index"))
     } else {
         None
     }
+}
+
+/// String knowledge for the path (reference) argument of a URL builder call:
+/// the inline literal, the literal head of an inline `"/v1/" + p` /
+/// template / f-string argument, or, for a plain variable argument, the
+/// variable's abstract fact.  An argument that is itself a call result has no
+/// usable fact, since the callee may rewrite the text.
+fn url_builder_path_fact(
+    info: &NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+    path_idx: usize,
+) -> crate::abstract_interp::StringFact {
+    use crate::abstract_interp::StringFact;
+    if let Some(Some(lit)) = info.call.arg_string_literals.get(path_idx) {
+        return StringFact::exact(lit);
+    }
+    if let Some(Some(prefix)) = info.call.arg_string_prefixes.get(path_idx) {
+        return StringFact::from_prefix(prefix);
+    }
+    // Only an argument that is exactly a name has the name's fact: a slice
+    // or a call over it can drop the head that keeps the host.
+    bare_name_arg(info, callee, args, path_idx)
+        .map(|v| abs.get(v).string)
+        .unwrap_or_else(StringFact::top)
 }
 
 /// Compute abstract values for an SSA instruction.
@@ -8080,6 +8118,52 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
             // Bool/Null/other: leave as Top
         }
 
+        // Phase 08 / Phase 14: `(base, path)` URL builder origin-lock.
+        // When the base arg is a literal (read off
+        // `info.call.arg_string_literals[base_idx]`) or a const-bound
+        // identifier whose abstract `StringFact.domain` is a singleton
+        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
+        // seed the result's [`StringFact`] so `is_string_safe_for_ssrf` can
+        // suppress the SSRF sink at the downstream HTTP call.  The arg
+        // position table lives in [`crate::ssa::type_facts::url_builder_arg_indices`]:
+        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`, Go
+        // `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`, Ruby
+        // `URI.join(base, path)`.
+        //
+        // Reference resolution is not concatenation: an absolute or
+        // protocol-relative path replaces the base's host, so the origin
+        // stays pinned only when the path is provably a relative reference
+        // (`StringFact::from_url_with_base`).  Go `JoinPath` appends path
+        // segments and pins the origin whatever they hold.
+        //
+        // This arm owns every two-argument builder call.  The generic
+        // string-prefix arms below read the *first* argument, which for
+        // `urljoin(base, path)` is the base and for `new URL(path, base)`
+        // the attacker's path, and would lock the origin of a builder whose
+        // base is unknown.  A builder without a concrete base leaves its
+        // result Top.
+        SsaOp::Call { callee, args, .. } if args.len() >= 2 && facts.url_builder.is_some() => {
+            let lang_u = lang.expect("a URL builder fact implies a language");
+            let (path_idx, base_idx) = facts.url_builder.expect("guard ensures Some");
+            if let Some(base) = url_builder_concrete_base(info, args, abs, base_idx) {
+                let path_fact = url_builder_path_fact(info, callee, args, abs, path_idx);
+                let string = if crate::ssa::type_facts::url_builder_appends_path(lang_u) {
+                    StringFact::from_url_joined_path(&base, &path_fact)
+                } else {
+                    StringFact::from_url_with_base(&base, &path_fact)
+                };
+                abs.set(
+                    inst.value,
+                    AbstractValue {
+                        interval: IntervalFact::top(),
+                        string,
+                        bits: BitFact::top(),
+                        path: PathFact::top(),
+                    },
+                );
+            }
+        }
+
         // Template-literal / string-prefix override: when the RHS is
         // `\`scheme://host/…${x}\`` or `"scheme://host/" + x`, seed the
         // result's StringFact prefix regardless of interpolation arity. Taint
@@ -8088,28 +8172,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // fixed-host URLs. Placed before the arithmetic/copy arms so it wins
         // over the default Top StringFact.
         SsaOp::Assign(_) if info.string_prefix.is_some() => {
-            let prefix = info.string_prefix.as_deref().unwrap();
-            abs.set(
-                inst.value,
-                AbstractValue {
-                    interval: IntervalFact::top(),
-                    string: StringFact::from_prefix(prefix),
-                    bits: BitFact::top(),
-                    path: PathFact::top(),
-                },
-            );
-        }
-
-        // Same prefix-from-CFG override for Call instructions whose result is
-        // the variable binding (e.g. `url = wrapper('lit' + userPath)`).  The
-        // CFG node carries `string_prefix` extracted from the call's first
-        // positional argument; without this arm the Call result's StringFact
-        // is Top and downstream SSRF suppression (`is_call_abstract_safe`
-        // looking at `axios.get(url)`'s own first arg) cannot read the lock.
-        // Mirrors the same passthrough-heuristic that the
-        // `is_call_abstract_safe` node-attached check at the sink site
-        // already relies on.
-        SsaOp::Call { .. } if info.string_prefix.is_some() => {
             let prefix = info.string_prefix.as_deref().unwrap();
             abs.set(
                 inst.value,
@@ -8253,45 +8315,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
             }
         }
 
-        // Phase 08 / Phase 14 — `(base, path)` URL builder origin-lock.
-        // When the base arg is a literal (read off
-        // `info.call.arg_string_literals[base_idx]`) or a const-bound
-        // identifier whose abstract `StringFact.domain` is a singleton
-        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
-        // seed the result's [`StringFact`] with
-        // `from_url_with_base(base, path_string)` so the locked-host
-        // prefix survives even when the path component carries arbitrary
-        // taint. `is_string_safe_for_ssrf` honours the prefix and
-        // suppresses the SSRF sink at the downstream HTTP call. The
-        // arg-position table lives in
-        // [`crate::ssa::type_facts::url_builder_arg_indices`] — covers
-        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
-        // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
-        // Ruby `URI.join(base, path)`.
-        SsaOp::Call { args, .. }
-            if facts.url_builder.is_some_and(|(_p, base_idx)| {
-                url_builder_concrete_base(info, args, abs, base_idx).is_some()
-            }) =>
-        {
-            let (path_idx, base_idx) = facts.url_builder.expect("guard ensures Some");
-            let base =
-                url_builder_concrete_base(info, args, abs, base_idx).expect("guard ensures Some");
-            let path_string = args
-                .get(path_idx)
-                .and_then(|g| g.first().copied())
-                .map(|pv| abs.get(pv).string)
-                .unwrap_or_else(StringFact::top);
-            abs.set(
-                inst.value,
-                AbstractValue {
-                    interval: IntervalFact::top(),
-                    string: StringFact::from_url_with_base(&base, &path_string),
-                    bits: BitFact::top(),
-                    path: PathFact::top(),
-                },
-            );
-        }
-
         // Phase 14 — single-arg URL/URI constructor StringFact passthrough.
         // `new URL(spec)` (Java/JS), plus the static factory list in
         // [`crate::ssa::type_facts::is_url_single_arg_factory`] — when the
@@ -8302,21 +8325,22 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // through `is_abstract_safe_for_sink`.  Strictly additive: the
         // 2-arg `(base, path)` shape is handled by the
         // `url_builder_arg_indices` arm above; this single-arg arm only
-        // fires when that arm doesn't.
-        SsaOp::Call { args, .. }
-            if facts.url_single_arg
-                && facts.url_builder.is_none_or(|(_p, base_idx)| {
-                    // Skip when the 2-arg arm above would already
-                    // have fired (it consumed a literal or
-                    // const-bound singleton base).
-                    url_builder_concrete_base(info, args, abs, base_idx).is_none()
-                }) =>
-        {
-            let arg_string = args
-                .first()
-                .and_then(|g| g.first().copied())
-                .map(|pv| abs.get(pv).string)
-                .unwrap_or_else(StringFact::top);
+        // fires when that arm doesn't.  A two-argument `(path, base)` call is
+        // the builder arm's; only the single-argument form passes its
+        // argument through.
+        SsaOp::Call { callee, args, .. } if facts.url_single_arg && args.len() < 2 => {
+            // A literal argument has no SSA use, so it is read off the node:
+            // `URL base = new URL("https://api.example.com/")` is what a later
+            // `new URL(base, spec)` resolves against.
+            let literal_arg = node_describes_call(info, callee)
+                .then(|| info.call.arg_string_literals.first())
+                .flatten()
+                .and_then(|l| l.as_deref());
+            let arg_string = match (args.first().and_then(|g| g.first().copied()), literal_arg) {
+                (Some(pv), _) => abs.get(pv).string,
+                (None, Some(lit)) => StringFact::exact(lit),
+                (None, None) => StringFact::top(),
+            };
             if !arg_string.is_top() {
                 abs.set(
                     inst.value,
@@ -8505,6 +8529,61 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
 
         _ => {}
     }
+
+    // Prefix-from-CFG for Call instructions whose result is the variable
+    // binding (e.g. `url = wrapper('lit' + userPath)`).  The CFG node carries
+    // `string_prefix` extracted from the call's URL argument; without it the
+    // Call result's StringFact is Top and downstream SSRF suppression
+    // (`is_call_abstract_safe` looking at `axios.get(url)`'s own first arg)
+    // cannot read the lock.  It only fills in the string component, after the
+    // arms above, so a path primitive (`Clean("/data/" + f)`) keeps its
+    // PathFact.  A `(base, path)` URL builder never takes it: the prefix
+    // belongs to an argument, not to the URL the builder resolves.
+    if let (SsaOp::Call { args, .. }, Some(prefix)) = (&inst.op, info.string_prefix.as_deref()) {
+        let is_url_builder = args.len() >= 2 && facts.url_builder.is_some();
+        if !is_url_builder {
+            let mut value = abs.get(inst.value);
+            if value.string.is_top() {
+                value.string = StringFact::from_prefix(prefix);
+                abs.set(inst.value, value);
+            }
+        }
+    }
+}
+
+/// The SSA value of positional argument `i` of the call `callee` when the
+/// argument is exactly a name (see `CallMeta::arg_bare_names`), so the
+/// value's abstract facts are the argument's.  `None` for any other argument
+/// shape, for a call the node does not describe, and when the use group does
+/// not hold exactly one value.
+fn bare_name_arg(
+    info: &NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    i: usize,
+) -> Option<SsaValue> {
+    if i >= 64 || info.call.arg_bare_names & (1u64 << i) == 0 {
+        return None;
+    }
+    if !node_describes_call(info, callee) {
+        return None;
+    }
+    match args.get(i) {
+        Some(group) if group.len() == 1 => Some(group[0]),
+        _ => None,
+    }
+}
+
+/// True when `info` is the CFG node of the call `callee`, not of an outer
+/// call whose argument list the SSA call sits in (`os.ReadFile(filepath.Clean(x))`
+/// shares one node between both calls).  Per-argument literals and prefixes on
+/// the node belong to the node's own call only.
+fn node_describes_call(info: &NodeInfo, callee: &str) -> bool {
+    let leaf = |c: &str| c.rsplit(['.', ':']).next().unwrap_or(c).to_string();
+    info.call
+        .callee
+        .as_deref()
+        .is_some_and(|node_callee| leaf(node_callee) == leaf(callee))
 }
 
 /// Structural check: does `callee` look like a Rust scoped identifier
@@ -13062,15 +13141,16 @@ fn is_abstract_safe_for_sink(
         // (covers sinks whose URL is a template literal argument without an
         // intermediate Assign to seed the abstract domain).
         let node_info = &cfg[inst.cfg_node];
+        let callee = node_info.call.callee.as_deref();
         if let Some(prefix) = node_info.string_prefix.as_deref() {
             let synthetic = crate::abstract_interp::StringFact::from_prefix(prefix);
-            if is_string_safe_for_ssrf(&synthetic) {
+            if is_string_safe_for_ssrf(&synthetic, callee) {
                 return true;
             }
         }
         if used
             .iter()
-            .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+            .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string, callee))
         {
             return true;
         }
@@ -13202,9 +13282,10 @@ fn is_call_abstract_safe(
         // (e.g. `axios.get(\`https://host/…${x}\`)` has no intermediate Assign
         // to seed a StringFact, check the node-attached prefix directly).
         let node_info = &cfg[inst.cfg_node];
+        let callee = node_info.call.callee.as_deref();
         if let Some(prefix) = node_info.string_prefix.as_deref() {
             let synthetic = crate::abstract_interp::StringFact::from_prefix(prefix);
-            if is_string_safe_for_ssrf(&synthetic) {
+            if is_string_safe_for_ssrf(&synthetic, callee) {
                 return true;
             }
         }
@@ -13212,7 +13293,7 @@ fn is_call_abstract_safe(
             if !first_arg.is_empty()
                 && first_arg
                     .iter()
-                    .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+                    .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string, callee))
             {
                 return true;
             }
@@ -13689,8 +13770,12 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
     if !is_network_fetch_source(info) {
         return false;
     }
-    let safe_prefix =
-        |p: &str| is_string_safe_for_ssrf(&crate::abstract_interp::StringFact::from_prefix(p));
+    let safe_prefix = |p: &str| {
+        is_string_safe_for_ssrf(
+            &crate::abstract_interp::StringFact::from_prefix(p),
+            info.call.callee.as_deref(),
+        )
+    };
     info.string_prefix.as_deref().is_some_and(safe_prefix)
         || info
             .call
@@ -13703,11 +13788,13 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
 /// URL-sink safety (SSRF and open redirect): the known prefix pins the
 /// origin, either `scheme://host/` or a same-origin `/path` that cannot be
 /// widened into `//host` (see
-/// [`crate::abstract_interp::string_domain::prefix_locks_origin`]).
-fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
+/// [`crate::abstract_interp::string_domain::prefix_locks_origin_for`], which
+/// also takes the sink `callee`: a callee that reads local paths, such as PHP
+/// `file_get_contents`, is not pinned by a `/path` prefix).
+fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact, callee: Option<&str>) -> bool {
     sf.prefix
         .as_deref()
-        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
+        .is_some_and(|p| crate::abstract_interp::string_domain::prefix_locks_origin_for(callee, p))
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by
@@ -15403,25 +15490,37 @@ mod engine_audit_fixes_tests {
         use crate::abstract_interp::StringFact;
 
         // A real same-origin path lock is safe.
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix("/api/")));
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "/projects"
-        )));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/api/"),
+            None
+        ));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/projects"),
+            None
+        ));
 
         // A bare "/" lock is NOT safe: a tainted "/evil.com" suffix yields
         // a protocol-relative "//evil.com" URL.
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("/")));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/"),
+            None
+        ));
 
         // An already protocol-relative prefix is not safe either.
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("//")));
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "//evil.com"
-        )));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("//"),
+            None
+        ));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("//evil.com"),
+            None
+        ));
 
         // Scheme-locked absolute URL with a path separator stays safe.
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "https://api.internal/"
-        )));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("https://api.internal/"),
+            None
+        ));
     }
 }
 

@@ -338,26 +338,19 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["os.path.realpath"],
-        label: DataLabel::Sanitizer(Cap::FILE_IO),
-        case_sensitive: false,
-    },
     // Outbound HTTP — flat SSRF sinks for read-shaped methods (GET / HEAD)
-    // that don't carry a body.  Body-bearing methods (POST / PUT / PATCH /
-    // DELETE / request) are modelled via destination-aware gates in
-    // GATED_SINKS so SSRF activation can be narrowed to the URL position
-    // and the cross-boundary `DATA_EXFIL` cap can attach to body kwargs as
-    // a separate gate.  `urllib.request.urlopen` stays flat: its argument
-    // is a Request object whose payload-vs-URL split happens at
-    // `urllib.request.Request` construction (gated below).
+    // that don't carry a body.  `requests.get/head` and `httpx.get/head` are
+    // destination-aware gates in GATED_SINKS (like the body-bearing methods
+    // POST / PUT / PATCH / DELETE / request), so SSRF fires on the URL
+    // position and a tainted `params=` / `headers=` does not make a constant
+    // endpoint an SSRF sink; the body methods also attach the
+    // cross-boundary `DATA_EXFIL` cap to body kwargs as a separate gate.
+    // `urllib.request.urlopen` stays flat: its argument is a Request object
+    // whose payload-vs-URL split happens at `urllib.request.Request`
+    // construction (gated below).
     LabelRule {
         matchers: &[
             "urllib.request.urlopen",
-            "requests.get",
-            "requests.head",
-            "httpx.get",
-            "httpx.head",
             "aiohttp.get",
             "aiohttp.head",
             "HttpClient.get",
@@ -681,6 +674,66 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // `request.form`), so plain user input forwarded to a POST body does
     // not surface — only sensitive sources (cookies, sessions, env, headers)
     // produce a DATA_EXFIL finding.
+    // `requests.get` / `head` and `httpx.get` / `head`: the URL is the first
+    // positional argument or the `url=` keyword.  `params=`, `headers=` and
+    // the other keywords do not choose the host, so a tainted query parameter
+    // on a constant endpoint is not SSRF.
+    SinkGate {
+        callee_matcher: "requests.get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
     SinkGate {
         callee_matcher: "requests.post",
         arg_index: 0,

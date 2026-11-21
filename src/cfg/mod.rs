@@ -38,6 +38,7 @@ mod helpers;
 mod hierarchy;
 mod imports;
 mod literals;
+mod module_consts;
 mod nested_calls;
 mod params;
 pub(crate) mod python_shapes;
@@ -74,17 +75,18 @@ use imports::{
 use literals::has_sql_placeholders;
 use literals::{
     ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer, extract_arg_callees,
-    extract_arg_string_literals, extract_arg_uses, extract_const_keyword_arg,
+    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer,
+    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_string_literals,
+    extract_arg_string_prefixes, extract_arg_uses, extract_const_keyword_arg,
     extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
     extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
     extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
     find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
-    has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
-    java_chain_arg0_kind_for_method, js_arg_is_prototype_object, js_arg_is_string_valued,
-    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    js_positional_arity, js_shell_option_argv_positions, parameterized_query_shape,
+    is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
+    js_arg_is_prototype_object, js_arg_is_string_valued, js_chain_arg0_kind_for_method,
+    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, js_positional_arity,
+    js_shell_option_argv_positions, parameterized_query_shape, python_positional_arity,
     ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
@@ -754,6 +756,24 @@ pub struct CallMeta {
     /// analysis (and future literal-aware passes) so they don't need the
     /// source bytes.
     pub arg_string_literals: Vec<Option<String>>,
+    /// Constant leading text of each positional argument that is a string
+    /// built from a literal head (`"https://h/" + id`, a template literal, an
+    /// f-string, `fmt.Sprintf("https://h/%s", id)`), parallel to
+    /// `arg_string_literals`.  `None` for plain literals (see above) and for
+    /// arguments with no literal head.  Empty when no argument has one.
+    /// Lets sinks and URL builders that take the URL at a position other
+    /// than the first read the prefix of the argument they care about.
+    #[serde(default)]
+    pub arg_string_prefixes: Vec<Option<String>>,
+    /// Bit `i` is set when positional argument `i` is exactly a name: an
+    /// identifier, or a member path of identifiers (`clean`, `cfg.root`),
+    /// with parentheses and PHP's `argument` wrapper peeled.  The SSA use of
+    /// such an argument is its whole value, so a fact on that use describes
+    /// the argument.  An expression over one name (`x + "/.."`, `x[1:]`) has
+    /// the same single SSA use but leaves its bit clear.  Positions past 63
+    /// are never set.
+    #[serde(default)]
+    pub arg_bare_names: u64,
     /// Destination-aware sink filter for outbound-HTTP gates.
     ///
     /// When `Some(names)`, the SSA sink scan restricts taint checks to
@@ -1172,6 +1192,13 @@ pub struct NodeInfo {
     /// SSA value so SSRF prefix-suppression can fire for values constructed
     /// from template literals.
     pub string_prefix: Option<String>,
+    /// `(identifier, literal tail)` when the string this node builds starts
+    /// with a bare identifier instead of a literal (`API + p`,
+    /// `` `${API}/x/${id}` ``).  Resolved into [`Self::string_prefix`] at the
+    /// end of `build_cfg` when the identifier is a module-level string
+    /// constant; cleared there either way, so it is never serialized.
+    #[serde(skip)]
+    pub string_prefix_ident: Option<(String, String)>,
     /// True when this node is a binary equality/inequality expression whose
     /// operator is `==` / `!=` / `===` / `!==` and exactly one operand is a
     /// syntactic literal (string / number / null / boolean). The SSA taint
@@ -2015,6 +2042,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         | "short_var_declaration"
         | "var_spec"
         | "var_declaration"
+        | "const_declaration"
         | "let_declaration" => {
             // Walk direct children for the first variable_declarator with a value.
             let mut w = ast.walk();
@@ -2023,6 +2051,14 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("right"))
+                })
+                .or_else(|| {
+                    // Go `var x = ...` / `const x = ...`: the value sits on
+                    // the `var_spec` / `const_spec` child.
+                    let mut w = ast.walk();
+                    ast.named_children(&mut w)
+                        .find(|c| matches!(c.kind(), "var_spec" | "const_spec"))
+                        .and_then(|spec| spec.child_by_field_name("value"))
                 })
                 .or_else(|| {
                     // Go: short_var_declaration's value is on a
@@ -2051,39 +2087,51 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
 }
 
 /// Extract a constant leading string prefix from an assignment-like node's
-/// RHS when the RHS is a JS/TS template literal beginning with a
-/// `string_fragment` or a binary `+` expression whose left operand is a string
-/// literal. Returns `None` if the grammar does not expose such a shape.
+/// RHS, or from the URL argument of a call, when it is a template literal,
+/// f-string or interpolated string with a literal head, a `"lit" + x + y`
+/// concatenation chain, or a format call (see [`prefix_of_expression`]).
+/// Returns `None` if the grammar does not expose such a shape.
 ///
 /// The recovered prefix is used by the abstract string domain to seed a
 /// `StringFact::from_prefix` on the result SSA value. For SSRF detection,
 /// when the prefix contains `scheme://host/`, the sink is suppressed because
 /// the attacker cannot reach a different host.
-fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String> {
+///
+/// `url_arg` is the positional index of the URL-bearing argument of a call
+/// (the sink's single payload position, else `0`).
+fn extract_template_prefix(ast: Node, lang: &str, code: &[u8], url_arg: usize) -> Option<String> {
+    url_operand_nodes(ast, lang, url_arg)
+        .into_iter()
+        .find_map(|(n, _)| prefix_of_expression(n, lang, code))
+}
+
+/// The string-building operand a node's prefix is read from: an assignment's
+/// RHS, then the URL argument of a call.  Empty for languages the prefix
+/// extractor does not cover.
+fn url_operand_nodes<'t>(ast: Node<'t>, lang: &str, url_arg: usize) -> Vec<(Node<'t>, bool)> {
     // Phase 14 — extended beyond JS/TS so the SSRF prefix-lock fires
     // across every supported language whose origin-locked URL shape
     // is a literal+tainted string concatenation.  The grammar
     // dispatch lives in [`prefix_of_expression`]; this function only
-    // walks the assignment-RHS / first-call-arg slots that consume
+    // walks the assignment-RHS / URL call-arg slots that consume
     // the prefix.
     let supported = matches!(
         lang,
         "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
     );
+    let mut out = Vec::new();
     if !supported {
-        return None;
+        return out;
     }
 
     // Assignment-like node: inspect the RHS directly.
     if let Some(rhs) = assignment_rhs(ast) {
-        if let Some(p) = prefix_of_expression(rhs, code) {
-            return Some(p);
-        }
+        out.push((rhs, false));
     }
 
-    // Call expression (including sink call nodes): inspect the first
-    // positional argument. Covers `axios.get(\`https://host/…${x}\`)` shape
-    // where the template literal is inline at the sink.
+    // Call expression (including sink call nodes): inspect the URL argument.
+    // Covers `axios.get(\`https://host/…${x}\`)` shape where the template
+    // literal is inline at the sink.
     if matches!(
         ast.kind(),
         "call_expression"
@@ -2093,6 +2141,9 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
             | "method_invocation"
             | "macro_invocation"
             | "function_call_expression"
+            | "member_call_expression"
+            | "scoped_call_expression"
+            | "nullsafe_member_call_expression"
     ) {
         let args = ast
             .child_by_field_name("arguments")
@@ -2102,34 +2153,190 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
             let positional: Vec<Node> = args_node.named_children(&mut w).collect();
             // Express `res.redirect(301, url)`: skip a leading numeric
             // status so the URL argument's prefix is read.
-            let url_arg = match positional.as_slice() {
-                [status, url] if matches!(status.kind(), "number" | "integer") => Some(*url),
-                [first, ..] => Some(*first),
-                [] => None,
+            let url_node = match positional.as_slice() {
+                [status, url] if url_arg == 0 && is_numeric_literal_kind(status.kind()) => {
+                    Some(*url)
+                }
+                all => all.get(url_arg).copied(),
             };
-            if let Some(p) = url_arg.and_then(|a| prefix_of_expression(a, code)) {
-                return Some(p);
-            }
+            out.extend(url_node.map(|n| (n, true)));
         }
     }
+    out
+}
 
+/// Like [`extract_template_prefix`] for a string that starts with a bare
+/// identifier instead of a literal: `(name, literal tail)` for `API + p`,
+/// `` `${API}/users/${id}` `` or `f"{API}/users/{id}"`.  The identifier is a
+/// module-level constant candidate, resolved once every body of the file is
+/// built (see `module_consts`).  When `url_sink` is set the URL argument may
+/// also be the bare identifier itself (`requests.get(API, params=p)`).
+fn extract_lead_ident(
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+    url_arg: usize,
+    url_sink: bool,
+) -> Option<(String, String)> {
+    url_operand_nodes(ast, lang, url_arg)
+        .into_iter()
+        .find_map(|(n, is_call_arg)| {
+            lead_ident_of_operand(n, lang, code, is_call_arg && url_sink, !is_call_arg, 0)
+        })
+}
+
+/// True for the node kinds that name a module-level constant visible inside
+/// a function.  A lowercase Ruby name at file level is a local of the
+/// top-level scope, which a `def` body does not see (there it is a method
+/// call), so Ruby only resolves `constant` names.
+fn is_identifier_kind(kind: &str, lang: &str) -> bool {
+    match lang {
+        "ruby" => kind == "constant",
+        _ => kind == "identifier",
+    }
+}
+
+/// The leading identifier of a string being built, with the literal text that
+/// follows it directly.  Mirrors the shapes [`prefix_of_operand`] reads a
+/// literal head from.  `concat_operand` accepts a bare identifier as the
+/// whole operand (left-hand side of a concatenation, or a URL argument).
+/// `descend_calls` follows a call into its first argument, as
+/// [`prefix_of_operand`] does for a statement's own call; an operand of a
+/// concatenation is never followed into a call, whose result is not its
+/// argument.
+fn lead_ident_of_operand(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    concat_operand: bool,
+    descend_calls: bool,
+    depth: usize,
+) -> Option<(String, String)> {
+    if depth > PREFIX_WALK_DEPTH {
+        return None;
+    }
+    let mut cur = node;
+    for _ in 0..8 {
+        match cur.kind() {
+            "parenthesized_expression" | "argument" => cur = cur.named_child(0)?,
+            "expression_list" if cur.named_child_count() == 1 => cur = cur.named_child(0)?,
+            "as_expression" | "type_assertion" | "satisfies_expression" | "non_null_expression" => {
+                cur = cur
+                    .child_by_field_name("expression")
+                    .or_else(|| cur.named_child(0))?;
+            }
+            "await_expression" | "yield_expression" => cur = cur.named_child(0)?,
+            "call_expression" | "call" | "new_expression" if descend_calls => {
+                let args = cur
+                    .child_by_field_name("arguments")
+                    .or_else(|| cur.child_by_field_name("argument_list"))?;
+                let mut w = args.walk();
+                cur = args.named_children(&mut w).next()?;
+            }
+            _ => break,
+        }
+    }
+    let kind = cur.kind();
+    if matches!(kind, "binary_expression" | "binary_operator" | "binary") {
+        let left = cur.named_child(0)?;
+        let mut w = cur.walk();
+        let op = cur.children(&mut w).find(|c| !c.is_named())?;
+        return match op.kind() {
+            "+" | "." => lead_ident_of_operand(left, lang, code, true, false, depth + 1),
+            _ => None,
+        };
+    }
+    if concat_operand && is_identifier_kind(kind, lang) {
+        return Some((text_of(cur, code)?, String::new()));
+    }
+    if is_string_like_kind(kind) {
+        return string_leading_ident(cur, lang, code);
+    }
     None
 }
 
-/// Return the leading constant string of `node` if it is a template literal or
-/// a left-associated `"lit" + x` binary expression. Used by
-/// `extract_template_prefix` for both assignment RHS and call arguments.
+/// `(identifier, following literal text)` when a string node opens with an
+/// interpolation of a bare identifier (`${API}…`, `{API}…`, `#{API}…`).
+fn string_leading_ident(node: Node, lang: &str, code: &[u8]) -> Option<(String, String)> {
+    let mut w = node.walk();
+    let mut children = node
+        .named_children(&mut w)
+        .filter(|c| c.kind() != "string_start");
+    let first = children.next()?;
+    if !matches!(first.kind(), "template_substitution" | "interpolation") {
+        return None;
+    }
+    if first.named_child_count() != 1 {
+        return None;
+    }
+    let inner = first.named_child(0)?;
+    if !is_identifier_kind(inner.kind(), lang) {
+        return None;
+    }
+    let tail = children
+        .next()
+        .filter(|c| is_string_content_kind(c.kind()) && c.kind() != "escape_sequence")
+        .and_then(|c| text_of(c, code))
+        .unwrap_or_default();
+    Some((text_of(inner, code)?, tail))
+}
+
+fn is_numeric_literal_kind(kind: &str) -> bool {
+    matches!(kind, "number" | "integer")
+}
+
+/// Deepest AST nesting [`prefix_of_operand`] follows through wrappers and down
+/// the left spine of a concatenation chain.
+const PREFIX_WALK_DEPTH: usize = 32;
+
+/// Return the leading constant string of `node`: the literal head of a
+/// template literal, f-string or interpolated string, the left-most literal of
+/// a `"lit" + x + y` / PHP `"lit" . $x` chain, the literal text before the
+/// first directive of a format call (`fmt.Sprintf`, `String.format`,
+/// `sprintf`, `"..." % x`, `"...".format(x)`), or a Rust `format!` head.  Used
+/// by `extract_template_prefix` for both assignment RHS and call arguments.
 ///
 /// Also descends through `await` / `yield` wrappers and into the first
 /// argument of a call expression, this covers the common sink shape
 /// `await axios.get(\`https://host/…${x}\`)` where the template literal lives
 /// inside a call inside an `await` wrapper.
-fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
-    // Unwrap trivial wrappers (parentheses, TS `as` / type assertions, await/yield).
+fn prefix_of_expression(node: Node, lang: &str, code: &[u8]) -> Option<String> {
+    prefix_of_operand(node, lang, code, false, true, 0)
+}
+
+/// [`prefix_of_expression`] for one argument of a call: the argument's own
+/// value, so a call in it is read only when it is a format call.  The result
+/// of any other call is not its first argument (`wrap("https://h/" + x)` can
+/// return anything).
+pub(super) fn arg_prefix_of_expression(node: Node, lang: &str, code: &[u8]) -> Option<String> {
+    prefix_of_operand(node, lang, code, false, false, 0)
+}
+
+/// `plain_literal_ok` is set for the operand of a concatenation: a bare
+/// literal is a prefix there (`"https://h/" + x`) but not on its own, where
+/// it is just a constant and not a string being built.  `descend_calls`
+/// follows a non-format call into its first argument, which only the
+/// statement-level reading wants (see [`prefix_of_expression`]).
+fn prefix_of_operand(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    plain_literal_ok: bool,
+    descend_calls: bool,
+    depth: usize,
+) -> Option<String> {
+    if depth > PREFIX_WALK_DEPTH {
+        return None;
+    }
+    // Unwrap trivial wrappers (parentheses, TS `as` / type assertions,
+    // await/yield, PHP `argument`, a single-element Go expression list).
     let mut cur = node;
-    for _ in 0..6 {
+    for _ in 0..8 {
         match cur.kind() {
-            "parenthesized_expression" => {
+            "parenthesized_expression" | "argument" => {
+                cur = cur.named_child(0)?;
+            }
+            "expression_list" if cur.named_child_count() == 1 => {
                 cur = cur.named_child(0)?;
             }
             "as_expression" | "type_assertion" | "satisfies_expression" | "non_null_expression" => {
@@ -2141,6 +2348,12 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
                 cur = cur.named_child(0)?;
             }
             "call_expression" | "call" | "new_expression" => {
+                if let Some(p) = format_call_prefix(cur, lang, code) {
+                    return Some(p);
+                }
+                if !descend_calls {
+                    return None;
+                }
                 // Descend into the first positional argument (e.g.
                 // `axios.get(\`https://…${x}\`)`, the URL we want to lock
                 // is the template-literal first argument of the call).
@@ -2150,68 +2363,29 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
                 let mut w = args.walk();
                 cur = args.named_children(&mut w).next()?;
             }
+            "function_call_expression" | "method_invocation" => {
+                return format_call_prefix(cur, lang, code);
+            }
             _ => break,
         }
     }
 
-    // Case 1: template literal, `\`scheme://host/…${x}…\``.
-    if cur.kind() == "template_string" {
-        let mut w = cur.walk();
-        let first_child = cur.named_children(&mut w).next()?;
-        // Leading fragment only counts when the very first piece is a literal
-        // text fragment (not an interpolation like `\`${x}…\``).
-        if first_child.kind() == "string_fragment" {
-            let frag = text_of(first_child, code)?;
-            if !frag.is_empty() {
-                return Some(frag);
-            }
-        }
-        return None;
-    }
+    let kind = cur.kind();
 
-    // Case 2: `"scheme://host/" + x` / PHP `"scheme://host/" . $x`,
-    // LHS is a string literal.  Phase 14: also accept `.` as the
-    // concat operator so PHP's `"prefix" . $tainted` shape locks the
-    // SSRF prefix the same way `+`-using languages do.
-    if matches!(
-        cur.kind(),
-        "binary_expression" | "binary_operator" | "binary"
-    ) {
-        let mut w2 = cur.walk();
-        let mut ops = cur.children(&mut w2).filter(|c| !c.is_named());
-        if !ops.any(|c| matches!(c.kind(), "+" | ".")) {
-            return None;
-        }
+    // `"scheme://host/" + x + "/y"` / PHP `"scheme://host/" . $x` /
+    // `"scheme://host/%s" % x`.  The prefix is whatever the left-most operand
+    // starts with, so a left-nested chain recurses down its left spine.
+    if matches!(kind, "binary_expression" | "binary_operator" | "binary") {
         let left = cur.named_child(0)?;
-        if matches!(
-            left.kind(),
-            "string"
-                | "string_fragment"
-                | "string_literal"
-                | "interpreted_string_literal"
-                | "raw_string_literal"
-                | "encapsed_string"
-        ) {
-            // For strings with embedded fragments (Java string_literal
-            // wraps a string_fragment child), recurse one level into
-            // the fragment to get the raw text without quote tokens.
-            let inner_text = if matches!(left.kind(), "string_literal" | "encapsed_string") {
-                let mut iw = left.walk();
-                left.named_children(&mut iw)
-                    .find(|c| c.kind() == "string_fragment")
-                    .and_then(|n| text_of(n, code))
-            } else {
-                None
-            };
-            let raw = match inner_text {
-                Some(t) => t,
-                None => text_of(left, code)?,
-            };
-            let trimmed = strip_string_quotes_loose(&raw);
-            if !trimmed.is_empty() {
-                return Some(trimmed);
+        let mut w = cur.walk();
+        let op = cur.children(&mut w).find(|c| !c.is_named())?;
+        return match op.kind() {
+            "+" | "." => prefix_of_operand(left, lang, code, true, false, depth + 1),
+            "%" if matches!(lang, "python" | "ruby") => {
+                literal_format_prefix(left, code, '%', depth + 1)
             }
-        }
+            _ => None,
+        };
     }
 
     // Case 3: Rust `format!("scheme://host/{}", x)` macro invocation.
@@ -2280,34 +2454,130 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         }
     }
 
-    // Case 4: interpolated-string leading literal fragment.
-    // Python f-strings parse as `formatted_string`; Ruby interpolated
-    // strings parse as `string` with an `interpolation` child.  The
-    // `string + has_interpolation child` gate keeps plain JS / TS /
-    // Java `string` nodes (whose children are only
-    // `string_content`/`string_fragment`) from accidentally seeding a
-    // phantom prefix on every literal-URL call site.  PHP double-
-    // quoted strings parse as `encapsed_string`, distinct kind, so
-    // they don't trip this branch either.
-    let is_fstring = cur.kind() == "formatted_string";
-    let is_interp_string = cur.kind() == "string" && has_string_interpolation(cur);
-    if is_fstring || is_interp_string {
-        let mut w = cur.walk();
-        // tree-sitter-python wraps the literal in `string_start` /
-        // `string_end` tokens; skip the opening one.
-        let first = cur
-            .named_children(&mut w)
-            .find(|c| c.kind() != "string_start")?;
-        if matches!(first.kind(), "string_content" | "string_fragment") {
-            let raw = text_of(first, code)?;
-            let trimmed = strip_string_quotes_loose(&raw);
-            if !trimmed.is_empty() {
-                return Some(trimmed);
-            }
+    // String-like nodes: the literal text before the first interpolation.
+    // JS/TS template literals, Python f-strings (`string` with an
+    // `interpolation` child), Ruby `"#{x}"`, PHP `encapsed_string` and, as
+    // the operand of a concatenation, plain literals.  A plain literal on
+    // its own is just a constant, so it is not read as a prefix.
+    if is_string_like_kind(kind) {
+        if kind == "template_string" || plain_literal_ok || string_is_interpolated(cur) {
+            return string_leading_content(cur, code);
         }
+        return None;
     }
 
     None
+}
+
+fn is_string_like_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "template_string"
+            | "string"
+            | "string_literal"
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "encapsed_string"
+    )
+}
+
+/// True for content-bearing children of a string node: literal text and
+/// escape sequences, as opposed to an interpolation or a delimiter.
+fn is_string_content_kind(kind: &str) -> bool {
+    kind.ends_with("_content") || kind.ends_with("_fragment") || kind == "escape_sequence"
+}
+
+/// True when a string node holds an interpolation (`#{x}`, `{x}`, `${x}`,
+/// PHP `$x` / `{$x}`) rather than only text.
+fn string_is_interpolated(node: Node) -> bool {
+    let mut w = node.walk();
+    node.named_children(&mut w).any(|c| {
+        let k = c.kind();
+        !is_string_content_kind(k) && k != "string_start" && k != "string_end"
+    })
+}
+
+/// The literal text a string node starts with, up to its first interpolation
+/// or escape sequence.  Delimiters (`"`, quote tokens, Python `string_start`)
+/// are skipped; `None` when the string starts with an interpolation or is
+/// empty.
+fn string_leading_content(node: Node, code: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    let mut w = node.walk();
+    for child in node.named_children(&mut w) {
+        let k = child.kind();
+        if k == "string_start" {
+            continue;
+        }
+        if k == "string_end" || k == "escape_sequence" || !is_string_content_kind(k) {
+            break;
+        }
+        out.push_str(&text_of(child, code)?);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Literal head of the format string `node` up to its first `directive`
+/// (`%` for printf-style formats, `{` for Python `str.format`).  A directive
+/// at the very start leaves no prefix.
+fn literal_format_prefix(node: Node, code: &[u8], directive: char, depth: usize) -> Option<String> {
+    let mut cur = node;
+    for _ in 0..4 {
+        if matches!(cur.kind(), "parenthesized_expression" | "argument") {
+            cur = cur.named_child(0)?;
+        }
+    }
+    if depth > PREFIX_WALK_DEPTH
+        || !is_string_like_kind(cur.kind())
+        || cur.kind() == "template_string"
+    {
+        return None;
+    }
+    let head = string_leading_content(cur, code)?;
+    let head = match head.find(directive) {
+        Some(i) => head[..i].to_string(),
+        None => head,
+    };
+    if head.is_empty() { None } else { Some(head) }
+}
+
+/// Prefix of a call that builds a string from a literal format:
+/// `fmt.Sprintf("https://h/%s", id)`, `String.format(...)`,
+/// `"https://h/%s".formatted(id)`, PHP `sprintf`, Ruby `format` / `sprintf`
+/// and Python `"https://h/{}".format(id)`.
+fn format_call_prefix(call: Node, lang: &str, code: &[u8]) -> Option<String> {
+    let args = call
+        .child_by_field_name("arguments")
+        .or_else(|| call.child_by_field_name("argument_list"))?;
+    let head = std::str::from_utf8(code.get(call.start_byte()..args.start_byte())?)
+        .ok()?
+        .trim();
+    let format_fn = match lang {
+        "go" => head == "fmt.Sprintf",
+        "java" => head == "String.format",
+        "php" => head == "sprintf",
+        "ruby" => matches!(
+            head,
+            "format" | "sprintf" | "Kernel.format" | "Kernel.sprintf"
+        ),
+        _ => false,
+    };
+    if format_fn {
+        let first = args.named_child(0)?;
+        return literal_format_prefix(first, code, '%', 0);
+    }
+    // `"literal".format(...)` (Python) / `"literal".formatted(...)` (Java):
+    // the format string is the call's receiver.
+    let receiver = call.child_by_field_name("object").or_else(|| {
+        call.child_by_field_name("function")
+            .filter(|f| f.kind() == "attribute")
+            .and_then(|f| f.child_by_field_name("object"))
+    })?;
+    match (lang, head.rsplit('.').next()) {
+        ("python", Some("format")) => literal_format_prefix(receiver, code, '{', 0),
+        ("java", Some("formatted")) => literal_format_prefix(receiver, code, '%', 0),
+        _ => None,
+    }
 }
 
 /// Resolve the leading prefix of a Rust `format!(IDENT, ...)`-style macro
@@ -3853,6 +4123,25 @@ pub(super) fn push_node<'a>(
                     {
                         continue;
                     }
+                    // Python lowers keyword arguments into the use group that
+                    // follows the positional ones, so a payload position the
+                    // call does not pass would read the keywords instead.  A
+                    // gate that names its keyword destinations (`url=`) has
+                    // its payload in those or in a passed position; with
+                    // neither, the call gives this gate no payload.
+                    let py_arity = if lang == "python" && !gm.object_destination_fields.is_empty() {
+                        python_positional_arity(cn)
+                    } else {
+                        None
+                    };
+                    if let Some(arity) = py_arity
+                        && gm.payload_args != crate::labels::ALL_ARGS_PAYLOAD
+                        && gm.payload_args.iter().all(|&p| p >= arity)
+                        && extract_destination_kwarg_pairs(cn, gm.object_destination_fields, code)
+                            .is_empty()
+                    {
+                        continue;
+                    }
                     if has_sink_label {
                         if !labels.contains(&gm.label) {
                             labels.push(gm.label);
@@ -3910,6 +4199,9 @@ pub(super) fn push_node<'a>(
                         // `payload_vec` to include that position; the
                         // `destination_filter` then narrows to the kwarg
                         // ident's `var_name`.
+                        if let Some(arity) = py_arity {
+                            payload_vec.retain(|&p| p < arity);
+                        }
                         let kwarg_pairs =
                             extract_destination_kwarg_pairs(cn, gm.object_destination_fields, code);
                         if !kwarg_pairs.is_empty() {
@@ -4526,6 +4818,21 @@ pub(super) fn push_node<'a>(
     let arg_string_literals = call_ast
         .map(|cn| extract_arg_string_literals(cn, code))
         .unwrap_or_default();
+    // Constant head of each argument built from a literal prefix, for sinks
+    // and URL builders whose URL is not the first argument.  Only SSRF /
+    // open-redirect reasoning reads it, and only the call-site languages the
+    // prefix extractor covers produce one.
+    let arg_string_prefixes = if matches!(
+        lang,
+        "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
+    ) {
+        call_ast
+            .map(|cn| extract_arg_string_prefixes(cn, lang, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
 
     // Extract keyword / named arguments for Call and gated-sink nodes.
     // Languages whose grammar doesn't produce `keyword_argument` / `named_argument`
@@ -4707,14 +5014,30 @@ pub(super) fn push_node<'a>(
                 .any(|ch| ch.kind() == "do_block" || ch.kind() == "block")
         });
 
+    // The URL-bearing argument is the sink's lowest payload position
+    // (`http.NewRequest(method, url, body)` pins arg 1), else the first.
+    let url_arg = sink_payload_args
+        .as_deref()
+        .and_then(|p| p.iter().copied().filter(|&i| i != usize::MAX).min())
+        .unwrap_or(0);
     // A read-modify-write keeps the target's own prefix (`url += "/x"`), so
     // only a call argument's prefix is recorded for it.
-    let string_prefix = if rmw.is_some() {
-        None
+    let own_scope = if rmw.is_some() { None } else { scope };
+    let string_prefix = own_scope
+        .and_then(|s| extract_template_prefix(s, lang, code, url_arg))
+        .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code, url_arg)));
+    let url_sink = labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)));
+    let string_prefix_ident = if string_prefix.is_none() {
+        own_scope
+            .and_then(|s| extract_lead_ident(s, lang, code, url_arg, url_sink))
+            .or_else(|| {
+                call_ast.and_then(|cn| extract_lead_ident(cn, lang, code, url_arg, url_sink))
+            })
     } else {
-        scope.and_then(|s| extract_template_prefix(s, lang, code))
-    }
-    .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code)));
+        None
+    };
 
     let (bin_op, bin_op_const) = match &rmw {
         Some(r) => {
@@ -4800,6 +5123,8 @@ pub(super) fn push_node<'a>(
             sink_reaching_uses,
             kwargs,
             arg_string_literals,
+            arg_string_prefixes,
+            arg_bare_names,
             destination_uses,
             gate_filters,
             is_constructor,
@@ -4852,6 +5177,7 @@ pub(super) fn push_node<'a>(
         parameterized_query,
         parameterized_query_interpolated,
         string_prefix,
+        string_prefix_ident,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
         member_field: if rmw.is_none() {
@@ -10071,6 +10397,10 @@ pub(crate) fn build_cfg<'a>(
     // Nested functions are pushed before their parents during build_sub,
     // so the Vec may be out of order before this sort.
     bodies.sort_by_key(|b| b.meta.id);
+
+    // Leading identifiers of URL-building strings (`API + id`) resolve against
+    // the file's module-level string constants, now that every body exists.
+    module_consts::resolve_prefix_idents(&mut bodies);
 
     // Extract import alias bindings for JS/TS files.
     let import_bindings = if matches!(

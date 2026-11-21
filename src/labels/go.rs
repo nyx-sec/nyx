@@ -1575,6 +1575,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "short_var_declaration"    => Kind::CallWrapper,
     "expression_statement"     => Kind::CallWrapper,
     "var_declaration"          => Kind::CallWrapper,
+    // `const x = "lit"` defines a name like `var x = "lit"` does, so a
+    // constant is a constant to const-prop and to module-level URL prefixes.
+    "const_declaration"        => Kind::CallWrapper,
     "type_assertion_expression" => Kind::Seq,
 
     // trivia

@@ -1241,6 +1241,15 @@ pub(crate) fn url_builder_arg_indices(
     }
 }
 
+/// True when the `(base, path)` builder appends its path arguments as path
+/// segments instead of resolving them as a URL reference.  Go `url.JoinPath`
+/// does: no element can change the host, so the base origin stays pinned.
+/// The other builders resolve a reference, where an absolute or
+/// protocol-relative path replaces the host.
+pub(crate) fn url_builder_appends_path(lang: Lang) -> bool {
+    lang == Lang::Go
+}
+
 /// Check if a callee is a known integer/numeric-producing function.
 ///
 /// Conservative list: only includes functions whose return type is unambiguously
