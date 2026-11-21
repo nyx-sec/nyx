@@ -3846,8 +3846,8 @@ pub(super) fn push_node<'a>(
                             .is_some_and(|m| {
                                 crate::labels::javascript::QUERY_BUILDER_SQL_TEXT_METHODS
                                     .contains(&m)
+                                    && js_arg_is_structured_condition(cn, 0, m, code)
                             })
-                        && js_arg_is_structured_condition(cn, 0)
                     {
                         continue;
                     }
@@ -10375,10 +10375,19 @@ pub(crate) fn build_cfg<'a>(
             BodyId(0),
         )
     };
-    let exits = if python_imports.is_empty() {
-        build_top_level()
+    // JS/TS call-shape rules (tagged SQL templates) read the import view
+    // while the CFG is built, the same way Python's do.
+    let js_imports = if matches!(lang, "javascript" | "typescript" | "tsx") {
+        extract_local_import_view(tree, code)
     } else {
+        HashMap::new()
+    };
+    let exits = if !python_imports.is_empty() {
         crate::ssa::type_facts::with_file_imports(Some(&python_imports), build_top_level)
+    } else if !js_imports.is_empty() {
+        crate::ssa::type_facts::with_file_imports(Some(&js_imports), build_top_level)
+    } else {
+        build_top_level()
     };
     debug!(target: "cfg", "exits: {:?}", exits);
     // Wire every real exit to our synthetic EXIT node.
