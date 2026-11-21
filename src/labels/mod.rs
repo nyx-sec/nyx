@@ -1612,9 +1612,15 @@ fn classify_aliased(
     text: &str,
     extra: Option<&[RuntimeLabelRule]>,
 ) -> Option<DataLabel> {
-    classify_text(lang, text, extra).or_else(|| {
-        aliased_receiver_text(text).and_then(|aliased| classify_text(lang, &aliased, extra))
-    })
+    classify_text(lang, text, extra)
+        .filter(|label| {
+            !(lang == "go"
+                && matches!(label, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE))
+                && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix))
+        })
+        .or_else(|| {
+            aliased_receiver_text(text).and_then(|aliased| classify_text(lang, &aliased, extra))
+        })
 }
 
 fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
@@ -1730,6 +1736,9 @@ fn classify_all_aliased(
     extra: Option<&[RuntimeLabelRule]>,
 ) -> SmallVec<[DataLabel; 2]> {
     let mut out = classify_all_text(lang, text, extra);
+    if lang == "go" && go::name_rule_sink_contradicts_declared_type(text, receiver_alias_prefix) {
+        out.retain(|l| !matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)));
+    }
     if let Some(aliased) = aliased_receiver_text(text) {
         for label in classify_all_text(lang, &aliased, extra) {
             if !out.contains(&label) {

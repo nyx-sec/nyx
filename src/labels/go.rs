@@ -1611,6 +1611,23 @@ pub fn request_receiver_prefix(type_text: &str) -> Option<&'static str> {
     }
 }
 
+/// True when `text` is a call of echo's name-keyed HTML sinks (`c.HTML`,
+/// `c.HTMLBlob`) on a receiver the enclosing function declares as a gin
+/// context.  The echo rules in [`framework_rules`] match on the receiver name
+/// alone, so a file that imports both frameworks would otherwise treat gin's
+/// `c.HTML(code, name, data)`, a named html/template that escapes `data`, as a
+/// raw HTML write.  `declared_prefix` maps a receiver name to the canonical
+/// prefix of its declared type.
+pub fn name_rule_sink_contradicts_declared_type(
+    text: &str,
+    declared_prefix: impl Fn(&str) -> Option<&'static str>,
+) -> bool {
+    let Some((root, method)) = text.split_once('.') else {
+        return false;
+    };
+    matches!(method, "HTML" | "HTMLBlob") && declared_prefix(root) == Some("GinContext")
+}
+
 /// Request binders that decode the request into the pointer passed at the
 /// listed argument positions and return only an `error`
 /// (`c.ShouldBindJSON(&in)`, `c.Bind(&in)`).  Consulted only when the call
