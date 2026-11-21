@@ -12683,7 +12683,16 @@ fn literal_arg_call_has_tainted_subject_receiver(
         transfer.extra_labels,
         Some(ssa),
     );
-    labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+    // The qualified lookup (`FileHandle.write`) also matches bare suffix
+    // rules (`write`), so a sink the callee text already carries on its own
+    // says nothing about the receiver being the subject.  Only a sink the
+    // qualified form adds counts; otherwise `out.write("done")` on a
+    // tainted `FileWriter` would report the servlet-response `write` rule
+    // the receiver type just ruled out.
+    let flat = crate::labels::classify_all(transfer.lang.as_str(), callee, transfer.extra_labels);
+    labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(_)) && !flat.contains(l))
 }
 
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
