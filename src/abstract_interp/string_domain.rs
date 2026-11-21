@@ -52,13 +52,14 @@ pub fn prefix_locks_origin(prefix: &str) -> bool {
 }
 
 /// True for callees that open their argument as a filesystem path unless it
-/// carries a URL scheme (PHP's stream functions, which are also SSRF sinks).
+/// carries a URL scheme (PHP's stream functions, and Ruby's `open` /
+/// `URI.open`, which fall back to `Kernel#open`; all are also SSRF sinks).
 /// A leading `/` there names a local file, not a path on the current origin.
 pub fn opens_local_paths(callee: &str) -> bool {
     let leaf = callee.rsplit(['\\', ':', '.']).next().unwrap_or(callee);
     matches!(
         leaf.to_ascii_lowercase().as_str(),
-        "file_get_contents" | "fopen" | "readfile" | "file"
+        "file_get_contents" | "fopen" | "readfile" | "file" | "open" | "open_uri"
     )
 }
 
@@ -1179,7 +1180,14 @@ mod tests {
     /// but a local file for a callee that opens paths (PHP stream functions).
     #[test]
     fn site_relative_prefix_does_not_lock_local_path_readers() {
-        for callee in ["file_get_contents", "fopen", "\\file_get_contents"] {
+        for callee in [
+            "file_get_contents",
+            "fopen",
+            "\\file_get_contents",
+            "URI.open",
+            "open",
+            "OpenURI.open_uri",
+        ] {
             assert!(
                 !prefix_locks_origin_for(Some(callee), "/var/data/"),
                 "{callee}"

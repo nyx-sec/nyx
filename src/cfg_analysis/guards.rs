@@ -376,9 +376,10 @@ pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: Nod
 /// (`const base = "https://api.example.com"; new URL(path, base)`).
 fn builder_base_is_absolute_literal(
     ctx: &AnalysisContext,
-    info: &crate::cfg::NodeInfo,
+    builder: NodeIndex,
     base_idx: usize,
 ) -> bool {
+    let info = &ctx.cfg[builder];
     let pins_origin = |base: &str| {
         crate::abstract_interp::string_domain::prefix_locks_origin(&format!(
             "{}/",
@@ -397,26 +398,51 @@ fn builder_base_is_absolute_literal(
         return false;
     };
     let func = info.ast.enclosing_func.as_deref();
-    let mut any = false;
-    let all_literal = ctx
+    let defs: Vec<NodeIndex> = ctx
         .cfg
         .node_indices()
-        .map(|i| &ctx.cfg[i])
-        .filter(|n| {
-            n.taint.defines.as_deref() == Some(name.as_str())
-                && n.ast.enclosing_func.as_deref() == func
+        .filter(|&i| {
+            ctx.cfg[i].taint.defines.as_deref() == Some(name.as_str())
+                && ctx.cfg[i].ast.enclosing_func.as_deref() == func
         })
-        .all(|n| {
-            any = true;
-            n.taint.const_text.as_deref().is_some_and(|text| {
-                let t = text.trim();
-                t.len() >= 2
-                    && matches!(t.as_bytes()[0], b'"' | b'\'' | b'`')
-                    && t.as_bytes()[0] == t.as_bytes()[t.len() - 1]
-                    && pins_origin(&t[1..t.len() - 1])
-            })
-        });
-    any && all_literal
+        .collect();
+    let all_literal = defs.iter().all(|&i| {
+        ctx.cfg[i].taint.const_text.as_deref().is_some_and(|text| {
+            let t = text.trim();
+            t.len() >= 2
+                && matches!(t.as_bytes()[0], b'"' | b'\'' | b'`')
+                && t.as_bytes()[0] == t.as_bytes()[t.len() - 1]
+                && pins_origin(&t[1..t.len() - 1])
+        })
+    });
+    all_literal && defs_cover_every_path(ctx, &defs, builder)
+}
+
+/// True when every path from the entry to `use_node` passes through one of
+/// `defs`.  A name that is also a parameter, or that is only re-bound under a
+/// condition (`if (!url) { url = "https://h/" + id }`), has a path on which
+/// the caller's value reaches the use without meeting a definition, so an
+/// "every definition is locked" check proves nothing without this.
+fn defs_cover_every_path(ctx: &AnalysisContext, defs: &[NodeIndex], use_node: NodeIndex) -> bool {
+    if defs.is_empty() {
+        return false;
+    }
+    let blocked: HashSet<NodeIndex> = defs.iter().copied().collect();
+    if blocked.contains(&ctx.entry) {
+        return true;
+    }
+    let mut seen: HashSet<NodeIndex> = HashSet::new();
+    let mut stack = vec![ctx.entry];
+    while let Some(n) = stack.pop() {
+        if n == use_node {
+            return false;
+        }
+        if !seen.insert(n) {
+            continue;
+        }
+        stack.extend(ctx.cfg.neighbors(n).filter(|m| !blocked.contains(m)));
+    }
+    true
 }
 
 /// Suppress a `cfg-unguarded-sink` SSRF finding when the sink's URL operand
@@ -467,7 +493,7 @@ fn sink_url_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap
             ) else {
                 return false;
             };
-            if !builder_base_is_absolute_literal(ctx, info, base_idx) {
+            if !builder_base_is_absolute_literal(ctx, idx, base_idx) {
                 return false;
             }
             if crate::ssa::type_facts::url_builder_appends_path(ctx.lang) {
@@ -3822,17 +3848,19 @@ fn url_target_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: C
         return false;
     };
     let sink_func = info.ast.enclosing_func.as_deref();
-    let mut defs = ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).filter(|n| {
-        n.taint.defines.as_deref() == Some(url_var.as_str())
-            && n.ast.enclosing_func.as_deref() == sink_func
-            && n.ast.span.0 < info.ast.span.0
-    });
-    let mut any = false;
-    let all_locked = defs.all(|n| {
-        any = true;
-        n.string_prefix.as_deref().is_some_and(locks)
-    });
-    any && all_locked
+    let defs: Vec<NodeIndex> = ctx
+        .cfg
+        .node_indices()
+        .filter(|&i| {
+            let n = &ctx.cfg[i];
+            n.taint.defines.as_deref() == Some(url_var.as_str())
+                && n.ast.enclosing_func.as_deref() == sink_func
+                && n.ast.span.0 < info.ast.span.0
+        })
+        .collect();
+    defs.iter()
+        .all(|&i| ctx.cfg[i].string_prefix.as_deref().is_some_and(locks))
+        && defs_cover_every_path(ctx, &defs, sink)
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.
