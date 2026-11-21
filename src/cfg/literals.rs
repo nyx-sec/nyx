@@ -3436,12 +3436,8 @@ fn js_name_is_sql_library_binding(node: Node, name: &str, code: &[u8]) -> bool {
     {
         return true;
     }
-    let mut root = node;
-    while let Some(p) = root.parent() {
-        root = p;
-    }
-    let mut cursor = root.walk();
-    root.named_children(&mut cursor)
+    js_top_level_statements(node)
+        .into_iter()
         .flat_map(|stmt| {
             let mut c = stmt.walk();
             stmt.named_children(&mut c).collect::<Vec<_>>()
@@ -3467,6 +3463,69 @@ fn js_name_is_sql_library_binding(node: Node, name: &str, code: &[u8]) -> bool {
         })
 }
 
+/// Top-level statements of the file that holds `node`, with an
+/// `export const ..` / `export function ..` read as its declaration.
+fn js_top_level_statements(node: Node) -> Vec<Node> {
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor)
+        .map(|stmt| {
+            if stmt.kind() == "export_statement" {
+                stmt.child_by_field_name("declaration").unwrap_or(stmt)
+            } else {
+                stmt
+            }
+        })
+        .collect()
+}
+
+/// True when `name` is a function the file defines itself at top level:
+/// `function sql(..) {..}` or `const sql = (..) => ..`.
+fn js_name_is_local_function(node: Node, name: &str, code: &[u8]) -> bool {
+    js_top_level_statements(node)
+        .into_iter()
+        .any(|stmt| match stmt.kind() {
+            "function_declaration" | "generator_function_declaration" => stmt
+                .child_by_field_name("name")
+                .and_then(|n| text_of(n, code))
+                .is_some_and(|n| n == name),
+            "lexical_declaration" | "variable_declaration" => {
+                let mut c = stmt.walk();
+                stmt.named_children(&mut c).any(|d| {
+                    d.kind() == "variable_declarator"
+                        && d.child_by_field_name("name")
+                            .and_then(|n| text_of(n, code))
+                            .is_some_and(|n| n == name)
+                        && d.child_by_field_name("value")
+                            .map(unwrap_parens)
+                            .is_some_and(|v| {
+                                matches!(
+                                    v.kind(),
+                                    "arrow_function" | "function_expression" | "function"
+                                )
+                            })
+                })
+            }
+            _ => false,
+        })
+}
+
+/// Roots of a parameterized SQL template API (`sql\`..\``, `sql.raw(..)`,
+/// `Prisma.sql`, `Prisma.raw(..)`).
+const SQL_TEMPLATE_ROOTS: &[&str] = &["sql", "SQL", "Prisma"];
+
+/// True when the `sql` / `SQL` / `Prisma` root of a SQL template is not the
+/// file's own function. An import (from a SQL library, or from a project
+/// module that re-exports one) and a client value (`const sql = postgres(url)`)
+/// are trusted to bind their substitutions; a tag the file defines as a
+/// function may concatenate them.
+fn js_sql_template_root_is_library(node: Node, name: &str, code: &[u8]) -> bool {
+    !js_name_is_local_function(node, name, code)
+}
+
 /// True when the callee text `callee` of a call under `node` is a raw-text
 /// splice of a SQL library: `Prisma.raw`, `sql.raw`, `sql.unsafe`, or a bare
 /// `raw` / `unsafe` imported from one.
@@ -3477,7 +3536,13 @@ fn is_sql_raw_splice_callee(node: Node, callee: &str, code: &[u8]) -> bool {
         return false;
     };
     let leaf = second.unwrap_or(first);
-    RAW_SQL_SPLICE_HELPERS.contains(&leaf) && js_name_is_sql_library_binding(node, first, code)
+    if !RAW_SQL_SPLICE_HELPERS.contains(&leaf) {
+        return false;
+    }
+    if second.is_some() && SQL_TEMPLATE_ROOTS.contains(&first) {
+        return js_sql_template_root_is_library(node, first, code);
+    }
+    js_name_is_sql_library_binding(node, first, code)
 }
 
 /// Raw-text splices of a JS/TS tagged SQL template, or `None` when `call` is
@@ -3510,11 +3575,11 @@ pub(super) fn js_sql_template_raw_splices(
         return None;
     }
     // Prisma's `$queryRaw` / `$executeRaw` are method names of its client.
-    // `sql` / `SQL` are ordinary identifiers, so the tag has to come from a
-    // SQL library; a user-defined tag may concatenate.
+    // `sql` / `SQL` are ordinary identifiers, so a tag the file defines as
+    // its own function is not trusted: it may concatenate.
     if !leaf.starts_with('$') {
         let root_name = tag.split('.').next().unwrap_or(&tag);
-        if !js_name_is_sql_library_binding(call, root_name, code) {
+        if !js_sql_template_root_is_library(call, root_name, code) {
             return None;
         }
     }
@@ -3591,16 +3656,9 @@ pub(super) fn js_arg_is_structured_condition(
     );
     match arg.kind() {
         "object" if is_condition_method => true,
-        "object" => {
-            let mut c = arg.walk();
-            arg.named_children(&mut c).all(|pair| match pair.kind() {
-                "pair" => pair.child_by_field_name("key").is_some_and(|k| {
-                    matches!(k.kind(), "property_identifier" | "string" | "number")
-                }),
-                "shorthand_property_identifier" | "comment" => true,
-                _ => false,
-            })
-        }
+        // TypeORM writes the values too (`orderBy({ 'u.name': dir })` puts
+        // `dir` after the column), so they must be static as well.
+        "object" => js_object_is_static(arg),
         "arrow_function" | "function_expression" | "function" => is_condition_method,
         "new_expression" => {
             is_condition_method
@@ -3613,6 +3671,34 @@ pub(super) fn js_arg_is_structured_condition(
         }
         _ => false,
     }
+}
+
+/// True when an object literal has only static keys and static values: string,
+/// number or substitution-free template literals, or nested objects of the
+/// same (`{ 'u.name': 'ASC' }`, `{ id: { order: 'DESC', nulls: 'NULLS LAST' } }`).
+fn js_object_is_static(obj: Node) -> bool {
+    let mut c = obj.walk();
+    obj.named_children(&mut c).all(|pair| match pair.kind() {
+        "pair" => {
+            pair.child_by_field_name("key")
+                .is_some_and(|k| matches!(k.kind(), "property_identifier" | "string" | "number"))
+                && pair
+                    .child_by_field_name("value")
+                    .map(unwrap_parens)
+                    .is_some_and(|v| match v.kind() {
+                        "string" | "number" => true,
+                        "template_string" => {
+                            let mut tc = v.walk();
+                            v.named_children(&mut tc)
+                                .all(|ch| ch.kind() != "template_substitution")
+                        }
+                        "object" => js_object_is_static(v),
+                        _ => false,
+                    })
+        }
+        "comment" => true,
+        _ => false,
+    })
 }
 
 /// True when the positional argument at `index` of a JS/TS call names an

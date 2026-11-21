@@ -5518,10 +5518,12 @@ fn ts_query_builder_chain_condition_is_a_sql_sink() {
 
 #[test]
 fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
-    let src = b"async function h(repo, col, name) {\n\
+    let src = b"async function h(repo, col, name, dir) {\n\
                   await repo.createQueryBuilder('u').orderBy({ [col]: 'ASC' }).getMany();\n\
                   await repo.createQueryBuilder('u').orderBy({ 'u.name': 'ASC' }).getMany();\n\
                   await repo.createQueryBuilder('u').orderBy({ ...col }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.name': dir }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.id': { order: 'DESC', nulls: 'NULLS LAST' } }).getMany();\n\
                   await repo.createQueryBuilder('u').groupBy(new String(col)).getMany();\n\
                   await repo.createQueryBuilder('u').where(new Brackets(q => q.where('a = 1'))).getMany();\n\
                   await repo.createQueryBuilder('u').where(new String(name)).getMany();\n\
@@ -5529,11 +5531,14 @@ fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
     let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
     let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
     let order = js_call_nodes(&file_cfg, "QueryBuilder.orderBy");
-    assert_eq!(order.len(), 3);
+    assert_eq!(order.len(), 5);
     // A computed key or a spread puts an attacker-chosen column into SQL.
     assert!(has_sink(order[0], Cap::SQL_QUERY));
     assert!(!has_sink(order[1], Cap::SQL_QUERY));
     assert!(has_sink(order[2], Cap::SQL_QUERY));
+    // The direction is written into SQL too, so it has to be static.
+    assert!(has_sink(order[3], Cap::SQL_QUERY));
+    assert!(!has_sink(order[4], Cap::SQL_QUERY));
     let group = js_call_nodes(&file_cfg, "QueryBuilder.groupBy");
     assert!(has_sink(group[0], Cap::SQL_QUERY));
     let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
@@ -5544,6 +5549,42 @@ fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
         "where(new String(name)) is not a Brackets group"
     );
     assert!(wheres.iter().any(|w| !has_sink(w, Cap::SQL_QUERY)));
+}
+
+#[test]
+fn ts_reexported_sql_tag_and_client_values_are_parameterized() {
+    // A tag re-exported by a project module, or a client built by a call, is
+    // a library tag; only a function the file defines itself is not.
+    for src in [
+        &b"import { sql } from '@/db';\n\
+           async function h(db, name) {\n\
+             await db.execute(sql`select * from t where n = ${name}`);\n\
+           }"[..],
+        &b"import postgres from 'postgres';\n\
+           export const sql = postgres(process.env.DB_URL);\n\
+           async function h(db, name) {\n\
+             await db.execute(sql`select * from t where n = ${name}`);\n\
+           }"[..],
+    ] {
+        let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+        let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+        let execs = js_call_nodes(&file_cfg, "db.execute");
+        assert_eq!(execs.len(), 1);
+        assert!(
+            !has_sink(execs[0], Cap::SQL_QUERY),
+            "{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+    // An arrow function the file defines is its own tag.
+    let src = b"const sql = (s, ...v) => s.join('');\n\
+                async function h(db, name) {\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert!(has_sink(execs[0], Cap::SQL_QUERY));
 }
 
 #[test]
