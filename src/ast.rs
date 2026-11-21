@@ -217,8 +217,26 @@ fn build_taint_diag(
     // step's `variable` (the SSA var name, e.g. "userAgent"), then to the
     // source node's `taint.defines` / first `taint.uses` entry, before
     // finally giving up and rendering "(unknown)".
-    let source_callee = source_info
-        .and_then(|i| i.call.callee.as_deref())
+    //
+    // A source call nested in the sink call's own arguments (`exec(getCmd())`)
+    // has its origin on the sink node, no flow steps, and the nested call's
+    // span; name it by its own callee text rather than the sink's.
+    let inline_source_callee = (finding.source == finding.sink && finding.flow_steps.is_empty())
+        .then_some(finding.source_span)
+        .flatten()
+        .and_then(|start| src.get(start..))
+        .map(|rest| {
+            let end = rest
+                .iter()
+                .take(120)
+                .position(|&b| b == b'(' || b == b'\n')
+                .unwrap_or(rest.len().min(120));
+            String::from_utf8_lossy(&rest[..end]).trim().to_string()
+        })
+        .filter(|t| !t.is_empty());
+    let source_callee = inline_source_callee
+        .as_deref()
+        .or_else(|| source_info.and_then(|i| i.call.callee.as_deref()))
         .map(sanitize_desc)
         .or_else(|| {
             finding

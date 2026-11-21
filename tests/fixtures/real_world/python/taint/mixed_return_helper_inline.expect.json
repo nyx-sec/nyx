@@ -1,0 +1,82 @@
+{
+  "description": "Helpers that quote on one return path and return the argument raw on another. Inline analysis of the callee must keep the raw path; the copy behind `return b` used to be a no-op in the inlined body, so only the quoted path was seen. A helper that always quotes stays clean.",
+  "tags": [
+    "taint",
+    "interproc",
+    "inline",
+    "mixed-return",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        28,
+        31
+      ],
+      "evidence_contains": [],
+      "notes": "quote_either returns b raw on the else path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        37
+      ],
+      "evidence_contains": [],
+      "notes": "raw_first returns b raw on the not-flag path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        40,
+        43
+      ],
+      "evidence_contains": [],
+      "notes": "quote_on_match returns b raw unless it equals 'x'"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        46,
+        49
+      ],
+      "notes": "always_quote quotes on every path"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        28,
+        49
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on os.system with a dynamic argument"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        28,
+        49
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule"
+    }
+  ]
+}

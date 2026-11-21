@@ -1253,6 +1253,26 @@ fn clone_preserves_all_sub_structs() {
                 payload_args: Some(vec![0]),
                 arg_string_literals: vec![Some("SELECT 1".into())],
             })),
+            nested_calls: Some(Box::new(NestedCallTree {
+                calls: vec![NestedCall {
+                    callee: "foo".into(),
+                    span: (7, 17),
+                    parent: None,
+                    slot: CallSlot::Other,
+                    arity: Some(1),
+                    exact_arg: false,
+                    label_source: crate::labels::Cap::empty(),
+                    label_strip: crate::labels::Cap::HTML_ESCAPE,
+                    label_sink: false,
+                    labelled: true,
+                }],
+                anchor: Some(0),
+                uses: vec![NestedUse {
+                    text: "a".into(),
+                    call: None,
+                    slot: CallSlot::Other,
+                }],
+            })),
         },
         taint: TaintMeta {
             labels: {
@@ -1266,6 +1286,10 @@ fn clone_preserves_all_sub_structs() {
             extra_defines: vec!["c".into()],
             array_pattern_indices: smallvec::SmallVec::new(),
             rhs_array_elements: smallvec::SmallVec::new(),
+            rhs_object_literal: Some(Box::new(crate::cfg::RhsObjectLiteral {
+                fields: smallvec::smallvec![("k".into(), crate::cfg::RhsObjectSlot::Literal)],
+                open: false,
+            })),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -1295,6 +1319,10 @@ fn clone_preserves_all_sub_structs() {
     assert_eq!(cloned.taint.defines, original.taint.defines);
     assert_eq!(cloned.taint.uses, original.taint.uses);
     assert_eq!(cloned.taint.extra_defines, original.taint.extra_defines);
+    assert_eq!(
+        cloned.taint.rhs_object_literal,
+        original.taint.rhs_object_literal
+    );
     assert_eq!(cloned.ast.span, original.ast.span);
     assert_eq!(cloned.ast.enclosing_func, original.ast.enclosing_func);
     assert_eq!(cloned.all_args_literal, original.all_args_literal);
@@ -1863,6 +1891,192 @@ fn sql_placeholder_detection() {
     assert!(!has_sql_placeholders("SELECT $dollar FROM t")); // $d not $N
     assert!(!has_sql_placeholders("SELECT * FROM t WHERE x = $0")); // $0 not valid
     assert!(!has_sql_placeholders("ratio = 50%")); // %<not s>
+}
+
+/// The first node whose callee ends with `suffix`, across all bodies.
+fn node_with_callee_suffix(file_cfg: &FileCfg, suffix: &str) -> NodeInfo {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .find(|n| {
+            n.call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.ends_with(suffix))
+        })
+        .unwrap_or_else(|| panic!("no call ending with {suffix}"))
+        .clone()
+}
+
+#[test]
+fn parameterized_query_constant_text_is_skipped() {
+    let src = b"def f(cur, uid):\n    cur.execute(\"SELECT * FROM t WHERE id = ?\", (uid,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_python_fstring_keeps_the_sink_on_arg0() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(f\"SELECT * FROM t ORDER BY {sort} LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_python_concatenated_fstring_part() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(\"SELECT * FROM t ORDER BY \" f\"{sort}\" \" LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_placeholder_inside_interpolation_is_not_a_placeholder() {
+    // The `?` belongs to the embedded expression, so this is not a
+    // parameterized query at all: no skip, and no payload narrowing.
+    let src = b"def f(cur, a, b, n):\n    cur.execute(f\"SELECT {a if b else 1} FROM t\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_ruby_interpolated_where() {
+    let src = b"def index\n  q = params[:q]\n  User.where(\"name LIKE '%#{q}%' AND active = ?\", true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_ruby_constant_where_is_skipped() {
+    let src = b"def index\n  User.where(\"name = ? AND active = ?\", params[:q], true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_js_template_with_substitution() {
+    let src = b"async function f(pool, t, id) { await pool.query(`SELECT * FROM ${t} WHERE id = $1`, [id]); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "javascript", ts_lang), "query");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+/// Every Sanitizer cap set that landed on a node of a Go snippet.
+fn go_body_sanitizer_caps(src: &[u8]) -> Vec<Cap> {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
+    cfg.node_indices()
+        .flat_map(|i| cfg[i].taint.labels.clone())
+        .filter_map(|l| match l {
+            DataLabel::Sanitizer(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn go_replace_single_metachar_strip_earns_no_credit() {
+    for call in [
+        r#"strings.ReplaceAll(s, ";", "")"#,
+        r#"strings.ReplaceAll(s, "|", "")"#,
+        r#"strings.ReplaceAll(s, "'", "")"#,
+        r#"strings.Replace(s, ";", "", -1)"#,
+    ] {
+        let src = format!("package main\nfunc f(s string) string {{\n\treturn {call}\n}}\n");
+        let caps = go_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{call} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn go_replace_complete_escape_earns_credit() {
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"<\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "tag strip should earn HTML_ESCAPE; got {caps:?}"
+    );
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"..\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "traversal strip should earn FILE_IO; got {caps:?}"
+    );
+}
+
+#[test]
+fn go_replace_with_count_is_only_a_full_replace_for_minus_one() {
+    let full = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", -1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(full)
+            .iter()
+            .any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "Replace(.., -1) is a full replace"
+    );
+    let first_only = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", 1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(first_only).is_empty(),
+        "Replace(.., 1) only strips the first match"
+    );
+}
+
+#[test]
+fn replace_chain_single_shell_or_quote_strip_earns_no_credit() {
+    for body in [
+        r#"s.replace(";", "")"#,
+        r#"s.replace("|", "").replace("&", "")"#,
+        r#"s.replace("'", "")"#,
+        r#"s.replace("--", "")"#,
+    ] {
+        let src = format!("fn f(s: &str) -> String {{\n    {body}\n}}\n");
+        let caps = rust_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{body} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn replace_chain_replacen_hop_earns_no_credit_but_keeps_the_walk() {
+    // replacen only strips the first n matches.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replacen("<", "", 1)
+}
+"#;
+    assert!(rust_body_sanitizer_caps(src).is_empty());
+    // A real full strip beneath a replacen hop still counts.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replace("..", "").replacen("x", "y", 1)
+}
+"#;
+    let caps = rust_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "the replace hop under replacen should still earn FILE_IO; got {caps:?}"
+    );
 }
 
 #[test]
@@ -4365,6 +4579,100 @@ class C {
     assert_eq!(arith[0].eval_bool(&r), Some(true));
 }
 
+// ── rhs_object_literal (JS/TS object-literal property shape) ──────────────
+
+fn object_literal_of<'a>(cfg: &'a Cfg, name: &str) -> Option<&'a crate::cfg::RhsObjectLiteral> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.taint.defines.as_deref() == Some(name))
+        .and_then(|n| n.taint.rhs_object_literal.as_deref())
+}
+
+#[test]
+fn rhs_object_literal_records_property_shape() {
+    use crate::cfg::RhsObjectSlot;
+    let src = b"function f(req) {\n\
+        const a = { k: 'v', \"q\": 1, n: null, t: `x`, i: req.query.x, s, id: other, o: { p: 'c' } };\n\
+        const b = { ...req.body, safe: 'x' };\n\
+        const c = { [req.query.k]: 1 };\n\
+        const d = ({ m() { return 1; } });\n\
+        const e = req.body;\n\
+        const g = { u: `a${req.query.x}` }, h = { v: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+
+    let a = object_literal_of(&cfg, "a").expect("`a` binds an object literal");
+    assert!(!a.open);
+    let slot = |k: &str| {
+        a.fields
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, s)| s.clone())
+    };
+    assert_eq!(slot("k"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("q"),
+        Some(RhsObjectSlot::Literal),
+        "quoted key is unquoted"
+    );
+    assert_eq!(slot("n"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("t"),
+        Some(RhsObjectSlot::Literal),
+        "template without substitutions"
+    );
+    assert_eq!(slot("i"), Some(RhsObjectSlot::Complex));
+    assert_eq!(
+        slot("s"),
+        Some(RhsObjectSlot::Ident("s".into())),
+        "shorthand"
+    );
+    assert_eq!(slot("id"), Some(RhsObjectSlot::Ident("other".into())));
+    match slot("o") {
+        Some(RhsObjectSlot::Object(inner)) => {
+            assert_eq!(inner.fields.len(), 1);
+            assert_eq!(inner.fields[0], ("p".into(), RhsObjectSlot::Literal));
+        }
+        other => panic!("nested literal expected, got {other:?}"),
+    }
+
+    assert!(object_literal_of(&cfg, "b").expect("spread literal").open);
+    assert!(
+        object_literal_of(&cfg, "c")
+            .expect("computed key literal")
+            .open
+    );
+    assert!(
+        object_literal_of(&cfg, "d")
+            .expect("parenthesised literal")
+            .open
+    );
+    assert!(object_literal_of(&cfg, "e").is_none(), "non-literal RHS");
+    assert!(
+        object_literal_of(&cfg, "g").is_none() && object_literal_of(&cfg, "h").is_none(),
+        "multi-declarator statements are not single bindings"
+    );
+}
+
+#[test]
+fn rhs_object_literal_unwraps_ts_assertions() {
+    let src = b"function f(req: any) {\n\
+        const a = { k: 'v' } as const;\n\
+        const b = { k: req.query.x } satisfies Record<string, unknown>;\n\
+        let c: any;\n\
+        c = { k: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let (cfg, _entry) = parse_and_build(src, "typescript", ts_lang);
+    assert!(object_literal_of(&cfg, "a").is_some(), "`as const` literal");
+    assert!(
+        object_literal_of(&cfg, "b").is_some(),
+        "`satisfies` literal"
+    );
+    assert!(object_literal_of(&cfg, "c").is_some(), "plain assignment");
+}
+
 // ── numeric_confined_uses (inline numeric-chain confinement) ──────────────
 
 /// Find the sink node carrying a non-empty `numeric_confined_uses`, plus the
@@ -4439,6 +4747,30 @@ fn numeric_confined_only_on_sink_nodes() {
             cfg[i].numeric_confined_uses
         );
     }
+}
+
+#[test]
+fn numeric_confined_js_parse_method_is_not_numeric() {
+    // Outside Rust a `.parse` method returns an object (`url.parse`,
+    // `JSON.parse`), so `x` inside `url.parse(x)` must not be confined, while
+    // `parseInt(y)` still confines `y`.
+    let src = b"var fs = require('fs'); function h(req) { var x = req.query.a; \
+                var y = req.query.b; fs.readFile(url.parse(x).pathname); \
+                fs.readFile('/d/' + parseInt(y)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined: Vec<&String> = cfg
+        .node_indices()
+        .flat_map(|i| cfg[i].numeric_confined_uses.iter())
+        .collect();
+    assert!(
+        !confined.iter().any(|u| *u == "x"),
+        "`url.parse(x)` must not numeric-confine `x`; got {confined:?}"
+    );
+    assert!(
+        confined.iter().any(|u| *u == "y"),
+        "`parseInt(y)` must numeric-confine `y`; got {confined:?}"
+    );
 }
 
 #[test]
@@ -6184,4 +6516,185 @@ fn closure_in_only_finally_copy_is_registered() {
         Language::from(tree_sitter_javascript::LANGUAGE),
     );
     assert_eq!(file_cfg.bodies.len(), 3);
+}
+
+// ── nested_calls (per-operand call nesting) ──────────────────────────────
+
+/// The nested-call record of the first node whose callee is `callee`.
+fn nested_calls_of<'a>(cfg: &'a Cfg, callee: &str) -> Option<&'a NestedCallTree> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.call.callee.as_deref() == Some(callee))
+        .and_then(|n| n.call.nested_calls.as_deref())
+}
+
+fn occ<'a>(tree: &'a NestedCallTree, text: &'a str) -> Vec<&'a NestedUse> {
+    tree.uses_of(text).collect()
+}
+
+#[test]
+fn nested_calls_separates_sanitized_and_sibling_operands() {
+    let src =
+        b"function f(name, bio) { const html = \"<p>\" + escapeHtml(name) + \"</p>\" + bio; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record for a call beside an operand");
+    assert_eq!(tree.calls.len(), 1);
+    assert_eq!(tree.anchor, Some(0));
+    let name = occ(tree, "name");
+    assert_eq!(name.len(), 1);
+    assert_eq!((name[0].call, name[0].slot), (Some(0), CallSlot::Arg(0)));
+    let bio = occ(tree, "bio");
+    assert_eq!(bio.len(), 1);
+    assert_eq!(bio[0].call, None, "`bio` sits outside every call");
+    assert!(
+        occ(tree, "html").is_empty(),
+        "the declared name is written, not read"
+    );
+}
+
+#[test]
+fn nested_calls_absent_for_a_single_call_statement() {
+    let src = b"function f(x) { const y = g(x); h(y.a, y); return k(x); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    for i in cfg.node_indices() {
+        assert!(
+            cfg[i].call.nested_calls.is_none(),
+            "single-call node {:?} must not carry a record",
+            cfg[i].call.callee
+        );
+    }
+}
+
+#[test]
+fn nested_calls_records_wrapper_argument_positions_go() {
+    let src = b"package main\nfunc h(w W, f string, a string, b string) { fmt.Fprintf(w, f, html.EscapeString(a), b) }\n";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "go", ts_lang);
+    let tree = nested_calls_of(&cfg, "fmt.Fprintf").expect("record for a nested call");
+    let anchor = tree.anchor.expect("anchor is the Fprintf call") as usize;
+    assert_eq!(tree.calls[anchor].callee, "fmt.Fprintf");
+    assert_eq!(tree.calls[anchor].arity, Some(4));
+    let esc = tree
+        .calls
+        .iter()
+        .position(|c| c.callee == "html.EscapeString")
+        .expect("inner call recorded");
+    assert_eq!(tree.calls[esc].parent, Some(anchor as u16));
+    assert_eq!(tree.calls[esc].slot, CallSlot::Arg(2));
+    let a = occ(tree, "a");
+    assert_eq!((a[0].call, a[0].slot), (Some(esc as u16), CallSlot::Arg(0)));
+    let b = occ(tree, "b");
+    assert_eq!(
+        (b[0].call, b[0].slot),
+        (Some(anchor as u16), CallSlot::Arg(3))
+    );
+}
+
+#[test]
+fn nested_calls_template_substitution_operand_is_a_sibling() {
+    let src = b"function f(n, bio) { const h = `<p>${escapeHtml(n)}</p>${bio}`; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    assert_eq!(occ(tree, "bio")[0].call, None);
+    assert_eq!(occ(tree, "n")[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_compound_assignment_reads_its_target() {
+    let src = b"function f(html, n) { html += escapeHtml(n); return html; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    let html = occ(tree, "html");
+    assert_eq!(html.len(), 1, "`+=` reads the target");
+    assert_eq!(html[0].call, None);
+}
+
+#[test]
+fn nested_calls_plain_assignment_skips_member_target() {
+    // `alias.data = sanitize(alias.data)`: the written target must not count
+    // as an operand beside the sanitizer call.
+    let src = b"function f(alias) { alias.data = DOMPurify.sanitize(alias.data) + x; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "DOMPurify.sanitize").expect("record");
+    let data = occ(tree, "alias.data");
+    assert_eq!(data.len(), 1, "only the read inside the call: {data:?}");
+    assert_eq!(data[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_receiver_and_member_path() {
+    let src = b"function f(req, y) { const s = req.query.name.trim() + escape(y); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "req.trim").or_else(|| {
+        cfg.node_indices()
+            .find_map(|i| cfg[i].call.nested_calls.as_deref())
+    });
+    let tree = tree.expect("record");
+    let path = occ(tree, "req.query.name");
+    assert_eq!(path.len(), 1);
+    assert_eq!(path[0].slot, CallSlot::Receiver);
+    let trim = path[0].call.expect("inside the trim call") as usize;
+    assert!(tree.calls[trim].callee.ends_with("trim"));
+}
+
+#[test]
+fn nested_calls_python_keyword_value_and_positions() {
+    let src = b"def f(a, b):\n    subprocess.run(quote(a), shell=b)\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "python", ts_lang);
+    let tree = nested_calls_of(&cfg, "subprocess.run").expect("record");
+    let anchor = tree.anchor.expect("anchor");
+    assert_eq!(
+        tree.calls[anchor as usize].arity,
+        Some(1),
+        "keyword args are not positional"
+    );
+    let b = occ(tree, "b");
+    assert_eq!((b[0].call, b[0].slot), (Some(anchor), CallSlot::Other));
+    assert!(occ(tree, "shell").is_empty(), "keyword names are not reads");
+}
+
+#[test]
+fn nested_calls_rust_macro_has_no_record() {
+    let src = b"fn f(a: String, b: String) { let s = format!(\"{}{}\", esc(&a), b); run(s); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "rust", ts_lang);
+    for i in cfg.node_indices() {
+        if cfg[i]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("format"))
+        {
+            assert!(cfg[i].call.nested_calls.is_none());
+        }
+    }
+}
+
+#[test]
+fn nested_calls_marks_whole_argument_calls() {
+    let src =
+        b"function f(res, n, x) { res.setHeader('X', String(n)); res.send('a' + String(x)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let exact = nested_calls_of(&cfg, "res.setHeader").expect("record");
+    let inner = exact
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(inner.exact_arg, "String(n) is the whole argument");
+    let concat = nested_calls_of(&cfg, "res.send").expect("record");
+    let inner = concat
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(!inner.exact_arg, "String(x) is one operand of the argument");
 }

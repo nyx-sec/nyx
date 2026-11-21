@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 737
+    "corpus_size": 780
   },
   "cases": [
     {
@@ -2690,7 +2690,7 @@
         "pointer-w4-w5"
       ],
       "disabled": false,
-      "notes": "validate() sanitises before append(); cmds[0] re-read carries the validated_must bit through the W4 ELEM cell + W5 subscript synth, suppressing the cmdi finding."
+      "notes": "validate() round-trips the value through strconv.Atoi/Itoa before append(), so only digits remain; cmds[0] re-read carries the validated_must bit through the W4 ELEM cell + W5 subscript synth, suppressing the cmdi finding."
     },
     {
       "case_id": "php-sqli-001",
@@ -3108,7 +3108,7 @@
         "user-input"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to php-safe-018: included variable is built from concatenation of $_GET inside the function \u2014 not a parameter pass-through. Pattern must still fire."
+      "notes": "Vulnerable counterpart to php-safe-018: included variable is built from concatenation of $_GET inside the function — not a parameter pass-through. Pattern must still fire."
     },
     {
       "case_id": "php-deser-001",
@@ -3762,7 +3762,7 @@
         "ssrf"
       ],
       "disabled": false,
-      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL \u2014 canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
+      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL — canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
     },
     {
       "case_id": "js-ssrf-safe-001",
@@ -4482,7 +4482,7 @@
         "path-traversal"
       ],
       "disabled": false,
-      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers \u2014 rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
+      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers — rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
     },
     {
       "case_id": "ruby-sqli-001",
@@ -4799,7 +4799,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "parseInt sanitizes user input \u2014 should produce no taint finding"
+      "notes": "parseInt sanitizes user input — should produce no taint finding"
     },
     {
       "case_id": "py-cmdi-popen-001",
@@ -4866,7 +4866,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "int() type coercion sanitizes user input \u2014 should produce no taint finding"
+      "notes": "int() type coercion sanitizes user input — should produce no taint finding"
     },
     {
       "case_id": "java-sqli-stmt-001",
@@ -4932,7 +4932,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "prepareStatement sanitizes SQL input \u2014 should produce no SQL taint finding"
+      "notes": "prepareStatement sanitizes SQL input — should produce no SQL taint finding"
     },
     {
       "case_id": "java-sqli-stmt-execute-002",
@@ -5028,7 +5028,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "strconv.Atoi sanitizes user input \u2014 should produce no taint finding"
+      "notes": "strconv.Atoi sanitizes user input — should produce no taint finding"
     },
     {
       "case_id": "go-xss-gin-001",
@@ -5091,7 +5091,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "filter_input sanitizes user input \u2014 should produce no taint finding"
+      "notes": "filter_input sanitizes user input — should produce no taint finding"
     },
     {
       "case_id": "php-safe-camelcase-validator-001",
@@ -5182,7 +5182,7 @@
         "rails"
       ],
       "disabled": false,
-      "notes": "Rails strong parameters (permit/require) sanitize user input \u2014 safe pattern"
+      "notes": "Rails strong parameters (permit/require) sanitize user input — safe pattern"
     },
     {
       "case_id": "ruby-sqli-raw-001",
@@ -5219,7 +5219,7 @@
         "sqli"
       ],
       "disabled": true,
-      "notes": "SQL injection via ActiveRecord connection.execute \u2014 disabled: multi-line call expression not resolved by SSA lowering for Ruby class methods"
+      "notes": "SQL injection via ActiveRecord connection.execute — disabled: multi-line call expression not resolved by SSA lowering for Ruby class methods"
     },
     {
       "case_id": "py-cmdi-cross-001",
@@ -5258,7 +5258,7 @@
         "propagation"
       ],
       "disabled": false,
-      "notes": "Cross-file taint propagation: env source \u2192 wrapper function \u2192 os.system sink"
+      "notes": "Cross-file taint propagation: env source → wrapper function → os.system sink"
     },
     {
       "case_id": "py-cmdi-cross-002",
@@ -5297,7 +5297,7 @@
         "source-detection"
       ],
       "disabled": false,
-      "notes": "Cross-file source detection: read_input() returns env source \u2192 subprocess.call sink"
+      "notes": "Cross-file source detection: read_input() returns env source → subprocess.call sink"
     },
     {
       "case_id": "py-cmdi-cross-003",
@@ -5336,7 +5336,7 @@
         "wrong-sanitizer"
       ],
       "disabled": false,
-      "notes": "Cross-file wrong-cap sanitizer: HTML sanitizer does not strip SHELL_ESCAPE caps \u2192 os.system still vulnerable"
+      "notes": "Cross-file wrong-cap sanitizer: HTML sanitizer does not strip SHELL_ESCAPE caps → os.system still vulnerable"
     },
     {
       "case_id": "py-cmdi-cross-004",
@@ -5420,7 +5420,7 @@
         "propagation"
       ],
       "disabled": false,
-      "notes": "Cross-file taint propagation: req.query \u2192 render wrapper \u2192 document.write XSS sink"
+      "notes": "Cross-file taint propagation: req.query → render wrapper → document.write XSS sink"
     },
     {
       "case_id": "go-cmdi-cross-001",
@@ -5460,7 +5460,7 @@
         "source-detection"
       ],
       "disabled": false,
-      "notes": "Cross-file source detection: GetUserInput returns request param \u2192 exec.Command sink"
+      "notes": "Cross-file source detection: GetUserInput returns request param → exec.Command sink"
     },
     {
       "case_id": "go-path_traversal-cross-001",
@@ -5500,7 +5500,7 @@
         "wrong-sanitizer"
       ],
       "disabled": false,
-      "notes": "Cross-file wrong-cap sanitizer: HTML sanitizer does not strip FILE_IO caps \u2192 os.ReadFile still vulnerable"
+      "notes": "Cross-file wrong-cap sanitizer: HTML sanitizer does not strip FILE_IO caps → os.ReadFile still vulnerable"
     },
     {
       "case_id": "c-cmdi-001",
@@ -6119,7 +6119,7 @@
         "no-source"
       ],
       "disabled": false,
-      "notes": "Constant string passed to system() \u2014 no taint source"
+      "notes": "Constant string passed to system() — no taint source"
     },
     {
       "case_id": "c-safe-002",
@@ -6915,7 +6915,7 @@
         "no-source"
       ],
       "disabled": false,
-      "notes": "Constant string passed to system() \u2014 no taint source"
+      "notes": "Constant string passed to system() — no taint source"
     },
     {
       "case_id": "cpp-safe-002",
@@ -7194,7 +7194,7 @@
         "real-repo-precision-2026-05-01"
       ],
       "disabled": false,
-      "notes": "reinterpret_cast<UserStruct*>(buf) genuinely violates [basic.lval]/11 strict aliasing \u2014 the pattern must continue to fire because the user-defined struct target is not in the byte-pointer / void* / sockaddr safe set."
+      "notes": "reinterpret_cast<UserStruct*>(buf) genuinely violates [basic.lval]/11 strict aliasing — the pattern must continue to fire because the user-defined struct target is not in the byte-pointer / void* / sockaddr safe set."
     },
     {
       "case_id": "rs-cmdi-001",
@@ -7605,7 +7605,7 @@
         "no-source"
       ],
       "disabled": false,
-      "notes": "Constant args passed to Command \u2014 no taint source"
+      "notes": "Constant args passed to Command — no taint source"
     },
     {
       "case_id": "rs-safe-002",
@@ -7652,7 +7652,7 @@
         "reassigned"
       ],
       "disabled": false,
-      "notes": "Tainted variable not used \u2014 constant passed to Command"
+      "notes": "Tainted variable not used — constant passed to Command"
     },
     {
       "case_id": "rs-safe-004",
@@ -7700,7 +7700,7 @@
         "no-source"
       ],
       "disabled": false,
-      "notes": "Hardcoded URL passed to reqwest::get \u2014 no taint source"
+      "notes": "Hardcoded URL passed to reqwest::get — no taint source"
     },
     {
       "case_id": "rs-safe-006",
@@ -7724,7 +7724,7 @@
         "parse"
       ],
       "disabled": false,
-      "notes": "Input parsed to u32 before constructing path \u2014 type-safe"
+      "notes": "Input parsed to u32 before constructing path — type-safe"
     },
     {
       "case_id": "rs-safe-007",
@@ -8011,7 +8011,7 @@
         "dangerous-literal"
       ],
       "disabled": false,
-      "notes": "Static HashMap where one inserted value carries shell metacharacters \u2014 finite-set suppression must NOT clear this sink"
+      "notes": "Static HashMap where one inserted value carries shell metacharacters — finite-set suppression must NOT clear this sink"
     },
     {
       "case_id": "rs-cmdi-009",
@@ -8100,7 +8100,7 @@
         "propagation"
       ],
       "disabled": false,
-      "notes": "Cross-file taint: main.rs line 7 env::var \u2192 transform::wrap at line 8 \u2192 Command::new at line 9. Sink is the top-level Command::new; transform::wrap is a cross-file propagator, not a sink."
+      "notes": "Cross-file taint: main.rs line 7 env::var → transform::wrap at line 8 → Command::new at line 9. Sink is the top-level Command::new; transform::wrap is a cross-file propagator, not a sink."
     },
     {
       "case_id": "rs-path-005",
@@ -8139,7 +8139,7 @@
         "known-gap"
       ],
       "disabled": false,
-      "notes": "fs::remove_file not in Rust sink rules \u2014 known FN coverage"
+      "notes": "fs::remove_file not in Rust sink rules — known FN coverage"
     },
     {
       "case_id": "rs-ssrf-003",
@@ -8177,7 +8177,7 @@
         "known-gap"
       ],
       "disabled": false,
-      "notes": "reqwest::Client::new().get(url).send() \u2014 builder chain not matched by reqwest::get/Client.execute sinks"
+      "notes": "reqwest::Client::new().get(url).send() — builder chain not matched by reqwest::get/Client.execute sinks"
     },
     {
       "case_id": "rs-sqli-001",
@@ -8216,7 +8216,7 @@
         "known-gap"
       ],
       "disabled": false,
-      "notes": "rusqlite::Connection.execute not in Rust sink rules \u2014 SQLi class has no Rust coverage"
+      "notes": "rusqlite::Connection.execute not in Rust sink rules — SQLi class has no Rust coverage"
     },
     {
       "case_id": "rs-deser-001",
@@ -8255,7 +8255,7 @@
         "known-gap"
       ],
       "disabled": false,
-      "notes": "serde_yaml::from_str not in Rust sink rules \u2014 deserialization class has no Rust coverage"
+      "notes": "serde_yaml::from_str not in Rust sink rules — deserialization class has no Rust coverage"
     },
     {
       "case_id": "rs-xss-001",
@@ -8294,7 +8294,7 @@
         "html"
       ],
       "disabled": false,
-      "notes": "Axum Path<String> \u2192 Html(format!(...)) \u2014 requires framework rules (Cargo.toml present)"
+      "notes": "Axum Path<String> → Html(format!(...)) — requires framework rules (Cargo.toml present)"
     },
     {
       "case_id": "rs-safe-013",
@@ -8342,7 +8342,7 @@
         "static-lookup"
       ],
       "disabled": false,
-      "notes": "Tainted key indexes static HashMap \u2014 value is hardcoded, not tainted"
+      "notes": "Tainted key indexes static HashMap — value is hardcoded, not tainted"
     },
     {
       "case_id": "rs-safe-011",
@@ -8366,7 +8366,7 @@
         "u16"
       ],
       "disabled": false,
-      "notes": "Input parsed to u16 before use as Command arg \u2014 type-narrowed"
+      "notes": "Input parsed to u16 before use as Command arg — type-narrowed"
     },
     {
       "case_id": "rs-safe-fileio-int-uid",
@@ -8391,7 +8391,7 @@
         "fileio-suppress"
       ],
       "disabled": false,
-      "notes": "Tainted username parsed to u32 (uid) before use as PathBuf component \u2014 digits cannot contain `..` or `/`, so the FILE_IO sink suppresses on type alone. Regression guard for the type-only FILE_IO suppression and int-producing-callee leaf-stop."
+      "notes": "Tainted username parsed to u32 (uid) before use as PathBuf component — digits cannot contain `..` or `/`, so the FILE_IO sink suppresses on type alone. Regression guard for the type-only FILE_IO suppression and int-producing-callee leaf-stop."
     },
     {
       "case_id": "rs-safe-format-named-arg-sanitized",
@@ -8439,7 +8439,7 @@
         "path-sanitizer"
       ],
       "disabled": false,
-      "notes": "Intraprocedural .contains(\"..\") + .starts_with('/') rejection \u2014 PathFact narrows dotdot and absolute axes on the sanitised branch"
+      "notes": "Intraprocedural .contains(\"..\") + .starts_with('/') rejection — PathFact narrows dotdot and absolute axes on the sanitised branch"
     },
     {
       "case_id": "rs-safe-015",
@@ -8463,7 +8463,7 @@
         "path-sanitizer"
       ],
       "disabled": false,
-      "notes": "Path::new(x).is_absolute() rejection + .contains(\"..\") \u2014 PathFact narrows both axes via typed check and substring rejection"
+      "notes": "Path::new(x).is_absolute() rejection + .contains(\"..\") — PathFact narrows both axes via typed check and substring rejection"
     },
     {
       "case_id": "rs-path-006",
@@ -8499,7 +8499,7 @@
         "negative-guard"
       ],
       "disabled": false,
-      "notes": "No sanitiser applied \u2014 PathFact stays Top, FILE_IO sink must fire (guards against over-suppression)"
+      "notes": "No sanitiser applied — PathFact stays Top, FILE_IO sink must fire (guards against over-suppression)"
     },
     {
       "case_id": "rs-safe-cross-001",
@@ -9048,7 +9048,7 @@
         "innerHTML"
       ],
       "disabled": false,
-      "notes": "TS-specific: taint must flow through `as any` and chained assertions (as_expression\u2192Kind::Seq)"
+      "notes": "TS-specific: taint must flow through `as any` and chained assertions (as_expression→Kind::Seq)"
     },
     {
       "case_id": "ts-xss-003",
@@ -9233,7 +9233,7 @@
         "queryRawUnsafe"
       ],
       "disabled": false,
-      "notes": "Prisma $queryRawUnsafe \u2014 TS-specific ORM sink"
+      "notes": "Prisma $queryRawUnsafe — TS-specific ORM sink"
     },
     {
       "case_id": "ts-sqli-003",
@@ -9262,7 +9262,7 @@
         "regression-guard"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart for ts-safe-017 \u2014 bare `connection.query(`SELECT...`)` and chained `db.query(SQL).then(...)` (Promise method, not ORM accessor) must still fire as SQL_QUERY sinks even after the ORM-chain recogniser landed."
+      "notes": "Vulnerable counterpart for ts-safe-017 — bare `connection.query(`SELECT...`)` and chained `db.query(SQL).then(...)` (Promise method, not ORM accessor) must still fire as SQL_QUERY sinks even after the ORM-chain recogniser landed."
     },
     {
       "case_id": "ts-cmdi-001",
@@ -9337,7 +9337,7 @@
         "execAsync"
       ],
       "disabled": false,
-      "notes": "promisify-wrapped exec (execAsync) \u2014 TS rules enumerate execAsync as a command sink"
+      "notes": "promisify-wrapped exec (execAsync) — TS rules enumerate execAsync as a command sink"
     },
     {
       "case_id": "ts-ssrf-001",
@@ -9373,7 +9373,7 @@
         "axios"
       ],
       "disabled": false,
-      "notes": "axios.get with req.query.url \u2014 baseline TS SSRF"
+      "notes": "axios.get with req.query.url — baseline TS SSRF"
     },
     {
       "case_id": "ts-ssrf-002",
@@ -9411,7 +9411,7 @@
         "adversarial-framework"
       ],
       "disabled": false,
-      "notes": "Fastify framework route \u2014 exercises framework_rules(ctx) source detection for request.query. Expected FN when framework context is not detected from a single file (no package.json)"
+      "notes": "Fastify framework route — exercises framework_rules(ctx) source detection for request.query. Expected FN when framework context is not detected from a single file (no package.json)"
     },
     {
       "case_id": "ts-ssrf-003",
@@ -9449,7 +9449,7 @@
         "adversarial-fn-guard"
       ],
       "disabled": false,
-      "notes": "Regression guard for prefix-locked SSRF suppression: encodeURIComponent is applied to the HOST (not path), so the template prefix 'https://' does not lock the destination. Must still fire as SSRF \u2014 proves the StringFact host check does not over-suppress when the attacker controls the authority component"
+      "notes": "Regression guard for prefix-locked SSRF suppression: encodeURIComponent is applied to the HOST (not path), so the template prefix 'https://' does not lock the destination. Must still fire as SSRF — proves the StringFact host check does not over-suppress when the attacker controls the authority component"
     },
     {
       "case_id": "ts-code_injection-001",
@@ -9525,7 +9525,7 @@
         "code-injection"
       ],
       "disabled": false,
-      "notes": "new Function(body) \u2014 AST pattern ts.code_exec.new_function"
+      "notes": "new Function(body) — AST pattern ts.code_exec.new_function"
     },
     {
       "case_id": "ts-open_redirect-001",
@@ -9633,7 +9633,7 @@
         "md5"
       ],
       "disabled": false,
-      "notes": "md5() imported from the md5 package \u2014 AST pattern ts.crypto.weak_hash_import"
+      "notes": "md5() imported from the md5 package — AST pattern ts.crypto.weak_hash_import"
     },
     {
       "case_id": "ts-secrets-001",
@@ -9666,7 +9666,7 @@
         "fallback-env"
       ],
       "disabled": false,
-      "notes": "process.env.KEY || 'hardcoded' \u2014 AST pattern ts.secrets.fallback_secret"
+      "notes": "process.env.KEY || 'hardcoded' — AST pattern ts.secrets.fallback_secret"
     },
     {
       "case_id": "ts-insecure_config-001",
@@ -9697,7 +9697,7 @@
         "reject-unauthorized"
       ],
       "disabled": false,
-      "notes": "TLS verification disabled \u2014 AST pattern"
+      "notes": "TLS verification disabled — AST pattern"
     },
     {
       "case_id": "ts-insecure_config-002",
@@ -9728,7 +9728,7 @@
         "httpOnly"
       ],
       "disabled": false,
-      "notes": "session cookie httpOnly: false \u2014 AST pattern"
+      "notes": "session cookie httpOnly: false — AST pattern"
     },
     {
       "case_id": "ts-prototype-001",
@@ -9758,7 +9758,7 @@
         "prototype-pollution"
       ],
       "disabled": false,
-      "notes": "__proto__ write \u2014 AST pattern"
+      "notes": "__proto__ write — AST pattern"
     },
     {
       "case_id": "ts-interproc-001",
@@ -9834,7 +9834,7 @@
         "cmdi"
       ],
       "disabled": false,
-      "notes": "TS discriminated-union narrowing (kind === 'ping') does not sanitize \u2014 a.target is still user-controlled. Guards against the FP of treating `kind` guards as security sanitizers"
+      "notes": "TS discriminated-union narrowing (kind === 'ping') does not sanitize — a.target is still user-controlled. Guards against the FP of treating `kind` guards as security sanitizers"
     },
     {
       "case_id": "ts-type_system-002",
@@ -9876,7 +9876,7 @@
         "cmdi"
       ],
       "disabled": false,
-      "notes": "Interface-typed receiver `impl: Runner` \u2192 resolve to ShellRunner.run \u2192 exec. Tests intra-file method resolution through interface types; expected FN if only normalized callee-name matching is used"
+      "notes": "Interface-typed receiver `impl: Runner` → resolve to ShellRunner.run → exec. Tests intra-file method resolution through interface types; expected FN if only normalized callee-name matching is used"
     },
     {
       "case_id": "ts-type_system-003",
@@ -9990,7 +9990,7 @@
         "adversarial-fp"
       ],
       "disabled": false,
-      "notes": "Semantically safe: user term is URL-encoded into a fixed-host URL; no SSRF possible. Known Nyx weak spot \u2014 encodeURIComponent is Cap::URL_ENCODE while axios sink is Cap::SSRF, so cap mismatch may yield FP. Documents the cap-overlap limitation"
+      "notes": "Semantically safe: user term is URL-encoded into a fixed-host URL; no SSRF possible. Known Nyx weak spot — encodeURIComponent is Cap::URL_ENCODE while axios sink is Cap::SSRF, so cap mismatch may yield FP. Documents the cap-overlap limitation"
     },
     {
       "case_id": "ts-safe-004",
@@ -10065,7 +10065,7 @@
         "eval"
       ],
       "disabled": false,
-      "notes": "typeof === 'number' guards eval; only numbers reach sink. Forbidden ts.code_exec.eval here because the taint flow is gated \u2014 pattern-only detection would be an FP"
+      "notes": "typeof === 'number' guards eval; only numbers reach sink. Forbidden ts.code_exec.eval here because the taint flow is gated — pattern-only detection would be an FP"
     },
     {
       "case_id": "ts-safe-007",
@@ -10140,7 +10140,7 @@
         "adversarial-fp"
       ],
       "disabled": false,
-      "notes": "Parameterized pg query: SQL string is constant, id flows as $1 placeholder value. Semantically safe but taint still reaches pool.query call; known Nyx limitation \u2014 positional args aren't distinguished for SQL_QUERY sink"
+      "notes": "Parameterized pg query: SQL string is constant, id flows as $1 placeholder value. Semantically safe but taint still reaches pool.query call; known Nyx limitation — positional args aren't distinguished for SQL_QUERY sink"
     },
     {
       "case_id": "ts-safe-010",
@@ -11046,7 +11046,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "CVE-2024-23334: aiohttp StaticResource symlink-bypass \u2014 relative_to(self._directory) check gated to the non-follow_symlinks arm; FileResponse(filepath) reachable from request.match_info on follow_symlinks=True. Apache-2.0"
+      "notes": "CVE-2024-23334: aiohttp StaticResource symlink-bypass — relative_to(self._directory) check gated to the non-follow_symlinks arm; FileResponse(filepath) reachable from request.match_info on follow_symlinks=True. Apache-2.0"
     },
     {
       "case_id": "cve-py-2024-23334-patched",
@@ -11114,7 +11114,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "CVE-2023-6568: mlflow auth create_user reflected attacker-controlled Content-Type request header into make_response f-string \u2014 reflected XSS. Apache-2.0"
+      "notes": "CVE-2023-6568: mlflow auth create_user reflected attacker-controlled Content-Type request header into make_response f-string — reflected XSS. Apache-2.0"
     },
     {
       "case_id": "cve-py-2023-6568-patched",
@@ -11474,7 +11474,7 @@
         "negative"
       ],
       "disabled": true,
-      "disabled_reason": "Patched-precision false positive on the default (field-INsensitive) taint model. The fix routes $this->userAgent / $this->ip through $db->escape() before the DELETE, but a tainted write to ANY object field (`$this->ip = <source>`) taints the WHOLE `$this` scalar, and every subsequent `$this->...` reference (the escape/query receiver chain AND the sprintf `$this->configuration->getLanguage()` arg) reads that polluted base, so the escaped value is bypassed and `taint-unsanitised-flow` fires on the base object. Root cause: per-field cells are gated behind NYX_POINTER_ANALYSIS (off by default), so field writes fold into the base object scalar. A clean fix (base-write field-sensitivity: member_access_expression dotted defines + field-write base rebuild + FieldProj field-precise reads) was prototyped this session and DID silence the patched fixture, but zeroing the field-write base scalar is UNSOUND for whole-object reads (`res.send(obj)` where a field is tainted must still fire \u2014 regression on ssa_field_base_sink_no_suppression) and the sound alternative needs default-mode per-field cells that whole-object reads aggregate while field reads project \u2014 a multi-day core-model change with broad cross-language regression surface. Tracked in nyx-dev-tools/CVE_DEFERRED.md. MPL-2.0",
+      "disabled_reason": "Patched-precision false positive on the default (field-INsensitive) taint model. The fix routes $this->userAgent / $this->ip through $db->escape() before the DELETE, but a tainted write to ANY object field (`$this->ip = <source>`) taints the WHOLE `$this` scalar, and every subsequent `$this->...` reference (the escape/query receiver chain AND the sprintf `$this->configuration->getLanguage()` arg) reads that polluted base, so the escaped value is bypassed and `taint-unsanitised-flow` fires on the base object. Root cause: per-field cells are gated behind NYX_POINTER_ANALYSIS (off by default), so field writes fold into the base object scalar. A clean fix (base-write field-sensitivity: member_access_expression dotted defines + field-write base rebuild + FieldProj field-precise reads) was prototyped this session and DID silence the patched fixture, but zeroing the field-write base scalar is UNSOUND for whole-object reads (`res.send(obj)` where a field is tainted must still fire — regression on ssa_field_base_sink_no_suppression) and the sound alternative needs default-mode per-field cells that whole-object reads aggregate while field reads project — a multi-day core-model change with broad cross-language regression surface. Tracked in nyx-dev-tools/CVE_DEFERRED.md. MPL-2.0",
       "notes": "CVE-2026-46364 patched counterpart: escapeQueryValue routes the user-agent header and client IP through $db->escape() before interpolation. MPL-2.0"
     },
     {
@@ -11601,7 +11601,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "CVE-2020-8130 patched counterpart: open(fn, ...) replaced with File.open(fn, ...); File.open never pipes a leading |. Fixture additionally hardcodes the filename + pattern (patched-fix simplification) so the regression guard is class-clean \u2014 see vulnerable.rb header for rationale."
+      "notes": "CVE-2020-8130 patched counterpart: open(fn, ...) replaced with File.open(fn, ...); File.open never pipes a leading |. Fixture additionally hardcodes the filename + pattern (patched-fix simplification) so the regression guard is class-clean — see vulnerable.rb header for rationale."
     },
     {
       "case_id": "cve-rb-2021-21288-vulnerable",
@@ -11913,7 +11913,7 @@
         "fediverse"
       ],
       "disabled": false,
-      "notes": "CVE-2023-3188: Owncast 0.0.x webfinger SSRF \u2014 `account` parsed off the @-delimited handle reaches `http.DefaultClient.Get(requestURL.String())` with no host validation. Engine detects via cross-function taint flow (handler \u2192 GetWebfingerLinks param 0 \u2192 http.DefaultClient.Get SSRF sink). MIT."
+      "notes": "CVE-2023-3188: Owncast 0.0.x webfinger SSRF — `account` parsed off the @-delimited handle reaches `http.DefaultClient.Get(requestURL.String())` with no host validation. Engine detects via cross-function taint flow (handler → GetWebfingerLinks param 0 → http.DefaultClient.Get SSRF sink). MIT."
     },
     {
       "case_id": "cve-go-2023-3188-patched",
@@ -12993,7 +12993,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "Actix handler mutates `project_service::update(project_id, \u2026)` with a path-bound scoped id, no ownership check"
+      "notes": "Actix handler mutates `project_service::update(project_id, …)` with a path-bound scoped id, no ownership check"
     },
     {
       "case_id": "rs-auth-002",
@@ -13027,7 +13027,7 @@
         "phase-a-control"
       ],
       "disabled": false,
-      "notes": "Authenticated handler that publishes against a group_id with no membership check \u2014 the positive control for the auth-rule FP-remediation work"
+      "notes": "Authenticated handler that publishes against a group_id with no membership check — the positive control for the auth-rule FP-remediation work"
     },
     {
       "case_id": "rs-auth-003",
@@ -13060,7 +13060,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "Equality compared but no early exit \u2014 the check is ineffective so the downstream read on doc_id must still flag (A2 regression guard)"
+      "notes": "Equality compared but no early exit — the check is ineffective so the downstream read on doc_id must still flag (A2 regression guard)"
     },
     {
       "case_id": "rs-auth-101",
@@ -13088,7 +13088,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "P0: HashMap/HashSet method calls on locally-constructed bindings \u2014 never an authorization decision (Phase A1 fix)"
+      "notes": "P0: HashMap/HashSet method calls on locally-constructed bindings — never an authorization decision (Phase A1 fix)"
     },
     {
       "case_id": "rs-auth-102",
@@ -13116,7 +13116,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "P4 (partial): library helper whose internal work is `result.insert(..)` on a locally-constructed HashSet \u2014 never a sink (Phase A1 fix)"
+      "notes": "P4 (partial): library helper whose internal work is `result.insert(..)` on a locally-constructed HashSet — never a sink (Phase A1 fix)"
     },
     {
       "case_id": "rs-auth-103",
@@ -13172,7 +13172,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "P5: `let user = require_auth(..).await?` binds the actor \u2014 `user.id` is self, not a scoped foreign id (Phase A3 fix)"
+      "notes": "P5: `let user = require_auth(..).await?` binds the actor — `user.id` is self, not a scoped foreign id (Phase A3 fix)"
     },
     {
       "case_id": "rs-auth-105",
@@ -13256,7 +13256,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "Phase B4: `validate_target` helper internally calls `require_membership(group_id, user.id)` \u2014 handler-level call lifts the auth check transparently"
+      "notes": "Phase B4: `validate_target` helper internally calls `require_membership(group_id, user.id)` — handler-level call lifts the auth check transparently"
     },
     {
       "case_id": "rs-auth-108",
@@ -13285,7 +13285,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "Phase A4: row-level fetch-then-authorize idiom. `let community = Community::read(pool, req.community_id)?;` followed by `check_community_user_action(&user, &community, ...)?;` \u2014 the structural recogniser admits the `check_<resource>_<role>_action` shape and the row-fetch exemption back-dates coverage of the read"
+      "notes": "Phase A4: row-level fetch-then-authorize idiom. `let community = Community::read(pool, req.community_id)?;` followed by `check_community_user_action(&user, &community, ...)?;` — the structural recogniser admits the `check_<resource>_<role>_action` shape and the row-fetch exemption back-dates coverage of the read"
     },
     {
       "case_id": "rs-auth-109",
@@ -13347,7 +13347,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Phase A4 regression guard: row fetched by user-supplied id without any authorization function naming the resulting row \u2014 the row-fetch exemption must NOT fire"
+      "notes": "Phase A4 regression guard: row fetched by user-supplied id without any authorization function naming the resulting row — the row-fetch exemption must NOT fire"
     },
     {
       "case_id": "rs-auth-realrepo-006",
@@ -13375,7 +13375,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "Row-population reverse-walk: lemmy `community/transfer.rs` shape \u2014 `let community = Community::read(pool, data.community_id); check_community_user_action(&user, &community, ..); CommunityActions::delete_mods_for_community(pool, data.community_id);` \u2014 the auth check on the fetched row must materially cover downstream re-uses of the request id"
+      "notes": "Row-population reverse-walk: lemmy `community/transfer.rs` shape — `let community = Community::read(pool, data.community_id); check_community_user_action(&user, &community, ..); CommunityActions::delete_mods_for_community(pool, data.community_id);` — the auth check on the fetched row must materially cover downstream re-uses of the request id"
     },
     {
       "case_id": "rs-auth-realrepo-007",
@@ -13403,7 +13403,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "Multi-line `let X =\\n    CALL(..)?;` \u2014 `row_population_data` records the call's start line so `op.line` matches and the row-fetch exemption fires (lemmy `comment/lock.rs:31`)"
+      "notes": "Multi-line `let X =\\n    CALL(..)?;` — `row_population_data` records the call's start line so `op.line` matches and the row-fetch exemption fires (lemmy `comment/lock.rs:31`)"
     },
     {
       "case_id": "rs-auth-realrepo-008",
@@ -13435,7 +13435,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Negative counterpart for the row-population reverse-walk: same fetch-then-mutate shape but no auth check on the fetched row \u2014 the reverse-walk has nothing to anchor to and the mutation by id must still flag"
+      "notes": "Negative counterpart for the row-population reverse-walk: same fetch-then-mutate shape but no auth check on the fetched row — the reverse-walk has nothing to anchor to and the mutation by id must still flag"
     },
     {
       "case_id": "rs-safe-014",
@@ -13516,7 +13516,7 @@
         "zip-slip"
       ],
       "disabled": false,
-      "notes": "CVE-2018-20997 / RUSTSEC-2018-0003: tar-rs zip-slip vulnerability \u2014 entry path interpolated into File::create without `..` rejection. MIT OR Apache-2.0"
+      "notes": "CVE-2018-20997 / RUSTSEC-2018-0003: tar-rs zip-slip vulnerability — entry path interpolated into File::create without `..` rejection. MIT OR Apache-2.0"
     },
     {
       "case_id": "cve-rs-2018-20997-patched",
@@ -13571,7 +13571,7 @@
         "symlink"
       ],
       "disabled": false,
-      "notes": "CVE-2022-36113: cargo `.cargo-ok` symlink follow \u2014 crate name interpolated into File::create without separator/dotdot rejection. MIT OR Apache-2.0"
+      "notes": "CVE-2022-36113: cargo `.cargo-ok` symlink follow — crate name interpolated into File::create without separator/dotdot rejection. MIT OR Apache-2.0"
     },
     {
       "case_id": "cve-rs-2022-36113-patched",
@@ -13626,7 +13626,7 @@
         "batbadbut"
       ],
       "disabled": false,
-      "notes": "CVE-2024-24576 / RUSTSEC-2024-0003: BatBadBut \u2014 argument injection into Windows .bat via `Command::new(...).arg`. MIT OR Apache-2.0"
+      "notes": "CVE-2024-24576 / RUSTSEC-2024-0003: BatBadBut — argument injection into Windows .bat via `Command::new(...).arg`. MIT OR Apache-2.0"
     },
     {
       "case_id": "cve-rs-2024-24576-patched",
@@ -14068,7 +14068,7 @@
         "direct-return"
       ],
       "disabled": false,
-      "notes": "JS direct-return sanitiser.  Standalone `nyx scan --index off` is clean, but the benchmark harness (single-thread + state/auth analysis enabled) reproduces a FP \u2014 diverges from production scan path.  Disabled until benchmark/binary parity is re-established."
+      "notes": "JS direct-return sanitiser.  Standalone `nyx scan --index off` is clean, but the benchmark harness (single-thread + state/auth analysis enabled) reproduces a FP — diverges from production scan path.  Disabled until benchmark/binary parity is re-established."
     },
     {
       "case_id": "js-safe-021",
@@ -14504,7 +14504,7 @@
         "allowed_classes"
       ],
       "disabled": false,
-      "notes": "PHP 7+ structural mitigation against object injection \u2014 unserialize($x, ['allowed_classes' => ...]) with false / array literal / class constant must not fire php.deser.unserialize. Distilled from nextcloud lib/private/Profiler/FileProfilerStorage.php and apps/dav CustomPropertiesBackend."
+      "notes": "PHP 7+ structural mitigation against object injection — unserialize($x, ['allowed_classes' => ...]) with false / array literal / class constant must not fire php.deser.unserialize. Distilled from nextcloud lib/private/Profiler/FileProfilerStorage.php and apps/dav CustomPropertiesBackend."
     },
     {
       "case_id": "php-safe-018",
@@ -14563,7 +14563,7 @@
         "cache-key"
       ],
       "disabled": false,
-      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes \u2014 ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
+      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes — ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
     },
     {
       "case_id": "php-crypto-001",
@@ -14620,7 +14620,7 @@
         "magic-method"
       ],
       "disabled": false,
-      "notes": "Serializable::unserialize($input) magic-method body \u2014 the legacy PHP Serializable interface contract (deprecated since PHP 8.1). PHP itself drives invocation; the body's \\unserialize($x) call is part of the deserialization machinery and cannot be removed without breaking the interface. Distilled from joomla/administrator/components/com_finder/src/Indexer/Result.php:488 + libraries/src/Input/{Cli,Input}.php."
+      "notes": "Serializable::unserialize($input) magic-method body — the legacy PHP Serializable interface contract (deprecated since PHP 8.1). PHP itself drives invocation; the body's \\unserialize($x) call is part of the deserialization machinery and cannot be removed without breaking the interface. Distilled from joomla/administrator/components/com_finder/src/Indexer/Result.php:488 + libraries/src/Input/{Cli,Input}.php."
     },
     {
       "case_id": "php-safe-021",
@@ -14647,7 +14647,7 @@
         "code-injection"
       ],
       "disabled": false,
-      "notes": "PHP 7.2+ assert(bool_expr, \"description\") \u2014 the second argument is a diagnostic message thrown with AssertionError, never evaluated as code. The first-argument anchor must suppress php.code_exec.assert_string on the description string. Distilled from glpi tests/ (atoum/PHPUnit) e.g. tests/src/GLPITestCase.php:131, tests/functional/SLMTest.php:2217, tests/src/Glpi/Auth/HelpersTrait.php:122."
+      "notes": "PHP 7.2+ assert(bool_expr, \"description\") — the second argument is a diagnostic message thrown with AssertionError, never evaluated as code. The first-argument anchor must suppress php.code_exec.assert_string on the description string. Distilled from glpi tests/ (atoum/PHPUnit) e.g. tests/src/GLPITestCase.php:131, tests/functional/SLMTest.php:2217, tests/src/Glpi/Auth/HelpersTrait.php:122."
     },
     {
       "case_id": "php-deser-003",
@@ -14786,7 +14786,7 @@
         "real-repo-precision-2026-04-28"
       ],
       "disabled": false,
-      "notes": "Postgres `pg_prewarm/autoprewarm.c` + `formatting.c::DCH_a_m` shape \u2014 strcpy/strcat with string-literal or ternary-of-literals source.  Layer D suppression (src/ast.rs::is_c_buffer_call_literal_safe)."
+      "notes": "Postgres `pg_prewarm/autoprewarm.c` + `formatting.c::DCH_a_m` shape — strcpy/strcat with string-literal or ternary-of-literals source.  Layer D suppression (src/ast.rs::is_c_buffer_call_literal_safe)."
     },
     {
       "case_id": "c-safe-018",
@@ -14812,7 +14812,7 @@
         "real-repo-precision-2026-04-28"
       ],
       "disabled": false,
-      "notes": "Postgres `datetime.c::EncodeDateTime` shape \u2014 sprintf with literal format string containing only width/precision-bounded specifiers.  Layer D suppression."
+      "notes": "Postgres `datetime.c::EncodeDateTime` shape — sprintf with literal format string containing only width/precision-bounded specifiers.  Layer D suppression."
     },
     {
       "case_id": "c-safe-realrepo-019",
@@ -14841,7 +14841,7 @@
         "real-repo-precision-2026-05-03"
       ],
       "disabled": false,
-      "notes": "curl/lib/dynhds.c::entry_new shape \u2014 sub-buffer alias `e->name = (char*)e + sizeof(*e)` and local-into-field ownership transfer `m->buf = ptr`.  Field-LHS in apply_assignment moves the RHS to MOVED but does not seed the field as a separately-tracked resource.  Engine fix: src/state/transfer.rs::apply_assignment SAFE-FOR-FIELD-LHS gate.  Closes the dominant `state-resource-leak` FP cluster on curl/openssl/postgres/git (~165 findings across 6 repos)."
+      "notes": "curl/lib/dynhds.c::entry_new shape — sub-buffer alias `e->name = (char*)e + sizeof(*e)` and local-into-field ownership transfer `m->buf = ptr`.  Field-LHS in apply_assignment moves the RHS to MOVED but does not seed the field as a separately-tracked resource.  Engine fix: src/state/transfer.rs::apply_assignment SAFE-FOR-FIELD-LHS gate.  Closes the dominant `state-resource-leak` FP cluster on curl/openssl/postgres/git (~165 findings across 6 repos)."
     },
     {
       "case_id": "c-safe-realrepo-025",
@@ -15144,7 +15144,7 @@
         "null-sentinel"
       ],
       "disabled": false,
-      "notes": "TS nullable-returning sanitiser; deferred \u2014 same reason as js-safe-015."
+      "notes": "TS nullable-returning sanitiser; deferred — same reason as js-safe-015."
     },
     {
       "case_id": "ts-safe-016",
@@ -15171,7 +15171,7 @@
         "cross-function"
       ],
       "disabled": false,
-      "notes": "TS cross-function bool validator; deferred \u2014 same reason as js-safe-016."
+      "notes": "TS cross-function bool validator; deferred — same reason as js-safe-016."
     },
     {
       "case_id": "ts-safe-017",
@@ -15227,7 +15227,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Indirect-validator branch narrowing \u2014 `const err = validateUrlSsrf(target); if (err) throw \u2026;` should suppress the downstream axios.get sink. Pinned by tests/lib::indirect_validator_narrowing_marks_arg_validated."
+      "notes": "Indirect-validator branch narrowing — `const err = validateUrlSsrf(target); if (err) throw …;` should suppress the downstream axios.get sink. Pinned by tests/lib::indirect_validator_narrowing_marks_arg_validated."
     },
     {
       "case_id": "ts-safe-019",
@@ -15254,7 +15254,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Helper-summary all_validated propagation \u2014 when a helper's body validates the param via `validateXxx`, the per-param probe's all_validated event should be skipped during summary extraction so callers don't refire the cross-fn SSRF. Pinned by tests/lib::helper_with_validator_does_not_propagate_to_caller_via_summary."
+      "notes": "Helper-summary all_validated propagation — when a helper's body validates the param via `validateXxx`, the per-param probe's all_validated event should be skipped during summary extraction so callers don't refire the cross-fn SSRF. Pinned by tests/lib::helper_with_validator_does_not_propagate_to_caller_via_summary."
     },
     {
       "case_id": "ts-safe-020",
@@ -15338,7 +15338,7 @@
         "real-repo-precision-2026-05-03"
       ],
       "disabled": false,
-      "notes": "Jest-style nested arrow callbacks (`describe('\u2026', () => { it('\u2026', async () => { const body = await res.json(); \u2026 }) })`) bubble inner-scope free vars (`body`, `userId`, `server.post`) up to the outer arrow as synthetic Params.  Before the fix, JS/TS auto-seed treated every Param whose var_name matched a handler-name (`userId`) as a real formal of the outer arrow and seeded it as `Source(UserInput)`, producing 934 phantom `taint-unsanitised-flow` findings on outline alone.  Engine fix: `lower_to_ssa_with_params` now signals `with_params=true` to `lower_to_ssa_inner`, which makes the synthetic-externals classifier always exclude formals (even when the formal list is empty, e.g. arrow `() => {\u2026}`) \u2014 bubbled-up free vars become synthetic and the auto-seed pass skips them.  Distilled from /Users/elipeter/oss/outline/server/routes/api/comments/comments.test.ts."
+      "notes": "Jest-style nested arrow callbacks (`describe('…', () => { it('…', async () => { const body = await res.json(); … }) })`) bubble inner-scope free vars (`body`, `userId`, `server.post`) up to the outer arrow as synthetic Params.  Before the fix, JS/TS auto-seed treated every Param whose var_name matched a handler-name (`userId`) as a real formal of the outer arrow and seeded it as `Source(UserInput)`, producing 934 phantom `taint-unsanitised-flow` findings on outline alone.  Engine fix: `lower_to_ssa_with_params` now signals `with_params=true` to `lower_to_ssa_inner`, which makes the synthetic-externals classifier always exclude formals (even when the formal list is empty, e.g. arrow `() => {…}`) — bubbled-up free vars become synthetic and the auto-seed pass skips them.  Distilled from /Users/elipeter/oss/outline/server/routes/api/comments/comments.test.ts."
     },
     {
       "case_id": "ts-sqli-realrepo-arrow-002",
@@ -15378,7 +15378,7 @@
         "real-repo-precision-2026-05-03"
       ],
       "disabled": false,
-      "notes": "Arrow with REAL handler-named formal (`userId`) MUST still auto-seed and trigger taint flow into `db.exec(\"\u2026 ${userId}\")`.  Pins the auto-seed positive path so the FP fix in ts-safe-022 does not over-suppress real handlers."
+      "notes": "Arrow with REAL handler-named formal (`userId`) MUST still auto-seed and trigger taint flow into `db.exec(\"… ${userId}\")`.  Pins the auto-seed positive path so the FP fix in ts-safe-022 does not over-suppress real handlers."
     },
     {
       "case_id": "js-safe-jest-callback-001",
@@ -15469,7 +15469,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Same shape but missing decorator \u2014 auth-gap fires"
+      "notes": "Same shape but missing decorator — auth-gap fires"
     },
     {
       "case_id": "java-preauth-001",
@@ -15531,7 +15531,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Servlet doGet without auth \u2014 taint flow fires"
+      "notes": "Servlet doGet without auth — taint flow fires"
     },
     {
       "case_id": "php-isgranted-001",
@@ -15593,7 +15593,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Top-level handler without IsGranted \u2014 taint flow fires"
+      "notes": "Top-level handler without IsGranted — taint flow fires"
     },
     {
       "case_id": "ruby-before-action-001",
@@ -15646,7 +15646,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Allowlist-then-exec pattern \u2014 engine must recognise membership check"
+      "notes": "Allowlist-then-exec pattern — engine must recognise membership check"
     },
     {
       "case_id": "ts-iife-closure-001",
@@ -15671,7 +15671,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "IIFE wrapper around handler with encodeURIComponent \u2014 must be cleared"
+      "notes": "IIFE wrapper around handler with encodeURIComponent — must be cleared"
     },
     {
       "case_id": "ts-iife-closure-vuln-001",
@@ -15706,7 +15706,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "IIFE wrapper without sanitizer \u2014 taint must propagate through closure"
+      "notes": "IIFE wrapper without sanitizer — taint must propagate through closure"
     },
     {
       "case_id": "py-validator-sentinel-001",
@@ -15768,7 +15768,7 @@
         "precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Same shape with inverted sentinel check \u2014 SQLi fires"
+      "notes": "Same shape with inverted sentinel check — SQLi fires"
     },
     {
       "case_id": "py-context-sanitize-001",
@@ -15882,7 +15882,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "`let user = match require_auth() { Ok(u) => u, ... }; let uid = user.id; query(.., &[uid])` \u2014 transitive copy of self-actor id (website/handlers/accounts.rs)"
+      "notes": "`let user = match require_auth() { Ok(u) => u, ... }; let uid = user.id; query(.., &[uid])` — transitive copy of self-actor id (website/handlers/accounts.rs)"
     },
     {
       "case_id": "rs-auth-realrepo-002",
@@ -15936,7 +15936,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "`realtime::publish_to_user(&user.email, ..)` \u2014 self-channel publish with email as self-identity field (website/handlers/social.rs)"
+      "notes": "`realtime::publish_to_user(&user.email, ..)` — self-channel publish with email as self-identity field (website/handlers/social.rs)"
     },
     {
       "case_id": "rs-auth-typed-extractors-001",
@@ -16017,7 +16017,7 @@
         "typed-extractors-phase6-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Phase 6 negative-control: DTO whose `doc_id` field is `String` must NOT be exempted \u2014 String DTO fields can carry injection payloads, so the auth rule must continue to fire."
+      "notes": "Phase 6 negative-control: DTO whose `doc_id` field is `String` must NOT be exempted — String DTO fields can carry injection payloads, so the auth rule must continue to fire."
     },
     {
       "case_id": "js-safe-realrepo-001",
@@ -16096,7 +16096,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Panic guard: CodeMirror Gherkin tokenizer ships a long localised regex inside a boolean sub-condition. Naive byte-slice truncation in CFG condition-text (`t[..MAX_CONDITION_TEXT_LEN]`) panicked when byte 256 landed inside a multi-byte UTF-8 character (Gurmukhi `\u0a16`). Engine fix: src/utils/snippet.rs::truncate_at_char_boundary applied at three CFG sites + two symex display sites (gogs public/plugins/codemirror-5.17.0/mode/gherkin/gherkin.js:107)."
+      "notes": "Panic guard: CodeMirror Gherkin tokenizer ships a long localised regex inside a boolean sub-condition. Naive byte-slice truncation in CFG condition-text (`t[..MAX_CONDITION_TEXT_LEN]`) panicked when byte 256 landed inside a multi-byte UTF-8 character (Gurmukhi `ਖ`). Engine fix: src/utils/snippet.rs::truncate_at_char_boundary applied at three CFG sites + two symex display sites (gogs public/plugins/codemirror-5.17.0/mode/gherkin/gherkin.js:107)."
     },
     {
       "case_id": "go-safe-realrepo-001",
@@ -16123,7 +16123,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "`if err != nil { log() }` whose if is the LAST statement in the function \u2014 no fallthrough sink possible (gin/debug.go:debugPrintError)"
+      "notes": "`if err != nil { log() }` whose if is the LAST statement in the function — no fallthrough sink possible (gin/debug.go:debugPrintError)"
     },
     {
       "case_id": "go-cmdi-realrepo-001",
@@ -16159,7 +16159,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart: `if err { log() } sink()` \u2014 error logged then fallthrough to sink. Pins that the False-edge-only walk does NOT silence the rule for real fallthrough."
+      "notes": "Vulnerable counterpart: `if err { log() } sink()` — error logged then fallthrough to sink. Pins that the False-edge-only walk does NOT silence the rule for real fallthrough."
     },
     {
       "case_id": "java-safe-realrepo-001",
@@ -16186,7 +16186,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "`if (logger.isErrorEnabled()) { print() } more_code()` \u2014 `isErrorEnabled` is a logging-state method, not an error variable; rule must reject camelCase names containing `err` (spring-boot/SpringApplication.java:854)"
+      "notes": "`if (logger.isErrorEnabled()) { print() } more_code()` — `isErrorEnabled` is a logging-state method, not an error variable; rule must reject camelCase names containing `err` (spring-boot/SpringApplication.java:854)"
     },
     {
       "case_id": "go-safe-realrepo-002",
@@ -16215,7 +16215,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "Go method receiver `c *Context` with internal `c.mu.Lock`/`defer c.mu.Unlock` is NOT a leakable resource \u2014 the proxy-receiver extractor previously took the root identifier of multi-segment callees (`c.writer.header().set` \u2192 `c`) and section 2b's exception-path heuristic ran on Go (gin/context.go:Set/Get/MustGet)"
+      "notes": "Go method receiver `c *Context` with internal `c.mu.Lock`/`defer c.mu.Unlock` is NOT a leakable resource — the proxy-receiver extractor previously took the root identifier of multi-segment callees (`c.writer.header().set` → `c`) and section 2b's exception-path heuristic ran on Go (gin/context.go:Set/Get/MustGet)"
     },
     {
       "case_id": "go-safe-fieldproj-phase3",
@@ -16271,7 +16271,7 @@
         "real-repo-precision-2026-04-25"
       ],
       "disabled": false,
-      "notes": "`id := \"id\"; c.AddParam(id, value)` \u2014 const-bound local must not count as a scoped-identifier subject (gin/context_test.go:TestContextAddParam)"
+      "notes": "`id := \"id\"; c.AddParam(id, value)` — const-bound local must not count as a scoped-identifier subject (gin/context_test.go:TestContextAddParam)"
     },
     {
       "case_id": "go-safe-realrepo-004",
@@ -16298,7 +16298,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "`w.Header().Get(constName)` and `r.URL.Query().Get(name)` \u2014 chained-call receiver returns an opaque value (http.Header / url.Values map); the verb-name fallback (Get matches the read indicator) must not auto-classify these as DbCrossTenantRead.  Closes the minio cmd/api-response.go cluster (~70 hits)."
+      "notes": "`w.Header().Get(constName)` and `r.URL.Query().Get(name)` — chained-call receiver returns an opaque value (http.Header / url.Values map); the verb-name fallback (Get matches the read indicator) must not auto-classify these as DbCrossTenantRead.  Closes the minio cmd/api-response.go cluster (~70 hits)."
     },
     {
       "case_id": "go-safe-realrepo-005",
@@ -16325,7 +16325,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "`func (c *Cache) ...` with `c.foo()` / `c.Fs.Create(...)` intra-struct dispatches \u2014 Go method receivers must seed `non_sink_vars` so the verb-name fallback doesn't fire on bare-receiver internal calls.  Closes the hugo cache/filecache.go cluster (~48 hits)."
+      "notes": "`func (c *Cache) ...` with `c.foo()` / `c.Fs.Create(...)` intra-struct dispatches — Go method receivers must seed `non_sink_vars` so the verb-name fallback doesn't fire on bare-receiver internal calls.  Closes the hugo cache/filecache.go cluster (~48 hits)."
     },
     {
       "case_id": "go-safe-realrepo-006",
@@ -16352,7 +16352,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "`if err != nil { c.Fatalf(...) }` / `os.Exit` / `log.Fatalf` / `panic(err)` are documented terminators (Goexit-class).  cfg-error-fallthrough must walk through them as terminating paths.  Closes the minio test-file cluster (49+34+12+11+9+7+7 hits across xl-storage_test.go, erasure-healing_test.go, format-erasure_test.go, \u2026).  Engine fix: src/cfg_analysis/error_handling.rs::call_never_returns."
+      "notes": "`if err != nil { c.Fatalf(...) }` / `os.Exit` / `log.Fatalf` / `panic(err)` are documented terminators (Goexit-class).  cfg-error-fallthrough must walk through them as terminating paths.  Closes the minio test-file cluster (49+34+12+11+9+7+7 hits across xl-storage_test.go, erasure-healing_test.go, format-erasure_test.go, …).  Engine fix: src/cfg_analysis/error_handling.rs::call_never_returns."
     },
     {
       "case_id": "go-safe-realrepo-016",
@@ -16381,7 +16381,7 @@
         "real-repo-precision-2026-05-02"
       ],
       "disabled": false,
-      "notes": "`require.NoError(t, f.Close())` and `errs = append(errs, f.Close())` shapes \u2014 the inner-call release was invisible because the CFG's per-statement Call node carries the OUTER callee.  Engine fix: src/state/transfer.rs::apply_call now walks info.arg_callees after the direct-release branch and marks the bare-receiver SymbolId CLOSED.  Closes 9+ hits across prometheus tsdb test files."
+      "notes": "`require.NoError(t, f.Close())` and `errs = append(errs, f.Close())` shapes — the inner-call release was invisible because the CFG's per-statement Call node carries the OUTER callee.  Engine fix: src/state/transfer.rs::apply_call now walks info.arg_callees after the direct-release branch and marks the bare-receiver SymbolId CLOSED.  Closes 9+ hits across prometheus tsdb test files."
     },
     {
       "case_id": "go-safe-realrepo-017",
@@ -16410,7 +16410,7 @@
         "real-repo-precision-2026-05-02"
       ],
       "disabled": false,
-      "notes": "`b.cpuprof = os.Create(...)` shape \u2014 member-expression LHS is an ownership transfer to the containing struct, not a local acquisition.  Closure responsibility belongs to a paired `stopProfiling()` method.  Engine fix: src/state/transfer.rs::apply_call gates the acquire on !define_is_field_lhs; src/cfg_analysis/resources.rs::run mirrors the gate.  Closes the prometheus cmd/promtool/tsdb.go::startProfiling cluster (4 findings on b.cpuprof, b.memprof, b.blockprof, b.mtxprof)."
+      "notes": "`b.cpuprof = os.Create(...)` shape — member-expression LHS is an ownership transfer to the containing struct, not a local acquisition.  Closure responsibility belongs to a paired `stopProfiling()` method.  Engine fix: src/state/transfer.rs::apply_call gates the acquire on !define_is_field_lhs; src/cfg_analysis/resources.rs::run mirrors the gate.  Closes the prometheus cmd/promtool/tsdb.go::startProfiling cluster (4 findings on b.cpuprof, b.memprof, b.blockprof, b.mtxprof)."
     },
     {
       "case_id": "go-vuln-realrepo-018",
@@ -16746,7 +16746,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to ts-auth-realrepo-001: `targetUserId` is a foreign id parameter (route-handed, not a session copy) \u2014 the rule must still fire on the qualified prisma.apiKey.deleteMany call.  Updated 2026-05-03: pre-fix used bare `deleteApiKeysFromUserId(userId)` whose `delete` verb-prefix match fired despite no receiver evidence; post `receiver_is_simple_chain` gating, the fixture uses a qualified ORM call to test the canonical detection path."
+      "notes": "Vulnerable counterpart to ts-auth-realrepo-001: `targetUserId` is a foreign id parameter (route-handed, not a session copy) — the rule must still fire on the qualified prisma.apiKey.deleteMany call.  Updated 2026-05-03: pre-fix used bare `deleteApiKeysFromUserId(userId)` whose `delete` verb-prefix match fired despite no receiver evidence; post `receiver_is_simple_chain` gating, the fixture uses a qualified ORM call to test the canonical detection path."
     },
     {
       "case_id": "js-auth-realrepo-001",
@@ -16800,7 +16800,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Destructure shapes: `const { user } = ctx.session` / `const { user } = await getServerSession()` / `const { user: me } = ctx.session` / `const { id } = req.user`.  cal.com NextAuth idiom \u2014 destructured local IS the actor (or actor's id), not a foreign tenant id."
+      "notes": "Destructure shapes: `const { user } = ctx.session` / `const { user } = await getServerSession()` / `const { user: me } = ctx.session` / `const { id } = req.user`.  cal.com NextAuth idiom — destructured local IS the actor (or actor's id), not a foreign tenant id."
     },
     {
       "case_id": "ts-auth-realrepo-004",
@@ -16880,7 +16880,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Excalidraw `Map<K, V>` / `Set<T>` / `WeakMap` / `WeakSet` / `Array<T>` / `T[]` / `readonly T[]` receivers \u2014 direct annotation, same-file `type X = Map<...>` aliasing, and inline `new Map()` constructor. SSA `constructor_type` JS/TS arm + `cfg::params::ts_type_to_local_collection` + `cfg::dto::collect_type_alias_local_collections` route every shape through `TypeKind::LocalCollection` \u2192 `SinkClass::InMemoryLocal`, suppressing missing-ownership."
+      "notes": "Excalidraw `Map<K, V>` / `Set<T>` / `WeakMap` / `WeakSet` / `Array<T>` / `T[]` / `readonly T[]` receivers — direct annotation, same-file `type X = Map<...>` aliasing, and inline `new Map()` constructor. SSA `constructor_type` JS/TS arm + `cfg::params::ts_type_to_local_collection` + `cfg::dto::collect_type_alias_local_collections` route every shape through `TypeKind::LocalCollection` → `SinkClass::InMemoryLocal`, suppressing missing-ownership."
     },
     {
       "case_id": "ts-auth-realrepo-007",
@@ -16906,7 +16906,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to ts-auth-realrepo-006: `prisma.user.findUnique` / `prisma.user.update` with attacker-supplied id and no preceding auth check.  Receiver is NOT a tracked Map / Set / Array, so the LocalCollection fix must NOT suppress this \u2014 proves the type-aware suppression doesn't blanket-cover real DB clients that share method names (`get`, `find`, `update`) with JS containers."
+      "notes": "Vulnerable counterpart to ts-auth-realrepo-006: `prisma.user.findUnique` / `prisma.user.update` with attacker-supplied id and no preceding auth check.  Receiver is NOT a tracked Map / Set / Array, so the LocalCollection fix must NOT suppress this — proves the type-aware suppression doesn't blanket-cover real DB clients that share method names (`get`, `find`, `update`) with JS containers."
     },
     {
       "case_id": "rs-auth-realrepo-009",
@@ -16961,7 +16961,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Negative counterpart for the LocalUserView recogniser: handler takes the typed extractor but mutates a row by `req.target_user_id` (foreign id) without any ownership check \u2014 must still flag.  Guards against an over-broad recogniser that would treat any handler with a self-actor extractor as authorised by default."
+      "notes": "Negative counterpart for the LocalUserView recogniser: handler takes the typed extractor but mutates a row by `req.target_user_id` (foreign id) without any ownership check — must still flag.  Guards against an over-broad recogniser that would treat any handler with a self-actor extractor as authorised by default."
     },
     {
       "case_id": "rs-auth-realrepo-011",
@@ -17017,7 +17017,7 @@
         "noise-budget-zero"
       ],
       "disabled": false,
-      "notes": "Rust function-parameter type annotations naming an in-memory container (`RoaringBitmap`, `HashMap<K,V>`, `HashSet<T>`, `BTreeSet<T>`) classify the receiver as `TypeKind::LocalCollection` \u2192 `SinkClass::InMemoryLocal`, suppressing the verb-name dispatch's DbMutation classification.  Surfaced from meilisearch/index-scheduler/scheduler/enterprise_edition/network.rs::balance_shards (`unsharded: RoaringBitmap`).  Mirrors the JS/TS `ts_type_to_local_collection` fix from 2026-04-29."
+      "notes": "Rust function-parameter type annotations naming an in-memory container (`RoaringBitmap`, `HashMap<K,V>`, `HashSet<T>`, `BTreeSet<T>`) classify the receiver as `TypeKind::LocalCollection` → `SinkClass::InMemoryLocal`, suppressing the verb-name dispatch's DbMutation classification.  Surfaced from meilisearch/index-scheduler/scheduler/enterprise_edition/network.rs::balance_shards (`unsharded: RoaringBitmap`).  Mirrors the JS/TS `ts_type_to_local_collection` fix from 2026-04-29."
     },
     {
       "case_id": "rs-auth-realrepo-013",
@@ -17044,7 +17044,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Negative-counterpart guard for the LocalCollection / parameter-name fixes: handler takes a HashMap typed param (in-memory bookkeeping) but ALSO calls `db.update_owner(req.target_user_id, ...)` (real DbMutation).  The cache mutation must not blanket-suppress the persistent-store mutation \u2014 the rule must still fire on `db.update_owner`."
+      "notes": "Negative-counterpart guard for the LocalCollection / parameter-name fixes: handler takes a HashMap typed param (in-memory bookkeeping) but ALSO calls `db.update_owner(req.target_user_id, ...)` (real DbMutation).  The cache mutation must not blanket-suppress the persistent-store mutation — the rule must still fire on `db.update_owner`."
     },
     {
       "case_id": "rs-auth-realrepo-014",
@@ -17185,7 +17185,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "ActiveRecord query methods (where/order/group/having/joins/pluck) with parameter-safe arg-0 shapes (hash, symbol, array, parameterised string) \u2014 Rails escapes the values, no SQLi exposure."
+      "notes": "ActiveRecord query methods (where/order/group/having/joins/pluck) with parameter-safe arg-0 shapes (hash, symbol, array, parameterised string) — Rails escapes the values, no SQLi exposure."
     },
     {
       "case_id": "ruby-sqli-where-string-interp-001",
@@ -17224,7 +17224,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "Counterpart to safe_active_record_query_shapes \u2014 same  method becomes a real SQLi sink when arg 0 is a string with #{...} interpolation. Engine must keep flagging this even though the safe-shape fixtures suppress SQL_QUERY at the same callee."
+      "notes": "Counterpart to safe_active_record_query_shapes — same  method becomes a real SQLi sink when arg 0 is a string with #{...} interpolation. Engine must keep flagging this even though the safe-shape fixtures suppress SQL_QUERY at the same callee."
     },
     {
       "case_id": "ruby-sqli-where-chained-interp-001",
@@ -17264,7 +17264,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "Chained shape: Model.where(\"...#{x}...\").preload(...).to_a. CFG collapses chained calls into one node whose outermost callee is .to_a (no args). The shape suppressor walks the receiver chain to reach the inner where(...) \u2014 chain-walking only suppresses SAFE shapes, so this dangerous form must still fire."
+      "notes": "Chained shape: Model.where(\"...#{x}...\").preload(...).to_a. CFG collapses chained calls into one node whose outermost callee is .to_a (no args). The shape suppressor walks the receiver chain to reach the inner where(...) — chain-walking only suppresses SAFE shapes, so this dangerous form must still fire."
     },
     {
       "case_id": "ruby-safe-post-fetch-ownership-001",
@@ -17292,7 +17292,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "Rails canonical \"load by id, then check ownership\" idiom \u2014 row-fetch exemption (row_population_data reverse-walk in auth_check_covers_subject) closes the gap when the per-record permission check appears textually after the fetch."
+      "notes": "Rails canonical \"load by id, then check ownership\" idiom — row-fetch exemption (row_population_data reverse-walk in auth_check_covers_subject) closes the gap when the per-record permission check appears textually after the fetch."
     },
     {
       "case_id": "ruby-auth-missing-post-fetch-001",
@@ -17325,7 +17325,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "Counterpart to safe_post_fetch_ownership_check \u2014 same controller shape but the per-record permission check is omitted, so the row-fetch exemption does not fire. Engine must keep flagging this even though the safe-shape fixtures train the exemption on the same Issue.find(params[:id]) pattern."
+      "notes": "Counterpart to safe_post_fetch_ownership_check — same controller shape but the per-record permission check is omitted, so the row-fetch exemption does not fire. Engine must keep flagging this even though the safe-shape fixtures train the exemption on the same Issue.find(params[:id]) pattern."
     },
     {
       "case_id": "ruby-safe-rails-private-callback-helper-001",
@@ -17381,7 +17381,7 @@
         "real-repo-precision"
       ],
       "disabled": false,
-      "notes": "Sister fixture to safe_rails_private_callback_helper \u2014 the `set_widget` helper carries no `private` directive but is registered via `before_action :set_widget`. Callback-target name suppression alone (independent of visibility) must skip the helper unit."
+      "notes": "Sister fixture to safe_rails_private_callback_helper — the `set_widget` helper carries no `private` directive but is registered via `before_action :set_widget`. Callback-target name suppression alone (independent of visibility) must skip the helper unit."
     },
     {
       "case_id": "java-safe-realrepo-keycloak-001",
@@ -17443,7 +17443,7 @@
         "real-repo-precision-2026-04-28"
       ],
       "disabled": false,
-      "notes": "Concatenated SQL passed to em.createQuery(...) \u2014 receiver-chain walk sees binary_expression at arg 0, refuses to synthesise sanitizer, structural sink fires. Regression guard for the JPA parameterised-execute fix."
+      "notes": "Concatenated SQL passed to em.createQuery(...) — receiver-chain walk sees binary_expression at arg 0, refuses to synthesise sanitizer, structural sink fires. Regression guard for the JPA parameterised-execute fix."
     },
     {
       "case_id": "java-safe-realrepo-openmrs-001",
@@ -17585,7 +17585,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to py-auth-realrepo-005: same FastAPI route shape but no `dependencies=[Depends(...)]` keyword arg.  Regression guard: the dependency-injection recogniser must not blanket-suppress every FastAPI route.  Updated 2026-05-03: pre-fix recall came from a member_chain quirk where `select(Connection).filter_by(...)` reduced to bare callee `filter_by` and prefix-matched the `filter` read indicator.  Post `receiver_is_simple_chain` gating, the fixture uses a qualified `Connection.objects.filter(id=connection_id).delete()` shape \u2014 SQLAlchemy `select().filter_by(...)` chained-call detection is a deferred deep fix."
+      "notes": "Vulnerable counterpart to py-auth-realrepo-005: same FastAPI route shape but no `dependencies=[Depends(...)]` keyword arg.  Regression guard: the dependency-injection recogniser must not blanket-suppress every FastAPI route.  Updated 2026-05-03: pre-fix recall came from a member_chain quirk where `select(Connection).filter_by(...)` reduced to bare callee `filter_by` and prefix-matched the `filter` read indicator.  Post `receiver_is_simple_chain` gating, the fixture uses a qualified `Connection.objects.filter(id=connection_id).delete()` shape — SQLAlchemy `select().filter_by(...)` chained-call detection is a deferred deep fix."
     },
     {
       "case_id": "js-data_exfil-001",
@@ -18260,7 +18260,7 @@
         "real-repo-precision-2026-05-02"
       ],
       "disabled": false,
-      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) \u2014 the kwarg key `organization_id` is the ORM column name, not a subject)."
+      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) — the kwarg key `organization_id` is the ORM column name, not a subject)."
     },
     {
       "case_id": "py-auth-realrepo-009",
@@ -18414,7 +18414,7 @@
         "real-repo-precision-2026-05-04"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to py-auth-realrepo-012: same bare-`set()` / `dict()` local container shape, but the helper *also* runs an id-targeted ORM `Project.objects.filter(id=team_id)` query whose filter param is a user-supplied id (no caller-scope-entity exemption applies).  Recall guard: bare-callee constructor recogniser must only suppress the InMemoryLocal `.add` / `.update` calls \u2014 the id-targeted ORM filter must still fire `py.auth.missing_ownership_check`."
+      "notes": "Vulnerable counterpart to py-auth-realrepo-012: same bare-`set()` / `dict()` local container shape, but the helper *also* runs an id-targeted ORM `Project.objects.filter(id=team_id)` query whose filter param is a user-supplied id (no caller-scope-entity exemption applies).  Recall guard: bare-callee constructor recogniser must only suppress the InMemoryLocal `.add` / `.update` calls — the id-targeted ORM filter must still fire `py.auth.missing_ownership_check`."
     },
     {
       "case_id": "py-auth-realrepo-014",
@@ -18509,7 +18509,7 @@
         "real-repo-precision-2026-05-04"
       ],
       "disabled": false,
-      "notes": "Recall counterpart to py-auth-realrepo-015.  `Security(require_auth, scopes=[])` with an empty scope list is NOT promoted to `Other` \u2014 the OAuth2 scope semantic only fires when scopes is non-empty, so the wrapper falls back to bare login classification.  Recall guard: `missing_ownership_check` must still fire on this id-targeted ORM filter; without conservative scope-emptiness gating, every empty-scopes route would over-suppress."
+      "notes": "Recall counterpart to py-auth-realrepo-015.  `Security(require_auth, scopes=[])` with an empty scope list is NOT promoted to `Other` — the OAuth2 scope semantic only fires when scopes is non-empty, so the wrapper falls back to bare login classification.  Recall guard: `missing_ownership_check` must still fire on this id-targeted ORM filter; without conservative scope-emptiness gating, every empty-scopes route would over-suppress."
     },
     {
       "case_id": "py-auth-realrepo-017",
@@ -18538,7 +18538,7 @@
         "real-repo-precision-2026-05-04"
       ],
       "disabled": false,
-      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:89-318`: `ti_id_router = VersionedAPIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declares the auth dep once at the router constructor; every `@ti_id_router.<verb>(...)` route inherits it at runtime.  Pre-fix the FastAPI dep extractor only walked the per-route decorator's `dependencies=[...]` kwarg; router-constructor `dependencies=` was dropped, so every attached route without inline deps fired `missing_ownership_check` + `token_override_without_validation` despite being authorized.  Fix: `collect_router_level_dependencies` walks module-level `<router> = APIRouter(...)` / `VersionedAPIRouter(...)` / `FastAPI(...)` assignments and captures `dependencies=[...]` keyed by the router var name; `router_prefix_from_decorator` extracts the receiver from `@<router>.<verb>(...)` and merges router-level deps into the per-route middleware list.  A scoped Security wrapper additionally synthesises matching `TokenExpiry` + `TokenRecipient` checks (the JWT-validation semantics \u2014 JWT signature includes expiry, scopes encode recipient binding) so the token-override rule recognises the route too.  Precision guard: route must NOT fire ownership / token-override findings."
+      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:89-318`: `ti_id_router = VersionedAPIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declares the auth dep once at the router constructor; every `@ti_id_router.<verb>(...)` route inherits it at runtime.  Pre-fix the FastAPI dep extractor only walked the per-route decorator's `dependencies=[...]` kwarg; router-constructor `dependencies=` was dropped, so every attached route without inline deps fired `missing_ownership_check` + `token_override_without_validation` despite being authorized.  Fix: `collect_router_level_dependencies` walks module-level `<router> = APIRouter(...)` / `VersionedAPIRouter(...)` / `FastAPI(...)` assignments and captures `dependencies=[...]` keyed by the router var name; `router_prefix_from_decorator` extracts the receiver from `@<router>.<verb>(...)` and merges router-level deps into the per-route middleware list.  A scoped Security wrapper additionally synthesises matching `TokenExpiry` + `TokenRecipient` checks (the JWT-validation semantics — JWT signature includes expiry, scopes encode recipient binding) so the token-override rule recognises the route too.  Precision guard: route must NOT fire ownership / token-override findings."
     },
     {
       "case_id": "py-auth-realrepo-018",
@@ -18571,7 +18571,7 @@
         "real-repo-precision-2026-05-04"
       ],
       "disabled": false,
-      "notes": "Recall counterpart to py-auth-realrepo-017.  Bare `router = VersionedAPIRouter()` with no `dependencies=` kwarg \u2014 attached routes that do not supply inline deps are genuinely unauthorized.  The router-level extractor must NOT enter a fake key for routers without router-level deps; the gate (`if deps.is_empty() { continue; }` in `collect_router_level_dependencies`) ensures absence is preserved.  Recall guard: `missing_ownership_check` must still fire on the id-targeted write."
+      "notes": "Recall counterpart to py-auth-realrepo-017.  Bare `router = VersionedAPIRouter()` with no `dependencies=` kwarg — attached routes that do not supply inline deps are genuinely unauthorized.  The router-level extractor must NOT enter a fake key for routers without router-level deps; the gate (`if deps.is_empty() { continue; }` in `collect_router_level_dependencies`) ensures absence is preserved.  Recall guard: `missing_ownership_check` must still fire on the id-targeted write."
     },
     {
       "case_id": "py-auth-realrepo-019",
@@ -18600,7 +18600,7 @@
         "real-repo-precision-2026-05-04"
       ],
       "disabled": false,
-      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:516-628`: the route handler `ti_update_state` is route-level authorized via the `ti_id_router = APIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declaration (closed by session-0010), then delegates the `session.add(...)` sink to a private helper `_create_state_update`.  Pre-fix the helper fired both `missing_ownership_check` and `token_override_without_validation` because `check_ownership_gaps` is scoped per AnalysisUnit \u2014 the caller's route-level auth check did not propagate to the callee.  Phase 1 caller-scope IPA fix (`apply_caller_scope_propagation` in `src/auth_analysis/mod.rs`) walks the call graph DOWN: when every in-file caller of a helper carries route-level non-Login auth, the helper inherits those checks via synthetic `is_route_level=true` AuthChecks anchored at the callee's start line.  Soundness: requires every caller authorized; refuses on dead helpers, mixed-caller helpers, login-only routes."
+      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:516-628`: the route handler `ti_update_state` is route-level authorized via the `ti_id_router = APIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declaration (closed by session-0010), then delegates the `session.add(...)` sink to a private helper `_create_state_update`.  Pre-fix the helper fired both `missing_ownership_check` and `token_override_without_validation` because `check_ownership_gaps` is scoped per AnalysisUnit — the caller's route-level auth check did not propagate to the callee.  Phase 1 caller-scope IPA fix (`apply_caller_scope_propagation` in `src/auth_analysis/mod.rs`) walks the call graph DOWN: when every in-file caller of a helper carries route-level non-Login auth, the helper inherits those checks via synthetic `is_route_level=true` AuthChecks anchored at the callee's start line.  Soundness: requires every caller authorized; refuses on dead helpers, mixed-caller helpers, login-only routes."
     },
     {
       "case_id": "py-auth-realrepo-020",
@@ -18695,7 +18695,7 @@
         "real-repo-precision-2026-06-11"
       ],
       "disabled": false,
-      "notes": "Recall counterpart to py-auth-realrepo-021.  Same shape, but the mutation declares NO `Meta.permissions` \u2014 a public graphene mutation.  The `GrapheneExtractor` must NOT mark `perform_mutation` authorized (the soundness gate fires only on a non-empty `Meta.permissions`), so the in-file caller-scope pass refuses to lift onto `_cancel_order_rows` and `missing_ownership_check` still fires on its id-targeted ORM write at line 21."
+      "notes": "Recall counterpart to py-auth-realrepo-021.  Same shape, but the mutation declares NO `Meta.permissions` — a public graphene mutation.  The `GrapheneExtractor` must NOT mark `perform_mutation` authorized (the soundness gate fires only on a non-empty `Meta.permissions`), so the in-file caller-scope pass refuses to lift onto `_cancel_order_rows` and `missing_ownership_check` still fires on its id-targeted ORM write at line 21."
     },
     {
       "case_id": "py-auth-realrepo-023",
@@ -19029,7 +19029,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "CVE-2021-21234 patched: securityCheck(Path base, String filename) canonicalises the resolved path and Assert.isTrue(canonicalLoggingPath.startsWith(baseCanonicalPath), errorMessage) \u2014 the canonical Java getCanonicalPath().startsWith(base) assert-guard containment idiom. Regression guard that Nyx recognises this confinement and does not refire. Deep fix: SsaFuncSummary.asserts_path_confined_params + detect_assert_path_confined_params (collapsed-group split at the startsWith method phantom) + apply_call_post_confinement in transfer_block AND collect_block_events."
+      "notes": "CVE-2021-21234 patched: securityCheck(Path base, String filename) canonicalises the resolved path and Assert.isTrue(canonicalLoggingPath.startsWith(baseCanonicalPath), errorMessage) — the canonical Java getCanonicalPath().startsWith(base) assert-guard containment idiom. Regression guard that Nyx recognises this confinement and does not refire. Deep fix: SsaFuncSummary.asserts_path_confined_params + detect_assert_path_confined_params (collapsed-group split at the startsWith method phantom) + apply_call_post_confinement in transfer_block AND collect_block_events."
     },
     {
       "case_id": "java-ssrf-003",
@@ -19165,7 +19165,7 @@
         "real-repo-precision-2026-06-11"
       ],
       "disabled": false,
-      "notes": "Precision counterpart to java-ssrf-004: the SAME multi-sink helper is called with a CONSTANT url, never attacker input. The per-cap de-masking split must not manufacture findings from an untainted argument \u2014 neither taint-unsanitised-flow nor taint-header-injection may fire."
+      "notes": "Precision counterpart to java-ssrf-004: the SAME multi-sink helper is called with a CONSTANT url, never attacker input. The per-cap de-masking split must not manufacture findings from an untainted argument — neither taint-unsanitised-flow nor taint-header-injection may fire."
     },
     {
       "case_id": "ts-path_traversal-002",
@@ -19465,7 +19465,7 @@
         "real-repo-precision-2026-06-12"
       ],
       "disabled": false,
-      "notes": "fs::read(format!(\"/var/data/{}\", name)) with a raw String env value \u2014 NOT numeric-confined, the path-traversal flow must still fire. Over-suppression guard for the format!-macro numeric-confinement fix."
+      "notes": "fs::read(format!(\"/var/data/{}\", name)) with a raw String env value — NOT numeric-confined, the path-traversal flow must still fire. Over-suppression guard for the format!-macro numeric-confinement fix."
     },
     {
       "case_id": "rs-safe-017",
@@ -19523,7 +19523,7 @@
         "real-repo-precision-2026-06-12"
       ],
       "disabled": false,
-      "notes": "Inline raw_port.parse::<u16>().unwrap().to_string() into Command::arg \u2014 numeric-confined leaf, must not fire cmdi or cfg-unguarded-sink"
+      "notes": "Inline raw_port.parse::<u16>().unwrap().to_string() into Command::arg — numeric-confined leaf, must not fire cmdi or cfg-unguarded-sink"
     },
     {
       "case_id": "rs-safe-019",
@@ -19552,7 +19552,7 @@
         "real-repo-precision-2026-06-12"
       ],
       "disabled": false,
-      "notes": "fs::read(format!(\"/var/data/{}\", id.parse::<u32>().unwrap())) \u2014 numeric interpolation inside a format! macro. tree-sitter flattens the chain into the token_tree, so the confinement recogniser re-parses the interpolation argument to clear taint + cfg-unguarded-sink (deep_engine_fixes format!-macro form)."
+      "notes": "fs::read(format!(\"/var/data/{}\", id.parse::<u32>().unwrap())) — numeric interpolation inside a format! macro. tree-sitter flattens the chain into the token_tree, so the confinement recogniser re-parses the interpolation argument to clear taint + cfg-unguarded-sink (deep_engine_fixes format!-macro form)."
     },
     {
       "case_id": "rs-cmdi-010",
@@ -19592,7 +19592,7 @@
         "real-repo-precision-2026-06-12"
       ],
       "disabled": false,
-      "notes": "user_cmd.to_string() on a String env value is an identity passthrough, not numeric confinement \u2014 cmdi must still fire"
+      "notes": "user_cmd.to_string() on a String env value is an identity passthrough, not numeric confinement — cmdi must still fire"
     },
     {
       "case_id": "cve-go-2024-37896-vulnerable",
@@ -19728,7 +19728,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "CVE-2024-37896 precision pair: parameterised `db.Where(\"name = ?\", name)` must NOT fire \u2014 the payload-arg-0 gate keeps the tainted bind value (arg 1) out of the SQL sink scan."
+      "notes": "CVE-2024-37896 precision pair: parameterised `db.Where(\"name = ?\", name)` must NOT fire — the payload-arg-0 gate keeps the tainted bind value (arg 1) out of the SQL sink scan."
     },
     {
       "case_id": "cve-py-2024-32651-vulnerable",
@@ -19765,7 +19765,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "CVE-2024-32651: changedetection.io notification SSTI-to-RCE \u2014 user-controlled notification body rendered through Environment(loader=BaseLoader).from_string(...).render(...). Apache-2.0"
+      "notes": "CVE-2024-32651: changedetection.io notification SSTI-to-RCE — user-controlled notification body rendered through Environment(loader=BaseLoader).from_string(...).render(...). Apache-2.0"
     },
     {
       "case_id": "cve-py-2024-32651-patched",
@@ -19793,7 +19793,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "CVE-2024-32651 patched counterpart: notification bodies rendered through jinja2.sandbox.ImmutableSandboxedEnvironment.from_string \u2014 Layer G recognises the sandboxed receiver and does not refire py.xss.jinja_from_string."
+      "notes": "CVE-2024-32651 patched counterpart: notification bodies rendered through jinja2.sandbox.ImmutableSandboxedEnvironment.from_string — Layer G recognises the sandboxed receiver and does not refire py.xss.jinja_from_string."
     },
     {
       "case_id": "py-safe-jinja-sandboxed-from-string",
@@ -19856,7 +19856,7 @@
         "positive"
       ],
       "disabled": false,
-      "notes": "Unrestricted Environment(loader=BaseLoader).from_string positive: Layer G must NOT suppress \u2014 only sandboxed receivers are safe."
+      "notes": "Unrestricted Environment(loader=BaseLoader).from_string positive: Layer G must NOT suppress — only sandboxed receivers are safe."
     },
     {
       "case_id": "rs-safe-021",
@@ -19922,7 +19922,7 @@
         "recall-guard"
       ],
       "disabled": false,
-      "notes": "Ok(File::open(&tainted_contents)) \u2014 tainted file contents ARE the inner sink path arg; must fire despite the Ok(...) wrapper (recall guard for the sibling-attribution fix)"
+      "notes": "Ok(File::open(&tainted_contents)) — tainted file contents ARE the inner sink path arg; must fire despite the Ok(...) wrapper (recall guard for the sibling-attribution fix)"
     },
     {
       "case_id": "rs-safe-022",
@@ -20773,7 +20773,7 @@
         "cache-key"
       ],
       "disabled": false,
-      "notes": "CVE-2026-53956 / GHSA-h672-p7h7-97v9: rattler_cache package-cache path traversal \u2014 untrusted conda `build` string interpolated into the cache-key path (`path.join(cache_key.to_string())`) then written, with no `..`/separator rejection. BSD-3-Clause."
+      "notes": "CVE-2026-53956 / GHSA-h672-p7h7-97v9: rattler_cache package-cache path traversal — untrusted conda `build` string interpolated into the cache-key path (`path.join(cache_key.to_string())`) then written, with no `..`/separator rejection. BSD-3-Clause."
     },
     {
       "case_id": "cve-rs-2026-53956-patched",
@@ -21002,7 +21002,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Same interproc helper chain but execFile(binary, argv-array) via promisify \u2014 no shell, tainted destination is a non-injectable argv element. Precision guard: promisify alias inherits the =execFile payload_args=[0] restriction."
+      "notes": "Same interproc helper chain but execFile(binary, argv-array) via promisify — no shell, tainted destination is a non-injectable argv element. Precision guard: promisify alias inherits the =execFile payload_args=[0] restriction."
     },
     {
       "case_id": "js-safe-realrepo-sequelize-migration-001",
@@ -23497,6 +23497,1559 @@
       ],
       "disabled": false,
       "notes": "Precision pair for js-cmdi-catch-seed-001: the try body only assigns another constant, so the handler's exec never sees request data."
+    },
+    {
+      "case_id": "js-path_traversal-url-parse-001",
+      "file": "javascript/path_traversal/path_traversal_url_parse.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "url.parse",
+        "readFile",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "url.parse(req.url).pathname into fs.readFile; a non-Rust .parse result is an object, not a number, so it must not be typed Int and suppressed"
+    },
+    {
+      "case_id": "js-xss-marked-parse-001",
+      "file": "javascript/xss/xss_marked_parse.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "marked.parse",
+        "res.send",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "marked.parse renders attacker markdown to HTML without sanitising; the parse result must keep its taint into res.send"
+    },
+    {
+      "case_id": "ts-cmdi-json-parse-001",
+      "file": "typescript/cmdi/cmdi_json_parse_concat.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "JSON.parse",
+        "exec",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "JSON.parse of request data concatenated into exec; JSON.parse is not a sanitizer and its result is not numeric"
+    },
+    {
+      "case_id": "java-xss-jsoup-parse-001",
+      "file": "java/xss/XssJsoupParseEcho.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "Jsoup.parse",
+        "getWriter-write",
+        "parse-not-numeric"
+      ],
+      "disabled": false,
+      "notes": "Jsoup.parse keeps script tags, so echoing doc.html() is reflected XSS; the parse result must not be typed Int"
+    },
+    {
+      "case_id": "js-cmdi-body-alias-field-001",
+      "file": "javascript/cmdi/cmdi_body_alias_field.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          6
+        ]
+      ],
+      "tags": [
+        "field-read",
+        "req.body",
+        "alias"
+      ],
+      "disabled": false,
+      "notes": "body = req.body; exec('ls ' + body.dir). The property is never written, so its phantom value must not count as a clean field of the tainted base"
+    },
+    {
+      "case_id": "ts-xss-query-copy-field-001",
+      "file": "typescript/xss/xss_query_copy_field.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          6
+        ]
+      ],
+      "tags": [
+        "field-read",
+        "req.query",
+        "alias",
+        "template-literal"
+      ],
+      "disabled": false,
+      "notes": "query = req.query; res.send(`<h1>Hello ${query.name}</h1>`). A field read off a copied whole-object source keeps the source taint"
+    },
+    {
+      "case_id": "js-xss-concat-partial-escape-001",
+      "file": "javascript/xss/xss_concat_partial_escape.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          7
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "'<h1>' + escapeHtml(name) + '</h1><p>' + bio: the sanitizer wraps `name` only, so the raw `bio` operand reaches res.send"
+    },
+    {
+      "case_id": "js-safe-concat-all-escaped-001",
+      "file": "javascript/safe/safe_concat_all_escaped.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "concat",
+        "escape",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with js-xss-concat-partial-escape-001: every operand of the concatenation is escaped"
+    },
+    {
+      "case_id": "js-xss-inline-sink-partial-escape-001",
+      "file": "javascript/xss/xss_inline_sink_partial_escape.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "inline-source",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "res.send(... escapeHtml(req.query.title) ... + req.query.body ...): the escaper covers its own argument, not the sibling inline read"
+    },
+    {
+      "case_id": "js-xss-helper-concat-sibling-001",
+      "file": "javascript/xss/xss_helper_concat_sibling.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "helper",
+        "constant-return",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "siteHeader() + bio: the helper's summary governs its own result, not the operand concatenated beside it"
+    },
+    {
+      "case_id": "js-cmdi-nested-source-helper-001",
+      "file": "javascript/cmdi/cmdi_nested_source_helper.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "nested-call",
+        "source-helper"
+      ],
+      "disabled": false,
+      "notes": "cp.exec(getCmd(req)): the helper returns a request parameter; the inline call is the same flow as `c = getCmd(req); cp.exec(c)`"
+    },
+    {
+      "case_id": "py-cmdi-partial-shlex-quote-001",
+      "file": "python/cmdi/cmdi_partial_shlex_quote.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          12
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "shlex",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "os.system('ls ' + shlex.quote(path) + ' ' + opts): `opts` is not quoted"
+    },
+    {
+      "case_id": "go-xss-fprintf-partial-escape-001",
+      "file": "go/xss/xss_fprintf_partial_escape.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          11
+        ]
+      ],
+      "tags": [
+        "partial-escape",
+        "fprintf",
+        "argument-position"
+      ],
+      "disabled": false,
+      "notes": "fmt.Fprintf(w, f, html.EscapeString(name), bio): the escaper covers argument 2 only"
+    },
+    {
+      "case_id": "java-sqli-parseint-concat-name-001",
+      "file": "java/sqli/SqliParseIntConcatName.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          11
+        ]
+      ],
+      "tags": [
+        "numeric-conversion",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "\"... id = \" + Integer.parseInt(id) + \" AND name = '\" + name: the concatenation is a string carrying `name`, not an Int"
+    },
+    {
+      "case_id": "java-safe-parseint-only-query-001",
+      "file": "java/safe/SafeParseIntOnlyQuery.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "numeric-conversion",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with java-sqli-parseint-concat-name-001: only the parsed number is concatenated"
+    },
+    {
+      "case_id": "java-cmdi-inline-request-param-001",
+      "file": "java/cmdi/CmdiInlineRequestParam.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "nested-call",
+        "inline-source"
+      ],
+      "disabled": false,
+      "notes": "Runtime.getRuntime().exec(req.getParameter(\"cmd\")): a source call passed inline to the sink"
+    },
+    {
+      "case_id": "php-sqli-intval-concat-name-001",
+      "file": "php/sqli/sqli_intval_concat_name.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          4
+        ]
+      ],
+      "tags": [
+        "numeric-conversion",
+        "concat",
+        "sibling-operand"
+      ],
+      "disabled": false,
+      "notes": "intval($id) does not cover the raw $name concatenated into the same query"
+    },
+    {
+      "case_id": "php-safe-intval-only-query-001",
+      "file": "php/safe/safe_intval_only_query.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "numeric-conversion",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with php-sqli-intval-concat-name-001: only intval($id) is concatenated"
+    },
+    {
+      "case_id": "js-cmdi-counted-loop-accumulator-001",
+      "file": "javascript/cmdi/cmdi_counted_loop_accumulator.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "loop",
+        "constraint-env"
+      ],
+      "disabled": false,
+      "notes": "cmd is extended inside a counted for loop and run after it; the loop counter folds to a constant and must not make the entry constraint environment unsatisfiable"
+    },
+    {
+      "case_id": "js-cmdi-validated-then-reread-001",
+      "file": "javascript/cmdi/cmdi_validated_then_reread.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "host passes isValidHost, then is re-read from req.query.fallback; the earlier check says nothing about the new value"
+    },
+    {
+      "case_id": "py-cmdi-validated-then-reread-001",
+      "file": "python/cmdi/cmdi_validated_then_reread.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "value passes validate_page, then is re-read from request.args[\"sort\"] before os.system"
+    },
+    {
+      "case_id": "java-cmdi-validated-then-reread-001",
+      "file": "java/cmdi/CmdiValidatedThenReread.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "name passes isValidName, then is re-read from getParameter(\"other\") before Runtime.exec"
+    },
+    {
+      "case_id": "php-cmdi-foreach-binder-after-validation-001",
+      "file": "php/cmdi/cmdi_foreach_binder_after_validation.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "validation",
+        "redefinition",
+        "foreach"
+      ],
+      "disabled": false,
+      "notes": "the foreach binder reuses the name $value that an earlier is_numeric check validated; the bound $_POST elements were never checked"
+    },
+    {
+      "case_id": "js-sqli-allowlisted-sort-inline-limit-001",
+      "file": "javascript/sqli/sqli_allowlisted_sort_inline_limit.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "validation",
+        "inline-source",
+        "allowlist"
+      ],
+      "disabled": false,
+      "notes": "sort is allowlisted, but req.query.limit is concatenated into the same statement unvalidated"
+    },
+    {
+      "case_id": "go-cmdi-err-reused-branch-001",
+      "file": "go/cmdi/cmdi_err_reused_branch.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "predicate",
+        "error-check",
+        "redefinition"
+      ],
+      "disabled": false,
+      "notes": "err is redefined by os.Stat after an earlier `if err != nil { return }`; its own error branch is reachable"
+    },
+    {
+      "case_id": "js-xss-escaped-copy-raw-original-001",
+      "file": "javascript/xss/xss_escaped_copy_raw_original.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "alias",
+        "copy-propagation",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "only the copy `shown` is escaped; rebinding a copy does not change `name`, which reaches res.send raw"
+    },
+    {
+      "case_id": "py-cmdi-quoted-copy-raw-original-001",
+      "file": "python/cmdi/cmdi_quoted_copy_raw_original.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "alias",
+        "copy-propagation",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "only the copy `shown` is shell-quoted; msg reaches os.system raw"
+    },
+    {
+      "case_id": "js-safe-copy-rebind-original-constant-001",
+      "file": "javascript/safe/safe_copy_rebind_original_constant.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "safe",
+        "alias",
+        "copy-propagation",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Paired with js-xss-escaped-copy-raw-original-001: rebinding the copy `label` to request data leaves the module constant it was copied from untouched"
+    },
+    {
+      "case_id": "js-cmdi-handler-named-helper-route-caller-001",
+      "file": "javascript/cmdi/cmdi_handler_named_helper_route_caller.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "auto-seed",
+        "handler-param",
+        "interproc"
+      ],
+      "disabled": false,
+      "notes": "run(cmd) has a caller in view, so the flow is req.query.c through run(); the name-based `cmd` seed no longer adds a second finding sourced at the parameter"
+    },
+    {
+      "case_id": "py-sqli-fstring-order-by-placeholder-001",
+      "file": "python/sqli/sqli_fstring_order_by_placeholder.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "parameterized-query",
+        "interpolation",
+        "f-string"
+      ],
+      "disabled": false,
+      "notes": "The trailing `?` is bound, but the f-string interpolates `sort` into the query text itself; only the bound LIMIT value is safe"
+    },
+    {
+      "case_id": "rb-sqli-where-interpolated-placeholder-001",
+      "file": "ruby/sqli/sqli_where_interpolated_placeholder.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "parameterized-query",
+        "interpolation",
+        "rails"
+      ],
+      "disabled": false,
+      "notes": "`where(\"... #{q} ... = ?\", true)` binds the second argument but still interpolates q into the fragment"
+    },
+    {
+      "case_id": "py-path_traversal-pathlib-literal-write-001",
+      "file": "python/path_traversal/path_traversal_pathlib_literal_write.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "receiver-sink",
+        "pathlib",
+        "literal-args"
+      ],
+      "disabled": false,
+      "notes": "The path is the receiver (`Path(user)`); the literal argument of write_text does not make the call safe"
+    },
+    {
+      "case_id": "rb-ssrf-net-http-new-literal-get-001",
+      "file": "ruby/ssrf/ssrf_net_http_new_literal_get.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "receiver-sink",
+        "net-http",
+        "literal-args"
+      ],
+      "disabled": false,
+      "notes": "The host is passed to Net::HTTP.new; the literal path of get does not make the request safe"
+    },
+    {
+      "case_id": "py-cmdi-semicolon-strip-partial-001",
+      "file": "python/cmdi/cmdi_semicolon_strip_partial.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "Removing ';' leaves '|', '&&' and '$(...)', so the replace is not a shell sanitizer"
+    },
+    {
+      "case_id": "go-cmdi-replaceall-semicolon-partial-001",
+      "file": "go/cmdi/cmdi_replaceall_semicolon_partial.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace",
+        "interproc"
+      ],
+      "disabled": false,
+      "notes": "strings.ReplaceAll over ';' in a helper strips one metacharacter of the shell class"
+    },
+    {
+      "case_id": "java-cmdi-replaceall-pipe-regex-001",
+      "file": "java/cmdi/cmdi_replaceall_pipe_regex.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace",
+        "regex"
+      ],
+      "disabled": false,
+      "notes": "replaceAll(\"|\", \"\") uses a regex that matches the empty string and removes nothing"
+    },
+    {
+      "case_id": "php-cmdi-str-replace-semicolon-001",
+      "file": "php/cmdi/cmdi_str_replace_semicolon.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "str_replace over ';' strips one metacharacter of the shell class"
+    },
+    {
+      "case_id": "py-sqli-quote-deletion-numeric-001",
+      "file": "python/sqli/sqli_quote_deletion_numeric.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "partial-sanitizer",
+        "replace"
+      ],
+      "disabled": false,
+      "notes": "Deleting quotes does nothing for a numeric SQL context"
+    },
+    {
+      "case_id": "js-cmdi-getter-member-source-001",
+      "file": "javascript/cmdi/cmdi_getter_member_source.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "member-source"
+      ],
+      "disabled": false,
+      "notes": "`return req.query.cmd` makes getCommand a source; callers that exec its result are flows"
+    },
+    {
+      "case_id": "py-cmdi-getter-subscript-source-001",
+      "file": "python/cmdi/cmdi_getter_subscript_source.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "subscript-source"
+      ],
+      "disabled": false,
+      "notes": "`return request.args[\"dir\"]` makes requested_dir a source"
+    },
+    {
+      "case_id": "php-cmdi-getter-superglobal-001",
+      "file": "php/cmdi/cmdi_getter_superglobal.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "getter",
+        "superglobal"
+      ],
+      "disabled": false,
+      "notes": "`return $_GET['host']` makes requested_host a source"
+    },
+    {
+      "case_id": "py-cmdi-mixed-quote-passthrough-helper-001",
+      "file": "python/cmdi/cmdi_mixed_quote_passthrough_helper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "mixed-return",
+        "inline"
+      ],
+      "disabled": false,
+      "notes": "One return path quotes the argument and the other returns it raw; inlining the helper must keep the raw path"
+    },
+    {
+      "case_id": "js-cmdi-setter-returns-object-001",
+      "file": "javascript/cmdi/cmdi_setter_returns_object.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "interproc",
+        "field-write",
+        "return-self"
+      ],
+      "disabled": false,
+      "notes": "withName stores its argument in a field of the object it returns; the field read at the sink is tainted"
     }
   ]
 }

@@ -1,0 +1,25 @@
+{
+  "description": "A property read off a local bound to a whole-object source (req.body, req.query, a JSON.parse of request data) carries the source taint. The property is never written in the body, so lowering gives it an unbacked phantom value; that phantom is not evidence that the property is clean.",
+  "tags": ["taint", "field-access", "false-negative-fix"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "body = req.body; exec(\"ls \" + body.dir)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "q = req.query; res.send(... + q.name + ...)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [17, 17],
+      "notes": "job = JSON.parse(req.body.payload); exec(job.command)"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "description": "Validation recorded for a variable describes its current value. A redefinition from new data, or a self-update that mixes in unvalidated data, is not validated; a self-update of the validated value alone stays validated. A request read inlined beside a validated operand is new data too.",
+  "tags": ["taint", "validation", "redefinition"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [14, 14],
+      "notes": "host was re-read from req.query.other after the check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [21, 21],
+      "notes": "req.query.extra is appended after the check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [29, 29],
+      "notes": "the unvalidated local `extra` is appended after the check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [36, 36],
+      "notes": "trim/toLowerCase only transform the validated value"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [43, 43],
+      "notes": "normalize only transforms the validated value"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [50, 50],
+      "notes": "a literal suffix adds no attacker data"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [57, 57],
+      "notes": "req.query.limit joins the query unvalidated beside the allowlisted sort"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [64, 64],
+      "notes": "only the allowlisted sort reaches the query"
+    }
+  ]
+}

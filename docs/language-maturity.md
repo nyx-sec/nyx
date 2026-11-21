@@ -96,10 +96,11 @@ treated as tainted.
 
 #### Go
 
-A recent fix recognises `strings.ReplaceAll` as a CMDi sanitiser in
-chain-wrapper / call-site-replace shapes, clearing the last open Go
-safe-fixture FP (`go-safe-009`, `validate(s string)` wrapping a
-`strings.ReplaceAll` over `;`).
+`strings.Replace` and `strings.ReplaceAll` count as a sanitiser only when the
+literal pair is a complete escape for the cap (see the symex limitations in
+[advanced-analysis](advanced-analysis.md)). A strip of a single shell
+metacharacter such as `;` is not one, so the `go-safe-009` fixture validates
+through a `strconv.Atoi` round trip instead.
 
 Gaps: no gated sinks, no deserialization class, and `fmt.Sprintf` is
 deliberately not a sink. Cap coverage is narrower than the Stable tier and

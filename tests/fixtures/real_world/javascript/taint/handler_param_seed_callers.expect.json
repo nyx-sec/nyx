@@ -1,0 +1,31 @@
+{
+  "description": "The name-based handler-param seed (`cmd`, `input`, `payload`, ...) stands in for callers the scan cannot see. A helper whose callers are all in view gets its inbound taint from them: literal-only callers make no finding, a route caller makes one finding at the call site, and an exported function with no caller keeps the seed.",
+  "tags": ["taint", "auto-seed", "handler-param", "interproc"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [6, 12],
+      "notes": "run and readInput are only called with literals"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [14, 16],
+      "notes": "deploy has a caller in view, so its flow is reported at that call, not again from the payload param"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [24, 24],
+      "notes": "req.body.target reaches execSync through deploy()"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [28, 30],
+      "notes": "no caller of the exported function is in view, so the userCommand param is seeded"
+    }
+  ]
+}

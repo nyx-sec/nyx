@@ -2619,6 +2619,7 @@ pub(crate) fn scan_filesystem_with_observer(
     // `GlobalSummaries::resolve_callee_widened`.
     global_summaries.install_hierarchy();
     let (call_graph, cg_analysis) = build_and_analyse_call_graph(&global_summaries);
+    global_summaries.install_called_keys(&call_graph);
     log_unresolved_callees(&call_graph);
     if let Some(p) = progress {
         p.record_call_graph_ms(cg_start.elapsed().as_millis() as u64);
@@ -3549,6 +3550,7 @@ pub fn scan_with_index_parallel_observer(
     // `GlobalSummaries::resolve_callee_widened`.
     global_summaries.install_hierarchy();
     let (call_graph, cg_analysis) = build_and_analyse_call_graph(&global_summaries);
+    global_summaries.install_called_keys(&call_graph);
     log_unresolved_callees(&call_graph);
     if let Some(p) = progress {
         p.record_call_graph_ms(cg_start.elapsed().as_millis() as u64);

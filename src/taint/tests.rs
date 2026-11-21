@@ -8611,6 +8611,7 @@ function parent(x) {
         guard_kind: None,
         uses_summary: false,
         primary_sink_site: None,
+        inline_source: false,
     };
     assert_eq!(
         probe.seed_caused_caps(&[event(anchor, Cap::SSRF), event(own, Cap::SHELL_ESCAPE)]),
@@ -9323,5 +9324,1574 @@ fn nested_catch_handler_sees_outer_handler_local() {
     assert_taint_fires(
         "javascript",
         "const { exec } = require('child_process');\nfunction h(req, res) {\n  try {\n    risky();\n  } catch (e) {\n    const c = req.query.c;\n    try {\n      other();\n    } catch (e2) {\n      exec(c);\n    }\n  }\n}\n",
+    );
+}
+
+/// Grammar, slug and file name for the languages the source-level helpers
+/// below can parse.
+fn grammar_for(lang: Lang) -> (&'static str, &'static str, tree_sitter::Language) {
+    match lang {
+        Lang::JavaScript => (
+            "javascript",
+            "test.js",
+            tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+        ),
+        Lang::TypeScript => (
+            "typescript",
+            "test.ts",
+            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        ),
+        Lang::Python => (
+            "python",
+            "test.py",
+            tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        ),
+        Lang::Go => (
+            "go",
+            "test.go",
+            tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+        ),
+        Lang::Java => (
+            "java",
+            "test.java",
+            tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+        ),
+        Lang::Php => (
+            "php",
+            "test.php",
+            tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
+        ),
+        Lang::Ruby => (
+            "ruby",
+            "test.rb",
+            tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
+        ),
+        Lang::Rust => (
+            "rust",
+            "test.rs",
+            tree_sitter::Language::from(tree_sitter_rust::LANGUAGE),
+        ),
+        other => panic!("no grammar wired for {other:?}"),
+    }
+}
+
+/// Parse `src` in `lang` and run the per-file taint analysis.
+fn analyse_src(src: &[u8], lang: Lang) -> Vec<Finding> {
+    let (slug, path, ts_lang) = grammar_for(lang);
+    let file_cfg = parse_lang(src, slug, ts_lang);
+    analyse_file(&file_cfg, &file_cfg.summaries, None, lang, path, &[], None)
+}
+
+/// SSA summary of the function called `func` in `src`, built the way the
+/// scan builds it.  `None` when the function has no observable effect (the
+/// scan stores no summary for it).
+fn summary_of(
+    src: &[u8],
+    lang: Lang,
+    func: &str,
+) -> Option<crate::summary::ssa_summary::SsaFuncSummary> {
+    let (slug, path, ts_lang) = grammar_for(lang);
+    let file_cfg = parse_lang(src, slug, ts_lang);
+    let (ssa_summaries, _) = crate::taint::lower_all_functions_from_bodies(
+        &file_cfg,
+        lang,
+        path,
+        &file_cfg.summaries,
+        None,
+        None,
+        None,
+        None,
+    );
+    ssa_summaries
+        .into_iter()
+        .find(|(k, _)| k.name == func)
+        .map(|(_, v)| v)
+}
+
+/// Parameter indices the SSA summary of `func` carries to its return value.
+fn return_edge_params(src: &[u8], lang: Lang, func: &str) -> Vec<usize> {
+    let mut idx: Vec<usize> = summary_of(src, lang, func)
+        .map(|s| s.param_to_return.iter().map(|(i, _)| *i).collect())
+        .unwrap_or_default();
+    idx.sort_unstable();
+    idx
+}
+
+// ── Bare `.parse` is numeric only in Rust (and JS `Date.parse`) ──────────
+
+#[test]
+fn js_url_parse_result_reaching_readfile_fires() {
+    let src = b"var fs = require('fs');\nvar url = require('url');\nrequire('http').createServer(function(req, res) {\n    var q = url.parse(req.url, true);\n    fs.readFile('/srv/' + q, function() {});\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        !findings.is_empty(),
+        "url.parse result is an object, not Int; the FILE_IO sink must fire"
+    );
+}
+
+#[test]
+fn js_yaml_parse_inline_exec_arg_fires() {
+    let src = b"var exec = require('child_process').exec;\nvar yaml = require('yaml');\nrequire('express')().post('/x', function(req, res) {\n    exec(yaml.parse(req.body.payload));\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        !findings.is_empty(),
+        "an inline yaml.parse(...) sink arg must not be dropped as a numeric producer"
+    );
+}
+
+#[test]
+fn python_user_parser_result_into_os_system_fires() {
+    let src = br#"
+import os
+from flask import request
+def run():
+    p = parser.parse(request.args.get("x"))
+    os.system("ls " + p)
+"#;
+    let findings = analyse_src(src, Lang::Python);
+    assert!(
+        !findings.is_empty(),
+        "a Python `.parse` result is not numeric; the shell sink must fire"
+    );
+}
+
+#[test]
+fn js_date_parse_result_stays_numeric() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/t', function(req, res) {\n    var ts = Date.parse(req.body.when);\n    exec('touch -d @' + ts + ' stamp');\n});\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "Date.parse returns a number; the shell sink must stay suppressed, got {findings:?}"
+    );
+}
+
+// ── Field reads of a locally bound object ───────────────────────────────
+//
+// `body.dir` after `const body = req.body` is never written in the body, so
+// lowering gives it an unbacked phantom value.  That phantom must not count
+// as proof that the field is clean: only a closed object literal whose
+// property is a literal (or absent) can show that.
+
+#[test]
+fn field_read_of_source_copy_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    exec('ls ' + body.dir);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a field read off a whole-object source copy carries the source taint"
+    );
+}
+
+#[test]
+fn field_read_of_json_parse_result_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var data = JSON.parse(req.body.payload);\n    exec(data.cmd);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a field read off a parsed request payload carries the payload taint"
+    );
+}
+
+#[test]
+fn field_read_of_query_copy_xss_fires_ts() {
+    let src = b"import express from 'express';\nconst app = express();\napp.get('/h', (req, res) => {\n    const q = req.query;\n    res.send('<h1>' + q.name + '</h1>');\n});\n";
+    assert!(
+        !analyse_src(src, Lang::TypeScript).is_empty(),
+        "TS: a field read off a copied req.query reaches res.send"
+    );
+}
+
+#[test]
+fn object_literal_tainted_field_read_fires() {
+    let src = b"function q(req, db) {\n    const obj = { safeField: 'SELECT 1', unsafeField: req.query.cmd };\n    return db.query(obj.unsafeField);\n}\nmodule.exports = { q };\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "the literal's tainted property must keep its taint"
+    );
+}
+
+#[test]
+fn object_literal_const_field_read_no_finding() {
+    let src = b"function q(req, db) {\n    const obj = { safeField: 'SELECT 1', unsafeField: req.query.cmd };\n    return db.query(obj.safeField);\n}\nmodule.exports = { q };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "the literal's constant property is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn object_literal_nested_const_field_read_no_finding() {
+    let src = b"var exec = require('child_process').exec;\nfunction t(req) {\n    const cfg = { auth: { userName: req.query.name, template: '/usr/bin/whoami' } };\n    exec(cfg.auth.template);\n}\nmodule.exports = { t };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "a constant nested property is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn object_literal_nested_tainted_field_read_fires() {
+    let src = b"var exec = require('child_process').exec;\nfunction t(req) {\n    const cfg = { auth: { userName: req.query.name, template: '/usr/bin/whoami' } };\n    exec(cfg.auth.userName);\n}\nmodule.exports = { t };\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a tainted nested property keeps its taint"
+    );
+}
+
+#[test]
+fn object_literal_spread_field_read_fires() {
+    let src = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    const o = { ...req.body, safe: 'x' };\n    exec(o.cmd);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "a spread can supply any property, so the read is not provably clean"
+    );
+}
+
+#[test]
+fn object_literal_ident_bound_to_constant_no_finding() {
+    let src = b"var exec = require('child_process').exec;\nvar BIN = '/usr/bin/uptime';\nfunction t(req) {\n    const job = { bin: BIN, arg: req.query.a };\n    exec(job.bin);\n}\nmodule.exports = { t };\n";
+    let findings = analyse_src(src, Lang::JavaScript);
+    assert!(
+        findings.is_empty(),
+        "a property bound to an untainted identifier is clean, got {findings:?}"
+    );
+}
+
+#[test]
+fn field_read_validated_on_all_paths_matches_let_bound_twin() {
+    // A property validated on every path before the sink is judged like its
+    // let-bound twin: the object reaches the sink only through that
+    // property, so the base object's taint must not bypass the validation.
+    let inline = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    if (!isValidDir(body.dir)) { return; }\n    exec('ls ' + body.dir);\n});\n";
+    let let_bound = b"var exec = require('child_process').exec;\nrequire('express')().post('/a', function(req, res) {\n    var body = req.body;\n    var d = body.dir;\n    if (!isValidDir(d)) { return; }\n    exec('ls ' + d);\n});\n";
+    let unvalidated = |fs: Vec<Finding>| fs.into_iter().filter(|f| !f.path_validated).count();
+    assert_eq!(
+        unvalidated(analyse_src(let_bound, Lang::JavaScript)),
+        0,
+        "let-bound twin: the validated flow is not reported as unvalidated"
+    );
+    assert_eq!(
+        unvalidated(analyse_src(inline, Lang::JavaScript)),
+        0,
+        "inline field read validated on every path is not reported as unvalidated"
+    );
+}
+
+// ── Per-operand sanitizers, sibling operands, nested helper calls ────────
+
+fn unvalidated_count(fs: &[Finding]) -> usize {
+    fs.iter().filter(|f| !f.path_validated).count()
+}
+
+const JS_APP: &str = "var escapeHtml = require('escape-html');\nvar cp = require('child_process');\nvar app = require('express')();\n";
+
+fn js_app(body: &str) -> Vec<u8> {
+    format!("{JS_APP}{body}").into_bytes()
+}
+
+#[test]
+fn concat_label_sanitizer_does_not_cover_sibling_operand_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var name = req.query.name;\n    var bio = req.query.bio;\n    var html = '<p>' + escapeHtml(name) + '</p>' + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "escapeHtml wraps `name` only; the raw `bio` operand must reach res.send"
+    );
+}
+
+#[test]
+fn concat_with_every_operand_escaped_is_clean_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var a = req.query.a;\n    var b = req.query.b;\n    var html = escapeHtml(a) + '<br>' + escapeHtml(b);\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "every operand is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn concat_operand_escaped_once_and_raw_once_fires_js() {
+    let src = js_app(
+        "app.get('/a', function(req, res) {\n    var name = req.query.name;\n    var html = `<p>${escapeHtml(name)}</p><div>${name}</div>`;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "the second, unescaped use of `name` must reach the sink"
+    );
+}
+
+#[test]
+fn inline_sink_sanitizer_does_not_cover_sibling_operand_js() {
+    let vuln = js_app(
+        "app.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    res.send('<h1>' + escapeHtml('Profile') + '</h1>' + bio);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "escapeHtml wraps a constant; `bio` is raw in the same argument"
+    );
+    let safe = js_app(
+        "app.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    res.send('<h1>' + escapeHtml(bio) + '</h1>');\n});\n",
+    );
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only operand is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn shell_quote_covers_only_its_operand_py() {
+    let vuln = br#"
+import os, shlex
+from flask import request
+def a():
+    f = request.args["f"]
+    opts = request.args["o"]
+    os.system("ls " + shlex.quote(f) + " " + opts)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Python)) > 0,
+        "`opts` is not quoted"
+    );
+    let safe = br#"
+import os, shlex
+from flask import request
+def a():
+    f = request.args["f"]
+    os.system("ls " + shlex.quote(f))
+"#;
+    let fs = analyse_src(safe, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only operand is quoted: {fs:?}"
+    );
+}
+
+#[test]
+fn shell_quote_assignment_keeps_sibling_taint_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def h():
+    a = request.args["a"]
+    b = request.args["b"]
+    s = shlex.quote(a) + " " + b
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "shlex.quote(a) must not quote the sibling `b`"
+    );
+}
+
+#[test]
+fn fprintf_escape_covers_only_its_argument_go() {
+    let vuln = b"package main\nimport (\"fmt\"; \"html\"; \"net/http\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"name\")\n\tbio := r.URL.Query().Get(\"bio\")\n\tfmt.Fprintf(w, \"<h1>%s</h1><p>%s</p>\", html.EscapeString(name), bio)\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Go)) > 0,
+        "html.EscapeString wraps argument 2 only; `bio` in argument 3 is raw"
+    );
+    let safe = b"package main\nimport (\"fmt\"; \"html\"; \"net/http\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"name\")\n\tbio := r.URL.Query().Get(\"bio\")\n\tfmt.Fprintf(w, \"<h1>%s</h1><p>%s</p>\", html.EscapeString(name), html.EscapeString(bio))\n}\n";
+    let fs = analyse_src(safe, Lang::Go);
+    assert_eq!(unvalidated_count(&fs), 0, "both arguments escaped: {fs:?}");
+}
+
+#[test]
+fn zero_arg_helper_keeps_sibling_operand_taint_js() {
+    let src = js_app(
+        "function siteHeader() { return '<h1>Site</h1>'; }\napp.get('/a', function(req, res) {\n    var bio = req.query.bio;\n    var html = siteHeader() + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "the helper returns a constant, but `bio` is concatenated raw"
+    );
+}
+
+#[test]
+fn constant_returning_helper_with_argument_keeps_sibling_taint_js() {
+    let src = js_app(
+        "function roleLabel(u) { if (u === 'admin') { return 'Administrator'; } return 'User'; }\napp.get('/f', function(req, res) {\n    var name = req.query.name;\n    var bio = req.query.bio;\n    var html = roleLabel(name) + bio;\n    res.send(html);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&src, Lang::JavaScript)) > 0,
+        "`bio` is not an argument of roleLabel"
+    );
+}
+
+#[test]
+fn sibling_wrapped_by_escaping_helper_stays_clean_js() {
+    let src = js_app(
+        "function siteHeader() { return '<h1>Site</h1>'; }\nfunction myEscape(s) { return escapeHtml(s); }\napp.get('/a', function(req, res) {\n    var bio = req.query.bio;\n    var html = siteHeader() + myEscape(bio);\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`bio` reaches the result only through an escaping helper: {fs:?}"
+    );
+}
+
+#[test]
+fn validated_sibling_beside_helper_stays_validated_js() {
+    let src = js_app(
+        "var ALLOWED = ['a', 'b'];\nfunction siteHeader() { return '<h1>Site</h1>'; }\napp.get('/b', function(req, res) {\n    var bio = req.query.bio;\n    if (!ALLOWED.includes(bio)) { return res.status(400).end(); }\n    var html = siteHeader() + bio;\n    res.send(html);\n});\n",
+    );
+    let fs = analyse_src(&src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`bio` is allowlisted before use, like the `Date.now() + bio` twin: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_constant_helper_in_sink_arg_matches_temp_form_js() {
+    let nested = js_app(
+        "function constant(x) { return 'ls'; }\napp.get('/b', function(req, res) {\n    var c = req.query.c;\n    cp.exec(constant(c));\n});\n",
+    );
+    let fs = analyse_src(&nested, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "constant() never returns its argument, as in `t = constant(c); cp.exec(t)`: {fs:?}"
+    );
+    let propagating = js_app(
+        "function wrap(x) { return 'ls ' + x; }\napp.get('/b', function(req, res) {\n    var c = req.query.c;\n    cp.exec(wrap(c));\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&propagating, Lang::JavaScript)) > 0,
+        "wrap() returns its argument"
+    );
+}
+
+#[test]
+fn nested_allowlist_helper_in_concat_sink_arg_is_clean_py() {
+    let src = br#"
+import os
+from flask import request
+def sort_column(s):
+    if s == "name":
+        return "name"
+    return "id"
+def h():
+    c = request.args["c"]
+    os.system("ls " + sort_column(c))
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "sort_column returns constants only: {fs:?}"
+    );
+}
+
+#[test]
+fn wrapper_param_sanitizer_applies_per_argument_js() {
+    let card = "function card(title, body) { return '<h2>' + escapeHtml(title) + '</h2><div>' + body + '</div>'; }\n";
+    let vuln = js_app(&format!(
+        "{card}app.get('/e', function(req, res) {{\n    var b = req.query.b;\n    res.send(card('static', b));\n}});\n"
+    ));
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "card() escapes its first parameter only; `b` is the second"
+    );
+    let safe = js_app(&format!(
+        "{card}app.get('/e', function(req, res) {{\n    var t = req.query.t;\n    res.send(card(t, 'static'));\n}});\n"
+    ));
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`t` goes through the escaped parameter: {fs:?}"
+    );
+}
+
+#[test]
+fn helper_summary_keeps_unquoted_parameter_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def q2(a, b):
+    return shlex.quote(a) + " " + b
+def h():
+    c = request.args["c"]
+    s = q2("x", c)
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "q2 quotes its first parameter only; its summary must keep the second"
+    );
+}
+
+#[test]
+fn safe_string_producer_does_not_cover_sibling_operand_java() {
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String name = req.getParameter(\"n\");\n    st.executeQuery(\"SELECT * FROM t WHERE c = \" + Integer.toString(5) + \" AND n = '\" + name + \"'\");\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "Integer.toString(5) is numeric; the concatenated `name` is not"
+    );
+}
+
+#[test]
+fn numeric_call_in_concat_does_not_type_the_whole_string_java() {
+    let vuln = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String id = req.getParameter(\"id\");\n    String name = req.getParameter(\"n\");\n    String sql = \"SELECT * FROM t WHERE id = \" + Integer.parseInt(id) + \" AND n = '\" + name + \"'\";\n    st.executeQuery(sql);\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Java)) > 0,
+        "the concatenation is a string carrying `name`, not an Int"
+    );
+    let safe = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, java.sql.Statement st) throws Exception {\n    String n = req.getParameter(\"n\");\n    String sql = \"SELECT * FROM t LIMIT \" + Integer.parseInt(n);\n    st.executeQuery(sql);\n  }\n}\n";
+    let fs = analyse_src(safe, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "only a parsed number is concatenated: {fs:?}"
+    );
+}
+
+#[test]
+fn numeric_call_in_fstring_does_not_cover_sibling_py() {
+    let vuln = br#"
+import sqlite3
+from flask import request
+conn = sqlite3.connect("x")
+def h():
+    name = request.args["n"]
+    limit = request.args["l"]
+    q = f"SELECT * FROM t WHERE n = '{name}' LIMIT {int(limit)}"
+    conn.execute(q)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Python)) > 0,
+        "int(limit) does not cover `name`"
+    );
+    let safe = br#"
+import sqlite3
+from flask import request
+conn = sqlite3.connect("x")
+def h():
+    limit = request.args["l"]
+    q = f"SELECT * FROM t LIMIT {int(limit)}"
+    conn.execute(q)
+"#;
+    let fs = analyse_src(safe, Lang::Python);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "only the int conversion is interpolated: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_source_helper_in_sink_arg_matches_temp_form_py() {
+    let src = br#"
+import os
+from flask import request
+def get_cmd():
+    v = request.args['c']
+    return v
+def nested():
+    os.system(get_cmd())
+def nested_concat():
+    os.system("ls " + get_cmd())
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert!(
+        unvalidated_count(&fs) >= 2,
+        "both inline uses of the source helper reach os.system: {fs:?}"
+    );
+}
+
+#[test]
+fn nested_label_source_in_sink_arg_fires_java() {
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    Runtime.getRuntime().exec(req.getParameter(\"c\"));\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "a request parameter passed inline to exec is the same flow as its let-bound twin"
+    );
+    let escaped = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    Runtime.getRuntime().exec(Integer.toString(Integer.parseInt(req.getParameter(\"c\"))));\n  }\n}\n";
+    let fs = analyse_src(escaped, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the inline source is reduced to a number: {fs:?}"
+    );
+}
+
+#[test]
+fn inline_member_sources_are_judged_per_read_js() {
+    let vuln = js_app(
+        "app.get('/a', function(req, res) {\n    res.send('<p>' + escapeHtml(req.query.name) + '</p>' + req.query.bio);\n});\n",
+    );
+    assert!(
+        unvalidated_count(&analyse_src(&vuln, Lang::JavaScript)) > 0,
+        "`req.query.bio` is concatenated raw beside the escaped `req.query.name`"
+    );
+    let safe = js_app(
+        "app.get('/a', function(req, res) {\n    res.send('<p>' + escapeHtml(req.query.name) + '</p><p>' + escapeHtml(req.query.bio) + '</p>');\n});\n",
+    );
+    let fs = analyse_src(&safe, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "every inline read is escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn wrapper_with_inline_sources_keeps_unescaped_parameter_js() {
+    let card = "function card(title, body) { return '<h2>' + escapeHtml(title) + '</h2><div>' + body + '</div>'; }\n";
+    let assigned = js_app(&format!(
+        "{card}app.get('/b', function(req, res) {{\n    var html = card(req.query.t, req.query.b);\n    res.send(html);\n}});\n"
+    ));
+    assert!(
+        unvalidated_count(&analyse_src(&assigned, Lang::JavaScript)) > 0,
+        "card() escapes only its first parameter; `req.query.b` is the second"
+    );
+    let escaped_only = js_app(&format!(
+        "{card}app.get('/b', function(req, res) {{\n    var html = card(req.query.t, 'static');\n    res.send(html);\n}});\n"
+    ));
+    let fs = analyse_src(&escaped_only, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "the only inline source goes through the escaped parameter: {fs:?}"
+    );
+}
+
+#[test]
+fn escape_inside_pass_through_formatter_covers_only_its_argument_java() {
+    let vuln = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    String bio = req.getParameter(\"bio\");\n    String html = String.format(\"<p>%s</p><p>%s</p>\", HtmlUtils.htmlEscape(name), bio);\n    resp.getWriter().println(html);\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(vuln, Lang::Java)) > 0,
+        "String.format passes `bio` through unescaped"
+    );
+    let safe = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    String bio = req.getParameter(\"bio\");\n    String html = String.format(\"<p>%s</p><p>%s</p>\", HtmlUtils.htmlEscape(name), HtmlUtils.htmlEscape(bio));\n    resp.getWriter().println(html);\n  }\n}\n";
+    let fs = analyse_src(safe, Lang::Java);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "both formatted values are escaped: {fs:?}"
+    );
+}
+
+#[test]
+fn container_write_around_inline_source_keeps_container_taint_java() {
+    // `parts.add(req.getParameter("x"))` is modelled as one op whose callee
+    // is the inline source and whose outer call is the container write; the
+    // receiver must stay with that op so the element taint lands in `parts`.
+    let src = b"class A {\n  void h(javax.servlet.http.HttpServletRequest req) throws Exception {\n    java.util.List<String> parts = new java.util.ArrayList<>();\n    parts.add(req.getParameter(\"x\"));\n    Runtime.getRuntime().exec(parts.get(0));\n  }\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Java)) > 0,
+        "the request parameter stored in `parts` reaches exec"
+    );
+}
+
+#[test]
+fn nested_source_beside_sanitized_operand_reaches_sink_py() {
+    // `input()` is a labelled source nested beside the sanitizer call; it has
+    // no SSA value of its own, so the expression must carry its taint.
+    let src = br#"
+import os, shlex
+from flask import request
+def h():
+    a = request.args["a"]
+    s = shlex.quote(a) + " " + input()
+    os.system("ls " + s)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "the unquoted input() operand reaches os.system"
+    );
+}
+
+#[test]
+fn nested_source_in_chained_sink_call_fires_go() {
+    let src = b"package main\nimport (\"net/http\"; \"os/exec\")\nfunc getCmd(r *http.Request) string {\n\tv := r.URL.Query().Get(\"c\")\n\treturn v\n}\nfunc h(w http.ResponseWriter, r *http.Request) {\n\texec.Command(\"sh\", \"-c\", getCmd(r)).Run()\n}\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Go)) > 0,
+        "getCmd(r) is the payload of exec.Command even when .Run() is chained on"
+    );
+}
+
+// ── Counted loops and the entry constraint environment ──────────────────
+//
+// `for (...; i < n; i++)` leaves `i` a constant `0` in SSA (`i++` is not a
+// definition), so its phi has a constant fact and an `Unknown` type fact.
+// Seeding both used to mark the entry environment unsatisfiable, and phi
+// operands reached through goto edges from the entry block were skipped, so
+// taint accumulated across such a loop never reached the sink after it.
+
+#[test]
+fn counted_loop_accumulator_keeps_taint_js() {
+    let src = b"var cp = require('child_process');\nvar app = require('express')();\napp.get('/run', function(req, res) {\n  var cmd = req.query.cmd;\n  for (var i = 0; i < 3; i++) {\n    cmd = cmd + ' --retry';\n  }\n  cp.exec(cmd);\n});\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0);
+}
+
+#[test]
+fn counted_loop_accumulator_of_a_copy_keeps_taint_js() {
+    let src = b"var cp = require('child_process');\nvar app = require('express')();\napp.get('/run', function(req, res) {\n  var data = req.query.cmd;\n  var cmd = data;\n  for (var i = 0; i < 3; i++) {\n    cmd = cmd + ' --retry';\n  }\n  cp.exec(cmd);\n});\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0);
+}
+
+// ── Name-keyed facts and redefinition ───────────────────────────────────
+//
+// Copy aliases, validation bits and predicate bits are recorded per variable
+// name.  A new definition of a name must not inherit facts about its earlier
+// value, and rebinding one name must not change its copies.
+
+fn analyse_rust_src(src: &[u8]) -> Vec<Finding> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter::Language::from(tree_sitter_rust::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = crate::cfg::build_cfg(&tree, src, "rust", "test.rs", None);
+    analyse_file(
+        &file_cfg,
+        &file_cfg.summaries,
+        None,
+        Lang::Rust,
+        "test.rs",
+        &[],
+        None,
+    )
+}
+
+#[test]
+fn rebinding_a_copy_does_not_taint_the_original_js() {
+    let src = b"const { exec } = require('child_process');\nconst app = require('express')();\nfunction getDefaultCmd() { return 'ls -la'; }\napp.get('/run', (req, res) => {\n  let cmd = getDefaultCmd();\n  let userCmd = cmd;\n  userCmd = req.query.c;\n  console.log(userCmd);\n  exec(cmd);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(
+        unvalidated_count(&fs),
+        0,
+        "`userCmd = req.query.c` rebinds the copy, `cmd` stays the constant: {fs:?}"
+    );
+}
+
+#[test]
+fn rebinding_a_copy_of_a_module_constant_does_not_taint_it_js() {
+    let src = b"const { exec } = require('child_process');\nconst app = require('express')();\nconst DEFAULT_CMD = 'uptime';\napp.get('/run', (req, res) => {\n  let label = DEFAULT_CMD;\n  if (req.query.label) {\n    label = req.query.label;\n  }\n  console.log(label);\n  exec(DEFAULT_CMD);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn rebinding_a_copy_does_not_taint_the_original_py() {
+    let src = br#"
+import os
+from flask import request
+def default_cmd():
+    return "ls -la"
+def run():
+    cmd = default_cmd()
+    user_cmd = cmd
+    user_cmd = request.args.get("c")
+    print(user_cmd)
+    os.system(cmd)
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn sanitizing_a_copy_leaves_the_original_raw_js() {
+    let src = b"const escapeHtml = require('escape-html');\nconst app = require('express')();\napp.get('/a', (req, res) => {\n  let x = req.query.a;\n  let y = x;\n  y = escapeHtml(y);\n  console.log(y);\n  res.send(x);\n});\n";
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::JavaScript)) > 0,
+        "escaping the copy `y` does not escape `x`"
+    );
+}
+
+#[test]
+fn sanitizing_a_copy_leaves_the_original_raw_py() {
+    let src = br#"
+import os, shlex
+from flask import request
+def run():
+    x = request.args.get("c")
+    y = x
+    y = shlex.quote(y)
+    print(y)
+    os.system("echo " + x)
+"#;
+    assert!(
+        unvalidated_count(&analyse_src(src, Lang::Python)) > 0,
+        "quoting the copy `y` does not quote `x`"
+    );
+}
+
+#[test]
+fn pointer_write_through_still_taints_the_pointee_go() {
+    // CFG lowering drops `&`, so `p := &cmd` reaches SSA as a copy and the
+    // write `*p = ...` defines `p`.  The name-level alias group is what
+    // carries the write back to `cmd`.
+    let src = b"package main\nimport (\"net/http\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tcmd := \"ls\"\n\tp := &cmd\n\t*p = r.URL.Query().Get(\"c\")\n\texec.Command(\"sh\", \"-c\", cmd).Run()\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Go)) > 0);
+}
+
+#[test]
+fn mut_ref_write_through_still_taints_the_referent_rust() {
+    let src = br#"
+        use std::process::Command;
+        fn main() {
+            let mut a = String::from("ls");
+            let b = &mut a;
+            *b = std::env::var("CMD").unwrap();
+            Command::new("sh").arg("-c").arg(&a).output().unwrap();
+        }"#;
+    assert!(unvalidated_count(&analyse_rust_src(src)) > 0);
+}
+
+const JS_HOST_APP: &str = "const { exec } = require('child_process');\nconst app = require('express')();\nfunction isValidHost(h) { return /^[a-z.]+$/.test(h); }\n";
+
+fn js_host_route(lines: &str) -> Vec<u8> {
+    format!(
+        "{JS_HOST_APP}app.get('/a', (req, res) => {{\n  let host = req.query.host;\n  if (!isValidHost(host)) return res.status(400).send('bad');\n{lines}\n  exec(host);\n}});\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_js() {
+    let fs = analyse_src(
+        &js_host_route("  host = req.query.other;"),
+        Lang::JavaScript,
+    );
+    assert!(
+        unvalidated_count(&fs) > 0,
+        "the second `req.query` read was never validated: {fs:?}"
+    );
+}
+
+#[test]
+fn validation_does_not_survive_concat_of_new_taint_js() {
+    for line in [
+        "  host = host + req.query.extra;",
+        "  const extra = req.query.extra;\n  host = host + extra;",
+        "  const extra = req.query.extra;\n  host = host.concat(extra);",
+        "  const extra = req.query.extra;\n  host = extra;",
+    ] {
+        let fs = analyse_src(&js_host_route(line), Lang::JavaScript);
+        assert!(
+            unvalidated_count(&fs) > 0,
+            "`{line}` mixes unvalidated taint into `host`: {fs:?}"
+        );
+    }
+}
+
+#[test]
+fn validation_survives_self_updates_of_the_validated_value_js() {
+    for line in [
+        "  host = host.trim();",
+        "  host = host.trim().toLowerCase();",
+        "  host = host + '.internal';",
+        "  host = `${host}`;",
+        "  host = host || 'localhost';",
+        "  host = host.replace(/\\.$/, '');",
+    ] {
+        let fs = analyse_src(&js_host_route(line), Lang::JavaScript);
+        assert_eq!(
+            unvalidated_count(&fs),
+            0,
+            "`{line}` only transforms the validated value: {fs:?}"
+        );
+    }
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_py() {
+    let src = br#"
+import os
+from flask import request
+def validate_page(v):
+    return v.isdigit()
+def a():
+    value = request.args["page"]
+    if not validate_page(value):
+        return "bad", 400
+    value = request.args["sort"]
+    os.system(value)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn validation_does_not_survive_a_foreach_binder_reusing_the_name_php() {
+    let src = b"<?php\n$value = $_GET['page'];\nif (!is_numeric($value)) {\n    die('bad');\n}\necho 'page ' . intval($value);\nforeach ($_POST['names'] as $value) {\n    system('echo ' . $value);\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Php)) > 0);
+}
+
+#[test]
+fn validation_does_not_survive_reassignment_from_a_source_java() {
+    let src = b"class Ctl {\n  static boolean isValidName(String s) { return s.matches(\"[a-z]+\"); }\n  void doGet(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {\n    String name = req.getParameter(\"name\");\n    if (!isValidName(name)) {\n      resp.sendError(400);\n      return;\n    }\n    name = req.getParameter(\"other\");\n    Runtime.getRuntime().exec(name);\n  }\n}\n";
+    assert!(unvalidated_count(&analyse_src(src, Lang::Java)) > 0);
+}
+
+#[test]
+fn inline_source_beside_a_validated_operand_is_not_validated_js() {
+    let src = b"const app = require('express')();\nconst db = require('./db');\nconst SORTS = ['name', 'date'];\napp.get('/items', (req, res) => {\n  const sort = req.query.sort;\n  if (!SORTS.includes(sort)) return res.status(400).end();\n  const sql = 'SELECT * FROM items ORDER BY ' + sort + ' LIMIT ' + req.query.limit;\n  db.query(sql);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(
+        unvalidated_count(&fs) > 0,
+        "`req.query.limit` joins the query unvalidated: {fs:?}"
+    );
+}
+
+#[test]
+fn allowlisted_operand_alone_stays_validated_js() {
+    let src = b"const app = require('express')();\nconst db = require('./db');\nconst SORTS = ['name', 'date'];\napp.get('/items', (req, res) => {\n  const sort = req.query.sort;\n  if (!SORTS.includes(sort)) return res.status(400).end();\n  const sql = 'SELECT * FROM items ORDER BY ' + sort + ' LIMIT 10';\n  db.query(sql);\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn inline_source_beside_a_validated_operand_is_not_validated_py() {
+    let src = br#"
+from flask import request
+import sqlite3
+SORTS = ["name", "date"]
+def items():
+    sort = request.args.get("sort")
+    if sort not in SORTS:
+        return "bad", 400
+    conn = sqlite3.connect("x.db")
+    sql = "SELECT * FROM items ORDER BY " + sort + " LIMIT " + request.args.get("limit")
+    conn.execute(sql)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn reused_err_check_after_redefinition_keeps_taint_go() {
+    // After `if err != nil { return }` a later `_, err = ...` is a new
+    // value; its own `err != nil` branch is reachable.
+    let src = b"package main\nimport (\"net/http\"; \"os\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"n\")\n\t_, err := os.Getwd()\n\tif err != nil {\n\t\treturn\n\t}\n\t_, err = os.Stat(\"/tmp/x\")\n\tif err != nil {\n\t\texec.Command(\"sh\", \"-c\", \"echo \"+name).Run()\n\t}\n}\n";
+    let fs = analyse_src(src, Lang::Go);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_error_check_polarity_is_not_a_contradiction_go() {
+    let src = b"package main\nimport (\"net/http\"; \"os\"; \"os/exec\")\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tname := r.URL.Query().Get(\"n\")\n\t_, err := os.Stat(\"/tmp/x\")\n\tif err == nil {\n\t\treturn\n\t}\n\tif err != nil {\n\t\texec.Command(\"sh\", \"-c\", \"echo \"+name).Run()\n\t}\n}\n";
+    let fs = analyse_src(src, Lang::Go);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_null_check_polarity_is_not_a_contradiction_js() {
+    let src = b"const { execSync } = require('child_process');\nconst app = require('express')();\napp.get('/a', (req, res) => {\n  const cmd = req.query.cmd;\n  const cfg = loadConfig();\n  if (cfg === null) return;\n  if (cfg !== null) {\n    execSync(cmd);\n  }\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(unvalidated_count(&fs) > 0, "{fs:?}");
+}
+
+#[test]
+fn opposite_none_check_polarity_is_not_a_contradiction_py() {
+    let src = br#"
+import os
+from flask import request
+def h():
+    cmd = request.args.get("cmd")
+    cfg = load_config()
+    if cfg is None:
+        return "no"
+    if cfg is not None:
+        os.system(cmd)
+"#;
+    assert!(unvalidated_count(&analyse_src(src, Lang::Python)) > 0);
+}
+
+#[test]
+fn opposite_null_check_polarity_is_not_a_contradiction_rust() {
+    let src = br#"
+        use std::env; use std::process::Command;
+        fn main() {
+            let x = env::var("INPUT").unwrap();
+            let y = env::var("OTHER").ok();
+            if y.is_none() { return; }
+            if y.is_some() {
+                Command::new("sh").arg(&x).status().unwrap();
+            }
+        }"#;
+    assert!(unvalidated_count(&analyse_rust_src(src)) > 0);
+}
+
+#[test]
+fn negated_null_check_after_guard_is_still_pruned_py() {
+    // After `if cfg is not None: return` only a None `cfg` reaches the
+    // second check, so its true edge is infeasible: the negated form records
+    // the same "is null" bit as `is None` would.
+    let src = br#"
+import os
+from flask import request
+def h():
+    cmd = request.args.get("cmd")
+    cfg = load_config()
+    if cfg is not None:
+        return "no"
+    if cfg is not None:
+        os.system(cmd)
+"#;
+    let fs = analyse_src(src, Lang::Python);
+    assert_eq!(unvalidated_count(&fs), 0, "{fs:?}");
+}
+
+#[test]
+fn negated_null_check_after_guard_is_still_pruned_rust() {
+    let src = br#"
+        use std::env; use std::process::Command;
+        fn main() {
+            let x = env::var("INPUT").unwrap();
+            let y = env::var("OTHER").ok();
+            if y.is_some() { return; }
+            if y.is_some() {
+                Command::new("sh").arg(&x).status().unwrap();
+            }
+        }"#;
+    let fs = analyse_rust_src(src);
+    assert!(fs.is_empty(), "{fs:?}");
+}
+
+// ── JS/TS handler-param seed and known callers ──────────────────────────
+//
+// A formal named `cmd` / `input` / `userId` is seeded as user input only when
+// the function has no known caller.  With a caller in view, what reaches the
+// parameter is whatever that caller passes.
+
+#[test]
+fn seed_named_helpers_called_only_with_literals_stay_quiet_js() {
+    let src = b"const { execSync } = require('child_process');\nconst fs = require('fs');\nfunction run(cmd) {\n  return execSync(cmd, { stdio: 'inherit' });\n}\nfunction readInput(input) {\n  return fs.readFileSync(input, 'utf8');\n}\nrun('npm run build');\nrun('npm test');\nconst cfg = JSON.parse(readInput('./config.json'));\nconsole.log(cfg);\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(fs.is_empty(), "every caller passes a literal: {fs:?}");
+}
+
+#[test]
+fn seed_named_helper_called_from_a_function_with_a_literal_stays_quiet_js() {
+    let src = b"const db = require('./db');\nasync function loadUser(userId) {\n  return db.query('SELECT * FROM users WHERE id = ' + userId);\n}\nasync function main() {\n  const u = await loadUser(42);\n  console.log(u);\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(fs.is_empty(), "loadUser's only caller passes 42: {fs:?}");
+}
+
+#[test]
+fn seed_named_function_without_callers_is_still_seeded_js() {
+    let src = b"const { execSync } = require('child_process');\nmodule.exports = function run(cmd) {\n  return execSync(cmd);\n};\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "an entry point with no caller in view keeps the seed"
+    );
+    let arrow = b"const { exec } = require('child_process');\nconst handle = (input) => exec(input);\nmodule.exports = { handle };\n";
+    assert!(!analyse_src(arrow, Lang::JavaScript).is_empty());
+}
+
+#[test]
+fn self_recursion_alone_does_not_count_as_a_caller_js() {
+    let src = b"const { execSync } = require('child_process');\nfunction run(cmd, n) {\n  if (n > 0) return run(cmd, n - 1);\n  return execSync(cmd);\n}\nmodule.exports = run;\n";
+    assert!(!analyse_src(src, Lang::JavaScript).is_empty());
+}
+
+#[test]
+fn helper_called_from_a_route_reports_only_the_call_site_flow_js() {
+    let src = b"const { execSync } = require('child_process');\nconst app = require('express')();\nfunction run(cmd) {\n  return execSync(cmd);\n}\napp.get('/x', (req, res) => {\n  run(req.query.c);\n  res.send('ok');\n});\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert_eq!(
+        fs.len(),
+        1,
+        "one flow, from req.query.c through run(), not a second one sourced at `cmd`: {fs:?}"
+    );
+}
+
+#[test]
+fn inlined_seed_named_callee_with_literal_argument_stays_quiet_js() {
+    let src = b"const { exec } = require('child_process');\nfunction normalize(input) {\n  return input.trim();\n}\nfunction main() {\n  const c = normalize('ls -la');\n  exec(c);\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::JavaScript);
+    assert!(
+        fs.is_empty(),
+        "normalize returns its literal argument: {fs:?}"
+    );
+}
+
+#[test]
+fn seed_named_helpers_called_only_with_literals_stay_quiet_ts() {
+    let src = b"import { execSync } from 'child_process';\nimport * as fs from 'fs';\nfunction readTemplate(input: string) { return fs.readFileSync(input, 'utf8'); }\nfunction git(cmd: string) { return execSync(cmd); }\nfunction main() {\n  readTemplate('./t.html');\n  git('git status');\n}\nmain();\n";
+    let fs = analyse_src(src, Lang::TypeScript);
+    assert!(fs.is_empty(), "{fs:?}");
+}
+
+// ── Summary extraction: per-parameter return edges ───────────────────────
+//
+// The per-parameter probe used to credit every parameter with a return edge
+// whenever the returned value was untainted under the probe, so a helper that
+// returns one of its arguments (or a sanitized one) made every other argument
+// look like it flowed to the result.
+
+#[test]
+fn summary_return_edge_only_for_the_returned_param() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::Python,
+            b"def first(aval, zval):\n    return aval\n",
+            "first",
+        ),
+        (
+            Lang::Python,
+            b"def first_tmp(aval, zval):\n    r = aval\n    return r\n",
+            "first_tmp",
+        ),
+        (
+            Lang::JavaScript,
+            b"function first(aval, zval) { return aval; }\n",
+            "first",
+        ),
+        (
+            Lang::JavaScript,
+            b"function first(aval, zval) { return aval.trim(); }\n",
+            "first",
+        ),
+        (
+            Lang::Go,
+            b"package main\nfunc first(a string, b string) string { return a }\n",
+            "first",
+        ),
+        (
+            Lang::Java,
+            b"class A { static String first(String a, String b) { return a; } }\n",
+            "first",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction first($a, $b) { return $a; }\n",
+            "first",
+        ),
+        (Lang::Ruby, b"def first(a, b)\n  return a\nend\n", "first"),
+    ];
+    for (lang, src, name) in cases {
+        assert_eq!(
+            return_edge_params(src, *lang, name),
+            vec![0],
+            "{lang:?} {name}: only the returned parameter may flow to the result"
+        );
+    }
+}
+
+#[test]
+fn summary_return_edge_second_param_when_it_is_the_one_returned() {
+    assert_eq!(
+        return_edge_params(
+            b"function pass(zval, aval) { return aval; }\n",
+            Lang::JavaScript,
+            "pass"
+        ),
+        vec![1]
+    );
+}
+
+#[test]
+fn summary_sanitizing_wrapper_records_a_full_strip_and_no_surviving_edge() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::JavaScript,
+            b"function c3(s) { return Number(s); }\n",
+            "c3",
+        ),
+        (
+            Lang::JavaScript,
+            b"function c4(s) { const n = Number(s); return n; }\n",
+            "c4",
+        ),
+        (
+            Lang::JavaScript,
+            b"function c5(s) { const r = parseInt(s, 10); return r; }\n",
+            "c5",
+        ),
+        (
+            Lang::Python,
+            b"def to_int(s):\n    return int(s)\n",
+            "to_int",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction to_int($s) { return intval($s); }\n",
+            "to_int",
+        ),
+        (
+            Lang::Go,
+            b"package main\nimport \"strconv\"\nfunc toInt(s string) int {\n\tn, _ := strconv.Atoi(s)\n\treturn n\n}\n",
+            "toInt",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        let summary = summary_of(src, *lang, name)
+            .unwrap_or_else(|| panic!("{lang:?} {name}: wrapper has no summary"));
+        // The parameter does reach the return, through a full sanitizer.  The
+        // summary says so with an all-bits strip, so a caller that passes the
+        // call's source inline still sees a sanitizing wrapper.
+        assert!(
+            summary.param_to_return.iter().all(|(_, t)| matches!(
+                t,
+                crate::summary::ssa_summary::TaintTransform::StripBits(c) if *c == Cap::all()
+            )),
+            "{lang:?} {name}: no taint may survive the wrapper, got {:?}",
+            summary.param_to_return
+        );
+    }
+}
+
+#[test]
+fn summary_partial_sanitizer_wrapper_keeps_a_strip_edge() {
+    use crate::summary::ssa_summary::TaintTransform;
+    let src = b"function wrap(s) { return shellescape(s); }\n";
+    let summary = summary_of(src, Lang::JavaScript, "wrap").expect("wrap has a summary");
+    assert!(
+        matches!(
+            summary.param_to_return.as_slice(),
+            [(0, TaintTransform::StripBits(_))]
+        ),
+        "a shell escaper strips its own bits and keeps the rest, got {:?}",
+        summary.param_to_return
+    );
+}
+
+#[test]
+fn summary_return_edges_kept_for_side_effects_the_ssa_has_no_operand_for() {
+    // Container append and receiver mutation make the returned object depend
+    // on a parameter that is not one of its operands.
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::Python,
+            b"def add(lst, item):\n    lst.append(item)\n    return lst\n",
+            "add",
+        ),
+        (
+            Lang::Java,
+            b"class A { static String sbuild(String head, String tail) { StringBuilder sb = new StringBuilder(head); sb.append(tail); return sb.toString(); } }\n",
+            "sbuild",
+        ),
+        (
+            Lang::Go,
+            b"package main\nfunc add(xs []string, x string) []string { return append(xs, x) }\n",
+            "add",
+        ),
+        (
+            Lang::JavaScript,
+            b"function build(base, extra) { let x = base; x = x + extra; return x; }\n",
+            "build",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        assert_eq!(
+            return_edge_params(src, *lang, name),
+            vec![0, 1],
+            "{lang:?} {name}: both parameters reach the returned value"
+        );
+    }
+}
+
+#[test]
+fn summary_mixed_sanitize_and_passthrough_keeps_the_identity_edge() {
+    use crate::summary::ssa_summary::TaintTransform;
+    let src = b"function maybe(s, strict) {\n  if (strict) { return Number(s); }\n  return s;\n}\n";
+    let summary = summary_of(src, Lang::JavaScript, "maybe").expect("maybe has a summary");
+    assert!(
+        summary
+            .param_to_return
+            .iter()
+            .any(|(i, t)| *i == 0 && matches!(t, TaintTransform::Identity)),
+        "the unsanitized return path keeps s flowing, got {:?}",
+        summary.param_to_return
+    );
+}
+
+#[test]
+fn unrelated_argument_to_a_returning_helper_does_not_taint_the_result() {
+    // `first` returns its first argument; the second is dead as far as the
+    // result goes.
+    let safe = b"import os\nfrom flask import request\n\ndef first(aval, zval):\n    return aval\n\ndef handler():\n    t = request.args.get(\"x\")\n    r = first(\"ls\", t)\n    os.system(r)\n";
+    assert!(
+        analyse_src(safe, Lang::Python).is_empty(),
+        "tainted second argument must not reach the result of first()"
+    );
+    let vuln = b"import os\nfrom flask import request\n\ndef first(aval, zval):\n    return aval\n\ndef handler():\n    t = request.args.get(\"x\")\n    r = first(t, \"ls\")\n    os.system(r)\n";
+    assert!(
+        !analyse_src(vuln, Lang::Python).is_empty(),
+        "tainted first argument flows through first()"
+    );
+}
+
+#[test]
+fn numeric_conversion_wrapper_result_does_not_carry_the_input_taint() {
+    let safe_js = b"var cp = require('child_process');\nfunction toNum(s) { return Number(s); }\nrequire('http').createServer(function(req, res) {\n  var n = toNum(req.query.n);\n  cp.exec('ls ' + n);\n});\n";
+    assert!(
+        analyse_src(safe_js, Lang::JavaScript).is_empty(),
+        "Number() wrapper must keep its sanitizing effect"
+    );
+    let safe_py = b"import os\nfrom flask import request\n\ndef to_int(s):\n    return int(s)\n\ndef handler():\n    n = to_int(request.args.get(\"n\"))\n    os.system(\"ls \" + str(n))\n";
+    assert!(analyse_src(safe_py, Lang::Python).is_empty());
+    let vuln_js = b"var cp = require('child_process');\nfunction ident(s) { return s; }\nrequire('http').createServer(function(req, res) {\n  var n = ident(req.query.n);\n  cp.exec('ls ' + n);\n});\n";
+    assert!(
+        !analyse_src(vuln_js, Lang::JavaScript).is_empty(),
+        "an identity helper still passes taint through"
+    );
+}
+
+// ── `return <member source>` is a source ─────────────────────────────────
+
+#[test]
+fn getter_returning_a_member_source_carries_source_caps() {
+    let cases: &[(Lang, &[u8], &str)] = &[
+        (
+            Lang::JavaScript,
+            b"function getQ(req) { return req.query.q; }\n",
+            "getQ",
+        ),
+        (
+            Lang::JavaScript,
+            b"function getBody(req) { return req.body; }\n",
+            "getBody",
+        ),
+        (
+            Lang::JavaScript,
+            b"function getEnv() { return process.env.X; }\n",
+            "getEnv",
+        ),
+        (
+            Lang::TypeScript,
+            b"function getEnv(): string { return process.env.X as string; }\n",
+            "getEnv",
+        ),
+        (
+            Lang::Python,
+            b"from flask import request\ndef get_q():\n    return request.args['x']\n",
+            "get_q",
+        ),
+        (
+            Lang::Python,
+            b"import os\ndef get_e():\n    return os.environ['X']\n",
+            "get_e",
+        ),
+        (
+            Lang::Php,
+            b"<?php\nfunction get_id() { return $_GET['id']; }\n",
+            "get_id",
+        ),
+        (
+            Lang::Ruby,
+            b"def get_id\n  return params[:id]\nend\n",
+            "get_id",
+        ),
+    ];
+    for (lang, src, name) in cases {
+        let summary = summary_of(src, *lang, name)
+            .unwrap_or_else(|| panic!("{lang:?} {name}: getter has no summary"));
+        assert!(
+            !summary.source_caps.is_empty(),
+            "{lang:?} {name}: `return <source>` must give the summary source caps"
+        );
+    }
+}
+
+#[test]
+fn getter_returning_a_member_source_taints_its_callers() {
+    let js = b"var cp = require('child_process');\nfunction getQ(req) { return req.query.x; }\nfunction h(req, res) {\n  var a = getQ(req);\n  cp.exec(a);\n}\nmodule.exports = h;\n";
+    assert!(
+        !analyse_src(js, Lang::JavaScript).is_empty(),
+        "js: a one-line getter of req.query.x is a source for its caller"
+    );
+    let py = b"import os\nfrom flask import request\n\ndef p_sub():\n    return request.args['x']\n\ndef handler():\n    v = p_sub()\n    os.system(v)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: a one-line getter of request.args['x'] is a source for its caller"
+    );
+    let php = b"<?php\nfunction get_id() {\n    return $_GET['id'];\n}\nfunction h() {\n    $a = get_id();\n    system($a);\n}\n";
+    assert!(
+        !analyse_src(php, Lang::Php).is_empty(),
+        "php: a one-line getter of $_GET['id'] is a source for its caller"
+    );
+}
+
+#[test]
+fn returning_a_closure_that_reads_a_source_is_not_a_source() {
+    let src = b"function make(req) { return () => req.query.q; }\n";
+    let carries_source = summary_of(src, Lang::JavaScript, "make")
+        .map(|s| !s.source_caps.is_empty())
+        .unwrap_or(false);
+    assert!(
+        !carries_source,
+        "the closure is returned, not the value its body reads"
+    );
+}
+
+#[test]
+fn getter_returning_a_constant_or_plain_param_has_no_source_caps() {
+    let src = b"function getK() { return 'static'; }\nfunction same(x) { return x.value; }\n";
+    for name in ["getK", "same"] {
+        let carries = summary_of(src, Lang::JavaScript, name)
+            .map(|s| !s.source_caps.is_empty())
+            .unwrap_or(false);
+        assert!(!carries, "{name} must not invent source caps");
+    }
+}
+
+// ── Inline analysis of a callee that returns a copied value ──────────────
+
+#[test]
+fn mixed_return_helper_inlines_the_unsanitized_path() {
+    // One path returns shlex.quote(b), the other returns b.  The copy behind
+    // `return b` used to be a Nop in the inline body, so inline analysis only
+    // saw the sanitized path.
+    let src = b"import os, shlex\n\ndef m_one(b):\n    if b == \"x\":\n        return shlex.quote(b)\n    return b\n\ndef m_else(flag, b):\n    if flag:\n        return shlex.quote(b)\n    else:\n        return b\n\ndef h1():\n    c = os.environ[\"C\"]\n    s = m_one(c)\n    os.system(\"ls \" + s)\n\ndef h2():\n    c = os.environ[\"C\"]\n    s = m_else(True, c)\n    os.system(\"ls \" + s)\n";
+    let findings = analyse_src(src, Lang::Python);
+    assert!(
+        findings.len() >= 2,
+        "both mixed sanitize/passthrough helpers must keep the raw path, got {}",
+        findings.len()
+    );
+}
+
+#[test]
+fn fully_quoting_helper_stays_clean_when_inlined() {
+    let src = b"import os, shlex\n\ndef quote_it(b):\n    return shlex.quote(b)\n\ndef h():\n    c = os.environ[\"C\"]\n    s = quote_it(c)\n    os.system(\"ls \" + s)\n";
+    assert!(analyse_src(src, Lang::Python).is_empty());
+}
+
+// ── Sink checks: interpolated parameterized queries ──────────────────────
+
+#[test]
+fn interpolated_query_text_with_placeholder_still_fires() {
+    let py = b"import sqlite3\nfrom flask import request\n\ndef f():\n    sort = request.args.get(\"sort\")\n    limit = request.args.get(\"limit\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(f\"SELECT * FROM users ORDER BY {sort} LIMIT ?\", (limit,))\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: the interpolated ORDER BY column is injectable even with a bound LIMIT"
+    );
+    let py_concat = b"import sqlite3\nfrom flask import request\n\ndef f():\n    sort = request.args.get(\"sort\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(\"SELECT * FROM users ORDER BY \" f\"{sort}\" \" LIMIT ?\", (10,))\n";
+    assert!(!analyse_src(py_concat, Lang::Python).is_empty());
+    let rb = b"class UsersController < ApplicationController\n  def search\n    q = params[:q]\n    @users = User.where(\"name LIKE '%#{q}%' AND active = ?\", true)\n  end\nend\n";
+    assert!(
+        !analyse_src(rb, Lang::Ruby).is_empty(),
+        "rb: interpolation in the where fragment is injectable"
+    );
+}
+
+#[test]
+fn bound_value_next_to_constant_interpolation_stays_quiet() {
+    // The interpolated part is a constant and the user value is bound: the
+    // bind value is not the injection vector.
+    let py = b"import sqlite3\nfrom flask import request\nTABLE = \"users\"\n\ndef f():\n    uid = request.args.get(\"id\")\n    cur = sqlite3.connect(\"a.db\").cursor()\n    cur.execute(f\"SELECT * FROM {TABLE} WHERE id = ?\", (uid,))\n";
+    assert!(
+        analyse_src(py, Lang::Python).is_empty(),
+        "py: a bound value must not fire just because the query text is interpolated"
+    );
+    let rb = b"class UsersController < ApplicationController\n  def by_table\n    q = params[:q]\n    @users = User.where(\"#{User.table_name}.name = ?\", q)\n  end\nend\n";
+    assert!(analyse_src(rb, Lang::Ruby).is_empty());
+}
+
+// ── Sink checks: tainted receiver with literal arguments ─────────────────
+
+#[test]
+fn tainted_path_receiver_with_literal_args_reaches_the_sink() {
+    for call in [
+        "p.write_text(\"pwned\")",
+        "p.read_text(\"utf-8\")",
+        "p.open(\"w\")",
+        "p.read_bytes()",
+    ] {
+        let src = format!(
+            "from pathlib import Path\nfrom flask import request\n\ndef f():\n    p = Path(request.args[\"f\"])\n    {call}\n"
+        );
+        assert!(
+            !analyse_src(src.as_bytes(), Lang::Python).is_empty(),
+            "{call}: the receiver is the attacker's path"
+        );
+    }
+}
+
+#[test]
+fn untainted_path_receiver_with_literal_args_stays_quiet() {
+    let src = b"from pathlib import Path\n\ndef f():\n    p = Path(\"/srv/static/index.html\")\n    p.write_text(\"x\")\n    return p.read_text(\"utf-8\")\n";
+    assert!(analyse_src(src, Lang::Python).is_empty());
+}
+
+#[test]
+fn tainted_http_client_receiver_with_literal_path_reaches_the_sink() {
+    let src = b"require 'net/http'\nclass ProxyController < ApplicationController\n  def status\n    http = Net::HTTP.new(params[:host], 80)\n    res = http.get(\"/status\")\n  end\nend\n";
+    assert!(
+        !analyse_src(src, Lang::Ruby).is_empty(),
+        "Net::HTTP.new(tainted host).get(literal) requests the attacker's host"
+    );
+    let fixed = b"require 'net/http'\nclass ProxyController < ApplicationController\n  def status\n    http = Net::HTTP.new(\"internal.example.com\", 80)\n    res = http.get(\"/status\")\n  end\nend\n";
+    assert!(analyse_src(fixed, Lang::Ruby).is_empty());
+}
+
+#[test]
+fn tainted_untyped_receiver_with_literal_args_stays_quiet() {
+    // A receiver with no handle type is not the sink subject: the literal
+    // argument call has no payload.
+    let src = b"var express = require('express');\nvar app = express();\napp.get('/x', function(req, res) {\n  var re = new RegExp(req.query.r);\n  re.exec('abc');\n  res.send('ok');\n});\n";
+    assert!(analyse_src(src, Lang::JavaScript).is_empty());
+}
+
+// ── A single-character replace is not a sanitizer ────────────────────────
+
+#[test]
+fn single_metachar_strip_before_a_shell_sink_still_fires() {
+    let py = b"import os\nfrom flask import request\n\ndef f():\n    host = request.args[\"host\"]\n    host = host.replace(\";\", \"\")\n    os.system(\"ping -c 1 \" + host)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "py: removing ';' leaves '|', '&&' and '$(..)'"
+    );
+    let go = b"package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n\t\"strings\"\n)\nfunc strip(s string) string { return strings.ReplaceAll(s, \";\", \"\") }\nfunc h(w http.ResponseWriter, r *http.Request) {\n\thost := strip(r.URL.Query().Get(\"host\"))\n\texec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host).Run()\n}\n";
+    assert!(
+        !analyse_src(go, Lang::Go).is_empty(),
+        "go: ReplaceAll over ';'"
+    );
+    let go_first = b"package main\nimport (\n\t\"net/http\"\n\t\"os/exec\"\n\t\"strings\"\n)\nfunc h(w http.ResponseWriter, r *http.Request) {\n\thost := strings.Replace(r.URL.Query().Get(\"host\"), \"<\", \"\", 1)\n\texec.Command(\"sh\", \"-c\", \"ping -c 1 \"+host).Run()\n}\n";
+    assert!(
+        !analyse_src(go_first, Lang::Go).is_empty(),
+        "go: Replace with n=1 only strips the first match"
+    );
+    let java = b"import javax.servlet.http.*;\npublic class A extends HttpServlet {\n  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws Exception {\n    String host = req.getParameter(\"host\");\n    host = host.replaceAll(\"|\", \"\");\n    Runtime.getRuntime().exec(\"ping -c 1 \" + host);\n  }\n}\n";
+    assert!(
+        !analyse_src(java, Lang::Java).is_empty(),
+        "java: the regex \"|\" matches the empty string and removes nothing"
+    );
+    let php = b"<?php\n$t = $_GET['t'];\n$t = str_replace(\";\", \"\", $t);\nsystem(\"ping -c 1 \" . $t);\n";
+    assert!(!analyse_src(php, Lang::Php).is_empty());
+}
+
+#[test]
+fn quote_deletion_before_a_numeric_sql_context_still_fires() {
+    let py = b"from flask import request\n\ndef f(cur):\n    uid = request.args[\"id\"]\n    uid = uid.replace(\"'\", \"\")\n    cur.execute(\"SELECT * FROM users WHERE id = \" + uid)\n";
+    assert!(
+        !analyse_src(py, Lang::Python).is_empty(),
+        "deleting quotes does nothing for a numeric context"
+    );
+}
+
+#[test]
+fn quote_doubling_before_a_quoted_sql_literal_stays_quiet() {
+    let py = b"from flask import request\n\ndef f(cur):\n    name = request.args[\"name\"]\n    name = name.replace(\"'\", \"''\")\n    cur.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n";
+    assert!(
+        analyse_src(py, Lang::Python).is_empty(),
+        "quote doubling is the SQL string-literal escape"
+    );
+}
+
+#[test]
+fn angle_bracket_strip_before_html_output_stays_quiet() {
+    let py = b"from flask import request, make_response\n\ndef f():\n    t = request.args[\"t\"]\n    t = t.replace(\"<\", \"&lt;\").replace(\">\", \"&gt;\")\n    return make_response(\"<p>\" + t + \"</p>\")\n";
+    assert!(analyse_src(py, Lang::Python).is_empty());
+}
+
+#[test]
+fn field_stored_by_a_helper_that_returns_the_object_stays_tainted() {
+    // `withName` writes its argument into a field and returns the object.
+    let src = b"var cp = require('child_process');\nfunction withName(obj, name) { obj.name = name; return obj; }\nrequire('http').createServer(function(req, res) {\n  var job = withName({}, req.query.job);\n  cp.exec(job.name);\n});\n";
+    assert!(
+        !analyse_src(src, Lang::JavaScript).is_empty(),
+        "the stored value is still reachable through the returned object"
     );
 }

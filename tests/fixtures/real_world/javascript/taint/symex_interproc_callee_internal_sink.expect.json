@@ -27,13 +27,13 @@
     {
       "rule_id": "taint-unsanitised-flow",
       "severity": null,
-      "must_match": true,
+      "must_not_match": true,
       "line_range": [
         4,
         8
       ],
       "evidence_contains": [],
-      "notes": "callee-internal flow: tainted input param reaches client.query inside processAndStore during interprocedural execution"
+      "notes": "no second copy of the line-11 flow sourced at the `input` param: processAndStore has a caller in the file, so the name-based handler-param seed does not apply and the SQL flow is reported once, at the call site"
     },
     {
       "rule_id": "taint-unsanitised-flow",

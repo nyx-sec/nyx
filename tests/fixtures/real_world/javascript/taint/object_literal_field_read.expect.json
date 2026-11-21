@@ -1,0 +1,37 @@
+{
+  "description": "Field reads off a local object literal. A read of a literal property, or of a property bound to an untainted identifier, is clean even though another property holds request data. A read of the tainted property, or of any property of a literal with a spread, keeps the taint.",
+  "tags": ["taint", "field-access", "object-literal"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [6, 6],
+      "notes": "obj.unsafeField holds req.query.cmd"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [11, 11],
+      "notes": "obj.safeField is a string literal"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [16, 16],
+      "notes": "cfg.auth.template is a nested string literal"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [21, 21],
+      "notes": "job.bin is bound to the module constant BIN"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [26, 26],
+      "notes": "the spread of req.body can supply opts.cmd"
+    }
+  ]
+}

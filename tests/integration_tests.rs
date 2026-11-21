@@ -374,6 +374,33 @@ fn cross_file_js_sqli() {
     validate_expectations(&diags, &dir);
 }
 
+/// JS: helpers in lib.js have parameter names the handler-param seed treats
+/// as user input, but route.js calls both.  The call graph shows the
+/// callers, so the seed stays off: the tainted call is reported at the call
+/// site and the literal-only call reports nothing inside lib.js.
+#[test]
+fn cross_file_js_seed_named_helper() {
+    let dir = fixture_path("cross_file_js_seed_named_helper");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+    // The real flow starts at req.body.target in route.js.  A finding whose
+    // source is a parameter in lib.js could only come from the seed.
+    let seeded: Vec<&nyx_scanner::commands::scan::Diag> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-"))
+        .filter(|d| {
+            d.evidence
+                .as_ref()
+                .and_then(|e| e.source.as_ref())
+                .is_some_and(|s| s.path.ends_with("lib.js"))
+        })
+        .collect();
+    assert!(
+        seeded.is_empty(),
+        "no flow may start at a lib.js parameter: {seeded:#?}"
+    );
+}
+
 /// Python: 3-file chain, os.environ in input_reader.py → passthrough in
 /// transform.py → subprocess.call in executor.py.  Taint must survive two
 /// inter-file hops with no sanitisation.

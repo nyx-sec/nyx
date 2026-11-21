@@ -1,0 +1,31 @@
+{
+  "description": "A plain copy `b = a` aliases one value of `a`, not the name. Rebinding the copy to a source does not taint the original, and escaping the copy does not escape the original.",
+  "tags": ["taint", "alias", "copy-propagation"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [14, 14],
+      "notes": "userCmd was rebound to the request value; cmd is still the constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [23, 23],
+      "notes": "label was rebound; the module constant is untouched"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [31, 31],
+      "notes": "only the copy y was escaped; x reaches res.send raw"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [37, 37],
+      "notes": "control: the copy itself carries the request value"
+    }
+  ]
+}

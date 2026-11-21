@@ -910,6 +910,7 @@ mod primary_sink_location_tests {
             /* guard_kind   */ None,
             /* uses_summary */ true,
             primary_sites,
+            /* inline_source */ false,
         );
         assert_eq!(events.len(), 1, "single site → single event");
         let event_site = events[0]
@@ -2368,13 +2369,17 @@ mod field_write_tests {
             recording_summary: false,
         };
 
-        // Pre-seed `validated_must` on `src` so the synth Assign
-        // observes it at write time.
+        // Validate `src` right after its definition, as a guard on it
+        // would, so the synth Assign observes the bit at write time.  A
+        // bit seeded before the definition would describe no value of
+        // `src`: the definition itself drops it.
         let mut state = SsaTaintState::initial();
-        state.validated_must.insert(sym_src);
-        state.validated_may.insert(sym_src);
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
+            if inst.var_name.as_deref() == Some("src") {
+                state.validated_must.insert(sym_src);
+                state.validated_may.insert(sym_src);
+            }
         }
 
         // Cell records validated_must=true (rhs was must-validated).
@@ -2906,12 +2911,16 @@ mod container_elem_tests {
             recording_summary: false,
         };
 
-        // Seed `src` as validated_must before the push fires.
+        // Validate `src` right after its definition (before the push
+        // fires), as a guard on it would.  A bit seeded before the
+        // definition would describe no value of `src`.
         let mut state = SsaTaintState::initial();
-        state.validated_must.insert(sym_src);
-        state.validated_may.insert(sym_src);
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
+            if inst.var_name.as_deref() == Some("src") {
+                state.validated_must.insert(sym_src);
+                state.validated_may.insert(sym_src);
+            }
         }
 
         // Cell carries validated_must=true after push.

@@ -40,7 +40,7 @@ impl CallTextFacts {
         is_constructor: bool,
     ) -> Self {
         let mut facts = CallTextFacts {
-            int_producing: type_facts::is_int_producing_callee(callee),
+            int_producing: type_facts::is_int_producing_callee(lang, callee),
             ..Default::default()
         };
         let Some(lang) = lang else {

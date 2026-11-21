@@ -38,15 +38,18 @@ mod helpers;
 mod hierarchy;
 mod imports;
 mod literals;
+mod nested_calls;
 mod params;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
-    call_ident_at_or_under, collect_nested_function_nodes, derive_anon_fn_name_from_context,
+    call_ident_at_or_under, collect_nested_function_nodes, collect_rhs_object_literal,
+    derive_anon_fn_name_from_context,
     find_classifiable_inner_call, find_inner_sink_call, first_call_ident_with_span,
     first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
     is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
+pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
 // helpers that physically live in `helpers.rs`.
 use conditions::{
@@ -58,8 +61,9 @@ use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
     HeaderExpr, RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
     control_header_expr, find_condition_subtree, find_constructor_type_child, first_call_ident,
-    has_call_descendant, member_expr_text, node_str, rmw_assignment, rmw_statement,
-    rmw_target_define, rmw_target_reads, root_receiver_text, slice_str, subtree_has_call, text_of,
+    has_call_descendant, has_function_descendant, member_expr_text, node_str, rmw_assignment,
+    rmw_statement, rmw_target_define, rmw_target_reads, root_receiver_text, slice_str,
+    subtree_has_call, text_of,
 };
 use imports::{
     extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
@@ -68,7 +72,7 @@ use imports::{
 #[cfg(test)]
 use literals::has_sql_placeholders;
 use literals::{
-    arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
+    ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
     detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer, extract_arg_callees,
     extract_arg_string_literals, extract_arg_uses, extract_const_keyword_arg,
     extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
@@ -76,10 +80,10 @@ use literals::{
     extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
     find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
-    has_string_interpolation, is_object_create_null_call, is_parameterized_query_call,
-    is_rust_format_style_macro, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
-    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, ruby_chain_arg0_for_method,
-    walk_chain_inner_call_args,
+    has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
+    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
+    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, parameterized_query_shape,
+    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -703,6 +707,12 @@ pub struct CallMeta {
     /// hoisted label did not come from inside a callback body).
     #[serde(default)]
     pub hoisted_sink: Option<Box<HoistedSink>>,
+    /// How the calls inside this node's expression nest and which operands
+    /// each one wraps (see [`NestedCallTree`]).  `None` when the node holds a
+    /// single call with every operand inside it, the shape the flat
+    /// `arg_uses` / `taint.uses` view already describes exactly.
+    #[serde(default)]
+    pub nested_calls: Option<Box<NestedCallTree>>,
 }
 
 /// Recorded provenance of a callback-nested inner sink call whose `Sink` label
@@ -789,6 +799,46 @@ pub struct TaintMeta {
     /// (Complex shape) where the legacy union painted `d` with `req.x`.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub rhs_array_elements: SmallVec<[RhsArraySlot; 4]>,
+    /// Property shape of a JS/TS object-literal RHS when this node binds the
+    /// single variable in `defines` to one (`const cfg = { bin: "ls", arg:
+    /// req.query.a }`).  `None` for every other RHS.
+    ///
+    /// Lowering gives the whole literal one SSA value, so a read of a
+    /// property the body never writes (`cfg.bin`) only exists as an unbacked
+    /// phantom value with no taint of its own.  Field-aware sink suppression
+    /// uses this shape to tell a property that is provably clean (a literal,
+    /// or absent from a closed literal) from a read of an object that is
+    /// tainted as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rhs_object_literal: Option<Box<RhsObjectLiteral>>,
+}
+
+/// Property shape of a JS/TS object literal.  See
+/// [`TaintMeta::rhs_object_literal`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RhsObjectLiteral {
+    /// Properties in source order.  A key written twice keeps both entries;
+    /// readers take the last one, as JS does.
+    pub fields: SmallVec<[(String, RhsObjectSlot); 4]>,
+    /// True when the literal can hold keys that `fields` does not list or
+    /// can overwrite listed ones: a spread (`...rest`), a computed key
+    /// (`[k]: v`), or a method / accessor.
+    pub open: bool,
+}
+
+/// Value of one property in an [`RhsObjectLiteral`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsObjectSlot {
+    /// Syntactic literal: string or template without substitutions, number,
+    /// boolean, `null`, `undefined`, regex.
+    Literal,
+    /// Bare identifier value, including shorthand properties (`{ name }`).
+    Ident(String),
+    /// Nested object literal.
+    Object(Box<RhsObjectLiteral>),
+    /// Any other expression (call, member access, binary, interpolated
+    /// template, ...).
+    Complex,
 }
 
 /// Source-order slot for an RHS array-literal element in a destructure
@@ -940,6 +990,15 @@ pub struct NodeInfo {
     /// `:name`) AND the call has >= 2 arguments (the params array/tuple).
     /// Both CFG analysis and SSA taint suppress findings on such nodes.
     pub parameterized_query: bool,
+    /// Same call shape as [`Self::parameterized_query`] (SQL_QUERY sink, query
+    /// text plus a params argument, a placeholder in the text), but the query
+    /// text is itself interpolated (`f"... {sort} LIMIT ?"`, Ruby
+    /// `"... #{q} ... = ?"`, JS `` `... ${t} ... $1` ``).  The sink is kept
+    /// and `sink_payload_args` narrows to the query text, since the bound
+    /// params are never the injection vector.  The structural
+    /// `cfg-unguarded-sink` pass only reports these when taint reaches arg 0.
+    #[serde(default)]
+    pub parameterized_query_interpolated: bool,
     /// Constant leading string prefix recovered from the node's RHS when it
     /// is a template literal (JS/TS) with a leading `string_fragment` or an
     /// equivalent constant-string-then-interpolation shape.  Populated for
@@ -3125,6 +3184,7 @@ pub(super) fn push_node<'a>(
     //
     // This covers both direct `Kind::Assignment` nodes and `Kind::CallWrapper`
     // nodes (expression_statement) that wrap an assignment.
+    let unlabelled_before_target_check = labels.is_empty();
     if labels.is_empty() {
         let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
             Some(ast)
@@ -3184,6 +3244,9 @@ pub(super) fn push_node<'a>(
             }
         }
     }
+    // The label now belongs to the assignment target, not to the call `text`
+    // names, so that call cannot anchor the node's call nesting.
+    let labelled_by_assign_target = unlabelled_before_target_check && !labels.is_empty();
 
     // Provenance for a Sink label hoisted onto a wrapper from a callback body
     // (populated in the hoist block below).  Consumed by the CFG node's
@@ -3200,13 +3263,25 @@ pub(super) fn push_node<'a>(
     // `run := func() { exec.Command(...) }` would otherwise inherit
     // `exec.Command`'s Sink label).  The function literal is handled as
     // its own scope by `collect_nested_function_nodes`.
+    //
+    // A bare `return <member source>` (`return req.query.q`,
+    // `return os.environ["X"]`, `return $_GET['id']`) is a read of that
+    // source too, so a one-line getter helper carries source caps in its
+    // summary.  Only a Source label attaches to a return, since a return is
+    // never a sink assignment.  A return with a call is already split into a
+    // Call node plus a Return node (whose argument sources are pre-emitted),
+    // and a returned closure returns the closure, not what its body reads.
+    let is_bare_return = lookup(lang, ast.kind()) == Kind::Return
+        && !has_call_descendant(ast, lang)
+        && !has_function_descendant(ast, lang);
     if labels.is_empty()
-        && matches!(
-            lookup(lang, ast.kind()),
-            Kind::CallWrapper | Kind::Assignment
-        )
-        && !rhs_is_function_literal(ast, lang)
+        && (is_bare_return
+            || (matches!(
+                lookup(lang, ast.kind()),
+                Kind::CallWrapper | Kind::Assignment
+            ) && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
+        && (!is_bare_return || matches!(found, DataLabel::Source(_)))
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
         labels.push(found);
@@ -3912,6 +3987,10 @@ pub(super) fn push_node<'a>(
 
     let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
         def_use(ast, lang, code, extra);
+    let rhs_object_literal = match defines.as_deref() {
+        Some(name) if extra_defines.is_empty() => collect_rhs_object_literal(ast, lang, code, name),
+        _ => None,
+    };
 
     // `x += y` / `x ||= y`: the right-hand side is an operand, not the
     // value of the target, so facts derived from the RHS alone (literal
@@ -3942,6 +4021,38 @@ pub(super) fn push_node<'a>(
         None
     };
 
+    // Call nesting for statement-level nodes that lower to an SSA `Call`.
+    // The anchor is the call `text` was taken from: the classified inner
+    // call, the first call of a wrapper statement, or the node's own call.
+    // It must still name that call (a member-source rewrite of `text` or a
+    // label taken from the assignment target leaves no anchor).
+    let nested_calls = if callee.is_some()
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::CallWrapper
+                | Kind::Assignment
+                | Kind::Return
+                | Kind::Throw
+                | Kind::CallFn
+                | Kind::CallMethod
+        ) {
+        let anchor_span = inner_callee_span.or(inner_text_span).or_else(|| {
+            if matches!(lookup(lang, ast.kind()), Kind::CallFn | Kind::CallMethod) {
+                Some((ast.start_byte(), ast.end_byte()))
+            } else {
+                call_ast.map(|c| (c.start_byte(), c.end_byte()))
+            }
+        });
+        let anchor = if labelled_by_assign_target {
+            None
+        } else {
+            anchor_span.map(|s| (s, text.as_str()))
+        };
+        nested_calls::build_nested_call_tree(ast, lang, code, anchor, extra)
+    } else {
+        None
+    };
+
     // Extract condition metadata for If nodes.  Python `elif_clause` and PHP
     // `else_if_clause` are lowered as guard nodes by `build_alternative_chain`
     // (the flat-sibling elif-chain handler) and carry their own `condition`
@@ -3958,10 +4069,44 @@ pub(super) fn push_node<'a>(
             (None, Vec::new(), false, None)
         };
 
+    // Detect parameterized SQL queries: arg 0 is a string literal with
+    // placeholder patterns ($1, ?, %s, :name) and >= 2 args present.
+    // Uses a deeper recursive search than `call_ast` (which only goes 2
+    // levels) to handle await-wrapped calls inside declarations.
+    let param_query_call = if labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
+    {
+        call_ast.or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 5)))
+    } else {
+        None
+    };
+    let param_query_shape = param_query_call
+        .map(|cn| parameterized_query_shape(cn, code))
+        .unwrap_or(ParamQueryShape::NotParameterized);
+    let parameterized_query = param_query_shape == ParamQueryShape::ConstantQuery;
+    let parameterized_query_interpolated = param_query_shape == ParamQueryShape::InterpolatedQuery;
+
+    // An interpolated query with a params argument
+    // (`cur.execute(f"... ORDER BY {sort} LIMIT ?", (n,))`) keeps its sink,
+    // but only the query text is the payload.  The bound values are
+    // parameters, the same way a gated `cursor.execute` / `pool.query` only
+    // checks arg 0.  Do not override a gate that already chose its positions.
+    let narrowed_query_call = if parameterized_query_interpolated
+        && sink_payload_args.is_none()
+        && gate_filters.is_empty()
+    {
+        sink_payload_args = Some(vec![0]);
+        param_query_call
+    } else {
+        None
+    };
+
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
     let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() {
         call_ast
+            .or(narrowed_query_call)
             .map(|cn| extract_arg_uses(cn, code))
             .unwrap_or_default()
     } else {
@@ -3995,17 +4140,6 @@ pub(super) fn push_node<'a>(
     } else {
         false
     };
-
-    // Detect parameterized SQL queries: arg 0 is a string literal with
-    // placeholder patterns ($1, ?, %s, :name) and >= 2 args present.
-    // Uses a deeper recursive search than `call_ast` (which only goes 2
-    // levels) to handle await-wrapped calls inside declarations.
-    let parameterized_query = labels
-        .iter()
-        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
-        && call_ast
-            .or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 5)))
-            .is_some_and(|cn| is_parameterized_query_call(cn, code));
 
     // Extract per-argument inner call callees for interprocedural sanitizer resolution.
     // Also extracted for non-Call kinds (e.g. Assign whose RHS is a call like
@@ -4245,6 +4379,7 @@ pub(super) fn push_node<'a>(
             is_constructor,
             produces_null_proto,
             hoisted_sink,
+            nested_calls,
         },
         taint: TaintMeta {
             labels,
@@ -4254,6 +4389,7 @@ pub(super) fn push_node<'a>(
             extra_defines,
             array_pattern_indices,
             rhs_array_elements,
+            rhs_object_literal,
         },
         ast: AstMeta {
             span,
@@ -4281,6 +4417,7 @@ pub(super) fn push_node<'a>(
             && java_getconnection_receiver_is_borrowed(ast, code),
         in_defer: false,
         parameterized_query,
+        parameterized_query_interpolated,
         string_prefix,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
@@ -4743,6 +4880,7 @@ type ConfinedCounts = std::collections::HashMap<String, (u32, u32)>;
 /// bundled JS files quadratic.
 fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut ConfinedCounts) {
     use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
+    let lang_enum = crate::symbol::Lang::from_slug(lang);
     let is_call = |n: Node| matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod);
     // Verdict per enclosing call, keyed by `Node::id`.  Ids are unique within
     // one tree; the Rust format-macro path re-parses into a separate tree and
@@ -4795,7 +4933,7 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         let confined = enclosing_call.is_some_and(|c| {
             *call_confines.entry(c.id()).or_insert_with(|| {
                 call_ident_of(c, lang, code).is_some_and(|ci| {
-                    is_int_producing_callee(&ci) || is_safe_string_producing_callee(&ci)
+                    is_int_producing_callee(lang_enum, &ci) || is_safe_string_producing_callee(&ci)
                 })
             })
         });

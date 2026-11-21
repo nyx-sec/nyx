@@ -1,0 +1,29 @@
+{
+  "description": "`return process.env.CMD as string` makes the getter a source.",
+  "tags": [
+    "taint",
+    "interproc",
+    "getter",
+    "member-source",
+    "typescript"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "getCommand returns process.env.CMD"
+    }
+  ]
+}

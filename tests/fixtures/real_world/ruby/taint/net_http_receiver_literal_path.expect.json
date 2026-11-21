@@ -1,0 +1,38 @@
+{
+  "description": "Net::HTTP.new(host) with a user-controlled host: the host is the request target, so the literal path of get() does not make the request safe. A fixed host stays quiet.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "net-http",
+    "receiver",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "params[:host] decides where the request goes"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        10,
+        14
+      ],
+      "notes": "fixed host"
+    }
+  ]
+}

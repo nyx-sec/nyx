@@ -1273,56 +1273,105 @@ pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Opt
     }
 }
 
-/// Detect whether a call node is a parameterized SQL query.
+/// How a call's first argument relates to the parameterized-query shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParamQueryShape {
+    /// Not a `query-with-placeholders, params` call.
+    NotParameterized,
+    /// Arg 0 is constant query text with placeholders and a params argument
+    /// follows.  The driver binds the params, so the sink is safe.
+    ConstantQuery,
+    /// Same shape, but the query text itself is interpolated
+    /// (`f"... ORDER BY {sort} LIMIT ?"`, `"... #{q} ... = ?"`,
+    /// `` `... ${t} ... $1` ``).  Binding the params does nothing for the
+    /// interpolated part, so arg 0 is still a live injection point while the
+    /// bind values are not.
+    InterpolatedQuery,
+}
+
+/// Classify a call as a parameterized SQL query.
 ///
-/// Returns `true` when:
-/// 1. The first argument (arg 0) is a string literal (including template
-///    strings without interpolation) containing SQL placeholder patterns:
-///    `$1`..`$N`, `?`, `%s`, or `:identifier`.
-/// 2. The call has at least 2 arguments (the second being the params
-///    array/tuple).
+/// The call must have at least 2 arguments (query + params), and arg 0 must
+/// be a string literal (a template string, an f-string or a Ruby `"#{..}"`
+/// string counts) containing SQL placeholder patterns: `$1`..`$N`, `?`,
+/// `%s`, or `:identifier`.  Placeholder characters that sit inside an
+/// interpolation do not count.
 ///
-/// This is intentionally conservative: if arg 0 is dynamic (variable,
-/// concatenation, template with interpolation), returns `false`.
-pub(super) fn is_parameterized_query_call(call_node: Node, code: &[u8]) -> bool {
+/// If arg 0 is a variable, a concatenation or any other expression the result
+/// is `NotParameterized`.
+pub(super) fn parameterized_query_shape(call_node: Node, code: &[u8]) -> ParamQueryShape {
     let Some(args) = call_node.child_by_field_name("arguments") else {
-        return false;
+        return ParamQueryShape::NotParameterized;
     };
     let mut cursor = args.walk();
     let named: Vec<_> = args.named_children(&mut cursor).collect();
     // Need at least 2 arguments: query string + params
     if named.len() < 2 {
-        return false;
+        return ParamQueryShape::NotParameterized;
     }
     let first_arg = named[0];
-    // Extract the raw text of arg 0, must be a string literal or
-    // template string without interpolation.
-    let query_text = match first_arg.kind() {
+    let dynamic = match first_arg.kind() {
         "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" => {
-            text_of(first_arg, code)
+            has_string_interpolation(first_arg)
         }
         "template_string" => {
-            // Only constant templates (no interpolation)
             let mut c = first_arg.walk();
-            if first_arg
+            first_arg
                 .named_children(&mut c)
                 .any(|ch| ch.kind() == "template_substitution")
-            {
-                return false; // dynamic, not safe
-            }
-            text_of(first_arg, code)
         }
-        // Python concatenated strings: "SELECT" "..." are implicit concat
+        // Python implicit concatenation: "SELECT" "..." f"{x}" is one node
+        // whose parts are plain or f-strings.
         "concatenated_string" => {
-            // If it's a concatenated_string, get the full text
-            text_of(first_arg, code)
+            let mut c = first_arg.walk();
+            first_arg
+                .named_children(&mut c)
+                .any(has_string_interpolation)
         }
-        _ => return false, // not a literal
+        _ => return ParamQueryShape::NotParameterized, // not a literal
     };
-    let Some(qt) = query_text else {
-        return false;
+    let Some(qt) = text_of(first_arg, code) else {
+        return ParamQueryShape::NotParameterized;
     };
-    has_sql_placeholders(&qt)
+    let qt = if dynamic {
+        mask_interpolations(first_arg, &qt)
+    } else {
+        qt
+    };
+    if !has_sql_placeholders(&qt) {
+        return ParamQueryShape::NotParameterized;
+    }
+    if dynamic {
+        ParamQueryShape::InterpolatedQuery
+    } else {
+        ParamQueryShape::ConstantQuery
+    }
+}
+
+/// Blank out the source text of every interpolation inside `node`, so a `?`
+/// or `:name` that belongs to an embedded expression (`{a if b else c}`,
+/// `${x ? y : z}`) is not mistaken for a SQL placeholder.  `text` is the
+/// text of `node` itself; offsets are relative to its start byte.
+fn mask_interpolations(node: Node, text: &str) -> String {
+    fn walk(n: Node, base: usize, out: &mut Vec<(usize, usize)>) {
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            if ch.kind().contains("interpolation") || ch.kind() == "template_substitution" {
+                out.push((ch.start_byte() - base, ch.end_byte() - base));
+            } else {
+                walk(ch, base, out);
+            }
+        }
+    }
+    let mut spans = Vec::new();
+    walk(node, node.start_byte(), &mut spans);
+    let mut bytes = text.as_bytes().to_vec();
+    for (s, e) in spans {
+        if let Some(slice) = bytes.get_mut(s..e.min(text.len())) {
+            slice.fill(b' ');
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_string())
 }
 
 /// Check whether a string contains SQL parameterized-query placeholders.
@@ -2031,36 +2080,30 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
     out
 }
 
-/// Caps that a search literal is known to strip, provided the replacement
-/// itself does not reintroduce any dangerous sequence.
+/// Caps a literal `search -> replacement` replace is known to strip.
 ///
-/// Policy is deliberately narrow and conservative: only literals that contain
-/// *known-dangerous* payloads earn a strip credit, so an arbitrary
-/// `.replace("foo", "bar")` is never promoted to a sanitizer.
-///   * `..`, `/`, `\\`         → path-traversal     → `Cap::FILE_IO`
-///   * `<`, `>`                → HTML metachars     → `Cap::HTML_ESCAPE`
-///   * `;`, `|`, `&`, `$`, `\`` → shell metachars   → `Cap::SHELL_ESCAPE`
-///   * `'`, `"`, `--`          → SQL metachars      → `Cap::SQL_QUERY`
-pub(super) fn caps_stripped_by_literal_pattern(search: &str) -> Cap {
-    let mut caps = Cap::empty();
+/// Policy is deliberately narrow: an arbitrary `.replace("foo", "bar")` is
+/// never promoted to a sanitizer, and neither is removing a single injection
+/// metacharacter.
+///   * `..`, `/`, `\\` in the search: path traversal (`Cap::FILE_IO`)
+///   * HTML and SQL: only complete escapes, per
+///     [`crate::symex::strings::replace_neutralises`]
+///   * shell: never, no single literal covers the metacharacter class
+pub(super) fn caps_stripped_by_literal_replace(search: &str, replacement: &str) -> Cap {
+    let mut caps = crate::symex::strings::replace_neutralises(search, replacement);
     if search.contains("..") || search.contains('/') || search.contains('\\') {
         caps |= Cap::FILE_IO;
     }
-    if search.contains('<') || search.contains('>') {
-        caps |= Cap::HTML_ESCAPE;
-    }
-    if search.contains(';')
-        || search.contains('|')
-        || search.contains('&')
-        || search.contains('$')
-        || search.contains('`')
-    {
-        caps |= Cap::SHELL_ESCAPE;
-    }
-    if search.contains('\'') || search.contains('"') || search.contains("--") {
-        caps |= Cap::SQL_QUERY;
-    }
     caps
+}
+
+/// True when a replacement literal carries a character that some injection
+/// class cares about.  A hop whose replacement does is able to reintroduce
+/// what a later hop strips, so the chain detectors abandon all credit.
+fn literal_carries_metachars(lit: &str) -> bool {
+    lit.contains("..")
+        || lit.contains(['/', '\\', '<', '>', ';', '|', '&', '$', '`', '\'', '"'])
+        || lit.contains("--")
 }
 
 /// Maximum number of `.replace(LIT, LIT)` hops we'll walk on a single chain.
@@ -2133,6 +2176,10 @@ pub(super) fn detect_rust_replace_chain_sanitizer(call_ast: Node, code: &[u8]) -
         if method_name != "replace" && method_name != "replacen" {
             return None;
         }
+        // `replacen` stops after n matches, so it strips nothing for sure.
+        // It still counts as a hop: its replacement can put a metacharacter
+        // back, and the walk has to reach the receiver beneath it.
+        let is_global = method_name == "replace";
 
         let args_node = current.child_by_field_name("arguments")?;
         let mut cursor = args_node.walk();
@@ -2164,10 +2211,12 @@ pub(super) fn detect_rust_replace_chain_sanitizer(call_ast: Node, code: &[u8]) -
         // If the replacement itself contains a dangerous sequence, this hop
         // can reintroduce the pattern that a later hop tries to strip.  Be
         // conservative: abandon all credit.
-        if !caps_stripped_by_literal_pattern(&replacement).is_empty() {
+        if literal_carries_metachars(&replacement) {
             return None;
         }
-        earned |= caps_stripped_by_literal_pattern(&search);
+        if is_global {
+            earned |= caps_stripped_by_literal_replace(&search, &replacement);
+        }
 
         // Walk to receiver via field_expression.value.
         current = func.child_by_field_name("value")?;
@@ -2207,6 +2256,16 @@ pub(super) fn detect_go_replace_call_sanitizer(call_ast: Node, code: &[u8]) -> O
     if method_name != "Replace" && method_name != "ReplaceAll" {
         return None;
     }
+    // `strings.Replace(s, old, new, n)` only replaces the first n matches.
+    // Only n == -1 is a full replace.
+    if method_name == "Replace" {
+        let args = call_ast.child_by_field_name("arguments")?;
+        let mut cursor = args.walk();
+        let n_arg = args.named_children(&mut cursor).nth(3)?;
+        if text_of(n_arg, code)?.trim() != "-1" {
+            return None;
+        }
+    }
     // Args layout: (s, old, new[, n]).  Need positional args 1 (old) and
     // 2 (new) to be string literals.
     let old_lit = extract_const_string_arg(call_ast, 1, code)?;
@@ -2214,10 +2273,10 @@ pub(super) fn detect_go_replace_call_sanitizer(call_ast: Node, code: &[u8]) -> O
 
     // If the replacement itself reintroduces a dangerous sequence, don't
     // credit the strip, matches the Rust chain detector's policy.
-    if !caps_stripped_by_literal_pattern(&new_lit).is_empty() {
+    if literal_carries_metachars(&new_lit) {
         return None;
     }
-    let caps = caps_stripped_by_literal_pattern(&old_lit);
+    let caps = caps_stripped_by_literal_replace(&old_lit, &new_lit);
     if caps.is_empty() { None } else { Some(caps) }
 }
 
