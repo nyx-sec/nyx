@@ -258,10 +258,12 @@ fn has_no_raw_sql_call(node: Node, code: &[u8]) -> bool {
         .all(|c| has_no_raw_sql_call(c, code))
 }
 
-/// True for a model class or a dotted name that reads one of its columns
-/// (`User`, `User.id`, `models.User.name`): every segment is an identifier and one of them is a
-/// class name. A lowercase-only chain (`form.sort`, `request.args`) can hold
-/// a string, which a clause method would splice into SQL text.
+/// True for a column source or a dotted name that reads one of its columns:
+/// a model class (`User`, `User.id`, `models.User.name`), a Core table's
+/// column collection (`users.c.name`, `t.columns.id`) or a name bound only to
+/// a Core `Table(..)` (`users`). Every segment is an identifier. Any other
+/// lowercase-only chain (`form.sort`, `request.args`) can hold a string,
+/// which a clause method would splice into SQL text.
 fn is_column_reference(node: Node, code: &[u8]) -> bool {
     let mut has_class = false;
     let mut cur = node;
@@ -274,20 +276,98 @@ fn is_column_reference(node: Node, code: &[u8]) -> bool {
                 ) else {
                     return false;
                 };
-                has_class |= code[attr.byte_range()]
-                    .first()
-                    .is_some_and(u8::is_ascii_uppercase);
+                let attr_text = &code[attr.byte_range()];
+                has_class |= attr_text.first().is_some_and(u8::is_ascii_uppercase);
+                // `table.c.<col>`: the column collection of a Core table.
+                has_class |= cur != node && matches!(attr_text, b"c" | b"columns");
                 cur = obj;
             }
             "identifier" => {
                 has_class |= code[cur.byte_range()]
                     .first()
                     .is_some_and(u8::is_ascii_uppercase);
-                return has_class;
+                return has_class || name_holds_core_table(cur, code);
             }
             _ => return false,
         }
     }
+}
+
+/// True when `ident` names a SQLAlchemy Core table: every binding of the name
+/// in its function, or failing any there, at module level, is
+/// `name = Table(..)` (`sa.Table`, `sqlalchemy.Table`). Any other binding (a
+/// parameter, a loop target, a string) leaves it unknown.
+fn name_holds_core_table(ident: Node, code: &[u8]) -> bool {
+    let name = &code[ident.byte_range()];
+    let scope = enclosing_scope(ident);
+    let mut root = scope;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut scopes = vec![scope];
+    if root != scope {
+        scopes.push(root);
+    }
+    for scope in scopes {
+        match core_table_bindings(scope, name, code) {
+            Some(only_tables) => return only_tables,
+            None => continue,
+        }
+    }
+    false
+}
+
+/// `None` when nothing under `scope` binds `name`; otherwise whether every
+/// binding is a `Table(..)` call.
+fn core_table_bindings(scope: Node, name: &[u8], code: &[u8]) -> Option<bool> {
+    let mut found = false;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for c in n.named_children(&mut cursor) {
+            stack.push(c);
+        }
+        match n.kind() {
+            "assignment" => {
+                let Some(left) = n.child_by_field_name("left") else {
+                    continue;
+                };
+                if left.kind() == "identifier" && &code[left.byte_range()] == name {
+                    let is_table = n
+                        .child_by_field_name("right")
+                        .is_some_and(|r| r.kind() == "call" && call_leaf(r, code) == Some("Table"));
+                    if !is_table {
+                        return Some(false);
+                    }
+                    found = true;
+                } else if binds_name(left, name, code) {
+                    return Some(false);
+                }
+            }
+            "augmented_assignment" | "named_expression" | "for_statement" | "for_in_clause" => {
+                let target = n
+                    .child_by_field_name("left")
+                    .or_else(|| n.child_by_field_name("name"));
+                if target.is_some_and(|t| binds_name(t, name, code)) {
+                    return Some(false);
+                }
+            }
+            "parameters"
+            | "lambda_parameters"
+            | "as_pattern"
+            | "global_statement"
+            | "nonlocal_statement"
+            | "import_statement"
+            | "import_from_statement"
+            | "delete_statement"
+                if binds_name(n, name, code) =>
+            {
+                return Some(false);
+            }
+            _ => {}
+        }
+    }
+    found.then_some(true)
 }
 
 /// True for an argument of a statement clause that is a column expression:
@@ -1048,6 +1128,43 @@ mod cfg_tests {
                 "{imports}def f(name, sort, parts, cond, stmt):\n    {body}\n    return stmt\n"
             );
             assert!(no_node_sanitizes(&src, Cap::SQL_QUERY), "{body}");
+        }
+    }
+
+    #[test]
+    fn core_tables_are_column_sources() {
+        let header = "from sqlalchemy import Table, select\nusers = Table('users', meta)\n";
+        for (body, leaf) in [
+            (
+                "stmt = select(users).where(users.c.id == uid).order_by(users.c.name)",
+                "order_by",
+            ),
+            (
+                "stmt = select(users.c.id, users.c.name).where(users.c.id == uid)",
+                "where",
+            ),
+            (
+                "stmt = select(users).order_by(users.columns.name)",
+                "order_by",
+            ),
+        ] {
+            let src = format!("{header}def f(uid):\n    {body}\n    return stmt\n");
+            assert!(!labels_of(&src, leaf).is_empty(), "{body}");
+            assert!(all_sanitize(&src, leaf, Cap::SQL_QUERY), "{body}");
+        }
+        // A name that is a parameter, or is also bound to something else, is
+        // not known to be a table.
+        for (header, params) in [
+            ("from sqlalchemy import Table, select\n", "uid, users"),
+            (
+                "from sqlalchemy import Table, select\nusers = Table('users', meta)\nusers = 'users'\n",
+                "uid",
+            ),
+        ] {
+            let src = format!(
+                "{header}def f({params}):\n    stmt = select(User).order_by(users)\n    return stmt\n"
+            );
+            assert!(no_node_sanitizes(&src, Cap::SQL_QUERY), "{header} {params}");
         }
     }
 

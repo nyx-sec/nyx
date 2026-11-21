@@ -1,0 +1,38 @@
+{
+  "description": "SQLAlchemy Core tables are column sources: a statement over Table columns binds its values, while a request string passed as a whole clause is still SQL text",
+  "tags": [
+    "taint",
+    "sqli",
+    "sqlalchemy",
+    "fastapi",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        10,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "select(users).where(users.c.id == uid) binds uid",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        16,
+        19
+      ],
+      "evidence_contains": [],
+      "notes": "order_by(sort) splices the request string into SQL text",
+      "must_match": true
+    }
+  ]
+}
