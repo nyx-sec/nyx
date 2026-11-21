@@ -186,6 +186,11 @@ pub struct SensitiveOperation {
     pub sink_class: Option<SinkClass>,
     pub callee: String,
     pub subjects: Vec<ValueRef>,
+    /// How many leading entries of `subjects` come from the call's receiver
+    /// chain (`Note.objects.filter(owner=request.user)` in
+    /// `Note.objects.filter(owner=request.user).update(..)`); the rest are the
+    /// call's own arguments.
+    pub receiver_subjects: usize,
     pub span: (usize, usize),
     pub line: usize,
     pub text: String,

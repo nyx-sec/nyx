@@ -157,16 +157,25 @@ fn check_ownership_gaps(
                 // created_by=request.user)`), so it counts as the owner pin
                 // only for a lookup callee.
                 let lookup = is_lookup_callee(&op.callee);
+                // A pin inside an earlier lookup of the chain scopes the rows
+                // the final call acts on:
+                // `Note.objects.filter(owner=request.user, pk=pk).update(..)`.
+                let receiver_lookup = op
+                    .callee
+                    .rsplit_once('.')
+                    .is_some_and(|(receiver, _)| receiver.split('.').any(is_lookup_callee));
                 //
                 // The receiver chain of the callee is not a co-subject:
                 // `req.user.constructor.findById(id)` and
                 // `req.user.createMembership(..)` start at the caller, but
                 // whether that scopes the call is for `is_owner_scoped_callee`
                 // to say, by what the method does.
-                let has_actor_co_subject = op.subjects.iter().any(|s| {
+                let has_actor_co_subject = op.subjects.iter().enumerate().any(|(i, s)| {
                     !is_callee_receiver(s, &op.callee)
                         && is_actor_context_subject(s, unit)
-                        && (lookup || !is_whole_actor_object(s))
+                        && (lookup
+                            || (receiver_lookup && i < op.receiver_subjects)
+                            || !is_whole_actor_object(s))
                 });
                 if has_actor_co_subject {
                     continue;
@@ -2136,6 +2145,7 @@ mod tests {
             sink_class: None,
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
+            receiver_subjects: 0,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2149,6 +2159,7 @@ mod tests {
             sink_class: None,
             callee: "delete_post".into(),
             subjects: vec![member("data", "post_id")],
+            receiver_subjects: 0,
             span: (0, 0),
             line: 15,
             text: String::new(),
@@ -2173,6 +2184,7 @@ mod tests {
             sink_class: None,
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
+            receiver_subjects: 0,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2210,6 +2222,7 @@ mod tests {
             sink_class: None,
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
+            receiver_subjects: 0,
             span: (0, 0),
             line: 10,
             text: String::new(),

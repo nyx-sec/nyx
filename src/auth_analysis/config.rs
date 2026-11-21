@@ -1886,12 +1886,17 @@ fn is_non_orm_get(callee: &str) -> bool {
     if method.starts_with("get_object_or") || method.starts_with("get_or_") {
         return false;
     }
+    // A bare `.get` on a class is as often a registry or settings lookup
+    // (`Settings.get(key)`, `Cache.get(item_id)`) as a model read, so a
+    // PascalCase receiver counts only for the ORM-only `get_by_*` spellings
+    // (`Note.get_by_id(pk)`).
+    let model_lookup = method.starts_with("get_by");
     matches_name(method, "get")
         && !receiver.split('.').any(|segment| {
             let segment = segment.trim_end_matches("()");
             ORM_SEGMENTS.contains(&segment)
                 || is_queryset_variable(segment)
-                || is_model_class_name(segment)
+                || (model_lookup && is_model_class_name(segment))
         })
 }
 
@@ -1902,11 +1907,8 @@ fn is_queryset_variable(segment: &str) -> bool {
     lower == "qs" || lower.ends_with("_qs") || lower.ends_with("queryset")
 }
 
-/// A model class (`Note.get(..)`, `Note.get_by_id(..)`) as Peewee, Tortoise,
-/// Pony and SQLModel spell a lookup.  Model classes are PascalCase; the
-/// dictionaries, clients and settings objects that `.get` is usually called on
-/// are lower-case variables, and an all-caps name (`GET`, `QUERY`) is a
-/// constant.
+/// A model class, as in Peewee's `Note.get_by_id(..)`.  Model classes are
+/// PascalCase; an all-caps name (`GET`, `QUERY`) is a constant.
 fn is_model_class_name(segment: &str) -> bool {
     segment
         .chars()
@@ -2189,7 +2191,6 @@ mod tests {
             "qs.get",
             "active_qs.get",
             "note_queryset.get",
-            "Note.get",
             "Note.get_by_id",
             "shortcuts.get_object_or_404",
             "Note.objects.get_or_create",
@@ -2200,7 +2201,14 @@ mod tests {
                 "{orm}"
             );
         }
-        for plain in ["options.get", "request.GET.get", "client.get"] {
+        for plain in [
+            "options.get",
+            "request.GET.get",
+            "client.get",
+            "Settings.get",
+            "Cache.get",
+            "FeatureFlags.get",
+        ] {
             assert_eq!(rules.classify_sink_class(plain, &none), None, "{plain}");
         }
     }

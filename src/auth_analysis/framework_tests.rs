@@ -1372,13 +1372,23 @@ class MembershipsController < ApplicationController
   def comment
     Comment.create(post_id: params[:post_id], author: current_user)
   end
+
+  def rename
+    Note.where(user: current_user, id: params[:id]).update_all(body: params[:body])
+  end
+
+  def claim
+    Note.where(id: params[:id]).update_all(user_id: current_user)
+  end
 end
 ";
         let found = rules("ruby", "memberships_controller.rb", src);
-        // The association lookup on line 12 stays clean.
+        // The association lookup on line 12 and the write through a
+        // caller-pinned `where` on line 21 stay clean. The caller stored as
+        // the written value on line 25 pins nothing.
         assert_eq!(
             lines(&found, "missing_ownership_check"),
-            vec![5, 9, 17],
+            vec![5, 9, 17, 25],
             "{found:?}"
         );
     }
@@ -1413,11 +1423,25 @@ def favorite(request, doc_id):
 def mine(request, doc_id):
     doc = Document.objects.filter(owner=request.user, id=doc_id).first()
     return JsonResponse({\"t\": doc.title})
+
+
+@login_required
+def rename(request, doc_id):
+    Document.objects.filter(owner=request.user, id=doc_id).update(title='x')
+    return JsonResponse({})
+
+
+@login_required
+def claim(request, doc_id):
+    Document.objects.filter(id=doc_id).update(owner=request.user)
+    return JsonResponse({})
 ";
         let found = rules("python", "views.py", src);
+        // A write through a caller-pinned filter (line 32) is scoped; the
+        // caller stored as the written value (line 38) is not a pin.
         assert_eq!(
             lines(&found, "missing_ownership_check"),
-            vec![8, 14, 20],
+            vec![8, 14, 20, 38],
             "{found:?}"
         );
     }

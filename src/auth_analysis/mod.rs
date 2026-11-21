@@ -1178,6 +1178,7 @@ mod tests {
             sink_class: initial,
             callee: callee.to_string(),
             subjects: Vec::new(),
+            receiver_subjects: 0,
             span: (0, 0),
             line: 1,
             text: callee.to_string(),

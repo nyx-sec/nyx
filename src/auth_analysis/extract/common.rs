@@ -1668,15 +1668,16 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     // ordinary calls skip the receiver-chain walk and the per-ref clones
     // entirely.  Order is identical to the old eager form: receiver refs first,
     // then each argument's refs in argument order.
-    let subjects: Vec<ValueRef> = if is_auth || op_kind.is_some() {
+    let (subjects, receiver_subjects): (Vec<ValueRef>, usize) = if is_auth || op_kind.is_some() {
         let mut subjects = call_receiver_subjects(node, bytes, state.request_roots.as_ref());
+        let receiver_subjects = subjects.len();
         subjects.reserve(args_value_refs.iter().map(Vec::len).sum());
         for refs in &args_value_refs {
             subjects.extend(refs.iter().cloned());
         }
-        subjects
+        (subjects, receiver_subjects)
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
 
     state.call_sites.push(CallSite {
@@ -1711,6 +1712,7 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             sink_class,
             callee,
             subjects,
+            receiver_subjects,
             span: span(node),
             line,
             text: node_text.to_string(),
@@ -4094,10 +4096,11 @@ fn python_int_bounded_typed_params(node: Node<'_>, bytes: &[u8]) -> HashSet<Stri
 ///
 /// * Python `x = Depends(..)` / `Security(..)` (FastAPI dependency injection),
 ///   with or without an annotation.
-/// * A TypeScript parameter carrying a decorator other than the ones that bind
-///   request data (`@Param`, `@Query`, `@Body`, `@Headers`, `@Req`, ..): a
-///   custom decorator such as `@CurrentUserId()` reads from the validated
-///   principal.
+/// * A TypeScript parameter carrying a custom decorator that names the
+///   caller (`@CurrentUserId()`, `@AuthUser()`, `@GetAccount()`): it reads from
+///   the validated principal.  Decorators that bind request data (`@Param`,
+///   `@Query`, `@Body`, GraphQL `@Args`, microservice `@Payload`, ..) and
+///   custom ones that name nothing about the caller do not count.
 /// * A Java parameter annotated `@AuthenticationPrincipal`.
 fn framework_injected_params(node: Node<'_>, bytes: &[u8]) -> HashSet<String> {
     const REQUEST_BINDING_DECORATORS: &[&str] = &[
@@ -4123,6 +4126,30 @@ fn framework_injected_params(node: Node<'_>, bytes: &[u8]) -> HashSet<String> {
         "RequestParam",
         "RequestHeader",
         "ModelAttribute",
+        // GraphQL resolvers and microservice handlers.
+        "Args",
+        "Arg",
+        "Payload",
+        "MessageBody",
+        "Ctx",
+        "Context",
+        "Parent",
+        "Root",
+        "Info",
+        "RawBody",
+        "ConnectedSocket",
+    ];
+    /// Words in a custom decorator that say it injects the caller.
+    const CALLER_WORDS: &[&str] = &[
+        "user",
+        "account",
+        "principal",
+        "actor",
+        "member",
+        "identity",
+        "auth",
+        "viewer",
+        "tenant",
     ];
     let mut out = HashSet::new();
     let Some(params_node) = node.child_by_field_name("parameters") else {
@@ -4165,7 +4192,10 @@ fn framework_injected_params(node: Node<'_>, bytes: &[u8]) -> HashSet<String> {
                             .next()
                             .unwrap_or("")
                             .trim();
-                        !name.is_empty() && !REQUEST_BINDING_DECORATORS.contains(&name)
+                        let lower = name.to_ascii_lowercase();
+                        !name.is_empty()
+                            && !REQUEST_BINDING_DECORATORS.contains(&name)
+                            && CALLER_WORDS.iter().any(|w| lower.contains(w))
                     });
                 if !custom {
                     continue;
@@ -6883,5 +6913,46 @@ export function makeUserRepo() {
             "generic CRUD repo must NOT be flagged as Adapter: {:?}",
             unit.name
         );
+    }
+
+    /// Only a custom decorator that names the caller injects the parameter.
+    /// GraphQL `@Args`, microservice `@Payload` and decorators that say
+    /// nothing about the caller leave it request-supplied.
+    #[test]
+    fn ts_injected_params_need_a_decorator_that_names_the_caller() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+class DocsResolver {
+  docs(
+    @Args('ownerId') ownerId: string,
+    @Payload('authorId') authorId: string,
+    @Tagged() tagged: string,
+    @CurrentUserId() currentUserId: string,
+    @AuthUser() me: string,
+    @Param('id') id: string,
+  ) {}
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let mut stack = vec![tree.root_node()];
+        let mut method = None;
+        while let Some(node) = stack.pop() {
+            if node.kind() == "method_definition" {
+                method = Some(node);
+                break;
+            }
+            for i in 0..node.named_child_count() {
+                stack.extend(node.named_child(i as u32));
+            }
+        }
+        let injected = super::framework_injected_params(method.expect("method"), src);
+        let mut got: Vec<&str> = injected.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["currentUserId", "me"]);
     }
 }
