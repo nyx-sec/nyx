@@ -78,6 +78,40 @@ pub struct CallGraphAnalysis {
 
 //  Callee-name normalization
 
+/// Drop a trailing Rust turbofish (`run_it::<u8>` becomes `run_it`).
+///
+/// The CFG keeps the generic arguments in the callee text, and the `::` split
+/// that finds the leaf would otherwise return `<u8>` (or `String>` for
+/// `run_it::<std::string::String>`), so a generic user function never resolved
+/// to its summary.  Walks back over the balanced `<..>` group, skipping the `>`
+/// of a `->` inside it, and only trims when `::` sits right before the `<`.
+pub(crate) fn trim_trailing_turbofish(raw: &str) -> &str {
+    if !raw.ends_with('>') {
+        return raw;
+    }
+    let bytes = raw.as_bytes();
+    let mut depth = 0u32;
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'>' if i == 0 || bytes[i - 1] != b'-' => depth += 1,
+            b'<' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return if i >= 2 && bytes[i - 2] == b':' && bytes[i - 1] == b':' {
+                        &raw[..i - 2]
+                    } else {
+                        raw
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    raw
+}
+
 /// Extract the last segment of a qualified callee name for resolution.
 ///
 /// ```text
@@ -102,6 +136,7 @@ pub struct CallGraphAnalysis {
 /// ""                   → ""
 /// ```
 pub(crate) fn normalize_callee_name(raw: &str) -> &str {
+    let raw = trim_trailing_turbofish(raw);
     // Try "::" separators first (Rust / C++ qualification)
     if let Some(pos) = raw.rfind("::") {
         let before_last = &raw[..pos];
@@ -139,6 +174,7 @@ pub(crate) fn normalize_callee_name(raw: &str) -> &str {
 /// "foo"           → "foo"
 /// ```
 pub(crate) fn callee_leaf_name(raw: &str) -> &str {
+    let raw = trim_trailing_turbofish(raw);
     let after_colons = raw.rsplit("::").next().unwrap_or(raw);
     after_colons.rsplit('.').next().unwrap_or(after_colons)
 }
@@ -151,6 +187,7 @@ pub(crate) fn callee_leaf_name(raw: &str) -> &str {
 /// enough context to pick the right method when two classes in the same file
 /// define the same leaf name.
 pub(crate) fn callee_container_hint(raw: &str) -> &str {
+    let raw = trim_trailing_turbofish(raw);
     if let Some(pos) = raw.rfind("::") {
         let prefix = &raw[..pos];
         return prefix.rsplit("::").next().unwrap_or(prefix);
@@ -1448,6 +1485,22 @@ mod tests {
         assert_eq!(callee_leaf_name("pkg.mod.func"), "func");
         assert_eq!(callee_leaf_name("foo"), "foo");
         assert_eq!(callee_leaf_name(""), "");
+    }
+
+    #[test]
+    fn rust_turbofish_does_not_hide_the_callee() {
+        assert_eq!(callee_leaf_name("run_it::<u8>"), "run_it");
+        assert_eq!(callee_leaf_name("run_it::<std::string::String>"), "run_it");
+        assert_eq!(callee_leaf_name("run_it::<fn(u8) -> u8>"), "run_it");
+        assert_eq!(callee_leaf_name("x.parse::<u32>"), "parse");
+        assert_eq!(
+            normalize_callee_name("sqlx::query_as::<_, User>"),
+            "sqlx::query_as"
+        );
+        assert_eq!(callee_container_hint("Repo::load::<Row>"), "Repo");
+        // Not a turbofish: nothing is trimmed.
+        assert_eq!(callee_leaf_name("Vec<u8>"), "Vec<u8>");
+        assert_eq!(callee_leaf_name("a < b >"), "a < b >");
     }
 
     // ── same name, different Rust modules ────────────────────────────────
