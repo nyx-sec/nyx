@@ -3623,13 +3623,28 @@ pub(super) fn push_node<'a>(
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
 
+    // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
+    // only unwrap the result, so the arguments that matter for gate payload
+    // positions belong to the call underneath.  Without this the outermost
+    // call carries no arguments and a typed-receiver SQL sink scans every use,
+    // including the bound parameters.
+    if lang == "rust"
+        && let Some(outer) = call_ast
+        && let Some(inner) = peel_rust_result_unwrap(outer, code)
+    {
+        call_ast = Some(inner);
+    }
+
+    // Rust `sqlx::query(sql).bind(v).fetch_all(pool)` takes the same route: the
+    // head classifies as the SQL sink and the outermost call is `.fetch_all`.
+    //
     // Python `conn.execute(sql, params).fetchall()` classifies on its head
     // (`conn.execute`, the text before the first `(`), so the node already has
     // its Sink label while the outermost call is the zero-arg `.fetchall()`.
     // The gate's payload positions and the literal-SQL check refer to the sink
     // call's arguments, so rebind to that call the way the block below does
     // for an unclassified outer call.
-    if lang == "python"
+    if matches!(lang, "python" | "rust")
         && text.contains('(')
         && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
         && let Some(outer) = call_ast
@@ -10730,3 +10745,34 @@ pub(crate) fn export_summaries(
 
 #[cfg(test)]
 mod cfg_tests;
+
+/// For a Rust `recv_call(..).unwrap()` / `.expect(..)`, the receiver call.
+///
+/// Peels repeated unwraps (`f(..).unwrap().expect(..)` is unusual but legal)
+/// and returns `None` when `call` is not an unwrap or its receiver is not
+/// itself a call.
+fn peel_rust_result_unwrap<'a>(call: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
+    let mut cur = call;
+    let mut peeled = false;
+    loop {
+        if cur.kind() != "call_expression" {
+            break;
+        }
+        let function = cur.child_by_field_name("function")?;
+        if function.kind() != "field_expression" {
+            break;
+        }
+        let method = function.child_by_field_name("field")?;
+        let name = method.utf8_text(code).ok()?;
+        if !matches!(name, "unwrap" | "expect") {
+            break;
+        }
+        let recv = function.child_by_field_name("value")?;
+        if recv.kind() != "call_expression" {
+            break;
+        }
+        cur = recv;
+        peeled = true;
+    }
+    peeled.then_some(cur)
+}

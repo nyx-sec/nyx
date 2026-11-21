@@ -12874,7 +12874,9 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
     // Walk from the end, peeling identity methods.
     let mut i = segments.len();
     while i > 0 {
-        let seg = segments[i - 1];
+        // A chain split over lines (`)\n    .unwrap()`) leaves whitespace around
+        // the segment.
+        let seg = segments[i - 1].trim();
         if !seg.is_empty() {
             out.push(seg.to_string());
         }
@@ -13743,6 +13745,7 @@ fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
 /// last-used one wins, matching the leaf-extraction rule in
 /// [`callee_leaf_name`].
 pub(crate) fn split_qualifier(raw: &str) -> (Option<&str>, Option<&str>) {
+    let raw = crate::callgraph::trim_trailing_turbofish(raw);
     if let Some(pos) = raw.rfind("::") {
         let prefix = &raw[..pos];
         let last = prefix.rsplit("::").next().unwrap_or(prefix);

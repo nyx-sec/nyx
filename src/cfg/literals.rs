@@ -1164,9 +1164,16 @@ pub(super) fn find_chained_gated_sink_call<'a>(
         if !matches!(lookup(lang, cur.kind()), Kind::CallFn | Kind::CallMethod) {
             return None;
         }
-        let function = cur
+        let mut function = cur
             .child_by_field_name("function")
             .or_else(|| cur.child_by_field_name("method"))?;
+        // Rust turbofish (`sqlx::query_as::<_, User>(..)`): the callee is a
+        // `generic_function` wrapping the real path.
+        if function.kind() == "generic_function"
+            && let Some(inner) = function.child_by_field_name("function")
+        {
+            function = inner;
+        }
         // Only treat THIS chain level as a candidate sink when its callee is a
         // real member/method access (has an own method-name segment). For an
         // immediately-invoked-call form `f(..)(..)` (e.g. lodash
