@@ -1113,7 +1113,63 @@ fn classify_param_type_rust<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
         return Some(k);
     }
 
+    if let Some(k) = rust_db_connection_type(&type_text) {
+        return Some(k);
+    }
+
     rust_type_to_kind(&type_text)
+}
+
+/// A `rusqlite` connection formal (`conn: &Connection`, `&mut rusqlite::Connection`)
+/// is a [`TypeKind::DatabaseConnection`], the same type `Connection::open(..)`
+/// produces for a local, so `conn.execute(sql, params)` resolves to the
+/// type-qualified SQL gate whichever way the handle arrived.  Only the exact
+/// type name qualifies: wrappers (`Arc<Mutex<Connection>>`), pools and
+/// unrelated `*Connection` types stay untyped.
+fn rust_db_connection_type(t: &str) -> Option<TypeKind> {
+    matches!(
+        strip_rust_ref_markers(t),
+        "Connection" | "rusqlite::Connection"
+    )
+    .then_some(TypeKind::DatabaseConnection)
+}
+
+/// Receiver-alias frame for a Rust function: every `rusqlite` connection formal
+/// (`conn: &Connection`) paired with the `DatabaseConnection` receiver prefix,
+/// every other formal with `None` so it shadows a same-named binding of an
+/// enclosing function.  Unscoped SSA lowering emits no `Param` op for a formal
+/// that is only ever a method receiver, so the type cannot reach the SSA type
+/// facts; classifying the callee text under the prefix while the body is built
+/// (the Go formals use the same channel) makes `conn.execute(sql, params)` hit
+/// the type-qualified SQL gate whether the handle is a local or a parameter.
+pub(super) fn rust_receiver_alias_frame(
+    func_node: Node<'_>,
+    code: &[u8],
+) -> crate::labels::ReceiverAliasFrame {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut frame = Vec::new();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter" {
+            continue;
+        }
+        let Some(pattern) = param.child_by_field_name("pattern") else {
+            continue;
+        };
+        if pattern.kind() != "identifier" {
+            continue;
+        }
+        let Some(name) = text_of(pattern, code) else {
+            continue;
+        };
+        let prefix = rust_param_type_text(param, code)
+            .and_then(|t| rust_db_connection_type(&t))
+            .and_then(|k| k.label_prefix());
+        frame.push((name, prefix));
+    }
+    frame
 }
 
 /// Strip Rust reference markers, lifetimes, and `mut` from the head of
@@ -1813,6 +1869,30 @@ mod typed_extractor_tests {
     }
 
     // ── Rust (Axum / Rocket / Actix) ─────────────────────────────────────
+
+    #[test]
+    fn rust_connection_formal_is_a_database_connection() {
+        for t in [
+            "Connection",
+            "&Connection",
+            "&mut rusqlite::Connection",
+            "&'a Connection",
+        ] {
+            assert_eq!(
+                super::rust_db_connection_type(t),
+                Some(TypeKind::DatabaseConnection),
+                "{t}"
+            );
+        }
+        for t in [
+            "Arc<Mutex<Connection>>",
+            "PgConnection",
+            "Pool",
+            "MyConnection",
+        ] {
+            assert_eq!(super::rust_db_connection_type(t), None, "{t}");
+        }
+    }
 
     #[test]
     fn rust_path_int_extractor_maps_to_int() {

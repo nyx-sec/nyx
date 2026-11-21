@@ -272,13 +272,18 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
-    // `toml::from_str` and `ron::from_str` are left out on purpose: like
-    // `serde_json::from_str` they decode a text format into a concrete type and
-    // have no polymorphic instantiation surface.  Turbofish-aware matching
-    // (`toml::from_str::<Config>(&text)`) would otherwise report every config
-    // loader.
+    // `toml::from_str` and `ron::from_str` into a concrete type are left out on
+    // purpose: like `serde_json::from_str` they have no polymorphic
+    // instantiation surface, and reporting them would flag every config loader.
+    // A `dyn` turbofish (`toml::from_str::<Box<dyn Plugin>>`) is attacker-chosen
+    // type selection, so the label layer rewrites that shape to the `@dyn`
+    // spellings below.
     LabelRule {
         matchers: &[
+            "toml::from_str@dyn",
+            "toml::from_slice@dyn",
+            "ron::from_str@dyn",
+            "ron::from_bytes@dyn",
             "serde_yaml::from_str",
             "serde_yaml::from_slice",
             "serde_yaml::from_reader",
@@ -752,6 +757,8 @@ mod tests {
         };
         assert!(!sinks_deser("toml::from_str"));
         assert!(!sinks_deser("toml::from_str::<Opt>"));
+        assert!(sinks_deser("toml::from_str::<Box<dyn Plugin>>"));
+        assert!(sinks_deser("ron::from_str::<Box<dyn Plugin>>"));
         assert!(!sinks_deser("ron::from_str"));
         assert!(!sinks_deser("serde_json::from_str"));
         assert!(sinks_deser("serde_yaml::from_str"));

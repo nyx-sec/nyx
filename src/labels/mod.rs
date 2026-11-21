@@ -2450,6 +2450,29 @@ fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// `toml::from_str::<Box<dyn Plugin>>` selects the concrete type from the
+/// document (typetag style), unlike the same call into a concrete struct.
+/// Rewrite that one shape to `toml::from_str@dyn` so a dedicated DESERIALIZE
+/// rule can match it while the typed-config form stays unclassified.  `stripped`
+/// is `text` with its turbofish removed.
+fn polymorphic_decoder_alias(text: &str, stripped: &str) -> Option<String> {
+    let head = stripped.split('(').next().unwrap_or("").trim();
+    if !matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) && !head.ends_with("::toml::from_str")
+        && !head.ends_with("::ron::from_str")
+    {
+        return None;
+    }
+    let generic = &text[text.find("::<")?..];
+    let generic = generic.split('(').next().unwrap_or(generic);
+    let is_dyn = generic
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == "dyn");
+    is_dyn.then(|| format!("{head}@dyn"))
+}
+
 /// Whether the path segment ending `before` is reached through a `.`, i.e. is
 /// a method call rather than a `::` path segment.
 fn segment_is_method(before: &str) -> bool {
@@ -2463,7 +2486,11 @@ fn segment_is_method(before: &str) -> bool {
 #[inline]
 fn strip_turbofish_for<'a>(lang: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
     if lang == "rust" || lang == "rs" {
-        strip_turbofish(text)
+        let stripped = strip_turbofish(text);
+        match polymorphic_decoder_alias(text, &stripped) {
+            Some(alias) => std::borrow::Cow::Owned(alias),
+            None => stripped,
+        }
     } else {
         std::borrow::Cow::Borrowed(text)
     }

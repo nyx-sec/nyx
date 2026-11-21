@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 910
+    "corpus_size": 913
   },
   "cases": [
     {
@@ -29066,6 +29066,105 @@
       ],
       "disabled": false,
       "notes": "Operator config file decoded into a concrete type with toml::from_str::<Config>; not a polymorphic deserialization sink"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-conn-param-format",
+      "file": "rust/sqli/sqli_rusqlite_conn_param_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "format-macro",
+        "param-receiver"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to execute on a &Connection parameter (receiver typed from the signature)"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-conn-param-params",
+      "file": "rust/safe/safe_rusqlite_conn_param_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "params-macro",
+        "param-receiver"
+      ],
+      "disabled": false,
+      "notes": "Literal SQL with params![] on a &Connection parameter"
+    },
+    {
+      "case_id": "rs-deser-toml-dyn-plugin",
+      "file": "rust/deser/deser_toml_dyn_plugin.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "turbofish"
+      ],
+      "disabled": false,
+      "notes": "toml::from_str into Box<dyn Plugin> lets the document choose the type"
     }
   ]
 }
