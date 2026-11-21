@@ -259,7 +259,7 @@ pub(crate) fn container_insert_arg_positions(
     out
 }
 
-/// Java wrapper-handoff facts for one body (see [`closeable_wrapper_names`]).
+/// Java wrapper-handoff facts for one body (see `closeable_wrapper_names`).
 #[derive(Debug, Default)]
 pub struct CloseableWrappers {
     /// Wrapper objects whose lifetime the body accounts for.
@@ -515,7 +515,7 @@ pub struct DefaultTransfer<'a> {
     pub nonescaping_field_containers: Option<&'a std::collections::HashSet<String>>,
     /// Java only: names of wrapper objects that this body closes, returns,
     /// manages with try-with-resources, or stores away (see
-    /// [`closeable_wrapper_names`]).  A stream handed to the constructor of
+    /// `closeable_wrapper_names`).  A stream handed to the constructor of
     /// one of these (`new BufferedInputStream(in)`) is owned by the wrapper
     /// from then on.  `None` disables the handoff.
     pub closeable_wrappers: Option<&'a CloseableWrappers>,

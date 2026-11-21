@@ -897,13 +897,9 @@ pub fn is_js_ts_handler_param_name(name: &str) -> bool {
     // camelCase / snake_case `user*` prefix: requires at least one
     // distinguishing character after the prefix so `user` alone does not match.
     let bytes = name.as_bytes();
-    if bytes.len() >= 5
+    bytes.len() >= 5
         && bytes[..4].eq_ignore_ascii_case(b"user")
         && (bytes[4].is_ascii_uppercase() || bytes[4] == b'_')
-    {
-        return true;
-    }
-    false
 }
 
 /// Bare bindings denoting an Express/Koa request sub-object when the handler
@@ -1496,7 +1492,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Pops the receiver-alias frame pushed by [`push_receiver_aliases`] when
+/// Pops the receiver-alias frame pushed by `push_receiver_aliases` when
 /// dropped, so an early return or unwind inside the body walk cannot leak a
 /// frame into the next function.
 pub(crate) struct ReceiverAliasScope {
@@ -1594,7 +1590,7 @@ pub fn go_request_receiver_prefix(type_text: &str) -> Option<&'static str> {
 /// match like `sanitize_shell`.
 ///
 /// When the text's root identifier is a formal with a declared request type
-/// (see [`push_receiver_aliases`]), the aliased text is tried when the
+/// (see `push_receiver_aliases`), the aliased text is tried when the
 /// literal text matches nothing.
 pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
     let direct = classify_aliased(lang, text, extra);
@@ -1710,7 +1706,7 @@ fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> 
 /// Same two-pass (exact/suffix then prefix) structure as [`classify()`], but
 /// collects every match instead of returning on first hit.  Deduplicates
 /// exact `(variant, caps)` pairs.  Labels of the receiver-aliased text (see
-/// [`push_receiver_aliases`]) are unioned in.
+/// `push_receiver_aliases`) are unioned in.
 pub fn classify_all(
     lang: &str,
     text: &str,

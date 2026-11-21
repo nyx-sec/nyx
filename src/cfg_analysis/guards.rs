@@ -1933,10 +1933,7 @@ fn php_check_subscript_set(
         q += 1;
     }
     let rhs = &scope[p + 1..q];
-    if used_as_val && !is_metachar_free_string_literal(rhs.trim_ascii()) {
-        return false;
-    }
-    true
+    !used_as_val || is_metachar_free_string_literal(rhs.trim_ascii())
 }
 
 /// `true` when `bytes` form a single-quoted or double-quoted string

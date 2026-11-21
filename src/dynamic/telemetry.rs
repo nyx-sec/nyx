@@ -89,9 +89,7 @@ const fn assert_corpus_version_str_matches_u32() {
         // Reverse the first `len` bytes so the most-significant digit lands first.
         let mut i: usize = 0;
         while i < len / 2 {
-            let tmp = buf[i];
-            buf[i] = buf[len - 1 - i];
-            buf[len - 1 - i] = tmp;
+            buf.swap(i, len - 1 - i);
             i += 1;
         }
     }

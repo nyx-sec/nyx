@@ -1048,7 +1048,7 @@ fn is_quote_entity(s: &str) -> bool {
 /// Detect whether a Replace operation acts as a security sanitizer.
 ///
 /// Returns `None` if the replace does not neutralise a whole injection class
-/// (see [`replace_neutralises`]).  `taint::ssa_transfer` ORs the caps of a
+/// (see `replace_neutralises`).  `taint::ssa_transfer` ORs the caps of a
 /// global replace into the call's sanitizer bits.
 pub fn detect_replace_sanitizer(
     pattern: &str,
@@ -1075,7 +1075,7 @@ pub fn detect_replace_sanitizer(
 ///   * the callee is a recognized Replace string method (per language),
 ///   * the pattern and replacement arguments are concrete string literals, and
 ///   * the pair neutralises a whole injection class per
-///     [`replace_neutralises`].
+///     `replace_neutralises`.
 ///
 /// Non-global replaces (e.g. JS `s.replace("<", "&lt;")` only replaces the
 /// first occurrence, Python `s.replace("<", "", 1)` stops after one) are

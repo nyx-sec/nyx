@@ -629,10 +629,7 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
         // B3: SQL synth checks name the auth-gated row var directly.
         // If our subject's row chain leads into the same authorized
         // var family this check anchors to, accept the coverage.
-        if subject_anchor_authorized && unit.authorized_sql_vars.contains(&check_key) {
-            return true;
-        }
-        false
+        subject_anchor_authorized && unit.authorized_sql_vars.contains(&check_key)
     })
 }
 

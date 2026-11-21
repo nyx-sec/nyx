@@ -4889,7 +4889,7 @@ pub fn auth_check_from_call_site(
 /// `roots` is the Go request-root set of the enclosing unit (`None` for every
 /// other language).  When present, accessor calls such as `Get`, `Query` and
 /// `Param` only count as request input on a receiver rooted at one of those
-/// names; see [`accessor_call_value_ref`].
+/// names; see `accessor_call_value_ref`.
 pub fn extract_value_refs(
     node: Node<'_>,
     bytes: &[u8],

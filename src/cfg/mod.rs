@@ -331,7 +331,7 @@ pub(crate) fn lookup_local_receiver_type(
 /// inner call's AST node and its bare receiver text, return the
 /// `label_prefix()` for the receiver's locally-bound TypeKind, when
 /// available.  Java falls back to the receiver's declared type
-/// ([`java_declared_receiver_kind`]), so a chain hop on an injected field
+/// (`java_declared_receiver_kind`), so a chain hop on an injected field
 /// (`em.createQuery(q).getResultList()`, `http.send(req).body()`) is typed
 /// too.  Returns `None` when neither source types the receiver or the
 /// `TypeKind` has no label prefix.
@@ -782,7 +782,7 @@ pub struct CallMeta {
     /// types them for SSA type facts.  Type-qualified label resolution uses
     /// it after the SSA type facts and path environment.  Only set when the
     /// call carries no `Sink` label of its own; see
-    /// [`java_declared_receiver_kind`] for the kinds that qualify.
+    /// `java_declared_receiver_kind` for the kinds that qualify.
     #[serde(default)]
     pub receiver_decl_type: Option<crate::ssa::type_facts::TypeKind>,
 }
@@ -6763,11 +6763,7 @@ fn pp_should_suppress_index_set(
     }
 
     // 2 + 3. Dominator-style guard ancestors (reject + allowlist).
-    if pp_is_guarded_by_proto_check(assign_ast, idx_text, code) {
-        return true;
-    }
-
-    false
+    pp_is_guarded_by_proto_check(assign_ast, idx_text, code)
 }
 
 /// Dangerous prototype-pollution key strings.  Matches the literal

@@ -13145,12 +13145,7 @@ fn is_abstract_safe_for_sink(
     // + `starts_with` guard, `Component::Normal` iterator filter) flow
     // through to the leaf values via PathFact; this check is the single
     // point at which the axis conjunction suppresses the sink.
-    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
-    {
-        return true;
-    }
-
-    false
+    sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
 }
 
 /// Check every tainted leaf flowing into `inst`'s used values carries a
@@ -13276,12 +13271,7 @@ fn is_call_abstract_safe(
 
     // PathFact gate (Call path): mirrors non-Call suppression so the gate
     // fires regardless of which sink-detection branch produces the event.
-    if sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
-    {
-        return true;
-    }
-
-    false
+    sink_caps.intersects(Cap::FILE_IO) && is_path_safe_for_sink(inst, state, ssa, cfg, abs, lang)
 }
 
 /// Maximum backwards trace depth through Assign chains.

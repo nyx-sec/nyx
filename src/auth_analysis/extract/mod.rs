@@ -331,12 +331,11 @@ fn deduplicate_units_by_span(model: &mut AuthorizationModel) {
     // the old-idx → new-idx remap.
     let mut new_idx_for_old: HashMap<usize, usize> = HashMap::new();
     let mut surviving: Vec<AnalysisUnit> = Vec::with_capacity(winner_by_span.len());
-    for old_idx in 0..model.units.len() {
-        let span = model.units[old_idx].span;
-        let winner = *winner_by_span.get(&span).unwrap_or(&old_idx);
+    for (old_idx, unit) in model.units.iter().enumerate() {
+        let winner = *winner_by_span.get(&unit.span).unwrap_or(&old_idx);
         if winner == old_idx {
             new_idx_for_old.insert(old_idx, surviving.len());
-            surviving.push(model.units[old_idx].clone());
+            surviving.push(unit.clone());
         }
     }
 

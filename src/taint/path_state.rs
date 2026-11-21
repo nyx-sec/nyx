@@ -139,10 +139,7 @@ fn is_shell_metachar_rejection(text: &str) -> bool {
         }
     }
     // Regex character-class form: `.match(/[;|&]/)` / `re.search(r"[…]", …)`
-    if is_metachar_regex_class(text) {
-        return true;
-    }
-    false
+    is_metachar_regex_class(text)
 }
 
 /// Detect the C/C++ argv-injection guard used before exec-family calls:

@@ -291,10 +291,7 @@ pub fn run_all(ctx: &AnalysisContext) -> Vec<CfgFinding> {
     findings.retain(|f| {
         // If both taint and cfg-unguarded-sink fire on the same span,
         // suppress the structural CFG finding (taint is the primary signal).
-        if f.rule_id == "cfg-unguarded-sink" && taint_spans.contains(&f.span) {
-            return false;
-        }
-        true
+        !(f.rule_id == "cfg-unguarded-sink" && taint_spans.contains(&f.span))
     });
 
     // ── Dedup: suppress cfg-unguarded-sink when cfg-unreachable-sink covers the span ──
@@ -304,12 +301,8 @@ pub fn run_all(ctx: &AnalysisContext) -> Vec<CfgFinding> {
         .map(|f| f.span)
         .collect();
 
-    findings.retain(|f| {
-        if f.rule_id == "cfg-unguarded-sink" && unreachable_spans.contains(&f.span) {
-            return false;
-        }
-        true
-    });
+    findings
+        .retain(|f| !(f.rule_id == "cfg-unguarded-sink" && unreachable_spans.contains(&f.span)));
 
     scoring::score_findings(&mut findings, ctx);
     findings.sort_by(|a, b| {

@@ -421,7 +421,7 @@ fn names_receiver_state(lang: Lang, name: &str, locals: &std::collections::HashS
 /// bodies actually contain matching operations, never infers from names alone.
 ///
 /// A summary stands for "calling this method opens / closes its receiver", so
-/// only operations on receiver state count (see [`names_receiver_state`]).  A
+/// only operations on receiver state count (see `names_receiver_state`).  A
 /// function that opens and closes a local handle (`func write(p string) { f,
 /// _ := os.Create(p); ..; f.Close() }`) says nothing about the receiver of a
 /// same-named call elsewhere (`buf.Write(..)`).

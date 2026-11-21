@@ -114,18 +114,14 @@ fn is_dead(inst: &SsaInst, use_counts: &HashMap<SsaValue, usize>, cfg: &Cfg) -> 
     }
 
     // Never remove instructions whose CFG node has Sink, Source, or Sanitizer labels
-    if cfg.node_weight(inst.cfg_node).is_some_and(|info| {
+    !cfg.node_weight(inst.cfg_node).is_some_and(|info| {
         info.taint.labels.iter().any(|l| {
             matches!(
                 l,
                 DataLabel::Sink(_) | DataLabel::Source(_) | DataLabel::Sanitizer(_)
             )
         })
-    }) {
-        return false;
-    }
-
-    true
+    })
 }
 
 /// Get all SSA values used by an instruction.
