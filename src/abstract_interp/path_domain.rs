@@ -763,7 +763,10 @@ fn classify_path_rejection_atom(clause: &str) -> PathRejection {
         if needle == "/" || needle == "\\" {
             return PathRejection::AbsoluteSlash;
         }
-        if matches!(needle.as_str(), ".." | "../" | "..\\") {
+        // Only the bare `..` prefix test rejects every leading-dotdot
+        // form: a normalised path can be exactly `..`, or use `\` as the
+        // separator, and neither starts with `../`.
+        if needle == ".." {
             return PathRejection::LeadingDotDot;
         }
     }
@@ -950,6 +953,37 @@ pub fn classify_path_assertion(text: &str) -> PathAssertion {
             return classify_path_assertion(inner);
         }
     }
+    // `||` binds looser than `&&`, so it is split first: in `A && B || C` the
+    // true edge is also reached when `C` alone holds and no clause of `A && B`
+    // may lock it.  A disjunction (`p === false || !str_starts_with(p, root)`) is false only
+    // when every clause is false, so a clause that tests the root *negatively*
+    // locks the false edge.  A positive root test inside a disjunction says
+    // nothing about either edge.
+    let clauses = split_top_level_or(trimmed);
+    if clauses.len() > 1 {
+        for clause in clauses {
+            let clause = strip_outer_parens(clause);
+            // `!a && b` is false when `b` is false, so a conjunction clause
+            // says nothing about the false edge.
+            if has_top_level_and(clause) {
+                continue;
+            }
+            let locked_when_false = match strip_leading_not(clause) {
+                Some(rest) => match classify_path_assertion(rest) {
+                    PathAssertion::PrefixLock(root) => Some(root),
+                    _ => None,
+                },
+                None => match classify_path_assertion(clause) {
+                    PathAssertion::PrefixLockUnless(root) => Some(root),
+                    _ => None,
+                },
+            };
+            if let Some(root) = locked_when_false {
+                return PathAssertion::PrefixLockUnless(root);
+            }
+        }
+        return PathAssertion::None;
+    }
     // A conjunction is true only when every clause is true, so a clause that
     // tests the root positively locks the true edge.  Its false edge says
     // nothing, so a negated root test or a `PrefixLockUnless` clause inside
@@ -963,30 +997,6 @@ pub fn classify_path_assertion(text: &str) -> PathAssertion {
             }
             if let PathAssertion::PrefixLock(root) = classify_path_assertion(clause) {
                 return PathAssertion::PrefixLock(root);
-            }
-        }
-        return PathAssertion::None;
-    }
-    // A disjunction (`p === false || !str_starts_with(p, root)`) is false only
-    // when every clause is false, so a clause that tests the root *negatively*
-    // locks the false edge.  A positive root test inside a disjunction says
-    // nothing about either edge.
-    let clauses = split_top_level_or(trimmed);
-    if clauses.len() > 1 {
-        for clause in clauses {
-            let clause = strip_outer_parens(clause);
-            let locked_when_false = match strip_leading_not(clause) {
-                Some(rest) => match classify_path_assertion(rest) {
-                    PathAssertion::PrefixLock(root) => Some(root),
-                    _ => None,
-                },
-                None => match classify_path_assertion(clause) {
-                    PathAssertion::PrefixLockUnless(root) => Some(root),
-                    _ => None,
-                },
-            };
-            if let Some(root) = locked_when_false {
-                return PathAssertion::PrefixLockUnless(root);
             }
         }
         return PathAssertion::None;
@@ -1503,12 +1513,7 @@ fn extract_contains_arg(text: &str) -> Option<String> {
     // Tier 2: free-function form with the receiver as first arg.  We can't
     // recover the receiver from the text (the lowering already records it
     // in `condition_vars`); we just need the literal needle to classify.
-    for prefix in [
-        "strings.Contains(",
-        "strings.HasPrefix(",
-        "strings.Index(",
-        "strstr(",
-    ] {
+    for prefix in ["strings.Contains(", "strings.Index(", "strstr("] {
         if let Some(idx) = text.find(prefix) {
             // Skip past the first argument (receiver), the literal needle
             // is the second arg, separated by a comma.  Find the comma at
@@ -2752,7 +2757,7 @@ mod tests {
         for cond in [
             "p.startswith('..')",
             "p.startsWith(\"..\")",
-            "strings.HasPrefix(p, \"../\")",
+            "strings.HasPrefix(p, \"..\")",
             "p.start_with?('..')",
         ] {
             assert_eq!(
@@ -2761,11 +2766,38 @@ mod tests {
                 "{cond}"
             );
         }
+        // A one-separator test misses a normalised `..` and `..\\x`, so it is
+        // not a leading-dotdot rejection.
+        for cond in ["p.startsWith('../')", "strings.HasPrefix(p, \"..\\\\\")"] {
+            assert!(classify_path_rejection_axes(cond).is_empty(), "{cond}");
+        }
         // Mixed with the absolute test, each clause keeps its axis.
         let axes = classify_path_rejection_axes("p.startswith('..') or p.startswith('/')");
         assert!(axes.contains(&PathRejection::LeadingDotDot));
         assert!(axes.contains(&PathRejection::AbsoluteSlash));
         assert!(!axes.contains(&PathRejection::DotDot));
+    }
+
+    #[test]
+    fn disjunction_binds_looser_than_conjunction() {
+        // `A && B || C` also takes the true edge when only `C` holds.
+        for cond in [
+            "p.startsWith('/srv/files/') && ok || isAdmin",
+            "strpos($p, '/srv/files/') === 0 && $ok or $admin",
+            "isAdmin || p.startsWith('/srv/files/') && ok",
+        ] {
+            assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
+        }
+        // A conjunction clause inside a disjunction does not lock the false edge.
+        assert_eq!(
+            classify_path_assertion("!p.startsWith('/srv/files/') && ok || bad"),
+            PathAssertion::None
+        );
+        // Plain conjunction still locks the true edge.
+        assert_eq!(
+            classify_path_assertion("p.startsWith('/srv/files/') && ok"),
+            PathAssertion::PrefixLock("/srv/files/".to_string())
+        );
     }
 
     #[test]
