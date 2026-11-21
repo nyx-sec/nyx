@@ -5,7 +5,9 @@
 //! their idiomatic safe spellings are common enough to drown the real
 //! findings: an autoescaped template or a JSON body in the response, and
 //! `yaml.load(f, Loader=yaml.SafeLoader)`. Likewise `request.args.get(k,
-//! type=int)` is a request accessor that returns a number. The label table
+//! type=int)` is a request accessor that returns a number, and a SQLAlchemy
+//! statement built from `select(..).where(Col == value)` binds `value` as a
+//! parameter. The label table
 //! cannot see an argument, so the shape is recognised here from the call's AST
 //! and the node gets a same-node `Sanitizer` for the sink's own cap (all caps,
 //! for the accessor). That clears the taint finding and, because a node
@@ -149,6 +151,231 @@ fn response_body_is_safe(
     content_type.is_some_and(|ct| response_content_type_is_non_html(&ct))
 }
 
+/// Calls that start a SQLAlchemy statement.
+const STATEMENT_ROOTS: &[&str] = &["select", "insert", "update", "delete", "exists"];
+
+/// Methods that add a clause to a statement. Values given to them are bound
+/// as parameters, conditions are built from column expressions.
+const STATEMENT_METHODS: &[&str] = &[
+    "where",
+    "filter",
+    "filter_by",
+    "having",
+    "order_by",
+    "group_by",
+    "limit",
+    "offset",
+    "distinct",
+    "values",
+    "returning",
+    "options",
+    "select_from",
+    "join",
+    "outerjoin",
+    "with_for_update",
+];
+
+/// The clause methods that can continue a statement held in a variable
+/// (`stmt = stmt.where(..)`). `join`, `values` and the rest are left out
+/// because `" ".join(parts)` and `dict.values()` are not statements.
+const VARIABLE_STATEMENT_METHODS: &[&str] = &[
+    "where",
+    "filter",
+    "filter_by",
+    "having",
+    "order_by",
+    "group_by",
+    "limit",
+    "offset",
+];
+
+/// Column methods whose arguments are bound values (`User.name.like(q)`).
+const VALUE_METHODS: &[&str] = &[
+    "like",
+    "ilike",
+    "notlike",
+    "notilike",
+    "contains",
+    "startswith",
+    "endswith",
+    "in_",
+    "not_in",
+    "notin_",
+    "is_",
+    "is_not",
+    "isnot",
+    "between",
+];
+
+/// SQLAlchemy constructors that build a column expression from column
+/// expressions (`and_(a == 1, b == 2)`, `desc(User.id)`).  Any other call is
+/// an arbitrary function whose result is not known to be a bound expression.
+/// `func.<name>(..)` is also accepted, see [`is_column_expression`].
+const COLUMN_EXPRESSION_CALLS: &[&str] = &[
+    "and_",
+    "or_",
+    "not_",
+    "desc",
+    "asc",
+    "nulls_first",
+    "nulls_last",
+    "nullsfirst",
+    "nullslast",
+    "cast",
+    "coalesce",
+    "any_",
+    "all_",
+    "tuple_",
+    "distinct",
+    "case",
+];
+
+/// Calls that splice their argument into the SQL text.
+const RAW_SQL_CALLS: &[&str] = &["text", "literal_column", "sql_text"];
+
+/// Execution methods whose first argument can be a statement object.
+const EXECUTE_METHODS: &[&str] = &["execute", "scalar", "scalars", "exec", "stream"];
+
+/// Last segment of a call's callee: `select` for `select(..)`, `where` for
+/// `stmt.where(..)`.
+fn call_leaf<'a>(call: Node, code: &'a [u8]) -> Option<&'a str> {
+    let func = call.child_by_field_name("function")?;
+    let leaf = match func.kind() {
+        "identifier" => func,
+        "attribute" => func.child_by_field_name("attribute")?,
+        _ => return None,
+    };
+    std::str::from_utf8(&code[leaf.byte_range()]).ok()
+}
+
+/// True when no call under `node` splices text into SQL (`text(f"..")`).
+fn has_no_raw_sql_call(node: Node, code: &[u8]) -> bool {
+    if node.kind() == "call" && call_leaf(node, code).is_some_and(|l| RAW_SQL_CALLS.contains(&l)) {
+        return false;
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .all(|c| has_no_raw_sql_call(c, code))
+}
+
+/// True for an argument of a statement clause that is a column expression:
+/// comparisons (their operands are bound values), boolean combinations,
+/// column references and calls over those. A bare string is raw SQL text, so
+/// it is not one.
+fn is_column_expression(node: Node, code: &[u8]) -> bool {
+    match node.kind() {
+        "identifier" | "attribute" | "integer" | "float" | "true" | "false" | "none" => true,
+        "comparison_operator" => has_no_raw_sql_call(node, code),
+        "parenthesized_expression"
+        | "not_operator"
+        | "unary_operator"
+        | "boolean_operator"
+        | "list"
+        | "tuple" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .all(|c| is_column_expression(c, code))
+        }
+        "binary_operator" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .all(|c| c.kind() != "string" && is_column_expression(c, code))
+        }
+        "call" => {
+            let Some(leaf) = call_leaf(node, code) else {
+                return false;
+            };
+            if RAW_SQL_CALLS.contains(&leaf) {
+                return false;
+            }
+            let on_column = node
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "attribute");
+            if on_column && VALUE_METHODS.contains(&leaf) {
+                return has_no_raw_sql_call(node, code);
+            }
+            if is_statement_call(node, code, false) {
+                return true;
+            }
+            let func = node.child_by_field_name("function");
+            let is_expression_call = COLUMN_EXPRESSION_CALLS.contains(&leaf)
+                || func.is_some_and(|f| {
+                    f.kind() == "attribute"
+                        && f.child_by_field_name("object")
+                            .is_some_and(|o| &code[o.byte_range()] == b"func")
+                });
+            is_expression_call && call_args_are_column_expressions(node, code)
+        }
+        _ => false,
+    }
+}
+
+fn call_args_are_column_expressions(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    args.named_children(&mut cursor).all(|a| match a.kind() {
+        "comment" => true,
+        // `filter_by(name=name)`, `values(x=value)`: the value is bound.
+        "keyword_argument" => has_no_raw_sql_call(a, code),
+        _ => is_column_expression(a, code),
+    })
+}
+
+/// True when `call` is a SQLAlchemy statement (or a clause added to one)
+/// whose arguments are column expressions, so every value in it reaches the
+/// database as a bound parameter. A clause method counts when its receiver is
+/// such a statement, or, with `variable_receiver`, a plain variable and one of
+/// [`VARIABLE_STATEMENT_METHODS`].
+fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
+    if call.kind() != "call" {
+        return false;
+    }
+    let Some(leaf) = call_leaf(call, code) else {
+        return false;
+    };
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let rooted = match func.kind() {
+        // `from sqlalchemy import select`; a bare `delete(..)` or `update(..)`
+        // from anywhere else is an ordinary function.
+        "identifier" => {
+            STATEMENT_ROOTS.contains(&leaf)
+                && crate::ssa::type_facts::file_import_path(leaf)
+                    .is_some_and(|p| p.starts_with("sqlalchemy") || p.starts_with("sqlmodel"))
+        }
+        "attribute" => {
+            let Some(object) = func.child_by_field_name("object") else {
+                return false;
+            };
+            if STATEMENT_ROOTS.contains(&leaf) {
+                // `sa.select(..)`, `sqlalchemy.update(..)`.
+                matches!(
+                    std::str::from_utf8(&code[object.byte_range()]),
+                    Ok("sa" | "sqlalchemy" | "sql")
+                )
+            } else if STATEMENT_METHODS.contains(&leaf) {
+                match object.kind() {
+                    "call" => is_statement_call(object, code, false),
+                    "identifier" => variable_receiver && VARIABLE_STATEMENT_METHODS.contains(&leaf),
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+    rooted && call_args_are_column_expressions(call, code)
+}
+
+/// The first positional argument of `call`, unwrapping nothing.
+fn first_positional(call: Node) -> Option<Node> {
+    positional_args(call).and_then(|a| a.first().copied())
+}
+
 /// The same-node sanitizer a Python call node should carry because its call
 /// shape neutralises the sink it matched, or `None` to leave the labels as
 /// they are.
@@ -177,12 +404,18 @@ pub(super) fn safe_shape_sanitizer(
     let deser = has_sink(Cap::DESERIALIZE) && !has_sanitizer(Cap::DESERIALIZE);
     let source = labels.iter().any(|l| matches!(l, DataLabel::Source(_)))
         && !labels.iter().any(|l| matches!(l, DataLabel::Sanitizer(_)));
-    if !html && !deser && !source {
+    let sql = !has_sanitizer(Cap::SQL_QUERY);
+    let sql_sink = sql && has_sink(Cap::SQL_QUERY);
+    // A statement-building call is cheap to rule out from its name alone.
+    let written_leaf = text.rsplit('.').next().unwrap_or(text);
+    let written_leaf = written_leaf.split('(').next().unwrap_or(written_leaf);
+    let statement_node = sql
+        && (STATEMENT_METHODS.contains(&written_leaf) || STATEMENT_ROOTS.contains(&written_leaf));
+    if !html && !deser && !source && !sql_sink && !statement_node {
         return None;
     }
     // `text` can name an inner call the node was rebound to; the shape below
     // is only read off the call that `text` is the callee of.
-    let written_leaf = text.rsplit('.').next().unwrap_or(text);
     let call_callee = call
         .child_by_field_name("function")
         .and_then(|f| text_of(f, code))?;
@@ -192,6 +425,18 @@ pub(super) fn safe_shape_sanitizer(
     }
     if source && source_value_is_coerced(call, code) {
         return Some(DataLabel::Sanitizer(Cap::all()));
+    }
+    // `session.execute(select(User).where(User.name == name))`: the statement
+    // binds `name`. The statement held in a variable gets the same treatment
+    // on the line that builds it.
+    if sql_sink
+        && EXECUTE_METHODS.contains(&written_leaf)
+        && first_positional(call).is_some_and(|a| is_statement_call(a, code, false))
+    {
+        return Some(DataLabel::Sanitizer(Cap::SQL_QUERY));
+    }
+    if statement_node && is_statement_call(call, code, true) {
+        return Some(DataLabel::Sanitizer(Cap::SQL_QUERY));
     }
     let qualified = crate::labels::python_import_qualified(text);
     let callee = qualified.as_deref().unwrap_or(text);
@@ -386,6 +631,22 @@ mod cfg_tests {
         out
     }
 
+    /// True when no CFG node of `src` carries a sanitizer for `cap`.  Used
+    /// when the statement is not a node of its own (a raw-text call nested in
+    /// it is the node's callee).
+    fn no_node_sanitizes(src: &str, cap: Cap) -> bool {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let file = crate::cfg::build_cfg(&tree, src.as_bytes(), "python", "t.py", None);
+        file.bodies
+            .iter()
+            .flat_map(|b| b.graph.node_weights())
+            .all(|n| !sanitizes(&n.taint.labels, cap))
+    }
+
     fn sanitizes(labels: &[DataLabel], cap: Cap) -> bool {
         labels
             .iter()
@@ -539,5 +800,90 @@ mod cfg_tests {
                     .any(|l| matches!(l, DataLabel::Source(_)))
         });
         assert!(has_synth_source);
+    }
+
+    #[test]
+    fn bound_statement_builders_carry_a_sql_sanitizer() {
+        let imports = "from sqlalchemy import select, update, text\n";
+        for (body, leaf) in [
+            ("stmt = select(User).where(User.name == name)", "where"),
+            (
+                "stmt = select(User).where(User.name == name).order_by(User.id).limit(10)",
+                "limit",
+            ),
+            ("stmt = stmt.where(User.age > limit)", "where"),
+            ("stmt = stmt.filter_by(name=name)", "filter_by"),
+            (
+                "stmt = update(User).where(User.id == uid).values(name=name)",
+                "values",
+            ),
+            (
+                "stmt = select(User).where(User.name.like(f'%{q}%'))",
+                "where",
+            ),
+            (
+                "stmt = select(User).where(and_(User.a == a, User.b.in_(bs)))",
+                "where",
+            ),
+        ] {
+            let src = format!(
+                "{imports}def f(name, limit, uid, q, stmt):\n    {body}\n    return stmt\n"
+            );
+            assert!(all_sanitize(&src, leaf, Cap::SQL_QUERY), "{body}");
+        }
+    }
+
+    #[test]
+    fn statements_with_raw_sql_text_are_left_alone() {
+        let imports = "from sqlalchemy import select, text\n";
+        for body in [
+            "stmt = select(User).where(text(f\"n = '{name}'\"))",
+            "stmt = select(User).where(\"n = '%s'\" % name)",
+            "stmt = select(User).where(\"n = 1\")",
+            "stmt = select(User).order_by(text(sort))",
+            "stmt = select(User).where(User.id == text(name))",
+            "stmt = select(User).order_by(request.args.get('sort'))",
+            // An arbitrary function may return SQL text.
+            "stmt = select(User).where(build_condition(name))",
+            // Not a statement: `join` on a string, no receiver chain.
+            "stmt = ', '.join(parts)",
+        ] {
+            let src =
+                format!("{imports}def f(name, sort, parts, stmt):\n    {body}\n    return stmt\n");
+            assert!(no_node_sanitizes(&src, Cap::SQL_QUERY), "{body}");
+        }
+    }
+
+    #[test]
+    fn statement_roots_need_a_sqlalchemy_import() {
+        let src = "def f(url):\n    r = delete(url)\n    return r\n";
+        assert!(none_sanitize(src, "delete", Cap::SQL_QUERY));
+        let src =
+            "from sqlalchemy import delete\ndef f(uid):\n    r = delete(User)\n    return r\n";
+        assert!(all_sanitize(src, "delete", Cap::SQL_QUERY));
+        let src = "from requests import delete\ndef f(url):\n    r = delete(url)\n    return r\n";
+        assert!(none_sanitize(src, "delete", Cap::SQL_QUERY));
+    }
+
+    #[test]
+    fn executing_a_bound_statement_is_neutralised_but_raw_text_is_not() {
+        let imports = "from sqlalchemy import select, text\n";
+        for body in [
+            "return session.execute(select(User).where(User.name == name))",
+            "return session.execute(select(User).where(User.name == name), {'x': 1})",
+            "return session.execute(select(User).where(User.name == name).order_by(User.id))",
+        ] {
+            let src = format!("{imports}def f(session, name):\n    {body}\n");
+            assert!(all_sanitize(&src, "execute", Cap::SQL_QUERY), "{body}");
+        }
+        for body in [
+            "return session.execute(select(User).where(text(f\"n = '{name}'\")))",
+            "return session.execute(text(f\"select 1 where n = '{name}'\"))",
+            "return session.execute(f\"select 1 where n = '{name}'\")",
+            "return session.execute(stmt)",
+        ] {
+            let src = format!("{imports}def f(session, name, stmt):\n    {body}\n");
+            assert!(none_sanitize(&src, "execute", Cap::SQL_QUERY), "{body}");
+        }
     }
 }
