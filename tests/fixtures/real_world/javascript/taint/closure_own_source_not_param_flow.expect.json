@@ -1,0 +1,21 @@
+{
+  "description": "Timer closure reads its own env var and execs it; the wrapper's parameter is only logged. The closure's own env -> exec flow is reported, but the request value passed to schedule() must not be attributed to the exec.",
+  "tags": ["taint", "closure", "cmdi", "interprocedural", "safe", "express"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-unsanitised-flow"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "evidence_contains": [],
+      "notes": "process.env.CRON_CMD flows to cp.exec inside the timer closure"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [18, 18],
+      "notes": "schedule(req.query.name): the label never reaches the closure's exec, so the closure's own flow is not a flow from this argument"
+    }
+  ]
+}

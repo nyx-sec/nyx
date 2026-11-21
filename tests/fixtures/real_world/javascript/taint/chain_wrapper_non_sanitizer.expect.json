@@ -1,0 +1,23 @@
+{
+  "description": "A source read passed through wrappers that do not sanitise (a builtin conversion and a local helper that appends text). The nested-call shape must not be mistaken for a sanitised flow.",
+  "tags": ["taint", "xss", "chain-wrapper"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [5, 6],
+      "evidence_contains": [],
+      "notes": "String() does not strip anything, the source still reaches res.send"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [13, 14],
+      "evidence_contains": [],
+      "notes": "exclaim() only appends text, the source still reaches res.send"
+    }
+  ]
+}

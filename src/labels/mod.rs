@@ -2048,32 +2048,75 @@ pub fn bare_method_name(callee: &str) -> &str {
 /// `.` segments and no leading `<`), avoiding the heap allocation. Only
 /// pays for a `String` when the input actually needs rewriting; the hot
 /// classify path runs on every CFG node so the borrow case dominates.
+///
+/// The rewrite starts at the first offset where a left-to-right scan has
+/// to act: a `(` whose matching `)` ends the text or is followed by `.` (or
+/// that never closes), or a `<`.  One pass with a stack of open parens
+/// finds it, so callee texts that carry whole callback bodies
+/// (`wrap(function(){...}).then`) cost O(len) rather than O(len * nesting).
 fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => {
-                let mut depth = 1u32;
-                let mut j = i + 1;
-                while j < bytes.len() && depth > 0 {
-                    match bytes[j] {
-                        b'(' => depth += 1,
-                        b')' => depth -= 1,
-                        _ => {}
-                    }
-                    j += 1;
+    let mut open: SmallVec<[usize; 8]> = SmallVec::new();
+    let mut first_collapse = usize::MAX;
+    let mut first_angle = usize::MAX;
+    for (k, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => open.push(k),
+            b')' => {
+                if let Some(i) = open.pop()
+                    && (k + 1 >= bytes.len() || bytes[k + 1] == b'.')
+                {
+                    first_collapse = first_collapse.min(i);
                 }
-                if j >= bytes.len() || bytes[j] == b'.' {
-                    return std::borrow::Cow::Owned(normalize_chained_call_owned(text, i));
-                }
-                i += 1;
             }
-            b'<' => return std::borrow::Cow::Borrowed(&text[..i]),
-            _ => i += 1,
+            b'<' if first_angle == usize::MAX => {
+                first_angle = k;
+                // Nothing past this `<` can matter unless an open `(` before
+                // it may still close into a collapsing group.
+                if open.is_empty() {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
-    std::borrow::Cow::Borrowed(text)
+    // A `(` that never closes collapses like one closing at end of text.
+    if let Some(&i) = open.first() {
+        first_collapse = first_collapse.min(i);
+    }
+    if first_collapse < first_angle {
+        std::borrow::Cow::Owned(normalize_chained_call_owned(text, first_collapse))
+    } else if first_angle != usize::MAX {
+        std::borrow::Cow::Borrowed(&text[..first_angle])
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// Every `(` at or after `from` with the offset just past its matching `)`
+/// (`bytes.len()` when it never closes).  Returns the `(` offsets in
+/// ascending order and the parallel group ends, so a lookup is a binary
+/// search and memory is per paren, not per byte.
+fn paren_group_ends(bytes: &[u8], from: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut opens: Vec<usize> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
+    let mut stack: SmallVec<[usize; 8]> = SmallVec::new();
+    for (k, &b) in bytes.iter().enumerate().skip(from) {
+        match b {
+            b'(' => {
+                stack.push(opens.len());
+                opens.push(k);
+                ends.push(bytes.len());
+            }
+            b')' => {
+                if let Some(o) = stack.pop() {
+                    ends[o] = k + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    (opens, ends)
 }
 
 /// Slow path for `normalize_chained_call`: runs only when the input
@@ -2086,22 +2129,16 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
 /// contiguous slices to keep multi-byte UTF-8 sequences intact.
 fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
     let bytes = text.as_bytes();
+    let (paren_opens, paren_ends) = paren_group_ends(bytes, prefix_end);
     let mut result = String::with_capacity(text.len());
     result.push_str(&text[..prefix_end]);
     let mut i = prefix_end;
     while i < bytes.len() {
         match bytes[i] {
             b'(' => {
-                let mut depth = 1u32;
-                let mut j = i + 1;
-                while j < bytes.len() && depth > 0 {
-                    match bytes[j] {
-                        b'(' => depth += 1,
-                        b')' => depth -= 1,
-                        _ => {}
-                    }
-                    j += 1;
-                }
+                let j = paren_opens
+                    .binary_search(&i)
+                    .map_or(bytes.len(), |o| paren_ends[o]);
                 if j >= bytes.len() || bytes[j] == b'.' {
                     i = j;
                 } else {
@@ -2859,6 +2896,123 @@ mod tests {
         // Last paren-call before EOL is also collapsed (j >= bytes.len()).
         let r = normalize_chained_call("a.b()");
         assert_eq!(r.as_ref(), "a.b");
+    }
+
+    /// The quadratic scan `normalize_chained_call` used before it learned
+    /// to match parens in one pass.  Kept as the reference the linear
+    /// version must agree with byte for byte.
+    fn normalize_chained_call_reference(text: &str) -> String {
+        fn group_end(bytes: &[u8], i: usize) -> usize {
+            let mut depth = 1u32;
+            let mut j = i + 1;
+            while j < bytes.len() && depth > 0 {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            j
+        }
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        let mut prefix_end = None;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => {
+                    let j = group_end(bytes, i);
+                    if j >= bytes.len() || bytes[j] == b'.' {
+                        prefix_end = Some(i);
+                        break;
+                    }
+                    i += 1;
+                }
+                b'<' => return text[..i].to_string(),
+                _ => i += 1,
+            }
+        }
+        let Some(prefix_end) = prefix_end else {
+            return text.to_string();
+        };
+        let mut result = String::from(&text[..prefix_end]);
+        let mut i = prefix_end;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'(' => {
+                    let j = group_end(bytes, i);
+                    if j >= bytes.len() || bytes[j] == b'.' {
+                        i = j;
+                    } else {
+                        result.push('(');
+                        i += 1;
+                    }
+                }
+                b'<' => break,
+                _ => {
+                    let start = i;
+                    while i < bytes.len() && !matches!(bytes[i], b'(' | b'<') {
+                        i += 1;
+                    }
+                    result.push_str(&text[start..i]);
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn normalize_chained_call_matches_reference_scan() {
+        // Hand-picked shapes: nested groups, unmatched and stray parens,
+        // `<` inside and after groups, callback bodies in the chain.
+        let cases = [
+            "",
+            "a",
+            "(",
+            ")",
+            "()",
+            "(.",
+            ").(",
+            "f(x)",
+            "f(x).g",
+            "f(g(x)).h(y)",
+            "f(g(x).h)(y)",
+            "f(a(b(c)))z",
+            "f(a(b(c)).d)z",
+            "f((x)",
+            "f(x))).g",
+            "a.b(c<d>).e",
+            "a<b>(c).d",
+            "a(b<c).d",
+            "a(b(c<d).e)f",
+            "items.filter(function(x){ return g(x).h; }).map",
+            "wrap(function(){ a(b(c)).d(); }).then",
+            "Vec::<u8>::new().len",
+            "s.parse::<u32>().unwrap",
+            "x.y().🦀_id(z).w",
+        ];
+        for c in cases {
+            assert_eq!(
+                normalize_chained_call(c).as_ref(),
+                normalize_chained_call_reference(c),
+                "input {c:?}"
+            );
+        }
+        // Every string up to length 6 over a small alphabet that exercises
+        // all the bytes the scan reacts to.
+        let alphabet = ['(', ')', '.', '<', 'a'];
+        for len in 0..=6u32 {
+            for code in 0..alphabet.len().pow(len) {
+                let s: String = (0..len)
+                    .map(|d| alphabet[(code / alphabet.len().pow(d)) % alphabet.len()])
+                    .collect();
+                assert_eq!(
+                    normalize_chained_call(&s).as_ref(),
+                    normalize_chained_call_reference(&s),
+                    "input {s:?}"
+                );
+            }
+        }
     }
 
     #[test]

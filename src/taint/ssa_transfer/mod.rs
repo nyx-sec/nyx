@@ -17,6 +17,7 @@
     clippy::unnecessary_map_or
 )]
 
+mod call_text;
 mod events;
 mod inline;
 mod state;
@@ -25,6 +26,7 @@ mod summary_extract;
 #[cfg(test)]
 mod tests;
 
+use call_text::{CallTextFacts, call_text_facts};
 pub use events::{SsaTaintEvent, ssa_events_to_findings};
 pub(crate) use inline::{ArgTaintSig, InlineCache};
 use inline::{CachedInlineShape, InlineResult, MAX_INLINE_BLOCKS, ReturnShape};
@@ -44,7 +46,7 @@ use state::{
 pub(crate) use state::{
     push_origin_bounded, record_engine_note, reset_body_engine_notes, take_body_engine_notes,
 };
-pub(crate) use summary_extract::detect_path_confined_return;
+pub(crate) use summary_extract::{MAX_PROBE_PARAMS, detect_path_confined_return};
 pub use summary_extract::{extract_ssa_func_summary, extract_ssa_func_summary_full};
 
 use crate::abstract_interp::AbstractState;
@@ -58,14 +60,15 @@ use crate::ssa::ir::*;
 use crate::ssa::type_facts::InputValidatorPolarity;
 use crate::state::lattice::Lattice;
 use crate::state::symbol::SymbolInterner;
-use crate::summary::{CalleeQuery, CalleeResolution, GlobalSummaries, SinkSite};
+use crate::summary::{CallReceiver, CalleeQuery, GlobalSummaries, SinkSite};
 use crate::symbol::{FuncKey, Lang};
 use crate::taint::domain::{PredicateSummary, TaintOrigin, VarTaint, predicate_kind_bit};
 use crate::taint::path_state::{PredicateKind, classify_condition_with_target};
 use petgraph::graph::NodeIndex;
 use smallvec::SmallVec;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 
 // ── SSA Taint Transfer ──────────────────────────────────────────────────
@@ -317,6 +320,10 @@ fn run_ssa_taint_internal(
     track_exit_states: bool,
 ) -> SsaTaintRunResult {
     let num_blocks = ssa.blocks.len();
+
+    // Callee resolutions are reused across the worklist visits and the event
+    // replay of this run.
+    let _resolve_memo = ResolveMemoScope::enter(transfer);
 
     // Path-confinement gates: computed once for the whole body so the per-call
     // confinement passes (and their string-grammar name checks) are skipped in
@@ -2314,9 +2321,23 @@ pub(super) fn compute_confinement_gates(transfer: &SsaTaintTransfer) -> Confinem
     let Some(map) = transfer.ssa_summaries else {
         return ConfinementGates::default();
     };
+    if let Some((addr, lang, gates)) = CONFINEMENT_GATES_TLS.get()
+        && addr == std::ptr::from_ref(map) as usize
+        && lang == transfer.lang
+    {
+        return gates;
+    }
+    scan_confinement_gates(map, transfer.lang)
+}
+
+/// The scan behind [`compute_confinement_gates`]: one pass over the summary map.
+fn scan_confinement_gates(
+    map: &HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    lang: Lang,
+) -> ConfinementGates {
     let mut g = ConfinementGates::default();
     for (key, sum) in map.iter() {
-        if key.lang != transfer.lang {
+        if key.lang != lang {
             continue;
         }
         g.assert |= !sum.asserts_path_confined_params.is_empty();
@@ -2327,6 +2348,54 @@ pub(super) fn compute_confinement_gates(transfer: &SsaTaintTransfer) -> Confinem
         }
     }
     g
+}
+
+thread_local! {
+    /// Gates of the summary map held fixed by the innermost
+    /// [`ConfinementGatesScope`]: `(address of the map, language, gates)`.
+    static CONFINEMENT_GATES_TLS: Cell<Option<(usize, Lang, ConfinementGates)>> =
+        const { Cell::new(None) };
+}
+
+/// Computes the [`ConfinementGates`] of a summary map once and hands them to
+/// every taint run on this thread until the guard drops.
+///
+/// Without it each run scans the whole map, and a file with F functions makes
+/// O(F) runs per extraction (one baseline probe plus one per parameter) over F
+/// extractions, so the scans alone grow with F squared. The scope trades the
+/// scans for one.
+///
+/// The map is matched by address, so for as long as the guard lives the map
+/// must not change in any field the gates read (`confines_path_return`,
+/// `asserts_path_confined_params`, `result_reject_guard_params`) and no key may
+/// be added whose summary sets one of them. Most entry points open a scope
+/// while holding the map as a shared reference, which rules out any change;
+/// the child-sink augment pass grows only sink lists on existing entries.
+pub(crate) struct ConfinementGatesScope {
+    prev: Option<(usize, Lang, ConfinementGates)>,
+}
+
+impl ConfinementGatesScope {
+    pub(crate) fn enter(
+        summaries: Option<&HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>>,
+        lang: Lang,
+    ) -> Self {
+        let prev = CONFINEMENT_GATES_TLS.get();
+        if let Some(map) = summaries {
+            let addr = std::ptr::from_ref(map) as usize;
+            // An enclosing scope for the same map already holds the answer.
+            if !prev.is_some_and(|(a, l, _)| a == addr && l == lang) {
+                CONFINEMENT_GATES_TLS.set(Some((addr, lang, scan_confinement_gates(map, lang))));
+            }
+        }
+        ConfinementGatesScope { prev }
+    }
+}
+
+impl Drop for ConfinementGatesScope {
+    fn drop(&mut self) {
+        CONFINEMENT_GATES_TLS.set(self.prev);
+    }
 }
 
 /// Whether `NYX_DISABLE_CONFINEMENT_GATE=1` is set (forces all confinement
@@ -3368,9 +3437,8 @@ fn inline_analyse_callee_with_seeds(
             receiver_var,
             arity: arity_hint,
         };
-        let res = gs.resolve_callee(&query);
-        match res {
-            CalleeResolution::Resolved(key) => {
+        match gs.resolve_callee_unique(&query) {
+            Some(key) => {
                 let xfile_bodies = transfer.cross_file_bodies?;
                 let body = xfile_bodies.get(&key)?;
                 // Indexed-scan bodies deserialized from SQLite
@@ -3394,7 +3462,7 @@ fn inline_analyse_callee_with_seeds(
                 );
                 (key, body)
             }
-            _ => return None,
+            None => return None,
         }
     };
 
@@ -4995,7 +5063,13 @@ pub(super) fn transfer_inst(
             receiver,
             ..
         } => {
-            if is_noreturn_call(transfer.lang, callee) {
+            let text_facts = call_text_facts(
+                Some(transfer.lang),
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            );
+            if text_facts.noreturn {
                 *state = SsaTaintState::bot();
                 return;
             }
@@ -5003,7 +5077,7 @@ pub(super) fn transfer_inst(
             // Excluded callees (e.g. router.get, app.post) should not propagate
             // taint through their return value, they are framework scaffolding,
             // not data-flow operations.
-            if crate::labels::is_excluded(transfer.lang.as_str(), callee.as_bytes()) {
+            if text_facts.excluded {
                 return;
             }
 
@@ -5117,17 +5191,36 @@ pub(super) fn transfer_inst(
             //     parent of the nested source.  Multiple sanitizing
             //     wrappers across different positions is ambiguous; stay
             //     conservative and credit nothing.
+            //
+            // Only two readers use the set: the Source-label outer-callee
+            // suppression further down, and the Go `append` element-write
+            // hook below.  Resolving every wrapper's summary is the costly
+            // part, and a callback-heavy call resolves one per closure
+            // argument, so the walk runs only when a reader can consume it.
+            let has_source_label = has_source_label_on_node(info);
+            let go_append_chain = transfer.lang == Lang::Go
+                && receiver.is_none()
+                && (callee == "append" || info.call.outer_callee.as_deref() == Some("append"));
             let caller_func_for_chain = info.ast.enclosing_func.as_deref().unwrap_or("");
             let mut chain_wrapper_sanitizer_caps = Cap::empty();
-            if !info.arg_callees.is_empty() {
+            if !info.arg_callees.is_empty() && (has_source_label || go_append_chain) {
                 let source_arg_pos = info
                     .arg_callees
                     .iter()
                     .position(|c| c.as_deref() == Some(callee.as_str()));
                 let mut per_arg_sanitizer_caps: SmallVec<[Cap; 4]> = SmallVec::new();
-                for (idx, maybe_callee) in info.arg_callees.iter().enumerate() {
-                    if Some(idx) == source_arg_pos {
-                        continue;
+                // With the source as an argument callee nothing is credited,
+                // so there is no wrapper to look at.
+                let wrappers: &[Option<String>] = if source_arg_pos.is_none() {
+                    &info.arg_callees
+                } else {
+                    &[]
+                };
+                for maybe_callee in wrappers {
+                    if per_arg_sanitizer_caps.len() >= 2 {
+                        // A second sanitising wrapper makes the credit
+                        // ambiguous, so the result is already empty.
+                        break;
                     }
                     let Some(wrap_callee) = maybe_callee else {
                         continue;
@@ -5184,9 +5277,6 @@ pub(super) fn transfer_inst(
             //     `args[0]` is the slice itself, value args start at
             //     position 1.
             if let Some(pf) = transfer.pointer_facts {
-                let go_append_chain = transfer.lang == Lang::Go
-                    && receiver.is_none()
-                    && (callee == "append" || info.call.outer_callee.as_deref() == Some("append"));
                 // For Go append, args[0] is the input slice whose
                 // points-to set may be empty when the slice was just
                 // initialised with a composite literal (`cmds :=
@@ -5443,11 +5533,6 @@ pub(super) fn transfer_inst(
             // summary propagation and sanitizer behaviour must still apply
             // (matches legacy `apply_call()` semantics).
             let caller_func = info.ast.enclosing_func.as_deref().unwrap_or("");
-            let has_source_label = info
-                .taint
-                .labels
-                .iter()
-                .any(|l| matches!(l, DataLabel::Source(_)));
 
             let mut resolved_callee = false;
 
@@ -7282,6 +7367,16 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
     use crate::cfg::BinOp;
 
     let info = &cfg[inst.cfg_node];
+    // Text-only questions about the callee, answered once per distinct callee.
+    let facts = match &inst.op {
+        SsaOp::Call { callee, .. } => call_text_facts(
+            lang,
+            callee,
+            info.call.outer_callee.as_deref(),
+            info.call.is_constructor,
+        ),
+        _ => CallTextFacts::default(),
+    };
     match &inst.op {
         SsaOp::Const(Some(text)) => {
             let trimmed = text.trim();
@@ -7514,28 +7609,12 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
         // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
         // Ruby `URI.join(base, path)`.
-        SsaOp::Call { callee, args, .. }
-            if lang
-                .and_then(|l| {
-                    crate::ssa::type_facts::url_builder_arg_indices(
-                        l,
-                        callee,
-                        info.call.outer_callee.as_deref(),
-                        info.call.is_constructor,
-                    )
-                })
-                .is_some_and(|(_p, base_idx)| {
-                    url_builder_concrete_base(info, args, abs, base_idx).is_some()
-                }) =>
+        SsaOp::Call { args, .. }
+            if facts.url_builder.is_some_and(|(_p, base_idx)| {
+                url_builder_concrete_base(info, args, abs, base_idx).is_some()
+            }) =>
         {
-            let lang_u = lang.expect("guard ensures lang.is_some()");
-            let (path_idx, base_idx) = crate::ssa::type_facts::url_builder_arg_indices(
-                lang_u,
-                callee,
-                info.call.outer_callee.as_deref(),
-                info.call.is_constructor,
-            )
-            .expect("guard ensures Some");
+            let (path_idx, base_idx) = facts.url_builder.expect("guard ensures Some");
             let base =
                 url_builder_concrete_base(info, args, abs, base_idx).expect("guard ensures Some");
             let path_string = args
@@ -7565,32 +7644,14 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // 2-arg `(base, path)` shape is handled by the
         // `url_builder_arg_indices` arm above; this single-arg arm only
         // fires when that arm doesn't.
-        SsaOp::Call { callee, args, .. }
-            if lang.is_some_and(|l| {
-                let l_u = l;
-                let is_url_ctor = info.call.is_constructor
-                    && crate::ssa::type_facts::constructor_type(l_u, callee)
-                        == Some(crate::ssa::type_facts::TypeKind::Url);
-                let via_outer = info.call.outer_callee.as_deref().is_some_and(|oc| {
-                    crate::ssa::type_facts::constructor_type(l_u, oc)
-                        == Some(crate::ssa::type_facts::TypeKind::Url)
-                });
-                let is_static_factory =
-                    crate::ssa::type_facts::is_url_single_arg_factory(l_u, callee);
-                (is_url_ctor || via_outer || is_static_factory)
-                    && crate::ssa::type_facts::url_builder_arg_indices(
-                        l_u,
-                        callee,
-                        info.call.outer_callee.as_deref(),
-                        info.call.is_constructor,
-                    )
-                    .is_none_or(|(_p, base_idx)| {
-                        // Skip when the 2-arg arm above would already
-                        // have fired (it consumed a literal or
-                        // const-bound singleton base).
-                        url_builder_concrete_base(info, args, abs, base_idx).is_none()
-                    })
-            }) =>
+        SsaOp::Call { args, .. }
+            if facts.url_single_arg
+                && facts.url_builder.is_none_or(|(_p, base_idx)| {
+                    // Skip when the 2-arg arm above would already
+                    // have fired (it consumed a literal or
+                    // const-bound singleton base).
+                    url_builder_concrete_base(info, args, abs, base_idx).is_none()
+                }) =>
         {
             let arg_string = args
                 .first()
@@ -7613,7 +7674,7 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // Known integer-producing calls get a bounded interval so downstream
         // arithmetic transfer produces useful facts (e.g. parseInt(x) * 10).
         // Unknown calls: implicit Top (don't store).
-        SsaOp::Call { callee, .. } if is_int_producing_callee(callee) => {
+        SsaOp::Call { .. } if facts.int_producing => {
             abs.set(
                 inst.value,
                 AbstractValue {
@@ -7785,11 +7846,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
 
         _ => {}
     }
-}
-
-/// Re-export from type_facts for use in transfer_abstract.
-fn is_int_producing_callee(callee: &str) -> bool {
-    crate::ssa::type_facts::is_int_producing_callee(callee)
 }
 
 /// Structural check: does `callee` look like a Rust scoped identifier
@@ -10271,9 +10327,9 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
     if let Some(r) = primary.filter(|r| !r.sink_caps.is_empty()) {
         return SinkInfo {
             caps: r.sink_caps,
-            param_to_sink: r.param_to_sink,
-            param_to_sink_sites: r.param_to_sink_sites,
-            param_to_gate_filters: r.param_to_gate_filters,
+            param_to_sink: r.param_to_sink.clone(),
+            param_to_sink_sites: r.param_to_sink_sites.clone(),
+            param_to_gate_filters: r.param_to_gate_filters.clone(),
         };
     }
 
@@ -10297,9 +10353,9 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
         {
             return SinkInfo {
                 caps: r.sink_caps,
-                param_to_sink: r.param_to_sink,
-                param_to_sink_sites: r.param_to_sink_sites,
-                param_to_gate_filters: r.param_to_gate_filters,
+                param_to_sink: r.param_to_sink.clone(),
+                param_to_sink_sites: r.param_to_sink_sites.clone(),
+                param_to_gate_filters: r.param_to_gate_filters.clone(),
             };
         }
     }
@@ -11362,6 +11418,25 @@ fn resolve_type_qualified_labels_with_args(
     (SmallVec::new(), None)
 }
 
+/// The instruction that defines `v`. The value table names the defining block,
+/// so only that block is searched; a hand-built body whose table disagrees with
+/// its block layout falls back to scanning every block.
+fn defining_inst(body: &SsaBody, v: SsaValue) -> Option<&SsaInst> {
+    fn in_block(b: &SsaBlock, v: SsaValue) -> Option<&SsaInst> {
+        b.phis
+            .iter()
+            .chain(b.body.iter())
+            .find(|inst| inst.value == v)
+    }
+    if let Some(vd) = body.value_defs.get(v.0 as usize)
+        && let Some(block) = body.blocks.get(vd.block.0 as usize)
+        && let Some(inst) = in_block(block, v)
+    {
+        return Some(inst);
+    }
+    body.blocks.iter().find_map(|b| in_block(b, v))
+}
+
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
 /// chains to collect candidate SSA values for type-fact lookup.
 ///
@@ -11389,31 +11464,26 @@ fn receiver_candidates_for_type_lookup(
     for _ in 0..8 {
         // Find the instruction defining `current`.
         let mut next_receiver: Option<SsaValue> = None;
-        'scan: for block in &body.blocks {
-            for inst in block.phis.iter().chain(block.body.iter()) {
-                if inst.value == current {
-                    match &inst.op {
-                        // FieldProj receiver chain, universal.
-                        SsaOp::FieldProj { receiver, .. } => {
-                            next_receiver = Some(*receiver);
-                        }
-                        // Chain through nested Call receivers.  Rust:
-                        // `conn.execute(x).unwrap()` parsed as one outer
-                        // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
-                        // where the FieldProj walks `searchParams →
-                        // <call result>` and we want to keep walking
-                        // through the `getUrl()` call to surface the
-                        // original URL receiver value (Phase 09 deferred
-                        // fix).
-                        SsaOp::Call {
-                            receiver: Some(rv), ..
-                        } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
-                            next_receiver = Some(*rv);
-                        }
-                        _ => {}
-                    }
-                    break 'scan;
+        if let Some(inst) = defining_inst(body, current) {
+            match &inst.op {
+                // FieldProj receiver chain, universal.
+                SsaOp::FieldProj { receiver, .. } => {
+                    next_receiver = Some(*receiver);
                 }
+                // Chain through nested Call receivers.  Rust:
+                // `conn.execute(x).unwrap()` parsed as one outer
+                // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
+                // where the FieldProj walks `searchParams →
+                // <call result>` and we want to keep walking
+                // through the `getUrl()` call to surface the
+                // original URL receiver value (Phase 09 deferred
+                // fix).
+                SsaOp::Call {
+                    receiver: Some(rv), ..
+                } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
+                    next_receiver = Some(*rv);
+                }
+                _ => {}
             }
         }
         match next_receiver {
@@ -12647,10 +12717,20 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
         }
     }
 
-    if let Some(cc) = q.caller_container {
-        if let Some(k) = pick_with_container(cc) {
-            return Some(k);
+    // Mirrors `GlobalSummaries::resolve_callee` step 3: only a call on the
+    // caller's own instance resolves through the caller's container.  A
+    // `super` / `parent` call targets a supertype, which this file-local
+    // index cannot see, so it is left to the global resolver.
+    match q.receiver() {
+        CallReceiver::Own => {
+            if let Some(cc) = q.caller_container
+                && let Some(k) = pick_with_container(cc)
+            {
+                return Some(k);
+            }
         }
+        CallReceiver::Super => return None,
+        CallReceiver::Other => {}
     }
 
     let arity_filtered: Vec<&FuncKey> = all.iter().copied().filter(|k| arity_matches(k)).collect();
@@ -12854,7 +12934,7 @@ fn resolve_callee(
     callee: &str,
     caller_func: &str,
     call_ordinal: u32,
-) -> Option<ResolvedSummary> {
+) -> Option<Rc<ResolvedSummary>> {
     resolve_callee_hinted(transfer, callee, caller_func, call_ordinal, None)
 }
 
@@ -12871,7 +12951,7 @@ fn resolve_callee_hinted(
     caller_func: &str,
     call_ordinal: u32,
     arity_hint: Option<usize>,
-) -> Option<ResolvedSummary> {
+) -> Option<Rc<ResolvedSummary>> {
     resolve_callee_full(
         transfer,
         callee,
@@ -12895,7 +12975,7 @@ fn resolve_callee_typed(
     call_ordinal: u32,
     arity_hint: Option<usize>,
     receiver: Option<SsaValue>,
-) -> Option<ResolvedSummary> {
+) -> Option<Rc<ResolvedSummary>> {
     let receiver_type = receiver_type_prefix(transfer, receiver);
     resolve_callee_full(
         transfer,
@@ -12920,7 +13000,206 @@ fn receiver_type_prefix(
     kind.label_prefix()
 }
 
+// ── Per-run callee resolution memo ──────────────────────────────────────
+
+/// One answer of [`resolve_callee_full`] together with the inputs that
+/// selected it.
+struct ResolveMemoEntry {
+    callee: String,
+    caller_func: String,
+    call_ordinal: u32,
+    arity_hint: Option<usize>,
+    receiver_type: Option<String>,
+    result: Option<Rc<ResolvedSummary>>,
+}
+
+impl ResolveMemoEntry {
+    fn matches(
+        &self,
+        callee: &str,
+        caller_func: &str,
+        call_ordinal: u32,
+        arity_hint: Option<usize>,
+        receiver_type: Option<&str>,
+    ) -> bool {
+        self.call_ordinal == call_ordinal
+            && self.arity_hint == arity_hint
+            && self.receiver_type.as_deref() == receiver_type
+            && self.callee == callee
+            && self.caller_func == caller_func
+    }
+}
+
+struct ResolveMemoFrame {
+    /// Address of the [`SsaTaintTransfer`] the entries were computed for.
+    owner: usize,
+    entries: rustc_hash::FxHashMap<u64, SmallVec<[ResolveMemoEntry; 1]>>,
+}
+
+thread_local! {
+    /// Stack of memo frames, one per taint run in progress on this thread. An
+    /// inline analysis nests a run for the callee body inside the caller's run.
+    static RESOLVE_MEMO: RefCell<Vec<ResolveMemoFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Keeps what [`resolve_callee_full`] has answered during one taint run.
+///
+/// A run visits each block of the body again whenever a predecessor's state
+/// changes, then replays every block once more to collect events, and every
+/// visit resolves the same calls. During a run the inputs of a resolution do
+/// not change: the transfer is borrowed immutably, and it holds shared
+/// references to the summaries it consults. So the answer for a call site is
+/// worked out once and shared.
+///
+/// A frame answers only for the transfer that opened it, matched by address.
+/// An inline analysis builds its own transfer for the callee body and opens its
+/// own frame; lookups made with any other transfer bypass the memo.
+pub(super) struct ResolveMemoScope {
+    pushed: bool,
+}
+
+impl ResolveMemoScope {
+    pub(super) fn enter(transfer: &SsaTaintTransfer) -> Self {
+        if resolve_memo_disabled() {
+            return ResolveMemoScope { pushed: false };
+        }
+        RESOLVE_MEMO.with(|m| {
+            m.borrow_mut().push(ResolveMemoFrame {
+                owner: std::ptr::from_ref(transfer) as usize,
+                entries: Default::default(),
+            });
+        });
+        ResolveMemoScope { pushed: true }
+    }
+}
+
+impl Drop for ResolveMemoScope {
+    fn drop(&mut self) {
+        if self.pushed {
+            RESOLVE_MEMO.with(|m| {
+                m.borrow_mut().pop();
+            });
+        }
+    }
+}
+
+/// `NYX_DISABLE_RESOLVE_MEMO=1` resolves every call from scratch, to compare
+/// the memoised and plain paths from one binary. Read once per process.
+fn resolve_memo_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("NYX_DISABLE_RESOLVE_MEMO")
+            .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+    })
+}
+
+fn resolve_memo_key(
+    callee: &str,
+    caller_func: &str,
+    call_ordinal: u32,
+    arity_hint: Option<usize>,
+    receiver_type: Option<&str>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    callee.hash(&mut h);
+    caller_func.hash(&mut h);
+    call_ordinal.hash(&mut h);
+    arity_hint.hash(&mut h);
+    receiver_type.hash(&mut h);
+    h.finish()
+}
+
 fn resolve_callee_full(
+    transfer: &SsaTaintTransfer,
+    callee: &str,
+    caller_func: &str,
+    call_ordinal: u32,
+    arity_hint: Option<usize>,
+    receiver_type: Option<&str>,
+) -> Option<Rc<ResolvedSummary>> {
+    let owner = std::ptr::from_ref(transfer) as usize;
+    let key = resolve_memo_key(callee, caller_func, call_ordinal, arity_hint, receiver_type);
+    let hit = RESOLVE_MEMO.with(|m| {
+        let frames = m.borrow();
+        let frame = frames.last().filter(|f| f.owner == owner)?;
+        let entry =
+            frame.entries.get(&key)?.iter().find(|e| {
+                e.matches(callee, caller_func, call_ordinal, arity_hint, receiver_type)
+            })?;
+        Some(entry.result.clone())
+    });
+    if let Some(result) = hit {
+        return result;
+    }
+
+    let result = resolve_callee_uncached(
+        transfer,
+        callee,
+        caller_func,
+        call_ordinal,
+        arity_hint,
+        receiver_type,
+    );
+
+    RESOLVE_MEMO.with(|m| {
+        let mut frames = m.borrow_mut();
+        if let Some(frame) = frames.last_mut().filter(|f| f.owner == owner) {
+            frame
+                .entries
+                .entry(key)
+                .or_default()
+                .push(ResolveMemoEntry {
+                    callee: callee.to_string(),
+                    caller_func: caller_func.to_string(),
+                    call_ordinal,
+                    arity_hint,
+                    receiver_type: receiver_type.map(str::to_string),
+                    result: result.clone(),
+                });
+        }
+    });
+    result
+}
+
+fn resolve_callee_uncached(
+    transfer: &SsaTaintTransfer,
+    callee: &str,
+    caller_func: &str,
+    call_ordinal: u32,
+    arity_hint: Option<usize>,
+    receiver_type: Option<&str>,
+) -> Option<Rc<ResolvedSummary>> {
+    // -2) Import alias resolution: if the callee matches an aliased import
+    // (e.g. `fetchUserCmd` → `getInput` from `./source`), resolve using the
+    // original exported name instead.  This fires before all other resolution
+    // so that downstream steps see the canonical symbol name.
+    if let Some(bindings) = transfer.import_bindings {
+        if let Some(binding) = bindings.get(callee_leaf_name(callee)) {
+            // Recursively resolve using the original name, preserving the
+            // arity hint (the import alias does not change call arity).
+            return resolve_callee_hinted(
+                transfer,
+                &binding.original,
+                caller_func,
+                call_ordinal,
+                arity_hint,
+            );
+        }
+    }
+    resolve_callee_steps(
+        transfer,
+        callee,
+        caller_func,
+        call_ordinal,
+        arity_hint,
+        receiver_type,
+    )
+    .map(Rc::new)
+}
+
+fn resolve_callee_steps(
     transfer: &SsaTaintTransfer,
     callee: &str,
     caller_func: &str,
@@ -12935,24 +13214,6 @@ fn resolve_callee_full(
     // prefix is the syntactic receiver variable, which we treat as a
     // soft hint.
     let (namespace_qualifier, receiver_var) = split_qualifier(callee);
-
-    // -2) Import alias resolution: if the callee matches an aliased import
-    // (e.g. `fetchUserCmd` → `getInput` from `./source`), resolve using the
-    // original exported name instead.  This fires before all other resolution
-    // so that downstream steps see the canonical symbol name.
-    if let Some(bindings) = transfer.import_bindings {
-        if let Some(binding) = bindings.get(normalized) {
-            // Recursively resolve using the original name, preserving the
-            // arity hint (the import alias does not change call arity).
-            return resolve_callee_hinted(
-                transfer,
-                &binding.original,
-                caller_func,
-                call_ordinal,
-                arity_hint,
-            );
-        }
-    }
 
     // -1) Callback resolution: if the callee name matches a parameter that was
     // bound to a specific function at the call site, resolve that function instead.

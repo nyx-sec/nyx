@@ -4935,17 +4935,19 @@ pub fn span(node: Node<'_>) -> (usize, usize) {
     (node.start_byte(), node.end_byte())
 }
 
+/// Drop later refs that repeat an earlier ref's `(name, span)`, keeping the
+/// first-seen order. One hash probe per ref, so a unit with thousands of refs
+/// does not pay a pairwise string comparison.
 fn dedup_value_refs(values: &mut Vec<ValueRef>) {
-    let mut deduped = Vec::new();
-    for value in values.drain(..) {
-        if !deduped
-            .iter()
-            .any(|existing: &ValueRef| existing.name == value.name && existing.span == value.span)
-        {
-            deduped.push(value);
-        }
-    }
-    *values = deduped;
+    let mut seen: rustc_hash::FxHashSet<((usize, usize), &str)> =
+        rustc_hash::FxHashSet::with_capacity_and_hasher(values.len(), Default::default());
+    let keep: Vec<bool> = values
+        .iter()
+        .map(|v| seen.insert((v.span, v.name.as_str())))
+        .collect();
+    drop(seen);
+    let mut keep = keep.into_iter();
+    values.retain(|_| keep.next().unwrap_or(true));
 }
 
 fn lower_segments(chain: &[String]) -> Vec<String> {
@@ -5030,8 +5032,58 @@ fn accessor_call_value_ref(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_owner_field_subject, is_self_actor_subject, is_self_actor_type_text};
+    use super::{
+        dedup_value_refs, is_owner_field_subject, is_self_actor_subject, is_self_actor_type_text,
+    };
     use crate::auth_analysis::model::{ValueRef, ValueSourceKind};
+
+    fn value_ref(name: &str, span: (usize, usize)) -> ValueRef {
+        ValueRef {
+            source_kind: ValueSourceKind::RequestParam,
+            name: name.into(),
+            base: None,
+            field: None,
+            index: None,
+            span,
+        }
+    }
+
+    #[test]
+    fn dedup_value_refs_keys_on_name_and_span_and_keeps_first_seen_order() {
+        let mut refs = vec![
+            value_ref("id", (0, 2)),
+            value_ref("name", (0, 2)), // same span, other name: kept
+            value_ref("id", (10, 12)), // same name, other span: kept
+            value_ref("id", (0, 2)),   // exact repeat: dropped
+            value_ref("name", (0, 2)), // exact repeat: dropped
+            value_ref("token", (3, 8)),
+            value_ref("id", (10, 12)), // exact repeat: dropped
+        ];
+        dedup_value_refs(&mut refs);
+        let got: Vec<(&str, (usize, usize))> =
+            refs.iter().map(|r| (r.name.as_str(), r.span)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("id", (0, 2)),
+                ("name", (0, 2)),
+                ("id", (10, 12)),
+                ("token", (3, 8)),
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_value_refs_keeps_the_first_occurrence_of_a_duplicate() {
+        let mut first = value_ref("id", (0, 2));
+        first.base = Some("req".into());
+        let mut later = value_ref("id", (0, 2));
+        later.base = Some("other".into());
+        let mut refs = vec![first, later];
+        dedup_value_refs(&mut refs);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].base.as_deref(), Some("req"));
+    }
 
     #[test]
     fn is_self_actor_type_text_matches_known_wrappers() {

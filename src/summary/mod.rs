@@ -562,8 +562,11 @@ pub struct CalleeQuery<'a> {
     /// `std::env::var` in Rust the caller passes `"env"`; for `http.Get`
     /// in Go, `"http"`.  Left `None` for purely bare calls.
     pub namespace_qualifier: Option<&'a str>,
-    /// Syntactic receiver variable name.  Used only as a tie-breaker, a
-    /// variable name is a weak proxy for a class name.
+    /// Syntactic receiver: the segment right before the leaf name (`"repo"`
+    /// in `this.repo.find()`, `"super"` in `super.init()`).  Decides
+    /// whether the caller's own container may hold the target (see
+    /// [`CallReceiver`]); otherwise only a tie-breaker, since a variable
+    /// name is a weak proxy for a class name.
     pub receiver_var: Option<&'a str>,
     /// Positional-argument count at the call site.  Hard filter when set.
     pub arity: Option<usize>,
@@ -579,9 +582,170 @@ impl<'a> CalleeQuery<'a> {
             || self.namespace_qualifier.is_some()
             || self.caller_container.is_some_and(|s| !s.is_empty())
     }
+
+    /// How the call's receiver relates to the caller's own instance.
+    pub fn receiver(&self) -> CallReceiver {
+        classify_call_receiver(self.caller_lang, self.receiver_var, self.caller_container)
+    }
+}
+
+/// How a call's receiver relates to the instance the calling function
+/// runs on.  Only an [`CallReceiver::Own`] call can target a method of the
+/// caller's own container through the caller-container resolution step,
+/// and only an `Own` call can be the caller calling itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallReceiver {
+    /// No receiver (`foo()`), the caller's own instance or class
+    /// (`this.foo()`, `self::foo()`, `static::foo()`, `cls.foo()`,
+    /// `Owner::foo()` inside `Owner`), or a Go method receiver, which each
+    /// method names freely.
+    Own,
+    /// The caller's supertype: `super.foo()`, `super().foo()`,
+    /// `parent::foo()`.  Never the caller's own container.
+    Super,
+    /// Any other object: `repo.find()`, `this.repo.find()`,
+    /// `$this->inner->get()`, `json.dumps()`.
+    Other,
+}
+
+/// Classify a call's receiver.  `receiver` is the receiver text the
+/// callee name carries before its leaf (`None` for a bare call); a
+/// multi-segment chain such as `this.repo` or `$this->inner` is a field
+/// of some object, never the caller's own instance.
+pub fn classify_call_receiver(
+    lang: Lang,
+    receiver: Option<&str>,
+    caller_container: Option<&str>,
+) -> CallReceiver {
+    let Some(r) = receiver.filter(|r| !r.is_empty()) else {
+        return CallReceiver::Own;
+    };
+    match r {
+        "this" | "self" | "$this" | "static" | "Self" | "cls" => CallReceiver::Own,
+        "super" | "parent" => CallReceiver::Super,
+        _ if r.starts_with("super(") => CallReceiver::Super,
+        _ if caller_container.is_some_and(|c| !c.is_empty() && c == r) => CallReceiver::Own,
+        _ if lang == Lang::Go && r.chars().all(|c| c == '_' || c.is_alphanumeric()) => {
+            CallReceiver::Own
+        }
+        _ => CallReceiver::Other,
+    }
+}
+
+/// The fields of a [`FuncSummary`] the SCC fixed-point loop compares
+/// between iterations: `(source_caps, sanitizer_caps, sink_caps,
+/// propagating_params)`.
+pub type CapsFingerprint = (u32, u32, u32, Vec<usize>);
+
+pub fn caps_fingerprint(s: &FuncSummary) -> CapsFingerprint {
+    (
+        s.source_caps,
+        s.sanitizer_caps,
+        s.sink_caps,
+        s.propagating_params.clone(),
+    )
+}
+
+/// Pre-write values of every key written through
+/// [`GlobalSummaries::insert_tracked`] / [`GlobalSummaries::insert_ssa_tracked`]
+/// since the log was created.
+///
+/// One SCC fixed-point iteration writes only the summaries of the files it
+/// re-analysed, so comparing each written key's first pre-write value with
+/// its current value finds every key that changed, at O(keys written)
+/// instead of the O(functions in the repo) a whole-map snapshot diff costs.
+/// A key that did not exist before its first write counts as changed.
+#[derive(Default)]
+pub struct SummaryChangeLog {
+    caps_before: HashMap<FuncKey, Option<CapsFingerprint>>,
+    ssa_before: HashMap<FuncKey, Option<SsaFuncSummary>>,
+}
+
+impl SummaryChangeLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Written keys whose [`caps_fingerprint`] differs from before.
+    pub fn changed_cap_keys(&self, gs: &GlobalSummaries) -> std::collections::HashSet<FuncKey> {
+        self.caps_before
+            .iter()
+            .filter(|(k, before)| {
+                let now = gs.by_key.get(*k).map(caps_fingerprint);
+                now != **before
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// Written keys whose SSA summary carries different facts than before
+    /// (see [`SsaFuncSummary::same_facts`]).
+    pub fn changed_ssa_keys(&self, gs: &GlobalSummaries) -> std::collections::HashSet<FuncKey> {
+        self.ssa_before
+            .iter()
+            .filter(
+                |(k, before)| match (gs.ssa_by_key.get(*k), Option::as_ref(*before)) {
+                    (Some(now), Some(before)) => !now.same_facts(before),
+                    (None, None) => false,
+                    _ => true,
+                },
+            )
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// The SSA summary `key` held before its first write, `None` when the
+    /// key was not written or did not exist yet.
+    pub fn ssa_before(&self, key: &FuncKey) -> Option<&SsaFuncSummary> {
+        self.ssa_before.get(key).and_then(Option::as_ref)
+    }
+
+    /// The cap tuple and SSA summary `key` held before this log's writes:
+    /// the logged pre-write value for each part that was written, the
+    /// current value for a part that was not.
+    pub fn values_before<'a>(
+        &'a self,
+        gs: &'a GlobalSummaries,
+        key: &FuncKey,
+    ) -> (Option<CapsFingerprint>, Option<&'a SsaFuncSummary>) {
+        let caps = match self.caps_before.get(key) {
+            Some(before) => before.clone(),
+            None => gs.by_key.get(key).map(caps_fingerprint),
+        };
+        let ssa = match self.ssa_before.get(key) {
+            Some(before) => before.as_ref(),
+            None => gs.ssa_by_key.get(key),
+        };
+        (caps, ssa)
+    }
 }
 
 // ── Lookup map used by the taint engine ─────────────────────────────────
+
+/// `name -> keys` maps split by language.
+///
+/// Resolution probes these once per call instruction, so a lookup takes the
+/// name as a `&str` and borrows the key list: a `(Lang, String)` map key would
+/// need an owned `String` per probe. Keys are only ever added, and every key
+/// listed here is also present in [`GlobalSummaries::by_key`].
+#[derive(Default)]
+struct LangIndex(FxHashMap<Lang, FxHashMap<String, Vec<FuncKey>>>);
+
+impl LangIndex {
+    fn get(&self, lang: Lang, name: &str) -> &[FuncKey] {
+        self.0
+            .get(&lang)
+            .and_then(|by_name| by_name.get(name))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    fn insert_unique(&mut self, lang: Lang, name: String, key: &FuncKey) {
+        let keys = self.0.entry(lang).or_default().entry(name).or_default();
+        if !keys.contains(key) {
+            keys.push(key.clone());
+        }
+    }
+}
 
 /// A merged view of all function summaries keyed by qualified [`FuncKey`].
 ///
@@ -602,11 +766,11 @@ pub struct GlobalSummaries {
     /// Bare leaf-name index, kept for compatibility with callers that only
     /// see an unqualified call string.  A single name may map to many keys
     /// across containers / files / arities.
-    by_lang_name: FxHashMap<(Lang, String), Vec<FuncKey>>,
+    by_lang_name: LangIndex,
     /// Container-qualified index: keyed on `"{container}::{name}"` (or just
     /// `name` for free functions).  Used to resolve calls when the call-site
     /// can supply a receiver / container hint (e.g. `OrderService::process`).
-    by_lang_qualified: FxHashMap<(Lang, String), Vec<FuncKey>>,
+    by_lang_qualified: LangIndex,
     /// Rust-only secondary index keyed on `(module_path, name)`.
     ///
     /// Populated whenever a Rust [`FuncSummary`] is inserted with a
@@ -836,6 +1000,28 @@ impl GlobalSummaries {
     /// preserved.
     pub fn insert(&mut self, key: FuncKey, summary: FuncSummary) {
         let key = self.reconcile_func_summary_key(key, &summary);
+        self.insert_reconciled(key, summary);
+    }
+
+    /// [`Self::insert`] that also records in `log` the convergence view
+    /// the target key held before this iteration first wrote it.  Used by
+    /// the SCC fixed-point loop so it can tell which keys changed without
+    /// snapshotting every summary in the repo.
+    pub fn insert_tracked(
+        &mut self,
+        key: FuncKey,
+        summary: FuncSummary,
+        log: &mut SummaryChangeLog,
+    ) {
+        let key = self.reconcile_func_summary_key(key, &summary);
+        if !log.caps_before.contains_key(&key) {
+            let before = self.by_key.get(&key).map(caps_fingerprint);
+            log.caps_before.insert(key.clone(), before);
+        }
+        self.insert_reconciled(key, summary);
+    }
+
+    fn insert_reconciled(&mut self, key: FuncKey, summary: FuncSummary) {
         let lang = key.lang;
         let name = key.name.clone();
         let qualified = key.qualified_name();
@@ -877,15 +1063,8 @@ impl GlobalSummaries {
             })
             .or_insert(summary);
 
-        let keys = self.by_lang_name.entry((lang, name)).or_default();
-        if !keys.contains(&key) {
-            keys.push(key.clone());
-        }
-
-        let q_keys = self.by_lang_qualified.entry((lang, qualified)).or_default();
-        if !q_keys.contains(&key) {
-            q_keys.push(key.clone());
-        }
+        self.by_lang_name.insert_unique(lang, name, &key);
+        self.by_lang_qualified.insert_unique(lang, qualified, &key);
 
         if let Some(mp) = rust_module {
             let mk = self
@@ -936,14 +1115,17 @@ impl GlobalSummaries {
 
     /// All same-language matches for a bare function name.
     pub fn lookup_same_lang(&self, lang: Lang, name: &str) -> Vec<(&FuncKey, &FuncSummary)> {
-        self.by_lang_name
-            .get(&(lang, name.to_string()))
-            .map(|keys| {
-                keys.iter()
-                    .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.keys_same_lang(lang, name)
+            .iter()
+            .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
+            .collect()
+    }
+
+    /// Keys of every same-language function with this bare name, in insertion
+    /// order. Borrows the index: no allocation and no summary lookup, for the
+    /// resolver, which only needs the keys.
+    pub fn keys_same_lang(&self, lang: Lang, name: &str) -> &[FuncKey] {
+        self.by_lang_name.get(lang, name)
     }
 
     /// Rust-only lookup by `(module_path, name)`.
@@ -970,14 +1152,16 @@ impl GlobalSummaries {
     /// Container-qualified lookup.  `qualified` should be
     /// `"Container::name"` (use [`FuncKey::qualified_name`]) or `"name"`.
     pub fn lookup_qualified(&self, lang: Lang, qualified: &str) -> Vec<(&FuncKey, &FuncSummary)> {
-        self.by_lang_qualified
-            .get(&(lang, qualified.to_string()))
-            .map(|keys| {
-                keys.iter()
-                    .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.keys_qualified(lang, qualified)
+            .iter()
+            .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
+            .collect()
+    }
+
+    /// Keys indexed under `"Container::name"` (or `"name"`), in insertion
+    /// order. Borrowing counterpart of [`Self::lookup_qualified`].
+    pub fn keys_qualified(&self, lang: Lang, qualified: &str) -> &[FuncKey] {
+        self.by_lang_qualified.get(lang, qualified)
     }
 
     /// Merge another `GlobalSummaries` into this one (for parallel fold/reduce).
@@ -1057,6 +1241,28 @@ impl GlobalSummaries {
     /// (audit gap A.2.1.G1 ,
     /// `project_typed_callgraph_audit_gap_ssa_disambig.md`).
     pub fn insert_ssa(&mut self, key: FuncKey, summary: SsaFuncSummary) {
+        let key = self.ssa_insert_key(key, &summary);
+        self.index_ssa_key(&key);
+        self.ssa_by_key.insert(key, summary);
+    }
+
+    /// [`Self::insert_ssa`] that also records in `log` the summary the
+    /// target key held before this iteration first wrote it.  The replaced
+    /// value is moved into the log, so tracking costs no clone.
+    pub fn insert_ssa_tracked(
+        &mut self,
+        key: FuncKey,
+        summary: SsaFuncSummary,
+        log: &mut SummaryChangeLog,
+    ) {
+        let key = self.ssa_insert_key(key, &summary);
+        self.index_ssa_key(&key);
+        let before = self.ssa_by_key.insert(key.clone(), summary);
+        log.ssa_before.entry(key).or_insert(before);
+    }
+
+    /// The key [`Self::insert_ssa`] stores `summary` under.
+    fn ssa_insert_key(&self, key: FuncKey, summary: &SsaFuncSummary) -> FuncKey {
         // The summary may reference a parameter index ≥ `key.arity` when
         // scoped SSA lowering synthesised `Param` ops for **external
         // captures** (free identifiers like `this`, module imports,
@@ -1093,7 +1299,7 @@ impl GlobalSummaries {
         //   dethrone the existing entry by silent overwrite.  Both
         //   summaries survive, the existing one at the original key,
         //   the new one at the synthesised disambig.
-        let key = if key.arity.is_some() && !ssa_summary_fits_arity(&summary, key.arity) {
+        if key.arity.is_some() && !ssa_summary_fits_arity(summary, key.arity) {
             let existing_also_overflows = self
                 .ssa_by_key
                 .get(&key)
@@ -1102,13 +1308,11 @@ impl GlobalSummaries {
             if !existing_present || existing_also_overflows {
                 key
             } else {
-                self.reconcile_ssa_summary_key(key, &summary)
+                self.reconcile_ssa_summary_key(key, summary)
             }
         } else {
-            self.reconcile_ssa_summary_key(key, &summary)
-        };
-        self.index_ssa_key(&key);
-        self.ssa_by_key.insert(key, summary);
+            self.reconcile_ssa_summary_key(key, summary)
+        }
     }
 
     /// Push `key` onto the secondary `(lang, namespace, name)` index.
@@ -1486,33 +1690,24 @@ impl GlobalSummaries {
         self.by_key.iter()
     }
 
+    /// Number of coarse [`FuncSummary`] entries.
+    pub fn func_count(&self) -> usize {
+        self.by_key.len()
+    }
+
     /// Snapshot the convergence-relevant fields of every summary.
     ///
-    /// Returns `(source_caps, sanitizer_caps, sink_caps, propagating_params)`
-    /// per key.  Used by the SCC fixed-point loop to detect when an iteration
-    /// has not changed any summary, i.e. convergence.
-    pub fn snapshot_caps(&self) -> HashMap<FuncKey, (u32, u32, u32, Vec<usize>)> {
+    /// Returns [`caps_fingerprint`] per key.  The SCC fixed-point loop
+    /// tracks changes per write through [`SummaryChangeLog`] instead, since
+    /// a whole-map snapshot per iteration costs O(functions in the repo).
+    pub fn snapshot_caps(&self) -> HashMap<FuncKey, CapsFingerprint> {
         self.by_key
             .iter()
-            .map(|(k, s)| {
-                (
-                    k.clone(),
-                    (
-                        s.source_caps,
-                        s.sanitizer_caps,
-                        s.sink_caps,
-                        s.propagating_params.clone(),
-                    ),
-                )
-            })
+            .map(|(k, s)| (k.clone(), caps_fingerprint(s)))
             .collect()
     }
 
-    /// Snapshot the SSA summaries for convergence detection.
-    ///
-    /// Used alongside [`Self::snapshot_caps`] in the SCC fixed-point loop so that
-    /// SSA-only refinements (e.g. a `StripBits` transform appearing after a
-    /// cross-file sanitizer is resolved) are not invisible to convergence.
+    /// Borrow every SSA summary.
     pub fn snapshot_ssa(&self) -> &HashMap<FuncKey, SsaFuncSummary> {
         &self.ssa_by_key
     }
@@ -1704,70 +1899,65 @@ impl GlobalSummaries {
     ///    missed).  Multiple + no qualified hint → narrow by namespace,
     ///    then container.
     pub fn resolve_callee(&self, q: &CalleeQuery<'_>) -> CalleeResolution {
-        // ── Helpers ─────────────────────────────────────────────────
-        let arity_matches = |k: &FuncKey| match q.arity {
-            Some(a) => k.arity == Some(a),
-            None => true,
-        };
+        match self.resolve_callee_core(q, true) {
+            BorrowedResolution::Resolved(key) => CalleeResolution::Resolved(key.clone()),
+            BorrowedResolution::NotFound => CalleeResolution::NotFound,
+            BorrowedResolution::Ambiguous(keys) => {
+                CalleeResolution::Ambiguous(keys.into_iter().cloned().collect())
+            }
+        }
+    }
 
-        // Look up `{container}::{name}` and return a single arity-matched
-        // candidate if one exists (using same-namespace to break ties).
-        let try_qualified = |container: &str| -> Option<FuncKey> {
-            if container.is_empty() {
-                return None;
-            }
-            let qual = format!("{container}::{}", q.name);
-            let candidates: Vec<&FuncKey> = self
-                .lookup_qualified(q.caller_lang, &qual)
-                .into_iter()
-                .map(|(k, _)| k)
-                .filter(|k| arity_matches(k))
-                .collect();
-            match candidates.len() {
-                0 => None,
-                1 => Some(candidates[0].clone()),
-                _ => {
-                    let same_ns: Vec<&FuncKey> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|k| k.namespace == q.caller_namespace)
-                        .collect();
-                    if same_ns.len() == 1 {
-                        Some(same_ns[0].clone())
-                    } else {
-                        None
-                    }
-                }
-            }
-        };
+    /// The single function `q` resolves to, if it resolves to exactly one.
+    ///
+    /// Same decision as [`Self::resolve_callee`] with `Ambiguous` and
+    /// `NotFound` both folded into `None`. For callers that never read the
+    /// candidates of an ambiguous call (a common method name can have
+    /// thousands) this skips building and cloning that list.
+    pub fn resolve_callee_unique(&self, q: &CalleeQuery<'_>) -> Option<FuncKey> {
+        match self.resolve_callee_core(q, false) {
+            BorrowedResolution::Resolved(key) => Some(key.clone()),
+            BorrowedResolution::NotFound | BorrowedResolution::Ambiguous(_) => None,
+        }
+    }
+
+    /// The resolution steps behind [`Self::resolve_callee`], with keys
+    /// borrowed from the index. Candidate sets are counted in place, and the
+    /// ambiguous list is only gathered when `want_candidates` is set.
+    fn resolve_callee_core(
+        &self,
+        q: &CalleeQuery<'_>,
+        want_candidates: bool,
+    ) -> BorrowedResolution<'_> {
+        use BorrowedResolution::{Ambiguous, NotFound, Resolved};
+
+        let lang = q.caller_lang;
+        let gather =
+            |keys, keep: &dyn Fn(&FuncKey) -> bool| gather_candidates(want_candidates, keys, keep);
 
         // ── Step 1: receiver_type (authoritative) ───────────────────
         if let Some(rt) = q.receiver_type {
-            if let Some(key) = try_qualified(rt) {
-                return CalleeResolution::Resolved(key);
+            if let Some(key) = self.qualified_unique(q, rt) {
+                return Resolved(key);
             }
             // Authoritative miss: before returning, check whether any
             // candidate exists at all for the leaf name.  If there are
             // some, report Ambiguous with the leaf candidates (so the
             // caller knows we saw the name but refused to pick the
             // wrong container).  If there are none, return NotFound.
-            let bare: Vec<&FuncKey> = self
-                .lookup_same_lang(q.caller_lang, q.name)
-                .into_iter()
-                .map(|(k, _)| k)
-                .filter(|k| arity_matches(k))
-                .collect();
-            return if bare.is_empty() {
-                CalleeResolution::NotFound
+            let leaf = self.keys_same_lang(lang, q.name);
+            let (matching, _) = tally(leaf, |k| arity_matches(q, k));
+            return if matching == 0 {
+                NotFound
             } else {
-                CalleeResolution::Ambiguous(bare.into_iter().cloned().collect())
+                Ambiguous(gather(leaf, &|k| arity_matches(q, k)))
             };
         }
 
         // ── Step 2: namespace_qualifier (authoritative for `::` paths) ──
         if let Some(nq) = q.namespace_qualifier {
-            if let Some(key) = try_qualified(nq) {
-                return CalleeResolution::Resolved(key);
+            if let Some(key) = self.qualified_unique(q, nq) {
+                return Resolved(key);
             }
             // A `::`-qualified callee names a concrete type or module.  With
             // no summary in that container it is an external associated
@@ -1781,44 +1971,52 @@ impl GlobalSummaries {
             // sanitize`).  `Self::` / `self::` is a real self-call and defers
             // to the caller-container step below.
             if !matches!(nq, "Self" | "self") {
-                let free: Vec<FuncKey> = self
-                    .lookup_same_lang(q.caller_lang, q.name)
-                    .into_iter()
-                    .map(|(k, _)| k)
-                    .filter(|k| k.container.is_empty() && arity_matches(k))
-                    .cloned()
-                    .collect();
-                return match free.len() {
-                    1 => CalleeResolution::Resolved(free[0].clone()),
-                    0 => CalleeResolution::NotFound,
-                    _ => CalleeResolution::Ambiguous(free),
+                let leaf = self.keys_same_lang(lang, q.name);
+                let is_free = |k: &FuncKey| k.container.is_empty() && arity_matches(q, k);
+                let (free, first) = tally(leaf, is_free);
+                return match (free, first) {
+                    (1, Some(only)) => Resolved(only),
+                    (0, _) => NotFound,
+                    _ => Ambiguous(gather(leaf, &is_free)),
                 };
             }
         }
 
         // ── Step 3: caller self-container ───────────────────────────
-        if let Some(cc) = q.caller_container
-            && let Some(key) = try_qualified(cc)
-        {
-            return CalleeResolution::Resolved(key);
+        // Only a call on the caller's own instance can land in the
+        // caller's container.  `repo.find(id)` inside `find` names another
+        // object's method, and `super.init(cfg)` inside `init` names the
+        // supertype's, so neither may resolve to the caller.
+        match q.receiver() {
+            CallReceiver::Own => {
+                if let Some(cc) = q.caller_container
+                    && let Some(key) = self.qualified_unique(q, cc)
+                {
+                    return Resolved(key);
+                }
+            }
+            CallReceiver::Super => {
+                return match q.caller_container {
+                    Some(cc) => self
+                        .supertypes_of(lang, cc)
+                        .iter()
+                        .find_map(|sup| self.defined_in_supertype(q, sup))
+                        .map_or(NotFound, Resolved),
+                    None => NotFound,
+                };
+            }
+            CallReceiver::Other => {}
         }
 
         // ── Step 4: same-namespace unique leaf ──────────────────────
-        let all_candidates: Vec<&FuncKey> = self
-            .lookup_same_lang(q.caller_lang, q.name)
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        if all_candidates.is_empty() {
-            return CalleeResolution::NotFound;
+        let all = self.keys_same_lang(lang, q.name);
+        if all.is_empty() {
+            return NotFound;
         }
 
-        let mut arity_filtered: Vec<&FuncKey> = all_candidates
-            .iter()
-            .copied()
-            .filter(|k| arity_matches(k))
-            .collect();
-        if arity_filtered.is_empty() {
+        let mut widened = false;
+        let (mut arity_n, mut arity_first) = tally(all, |k| arity_ok(q, k, widened));
+        if arity_n == 0 && q.arity.is_some() {
             // Exact-arity match found nothing. Tolerate under-application:
             // `FuncKey::arity` is the *total* parameter count, so a call
             // supplying `a` arguments to a function declared with more
@@ -1831,32 +2029,27 @@ impl GlobalSummaries {
             // degrades to `Ambiguous`, never a wrong `Resolved`. Exact-arity
             // matches always take precedence (this branch runs only when none
             // exist), so no existing exact-match resolution regresses.
-            if let Some(a) = q.arity {
-                arity_filtered = all_candidates
-                    .iter()
-                    .copied()
-                    .filter(|k| matches!(k.arity, Some(p) if p >= a))
-                    .collect();
-            }
-            if arity_filtered.is_empty() {
-                return CalleeResolution::NotFound;
-            }
+            widened = true;
+            (arity_n, arity_first) = tally(all, |k| arity_ok(q, k, true));
         }
+        if arity_n == 0 {
+            return NotFound;
+        }
+        let in_arity = |k: &FuncKey| arity_ok(q, k, widened);
 
-        let same_ns: Vec<&FuncKey> = arity_filtered
-            .iter()
-            .copied()
-            .filter(|k| k.namespace == q.caller_namespace)
-            .collect();
-        if same_ns.len() == 1 {
-            return CalleeResolution::Resolved(same_ns[0].clone());
+        let in_caller_ns = |k: &FuncKey| in_arity(k) && k.namespace == q.caller_namespace;
+        let (same_ns_n, same_ns_first) = tally(all, in_caller_ns);
+        if same_ns_n == 1
+            && let Some(only) = same_ns_first
+        {
+            return Resolved(only);
         }
 
         // ── Step 5: receiver_var tie-break (soft) ───────────────────
         if let Some(rv) = q.receiver_var
-            && let Some(key) = try_qualified(rv)
+            && let Some(key) = self.qualified_unique(q, rv)
         {
-            return CalleeResolution::Resolved(key);
+            return Resolved(key);
         }
 
         // ── Step 5.5: bare-call free-function preference ────────────
@@ -1873,19 +2066,19 @@ impl GlobalSummaries {
             && q.namespace_qualifier.is_none()
             && q.receiver_var.is_none();
         if syntactic_bare {
-            let empty_container_same_ns: Vec<&FuncKey> = same_ns
-                .iter()
-                .copied()
-                .filter(|k| k.container.is_empty())
-                .collect();
-            if empty_container_same_ns.len() == 1 {
-                return CalleeResolution::Resolved(empty_container_same_ns[0].clone());
+            let (n, first) = tally(all, |k| in_caller_ns(k) && k.container.is_empty());
+            if n == 1
+                && let Some(only) = first
+            {
+                return Resolved(only);
             }
         }
 
         // ── Step 6: leaf fallback ───────────────────────────────────
-        if arity_filtered.len() == 1 {
-            return CalleeResolution::Resolved(arity_filtered[0].clone());
+        if arity_n == 1
+            && let Some(only) = arity_first
+        {
+            return Resolved(only);
         }
 
         // Multiple arity-matched candidates remain.  When a qualified
@@ -1895,15 +2088,51 @@ impl GlobalSummaries {
         // reaches here; `namespace_qualifier` / `caller_container`
         // missing their target flow through as a soft miss.)
         if q.has_qualified_hint() {
-            return CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect());
+            return Ambiguous(gather(all, &in_arity));
         }
 
         // No qualified hints whatsoever, tolerate namespace narrowing.
-        match same_ns.len() {
-            1 => CalleeResolution::Resolved(same_ns[0].clone()),
-            0 => CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect()),
-            _ => CalleeResolution::Ambiguous(same_ns.into_iter().cloned().collect()),
+        match (same_ns_n, same_ns_first) {
+            (1, Some(only)) => Resolved(only),
+            (0, _) => Ambiguous(gather(all, &in_arity)),
+            _ => Ambiguous(gather(all, &in_caller_ns)),
         }
+    }
+
+    /// The one arity-matched function indexed as `{container}::{q.name}`,
+    /// using the caller's namespace to break a tie. `None` when there is no
+    /// such function or the tie stays unbroken.
+    fn qualified_unique(&self, q: &CalleeQuery<'_>, container: &str) -> Option<&FuncKey> {
+        if container.is_empty() {
+            return None;
+        }
+        let qual = format!("{container}::{}", q.name);
+        let keys = self.keys_qualified(q.caller_lang, &qual);
+        match tally(keys, |k| arity_matches(q, k)) {
+            (0, _) => None,
+            (1, first) => first,
+            _ => match tally(keys, |k| {
+                arity_matches(q, k) && k.namespace == q.caller_namespace
+            }) {
+                (1, only) => only,
+                _ => None,
+            },
+        }
+    }
+
+    /// `q.name` as defined by the supertype `sup`. Like step 4, tolerates a
+    /// declaration with more parameters than the call passes (defaults, or
+    /// Python's explicit `self`).
+    fn defined_in_supertype(&self, q: &CalleeQuery<'_>, sup: &str) -> Option<&FuncKey> {
+        self.qualified_unique(q, sup).or_else(|| {
+            let a = q.arity?;
+            let qual = format!("{sup}::{}", q.name);
+            let keys = self.keys_qualified(q.caller_lang, &qual);
+            match tally(keys, |k| matches!(k.arity, Some(p) if p > a)) {
+                (1, only) => only,
+                _ => None,
+            }
+        })
     }
 
     /// Install / refresh the type-hierarchy index from the currently
@@ -1922,6 +2151,34 @@ impl GlobalSummaries {
     /// Borrow the installed hierarchy index, if any.
     pub fn hierarchy(&self) -> Option<&crate::callgraph::TypeHierarchyIndex> {
         self.hierarchy.as_ref()
+    }
+
+    /// Every recorded supertype of `container`, nearest first (direct
+    /// supertypes, then theirs).  Empty when no hierarchy is installed.
+    /// Used to resolve `super.m()` / `parent::m()` to the closest
+    /// supertype that defines `m`.
+    pub fn supertypes_of(&self, lang: Lang, container: &str) -> Vec<String> {
+        /// Bound on the inheritance depth walked; real chains are short and
+        /// the visited set already stops cycles.
+        const MAX_SUPERTYPES: usize = 32;
+        let Some(h) = self.hierarchy.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        let mut next = 0;
+        let mut current = container.to_string();
+        loop {
+            for sup in h.supers_of(lang, &current) {
+                if sup != container && !out.contains(sup) && out.len() < MAX_SUPERTYPES {
+                    out.push(sup.clone());
+                }
+            }
+            if next >= out.len() {
+                return out;
+            }
+            current = out[next].clone();
+            next += 1;
+        }
     }
 
     /// Hard cap on hierarchy fan-out from a single call site, see
@@ -1966,12 +2223,8 @@ impl GlobalSummaries {
             None => true,
         };
 
-        let single_fallback = || -> Vec<FuncKey> {
-            match self.resolve_callee(q) {
-                CalleeResolution::Resolved(k) => vec![k],
-                _ => Vec::new(),
-            }
-        };
+        let single_fallback =
+            || -> Vec<FuncKey> { self.resolve_callee_unique(q).into_iter().collect() };
 
         // Hierarchy fan-out only fires when the call has an
         // authoritative receiver type AND the index is installed AND
@@ -2047,6 +2300,63 @@ impl GlobalSummaries {
 
         out
     }
+}
+
+/// Result of [`GlobalSummaries::resolve_callee_core`]: the keys stay borrowed
+/// from the index. `Ambiguous` holds the candidates only when the caller asked
+/// for them, otherwise it is empty.
+enum BorrowedResolution<'a> {
+    Resolved(&'a FuncKey),
+    NotFound,
+    Ambiguous(Vec<&'a FuncKey>),
+}
+
+/// The keys of `keys` that pass `keep`, or nothing when the caller did not ask
+/// for the candidate list.
+fn gather_candidates<'a>(
+    want: bool,
+    keys: &'a [FuncKey],
+    keep: &dyn Fn(&FuncKey) -> bool,
+) -> Vec<&'a FuncKey> {
+    if want {
+        keys.iter().filter(|k| keep(k)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Hard arity filter: with no call arity every key passes.
+fn arity_matches(q: &CalleeQuery<'_>, k: &FuncKey) -> bool {
+    match q.arity {
+        Some(a) => k.arity == Some(a),
+        None => true,
+    }
+}
+
+/// [`arity_matches`], or with `widened` the under-application rule
+/// (`param_count >= call_arity`) used when no exact-arity match exists.
+fn arity_ok(q: &CalleeQuery<'_>, k: &FuncKey, widened: bool) -> bool {
+    match (q.arity, widened) {
+        (Some(a), true) => matches!(k.arity, Some(p) if p >= a),
+        _ => arity_matches(q, k),
+    }
+}
+
+/// How many of `keys` satisfy `keep`, counted up to 2 (every decision in the
+/// resolver is "none", "exactly one" or "more"), plus the first one found.
+fn tally(keys: &[FuncKey], keep: impl Fn(&FuncKey) -> bool) -> (usize, Option<&FuncKey>) {
+    let mut count = 0;
+    let mut first = None;
+    for k in keys {
+        if keep(k) {
+            first.get_or_insert(k);
+            count += 1;
+            if count == 2 {
+                break;
+            }
+        }
+    }
+    (count, first)
 }
 
 impl std::fmt::Debug for GlobalSummaries {

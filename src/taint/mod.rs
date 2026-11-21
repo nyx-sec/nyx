@@ -1487,6 +1487,8 @@ fn analyse_multi_body(
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
     cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> Vec<Finding> {
+    // Every body of the file is analysed against the same summary map.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(ssa_summaries, lang);
     let order = containment_order(&file_cfg.bodies);
     let mut all_findings: Vec<Finding> = Vec::new();
 
@@ -2606,6 +2608,16 @@ fn rerun_extraction_with_augmented_summaries(
     let in_file_names: std::collections::HashSet<&str> =
         augmented_snapshot.keys().map(|k| k.name.as_str()).collect();
 
+    // Bare names of the in-file helpers whose summary confines a path return.
+    let confiner_names: std::collections::HashSet<&str> = augmented_snapshot
+        .iter()
+        .filter(|(_, s)| s.confines_path_return)
+        .map(|(k, _)| k.name.as_str())
+        .collect();
+
+    // Each body is re-extracted against the same snapshot.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(Some(&augmented_snapshot), lang);
+
     for body in file_cfg.function_bodies() {
         let Some(parent_key) = body.meta.func_key.clone() else {
             continue;
@@ -2684,9 +2696,7 @@ fn rerun_extraction_with_augmented_summaries(
         let calls_confiner = callee.ssa.blocks.iter().any(|b| {
             b.body.iter().any(|inst| {
                 if let SsaOp::Call { callee: name, .. } = &inst.op {
-                    augmented_snapshot
-                        .iter()
-                        .any(|(k, s)| k.name == *name && s.confines_path_return)
+                    confiner_names.contains(name.as_str())
                 } else {
                     false
                 }
@@ -2768,6 +2778,14 @@ fn merge_sink_fields(
 ///       (deduplicated by cap-mask so repeat probes don't inflate
 ///       the entry).
 ///
+/// A child reads the seed only through its `Param` / `SelfParam` ops, so a
+/// child that captures nothing the param reached is skipped without a run.
+/// Only events fed by the seed count: a closure's own source-to-sink flow is
+/// not a flow from the parent's parameter.  A parent without formals is
+/// probed on the same `Param` ops as its own summary probe in
+/// `extract_ssa_func_summary`: the first `MAX_PROBE_PARAMS` of its captured
+/// names, not all of them.
+///
 /// Strict-additive: only inserts new `param_to_sink` entries; never
 /// modifies `param_return_paths`, `points_to`, `source_caps`, etc.
 fn augment_summaries_with_child_sinks(
@@ -2784,6 +2802,12 @@ fn augment_summaries_with_child_sinks(
     use crate::summary::SinkSite;
     use crate::taint::domain::{TaintOrigin, VarTaint};
     use ssa_transfer::BindingKey;
+
+    // Every probe below resolves against `summaries`, and the loop only ever
+    // grows `param_to_sink` / `param_to_sink_param` on entries that already
+    // exist. The path-confinement gates read none of those fields, so one scan
+    // of the map serves all of the (ancestor, param, child) runs.
+    let _confinement = ssa_transfer::ConfinementGatesScope::enter(Some(&*summaries), lang);
 
     // ── Build lexical-containment relationships ──────────────────────
     // Map parent BodyId → list of descendant body indices.  Reverse-walk
@@ -2809,6 +2833,10 @@ fn augment_summaries_with_child_sinks(
         }
     }
 
+    // Per-child state shared by every probe that reaches the child.
+    let mut child_probes: std::collections::HashMap<usize, ChildSinkProbe> =
+        std::collections::HashMap::new();
+
     // ── Map each parent body to its FuncKey and the SSA body cache ──
     // Skip bodies with no formal params (nothing to probe) and bodies
     // whose SSA was never lowered (lowering errors logged earlier).
@@ -2822,7 +2850,20 @@ fn augment_summaries_with_child_sinks(
         let Some(parent_callee) = bodies.get(&parent_key) else {
             continue;
         };
-        if parent_callee.param_count == 0 {
+        // Without formals, `param_count` counts the `Param` ops lowering
+        // emits for captured names (`SsaBody::synthetic_externals`).  Probe
+        // the same ones the parent's own summary probe does instead of every
+        // capture: a route-registration body can capture dozens of names,
+        // and each probe re-runs the parent plus every child reading what
+        // that name reached.
+        let probe_count = if parent_body.meta.params.is_empty() {
+            parent_callee
+                .param_count
+                .min(ssa_transfer::MAX_PROBE_PARAMS)
+        } else {
+            parent_callee.param_count
+        };
+        if probe_count == 0 {
             continue;
         }
         let Some(child_indices) = descendants.get(&parent_body.meta.id) else {
@@ -2845,7 +2886,7 @@ fn augment_summaries_with_child_sinks(
         for block in &parent_ssa.blocks {
             for inst in block.phis.iter().chain(block.body.iter()) {
                 if let crate::ssa::ir::SsaOp::Param { index } = &inst.op {
-                    if *index < parent_callee.param_count {
+                    if *index < probe_count {
                         if let Some(name) = inst.var_name.as_ref() {
                             parent_param_info.push((*index, name.clone()));
                         }
@@ -2874,43 +2915,15 @@ fn augment_summaries_with_child_sinks(
                 },
             );
 
-            let parent_transfer = ssa_transfer::SsaTaintTransfer {
+            let parent_transfer = augment_probe_transfer(
                 lang,
                 namespace,
-                interner: &parent_interner,
+                &parent_interner,
                 local_summaries,
                 global_summaries,
-                interop_edges: &[],
-                owner_body_id: BodyId(0),
-                parent_body_id: None,
-                global_seed: Some(&seed),
-                param_seed: None,
-                receiver_seed: None,
-                const_values: None,
-                type_facts: None,
-                xml_parser_config: None,
-                xpath_config: None,
-                ssa_summaries: Some(summaries),
-                extra_labels: None,
-                base_aliases: None,
-                callee_bodies: None,
-                inline_cache: None,
-                context_depth: 0,
-                callback_bindings: None,
-                points_to: None,
-                dynamic_pts: None,
-                import_bindings: None,
-                promisify_aliases: None,
-                module_aliases: None,
-                static_map: None,
-                auto_seed_handler_params: false,
-                cross_file_bodies: None,
-                pointer_facts: None,
-                cross_package_imports: None,
-                entry_kind: None,
-                param_route_capture: None,
-                recording_summary: false,
-            };
+                &seed,
+                summaries,
+            );
 
             let (_parent_events, parent_block_states) =
                 ssa_transfer::run_ssa_taint_full(parent_ssa, parent_cfg, &parent_transfer);
@@ -2940,61 +2953,34 @@ fn augment_summaries_with_child_sinks(
                     continue;
                 };
 
-                let child_interner = crate::state::symbol::SymbolInterner::from_cfg(child_cfg);
-
-                let child_transfer = ssa_transfer::SsaTaintTransfer {
-                    lang,
-                    namespace,
-                    interner: &child_interner,
-                    local_summaries,
-                    global_summaries,
-                    interop_edges: &[],
-                    owner_body_id: BodyId(0),
-                    parent_body_id: None,
-                    global_seed: Some(&parent_exit),
-                    param_seed: None,
-                    receiver_seed: None,
-                    const_values: None,
-                    type_facts: None,
-                    xml_parser_config: None,
-                    xpath_config: None,
-                    ssa_summaries: Some(summaries),
-                    extra_labels: None,
-                    base_aliases: None,
-                    callee_bodies: None,
-                    inline_cache: None,
-                    context_depth: 0,
-                    callback_bindings: None,
-                    points_to: None,
-                    dynamic_pts: None,
-                    import_bindings: None,
-                    promisify_aliases: None,
-                    module_aliases: None,
-                    static_map: None,
-                    auto_seed_handler_params: false,
-                    cross_file_bodies: None,
-                    pointer_facts: None,
-                    cross_package_imports: None,
-                    entry_kind: None,
-                    param_route_capture: None,
-                    recording_summary: false,
-                };
-
-                let (child_events, _child_block_states) =
-                    ssa_transfer::run_ssa_taint_full(child_ssa, child_cfg, &child_transfer);
-
-                if child_events.is_empty() {
+                let probe = child_probes
+                    .entry(child_idx)
+                    .or_insert_with(|| ChildSinkProbe::new(child_ssa, child_cfg));
+                let child_seed = probe.restrict_seed(&parent_exit);
+                if child_seed.is_empty() {
+                    // The child reads nothing this param reached, so none of
+                    // its events can come from the param.
                     continue;
                 }
+                let child_transfer = augment_probe_transfer(
+                    lang,
+                    namespace,
+                    &probe.interner,
+                    local_summaries,
+                    global_summaries,
+                    &child_seed,
+                    summaries,
+                );
+                let (child_events, _child_block_states) =
+                    ssa_transfer::run_ssa_taint_full(child_ssa, child_cfg, &child_transfer);
+                #[cfg(test)]
+                AUGMENT_CHILD_RUNS.with(|c| c.set(c.get() + 1));
 
-                // Aggregate sink caps across all child events into one
-                // entry per parent param (cap-only SinkSite, the
-                // exact location lives in the child body's CFG and is
-                // not directly addressable from the parent's summary).
-                let mut union_caps = Cap::empty();
-                for ev in &child_events {
-                    union_caps |= ev.sink_caps;
-                }
+                // Aggregate the sink caps of the events the param caused into
+                // one entry per parent param (cap-only SinkSite, the exact
+                // location lives in the child body's CFG and is not directly
+                // addressable from the parent's summary).
+                let union_caps = probe.seed_caused_caps(&child_events);
                 if union_caps.is_empty() {
                     continue;
                 }
@@ -3033,6 +3019,140 @@ fn augment_summaries_with_child_sinks(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test counter: child bodies the augment pass actually ran.
+    pub(crate) static AUGMENT_CHILD_RUNS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// What [`augment_summaries_with_child_sinks`] keeps per child body across
+/// every (ancestor, param) probe that reaches it.
+struct ChildSinkProbe {
+    interner: crate::state::symbol::SymbolInterner,
+    /// Names the child's `Param` / `SelfParam` ops look up in `global_seed`.
+    /// The transfer reads the seed nowhere else, so entries for other names
+    /// cannot change the child's events.
+    seed_names: std::collections::HashSet<String>,
+    /// CFG nodes the seed's origins are remapped onto: the node of each
+    /// `Param` / `SelfParam` op, which is the body's `Entry` node and so never
+    /// the node of a real source.  An origin on one of these came from the
+    /// seed, any other origin is the child's own.
+    seed_anchors: std::collections::HashSet<petgraph::graph::NodeIndex>,
+}
+
+impl ChildSinkProbe {
+    fn new(ssa: &crate::ssa::ir::SsaBody, cfg: &crate::cfg::Cfg) -> Self {
+        use crate::ssa::ir::SsaOp;
+        let mut seed_names = std::collections::HashSet::new();
+        let mut seed_anchors = std::collections::HashSet::new();
+        for block in &ssa.blocks {
+            for inst in block.phis.iter().chain(block.body.iter()) {
+                if !matches!(inst.op, SsaOp::Param { .. } | SsaOp::SelfParam) {
+                    continue;
+                }
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(inst.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_ref())
+                {
+                    seed_names.insert(name.clone());
+                    seed_anchors.insert(inst.cfg_node);
+                }
+            }
+        }
+        Self {
+            interner: crate::state::symbol::SymbolInterner::from_cfg(cfg),
+            seed_names,
+            seed_anchors,
+        }
+    }
+
+    /// The part of `seed` the child can read.  Child probes run with no
+    /// parent body id, so only top-level (`BodyId(0)`) keys are looked up.
+    fn restrict_seed(
+        &self,
+        seed: &std::collections::HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>,
+    ) -> std::collections::HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint> {
+        seed.iter()
+            .filter(|(k, _)| {
+                k.body_id == crate::cfg::BodyId(0) && self.seed_names.contains(&k.name)
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Union of the sink caps of the events the seed caused: those where a
+    /// tainted value carries an origin anchored at one of the child's
+    /// `Param` ops.  An event fed only by the child's own sources (a closure
+    /// that reads `process.env` itself) would fire with or without the
+    /// param, so it is not the param's flow.
+    fn seed_caused_caps(&self, events: &[ssa_transfer::SsaTaintEvent]) -> crate::labels::Cap {
+        let mut caps = crate::labels::Cap::empty();
+        for ev in events {
+            let from_seed = ev
+                .tainted_values
+                .iter()
+                .any(|(_, _, origins)| origins.iter().any(|o| self.seed_anchors.contains(&o.node)));
+            if from_seed {
+                caps |= ev.sink_caps;
+            }
+        }
+        caps
+    }
+}
+
+/// The transfer [`augment_summaries_with_child_sinks`] runs both the parent
+/// probe and each child body with: lexical seed only, summaries resolved
+/// against the in-progress per-file map.
+fn augment_probe_transfer<'a>(
+    lang: Lang,
+    namespace: &'a str,
+    interner: &'a crate::state::symbol::SymbolInterner,
+    local_summaries: &'a FuncSummaries,
+    global_summaries: Option<&'a GlobalSummaries>,
+    seed: &'a std::collections::HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>,
+    summaries: &'a std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+) -> ssa_transfer::SsaTaintTransfer<'a> {
+    ssa_transfer::SsaTaintTransfer {
+        lang,
+        namespace,
+        interner,
+        local_summaries,
+        global_summaries,
+        interop_edges: &[],
+        owner_body_id: crate::cfg::BodyId(0),
+        parent_body_id: None,
+        global_seed: Some(seed),
+        param_seed: None,
+        receiver_seed: None,
+        const_values: None,
+        type_facts: None,
+        xml_parser_config: None,
+        xpath_config: None,
+        ssa_summaries: Some(summaries),
+        extra_labels: None,
+        base_aliases: None,
+        callee_bodies: None,
+        inline_cache: None,
+        context_depth: 0,
+        callback_bindings: None,
+        points_to: None,
+        dynamic_pts: None,
+        import_bindings: None,
+        promisify_aliases: None,
+        module_aliases: None,
+        static_map: None,
+        auto_seed_handler_params: false,
+        cross_file_bodies: None,
+        pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     }
 }
 

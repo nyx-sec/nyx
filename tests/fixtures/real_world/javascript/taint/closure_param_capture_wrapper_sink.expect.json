@@ -1,0 +1,14 @@
+{
+  "description": "Timer closure captures the wrapper's parameter and execs it. The request value passed to schedule() reaches the exec through the capture, reported at the call site.",
+  "tags": ["taint", "closure", "cmdi", "interprocedural", "express"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [16, 16],
+      "evidence_contains": [],
+      "notes": "req.query.name -> schedule(label) -> closure captures label -> cp.exec(label)"
+    }
+  ]
+}

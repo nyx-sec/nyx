@@ -803,6 +803,69 @@ fn find_exit_node_exists() {
     assert!(exit.is_some(), "Should find an exit node");
 }
 
+/// Post-dominators over a hand-built CFG: an if/else diamond, a loop with a
+/// back edge, and a node with no path to Exit.  Pins the semantics of
+/// `compute_post_dominators` (dominators of the reversed graph from Exit).
+#[test]
+fn post_dominators_diamond_loop_and_dead_end() {
+    use crate::cfg::{Cfg, EdgeKind, NodeInfo, StmtKind};
+
+    fn node(kind: StmtKind) -> NodeInfo {
+        NodeInfo {
+            kind,
+            ..Default::default()
+        }
+    }
+
+    let mut cfg = Cfg::new();
+    let entry = cfg.add_node(node(StmtKind::Entry));
+    let if_n = cfg.add_node(node(StmtKind::If));
+    let then_n = cfg.add_node(node(StmtKind::Seq));
+    let else_n = cfg.add_node(node(StmtKind::Seq));
+    let join = cfg.add_node(node(StmtKind::Seq));
+    let header = cfg.add_node(node(StmtKind::Loop));
+    let body = cfg.add_node(node(StmtKind::Seq));
+    let after = cfg.add_node(node(StmtKind::Seq));
+    let exit = cfg.add_node(node(StmtKind::Exit));
+    // Reachable from the else branch but never reaches Exit (an infinite
+    // spin with no edge out).
+    let dead_end = cfg.add_node(node(StmtKind::Seq));
+
+    cfg.add_edge(entry, if_n, EdgeKind::Seq);
+    cfg.add_edge(if_n, then_n, EdgeKind::True);
+    cfg.add_edge(if_n, else_n, EdgeKind::False);
+    cfg.add_edge(then_n, join, EdgeKind::Seq);
+    cfg.add_edge(else_n, join, EdgeKind::Seq);
+    cfg.add_edge(else_n, dead_end, EdgeKind::Seq);
+    cfg.add_edge(dead_end, dead_end, EdgeKind::Back);
+    cfg.add_edge(join, header, EdgeKind::Seq);
+    cfg.add_edge(header, body, EdgeKind::True);
+    cfg.add_edge(header, after, EdgeKind::False);
+    cfg.add_edge(body, header, EdgeKind::Back);
+    cfg.add_edge(after, exit, EdgeKind::Seq);
+
+    let pd = dominators::compute_post_dominators(&cfg).expect("cfg has an Exit node");
+    assert_eq!(pd.immediate_dominator(if_n), Some(join));
+    assert_eq!(pd.immediate_dominator(then_n), Some(join));
+    assert_eq!(pd.immediate_dominator(else_n), Some(join));
+    assert_eq!(pd.immediate_dominator(join), Some(header));
+    assert_eq!(pd.immediate_dominator(body), Some(header));
+    assert_eq!(pd.immediate_dominator(header), Some(after));
+    assert_eq!(pd.immediate_dominator(after), Some(exit));
+    assert_eq!(pd.immediate_dominator(exit), None);
+    assert!(dominators::dominates(&pd, header, body));
+    assert!(dominators::dominates(&pd, exit, entry));
+    assert!(!dominators::dominates(&pd, then_n, if_n));
+    // A node with no path to Exit has no post-dominator.
+    assert_eq!(pd.immediate_dominator(dead_end), None);
+    assert!(!dominators::dominates(&pd, exit, dead_end));
+
+    // No Exit node: no post-dominator tree.
+    let mut no_exit = Cfg::new();
+    no_exit.add_node(node(StmtKind::Entry));
+    assert!(dominators::compute_post_dominators(&no_exit).is_none());
+}
+
 #[test]
 fn shortest_distance_basic() {
     let src = br#"

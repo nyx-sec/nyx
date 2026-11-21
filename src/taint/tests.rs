@@ -8034,6 +8034,259 @@ const is_relative_url = (url) => {
     );
 }
 
+fn js_body_summaries(
+    src: &[u8],
+) -> std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary> {
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    crate::taint::lower_all_functions_from_bodies(
+        &file_cfg,
+        Lang::JavaScript,
+        "test.js",
+        &file_cfg.summaries,
+        None,
+        None,
+        None,
+        None,
+    )
+    .0
+}
+
+fn js_summary_of<'a>(
+    summaries: &'a std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    name: &str,
+) -> Option<&'a crate::summary::ssa_summary::SsaFuncSummary> {
+    summaries
+        .iter()
+        .find(|(k, _)| k.name == name)
+        .map(|(_, v)| v)
+}
+
+fn param_sink_caps(summary: &crate::summary::ssa_summary::SsaFuncSummary, idx: usize) -> Cap {
+    summary
+        .param_to_sink
+        .iter()
+        .filter(|(i, _)| *i == idx)
+        .flat_map(|(_, sites)| sites.iter().map(|s| s.cap))
+        .fold(Cap::empty(), |a, b| a | b)
+}
+
+/// The closure-capture augment pass runs a child only for a param that
+/// reached a name the child captures.  `job` has three params and three
+/// closures, but each param reaches one closure: `name` and `mode` the
+/// closure over `label`, `path` the closure over `path`.
+#[test]
+fn augment_skips_children_that_capture_nothing_the_param_reached() {
+    let src = br#"
+const cp = require('child_process');
+function job(name, path, mode) {
+  const label = name + mode;
+  setTimeout(function () { cp.exec(path); }, 1);
+  setTimeout(function () { log('tick'); }, 2);
+  setTimeout(function () { http.get(label); }, 3);
+}
+"#;
+    super::AUGMENT_CHILD_RUNS.with(|c| c.set(0));
+    let summaries = js_body_summaries(src);
+    let runs = super::AUGMENT_CHILD_RUNS.with(std::cell::Cell::get);
+    assert_eq!(runs, 3, "three (param, closure) pairs share a capture");
+    let job = js_summary_of(&summaries, "job").expect("job summary");
+    assert!(
+        param_sink_caps(job, 0).intersects(Cap::SSRF),
+        "name reaches http.get via label"
+    );
+    assert!(
+        param_sink_caps(job, 1).intersects(Cap::SHELL_ESCAPE),
+        "path reaches cp.exec"
+    );
+    assert!(
+        param_sink_caps(job, 2).intersects(Cap::SSRF),
+        "mode reaches http.get via label"
+    );
+}
+
+/// Sinks in a closure two levels down are lifted onto each ancestor param
+/// that reaches them, including through an in-file wrapper whose own summary
+/// the pass has grown.
+#[test]
+fn augment_lifts_nested_closure_sinks_to_each_ancestor_param() {
+    let src = br#"
+const cp = require('child_process');
+function runLater(cmd) {
+  setTimeout(() => { cp.exec(cmd); }, 10);
+}
+function outer(a, b) {
+  log(a);
+  function inner(c) {
+    return function () { http.get(a + c); runLater(b); };
+  }
+  return inner(b);
+}
+"#;
+    let summaries = js_body_summaries(src);
+    let outer = js_summary_of(&summaries, "outer").expect("outer summary");
+    for (idx, cap) in [(0, Cap::SSRF), (1, Cap::SHELL_ESCAPE)] {
+        assert!(
+            param_sink_caps(outer, idx).intersects(cap),
+            "param {idx} of `outer` reaches a {cap:?} sink in a nested closure; got {:?}",
+            outer.param_to_sink
+        );
+    }
+}
+
+/// A body without formals has a `Param` op per captured name.  The augment
+/// pass probes the same ones the body's own summary probe does (the first
+/// `MAX_PROBE_PARAMS` in lowering order), not every capture.  The captures
+/// keep their edges: invoking a closure value passes the callee itself as
+/// argument 0, which is how `fn()` reports the flow of a variable `fn`
+/// captured.
+#[test]
+fn zero_formal_parent_augment_probes_bounded_like_summary_probe() {
+    let src = br#"
+const cp = require('child_process');
+function routes() {
+  log(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+  app.get('/x', function () { cp.exec(a1); cp.exec(a9); });
+}
+"#;
+    let summaries = js_body_summaries(src);
+    let routes = js_summary_of(&summaries, "routes").expect("routes summary");
+    // `a1` is the second capture: probed, and the closure's exec of it is
+    // lifted.
+    assert!(
+        routes.param_to_sink.iter().any(|(i, _)| *i == 1),
+        "capture `a1` reaches the closure's exec; got {:?}",
+        routes.param_to_sink
+    );
+    // `a9` is the tenth: past the probe bound, as in the summary probe.
+    assert!(
+        routes
+            .param_to_sink
+            .iter()
+            .all(|(i, _)| *i < super::ssa_transfer::MAX_PROBE_PARAMS),
+        "no capture past MAX_PROBE_PARAMS is probed; got {:?}",
+        routes.param_to_sink
+    );
+}
+
+/// The formals of a body are still probed, and a closure that captures one
+/// lifts its sink onto that formal.
+#[test]
+fn formal_param_captured_by_closure_still_lifts_sink() {
+    let src = br#"
+const cp = require('child_process');
+function schedule(label) {
+  log(label);
+  setTimeout(function () { cp.exec(label); }, 1000);
+}
+"#;
+    let summaries = js_body_summaries(src);
+    let schedule = js_summary_of(&summaries, "schedule").expect("schedule summary");
+    assert!(
+        param_sink_caps(schedule, 0).intersects(Cap::SHELL_ESCAPE),
+        "`label` reaches cp.exec through the closure; got {:?}",
+        schedule.param_to_sink
+    );
+}
+
+/// A closure's own source-to-sink flow is not a flow from the parent's
+/// parameter: `schedule` never passes `label` to the exec, so the closure's
+/// env read is the only thing reaching it.
+#[test]
+fn augment_does_not_attribute_closure_own_flow_to_parent_param() {
+    let src = br#"
+const cp = require('child_process');
+function schedule(label) {
+  setTimeout(function () {
+    const cmd = process.env.CRON_CMD;
+    cp.exec(cmd);
+  }, 1000);
+  return label.length;
+}
+"#;
+    let summaries = js_body_summaries(src);
+    let schedule = js_summary_of(&summaries, "schedule").expect("schedule summary");
+    assert!(
+        param_sink_caps(schedule, 0).is_empty(),
+        "label never reaches a sink; got {:?}",
+        schedule.param_to_sink
+    );
+}
+
+/// `seed_caused_caps` keeps an event only when a tainted value carries an
+/// origin on one of the child's `Param` nodes, where the seed lands.
+#[test]
+fn seed_caused_caps_counts_only_events_anchored_at_a_param() {
+    use crate::ssa::ir::SsaValue;
+    use crate::taint::domain::TaintOrigin;
+    use crate::taint::ssa_transfer::SsaTaintEvent;
+    use petgraph::graph::NodeIndex;
+
+    let src = br#"
+function parent(x) {
+  const inner = function () { return x; };
+  return inner;
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    // The closure is the body without formals that captures `x`.
+    let probe = file_cfg
+        .function_bodies()
+        .iter()
+        .filter(|b| b.meta.params.is_empty())
+        .find_map(|b| {
+            // Lowering scopes nodes by the enclosing function's name.
+            let name = b.meta.name.clone().or_else(|| {
+                let d = b.meta.func_key.as_ref()?.disambig?;
+                Some(format!("<anon#{d}>"))
+            })?;
+            let ssa = crate::ssa::lower_to_ssa_with_params(
+                &b.graph,
+                b.entry,
+                Some(&name),
+                false,
+                &b.meta.params,
+            )
+            .ok()?;
+            let probe = super::ChildSinkProbe::new(&ssa, &b.graph);
+            probe.seed_names.contains("x").then_some(probe)
+        })
+        .expect("closure capturing x");
+    let anchor = *probe
+        .seed_anchors
+        .iter()
+        .next()
+        .expect("closure captures x");
+    let own = NodeIndex::new(anchor.index() + 7);
+    let event = |origin_node: NodeIndex, caps: Cap| SsaTaintEvent {
+        sink_node: NodeIndex::new(1),
+        tainted_values: vec![(
+            SsaValue(0),
+            Cap::all(),
+            smallvec::smallvec![TaintOrigin {
+                node: origin_node,
+                source_kind: crate::labels::SourceKind::UserInput,
+                source_span: None,
+            }],
+        )],
+        sink_caps: caps,
+        all_validated: false,
+        guard_kind: None,
+        uses_summary: false,
+        primary_sink_site: None,
+    };
+    assert_eq!(
+        probe.seed_caused_caps(&[event(anchor, Cap::SSRF), event(own, Cap::SHELL_ESCAPE)]),
+        Cap::SSRF
+    );
+    assert!(
+        probe
+            .seed_caused_caps(&[event(own, Cap::SHELL_ESCAPE)])
+            .is_empty()
+    );
+}
+
 /// Extract `compose_path`'s `confines_path_return` flag for a given body.
 /// Shared by the uftpd CVE-2020-5221 return-confinement tests.
 #[cfg(test)]

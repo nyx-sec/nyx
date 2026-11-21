@@ -4510,6 +4510,37 @@ fn numeric_confined_format_macro_blocked_by_raw_occurrence() {
 }
 
 #[test]
+fn numeric_confined_shares_enclosing_call_verdict_across_callbacks() {
+    // Sink argument is a chained call whose callee text carries a whole
+    // callback body.  Each identifier is judged by its nearest enclosing
+    // call: `n` and `m` only ever feed `parseInt`, so they are confined
+    // (both occurrences of `m`); `x` and `items` feed `filter` and stay raw.
+    let src = b"function h(req, res) { \
+                res.send(items.filter(function (x) { return parseInt(n + m) > x; }).size(), parseInt(m)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined = confined_uses_of(&cfg, "res.send").expect("sink node present");
+    let mut got: Vec<&str> = confined.iter().map(String::as_str).collect();
+    got.sort_unstable();
+    assert_eq!(got, ["m", "n"], "confined idents");
+}
+
+#[test]
+fn numeric_confined_raw_occurrence_inside_callback_blocks() {
+    // `n` feeds `parseInt` in the outer argument but appears raw (argument
+    // of the non-numeric `log`) inside the callback, so it is not confined.
+    let src = b"function h(req, res) { \
+                res.send(items.map(function (y) { log(n); return y; }).size(), parseInt(n)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined = confined_uses_of(&cfg, "res.send").expect("sink node present");
+    assert!(
+        !confined.iter().any(|u| u == "n"),
+        "raw `log(n)` occurrence must block confinement; got {confined:?}"
+    );
+}
+
+#[test]
 fn format_macro_method_idents_records_machinery() {
     // The phantom method/macro-name tokens (`format`, `parse`, `unwrap`) of a
     // confined format! interpolation are recorded so the structural confinement
