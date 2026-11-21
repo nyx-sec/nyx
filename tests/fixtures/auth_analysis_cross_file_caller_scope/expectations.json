@@ -1,7 +1,6 @@
 {
   "required_findings": [
-    { "id_prefix": "py.auth.missing_ownership_check", "min_count": 1 },
-    { "id_prefix": "py.auth.token_override_without_validation", "min_count": 1 }
+    { "id_prefix": "py.auth.missing_ownership_check", "min_count": 1 }
   ],
   "forbidden_findings": [
     {

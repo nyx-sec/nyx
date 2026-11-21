@@ -117,6 +117,12 @@ impl AuthAnalysisRules {
         self.finding_prefix == "go.auth"
     }
 
+    /// True for the Python auth family (finding prefix `py.auth`).
+    #[inline]
+    pub fn is_python_lang(&self) -> bool {
+        self.finding_prefix == "py.auth"
+    }
+
     /// Last path segment of a type name (e.g. `std::collections::HashMap` → `HashMap`).
     /// Accepts either `::` or `.` as the path separator.
     fn type_last_segment(ty: &str) -> &str {
@@ -292,6 +298,13 @@ impl AuthAnalysisRules {
             || self.callee_has_non_sink_method(callee)
         {
             return Some(SinkClass::InMemoryLocal);
+        }
+        // Python `.get(..)` is mostly a dictionary lookup (`options.get(key)`,
+        // `cache.get(k)`, `request.GET.get("id")`) and `.get_*(..)` an ordinary
+        // method (`group.get_absolute_url`).  Both are reads of rows only on an
+        // ORM receiver (`Model.objects.get`, `db.session.get`).
+        if self.is_python_lang() && is_non_orm_get(callee) {
+            return None;
         }
         // An id, or a collection of ids, is a value and never a data-layer
         // client: `uniqueIDs.Remove(0)`, `r.configVersionID.Load()`.
@@ -528,7 +541,7 @@ impl AuthAnalysisRules {
     pub fn is_token_lookup(&self, name: &str) -> bool {
         self.token_lookup_names
             .iter()
-            .any(|pattern| matches_name(name, pattern))
+            .any(|pattern| matches_qualified_name(name, pattern))
     }
 
     pub fn is_token_lookup_call(&self, name: &str, call_text: &str) -> bool {
@@ -706,6 +719,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "get_invitation_by_token".into(),
                 "Invitation.objects.get".into(),
                 "invite_lookup".into(),
+                "invitation_lookup".into(),
             ],
             token_expiry_fields: vec![
                 "expires_at".into(),
@@ -1855,6 +1869,40 @@ pub fn matches_name(name: &str, pattern: &str) -> bool {
     canon_has_prefix(name_last, pattern_last)
 }
 
+/// `<receiver>.get(..)` and `<receiver>.get_*(..)` whose receiver shows no ORM:
+/// not a manager (`objects`), a query property (`Model.query`), a session
+/// (`db.session`) or a queryset chain (`Model.objects.select_related(..).get`).
+/// Off an ORM these are dictionary lookups (`options.get(k)`), HTTP clients
+/// (`client.get(url)`) and ordinary object methods (`group.get_absolute_url`).
+fn is_non_orm_get(callee: &str) -> bool {
+    const ORM_SEGMENTS: &[&str] = &[
+        "objects",
+        "query",
+        "session",
+        "_default_manager",
+        "_base_manager",
+        "select_related",
+        "prefetch_related",
+        "select_for_update",
+        "only",
+        "defer",
+        "filter",
+        "exclude",
+        "all",
+        "annotate",
+        "using",
+        "order_by",
+        "distinct",
+    ];
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    matches_name(method, "get")
+        && !receiver
+            .split('.')
+            .any(|segment| ORM_SEGMENTS.contains(&segment.trim_end_matches("()")))
+}
+
 /// Names of role-gating middleware: the roles they accept are arguments, so
 /// the call is an admin guard only when those arguments name admin roles.
 fn is_role_gate_name(name: &str) -> bool {
@@ -1900,6 +1948,54 @@ fn string_literals(text: &str) -> Vec<String> {
     out
 }
 
+/// Separator between a callee's receiver segments: `Invitation.objects.get`
+/// (Python, JS, Ruby) and `Accounts::Invitation.find_by` (Ruby, Rust).
+fn is_path_separator(c: char) -> bool {
+    c == '.' || c == ':'
+}
+
+/// True when two segments read the same once punctuation and case are dropped.
+fn canon_eq(a: &str, b: &str) -> bool {
+    let mut a = a.bytes().filter(u8::is_ascii_alphanumeric);
+    let mut b = b.bytes().filter(u8::is_ascii_alphanumeric);
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(&y) => {}
+            _ => return false,
+        }
+    }
+}
+
+/// Like [`matches_name`], but a dotted `pattern` keeps its receiver.
+///
+/// `matches_name` compares only the last segment, so the pattern
+/// `Invitation.objects.get` collapses to `get` and matches every dictionary
+/// `.get()` and ORM `.get()` in the program.  Here the callee has to end in the
+/// same receiver segments (compared by canonical form, so `::Invitation` and
+/// `invitation` agree) and its last segment must start with the pattern's last
+/// segment, as in `matches_name`.  A pattern with no separator behaves exactly
+/// like `matches_name`.
+pub fn matches_qualified_name(name: &str, pattern: &str) -> bool {
+    if !pattern.contains(is_path_separator) {
+        return matches_name(name, pattern);
+    }
+    let mut name_segments = name.rsplit(is_path_separator).filter(|s| !s.is_empty());
+    let mut pattern_segments = pattern.rsplit(is_path_separator).filter(|s| !s.is_empty());
+    let (Some(name_last), Some(pattern_last)) = (name_segments.next(), pattern_segments.next())
+    else {
+        return false;
+    };
+    if !canon_has_prefix(name_last, pattern_last) {
+        return false;
+    }
+    pattern_segments.all(|pattern_segment| {
+        name_segments
+            .next()
+            .is_some_and(|name_segment| canon_eq(name_segment, pattern_segment))
+    })
+}
+
 pub fn strip_quotes(input: &str) -> String {
     input
         .trim()
@@ -1913,6 +2009,87 @@ pub fn strip_quotes(input: &str) -> String {
 mod tests {
     use super::build_auth_rules;
     use crate::utils::config::{AuthAnalysisConfig, Config, LanguageAnalysisConfig};
+
+    #[test]
+    fn qualified_pattern_keeps_its_receiver() {
+        use super::matches_qualified_name as m;
+        assert!(m("Invitation.objects.get", "Invitation.objects.get"));
+        assert!(m("app.Invitation.objects.get", "Invitation.objects.get"));
+        assert!(m(
+            "invitation.objects.get_or_create",
+            "Invitation.objects.get"
+        ));
+        // Other receivers share the last segment only.
+        assert!(!m("request.json.get", "Invitation.objects.get"));
+        assert!(!m("Document.objects.get", "Invitation.objects.get"));
+        assert!(!m("db.session.get", "Invitation.objects.get"));
+        // A bare `get` has no receiver to compare.
+        assert!(!m("get", "Invitation.objects.get"));
+        // Ruby scope resolution and bang methods.
+        assert!(m("Accounts::Invitation.find_by!", "Invitation.find_by"));
+        assert!(m("::Invitation.find_by", "Invitation.find_by"));
+        assert!(!m("Document.find_by", "Invitation.find_by"));
+        assert!(!m("find_by", "Invitation.find_by"));
+        // A pattern with no separator is the old last-segment prefix match.
+        assert!(m("Invitation.find_by_token", "find_by_token"));
+        assert!(m("store.findByToken", "findByToken"));
+        assert!(!m("store.find", "findByToken"));
+    }
+
+    #[test]
+    fn default_token_lookups_need_their_receiver() {
+        let cfg = Config::default();
+        let python = build_auth_rules(&cfg, "python");
+        assert!(python.is_token_lookup("Invitation.objects.get"));
+        assert!(python.is_token_lookup("invitation_lookup"));
+        assert!(python.is_token_lookup("store.find_by_token"));
+        assert!(!python.is_token_lookup("Document.objects.get"));
+        assert!(!python.is_token_lookup("request.json.get"));
+        assert!(!python.is_token_lookup("db.session.get"));
+
+        let ruby = build_auth_rules(&cfg, "ruby");
+        assert!(ruby.is_token_lookup("Invitation.find_by"));
+        assert!(ruby.is_token_lookup("Invite.find_by!"));
+        assert!(ruby.is_token_lookup("Invitation.find_by_token"));
+        assert!(!ruby.is_token_lookup("Document.find_by"));
+        assert!(!ruby.is_token_lookup("Document.find_by!"));
+    }
+
+    #[test]
+    fn python_get_is_a_row_read_only_on_an_orm_receiver() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let rules = build_auth_rules(&Config::default(), "python");
+        let none = HashSet::new();
+        let class = |callee: &str| rules.classify_sink_class(callee, &none);
+        for orm in [
+            "Document.objects.get",
+            "db.session.get",
+            "Note.query.get",
+            "Document.objects.select_related().get",
+            "self.model._default_manager.get",
+            "Project.objects.get_from_cache",
+        ] {
+            assert_eq!(class(orm), Some(SinkClass::DbCrossTenantRead), "{orm}");
+        }
+        for plain in [
+            "options.get",
+            "titles_by_id.get",
+            "cache.get",
+            "request.GET.get",
+            "self.object.project.statuses.get",
+            "group.get_absolute_url",
+            "integration_service.get_integration",
+            "dag.get_task",
+        ] {
+            assert_eq!(class(plain), None, "{plain}");
+        }
+        // Other verbs keep their old classification.
+        assert_eq!(
+            class("Document.objects.filter"),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+    }
 
     #[test]
     fn role_gates_are_admin_guards_only_for_an_admin_role() {
