@@ -442,7 +442,12 @@ fn run_ssa_taint_internal(
             if skip_self && is_self {
                 continue;
             }
-            if ssa.synthetic_externals.contains(&inst.value) {
+            // A dotted free name rooted at a seeded FastAPI body model
+            // (`item.name` for `item: Item`) is a field of that formal, not a
+            // free variable, so it carries the formal's taint.
+            let body_model_field = matches!(entry_kind, EntryKind::FastApiRoute { .. })
+                && is_body_model_field(ssa, transfer, inst.value);
+            if ssa.synthetic_externals.contains(&inst.value) && !body_model_field {
                 continue;
             }
             let seed_this = match (only_index, param_index) {
@@ -526,18 +531,21 @@ fn run_ssa_taint_internal(
             if !is_self && matches!(entry_kind, EntryKind::FastApiRoute { .. }) {
                 // FastAPI / Starlette handlers mix four formal shapes:
                 //   - path captures (`@app.get("/u/{name}")` + `name: str`)
-                //   - typed extractors (`q: Annotated[int, Query()]`,
-                //     `body: Annotated[User, Body()]`)
-                //   - DI handles (`db: Session = Depends(get_db)`)
+                //   - request-bound formals (`q: str`, `q: str = Query(None)`,
+                //     `q: Annotated[int, Query()]`, `item: Item` for a
+                //     Pydantic model)
+                //   - DI handles (`db: Session = Depends(get_db)`,
+                //     `session: SessionDep`)
                 //   - implicit globals (`request: Request`)
                 //
                 // Seed only when the formal is either a path capture
-                // (`param_route_capture[idx]`) OR carries a recognised
-                // FastAPI typed-extractor wrapper. `classify_param_type_python`
-                // populates `BodyMeta.param_types` with `Some(TypeKind)` for
-                // `Annotated[T, Path()/Query()/Body()/Header()/Cookie()/Form()
-                // /File()]` shapes; everything else (`Session`, `Request`,
-                // bare `dict`, unannotated) returns `None`.
+                // (`param_route_capture[idx]`) OR classified as request-bound.
+                // `classify_param_type_python` populates `BodyMeta.param_types`
+                // with `Some(TypeKind)` for a scalar, container or same-file
+                // Pydantic annotation on a FastAPI route and for the
+                // `Query()` / `Body()` / ... markers; everything else
+                // (`Session`, `Request`, `Depends(..)` defaults, unknown
+                // dependency aliases, unannotated) returns `None`.
                 // `analyze_types_with_param_types` then materialises
                 // `Some(&TypeKind::Unknown)` for `None` entries, so the gate
                 // must reject both missing facts and explicit `Unknown`.
@@ -552,7 +560,7 @@ fn run_ssa_taint_internal(
                     .type_facts
                     .and_then(|tf| tf.get_type(inst.value))
                     .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
-                if !seed_capture && !seed_extractor {
+                if !seed_capture && !seed_extractor && !body_model_field {
                     continue;
                 }
             }
@@ -10979,6 +10987,36 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
         param_to_sink_sites: vec![],
         param_to_gate_filters: vec![],
     }
+}
+
+/// True when `value` is a dotted free name (`item.name`) whose root is a real
+/// formal typed as a request-body model (a Pydantic class or a `dict`), the
+/// shape SSA lowering gives an attribute read on that formal.
+fn is_body_model_field(ssa: &SsaBody, transfer: &SsaTaintTransfer, value: SsaValue) -> bool {
+    let var_name = |v: SsaValue| {
+        ssa.value_defs
+            .get(v.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+    };
+    let Some((root, _)) = var_name(value).and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    let eb = &ssa.blocks[ssa.entry.0 as usize];
+    eb.phis.iter().chain(eb.body.iter()).any(|i| {
+        matches!(i.op, SsaOp::Param { .. })
+            && !ssa.synthetic_externals.contains(&i.value)
+            && var_name(i.value) == Some(root)
+            && transfer
+                .type_facts
+                .and_then(|tf| tf.get_type(i.value))
+                .is_some_and(|t| {
+                    matches!(
+                        t,
+                        crate::ssa::type_facts::TypeKind::Dto(_)
+                            | crate::ssa::type_facts::TypeKind::Object
+                    )
+                })
+    })
 }
 
 /// Collect tainted SSA values at a sink instruction.

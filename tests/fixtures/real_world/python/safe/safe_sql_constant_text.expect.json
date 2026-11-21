@@ -1,0 +1,156 @@
+{
+  "description": "Constant SQL text with driver-bound parameters is quiet (module constants, f-string over a constant, chained fetchall); concatenated SQL still fires",
+  "tags": [
+    "taint",
+    "sqli",
+    "python",
+    "safe",
+    "parameterized"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        14,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "module-level SQL constant, bound parameter dict",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        14,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "constant SQL text is not an unguarded sink",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "line_range": [
+        14,
+        34
+      ],
+      "evidence_contains": [],
+      "notes": "SQL text is a constant in each of these",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        20,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "constant concatenated with a literal, bound tuple",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        20,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "constant concatenated with a literal, bound tuple",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        26,
+        29
+      ],
+      "evidence_contains": [],
+      "notes": "f-string over a module constant",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        26,
+        29
+      ],
+      "evidence_contains": [],
+      "notes": "f-string over a module constant",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        37,
+        42
+      ],
+      "evidence_contains": [],
+      "notes": "literal SQL, bound tuple, result accessor chained on",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        45,
+        51
+      ],
+      "evidence_contains": [],
+      "notes": "SQL held in a local variable, bound tuple",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        54,
+        57
+      ],
+      "evidence_contains": [],
+      "notes": "tainted value concatenated into the SQL text",
+      "must_match": true
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "line_range": [
+        54,
+        57
+      ],
+      "evidence_contains": [],
+      "notes": "pattern flags the concatenation",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        60,
+        65
+      ],
+      "evidence_contains": [],
+      "notes": "tainted value concatenated into the SQL text of a chained call",
+      "must_match": true
+    }
+  ]
+}

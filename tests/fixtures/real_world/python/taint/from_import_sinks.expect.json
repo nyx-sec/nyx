@@ -1,0 +1,83 @@
+{
+  "description": "Names bound by `from M import n` resolve to their module-qualified sinks and sanitizers",
+  "tags": [
+    "taint",
+    "cmdi",
+    "deserialization",
+    "python",
+    "imports"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        11,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "check_output imported from subprocess",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        16,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "check_output with the request read inline",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        20,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "system imported from os",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        25,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "loads imported from pickle",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        29,
+        31
+      ],
+      "evidence_contains": [],
+      "notes": "shlex.quote imported by name sanitizes the shell argument",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        34,
+        37
+      ],
+      "evidence_contains": [],
+      "notes": "html.escape imported by name sanitizes the markup",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

@@ -1255,6 +1255,11 @@ pub(super) fn walk_chain_inner_call_args<'a>(outer: Node<'a>, lang: &str, out: &
 /// Recursively find a call-expression node within an AST subtree (up to
 /// 4 levels deep).  Unlike `find_call_node` which only checks 2 levels,
 /// this handles `await`-wrapped calls inside declarations.
+///
+/// The walk stops at nested blocks and function literals: a call inside a
+/// loop / `if` body or a callback is its own CFG node, so it must not stand
+/// in for the enclosing statement (a `for` header picking up the gated sink
+/// of a `res.setHeader(..)` call in its body).
 pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Option<Node<'a>> {
     if depth == 0 {
         return None;
@@ -1264,6 +1269,9 @@ pub(super) fn find_call_node_deep<'a>(n: Node<'a>, lang: &str, depth: u8) -> Opt
         _ => {
             let mut cursor = n.walk();
             for c in n.children(&mut cursor) {
+                if matches!(lookup(lang, c.kind()), Kind::Block | Kind::Function) {
+                    continue;
+                }
                 if let Some(found) = find_call_node_deep(c, lang, depth - 1) {
                     return Some(found);
                 }
@@ -2973,6 +2981,12 @@ pub(super) struct ShellArrayMatch {
 /// not a shell.  Element 1 must be a literal `-c` (POSIX) or `/c`/`/C` (cmd);
 /// otherwise the array is not in shell-exec form regardless of element 0.
 ///
+/// The split form `(<shell>, [<flag>, <payload>...])`, where the shell is
+/// its own string argument and the next argument is the argv array
+/// (`spawn('sh', ['-c', cmd])`, `execFile('/bin/bash', ['-c', cmd])`), is the
+/// same shell invocation spelled through an argv-taking API and matches too;
+/// its `arg_position` is the argv array's index.
+///
 /// Identifiers from elements at positions 2+ are lifted via
 /// [`collect_idents_with_paths`] so template-literal interpolations
 /// (`` `echo ${x}` ``), member-expressions (`obj.field`), and bare idents are
@@ -2986,8 +3000,21 @@ pub(super) fn extract_shell_array_payload_idents(
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return out;
     };
+    // Shell named by the previous positional argument, for the split form.
+    let mut prev_shell: Option<String> = None;
     let mut cursor = args_node.walk();
     for (idx, child) in args_node.named_children(&mut cursor).enumerate() {
+        let shell_here = const_string_value(child, code).filter(|s| is_known_shell(s));
+        if let Some(shell) = prev_shell.take()
+            && let Some(idents) = shell_argv_payload_idents_of(&shell, child, code)
+        {
+            out.push(ShellArrayMatch {
+                arg_position: idx,
+                payload_idents: idents,
+            });
+            continue;
+        }
+        prev_shell = shell_here;
         let kind = child.kind();
         // Splats break positional indexing; bail conservatively on the whole call.
         if kind == "spread_element"
@@ -3061,12 +3088,344 @@ fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>>
     if !is_shell_command_flag(&shell, &flag) {
         return None;
     }
-    // Lift identifiers from the payload elements (positions 2+).  Constants
-    // contribute nothing.  An empty result means the entire payload is
-    // statically benign.
+    shell_payload_idents(&elems[2..], code)
+}
+
+/// Number of positional arguments a JS/TS call passes, counted the way
+/// [`extract_arg_uses`] indexes them, or `None` when a spread argument
+/// (`f(...args)`) hides the real arity.
+pub(super) fn js_positional_arity(call_node: Node) -> Option<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Some(0);
+    };
+    let mut cursor = args.walk();
+    let mut arity = 0;
+    for arg in args.named_children(&mut cursor) {
+        if arg.kind() == "spread_element" {
+            return None;
+        }
+        arity += 1;
+    }
+    Some(arity)
+}
+
+/// True when the positional argument at `index` of a JS/TS call is a
+/// string by construction, the shape a string-evaluating timer
+/// (`setTimeout(code, ms)`) compiles:
+///
+/// * a string or template literal, or a `+` concatenation;
+/// * a member read that classifies as a taint Source (`req.query.code`,
+///   `location.hash`);
+/// * a call to a string-producing method or global
+///   ([`JS_STRING_METHODS`], [`JS_STRING_FUNCTIONS`]), as in
+///   `location.hash.substring(1)`;
+/// * a local name whose nearest declaration initialises it with one of the
+///   above.
+///
+/// Everything else (a function reference, a parameter, an arbitrary call
+/// result) is not evidence of a string: timers almost always receive a
+/// callback.
+pub(super) fn js_arg_is_string_valued(
+    call_node: Node,
+    index: usize,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(index) else {
+        return false;
+    };
+    js_expr_is_string_valued(arg, lang, code, extra, 3)
+}
+
+/// True when the positional argument at `index` of a JS/TS call names an
+/// object's prototype: `Foo.prototype`, `x.__proto__`, `x['__proto__']`, or
+/// `Object.getPrototypeOf(x)` / `Reflect.getPrototypeOf(x)`.  Properties
+/// written into such a target are inherited by every object built from it,
+/// which is what a shallow `Object.assign` needs to pollute a prototype.
+pub(super) fn js_arg_is_prototype_object(call_node: Node, index: usize, code: &[u8]) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(index) else {
+        return false;
+    };
+    let arg = unwrap_parens(arg);
+    match arg.kind() {
+        "member_expression" => arg
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))
+            .is_some_and(|p| p == "prototype" || p == "__proto__"),
+        "subscript_expression" => arg
+            .child_by_field_name("index")
+            .and_then(|i| const_string_value(i, code))
+            .is_some_and(|k| k == "prototype" || k == "__proto__"),
+        "call_expression" => arg
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|f| {
+                matches!(
+                    f.as_str(),
+                    "Object.getPrototypeOf" | "Reflect.getPrototypeOf"
+                )
+            }),
+        _ => false,
+    }
+}
+
+/// String-returning `String.prototype` / `Array.prototype.join` methods.
+const JS_STRING_METHODS: &[&str] = &[
+    "substring",
+    "substr",
+    "slice",
+    "replace",
+    "replaceAll",
+    "trim",
+    "trimStart",
+    "trimEnd",
+    "toString",
+    "toLowerCase",
+    "toUpperCase",
+    "concat",
+    "join",
+    "padStart",
+    "padEnd",
+    "repeat",
+    "normalize",
+];
+
+/// String-returning global functions.
+const JS_STRING_FUNCTIONS: &[&str] = &[
+    "String",
+    "decodeURIComponent",
+    "decodeURI",
+    "unescape",
+    "atob",
+];
+
+fn js_expr_is_string_valued(
+    expr: Node,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    depth: u8,
+) -> bool {
+    let expr = unwrap_parens(expr);
+    match expr.kind() {
+        "string" | "template_string" => true,
+        "binary_expression" => expr
+            .child_by_field_name("operator")
+            .and_then(|o| text_of(o, code))
+            .is_some_and(|o| o == "+"),
+        "member_expression" | "subscript_expression" => matches!(
+            super::helpers::first_member_label(expr, lang, code, extra),
+            Some(crate::labels::DataLabel::Source(_))
+        ),
+        "call_expression" => {
+            let Some(func) = expr.child_by_field_name("function") else {
+                return false;
+            };
+            match func.kind() {
+                "member_expression" => func
+                    .child_by_field_name("property")
+                    .and_then(|p| text_of(p, code))
+                    .is_some_and(|p| JS_STRING_METHODS.contains(&p.as_str())),
+                "identifier" => {
+                    text_of(func, code).is_some_and(|f| JS_STRING_FUNCTIONS.contains(&f.as_str()))
+                }
+                _ => false,
+            }
+        }
+        "identifier" if depth > 0 => text_of(expr, code)
+            .and_then(|name| js_local_initializer(expr, &name, code))
+            .is_some_and(|init| js_expr_is_string_valued(init, lang, code, extra, depth - 1)),
+        _ => false,
+    }
+}
+
+/// Initialiser of the nearest `const` / `let` / `var` declaration of `name`
+/// in a block enclosing `from`.  `None` when a parameter of an enclosing
+/// function binds `name` first, or when no initialised declaration is found.
+fn js_local_initializer<'a>(from: Node<'a>, name: &str, code: &[u8]) -> Option<Node<'a>> {
+    let mut scope = from.parent();
+    while let Some(s) = scope {
+        if matches!(
+            s.kind(),
+            "function_expression"
+                | "function"
+                | "function_declaration"
+                | "generator_function"
+                | "generator_function_declaration"
+                | "arrow_function"
+                | "method_definition"
+        ) && js_function_has_param(s, name, code)
+        {
+            return None;
+        }
+        if matches!(s.kind(), "statement_block" | "program") {
+            let mut cursor = s.walk();
+            for stmt in s.named_children(&mut cursor) {
+                if !matches!(stmt.kind(), "lexical_declaration" | "variable_declaration") {
+                    continue;
+                }
+                let mut dc = stmt.walk();
+                for decl in stmt.named_children(&mut dc) {
+                    if decl.kind() == "variable_declarator"
+                        && decl
+                            .child_by_field_name("name")
+                            .and_then(|n| text_of(n, code))
+                            .is_some_and(|n| n == name)
+                    {
+                        return decl.child_by_field_name("value");
+                    }
+                }
+            }
+        }
+        scope = s.parent();
+    }
+    None
+}
+
+/// True when the function node `func` declares a parameter named `name`.
+fn js_function_has_param(func: Node, name: &str, code: &[u8]) -> bool {
+    // `x => ...` keeps its lone parameter in the `parameter` field.
+    if let Some(p) = func.child_by_field_name("parameter") {
+        return text_of(p, code).is_some_and(|t| t == name);
+    }
+    let Some(params) = func.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut cursor = params.walk();
+    params.named_children(&mut cursor).any(|p| {
+        // TS wraps each parameter (`required_parameter` / `optional_parameter`)
+        // with the binding under `pattern`; JS default values wrap it in an
+        // `assignment_pattern` under `left`.
+        let binding = p
+            .child_by_field_name("pattern")
+            .or_else(|| p.child_by_field_name("left"))
+            .unwrap_or(p);
+        binding.kind() == "identifier" && text_of(binding, code).is_some_and(|t| t == name)
+    })
+}
+
+/// Positional args of an argv-taking `child_process` call (`spawn`,
+/// `execFile`, ...) that become shell payloads because an inline options
+/// object enables `shell`.  Node then joins the binary and the argv array
+/// into one `/bin/sh -c` string, so the argv array is injectable the same
+/// way `exec`'s command string is.
+///
+/// Empty when no object-literal argument after arg 0 has a `shell` key, or
+/// when its value is a falsy literal (`false`, `null`, `undefined`, `0`,
+/// `''`).  A dynamic value counts as enabled.  Arg 0 is not reported (it is
+/// already a payload), and neither are the options object itself nor a
+/// function argument (the completion callback).
+pub(super) fn js_shell_option_argv_positions(call_node: Node, code: &[u8]) -> Vec<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut cursor = args.walk();
+    let positional: Vec<Node> = args.named_children(&mut cursor).collect();
+    let shell_enabled = positional
+        .iter()
+        .skip(1)
+        .any(|a| js_object_enables_shell(unwrap_parens(*a), code));
+    if !shell_enabled {
+        return Vec::new();
+    }
+    positional
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, a)| {
+            !matches!(
+                unwrap_parens(**a).kind(),
+                "object" | "function_expression" | "arrow_function" | "function"
+            )
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// True when `obj` is an object literal whose `shell` property is present
+/// and not a falsy literal.
+fn js_object_enables_shell(obj: Node, code: &[u8]) -> bool {
+    if obj.kind() != "object" {
+        return false;
+    }
+    let mut cursor = obj.walk();
+    for child in obj.named_children(&mut cursor) {
+        match child.kind() {
+            // `{ shell }`: value is whatever the local binding holds.
+            "shorthand_property_identifier" if text_of(child, code).as_deref() == Some("shell") => {
+                return true;
+            }
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    continue;
+                };
+                let key_text = match key.kind() {
+                    "string" => const_string_value(key, code),
+                    "property_identifier" => text_of(key, code),
+                    _ => None,
+                };
+                if key_text.as_deref() != Some("shell") {
+                    continue;
+                }
+                let Some(value) = child.child_by_field_name("value") else {
+                    return true;
+                };
+                let value = unwrap_parens(value);
+                return match value.kind() {
+                    "false" | "null" | "undefined" => false,
+                    "number" => text_of(value, code).as_deref() != Some("0"),
+                    "string" | "template_string" => {
+                        const_string_value(value, code).is_none_or(|s| !s.is_empty())
+                    }
+                    "identifier" => text_of(value, code).as_deref() != Some("undefined"),
+                    _ => true,
+                };
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split-form counterpart of [`shell_array_payload_idents_of`]: `shell` came
+/// from the previous positional argument and `node` must be an argv array
+/// literal `[<flag>, *]` whose first element is that shell's command flag.
+/// Returns the identifiers in the elements after the flag.
+fn shell_argv_payload_idents_of(shell: &str, node: Node, code: &[u8]) -> Option<Vec<String>> {
+    let node = unwrap_parens(node);
+    if node.kind() != "array" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let elems: Vec<Node> = node.named_children(&mut cursor).collect();
+    if elems.len() < 2 {
+        return None;
+    }
+    let flag = const_string_value(elems[0], code)?;
+    if !is_shell_command_flag(shell, &flag) {
+        return None;
+    }
+    shell_payload_idents(&elems[1..], code)
+}
+
+/// Identifiers and dotted paths referenced by the shell-command elements of
+/// a shell-array literal.  `None` when every element is a constant.
+fn shell_payload_idents(payload: &[Node], code: &[u8]) -> Option<Vec<String>> {
+    // Lift identifiers from the payload elements.  Constants contribute
+    // nothing.  An empty result means the entire payload is statically
+    // benign.
     let mut idents: Vec<String> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
-    for elem in &elems[2..] {
+    for elem in payload {
         collect_idents_with_paths(*elem, code, &mut idents, &mut paths);
     }
     let mut combined = paths;

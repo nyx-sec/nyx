@@ -1,0 +1,168 @@
+{
+  "description": "Flask and Django responses whose body cannot carry markup stay quiet; the HTML-typed and concatenated spellings still fire",
+  "tags": [
+    "taint",
+    "xss",
+    "flask",
+    "django",
+    "safe",
+    "response"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        11,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "make_response(render_template(..)): autoescaped Jinja render, not an XSS",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        11,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "no structural finding for the autoescaped render either",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        19,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "make_response(jsonify(..)) is a JSON response",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        19,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "no structural finding for the JSON response",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        25,
+        27
+      ],
+      "evidence_contains": [],
+      "notes": "HttpResponse with an application/json content type",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        30,
+        32
+      ],
+      "evidence_contains": [],
+      "notes": "HttpResponse with a text/plain content type",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        35,
+        37
+      ],
+      "evidence_contains": [],
+      "notes": "HttpResponse(render_to_string(..)): autoescaped Django render",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        40,
+        42
+      ],
+      "evidence_contains": [],
+      "notes": "HttpResponse(html.escape(..)) with a trailing keyword argument",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        25,
+        42
+      ],
+      "evidence_contains": [],
+      "notes": "no structural finding on any of the safe response bodies",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        45,
+        47
+      ],
+      "evidence_contains": [],
+      "notes": "json.dumps body with the default text/html content type is a real XSS",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        50,
+        52
+      ],
+      "evidence_contains": [],
+      "notes": "explicit text/html content type",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        55,
+        57
+      ],
+      "evidence_contains": [],
+      "notes": "computed content type cannot be proven non-HTML",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        60,
+        63
+      ],
+      "evidence_contains": [],
+      "notes": "HTML built by concatenation around the tainted value",
+      "must_match": true
+    }
+  ]
+}

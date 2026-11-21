@@ -1,0 +1,61 @@
+{
+  "description": "Syntactic config / XSS patterns skip their safe shapes (allowlisted CORS origin, mail transport secure:false, constant location/cookie writes, message-string error) and still fire on the vulnerable twins.",
+  "tags": ["pattern", "cors", "config", "safe"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "js.config.cors_dynamic_origin",
+      "must_not_match": true,
+      "line_range": [7, 19],
+      "notes": "origin echoed only after an allowlist test (enclosing if, or early exit)"
+    },
+    {
+      "rule_id": "js.config.insecure_session_secure",
+      "must_not_match": true,
+      "line_range": [22, 22],
+      "notes": "nodemailer STARTTLS transport"
+    },
+    {
+      "rule_id": "js.xss.",
+      "must_not_match": true,
+      "line_range": [25, 28],
+      "notes": "constant right-hand sides"
+    },
+    {
+      "rule_id": "js.config.verbose_error_response",
+      "must_not_match": true,
+      "line_range": [31, 34],
+      "notes": "error is a string literal"
+    },
+    {
+      "rule_id": "js.config.cors_dynamic_origin",
+      "must_match": true,
+      "line_range": [37, 40],
+      "notes": "request origin reflected with no allowlist"
+    },
+    {
+      "rule_id": "js.config.insecure_session_secure",
+      "must_match": true,
+      "line_range": [42, 42],
+      "notes": "express-session cookie options"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "must_match": true,
+      "line_range": [45, 45],
+      "notes": "non-constant right-hand side"
+    },
+    {
+      "rule_id": "js.xss.cookie_write",
+      "must_match": true,
+      "line_range": [46, 46],
+      "notes": "non-constant right-hand side"
+    },
+    {
+      "rule_id": "js.config.verbose_error_response",
+      "must_match": true,
+      "line_range": [49, 52],
+      "notes": "error is the caught value"
+    }
+  ]
+}

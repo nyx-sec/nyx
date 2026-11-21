@@ -114,7 +114,7 @@ fn default_must_match() -> bool {
 struct Fixture {
     /// Language slug (rust, c, cpp, java, go, php, python, ruby, typescript, javascript).
     lang: String,
-    /// Category (taint, cfg, state, mixed).
+    /// Category (taint, cfg, state, mixed, safe).
     category: String,
     /// Fixture name (stem of source file).
     name: String,
@@ -140,7 +140,7 @@ fn discover_fixtures() -> Vec<Fixture> {
         "typescript",
         "javascript",
     ];
-    let categories = ["taint", "cfg", "state", "mixed"];
+    let categories = ["taint", "cfg", "state", "mixed", "safe"];
 
     for lang in &langs {
         for category in &categories {

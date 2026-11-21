@@ -148,21 +148,35 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
-    // Shell-exec sinks. Qualified `child_process.*` and bare forms are both
-    // flat sinks; receiver-name collisions are handled via EXCLUDES; the
-    // `=*` gates in `GATED_SINKS` below restrict checked args to arg 0
-    // (command string) so `execSync(cmd, { env: process.env })` no longer
-    // flags `process.env` flowing into the options object.  See
-    // javascript.rs for full rationale.
+    // Dynamic code construction (`new Function(src)`, `Function(src)`) and
+    // the `vm` compile entry points.  See javascript.rs for the rationale.
+    LabelRule {
+        matchers: &[
+            "=Function",
+            "vm.runInNewContext",
+            "vm.runInThisContext",
+            "vm.runInContext",
+            "vm.compileFunction",
+            "vm.Script",
+        ],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+    },
+    // Shell-exec sinks.  Only module-qualified `child_process.*` forms are
+    // flat; aliased (`cp.exec`) and destructured (`spawn`) forms ride the
+    // import-gated rule in `GATED_LABEL_RULES`, so `RegExp.prototype.exec`,
+    // mongoose `Query.exec()` and sqlite `db.exec(sql)` never match.  The
+    // `GATED_SINKS` entries restrict the checked args to arg 0.  See
+    // javascript.rs for the full rationale.
     LabelRule {
         matchers: &[
             "child_process.exec",
             "child_process.execSync",
-            "child_process.spawn",
             "child_process.execFile",
-            "exec",
-            "execSync",
-            "execFile",
+            "child_process.execFileSync",
+            "child_process.spawn",
+            "child_process.spawnSync",
+            "child_process.fork",
             "execAsync",
             "execPromise",
         ],
@@ -180,7 +194,8 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::URL_ENCODE),
         case_sensitive: false,
     },
-    // Express response sinks
+    // Express response sinks.  The matching `GATED_SINKS` entries keep the
+    // `res` receiver out of the payload; see javascript.rs.
     LabelRule {
         matchers: &["res.send", "res.json"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
@@ -193,11 +208,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
-    LabelRule {
-        matchers: &["res.set", "res.header"],
-        label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
     // DOM XSS sinks
     LabelRule {
         matchers: &[
@@ -207,12 +217,6 @@ pub static RULES: &[LabelRule] = &[
             "insertAdjacentHTML",
         ],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
-        case_sensitive: false,
-    },
-    // Navigation / open-redirect sinks
-    LabelRule {
-        matchers: &["location.assign", "location.replace", "window.open"],
-        label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
     // Node.js file-system sinks
@@ -231,6 +235,22 @@ pub static RULES: &[LabelRule] = &[
             "fs.unlinkSync",
             "fs.readdir",
             "fs.readdirSync",
+            "fs.accessSync",
+            "fs.open",
+            "fs.openSync",
+            "fs.mkdir",
+            "fs.mkdirSync",
+            "fs.rm",
+            "fs.rmSync",
+            "fs.rmdir",
+            "fs.rmdirSync",
+            "fs.rename",
+            "fs.renameSync",
+            "fs.copyFile",
+            "fs.copyFileSync",
+            // Arg 1 is the appended data; `GATED_SINKS` restricts to arg 0.
+            "fs.appendFile",
+            "fs.appendFileSync",
             // Phase 05 — `node:fs/promises` member-access forms covered
             // here. Bare-name forms (`readFile`, `open`, ...) and
             // `fsp.readFile` namespace-import forms ride the gated
@@ -292,6 +312,9 @@ pub static RULES: &[LabelRule] = &[
             "pool.query",
             "db.query",
             "db.execute",
+            // better-sqlite3 / sqlite3 `db.exec(sql)` runs a raw SQL string.
+            // (A bare `exec` suffix used to classify it as a shell sink.)
+            "db.exec",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
@@ -396,6 +419,7 @@ pub static RULES: &[LabelRule] = &[
             "res.redirect",
             "location.replace",
             "location.assign",
+            "window.open",
             "router.navigate",
             "router.navigateByUrl",
             "window.location",
@@ -465,27 +489,14 @@ pub static EXCLUDES: &[&str] = &[
 /// language registries carry the same matcher list to keep .ts and .js
 /// fixtures in lockstep.
 pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
-    GatedLabelRule {
-        matchers: &[
-            "readFile",
-            "writeFile",
-            "unlink",
-            "open",
-            "stat",
-            "readdir",
-            "mkdir",
-            "rmdir",
-            "rm",
-            "appendFile",
-            "copyFile",
-            "rename",
-            "truncate",
-            "chmod",
-        ],
-        label: DataLabel::Sink(Cap::FILE_IO),
-        case_sensitive: false,
-        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
-    },
+    super::javascript::FS_PROMISES_IMPORT_PATH_RULE,
+    super::javascript::FS_PROMISES_IMPORT_PATH_PAIR_RULE,
+    // Node core modules reached through an import binding; shared with
+    // javascript.rs, which documents each rule.
+    super::javascript::CHILD_PROCESS_IMPORT_RULE,
+    super::javascript::VM_IMPORT_RULE,
+    super::javascript::FS_IMPORT_PATH_RULE,
+    super::javascript::FS_IMPORT_PATH_PAIR_RULE,
     // Phase 07 — Knex bare-name raw-SQL escape hatches. See
     // `labels/javascript.rs::GATED_LABEL_RULES` for the rationale; this
     // mirror keeps `.ts` and `.js` fixtures in lockstep.
@@ -497,6 +508,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
             modules: &["knex"],
             local_names: &["knex"],
         },
+        payload_args: &[],
     },
     // Phase 07 — Drizzle `sql` template-tag builder. See
     // `labels/javascript.rs::GATED_LABEL_RULES` for the two callee
@@ -506,6 +518,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+        payload_args: &[],
     },
     // Phase 10 — Next.js `cookies()` / `headers()` helpers from the
     // `next/headers` module return adversary-controlled
@@ -518,6 +531,7 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["next/headers"]),
+        payload_args: &[],
     },
 ];
 
@@ -840,12 +854,53 @@ pub static GATED_SINKS: &[SinkGate] = &[
         },
     },
     // ── Shell-exec sinks (SHELL_ESCAPE) ──────────────────────────────────
-    // See javascript.rs for the rationale.  Only arg 0 (command string)
-    // carries the shell-injection payload; bare forms use `=` exact-only
-    // matching so they don't collide with any `<receiver>.exec` method.
-    // Qualified `child_process.*` forms stay as flat sinks; gates only fire
-    // when no flat sink classifies the call, so the bare destructured-import
-    // forms below are the only place where shell-exec needs gating.
+    // See javascript.rs for the rationale.  Only arg 0 (command string or
+    // binary) carries the shell-injection payload.  The qualified gates
+    // restrict the flat `child_process.*` sinks; bare forms use `=`
+    // exact-only matching so they don't collide with any `<receiver>.exec`
+    // method.
+    SinkGate::payload_positions(
+        "child_process.exec",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execFile",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.execFileSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.spawn",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.spawnSync",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "child_process.fork",
+        DataLabel::Sink(Cap::SHELL_ESCAPE),
+        true,
+        &[0],
+    ),
     SinkGate {
         callee_matcher: "=exec",
         arg_index: 0,
@@ -1039,6 +1094,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    SinkGate::payload_positions("db.exec", DataLabel::Sink(Cap::SQL_QUERY), false, &[0]),
     SinkGate {
         callee_matcher: "db.execute",
         arg_index: 0,
@@ -1178,6 +1234,7 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // Prototype targets only; see `javascript::SHALLOW_ASSIGN_MERGES`.
     SinkGate {
         callee_matcher: "Object.assign",
         arg_index: 0,
@@ -1299,6 +1356,138 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // ── Express / Node `http` response payload positions ─────────────────
+    // See javascript.rs: keeps the `res` receiver out of the payload.
+    SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
+    SinkGate::payload_positions(
+        "res.redirect",
+        DataLabel::Sink(Cap::OPEN_REDIRECT),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.set",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.header",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "res.append",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions(
+        "setHeader",
+        DataLabel::Sink(Cap::HEADER_INJECTION),
+        false,
+        &[0, 1],
+    ),
+    SinkGate::payload_positions("res.sendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("res.download", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    // ── String-evaluating timers ─────────────────────────────────────────
+    //
+    // `setTimeout(code, ms)` / `setInterval(code, ms)` compile a string
+    // first argument like `eval`.  The usual argument is a callback, so the
+    // CFG gate pass keeps these gates only when arg 0 is a string by
+    // construction (see `STRING_EVALUATING_TIMERS`).  Exact-only (`=`) so
+    // `socket.setTimeout(ms)` / `req.setTimeout(ms)` never match.
+    SinkGate::payload_positions("=setTimeout", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions("=setInterval", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions(
+        "window.setTimeout",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "window.setInterval",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    // ── `vm` code compilation and `fs.appendFile` payload positions ──────
+    SinkGate::payload_positions(
+        "vm.runInNewContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.runInThisContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.runInContext",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "vm.compileFunction",
+        DataLabel::Sink(Cap::CODE_EXEC),
+        true,
+        &[0],
+    ),
+    SinkGate::payload_positions("vm.Script", DataLabel::Sink(Cap::CODE_EXEC), true, &[0]),
+    SinkGate::payload_positions("fs.appendFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions(
+        "fs.appendFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    // ── `fs` write payload positions ─────────────────────────────────────
+    //
+    // Path traversal needs taint in the path.  The written content (arg 1)
+    // and the options object are not traversal vectors, so logging request
+    // data to a fixed file is not a FILE_IO finding.
+    SinkGate::payload_positions("fs.writeFile", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions(
+        "fs.writeFileSync",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.createWriteStream",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "fs.promises.appendFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.writeFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions(
+        "FileSystemPromisesNs.appendFile",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -1401,19 +1590,29 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
+        // `ctx.body` is an alias of `ctx.response.body`; both are written
+        // as assignment targets.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.body".into()],
+            matchers: vec!["ctx.body".into(), "ctx.response.body".into()],
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: false,
         });
+        // A redirect sends the browser elsewhere: open redirect, not SSRF.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            matchers: vec!["ctx.redirect".into(), "ctx.response.redirect".into()],
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
+        // Header setters write a response header, so the risk is CRLF
+        // injection; HTML escaping does nothing for them.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.set".into(), "ctx.append".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            matchers: vec![
+                "ctx.set".into(),
+                "ctx.append".into(),
+                "ctx.response.set".into(),
+                "ctx.response.append".into(),
+            ],
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }
@@ -1441,7 +1640,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.redirect".into()],
-            label: DataLabel::Sink(Cap::SSRF),
+            label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
         rules.push(RuntimeLabelRule {
@@ -1451,7 +1650,7 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         rules.push(RuntimeLabelRule {
             matchers: vec!["reply.header".into(), "reply.headers".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
+            label: DataLabel::Sink(Cap::HEADER_INJECTION),
             case_sensitive: false,
         });
     }

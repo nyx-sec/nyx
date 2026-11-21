@@ -1436,6 +1436,15 @@ fn python_fastapi_route_per_formal_seeding() {
     let positives = [
         ("fastapi_path_capture.py", 18usize),
         ("fastapi_annotated_query.py", 17usize),
+        // Plain annotations and default markers on a route are request-bound.
+        ("fastapi_plain_query.py", 13usize),
+        ("fastapi_query_default.py", 10usize),
+        ("fastapi_optional_query.py", 13usize),
+        ("fastapi_optional_query.py", 18usize),
+        ("fastapi_mixed_capture_and_query.py", 12usize),
+        // A same-file Pydantic model is the request body, and so are its fields.
+        ("fastapi_pydantic_body.py", 20usize),
+        ("fastapi_pydantic_body.py", 21usize),
     ];
     for (file, sink_line) in positives {
         let hit = findings.iter().any(|f| {
@@ -1455,10 +1464,19 @@ fn python_fastapi_route_per_formal_seeding() {
                 .join("\n"),
         );
     }
+    // Injected handles, `Annotated` dependency aliases and numeric query
+    // parameters are not attacker-controlled strings.
     let depends_taint: Vec<&_> = findings
         .iter()
         .filter(|f| {
-            f.path.ends_with("fastapi_depends_denylist.py")
+            [
+                "fastapi_depends_denylist.py",
+                "fastapi_annotated_alias_di.py",
+                "fastapi_injected_types.py",
+                "fastapi_int_query.py",
+            ]
+            .iter()
+            .any(|n| f.path.ends_with(n))
                 && f.id.starts_with("taint-unsanitised-flow")
         })
         .collect();

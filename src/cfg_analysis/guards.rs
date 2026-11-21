@@ -328,10 +328,21 @@ fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: NodeIndex) -> 
     // resolve to a captured literal; a position outside the recorded arg list
     // (empty vec on splat args, arity mismatch) is left unproven → not
     // suppressed.
+    //
+    // A payload argument built only from file-level constants
+    // (`cur.execute(BASE_Q + " WHERE id = ?", (uid,))`, with `BASE_Q` a
+    // module-level string) is constant too: its only identifiers are in the
+    // file's constant scalar table, which the per-function CFG cannot see.
     let lits = &info.call.arg_string_literals;
-    payload_positions
-        .iter()
-        .all(|&pos| matches!(lits.get(pos), Some(Some(_))))
+    let arg_uses = &info.call.arg_uses;
+    payload_positions.iter().all(|&pos| {
+        matches!(lits.get(pos), Some(Some(_)))
+            || ctx.class_constant_scalars.is_some_and(|consts| {
+                arg_uses.get(pos).is_some_and(|uses| {
+                    !uses.is_empty() && uses.iter().all(|u| consts.contains_key(u))
+                })
+            })
+    })
 }
 
 /// Suppress a `cfg-unguarded-sink` SSRF finding when the sink's URL operand

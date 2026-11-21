@@ -1426,7 +1426,9 @@ mod goto_succ_propagation_tests {
         interner.intern("next");
         let vars = ["next".to_string()];
         let apply = |st: &mut SsaTaintState, kind, polarity| {
-            super::super::apply_branch_predicates(st, &vars, kind, polarity, None, &interner, &ssa, None)
+            super::super::apply_branch_predicates(
+                st, &vars, kind, polarity, None, &interner, &ssa, None,
+            )
         };
         let caps_of = |st: &SsaTaintState| st.get(SsaValue(0)).map(|t| t.caps);
 

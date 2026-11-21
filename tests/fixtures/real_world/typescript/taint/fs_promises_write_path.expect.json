@@ -1,0 +1,25 @@
+{
+  "description": "fs/promises writeFile / appendFile imported by name check the path, not the written data; copyFile checks both paths.",
+  "tags": ["taint", "path-traversal", "fs"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [5, 6],
+      "notes": "constant paths, tainted content"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "writeFile(`/srv/uploads/${name}`, 'x')"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [14, 14],
+      "notes": "copyFile(template, dest)"
+    }
+  ]
+}

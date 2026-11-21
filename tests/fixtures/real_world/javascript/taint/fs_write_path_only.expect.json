@@ -1,0 +1,25 @@
+{
+  "description": "fs write sinks are path-traversal sinks on the path argument only; request data written to a fixed file is not a finding.",
+  "tags": ["taint", "path-traversal", "fs"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [6, 8],
+      "notes": "constant paths, tainted content"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "fs.writeFileSync('/srv/uploads/' + req.query.name, ...)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [14, 14],
+      "notes": "fs.promises.writeFile(req.query.path, 'x')"
+    }
+  ]
+}

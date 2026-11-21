@@ -1,0 +1,35 @@
+{
+  "description": "subprocess.getoutput and getstatusoutput always run through the shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "subprocess"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        6,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "getoutput with a request value",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        11,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "getstatusoutput with a request value",
+      "must_match": true
+    }
+  ]
+}

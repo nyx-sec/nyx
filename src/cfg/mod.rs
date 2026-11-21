@@ -40,14 +40,15 @@ mod imports;
 mod literals;
 mod nested_calls;
 mod params;
+pub(crate) mod python_shapes;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
-    call_ident_at_or_under, collect_nested_function_nodes, collect_rhs_object_literal,
-    derive_anon_fn_name_from_context,
-    find_classifiable_inner_call, find_inner_sink_call, first_call_ident_with_span,
-    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
+    call_fn_callee_text, call_ident_at_or_under, collect_nested_function_nodes,
+    collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
+    find_inner_sink_call, first_call_ident_with_span, first_callback_sink_call, first_member_label,
+    first_member_text, is_raii_factory, is_subscript_kind, root_member_receiver,
+    subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -67,7 +68,7 @@ pub(crate) use helpers::{
 };
 use imports::{
     collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
-    extract_promisify_aliases, rust_bare_join_crate_prefix,
+    extract_promisify_aliases, extract_python_import_paths, rust_bare_join_crate_prefix,
 };
 #[cfg(test)]
 use literals::has_sql_placeholders;
@@ -81,8 +82,9 @@ use literals::{
     find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
-    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
-    js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref, parameterized_query_shape,
+    java_chain_arg0_kind_for_method, js_arg_is_prototype_object, js_arg_is_string_valued,
+    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
+    js_positional_arity, js_shell_option_argv_positions, parameterized_query_shape,
     ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
@@ -1329,7 +1331,10 @@ pub struct FileCfg {
     /// [`crate::entry_points::EntryKind`] to the resulting summary.
     pub entry_kinds: std::collections::HashMap<(usize, usize), crate::entry_points::EntryKind>,
     /// Per-file local import view: local-name → source-module specifier.
-    /// Built once during JS/TS CFG construction (empty for other langs).
+    /// Built once during JS/TS CFG construction. For Python it maps a bound
+    /// name to the dotted path it names instead (`from M import n as a`
+    /// gives `a` → `M.n`), which label classification uses to also try the
+    /// qualified callee. Empty for other langs.
     /// Consumed by gated label rules and by the ORM TypeKind import gate
     /// in `crate::ssa::type_facts::constructor_type` (via the
     /// `FILE_IMPORTS_TLS` thread-local set around per-body SSA passes).
@@ -2812,7 +2817,7 @@ pub(super) fn push_node<'a>(
                 if lookup(lang, unwrapped.kind()) == Kind::Function {
                     Some(anon_fn_name(unwrapped.start_byte()))
                 } else {
-                    text_of(n, code)
+                    call_fn_callee_text(n, lang, code)
                 }
             })
             .unwrap_or_default(),
@@ -3296,6 +3301,9 @@ pub(super) fn push_node<'a>(
     // (populated in the hoist block below).  Consumed by the CFG node's
     // `CallMeta.hoisted_sink`.
     let mut hoisted_sink: Option<Box<HoistedSink>> = None;
+    // Set when the hoist block below rewrites `text` to a member expression
+    // found inside the node rather than the node's own callee.
+    let mut text_from_member_label = false;
 
     // For declarations/assignments whose RHS is a member expression (not a call),
     // try to classify the member expression text as a source.
@@ -3367,6 +3375,7 @@ pub(super) fn push_node<'a>(
                     outer_callee = Some(text.clone());
                 }
                 text = member_text;
+                text_from_member_label = true;
             }
         }
     }
@@ -3420,6 +3429,26 @@ pub(super) fn push_node<'a>(
 
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
+
+    // Python `conn.execute(sql, params).fetchall()` classifies on its head
+    // (`conn.execute`, the text before the first `(`), so the node already has
+    // its Sink label while the outermost call is the zero-arg `.fetchall()`.
+    // The gate's payload positions and the literal-SQL check refer to the sink
+    // call's arguments, so rebind to that call the way the block below does
+    // for an unclassified outer call.
+    if lang == "python"
+        && text.contains('(')
+        && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+        && let Some(outer) = call_ast
+        && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
+        && inner.id() != outer.id()
+        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+    {
+        call_ast = Some(inner);
+        outer_callee = Some(text.clone());
+        text = inner_callee_text;
+        inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
+    }
 
     // Chained-call inner-gate rebinding.  When the outer call is a method-
     // chain wrapper whose receiver is itself a call to a known gated sink
@@ -3497,6 +3526,10 @@ pub(super) fn push_node<'a>(
             // function field carries the actual callee identifier; when it
             // disagrees with `text`, `text` was clobbered by a member-source
             // override and the function field is the right gate target.
+            // The same holds for a Sink that `first_member_label` found on a
+            // function *reference* passed as an argument
+            // (`apply(child_process.exec, cmd)`): the gate of the referenced
+            // function describes its own parameters, not this call's.
             // Whitespace is stripped to mirror `find_chained_inner_call`
             // so multi-line chains (`http\n  .get(...)`) still match flat
             // gate matchers like `http.get`.
@@ -3504,17 +3537,18 @@ pub(super) fn push_node<'a>(
                 .child_by_field_name("function")
                 .or_else(|| cn.child_by_field_name("method"))
                 .or_else(|| cn.child_by_field_name("name"))
-                .and_then(|f| text_of(f, code))
+                .and_then(|f| call_fn_callee_text(f, lang, code))
                 .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>());
             let has_source_label = labels
                 .iter()
                 .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+            let member_ref_sink = text_from_member_label && hoisted_sink.is_none();
             // Clippy flags one branch's clone as redundant because it cannot
             // see that `text` is read after this `let` (further down in this
             // function); silence the false positive without restructuring.
             #[allow(clippy::redundant_clone)]
             let gate_callee_text = if let Some(ff) = function_field_text.as_deref()
-                && has_source_label
+                && (has_source_label || member_ref_sink)
                 && ff != text.as_str()
             {
                 ff.to_string()
@@ -3584,6 +3618,29 @@ pub(super) fn push_node<'a>(
                 // applies on top of the flat sink.
                 let mut union_payload: Vec<usize> = Vec::new();
                 for gm in &matches {
+                    // A string-evaluating timer (`setTimeout(code, ms)`) is a
+                    // sink only when arg 0 is a string by construction.  Its
+                    // usual argument is a callback (a function literal, a
+                    // named function, a Promise `resolve`), which compiles
+                    // nothing; the callback body is analysed on its own.
+                    if matches!(lang, "javascript" | "typescript" | "tsx")
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::CODE_EXEC))
+                        && crate::labels::javascript::STRING_EVALUATING_TIMERS
+                            .contains(&gate_callee_text.rsplit('.').next().unwrap_or(""))
+                        && !js_arg_is_string_valued(cn, 0, lang, code, extra)
+                    {
+                        continue;
+                    }
+                    // A shallow `Object.assign(target, src)` pollutes a shared
+                    // prototype only when `target` is one.
+                    if matches!(lang, "javascript" | "typescript" | "tsx")
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::PROTOTYPE_POLLUTION))
+                        && crate::labels::javascript::SHALLOW_ASSIGN_MERGES
+                            .contains(&gate_callee_text.as_str())
+                        && !js_arg_is_prototype_object(cn, 0, code)
+                    {
+                        continue;
+                    }
                     if has_sink_label {
                         if !labels.contains(&gm.label) {
                             labels.push(gm.label);
@@ -3691,6 +3748,65 @@ pub(super) fn push_node<'a>(
                 if gate_filters.len() == 1 {
                     destination_uses = gate_filters[0].destination_uses.clone();
                 }
+            }
+        }
+    }
+
+    // `child_process.spawn(bin, argv, { shell: true })` and the other
+    // argv-taking forms: the gate above restricted the sink to the binary,
+    // but an enabled `shell` option makes the argv array part of the shell
+    // command.
+    if let Some(cn) = call_ast {
+        let extra_payload = js_shell_option_payload(lang, &text, &labels, cn, code);
+        if !extra_payload.is_empty()
+            && let Some(payload) = sink_payload_args.as_mut()
+        {
+            for p in extra_payload {
+                if !payload.contains(&p) {
+                    payload.push(p);
+                }
+                for f in gate_filters
+                    .iter_mut()
+                    .filter(|f| f.label_caps.contains(Cap::SHELL_ESCAPE))
+                {
+                    if !f.payload_args.contains(&p) {
+                        f.payload_args.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // A JS/TS payload position the call does not pass carries no payload.
+    // Without this trim, a zero-arg `res.json()` / `res.status(code).json()`
+    // is checked against the SSA lowering's fallback argument group, which
+    // lumps the receiver and the chain links' own arguments together, and
+    // the structural pass reports the call as an unguarded sink.
+    // Only applies when the classified callee is the call's own function:
+    // not when `text` holds a nested call (`http.request(url, cb).end()`,
+    // where the gate matched the chain head, whose arguments live in that
+    // fallback group), and not when an inner call's callee replaced the
+    // node's own (`require('child_process').execSync(cmd).toString()`, where
+    // `call_ast` is still the outer zero-arg call).  Also skipped when a
+    // spread argument hides the real arity.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && !text.contains('(')
+        && outer_callee.is_none()
+        && let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4))
+        && let Some(arity) = js_positional_arity(cn)
+        && let Some(payload) = sink_payload_args.as_mut()
+    {
+        payload.retain(|&p| p < arity);
+        if payload.is_empty() {
+            // Every payload position is absent, so the call writes nothing
+            // a sink could receive and is not a sink at this site.
+            labels.retain(|l| !matches!(l, DataLabel::Sink(_)));
+            sink_payload_args = None;
+            destination_uses = None;
+            gate_filters.clear();
+        } else {
+            for f in &mut gate_filters {
+                f.payload_args.retain(|&p| p < arity);
             }
         }
     }
@@ -3811,6 +3927,17 @@ pub(super) fn push_node<'a>(
         && jsx_text_content_interp_present(ast, lang)
     {
         labels.push(DataLabel::Sanitizer(Cap::HTML_ESCAPE));
+    }
+
+    // Python call shapes the flat sink labels cannot tell apart from the
+    // dangerous ones: `make_response(render_template(..))`, a JSON
+    // `HttpResponse`, `yaml.load(f, Loader=yaml.SafeLoader)`.
+    if lang == "python"
+        && let Some(cn) = call_ast
+        && let Some(san) =
+            python_shapes::safe_shape_sanitizer(&text, cn, code, extra, labels.as_slice())
+    {
+        labels.push(san);
     }
 
     // Shape-based sanitizer synthesis for Ruby ActiveRecord query methods.
@@ -6283,20 +6410,26 @@ fn pre_emit_arg_source_nodes(
         args_node.named_children(&mut cursor).collect()
     };
 
-    // Bail on spread/splat/keyword arguments where positional mapping is unreliable.
+    // Bail on spread/splat arguments where positional mapping is unreliable.
+    // Keyword arguments sit outside the positional numbering (`arg_uses`
+    // skips them, see `extract_arg_uses`), so they are skipped rather than
+    // bailing: `check_output("ls " + request.args["d"], shell=True)` still
+    // binds its positional source.
     for child in &children {
         let k = child.kind();
         if k == "spread_element"
             || k == "dictionary_splat"
             || k == "list_splat"
-            || k == "keyword_argument"
             || k == "splat_argument"
             || k == "hash_splat_argument"
-            || k == "named_argument"
         {
             return (effective_preds, bindings, uses_only);
         }
     }
+    let children: Vec<_> = children
+        .into_iter()
+        .filter(|c| !matches!(c.kind(), "keyword_argument" | "named_argument"))
+        .collect();
 
     let pointer_on = crate::pointer::is_enabled();
 
@@ -8631,24 +8764,39 @@ pub(crate) fn build_cfg<'a>(
     let mut top_breaks = Vec::new();
     let mut top_continues = Vec::new();
     let mut top_throws = Vec::new();
-    let exits = build_sub(
-        tree.root_node(),
-        &[entry],
-        &mut g,
-        lang,
-        code,
-        &mut summaries,
-        file_path,
-        None,
-        &mut top_ordinal,
-        analysis_rules,
-        &mut top_breaks,
-        &mut top_continues,
-        &mut top_throws,
-        &mut bodies,
-        &mut next_body_id,
-        BodyId(0),
-    );
+    // Python: the file's `from M import n` bindings, consulted by label
+    // classification while the nodes are built and kept on the `FileCfg` for
+    // the taint passes (see `extract_python_import_paths`).
+    let python_imports = if lang == "python" {
+        extract_python_import_paths(tree, code)
+    } else {
+        HashMap::new()
+    };
+    let mut build_top_level = || {
+        build_sub(
+            tree.root_node(),
+            &[entry],
+            &mut g,
+            lang,
+            code,
+            &mut summaries,
+            file_path,
+            None,
+            &mut top_ordinal,
+            analysis_rules,
+            &mut top_breaks,
+            &mut top_continues,
+            &mut top_throws,
+            &mut bodies,
+            &mut next_body_id,
+            BodyId(0),
+        )
+    };
+    let exits = if python_imports.is_empty() {
+        build_top_level()
+    } else {
+        crate::ssa::type_facts::with_file_imports(Some(&python_imports), build_top_level)
+    };
     debug!(target: "cfg", "exits: {:?}", exits);
     // Wire every real exit to our synthetic EXIT node.
     for e in exits {
@@ -8753,7 +8901,8 @@ pub(crate) fn build_cfg<'a>(
         }
         local_imports
     } else {
-        HashMap::new()
+        // Empty for every language but Python, whose view holds dotted paths.
+        python_imports
     };
 
     // Clear the per-file DFS-index map so it does not leak to the next
@@ -8918,13 +9067,43 @@ fn apply_promisify_labels(
     }
 }
 
+/// Extra payload positions for a JS/TS `child_process` argv-taking sink
+/// (`spawn`, `execFile`, ...) whose inline options object enables `shell`
+/// (see [`js_shell_option_argv_positions`]).  Empty unless the node carries a
+/// `SHELL_ESCAPE` sink and the callee's last segment is one of
+/// [`crate::labels::javascript::CHILD_PROCESS_SHELL_OPTION_METHODS`].
+fn js_shell_option_payload(
+    lang: &str,
+    callee: &str,
+    labels: &[DataLabel],
+    call_node: Node,
+    code: &[u8],
+) -> Vec<usize> {
+    if !matches!(lang, "javascript" | "typescript" | "tsx") {
+        return Vec::new();
+    }
+    if !labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE)))
+    {
+        return Vec::new();
+    }
+    let leaf = callee.rsplit('.').next().unwrap_or(callee);
+    if !crate::labels::javascript::CHILD_PROCESS_SHELL_OPTION_METHODS.contains(&leaf) {
+        return Vec::new();
+    }
+    js_shell_option_argv_positions(call_node, code)
+}
+
 /// Phase 05 — apply [`crate::labels::GatedLabelRule`] entries against
 /// every call node in the file. The local-import view supplies the
 /// gate evaluation context so a bare-name `readFile(...)` only fires
 /// when the file actually imports `readFile` from `fs/promises` /
 /// `node:fs/promises` (or is renamed via `import * as fsp` /
 /// `import { readFile as rf }`). Strictly additive: only inserts new
-/// labels, never removes existing ones.
+/// labels, never removes existing ones.  A sink label this pass
+/// contributes also carries its rule's payload positions
+/// ([`crate::labels::GatedLabelRule::payload_args`]).
 fn apply_gated_label_rules(
     bodies: &mut [BodyCfg],
     lang: &str,
@@ -8943,13 +9122,81 @@ fn apply_gated_label_rules(
             let Some(callee) = body.graph[idx].call.callee.clone() else {
                 continue;
             };
-            let labels = crate::labels::classify_gated_only(lang, &callee, Some(&ctx));
-            if !labels.is_empty() {
-                let info = &mut body.graph[idx];
-                for lbl in labels {
-                    if !info.taint.labels.contains(&lbl) {
-                        info.taint.labels.push(lbl);
+            let matches = crate::labels::classify_gated_matches(lang, &callee, Some(&ctx));
+            if !matches.is_empty() {
+                let (start, end) = body.graph[idx]
+                    .call
+                    .callee_span
+                    .unwrap_or(body.graph[idx].ast.span);
+                let cn = root
+                    .descendant_for_byte_range(start, end)
+                    .and_then(|n| find_call_node(n, lang));
+                // Which call does the gated sink name?  The node's own call
+                // when its function text matches directly (read from the AST:
+                // `callee` may hold a member Source that `push_node` hoisted
+                // out of the arguments).  Otherwise the rule matched the head
+                // of the receiver chain (`execSync(cmd).toString()`), whose
+                // arguments are not this node's positional arguments: restrict
+                // the sink to the identifiers inside the head call's payload
+                // arguments, and drop it when that payload is a constant.
+                let has_gated_sink = matches
+                    .iter()
+                    .any(|m| matches!(m.label, crate::labels::DataLabel::Sink(_)));
+                let own_call_matches = cn
+                    .and_then(|c| c.child_by_field_name("function"))
+                    .and_then(|f| call_fn_callee_text(f, lang, code))
+                    .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>())
+                    .is_some_and(|t| {
+                        crate::labels::classify_gated_matches(lang, &t, Some(&ctx))
+                            .iter()
+                            .any(|m| {
+                                !m.chain_head
+                                    && matches!(m.label, crate::labels::DataLabel::Sink(_))
+                            })
+                    });
+                let head = cn.map(chain_head_call).filter(|h| Some(*h) != cn);
+                let chain_reaching = match head {
+                    Some(head) if has_gated_sink && !own_call_matches => {
+                        let mut payload: Vec<usize> = Vec::new();
+                        for m in &matches {
+                            if matches!(m.label, crate::labels::DataLabel::Sink(_)) {
+                                payload.extend(m.payload_args.iter().copied());
+                            }
+                        }
+                        Some(inner_payload_idents(head, &payload, code))
                     }
+                    _ => None,
+                };
+                let info = &mut body.graph[idx];
+                let had_sink = info
+                    .taint
+                    .labels
+                    .iter()
+                    .any(|l| matches!(l, crate::labels::DataLabel::Sink(_)));
+                // Payload positions of the sinks this pass contributes.  A
+                // label the node already carries keeps the payload set its
+                // flat rule or `SinkGate` gave it.
+                let mut payload: Vec<usize> = Vec::new();
+                for m in matches {
+                    let is_sink = matches!(m.label, crate::labels::DataLabel::Sink(_));
+                    if info.taint.labels.contains(&m.label)
+                        || (is_sink && chain_reaching.as_ref().is_some_and(|u| u.is_empty()))
+                    {
+                        continue;
+                    }
+                    info.taint.labels.push(m.label);
+                    if is_sink {
+                        payload.extend(m.payload_args.iter().copied());
+                    }
+                }
+                payload.sort_unstable();
+                payload.dedup();
+                if let Some(uses) = chain_reaching {
+                    if !uses.is_empty() && info.call.sink_reaching_uses.is_none() {
+                        info.call.sink_reaching_uses = Some(uses);
+                    }
+                } else if !payload.is_empty() {
+                    record_gated_sink_payload(info, payload, had_sink, &callee, cn, lang, code);
                 }
                 continue;
             }
@@ -8974,18 +9221,163 @@ fn apply_gated_label_rules(
             let Some(node) = root.descendant_for_byte_range(start, end) else {
                 continue;
             };
-            if let Some((inner_text, inner_label, inner_span)) =
+            if let Some((inner_text, inner, inner_span)) =
                 helpers::find_inner_gated_sink_call(node, lang, code, &ctx)
             {
+                // The "inner" call can be the node's own call: `push_node`
+                // rewrote the callee of `spawn('ls', [req.query.dir])` to the
+                // member Source in its arguments because the import-gated
+                // `spawn` was not yet known to be a sink.  Restore the call's
+                // identity (its `arg_uses` and argument literals belong to it)
+                // and apply the rule's payload positions, as a CFG-time sink
+                // label would have.
+                let own_call = find_call_node(node, lang)
+                    .filter(|cn| (cn.start_byte(), cn.end_byte()) == inner_span);
+                // A genuinely nested sink (`upload(createReadStream(p), meta)`)
+                // only receives its own payload arguments: restrict the scan
+                // to the identifiers inside them, so a tainted sibling
+                // argument of the wrapper (`meta`) is not its payload.  A
+                // nested sink whose payload holds no identifier at all is a
+                // constant and contributes nothing.
+                // The same holds for the head of a chain matched through its
+                // outer call (`execFileSync(bin).toString()`).
+                let mut reaching: Option<Vec<String>> = None;
+                if own_call.is_none() || inner.chain_head {
+                    let mut uses = root
+                        .descendant_for_byte_range(inner_span.0, inner_span.1)
+                        .map(|c| {
+                            if inner.chain_head {
+                                chain_head_call(c)
+                            } else {
+                                c
+                            }
+                        })
+                        .map(|c| inner_payload_idents(c, inner.payload_args, code))
+                        .unwrap_or_default();
+                    if uses.is_empty() {
+                        continue;
+                    }
+                    // An inline member Source inside the nested call
+                    // (`upload(createReadStream(req.query.p))`) is lowered as a
+                    // synthetic `__nyx_src_*` binding of the wrapper argument
+                    // that contains it; keep that binding reachable.
+                    if let Some(pos) = find_call_node(node, lang)
+                        .and_then(|outer| enclosing_arg_position(outer, inner_span))
+                        && let Some(group) = body.graph[idx].call.arg_uses.get(pos)
+                    {
+                        uses.extend(group.iter().filter(|u| u.starts_with("__nyx_")).cloned());
+                    }
+                    reaching = Some(uses);
+                }
                 let info = &mut body.graph[idx];
-                info.taint.labels.push(inner_label);
-                if info.call.outer_callee.is_none() {
+                info.taint.labels.push(inner.label);
+                if info.call.sink_reaching_uses.is_none() {
+                    info.call.sink_reaching_uses = reaching;
+                }
+                if own_call.is_some() && !inner.chain_head {
+                    if info.call.outer_callee.as_deref() == Some(inner_text.as_str()) {
+                        info.call.outer_callee = None;
+                        info.call.callee = Some(inner_text.clone());
+                        info.call.callee_span = Some(inner_span);
+                    }
+                    if !inner.payload_args.is_empty() {
+                        record_gated_sink_payload(
+                            info,
+                            inner.payload_args.to_vec(),
+                            false,
+                            &inner_text,
+                            own_call,
+                            lang,
+                            code,
+                        );
+                    }
+                } else if own_call.is_none() && info.call.outer_callee.is_none() {
                     info.call.outer_callee = Some(callee);
                     info.call.callee = Some(inner_text);
                     info.call.callee_span = Some(inner_span);
                 }
             }
         }
+    }
+}
+
+/// Innermost call of a method chain rooted at `call_node`
+/// (`cp.execSync(cmd)` for `cp.execSync(cmd).toString().trim()`).
+fn chain_head_call(call_node: Node) -> Node {
+    let mut cur = call_node;
+    while let Some(next) = cur
+        .child_by_field_name("function")
+        .filter(|f| f.kind() == "member_expression")
+        .and_then(|f| f.child_by_field_name("object"))
+        .map(unwrap_parens)
+        .filter(|o| o.kind() == "call_expression")
+    {
+        cur = next;
+    }
+    cur
+}
+
+/// Positional index of the argument of `call_node` whose span contains
+/// `span`.
+fn enclosing_arg_position(call_node: Node, span: (usize, usize)) -> Option<usize> {
+    let args = call_node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    args.named_children(&mut cursor)
+        .position(|a| a.start_byte() <= span.0 && span.1 <= a.end_byte())
+}
+
+/// Identifiers (dotted paths first) inside the payload arguments of
+/// `call_node`, or inside every argument when `payload_args` is empty.
+fn inner_payload_idents(call_node: Node, payload_args: &[usize], code: &[u8]) -> Vec<String> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    let mut cursor = args.walk();
+    for (i, arg) in args.named_children(&mut cursor).enumerate() {
+        if payload_args.is_empty() || payload_args.contains(&i) {
+            collect_idents_with_paths(arg, code, &mut idents, &mut paths);
+        }
+    }
+    paths.extend(idents);
+    paths
+}
+
+/// Record the payload positions of a sink the gated post-pass attached to
+/// `info`, widened for an enabled `child_process` `shell` option (mirrors the
+/// `SinkGate` handling in `push_node`).  `had_sink` says whether the node
+/// already carried a sink from a flat rule: restricting an unrestricted
+/// (`None`) payload set is only sound when no earlier sink relies on every
+/// argument being checked.
+fn record_gated_sink_payload(
+    info: &mut NodeInfo,
+    mut payload: Vec<usize>,
+    had_sink: bool,
+    callee: &str,
+    call_node: Option<Node>,
+    lang: &str,
+    code: &[u8],
+) {
+    if let Some(cn) = call_node {
+        for p in js_shell_option_payload(lang, callee, &info.taint.labels, cn, code) {
+            if !payload.contains(&p) {
+                payload.push(p);
+            }
+        }
+    }
+    match &mut info.call.sink_payload_args {
+        Some(existing) => {
+            for p in payload {
+                if !existing.contains(&p) {
+                    existing.push(p);
+                }
+            }
+        }
+        None if !had_sink => {
+            info.call.sink_payload_args = Some(payload);
+        }
+        None => {}
     }
 }
 
