@@ -246,9 +246,11 @@ fn class_filter_directives(body: Node<'_>, bytes: &[u8]) -> Vec<FilterDirective>
     filters
 }
 
-/// CanCanCan class macros.  `load_and_authorize_resource` and
-/// `authorize_resource` add an authorization check to every action they cover;
-/// the `skip_` forms take it away again.
+/// CanCanCan class macros.  `load_and_authorize_resource` adds an authorization
+/// check to every action it covers.  `authorize_resource` does not load the
+/// record: unless an earlier filter set the instance it authorizes the class
+/// (`can? :destroy, Note`), which ignores row conditions, so it is not credited
+/// as a row check.  The `skip_` forms take the check away again.
 fn is_resource_macro(name: &str) -> bool {
     matches!(
         name,
@@ -266,6 +268,9 @@ fn is_resource_macro(name: &str) -> bool {
 fn parse_resource_macro(node: Node<'_>, bytes: &[u8], name: &str) -> Vec<FilterDirective> {
     let skip = name.starts_with("skip_");
     let call_name = name.trim_start_matches("skip_");
+    if !skip && call_name == "authorize_resource" {
+        return Vec::new();
+    }
     let (only, except) = node
         .child_by_field_name("arguments")
         .map(|arguments| filter_scope(&named_children(arguments), bytes))

@@ -118,8 +118,15 @@ fn collect_view_class_units(
             continue;
         };
         let class_name = class_name(class_node, bytes).unwrap_or_default();
-        let mut class_calls = class_middleware_calls(class_node, definition, bytes);
-        class_calls.extend(permission_class_calls(body, bytes, rules));
+        let class_calls = class_middleware_calls(class_node, definition, bytes);
+        // A `get_permissions()` override decides the permissions per action
+        // (`if self.action == "list": return [AllowAny()]`), which this
+        // analysis cannot evaluate, so the class-level list is not credited.
+        let class_permissions = if defines_method(body, "get_permissions", bytes) {
+            Vec::new()
+        } else {
+            permission_class_calls(body, bytes, rules)
+        };
 
         for method_node in named_children(body) {
             if !matches!(
@@ -140,6 +147,30 @@ fn collect_view_class_units(
                 continue;
             }
             let mut calls = class_calls.clone();
+            // `@action(.., permission_classes=[..])` replaces the class-level
+            // list for that action.
+            let overridden = action_permission_override(method_node, bytes, rules);
+            let permissions = overridden.as_ref().unwrap_or(&class_permissions);
+            // Read-only variants let anonymous callers through, so they guard
+            // only the unsafe methods (the viewset action is unknown for
+            // `@action`, which is taken as safe).
+            let unsafe_method = matches!(
+                method_name.as_str(),
+                "post"
+                    | "put"
+                    | "patch"
+                    | "delete"
+                    | "create"
+                    | "update"
+                    | "partial_update"
+                    | "destroy"
+            );
+            calls.extend(
+                permissions
+                    .iter()
+                    .filter(|call| unsafe_method || !allows_anonymous_reads(&call.name))
+                    .cloned(),
+            );
             if method_node.kind() == "decorated_definition" {
                 calls.extend(
                     decorator_expressions(method_node)
@@ -162,6 +193,53 @@ fn collect_view_class_units(
             inject_middleware_auth(model, unit_idx, line, &calls, rules);
         }
     }
+}
+
+/// DRF permission classes that let an anonymous caller through for safe
+/// methods: `IsAuthenticatedOrReadOnly`, `DjangoModelPermissionsOrAnonReadOnly`.
+fn allows_anonymous_reads(name: &str) -> bool {
+    let last = name.rsplit('.').next().unwrap_or(name);
+    last.ends_with("OrReadOnly") || last.ends_with("OrAnonReadOnly")
+}
+
+/// True when the class body defines a method called `name`.
+fn defines_method(body: Node<'_>, name: &str, bytes: &[u8]) -> bool {
+    named_children(body).into_iter().any(|child| {
+        matches!(child.kind(), "function_definition" | "decorated_definition")
+            && function_name(child, bytes).as_deref() == Some(name)
+    })
+}
+
+/// The permission classes a `@action(..., permission_classes=[..])` decorator
+/// names, or `None` when the method has no such override.
+fn action_permission_override(
+    method_node: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+) -> Option<Vec<CallSite>> {
+    if method_node.kind() != "decorated_definition" {
+        return None;
+    }
+    for decorator in decorator_expressions(method_node) {
+        if decorator.kind() != "call" {
+            continue;
+        }
+        let Some(arguments) = decorator.child_by_field_name("arguments") else {
+            continue;
+        };
+        for argument in named_children(arguments) {
+            if argument.kind() != "keyword_argument" {
+                continue;
+            }
+            let is_override = argument
+                .child_by_field_name("name")
+                .is_some_and(|key| text(key, bytes) == "permission_classes");
+            if let (true, Some(value)) = (is_override, argument.child_by_field_name("value")) {
+                return Some(permission_classes_in(value, bytes, rules));
+            }
+        }
+    }
+    None
 }
 
 /// Names a module binds from Django, Django REST framework or Flask:
