@@ -5457,7 +5457,9 @@ fn js_for_of_over_source_field_is_a_source() {
 
 #[test]
 fn ts_sql_tagged_templates_bind_substitutions() {
-    let src = b"async function h(prisma, db, sql, Prisma, name, col) {\n\
+    let src = b"import { sql } from 'drizzle-orm';\n\
+                import { Prisma } from '@prisma/client';\n\
+                async function h(prisma, db, name, col) {\n\
                   await prisma.$queryRaw`SELECT * FROM t WHERE n = ${name}`;\n\
                   await prisma.$queryRaw`SELECT ${Prisma.raw(col)} FROM t WHERE n = ${name}`;\n\
                   await db.execute(sql`select * from t where n = ${name}`);\n\
@@ -5510,6 +5512,59 @@ fn ts_query_builder_chain_condition_is_a_sql_sink() {
     );
     // An object condition is bound by the ORM.
     assert!(!has_sink(wheres[1], Cap::SQL_QUERY));
+}
+
+#[test]
+fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
+    let src = b"async function h(repo, col, name) {\n\
+                  await repo.createQueryBuilder('u').orderBy({ [col]: 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.name': 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ ...col }).getMany();\n\
+                  await repo.createQueryBuilder('u').groupBy(new String(col)).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new Brackets(q => q.where('a = 1'))).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new String(name)).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let order = js_call_nodes(&file_cfg, "QueryBuilder.orderBy");
+    assert_eq!(order.len(), 3);
+    // A computed key or a spread puts an attacker-chosen column into SQL.
+    assert!(has_sink(order[0], Cap::SQL_QUERY));
+    assert!(!has_sink(order[1], Cap::SQL_QUERY));
+    assert!(has_sink(order[2], Cap::SQL_QUERY));
+    let group = js_call_nodes(&file_cfg, "QueryBuilder.groupBy");
+    assert!(has_sink(group[0], Cap::SQL_QUERY));
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert!(
+        wheres
+            .iter()
+            .any(|w| w.call.arg_uses[0].iter().any(|u| u == "name") && has_sink(w, Cap::SQL_QUERY)),
+        "where(new String(name)) is not a Brackets group"
+    );
+    assert!(wheres.iter().any(|w| !has_sink(w, Cap::SQL_QUERY)));
+}
+
+#[test]
+fn ts_user_defined_sql_tag_is_not_parameterized() {
+    // Same shapes as the drizzle test, with no SQL library import: the tag
+    // and the `raw` helper are the file's own functions.
+    let src = b"function sql(s, ...v) { return s.join(''); }\n\
+                async function h(db, name) {\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert_eq!(execs.len(), 1);
+    assert!(has_sink(execs[0], Cap::SQL_QUERY));
+    let builder = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .find(|n| n.call.callee.as_deref() == Some("sql"));
+    assert!(builder.is_none_or(|b| {
+        !b.taint
+            .labels
+            .contains(&DataLabel::Sanitizer(Cap::SQL_QUERY))
+    }));
 }
 
 #[test]
