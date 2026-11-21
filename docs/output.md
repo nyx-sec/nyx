@@ -310,11 +310,23 @@ browser triage and CI gating use the same decisions.
 
 ### Non-production severity downgrade
 
-By default, findings in paths matching common non-production patterns (`tests/`, `test/`, `vendor/`, `build/`, `examples/`, `benchmarks/`) are downgraded by one tier:
+By default, findings in non-production files are downgraded by one tier:
 
 - High → Medium
 - Medium → Low
 - Low → Low (unchanged)
+
+A file counts as non-production when its path **relative to the scan root** has:
+
+- a directory such as `tests/`, `test/`, `__tests__/`, `fixtures/`, `vendor/`, `build/`, `scripts/`, `docs/`, `examples/`, `benches/` or `benchmarks/`;
+- for Ruby and JS/TS files, a `spec/` directory (RSpec, Jasmine); for Ruby files, Cucumber's `features/step_definitions/` or `features/support/`;
+- a test file name: `_test.go`, `_spec.rb`, `_test.rb`, `*.test.ts`, `*.spec.js`, `test_*.py`, `*_test.py`, `conftest.py`, `*Test.java`, `*Test.php`, and the other language conventions.
+
+Directories above the scan root do not count, so scanning a checkout under `/opt/build/repo` or `~/test/app` keeps full severity.
+
+The downgrade follows the file the flow was found in: a flow whose source is in a test file keeps the downgrade even when its reported location is the callee's sink in a production file.
+
+Go auth findings (`go.auth.*`) are not reported in `_test.go` files: Go never builds them into a non-test binary, so no request can reach them. `--keep-nonprod-severity` reports them as well.
 
 Use `--keep-nonprod-severity` to disable this behavior.
 
@@ -331,6 +343,10 @@ Suppress specific findings in source with `nyx:ignore` comments. Suppressed find
 | Rust, C, C++, Java, Go, JS, TS | `// nyx:ignore ...` or `/* nyx:ignore ... */` |
 | Python, Ruby | `# nyx:ignore ...` |
 | PHP | `// nyx:ignore ...`, `# nyx:ignore ...`, or `/* nyx:ignore ... */` |
+
+Directives work in every file extension Nyx scans for the language (`.jsx`, `.tsx`, `.cc`, `.cxx`, `.hpp`, `.hh`, and so on). Rust lifetimes (`&'static str`) on the same line do not hide a directive.
+
+Inline suppressions apply to every scan front end: `nyx scan` (indexed or not) and `nyx serve`, where suppressed findings show with the `suppressed` status.
 
 ### Directive forms
 

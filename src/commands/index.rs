@@ -193,6 +193,7 @@ pub fn build_index_with_observer(
     {
         let idx = Indexer::from_pool(project_name, &pool)?;
         idx.clear()?;
+        idx.reconcile_analysis_cache_key(&config.analysis_cache_key())?;
     }
 
     tracing::debug!("Cleaned index for: {}", project_name);

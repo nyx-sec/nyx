@@ -801,8 +801,7 @@ pub fn handle(
         retain_converged_findings(&mut diags);
     }
 
-    // ── Apply inline suppressions ───────────────────────────────────
-    apply_suppressions(&mut diags);
+    // Inline suppressions were applied in `post_process_diags`.
     if !show_suppressed {
         let triage_summary =
             crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
@@ -1033,12 +1032,24 @@ pub fn handle(
 
 // Shared post-processing helpers
 
-/// Assign confidence, rank, and truncate diagnostics.
+/// Apply inline suppressions, assign confidence, rank, and truncate
+/// diagnostics.  Shared by every front end (CLI, `serve`, library API).
 pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
+    // Put findings in a fixed order first.  Pass 2 emits them in call-graph
+    // batch order, which varies between runs; the tie-breaks below
+    // (duplicate-flow survivor, unranked output order, `max_results`
+    // truncation) must not depend on it.
+    diags.sort_by(canonical_diag_order);
+
     // 0. Collapse duplicate taint-unsanitised-flow findings at the same
     //    primary location. Runs first so subsequent confidence / ranking
     //    sees a single representative per (sink, rule_base, severity).
     deduplicate_taint_flows(diags);
+
+    // Inline `nyx:ignore` directives flag (not drop) the findings they
+    // cover, so the server can show them as suppressed and the CLI can
+    // decide whether to print them.
+    apply_suppressions(diags);
 
     // 1. Compute confidence first (needed by ranking).
     for d in diags.iter_mut() {
@@ -1053,6 +1064,13 @@ pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
     if let Some(max) = cfg.output.max_results {
         diags.truncate(max as usize);
     }
+}
+
+/// Total order over findings by location, rule and message, independent of
+/// the order the analysis produced them in.
+fn canonical_diag_order(a: &Diag, b: &Diag) -> std::cmp::Ordering {
+    (&a.path, a.line, a.col, &a.id, a.severity, &a.message)
+        .cmp(&(&b.path, b.line, b.col, &b.id, b.severity, &b.message))
 }
 
 /// Drop diagnostics whose engine provenance notes indicate the analysis
@@ -2843,6 +2861,16 @@ pub fn scan_with_index_parallel_observer(
     let walk_start = std::time::Instant::now();
     let indexed_files = {
         let idx = Indexer::from_pool(project, &pool)?;
+        // Cached summaries depend on the settings as well as the file bytes;
+        // drop them when the settings changed since they were written.
+        if idx.reconcile_analysis_cache_key(&cfg.analysis_cache_key())?
+            && let Some(l) = logs
+        {
+            l.info(
+                "Analysis settings changed since the last scan; re-analysing every file",
+                None,
+            );
+        }
         idx.get_files(project)?
     };
     let (rx, handle) = spawn_file_walker(scan_root, cfg);
@@ -3382,7 +3410,7 @@ pub fn scan_with_index_parallel_observer(
     };
 
     if !needs_taint {
-        // ── AST-only: existing parallel scan with caching ────────────────
+        // ── AST-only: parallel scan, index tracks changed files ──────────
         if let Some(p) = progress {
             p.set_stage(ScanStage::Analyzing);
         }
@@ -3398,12 +3426,12 @@ pub fn scan_with_index_parallel_observer(
         );
         let diag_map: DashMap<String, Vec<Diag>> = DashMap::new();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
-        let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let unchanged_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
         let write_tx = writer.sender();
 
         let persist_errors_ref = Arc::clone(&persist_errors);
-        let skipped_files_ref = Arc::clone(&skipped_files);
+        let unchanged_files_ref = Arc::clone(&unchanged_files);
         let progress_ref = progress.cloned();
         files.into_par_iter().for_each_init(
             || Indexer::from_pool(project, &pool).expect("db pool"),
@@ -3414,30 +3442,34 @@ pub fn scan_with_index_parallel_observer(
                 let bytes_opt = std::fs::read(&path).ok();
                 let hash = bytes_opt.as_ref().map(|b| Indexer::digest_bytes(b));
 
-                let needs_scan = match (&hash, &bytes_opt) {
+                let changed = match (&hash, &bytes_opt) {
                     (Some(h), _) => idx.should_scan_with_hash(&path, h).unwrap_or(true),
                     _ => true,
                 };
 
-                let mut diags = if needs_scan {
-                    if let Some(p) = &progress_ref {
-                        p.inc_parsed(1);
-                        p.inc_analyzed(1);
-                    }
-                    let d = recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        &path,
-                        logs,
-                        || match &bytes_opt {
+                // Every file is analysed, changed or not.  The `issues` rows
+                // keep only (rule, severity, line, col), so a Diag rebuilt
+                // from them has no message, evidence or confidence; AST rules
+                // are cheap next to the taint passes the index exists to
+                // skip.  The index records which files changed and which
+                // were removed.
+                if let Some(p) = &progress_ref {
+                    p.inc_parsed(1);
+                    p.inc_analyzed(1);
+                }
+                let mut diags =
+                    recover_or_propagate(cfg.scanner.enable_panic_recovery, &path, logs, || {
+                        match &bytes_opt {
                             Some(bytes) => {
                                 run_rules_on_bytes(bytes, &path, cfg, None, Some(scan_root))
                             }
                             None => run_rules_on_file(&path, cfg, None, Some(scan_root)),
-                        },
-                    )
+                        }
+                    })
                     .unwrap_or_default();
 
-                    let issue_rows: Vec<(String, String, i64, i64)> = d
+                if changed {
+                    let issue_rows: Vec<(String, String, i64, i64)> = diags
                         .iter()
                         .map(|d| {
                             (
@@ -3474,14 +3506,9 @@ pub fn scan_with_index_parallel_observer(
                             format!("queue issues {path_label}: {e}"),
                         );
                     }
-                    d
                 } else {
-                    skipped_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if let Some(p) = &progress_ref {
-                        p.inc_skipped(1);
-                    }
-                    idx.get_issues_from_file(&path).unwrap_or_default()
-                };
+                    unchanged_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
 
                 // AST-only: drop taint/cfg findings
                 diags.retain(|d| !d.id.starts_with("taint") && !d.id.starts_with("cfg-"));
@@ -3498,15 +3525,10 @@ pub fn scan_with_index_parallel_observer(
         drop(write_tx);
         let writer_result = writer.finish("AST-only pass 2");
         pb2.finish_and_clear();
-        let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
+        let unchanged = unchanged_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
-            p.set_files_skipped(skipped);
             p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
             p.set_stage(ScanStage::PostProcessing);
-        }
-        if let Some(m) = metrics {
-            m.summaries_reused
-                .store(skipped, std::sync::atomic::Ordering::Relaxed);
         }
         fail_if_persist_errors("AST-only pass 2", persist_errors)?;
         writer_result?;
@@ -3521,10 +3543,10 @@ pub fn scan_with_index_parallel_observer(
         if let Some(l) = logs {
             l.info(
                 format!(
-                    "AST-only indexed scan complete in {}ms: {} findings, {} reused files",
+                    "AST-only indexed scan complete in {}ms: {} findings, {} unchanged files",
                     pass2_start.elapsed().as_millis(),
                     diags.len(),
-                    skipped
+                    unchanged
                 ),
                 None,
             );
@@ -4639,6 +4661,201 @@ fn scan_with_index_parallel_discovers_new_files_after_index_build() {
         2,
         "new files should be discovered without rebuild"
     );
+}
+
+#[test]
+fn indexed_scan_drops_cached_summaries_when_rules_change() {
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(project_dir.join("util.py"), "def run(x):\n    my_exec(x)\n").unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "from flask import Flask, request\nfrom util import run\napp = Flask(__name__)\n\n\
+         @app.route('/a')\ndef a():\n    run(request.args.get('v'))\n    return 'ok'\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let taint = |diags: &[Diag]| diags.iter().filter(|d| d.id.starts_with("taint-")).count();
+    let before =
+        scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+            .unwrap();
+    assert_eq!(taint(&before), 0, "my_exec is not a sink yet: {before:?}");
+
+    // Declaring `my_exec` a sink changes util.py's summary although its
+    // bytes did not change.
+    let mut with_sink = cfg.clone();
+    with_sink.analysis.languages.insert(
+        "python".into(),
+        crate::utils::config::LanguageAnalysisConfig {
+            rules: vec![crate::utils::config::ConfigLabelRule {
+                matchers: vec!["my_exec".into()],
+                kind: crate::utils::config::RuleKind::Sink,
+                cap: crate::utils::config::CapName::ShellEscape,
+                case_sensitive: false,
+            }],
+            ..Default::default()
+        },
+    );
+    let after = scan_with_index_parallel(
+        &project_name,
+        Arc::clone(&pool),
+        &with_sink,
+        false,
+        &project_dir,
+    )
+    .unwrap();
+    let off = crate::scan_no_index(&project_dir, &with_sink).unwrap();
+    assert!(taint(&off) > 0, "{off:?}");
+    assert_eq!(
+        taint(&after),
+        taint(&off),
+        "indexed: {after:?}\noff: {off:?}"
+    );
+}
+
+#[test]
+fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    std::fs::write(
+        root.join("helper.go"),
+        "package app\n\nimport \"net/http\"\n\n\
+         func Echo(w http.ResponseWriter, v string) {\n\tw.Header().Set(\"X-Echo\", v)\n}\n",
+    )
+    .unwrap();
+    let test_src = "package app\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"testing\"\n)\n\n\
+         func TestEcho(t *testing.T) {\n\
+         \tr := httptest.NewRequest(\"GET\", \"/?q=x\", nil)\n\
+         \tw := httptest.NewRecorder()\n\
+         \tEcho(w, r.URL.Query().Get(\"q\"))\n}\n";
+    std::fs::write(root.join("helper_test.go"), test_src).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    let in_helper: Vec<&Diag> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
+        .collect();
+    assert!(!in_helper.is_empty(), "{diags:?}");
+    assert!(
+        in_helper.iter().all(|d| d.severity == Severity::Medium),
+        "test-origin flows keep the test file's downgrade: {in_helper:?}"
+    );
+
+    // The same caller in a production file reports at full severity.
+    std::fs::remove_file(root.join("helper_test.go")).unwrap();
+    std::fs::write(root.join("caller.go"), test_src).unwrap();
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.id.starts_with("taint-") && d.severity == Severity::High),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn ast_only_indexed_scan_keeps_messages_on_unchanged_files() {
+    let mut cfg = Config::default();
+    cfg.scanner.mode = crate::utils::config::AnalysisMode::Ast;
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "import os\ndef run(cmd):\n    os.system(cmd)\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let off = crate::scan_no_index(&project_dir, &cfg).unwrap();
+    assert!(!off.is_empty());
+    for _ in 0..2 {
+        let indexed =
+            scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+                .unwrap();
+        let view = |ds: &[Diag]| {
+            ds.iter()
+                .map(|d| (d.id.clone(), d.line, d.message.clone(), d.confidence))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(view(&indexed), view(&off));
+        assert!(indexed.iter().all(|d| d.message.is_some()), "{indexed:?}");
+    }
+}
+
+#[test]
+fn unranked_output_order_is_by_location() {
+    let mut cfg = Config::default();
+    cfg.output.attack_surface_ranking = false;
+    let diag = |path: &str, line: usize, id: &str| Diag {
+        path: path.into(),
+        line,
+        col: 1,
+        id: id.into(),
+        ..Default::default()
+    };
+    let mut a = vec![
+        diag("b.py", 3, "r1"),
+        diag("a.py", 9, "r2"),
+        diag("a.py", 2, "r2"),
+        diag("a.py", 2, "r1"),
+    ];
+    let mut b: Vec<Diag> = a.iter().rev().cloned().collect();
+    post_process_diags(&mut a, &cfg);
+    post_process_diags(&mut b, &cfg);
+    let key = |ds: &[Diag]| {
+        ds.iter()
+            .map(|d| (d.path.clone(), d.line, d.id.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(key(&a), key(&b));
+    assert_eq!(
+        key(&a),
+        vec![
+            ("a.py".to_string(), 2, "r1".to_string()),
+            ("a.py".to_string(), 2, "r2".to_string()),
+            ("a.py".to_string(), 9, "r2".to_string()),
+            ("b.py".to_string(), 3, "r1".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn post_processing_flags_inline_suppressions() {
+    let td = tempfile::tempdir().unwrap();
+    let file = td.path().join("server.jsx");
+    std::fs::write(&file, "exec(cmd); // nyx:ignore js.cmdi.exec\nexec(cmd);\n").unwrap();
+    let path = file.to_string_lossy().into_owned();
+    let mut diags: Vec<Diag> = [1, 2]
+        .into_iter()
+        .map(|line| Diag {
+            path: path.clone(),
+            line,
+            col: 1,
+            id: "js.cmdi.exec".into(),
+            ..Default::default()
+        })
+        .collect();
+    post_process_diags(&mut diags, &Config::default());
+    let flagged: Vec<(usize, bool)> = diags.iter().map(|d| (d.line, d.suppressed)).collect();
+    assert_eq!(flagged, vec![(1, true), (2, false)]);
 }
 
 #[test]

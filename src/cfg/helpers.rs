@@ -758,6 +758,33 @@ pub(crate) fn member_expr_text(n: Node, code: &[u8]) -> Option<String> {
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
     match n.kind() {
+        // Java `field_access` (`object` / `field`) and PHP
+        // `member_access_expression` (`object` / `name`).  PHP's `$this` is
+        // spelled without the sigil, like every other PHP variable name.
+        // Java `this.x` stays the bare `x`: an unqualified read of the same
+        // field in the class body spells it that way, so both forms must
+        // name one variable.
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            let obj = n.child_by_field_name("object");
+            let prop = n
+                .child_by_field_name("field")
+                .or_else(|| n.child_by_field_name("name"))
+                .and_then(|p| text_of(p, code))
+                .map(|p| p.trim_start_matches('$').to_string());
+            if obj.is_some_and(|o| o.kind() == "this") {
+                return prop;
+            }
+            let obj_text = obj.and_then(|o| match o.kind() {
+                "variable_name" => text_of(o, code).map(|t| t.trim_start_matches('$').to_string()),
+                _ => member_expr_text_inner(o, code),
+            });
+            match (obj_text, prop) {
+                (Some(o), Some(p)) => Some(format!("{o}.{p}")),
+                (_, Some(p)) => Some(p),
+                (Some(o), _) => Some(o),
+                _ => text_of(n, code),
+            }
+        }
         "member_expression" | "attribute" | "selector_expression" => {
             // Tree-sitter exposes the receiver under `object` (JS/TS, Python),
             // `value` (Rust field_expression, handled in the matching arm
@@ -1467,6 +1494,47 @@ pub(crate) fn collect_idents_with_paths(
     }
 }
 
+/// Assignment targets of a Java / PHP LHS in source order: each plain
+/// variable, and each member path (`o.cmd`, `this.fh`) as one name.  The
+/// pieces a member path is built from are not targets: `o.cmd = x` assigns
+/// `o.cmd`, never a local `cmd`, and `$this->fh = ..` assigns `this.fh`,
+/// not `this`.  For a subscript only the container is a target
+/// (`arr[i] = v` does not assign `i`).
+pub(crate) fn collect_assign_targets(n: Node, code: &[u8], out: &mut Vec<String>) {
+    match n.kind() {
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            if let Some(path) = member_expr_text(n, code) {
+                out.push(path);
+            }
+        }
+        "array_access" | "subscript_expression" => {
+            let base = n
+                .child_by_field_name("array")
+                .or_else(|| n.child_by_field_name("object"))
+                .or_else(|| n.named_child(0));
+            if let Some(base) = base {
+                collect_assign_targets(base, code, out);
+            }
+        }
+        "identifier" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t);
+            }
+        }
+        "variable_name" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t.trim_start_matches('$').to_string());
+            }
+        }
+        _ => {
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                collect_assign_targets(ch, code, out);
+            }
+        }
+    }
+}
+
 /// Walk an array/tuple destructure pattern in source order and return
 /// each simple-identifier binding paired with its position index.
 ///
@@ -1970,6 +2038,187 @@ pub(crate) fn subscript_components<'a>(n: Node<'a>, code: &'a [u8]) -> Option<(S
     // don't use it for local array identifiers.
     let idx_text = text_of(idx, code)?;
     Some((arr_text, idx_text))
+}
+
+/// Values that leave a function through a `return` statement.
+///
+/// `idents` holds the variable names (and member paths such as `self.conn`)
+/// that sit in an *escape position* of the returned expression: the value
+/// itself, an element of a returned tuple / list / object / struct literal,
+/// the operand of `&` / a cast / `std::move`, a ternary arm, or an argument of
+/// a returned constructor (`new BufferedReader(r)`).  `call_callees` holds the
+/// callee text (as [`super::literals::call_ident_of`] spells it, so it
+/// matches `CallMeta::callee`) of each call or constructor whose result is
+/// returned directly (`return os.Open(p)`, `return new Foo()`).
+///
+/// A plain call's arguments and receiver are NOT escape positions: in
+/// `return f.read()` / `return io.ReadAll(f)` / `return json.load(f)` the
+/// handle `f` stays with this function, so it must not count as handed to
+/// the caller.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReturnEscapes {
+    pub idents: Vec<String>,
+    pub call_callees: Vec<String>,
+}
+
+/// Collect [`ReturnEscapes`] from a return statement node.
+pub(crate) fn collect_return_escapes(ret: Node, lang: &str, code: &[u8]) -> ReturnEscapes {
+    let mut out = ReturnEscapes::default();
+    let mut cursor = ret.walk();
+    for child in ret.named_children(&mut cursor) {
+        return_escape_walk(child, lang, code, &mut out, 0);
+    }
+    out
+}
+
+/// [`ReturnEscapes`] of a value expression that is returned implicitly
+/// (Ruby's last statement), walked exactly like a `return` operand.
+pub(crate) fn collect_value_escapes(expr: Node, lang: &str, code: &[u8]) -> ReturnEscapes {
+    let mut out = ReturnEscapes::default();
+    return_escape_walk(expr, lang, code, &mut out, 0);
+    out
+}
+
+fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes, depth: u32) {
+    if depth > 12 {
+        return;
+    }
+    let recurse_named = |n: Node, out: &mut ReturnEscapes| {
+        let mut cursor = n.walk();
+        for child in n.named_children(&mut cursor) {
+            return_escape_walk(child, lang, code, out, depth + 1);
+        }
+    };
+    match n.kind() {
+        "identifier" | "shorthand_property_identifier" => {
+            if let Some(t) = text_of(n, code) {
+                out.idents.push(t);
+            }
+        }
+        "variable_name" => {
+            if let Some(t) = text_of(n, code) {
+                out.idents.push(t.trim_start_matches('$').to_string());
+            }
+        }
+        // A returned field read hands the field's value to the caller, not
+        // the object it hangs off.
+        "member_expression"
+        | "attribute"
+        | "selector_expression"
+        | "field_expression"
+        | "field_access" => {
+            if let Some(t) = member_expr_text(n, code) {
+                out.idents.push(t);
+            }
+            if let Some(t) = text_of(n, code) {
+                let compact: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                if !out.idents.contains(&compact) {
+                    out.idents.push(compact);
+                }
+            }
+        }
+        // Transparent containers: every element escapes.
+        "parenthesized_expression"
+        | "expression_list"
+        | "tuple"
+        | "list"
+        | "array"
+        | "array_creation_expression"
+        | "array_initializer"
+        | "argument_list"
+        | "literal_value"
+        | "literal_element"
+        | "initializer_list"
+        | "field_initializer_list"
+        | "shorthand_field_initializer"
+        | "object"
+        | "dictionary"
+        | "array_element_initializer"
+        | "composite_literal"
+        | "condition_clause" => recurse_named(n, out),
+        // Keyed elements: only the value escapes, never the key.
+        "pair" | "keyed_element" | "field_initializer" => {
+            if let Some(v) = n.child_by_field_name("value") {
+                return_escape_walk(v, lang, code, out, depth + 1);
+            } else {
+                let mut cursor = n.walk();
+                if let Some(last) = n.named_children(&mut cursor).last() {
+                    return_escape_walk(last, lang, code, out, depth + 1);
+                }
+            }
+        }
+        // Address-of / casts / type assertions: the operand escapes.
+        "unary_expression" | "pointer_expression" | "reference_expression" => {
+            let is_addr = n
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&");
+            if is_addr || n.kind() == "reference_expression" {
+                if let Some(arg) = n
+                    .child_by_field_name("argument")
+                    .or_else(|| n.child_by_field_name("operand"))
+                    .or_else(|| n.child_by_field_name("value"))
+                {
+                    return_escape_walk(arg, lang, code, out, depth + 1);
+                }
+            }
+        }
+        "cast_expression"
+        | "type_assertion_expression"
+        | "as_expression"
+        | "type_conversion_expression"
+        | "non_null_expression"
+        | "satisfies_expression" => {
+            if let Some(v) = n
+                .child_by_field_name("value")
+                .or_else(|| n.child_by_field_name("operand"))
+            {
+                return_escape_walk(v, lang, code, out, depth + 1);
+            } else {
+                let mut cursor = n.walk();
+                if let Some(first) = n.named_children(&mut cursor).next() {
+                    return_escape_walk(first, lang, code, out, depth + 1);
+                }
+            }
+        }
+        "conditional_expression" | "ternary_expression" => {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = n.child_by_field_name(field) {
+                    return_escape_walk(arm, lang, code, out, depth + 1);
+                }
+            }
+        }
+        // Constructors: the new object escapes, and so does every argument
+        // handed to it (a wrapper owns what it wraps).
+        "object_creation_expression" | "new_expression" => {
+            if let Some(callee) = super::literals::call_ident_of(n, lang, code) {
+                out.call_callees.push(callee);
+            }
+            if let Some(args) = n.child_by_field_name("arguments").or_else(|| {
+                let mut cursor = n.walk();
+                n.named_children(&mut cursor)
+                    .find(|c| c.kind() == "argument_list" || c.kind() == "arguments")
+            }) {
+                recurse_named(args, out);
+            }
+        }
+        _ => {
+            if matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod) {
+                let callee = super::literals::call_ident_of(n, lang, code);
+                // C++ `std::move(x)` hands `x` itself to the caller.
+                let is_move = lang == "cpp"
+                    && callee
+                        .as_deref()
+                        .is_some_and(|c| c == "std::move" || c == "move");
+                if is_move {
+                    if let Some(args) = n.child_by_field_name("arguments") {
+                        recurse_named(args, out);
+                    }
+                } else if let Some(callee) = callee {
+                    out.call_callees.push(callee);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

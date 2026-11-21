@@ -17,8 +17,7 @@ pub struct RocketExtractor;
 impl AuthExtractor for RocketExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "rust"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Rocket))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Rocket))
     }
 
     fn extract(

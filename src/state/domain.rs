@@ -1,7 +1,7 @@
 use super::lattice::Lattice;
 use super::symbol::SymbolId;
 use bitflags::bitflags;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 // ── ResourceLifecycle ────────────────────────────────────────────────────
 
@@ -178,6 +178,71 @@ pub struct ChainProxyState {
     pub acquire_span: (usize, usize),
 }
 
+/// Go error companions: `(err, resource)` pairs bound by one acquire
+/// (`f, err := os.Open(p)`) whose `err` and resource have not been reassigned
+/// since, on every path reaching the node.  On the branch where such an `err`
+/// is non-nil the acquire failed and the resource is the zero value, so the
+/// resource passes drop its OPEN state there.
+///
+/// A must-fact: join is intersection, so a pair survives a merge only when it
+/// holds on every incoming path.  `None` is the join identity ("no path has
+/// reached this node yet"), which keeps `bot()` a true identity for
+/// intersection; [`ProductState::initial`] starts from the empty set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ErrCompanions(Option<BTreeSet<(SymbolId, SymbolId)>>);
+
+impl ErrCompanions {
+    pub fn empty() -> Self {
+        Self(Some(BTreeSet::new()))
+    }
+
+    /// Record that `resource` was acquired together with `err`.
+    pub fn bind(&mut self, err: SymbolId, resource: SymbolId) {
+        self.0
+            .get_or_insert_with(BTreeSet::new)
+            .insert((err, resource));
+    }
+
+    /// Drop every pair that mentions `sym` on either side (it was
+    /// reassigned, so the pairing no longer describes the current values).
+    pub fn kill(&mut self, sym: SymbolId) {
+        if let Some(pairs) = self.0.as_mut() {
+            pairs.retain(|&(e, r)| e != sym && r != sym);
+        }
+    }
+
+    /// Resources currently paired with `err`.
+    pub fn resources_of(&self, err: SymbolId) -> impl Iterator<Item = SymbolId> + '_ {
+        self.0
+            .iter()
+            .flat_map(|pairs| pairs.iter())
+            .filter(move |&&(e, _)| e == err)
+            .map(|&(_, r)| r)
+    }
+}
+
+impl Lattice for ErrCompanions {
+    fn bot() -> Self {
+        Self(None)
+    }
+
+    fn join(&self, other: &Self) -> Self {
+        match (&self.0, &other.0) {
+            (None, _) => other.clone(),
+            (_, None) => self.clone(),
+            (Some(a), Some(b)) => Self(Some(a.intersection(b).copied().collect())),
+        }
+    }
+
+    fn leq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(a), Some(b)) => a.is_superset(b),
+        }
+    }
+}
+
 /// Composable product of resource and auth domains.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductState {
@@ -199,6 +264,8 @@ pub struct ProductState {
     /// Tracking-only: chain receivers that remain OPEN at exit are NOT
     /// promoted to leak findings.
     pub chain_proxies: HashMap<String, ChainProxyState>,
+    /// Go `(err, resource)` acquire pairs still valid at this node.
+    pub err_companions: ErrCompanions,
 }
 
 impl ProductState {
@@ -209,6 +276,7 @@ impl ProductState {
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
             chain_proxies: HashMap::new(),
+            err_companions: ErrCompanions::empty(),
         }
     }
 }
@@ -221,6 +289,7 @@ impl Lattice for ProductState {
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
             chain_proxies: HashMap::new(),
+            err_companions: ErrCompanions::bot(),
         }
     }
 
@@ -251,11 +320,14 @@ impl Lattice for ProductState {
             receiver_class_group: class_group,
             proxy_acquire_spans: proxy_spans,
             chain_proxies: chain,
+            err_companions: self.err_companions.join(&other.err_companions),
         }
     }
 
     fn leq(&self, other: &Self) -> bool {
-        self.resource.leq(&other.resource) && self.auth.leq(&other.auth)
+        self.resource.leq(&other.resource)
+            && self.auth.leq(&other.auth)
+            && self.err_companions.leq(&other.err_companions)
     }
 }
 
@@ -337,6 +409,42 @@ mod tests {
         let joined = a.join(&b);
         assert_eq!(joined.auth_level, AuthLevel::Authed);
         assert_eq!(joined.validated, [sym_b].into_iter().collect());
+    }
+
+    #[test]
+    fn err_companions_join_is_intersection_with_bot_identity() {
+        let (err, f, g) = (SymbolId(0), SymbolId(1), SymbolId(2));
+        let mut a = ErrCompanions::empty();
+        a.bind(err, f);
+        a.bind(err, g);
+        let mut b = ErrCompanions::empty();
+        b.bind(err, f);
+
+        let joined = a.join(&b);
+        assert_eq!(joined.resources_of(err).collect::<Vec<_>>(), vec![f]);
+        assert_eq!(a.join(&ErrCompanions::bot()), a);
+        assert_eq!(ErrCompanions::bot().join(&a), a);
+        assert!(a.leq(&b), "more pairs is more precise");
+        assert!(!b.leq(&a));
+
+        // A path that never bound anything empties the meet.
+        assert_eq!(a.join(&ErrCompanions::empty()).resources_of(err).count(), 0);
+    }
+
+    #[test]
+    fn err_companions_kill_drops_both_sides() {
+        let (err, f, other) = (SymbolId(0), SymbolId(1), SymbolId(2));
+        let mut a = ErrCompanions::empty();
+        a.bind(err, f);
+        a.kill(other);
+        assert_eq!(a.resources_of(err).count(), 1);
+        a.kill(err);
+        assert_eq!(a.resources_of(err).count(), 0);
+
+        let mut b = ErrCompanions::empty();
+        b.bind(err, f);
+        b.kill(f);
+        assert_eq!(b.resources_of(err).count(), 0);
     }
 
     #[test]

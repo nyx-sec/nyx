@@ -28,8 +28,7 @@ type RouterLevelDepMap = HashMap<String, Vec<(CallSite, bool)>>;
 impl AuthExtractor for FlaskExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "python"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Flask))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Flask))
     }
 
     fn extract(

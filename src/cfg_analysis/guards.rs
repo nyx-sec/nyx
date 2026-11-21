@@ -53,7 +53,7 @@ fn node_introduces_untrusted_data(info: &crate::cfg::NodeInfo) -> bool {
 /// `SsaOp::Call` operands and consulting `OptimizeResult.const_values` for
 /// any operand the syntactic trace can't classify (e.g. a chained method-call
 /// receiver recorded as a compound identifier rather than a named binding).
-fn is_all_args_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+pub(super) fn is_all_args_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     // Fast path: syntactic literal detection from CFG construction.
     // Strictly weaker than the one-hop trace below, serves as an
     // optimization for the common case of inline literal arguments.
@@ -117,7 +117,9 @@ fn is_all_args_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         {
             return true;
         }
-        false
+        // File-scope constant the body neither assigns nor shadows with a
+        // parameter (`const CMD = 'ls'` at module level).
+        ident_bound_to_constant(ctx, sink_func, u)
     }) || ssa_all_sink_operands_constant(ctx, sink, callee_desc, &callee_parts, &outer_parts)
 }
 
@@ -303,7 +305,7 @@ fn payload_positions_all_literal(
     }
 }
 
-fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+pub(super) fn sink_payload_args_syntactic_const(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     let info = &ctx.cfg[sink];
 
     // Hoisted-callback sink: the `Sink` label on this wrapper node was hoisted
@@ -3068,22 +3070,106 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     result
 }
 
+/// Sanitizer caps that label rules (built-in and `nyx.conf`) give the calls
+/// wrapping the sink's arguments.  Mirrors the fallback in the taint
+/// engine's arg-callee sanitizer subtraction: a callee with a same-file
+/// summary is answered by that summary (the `has_interprocedural_sanitizer`
+/// check), every other callee by its labels, which is how library
+/// sanitizers such as `escapeHtml` or `DOMPurify.sanitize` count.
+fn arg_callee_label_sanitizer_caps(ctx: &AnalysisContext, sink: NodeIndex) -> Cap {
+    let extra = ctx.analysis_rules.map(|r| r.extra_labels.as_slice());
+    let mut caps = Cap::empty();
+    for callee in ctx.cfg[sink].arg_callees.iter().flatten() {
+        let leaf = callee_leaf_name(callee);
+        if ctx.func_summaries.keys().any(|k| k.name == leaf) {
+            continue;
+        }
+        for label in crate::labels::classify_all(ctx.lang.as_str(), callee, extra) {
+            if let DataLabel::Sanitizer(c) = label {
+                caps |= c;
+            }
+        }
+    }
+    caps
+}
+
 /// Check whether taint analysis confirmed unsanitized flow to this sink node.
-fn taint_confirms_sink(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+pub(super) fn taint_confirms_sink(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     ctx.taint_findings.iter().any(|f| f.sink == sink)
 }
 
-/// Check whether any variable used by the sink is directly derived from a
-/// Source node in the same function (via simple def-use chain).
+/// Identifiers that can carry the sink's injection payload, mirroring the
+/// taint engine's sink filter: a gated sink takes its payload only from its
+/// payload positions (per gate when the call carries several, narrowed to
+/// the destination-field identifiers when the gate names them).  The bind
+/// array of `pool.query(SQL, [req.query.email])` or the body sent to a fixed
+/// URL is not the payload.  `None` when every use counts: an ungated sink,
+/// a call whose argument boundaries are unknown, or one whose payload
+/// positions may index a different call (see [`payload_positions_aligned`]).
+fn sink_payload_uses(lang: Lang, info: &crate::cfg::NodeInfo) -> Option<SmallVec<[&str; 8]>> {
+    let arg_uses = &info.call.arg_uses;
+    if arg_uses.is_empty() || !payload_positions_aligned(lang, info) {
+        return None;
+    }
+    let mut out: SmallVec<[&str; 8]> = SmallVec::new();
+    let mut add = |positions: &[usize], dest: Option<&[String]>| -> Option<()> {
+        for &pos in positions {
+            for u in arg_uses.get(pos)? {
+                if dest.is_none_or(|names| names.contains(u)) && !out.contains(&u.as_str()) {
+                    out.push(u.as_str());
+                }
+            }
+        }
+        Some(())
+    };
+    if info.call.gate_filters.len() > 1 {
+        for gate in &info.call.gate_filters {
+            add(&gate.payload_args, gate.destination_uses.as_deref())?;
+        }
+    } else {
+        match info.call.sink_payload_args.as_deref() {
+            Some(positions) if !positions.is_empty() => {
+                add(positions, info.call.destination_uses.as_deref())?
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Whether the sink's payload positions index the arguments recorded on the
+/// node.  The positions come from the gate that matched the sink callee, and
+/// `arg_uses` / `arg_string_literals` from the statement's own call.  When the
+/// callee was rebound to an inner call (`http.get(target, cb).on('error', ..)`
+/// keeps the `.on` arguments while the SSRF gate is `http.get`'s), the two
+/// only line up if the outer call is itself the gated sink (`fetch(url, {body:
+/// JSON.stringify(..)})`).  A hoisted callback sink keeps its own positions.
+fn payload_positions_aligned(lang: Lang, info: &crate::cfg::NodeInfo) -> bool {
+    if info.call.hoisted_sink.is_some() {
+        return false;
+    }
+    match info.call.outer_callee.as_deref() {
+        None => true,
+        Some(outer) => {
+            !crate::labels::classify_gated_sink(lang.as_str(), outer, |_| None, |_| None, |_| true)
+                .is_empty()
+        }
+    }
+}
+
+/// Check whether any variable that reaches the sink's payload is directly
+/// derived from a Source node in the same function (via simple def-use
+/// chain).
 fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     let sink_info = &ctx.cfg[sink];
     let sink_func = sink_info.ast.enclosing_func.as_deref();
 
-    // Collect all variables the sink reads
-    let sink_uses = &sink_info.taint.uses;
-    if sink_uses.is_empty() {
-        return false;
-    }
+    // Collect the variables the sink reads at its payload positions.
+    let payload_uses = sink_payload_uses(ctx.lang, sink_info);
+    let reaches_payload = |name: &str| match &payload_uses {
+        Some(uses) => uses.contains(&name),
+        None => sink_info.taint.uses.iter().any(|u| u == name),
+    };
 
     // Walk all nodes in the same function looking for Source nodes that define
     // one of the variables the sink uses.
@@ -3097,12 +3183,70 @@ fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
         // Source node defines a variable that the sink reads → source-derived
         if let Some(def) = &info.taint.defines
-            && sink_uses.iter().any(|u| u == def)
+            && reaches_payload(def)
         {
             return true;
         }
     }
     false
+}
+
+/// Whether `name`, read in the body under analysis, is bound to a literal:
+/// every assignment of it in this body is a constant (and there is at least
+/// one), or the body neither assigns it nor takes it as a parameter and it is
+/// a file-scope constant (`module_constants`, Java `static final` scalars).
+fn ident_bound_to_constant(ctx: &AnalysisContext, sink_func: Option<&str>, name: &str) -> bool {
+    let mut local_defs = ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).filter(|info| {
+        info.ast.enclosing_func.as_deref() == sink_func
+            && (info.taint.defines.as_deref() == Some(name)
+                || info.taint.extra_defines.iter().any(|d| d == name))
+    });
+    let mut any_local = false;
+    for info in local_defs.by_ref() {
+        any_local = true;
+        let constant = info.taint.defines.as_deref() == Some(name)
+            && info.taint.uses.is_empty()
+            && !node_introduces_untrusted_data(info);
+        if !constant {
+            return false;
+        }
+    }
+    if any_local {
+        return true;
+    }
+    if ctx.scope_param_names().any(|p| p == name) {
+        return false;
+    }
+    ctx.module_constants.is_some_and(|m| m.contains(name))
+        || ctx
+            .class_constant_scalars
+            .is_some_and(|m| m.contains_key(name))
+}
+
+/// CFG-level twin of [`sink_payload_args_const`]: a gated sink whose
+/// payload positions only hold literals or identifiers bound to literals
+/// ([`ident_bound_to_constant`]).  Covers the named-query idiom
+/// `pool.query(FIND_USER, [req.query.email])` / `cursor.execute(QUERY,
+/// params)`, where the SQL lives in a local or file-scope constant that the
+/// per-body SSA facts do not resolve, and the bind values sit outside the
+/// payload.
+fn sink_payload_uses_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let info = &ctx.cfg[sink];
+    let positions = match info.call.sink_payload_args.as_deref() {
+        Some(p) if !p.is_empty() && payload_positions_aligned(ctx.lang, info) => p,
+        _ => return false,
+    };
+    let sink_func = info.ast.enclosing_func.as_deref();
+    positions.iter().all(|&pos| {
+        let literal = matches!(info.call.arg_string_literals.get(pos), Some(Some(_)));
+        match info.call.arg_uses.get(pos) {
+            Some(uses) if !uses.is_empty() => uses
+                .iter()
+                .all(|u| ident_bound_to_constant(ctx, sink_func, u)),
+            Some(_) => literal,
+            None => false,
+        }
+    })
 }
 
 /// Check whether the sink's arguments are *only* function parameters
@@ -3117,16 +3261,9 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         return true; // treat as non-dangerous (constant arg)
     }
 
-    // Collect parameter names for the enclosing function from FuncSummaries
-    let param_names: Vec<&str> = ctx
-        .func_summaries
-        .values()
-        .filter(|s| {
-            // Match by function entry being in the same function
-            ctx.cfg[s.entry].ast.enclosing_func.as_deref() == sink_func
-        })
-        .flat_map(|s| s.param_names.iter().map(|p| p.as_str()))
-        .collect();
+    // Parameters in scope for this body (its own plus the ones a closure
+    // captures from the functions around it).
+    let param_names: SmallVec<[&str; 8]> = ctx.scope_param_names().collect();
 
     if param_names.is_empty() {
         return false; // can't determine params
@@ -3274,19 +3411,6 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
     }
 
-    // Strict parameter set scoped to the sink's enclosing function only.
-    // Used for the local-trace fallback below to prevent over-suppression
-    // when sibling functions in the same file happen to share param names
-    // with the current scope (e.g. a constructor's `dbConn` param leaking
-    // into the `param_names` view of an unrelated `logAuditEvent` body).
-    // The existing broad `param_names` view is preserved for the direct
-    // in-list check above so legacy suppression behaviour is unchanged.
-    let strict_param_names: SmallVec<[&str; 8]> = ctx
-        .func_summaries
-        .iter()
-        .filter(|(key, _)| sink_func.is_some_and(|name| key.name.as_str() == name))
-        .flat_map(|(_, s)| s.param_names.iter().map(|p| p.as_str()))
-        .collect();
     sink_uses.iter().all(|u| {
         if callee_fragments.contains(&u.as_str()) || u == callee_desc {
             return true;
@@ -3301,14 +3425,11 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         // local is wrapper plumbing.  Receiver-variable shapes whose
         // definitions reach a free (non-param, non-local) identifier or
         // a Source label fail the trace and keep the structural finding.
-        if strict_param_names.is_empty() {
-            return false;
-        }
         let mut seen: SmallVec<[&str; 4]> = SmallVec::new();
         local_is_param_derived(
             ctx,
             sink_func,
-            &strict_param_names,
+            &param_names,
             &callee_fragments,
             u.as_str(),
             3,
@@ -3712,7 +3833,17 @@ impl CfgAnalysis for UnguardedSink {
                 }
             });
 
-            if is_guarded || has_sanitizer || has_interprocedural_sanitizer {
+            // Library sanitizer wrapping an argument (`res.send(escapeHtml(x))`,
+            // `shell_exec('wc -l ' . escapeshellarg($f))`): the taint engine
+            // strips the sanitizer's caps from the sink, so do the same.
+            let wrapped_by_label_sanitizer =
+                (sink_caps & !arg_callee_label_sanitizer_caps(ctx, *sink)).is_empty();
+
+            if is_guarded
+                || has_sanitizer
+                || has_interprocedural_sanitizer
+                || wrapped_by_label_sanitizer
+            {
                 continue;
             }
 
@@ -3755,6 +3886,12 @@ impl CfgAnalysis for UnguardedSink {
             // values) cannot make the call dangerous, so the structural finding
             // is a false positive even though `is_all_args_constant` rejects it.
             if !has_taint && sink_payload_args_const(ctx, *sink) {
+                continue;
+            }
+            // Same, resolved on the CFG: the payload positions hold literals
+            // or names bound to literals in this body or at file scope
+            // (`pool.query(FIND_USER, [req.query.email])`).
+            if !has_taint && sink_payload_uses_constant(ctx, *sink) {
                 continue;
             }
 
@@ -3962,11 +4099,7 @@ impl CfgAnalysis for UnguardedSink {
                             .iter()
                             .any(|l| matches!(l, DataLabel::Source(_)))
                 });
-                let has_params = ctx.func_summaries.values().any(|s| {
-                    s.entry.index() < ctx.cfg.node_count()
-                        && ctx.cfg[s.entry].ast.enclosing_func.as_deref() == sink_func
-                        && !s.param_names.is_empty()
-                });
+                let has_params = ctx.scope_param_names().next().is_some();
                 if !has_sources && !has_params {
                     continue; // No sources or params in scope → noise
                 }

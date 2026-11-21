@@ -15,9 +15,7 @@ pub struct EchoExtractor;
 
 impl AuthExtractor for EchoExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
-        lang == "go"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Echo))
+        lang == "go" && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Echo))
     }
 
     fn extract(

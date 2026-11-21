@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 862
+    "corpus_size": 898
   },
   "cases": [
     {
@@ -27671,6 +27671,1044 @@
       ],
       "disabled": false,
       "notes": "Output of a child process written to the response is not request input"
+    },
+    {
+      "case_id": "c-safe-nullguard-001",
+      "file": "c/safe/safe_null_guard_early_return.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "fopen/malloc checked with `== NULL` / `!b` and an early return. The failure branch holds no handle, the success branch closes or returns it. Fix: structured NullCheck on If nodes consumed by the state engine and the cfg twin."
+    },
+    {
+      "case_id": "c-safe-outparam-001",
+      "file": "c/safe/safe_outparam_store.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "calloc result handed to the caller with `*out = b`. Fix: escaping_store on deref / container / non-local assignment targets."
+    },
+    {
+      "case_id": "go-safe-errguard-factory-001",
+      "file": "go/safe/safe_err_guard_factory.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`f, err := os.OpenFile(..); if err != nil { return nil, err }; return f, nil`. Fix: Go (err, resource) companions in the state engine and return escapes."
+    },
+    {
+      "case_id": "py-safe-factory-001",
+      "file": "python/safe/safe_factory_returns_handle.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Factories that return the handle (`return f`, `return conn`, `return open(p)`). Fix: return escapes treated as ownership transfer in the cfg twin."
+    },
+    {
+      "case_id": "py-safe-suffix-callee-001",
+      "file": "python/safe/safe_suffix_callees_not_acquire.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "disconnect / reconnect / subprocess.Popen only end in an acquire name. Fix: identifier-boundary acquire matching in the state engine outside C/C++."
+    },
+    {
+      "case_id": "py-vuln-return-read-001",
+      "file": "python/safe/vuln_return_read_without_close.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-772",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive"
+      ],
+      "disabled": false,
+      "notes": "`f = open(p); return f.read()` returns the contents, not the file: f leaks. The state engine used to count any mention of f in the return as a transfer."
+    },
+    {
+      "case_id": "java-safe-factory-001",
+      "file": "java/safe/SafeFactoryReturnsHandle.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Connection and wrapped reader returned to the caller. Fix: return escapes, including constructor arguments of a returned wrapper."
+    },
+    {
+      "case_id": "java-safe-same-name-field-001",
+      "file": "java/safe/SafeSameNameFieldStore.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "field-store",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A local `path` shares its name with a field that receives user input (`o.path`). The field store used to emit the member name as an extra define, so the untouched local looked tainted at the FileInputStream sink. Fix: Java / PHP assignment targets keep the member path whole (`cfg::helpers::collect_assign_targets`)."
+    },
+    {
+      "case_id": "java-cmdi-field-store-001",
+      "file": "java/cmdi/CmdiFieldStore.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "java.cmdi.runtime_exec"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "field-store"
+      ],
+      "disabled": false,
+      "notes": "Positive control for the field-store define change: the tainted field itself reaches the sink."
+    },
+    {
+      "case_id": "php-safe-same-name-field-001",
+      "file": "php/safe/safe_same_name_field_store.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "field-store",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Guard for the PHP member define change: `$this->path = $_GET[..]` now defines `this.path`, which must not reach the local `$path` read by file_get_contents."
+    },
+    {
+      "case_id": "php-cmdi-field-store-001",
+      "file": "php/cmdi/cmdi_field_store.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "php.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "field-store"
+      ],
+      "disabled": false,
+      "notes": "Positive control for the field-store define change: the tainted field itself reaches the sink."
+    },
+    {
+      "case_id": "go-safe-errfall-const-001",
+      "file": "go/safe/safe_error_log_then_const_sink.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Logged-and-ignored error followed by sinks with literal arguments only (`db.Exec(\"CREATE INDEX ..\")`, `exec.Command(\"sync\")`). Fix: cfg-error-fallthrough skips sinks whose payload is provably constant."
+    },
+    {
+      "case_id": "js-safe-errfall-const-001",
+      "file": "javascript/safe/safe_err_log_then_const_response.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Express callback logs the error and still sends a literal body. Fix: cfg-error-fallthrough skips constant-payload sinks."
+    },
+    {
+      "case_id": "js-safe-pg-named-query-001",
+      "file": "javascript/safe/safe_pg_named_query_const.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "pg query text in a module-level / handler-local constant, request value only in the bind array. Fix: cfg-unguarded-sink reads only the payload positions for source derivation and resolves payload identifiers bound to literals (file scope included)."
+    },
+    {
+      "case_id": "js-sqli-pg-text-001",
+      "file": "javascript/sqli/vuln_pg_query_text_from_request.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "positive",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "Counterpart to js-safe-pg-named-query-001: the request value is concatenated into the query text (payload position 0)."
+    },
+    {
+      "case_id": "py-safe-module-query-001",
+      "file": "python/safe/safe_module_query_params.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "cursor.execute(QUERY, {..request..}) with QUERY a module-level triple-quoted constant. Fix: payload-position source derivation plus file-scope constant resolution."
+    },
+    {
+      "case_id": "js-safe-escape-wrapped-001",
+      "file": "javascript/safe/safe_escape_html_wrapped_arg.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "xss"
+      ],
+      "disabled": false,
+      "notes": "res.send(escapeHtml(..)) and a concatenation around escapeHtml(..). Fix: cfg-unguarded-sink honours label sanitizers on argument callees, as the taint engine does."
+    },
+    {
+      "case_id": "js-cmdi-wrong-escaper-001",
+      "file": "javascript/cmdi/vuln_html_escaper_on_shell_sink.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "An HTML escaper around a shell command argument does not cover SHELL_ESCAPE; the injection must still be reported."
+    },
+    {
+      "case_id": "php-safe-escapeshellarg-001",
+      "file": "php/safe/safe_escapeshellarg_concat.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "shell_exec('wc -l ' . escapeshellarg($file)). Fix: label sanitizers on argument callees."
+    },
+    {
+      "case_id": "rb-safe-no-params-sibling-001",
+      "file": "ruby/safe/safe_no_params_sibling_helper.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A parameterless method with no sources next to an unrelated method that takes a parameter. Fix: the no-params-no-sources check reads the sink function's own parameters instead of any summary in the file."
+    },
+    {
+      "case_id": "py-cmdi-layerb-escape-001",
+      "file": "python/cmdi/vuln_dict_key_cmd_unrelated_escape.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Request value reaches os.system through dict-key iteration, which taint does not track. An html.escape on another value in the same function is not evidence that the engine evaluated the shell sink, so the AST pattern must not be suppressed."
+    },
+    {
+      "case_id": "py-cmdi-layerb-same-name-001",
+      "file": "python/cmdi/vuln_same_name_method_other_class.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.cmdi.os_system"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "positive",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Two class-based views each define get(). Taint tracks the flow in RunView.get but loses the dict-key flow in OtherView.get; evidence from one get() must not suppress the AST pattern in the other."
+    },
+    {
+      "case_id": "py-safe-shell-quote-helper-001",
+      "file": "python/safe/safe_shell_quote_helper.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "engine-precision-2026-10",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.cmdi.os_system",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ast-suppression",
+        "negative",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "Request value passes through a same-file helper wrapping shlex.quote before os.system. The helper's SHELL_ESCAPE sanitizer is evidence that the engine cleared the flow, so the AST pattern stays suppressed."
+    },
+    {
+      "case_id": "go-auth-state-001",
+      "file": "go/auth/safe_request_context_scope.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "request-context"
+      ],
+      "disabled": false,
+      "notes": "gitea-style request-context scope and actor chains (ctx.Repo.Repository.ID, ctx.Doer.ID, a co-passed scope id) are not foreign ids."
+    },
+    {
+      "case_id": "go-auth-state-002",
+      "file": "go/auth/vuln_unscoped_label_lookup.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "request-context"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for go-auth-state-001: the same handler without a scope id looks the label up by the request-supplied id alone."
+    },
+    {
+      "case_id": "go-auth-state-003",
+      "file": "go/auth/safe_in_memory_values.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "in-memory"
+      ],
+      "disabled": false,
+      "notes": "Atomic field, local set, url.Values, request header/form accessors and a router registration are not data-layer operations even though their names are id-shaped and the verbs are Get/Add/Remove/Load."
+    },
+    {
+      "case_id": "go-auth-state-004",
+      "file": "go/auth/safe_package_level_symbols.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "package-symbols"
+      ],
+      "disabled": false,
+      "notes": "A selector rooted at an imported package and a file-level const name declarations, not per-request values."
+    },
+    {
+      "case_id": "go-auth-state-005",
+      "file": "go/auth/safe_fetch_then_authorize.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "fetch-then-authorize"
+      ],
+      "disabled": false,
+      "notes": "Go fetch-then-authorize: `issue, err := Get(...)` followed by a permission check on the row covers the fetch."
+    },
+    {
+      "case_id": "ts-auth-state-001",
+      "file": "typescript/auth/safe_browser_components.tsx",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "browser"
+      ],
+      "disabled": false,
+      "notes": "React components and hooks are browser code; their id-named props and SDK calls are not unchecked server-side data access."
+    },
+    {
+      "case_id": "ts-auth-state-002",
+      "file": "typescript/auth/vuln_next_server_component.tsx",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "browser"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for ts-auth-state-001: an async App Router server component queries the database directly with a path param."
+    },
+    {
+      "case_id": "js-auth-state-001",
+      "file": "javascript/auth/safe_route_level_middleware.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "route-middleware"
+      ],
+      "disabled": false,
+      "notes": "Authorization middleware named on an Express route guards the whole handler."
+    },
+    {
+      "case_id": "js-auth-state-002",
+      "file": "javascript/auth/vuln_commonjs_controller_exports.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "controller-exports"
+      ],
+      "disabled": false,
+      "notes": "CommonJS `exports.x = fn` and undecorated class methods are controller handlers; both delete by a request id with no check."
+    },
+    {
+      "case_id": "js-auth-state-003",
+      "file": "javascript/auth/vuln_shorthand_where_id.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "shorthand"
+      ],
+      "disabled": false,
+      "notes": "`where: { id }` shorthand carries the request id; the delete has no ownership check."
+    },
+    {
+      "case_id": "js-auth-state-004",
+      "file": "javascript/auth/safe_row_fetch_then_authorize.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "fetch-then-authorize"
+      ],
+      "disabled": false,
+      "notes": "Fetch-then-authorize holds when the row is reassigned, written after the check, or fetched through Promise.all."
+    },
+    {
+      "case_id": "js-auth-state-005",
+      "file": "javascript/auth/safe_session_user_id.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "session"
+      ],
+      "disabled": false,
+      "notes": "req.session.userId is the caller's own id and is self-scoped for own-account writes."
+    },
+    {
+      "case_id": "py-auth-state-001",
+      "file": "python/auth/safe_words_ending_in_id.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "id-like"
+      ],
+      "disabled": false,
+      "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
     }
   ]
 }

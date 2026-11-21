@@ -11,9 +11,10 @@
 //! # Determinism
 //!
 //! `stable_hash` is the BLAKE3-truncated digest of the chain member
-//! hashes joined with the implied impact byte.  Two scans of the same
-//! source produce the same `stable_hash` regardless of DFS visitation
-//! order.
+//! hashes joined with the implied impact byte and the terminal sink.  Two
+//! scans of the same source produce the same `stable_hash` regardless of
+//! DFS visitation order, and two chains that share their members but end
+//! at different sinks get different hashes.
 //!
 //! # Suppressing constituents in default output
 //!
@@ -92,8 +93,9 @@ pub type ChainMember = FindingRef;
 /// `stable_hash` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainFinding {
-    /// BLAKE3 of `(member.stable_hash for member in members) || implied_impact`,
-    /// truncated to 64 bits.  Stable across scans for the same chain.
+    /// BLAKE3 of `(member.stable_hash for member in members) || implied_impact
+    /// || sink`, truncated to 64 bits.  Stable across scans for the same
+    /// chain.
     pub stable_hash: u64,
     /// Constituent findings, in path order (entry-adjacent first,
     /// sink-adjacent last).
@@ -124,7 +126,7 @@ pub struct ChainFinding {
 
 /// Sink terminus of a [`ChainFinding`].  Mirrors the
 /// [`crate::surface::DangerousLocal`] node the path ends at.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChainSink {
     pub file: String,
     pub line: u32,
@@ -133,17 +135,44 @@ pub struct ChainSink {
     pub cap_bits: u32,
 }
 
+impl ChainSink {
+    /// Total order used to break ties between chains.
+    pub(crate) fn order_key(&self) -> (&str, u32, u32, &str, u32) {
+        (
+            &self.file,
+            self.line,
+            self.col,
+            &self.function_name,
+            self.cap_bits,
+        )
+    }
+}
+
 impl ChainFinding {
-    /// Compute the stable hash from a member list + impact category.
+    /// Compute the stable hash from a member list + impact category +
+    /// terminal sink.  The sink is part of the chain's identity: the same
+    /// finding can reach several dangerous locals, and each of those chains
+    /// is reported (and re-verified, as `chain-{hash}`) on its own.
     /// Exposed so callers that build a `ChainFinding` outside
     /// [`crate::chain::search`] (tests, future composers) stay in sync
     /// with the canonical hash formula.
-    pub fn compute_stable_hash(members: &[ChainMember], implied_impact: ImpactCategory) -> u64 {
+    pub fn compute_stable_hash(
+        members: &[ChainMember],
+        implied_impact: ImpactCategory,
+        sink: &ChainSink,
+    ) -> u64 {
         let mut h = blake3::Hasher::new();
         for m in members {
             h.update(&m.stable_hash.to_le_bytes());
         }
         h.update(&[impact_byte(implied_impact)]);
+        h.update(sink.file.as_bytes());
+        h.update(b"\0");
+        h.update(sink.function_name.as_bytes());
+        h.update(b"\0");
+        h.update(&sink.line.to_le_bytes());
+        h.update(&sink.col.to_le_bytes());
+        h.update(&sink.cap_bits.to_le_bytes());
         let out = h.finalize();
         let bytes = out.as_bytes();
         u64::from_le_bytes(bytes[..8].try_into().unwrap())
@@ -208,32 +237,66 @@ mod tests {
         }
     }
 
+    fn sink(function_name: &str, line: u32) -> ChainSink {
+        ChainSink {
+            file: "a.py".into(),
+            line,
+            col: 1,
+            function_name: function_name.into(),
+            cap_bits: 1,
+        }
+    }
+
     #[test]
     fn stable_hash_changes_with_member_order() {
-        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce);
-        let b = ChainFinding::compute_stable_hash(&[member(2), member(1)], ImpactCategory::Rce);
+        let s = sink("run", 3);
+        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce, &s);
+        let b = ChainFinding::compute_stable_hash(&[member(2), member(1)], ImpactCategory::Rce, &s);
         assert_ne!(a, b);
     }
 
     #[test]
     fn stable_hash_changes_with_impact() {
-        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce);
+        let s = sink("run", 3);
+        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce, &s);
         let b = ChainFinding::compute_stable_hash(
             &[member(1), member(2)],
             ImpactCategory::BrowserToLocalRce,
+            &s,
         );
         assert_ne!(a, b);
     }
 
     #[test]
+    fn stable_hash_changes_with_sink() {
+        let members = [member(1)];
+        let base = ChainFinding::compute_stable_hash(&members, ImpactCategory::Rce, &sink("a", 3));
+        for other in [sink("b", 3), sink("a", 4)] {
+            let h = ChainFinding::compute_stable_hash(&members, ImpactCategory::Rce, &other);
+            assert_ne!(base, h, "{other:?}");
+        }
+        let mut other_file = sink("a", 3);
+        other_file.file = "b.py".into();
+        let mut other_cap = sink("a", 3);
+        other_cap.cap_bits = 2;
+        for other in [other_file, other_cap] {
+            let h = ChainFinding::compute_stable_hash(&members, ImpactCategory::Rce, &other);
+            assert_ne!(base, h, "{other:?}");
+        }
+    }
+
+    #[test]
     fn stable_hash_deterministic_across_calls() {
+        let s = sink("run", 3);
         let h1 = ChainFinding::compute_stable_hash(
             &[member(1), member(2), member(3)],
             ImpactCategory::Rce,
+            &s,
         );
         let h2 = ChainFinding::compute_stable_hash(
             &[member(1), member(2), member(3)],
             ImpactCategory::Rce,
+            &s,
         );
         assert_eq!(h1, h2);
     }

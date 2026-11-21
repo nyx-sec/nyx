@@ -55,8 +55,8 @@ pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // helpers that physically live in `helpers.rs`.
 use conditions::{
     build_condition_chain, build_ternary_diamond, classify_ternary_lhs,
-    detect_rust_let_match_guard, emit_rust_match_guard_if, find_ternary_rhs_wrapper,
-    is_boolean_operator, ternary_parts, unwrap_parens,
+    detect_rust_let_match_guard, emit_rust_match_guard_if, extract_null_check,
+    find_ternary_rhs_wrapper, is_boolean_operator, ternary_parts, unwrap_parens,
 };
 use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
@@ -423,6 +423,44 @@ pub enum EdgeKind {
     Exception, // from call/throw inside try body → catch entry
 }
 
+/// A branch condition that tests one variable against its "nothing was
+/// produced" value: `if (f)`, `if (!f)`, `f == NULL`, `NULL != f`,
+/// `f is None`, `$fh === false`, `fd < 0`, `err != nil`.
+///
+/// Recognised from the AST at CFG build (see
+/// `conditions::extract_null_check`), so the resource passes never re-parse
+/// condition text.  `null_on_true` names the branch on which `var` holds the
+/// null / failure value: `true` when the condition holding means "null"
+/// (`f == NULL`, `!f`, `fd < 0`), `false` when the condition failing does
+/// (`if (f)`, `f != NULL`).  CFG `True` / `False` edges carry the value of
+/// the whole condition, so [`NullCheck::null_edge`] maps straight onto them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NullCheck {
+    pub var: String,
+    pub null_on_true: bool,
+}
+
+impl NullCheck {
+    /// The edge on which `var` is null (or the failure sentinel).
+    pub fn null_edge(&self) -> EdgeKind {
+        if self.null_on_true {
+            EdgeKind::True
+        } else {
+            EdgeKind::False
+        }
+    }
+
+    /// The edge on which `var` is non-null.  For a Go error companion
+    /// (`err != nil`) this is the branch where the call failed.
+    pub fn non_null_edge(&self) -> EdgeKind {
+        if self.null_on_true {
+            EdgeKind::False
+        } else {
+            EdgeKind::True
+        }
+    }
+}
+
 /// Maximum number of identifiers to store from a condition expression.
 pub(super) const MAX_COND_VARS: usize = 8;
 pub(super) const MAX_CONDITION_TEXT_LEN: usize = 256;
@@ -700,6 +738,14 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// Bare variables whose ownership this constructor takes over: the
+    /// arguments of a Java wrapper constructor (`new BufferedInputStream(in)`,
+    /// nested wrappers included) and the initialiser of a C++ smart-pointer
+    /// declaration (`std::unique_ptr<T> p(raw)`).  Whether the handoff
+    /// happens is decided by the resource passes; see
+    /// `state::transfer::DefaultTransfer::apply_call`.
+    #[serde(default)]
+    pub ctor_owned_args: Vec<String>,
     /// True when this call is `Object.create(null)` (or alias). The returned
     /// value has no prototype chain.  Consumed by TypeFacts to tag the
     /// SsaValue with [`crate::ssa::type_facts::TypeKind::NullPrototypeObject`]
@@ -914,6 +960,42 @@ pub struct NodeInfo {
     pub condition_vars: Vec<String>,
     /// For If nodes: whether the condition has a leading negation (`!` / `not`).
     pub condition_negated: bool,
+    /// For If nodes whose condition is a single-variable null / failure test
+    /// (`if (!f)`, `f == NULL`, `fd < 0`, `err != nil`): the variable and
+    /// which edge is its null edge.  `None` for any other condition shape.
+    /// Consumed by the resource-lifecycle passes to prune the branch on which
+    /// an acquire produced nothing.
+    #[serde(default)]
+    pub null_check: Option<NullCheck>,
+    /// For Return nodes: variables (and member paths) the returned expression
+    /// hands to the caller, in escape positions only (see
+    /// `helpers::collect_return_escapes`).  `return f`, `return f, nil`,
+    /// `return &W{f: f}` and `return new BufferedReader(r)` list `f` / `r`;
+    /// `return f.read()` and `return io.ReadAll(f)` list nothing.  Consumed by
+    /// the resource-leak passes as "ownership moved to the caller".
+    #[serde(default)]
+    pub returned_idents: Vec<String>,
+    /// For Return nodes: callee text of each call / constructor whose result
+    /// is itself the returned value (`return os.Open(p)`,
+    /// `return new Foo()`), spelled like `CallMeta::callee`.
+    #[serde(default)]
+    pub returned_call_callees: Vec<String>,
+    /// True for the node built from the last statement of a Ruby method
+    /// body, whose value the method implicitly returns.  `returned_idents` /
+    /// `returned_call_callees` then describe that value, exactly as they do
+    /// for an explicit Return node.  The node keeps its own `StmtKind`.
+    #[serde(default)]
+    pub implicit_return: bool,
+    /// True when this node's assignment stores into storage the body does
+    /// not own as a plain local: through a pointer (`*out = v`), into a
+    /// container element (`a[k] = v`, `$a[] = v`), or (C / C++ / Go / Java,
+    /// where locals must be declared) into a name that is neither a
+    /// parameter nor declared anywhere in the function: a global, a package
+    /// variable, or an unqualified field / member.  The resource passes
+    /// treat a handle stored this way as handed off, not as a new local
+    /// resource that must be released before the function returns.
+    #[serde(default)]
+    pub escaping_store: bool,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -1457,10 +1539,16 @@ fn extract_condition_raw<'a>(
     ast: Node<'a>,
     lang: &str,
     code: &'a [u8],
-) -> (Option<String>, Vec<String>, bool, Option<CondArith>) {
+) -> (
+    Option<String>,
+    Vec<String>,
+    bool,
+    Option<CondArith>,
+    Option<NullCheck>,
+) {
     // 1. Find the condition subtree.
     let Some(cond) = find_condition_subtree(ast, lang) else {
-        return (None, Vec::new(), false, None);
+        return (None, Vec::new(), false, None, None);
     };
 
     // 2. Detect leading negation (`!expr`, `not expr`, Ruby `unless`).
@@ -1491,7 +1579,16 @@ fn extract_condition_raw<'a>(
         build_cond_arith(cond, lang, code, 0)
     };
 
-    (text, vars, negated, cond_arith)
+    // 6. Single-variable null / failure test (`if (!f)`, `f == NULL`,
+    //    `err != nil`).  Skipped for Ruby `unless` for the same reason as
+    //    `cond_arith` above.
+    let null_check = if ast.kind() == "unless" {
+        None
+    } else {
+        extract_null_check(cond, lang, code)
+    };
+
+    (text, vars, negated, cond_arith, null_check)
 }
 
 /// Detect leading negation and return the inner expression.
@@ -4298,13 +4395,13 @@ pub(super) fn push_node<'a>(
     // though their grammar kind maps to `Kind::Block`.  These two node kinds
     // only ever reach `push_node` from that handler, so widening the guard
     // here cannot affect ordinary block lowering.
-    let (condition_text, condition_vars, condition_negated, cond_arith) =
+    let (condition_text, condition_vars, condition_negated, cond_arith, null_check) =
         if matches!(lookup(lang, ast.kind()), Kind::If)
             || matches!(ast.kind(), "elif_clause" | "else_if_clause")
         {
             extract_condition_raw(ast, lang, code)
         } else {
-            (None, Vec::new(), false, None)
+            (None, Vec::new(), false, None, None)
         };
 
     // Detect parameterized SQL queries: arg 0 is a string literal with
@@ -4580,6 +4677,10 @@ pub(super) fn push_node<'a>(
         || call_ast
             .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
 
+    let ctor_owned_args = collect_ctor_owned_args(ast, call_ast, lang, code, is_constructor);
+    let new_into_smart_pointer =
+        lang == "cpp" && text == "new" && cpp_decl_is_smart_pointer(ast, code);
+
     // Detect `Object.create(null)` so TypeFacts can tag the returned
     // SsaValue with `NullPrototypeObject` for flow-sensitive
     // prototype-pollution suppression.  Restricted to JS/TS where
@@ -4596,6 +4697,12 @@ pub(super) fn push_node<'a>(
         } else {
             None
         };
+
+    let return_escapes = if kind == StmtKind::Return {
+        helpers::collect_return_escapes(ast, lang, code)
+    } else {
+        helpers::ReturnEscapes::default()
+    };
 
     let numeric_confined_uses = scope
         .map(|s| collect_numeric_confined_value_idents(s, lang, code, &labels))
@@ -4625,6 +4732,7 @@ pub(super) fn push_node<'a>(
             destination_uses,
             gate_filters,
             is_constructor,
+            ctor_owned_args,
             produces_null_proto,
             hoisted_sink,
             nested_calls,
@@ -4647,6 +4755,11 @@ pub(super) fn push_node<'a>(
         condition_text,
         condition_vars,
         condition_negated,
+        null_check,
+        returned_idents: return_escapes.idents,
+        returned_call_callees: return_escapes.call_callees,
+        implicit_return: false,
+        escaping_store: assignment_target_is_indirect(ast, lang),
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -4658,7 +4771,7 @@ pub(super) fn push_node<'a>(
         rmw_rhs_from_pred: false,
         finally_return: false,
         finally_tail: false,
-        managed_resource: is_raii_managed || is_ruby_block_managed,
+        managed_resource: is_raii_managed || is_ruby_block_managed || new_into_smart_pointer,
         borrowed_resource: lang == "java"
             && code
                 .get(span.0..span.1)
@@ -7537,6 +7650,355 @@ pub(super) fn emit_call_node<'a>(
     (n, false)
 }
 
+/// True when `ast` is a C++ declaration of an owning smart pointer
+/// (`std::unique_ptr<T> p(...)`, `shared_ptr`, `boost::scoped_ptr`,
+/// `QScopedPointer`, ...).
+fn cpp_decl_is_smart_pointer(ast: Node, code: &[u8]) -> bool {
+    if ast.kind() != "declaration" {
+        return false;
+    }
+    let Some(ty) = ast
+        .child_by_field_name("type")
+        .and_then(|t| text_of(t, code))
+    else {
+        return false;
+    };
+    let base = ty.split('<').next().unwrap_or(&ty);
+    let leaf = base
+        .rsplit("::")
+        .next()
+        .unwrap_or(base)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        leaf.as_str(),
+        "unique_ptr"
+            | "shared_ptr"
+            | "auto_ptr"
+            | "scoped_ptr"
+            | "scoped_array"
+            | "shared_array"
+            | "qscopedpointer"
+            | "qsharedpointer"
+    )
+}
+
+/// See [`CallMeta::ctor_owned_args`].
+fn collect_ctor_owned_args(
+    ast: Node,
+    call_ast: Option<Node>,
+    lang: &str,
+    code: &[u8],
+    is_constructor: bool,
+) -> Vec<String> {
+    fn java_ctor_args(ctor: Node, code: &[u8], out: &mut Vec<String>, depth: u32) {
+        if depth > 8 {
+            return;
+        }
+        let Some(args) = ctor.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = args.walk();
+        for arg in args.named_children(&mut cursor) {
+            let mut arg = unwrap_parens(arg);
+            if arg.kind() == "cast_expression"
+                && let Some(v) = arg.child_by_field_name("value")
+            {
+                arg = unwrap_parens(v);
+            }
+            match arg.kind() {
+                "identifier" => {
+                    if let Some(t) = text_of(arg, code) {
+                        out.push(t);
+                    }
+                }
+                "object_creation_expression" => java_ctor_args(arg, code, out, depth + 1),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    match lang {
+        "java" if is_constructor => {
+            let ctor = [Some(ast), call_ast]
+                .into_iter()
+                .flatten()
+                .find(|n| n.kind() == "object_creation_expression");
+            if let Some(ctor) = ctor {
+                java_ctor_args(ctor, code, &mut out, 0);
+            }
+        }
+        "cpp" if cpp_decl_is_smart_pointer(ast, code) => {
+            let mut cursor = ast.walk();
+            for d in ast.children_by_field_name("declarator", &mut cursor) {
+                match d.kind() {
+                    // `std::unique_ptr<T> p(raw)` / `p{raw}`
+                    "init_declarator" => {
+                        if let Some(v) = d.child_by_field_name("value")
+                            && matches!(v.kind(), "argument_list" | "initializer_list")
+                        {
+                            let mut c = v.walk();
+                            for a in v.named_children(&mut c) {
+                                let a = unwrap_parens(a);
+                                if a.kind() == "identifier"
+                                    && let Some(t) = text_of(a, code)
+                                {
+                                    out.push(t);
+                                }
+                            }
+                        }
+                    }
+                    // `std::unique_ptr<T> p(raw);` read as a function
+                    // declaration whose single "parameter type" is `raw`.
+                    "function_declarator" => {
+                        if let Some(params) = d.child_by_field_name("parameters") {
+                            let mut c = params.walk();
+                            let ps: Vec<Node> = params.named_children(&mut c).collect();
+                            if let [p] = ps.as_slice()
+                                && p.kind() == "parameter_declaration"
+                                && p.child_by_field_name("declarator").is_none()
+                                && let Some(ty) = p.child_by_field_name("type")
+                                && ty.kind() == "type_identifier"
+                                && let Some(t) = text_of(ty, code)
+                            {
+                                out.push(t);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// True when `ast` is (or wraps) an assignment whose target is reached
+/// through a pointer or a container element: `*out = v`, `arr[i] = v`,
+/// `$a[] = v`, `m[k] = v`.  The defined name is then the pointer or the
+/// container, not a fresh local holding the value.
+fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
+    let assign = if lookup(lang, ast.kind()) == Kind::Assignment {
+        Some(ast)
+    } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
+        let mut cursor = ast.walk();
+        ast.named_children(&mut cursor)
+            .find(|c| lookup(lang, c.kind()) == Kind::Assignment)
+    } else {
+        None
+    };
+    let Some(lhs) = assign.and_then(|a| a.child_by_field_name("left")) else {
+        return false;
+    };
+    let mut lhs = unwrap_parens(lhs);
+    // Go: `left` is an expression_list; only a single target qualifies.
+    if lhs.kind() == "expression_list" {
+        let mut cursor = lhs.walk();
+        let named: Vec<Node> = lhs.named_children(&mut cursor).collect();
+        if named.len() != 1 {
+            return false;
+        }
+        lhs = named[0];
+    }
+    match lhs.kind() {
+        "pointer_expression" | "unary_expression" => lhs
+            .child_by_field_name("operator")
+            .is_some_and(|op| op.kind() == "*"),
+        "subscript_expression"
+        | "subscript"
+        | "index_expression"
+        | "array_access"
+        | "element_reference" => true,
+        _ => false,
+    }
+}
+
+/// Names a C / C++ / Go / Java function declares itself: parameters
+/// (including receivers and named results) and local declarations in any
+/// nested scope.  Over-approximate on purpose: a name counted as local here
+/// keeps its resource tracking.
+fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut HashSet<String>) {
+    fn push_text(n: Node, code: &[u8], out: &mut HashSet<String>) {
+        if let Some(t) = text_of(n, code) {
+            out.insert(t);
+        }
+    }
+    fn push_identifiers(n: Node, code: &[u8], out: &mut HashSet<String>) {
+        if n.kind() == "identifier" {
+            push_text(n, code, out);
+            return;
+        }
+        let mut cursor = n.walk();
+        for c in n.named_children(&mut cursor) {
+            if c.kind() == "identifier" {
+                push_text(c, code, out);
+            }
+        }
+    }
+    fn c_declarator_names(mut d: Node, code: &[u8], out: &mut HashSet<String>) {
+        for _ in 0..16 {
+            match d.kind() {
+                "identifier" | "field_identifier" => {
+                    push_text(d, code, out);
+                    return;
+                }
+                "structured_binding_declarator" => {
+                    push_identifiers(d, code, out);
+                    return;
+                }
+                "init_declarator"
+                | "pointer_declarator"
+                | "array_declarator"
+                | "reference_declarator"
+                | "attributed_declarator"
+                | "function_declarator"
+                | "parenthesized_declarator" => {
+                    let next = d.child_by_field_name("declarator").or_else(|| {
+                        let mut cursor = d.walk();
+                        d.named_children(&mut cursor).next()
+                    });
+                    match next {
+                        Some(x) => d = x,
+                        None => return,
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
+    match (lang, n.kind()) {
+        (
+            "c" | "cpp",
+            "declaration"
+            | "parameter_declaration"
+            | "optional_parameter_declaration"
+            | "variadic_parameter_declaration"
+            | "for_range_loop",
+        ) => {
+            // A function-scope `static` outlives every call, like a global.
+            let mut cursor = n.walk();
+            let is_static = n.children(&mut cursor).any(|c| {
+                c.kind() == "storage_class_specifier"
+                    && text_of(c, code).is_some_and(|t| t == "static")
+            });
+            if !is_static {
+                let mut cursor = n.walk();
+                for d in n.children_by_field_name("declarator", &mut cursor) {
+                    c_declarator_names(d, code, out);
+                }
+            }
+        }
+        ("go", "short_var_declaration" | "range_clause" | "receive_statement") => {
+            if let Some(left) = n.child_by_field_name("left") {
+                push_identifiers(left, code, out);
+            }
+        }
+        ("go", "type_switch_statement") => {
+            if let Some(alias) = n.child_by_field_name("alias") {
+                push_identifiers(alias, code, out);
+            }
+        }
+        (
+            "go",
+            "var_spec" | "const_spec" | "parameter_declaration" | "variadic_parameter_declaration",
+        ) => {
+            let mut cursor = n.walk();
+            for name in n.children_by_field_name("name", &mut cursor) {
+                push_text(name, code, out);
+            }
+        }
+        (
+            "java",
+            "variable_declarator"
+            | "formal_parameter"
+            | "catch_formal_parameter"
+            | "enhanced_for_statement"
+            | "resource",
+        ) => {
+            if let Some(name) = n.child_by_field_name("name") {
+                push_text(name, code, out);
+            }
+        }
+        ("java", "inferred_parameters") => push_identifiers(n, code, out),
+        ("java", "lambda_expression") => {
+            if let Some(p) = n.child_by_field_name("parameters")
+                && p.kind() == "identifier"
+            {
+                push_text(p, code, out);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = n.walk();
+    for c in n.children(&mut cursor) {
+        collect_local_decl_names(c, lang, code, out);
+    }
+}
+
+/// Flag nodes of a C / C++ / Go / Java body that assign a name the function
+/// never declares (a global, package variable or unqualified field).  See
+/// [`NodeInfo::escaping_store`].
+fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], params: &[String]) {
+    if !matches!(lang, "c" | "cpp" | "go" | "java") {
+        return;
+    }
+    let mut locals: HashSet<String> = params.iter().cloned().collect();
+    collect_local_decl_names(func, lang, code, &mut locals);
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        let Some(def) = info.taint.defines.as_deref() else {
+            continue;
+        };
+        let plain_ident = !def.is_empty()
+            && !def.starts_with("__")
+            && def != "_"
+            && def.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if plain_ident && !locals.contains(def) {
+            info.escaping_store = true;
+        }
+    }
+}
+
+/// Mark the CFG node built from the tail statement of a Ruby method body as
+/// the method's implicit return value.  Only a plain value expression
+/// qualifies (a variable, a call, a literal container); control flow
+/// (`if` / `case` / `begin`), assignments and explicit `return` keep their
+/// own semantics.  The node is matched by span so only the node that
+/// evaluates the whole statement is marked.
+fn mark_ruby_implicit_return(
+    g: &mut Cfg,
+    stmt: Node,
+    exits: &[NodeIndex],
+    lang: &str,
+    code: &[u8],
+) {
+    if !matches!(
+        lookup(lang, stmt.kind()),
+        Kind::CallFn | Kind::CallMethod | Kind::CallWrapper | Kind::Other
+    ) || matches!(
+        stmt.kind(),
+        "assignment" | "operator_assignment" | "return" | "comment"
+    ) {
+        return;
+    }
+    let span = (stmt.start_byte(), stmt.end_byte());
+    let escapes = helpers::collect_value_escapes(stmt, lang, code);
+    if escapes.idents.is_empty() && escapes.call_callees.is_empty() {
+        return;
+    }
+    for &idx in exits {
+        let info = &mut g[idx];
+        if info.ast.span == span && matches!(info.kind, StmtKind::Seq | StmtKind::Call) {
+            info.implicit_return = true;
+            info.returned_idents = escapes.idents.clone();
+            info.returned_call_callees = escapes.call_callees.clone();
+        }
+    }
+}
+
 //    The recursive *work‑horse* that converts an AST node into a CFG slice.
 //    Returns the set of *exit* nodes that need to be wired further.
 #[allow(clippy::too_many_arguments)]
@@ -8440,6 +8902,24 @@ pub(super) fn build_sub<'a>(
                 }
             }
 
+            // Ruby methods return the value of their last statement.  Note it
+            // so the resource passes can see `def open_log(p) File.open(p) end`
+            // and `f = File.open(p); f` hand the handle to the caller.
+            let ruby_tail_stmt = if lang == "ruby"
+                && ast.kind() == "body_statement"
+                && ast
+                    .parent()
+                    .is_some_and(|p| matches!(p.kind(), "method" | "singleton_method"))
+            {
+                let mut c = ast.walk();
+                ast.named_children(&mut c)
+                    .filter(|n| n.kind() != "comment")
+                    .last()
+                    .map(|n| n.id())
+            } else {
+                None
+            };
+
             let mut cursor = ast.walk();
             let mut frontier = preds.to_vec();
             // With per-body CFGs, function definitions become placeholder
@@ -8487,6 +8967,10 @@ pub(super) fn build_sub<'a>(
                             g[idx].in_defer = true;
                         }
                     }
+                }
+
+                if ruby_tail_stmt == Some(child.id()) {
+                    mark_ruby_implicit_return(g, child, &child_exits, lang, code);
                 }
 
                 let is_preproc = child.kind().starts_with("preproc_");
@@ -8807,6 +9291,9 @@ pub(super) fn build_sub<'a>(
                     kind: fn_kind,
                 },
             );
+
+            // ── 5b) Flag assignments to names this body never declares ───────
+            mark_nonlocal_defines(&mut fn_graph, ast, lang, code, &param_names);
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let auth_decorators = extract_auth_decorators(ast, lang, code);

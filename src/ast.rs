@@ -22,7 +22,7 @@
 #![allow(clippy::only_used_in_recursion, clippy::type_complexity)]
 
 use crate::auth_analysis;
-use crate::cfg::{Cfg, FileCfg, FuncSummaries, build_cfg, export_summaries};
+use crate::cfg::{BodyId, Cfg, FileCfg, FuncSummaries, build_cfg, export_summaries};
 use crate::cfg_analysis;
 use crate::commands::scan::Diag;
 use crate::errors::{NyxError, NyxResult};
@@ -846,14 +846,34 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().filter(|b| **b == 0).count() * 100 / bytes.len().max(1) > 1
 }
 
+/// The part of `path` that names the file inside the scan, for the
+/// path-shape classifiers ([`is_test_file`], [`is_nonprod_path`],
+/// [`is_vendored_asset_path`]).  Directories above the scan root say
+/// nothing about the code: a checkout under `/opt/build/repo` or
+/// `~/test/app` is not build or test code.
+///
+/// * `path` under `scan_root`: the remainder after the root.
+/// * `path` equal to `scan_root` (single-file scan), or no scan root
+///   (single-file API): the file name alone.
+/// * `path` outside `scan_root`: `path` unchanged.
+fn scan_relative_path<'p>(path: &'p Path, scan_root: Option<&Path>) -> &'p Path {
+    let file_name_only = || path.file_name().map(Path::new).unwrap_or(path);
+    match scan_root.map(|root| path.strip_prefix(root)) {
+        Some(Ok(rel)) if !rel.as_os_str().is_empty() => rel,
+        Some(Ok(_)) | None => file_name_only(),
+        Some(Err(_)) => path,
+    }
+}
+
 /// Check if a file path indicates a test file. Matches filename-based
 /// conventions across the languages the engine supports, plus the
 /// `__tests__` directory convention used by JS/TS tooling.
 ///
-/// Directory-only checks (`test/`, `tests/`, `fixtures/`) are
-/// intentionally excluded because they are too broad when scanning
-/// absolute paths.  Severity-downgrade for those directories lives in
-/// [`is_nonprod_path`].
+/// Directory-only checks (`test/`, `tests/`, `fixtures/`, `spec/`) are
+/// intentionally excluded: some real codebases ship production modules
+/// under such directories (django apps with a `tests` submodule next to
+/// production code in the same package).  Severity downgrade for those
+/// directories lives in [`is_nonprod_path`].
 pub(crate) fn is_test_file(path: &Path) -> bool {
     // Filename-suffix conventions that are unambiguous markers of a test
     // module.  Each entry must end with a `.<ext>` suffix so PHP
@@ -1038,9 +1058,91 @@ fn is_test_suppressible_pattern(id: &str) -> bool {
         || id.ends_with(".transport.fetch_http")
 }
 
+/// Directory components of `path` (the file name itself excluded).
+fn dir_components(path: &Path) -> impl Iterator<Item = &str> {
+    path.parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+}
+
+/// RSpec / Jasmine and Cucumber test trees.
+///
+/// * `spec/` holds RSpec specs and their `spec/support` helpers in Ruby,
+///   and Jasmine specs in JS/TS.  Other languages ship production
+///   packages named `spec` (Go OCI and OpenAPI spec code), so the
+///   directory only counts for Ruby and JS/TS files.
+/// * Cucumber keeps Ruby step definitions and hooks under
+///   `features/step_definitions` and `features/support`.  A bare
+///   `features/` is a common production layout in JS/TS
+///   (`app/javascript/mastodon/features/`), so only those two
+///   subdirectories count.
+fn is_spec_tree_path(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ruby = ext == "rb";
+    let js_ts = matches!(
+        ext.as_str(),
+        "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts"
+    );
+    if !(ruby || js_ts) {
+        return false;
+    }
+    let dirs: Vec<&str> = dir_components(path).collect();
+    if dirs.contains(&"spec") {
+        return true;
+    }
+    ruby && dirs
+        .windows(2)
+        .any(|w| w[0] == "features" && matches!(w[1], "step_definitions" | "support"))
+}
+
+/// Test-support code that is not itself a test module: helpers under
+/// test directories and PHPUnit base classes, traits and helpers
+/// (`FieldTestBase.php`, `TestFileCreationTrait.php`, `GLPITestCase.php`).
+///
+/// Only used to skip [`is_test_suppressible_pattern`] rules, which are
+/// informational in test code.  Severity downgrade goes through
+/// [`is_nonprod_path`].
+fn is_test_support_path(path: &Path) -> bool {
+    static TEST_SUPPORT_DIRS: &[&str] = &[
+        "tests",
+        "test",
+        "__tests__",
+        "testing",
+        "fixtures",
+        "__fixtures__",
+        "js_tests",
+    ];
+    static PHP_TEST_SUPPORT_SUFFIXES: &[&str] = &[
+        "TestBase.php",
+        "TestCase.php",
+        "TestTrait.php",
+        "TestHelper.php",
+    ];
+
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && PHP_TEST_SUPPORT_SUFFIXES.iter().any(|s| name.ends_with(s))
+    {
+        return true;
+    }
+    dir_components(path).any(|d| TEST_SUPPORT_DIRS.contains(&d)) || is_spec_tree_path(path)
+}
+
 /// Check if a file path belongs to a non-production context (tests, vendor,
 /// benchmarks, etc.).  Used to downgrade severity for findings in paths that
-/// are unlikely to represent attack surface.
+/// are unlikely to represent attack surface.  `path` must be relative to the
+/// scan root (see [`scan_relative_path`]).
+///
+/// Test modules count by file name ([`is_test_file`]: `_test.go`,
+/// `_spec.rb`, `*.test.ts`, ...) as well as by directory, so the policy
+/// does not depend on where a project keeps its tests.
 fn is_nonprod_path(path: &Path) -> bool {
     static NONPROD_DIRS: &[&str] = &[
         "tests",
@@ -1073,7 +1175,7 @@ fn is_nonprod_path(path: &Path) -> bool {
         }
     }
 
-    false
+    is_test_file(path) || is_spec_tree_path(path)
 }
 
 /// Normalize a callee description for display.
@@ -1114,6 +1216,10 @@ struct ParsedSource<'a> {
     lang_slug: &'static str,
     bytes: &'a [u8],
     path: &'a Path,
+    /// `path` relative to the scan root (see [`scan_relative_path`]).  The
+    /// path-shape classifiers (test file, non-production, vendored asset)
+    /// read this one.
+    rel_path: &'a Path,
     file_path_str: Cow<'a, str>,
     /// Registers `bytes` as this thread's validated source (once, on parse) so
     /// node-text extraction can slice the pre-validated bytes as `&str` instead
@@ -1130,12 +1236,17 @@ impl<'a> ParsedSource<'a> {
     /// [`ScannerConfig::max_file_size_mb`]; the timeout check here defends
     /// against hostile inputs (pathological grammar ambiguities) that could
     /// tie up a worker indefinitely even for files within the size cap.
-    fn try_new(bytes: &'a [u8], path: &'a Path) -> NyxResult<Option<Self>> {
+    fn try_new(
+        bytes: &'a [u8],
+        path: &'a Path,
+        scan_root: Option<&Path>,
+    ) -> NyxResult<Option<Self>> {
         // Clear any stale parse-timeout signal from a prior `try_new` on
         // this thread that the caller did not consume.  Ensures the slot
         // always reflects "this parse" by the time we return.
         LAST_PARSE_TIMEOUT_MS.with(|c| c.set(None));
-        if is_vendored_asset_path(path) {
+        let rel_path = scan_relative_path(path, scan_root);
+        if is_vendored_asset_path(rel_path) {
             return Ok(None);
         }
         if is_binary(bytes) {
@@ -1191,6 +1302,7 @@ impl<'a> ParsedSource<'a> {
             lang_slug,
             bytes,
             path,
+            rel_path,
             file_path_str,
             _valid_source,
         }))
@@ -1201,7 +1313,7 @@ impl<'a> ParsedSource<'a> {
         let root = self.tree.root_node();
         let mut cursor = QueryCursor::new();
         let mut out = Vec::new();
-        let in_test_file = is_test_file(self.path);
+        let in_test_file = is_test_file(self.rel_path) || is_test_support_path(self.rel_path);
 
         // Fast path: one combined multi-pattern query walks the AST ONCE for
         // all rules, instead of the legacy loop's one full tree walk per rule
@@ -1659,6 +1771,15 @@ impl<'a> ParsedSource<'a> {
         })
     }
 
+    /// Whether auth-analysis findings are reported for this file.  Go
+    /// never links `_test.go` files into a non-test build, so no request
+    /// can reach a function defined in one and the auth rules (a handler
+    /// missing an authorization step) have nothing to report there.
+    /// `--keep-nonprod-severity` keeps them.
+    fn reports_auth_findings(&self, cfg: &Config) -> bool {
+        cfg.scanner.include_nonprod || !(self.lang_slug == "go" && is_test_file(self.rel_path))
+    }
+
     /// Sort, dedup, and optionally downgrade severity for non-production paths.
     ///
     /// Dedup key matches the `issues` table PRIMARY KEY `(file_id, rule_id,
@@ -1674,7 +1795,11 @@ impl<'a> ParsedSource<'a> {
         });
         out.dedup_by(|a, b| a.line == b.line && a.col == b.col && a.id == b.id);
 
-        if !cfg.scanner.include_nonprod && is_nonprod_path(self.path) {
+        // Classified on the file under analysis, not on each diag's own
+        // path: a flow that starts in a test file keeps this file's
+        // downgrade even when its primary location was promoted to the
+        // callee's sink in a production file.
+        if !cfg.scanner.include_nonprod && is_nonprod_path(self.rel_path) {
             for d in out.iter_mut() {
                 d.severity = downgrade_severity(d.severity);
             }
@@ -2165,6 +2290,7 @@ impl<'a> ParsedFile<'a> {
         let closure_released_per_body =
             state::collect_closure_released_var_names(&self.file_cfg.bodies, caller_lang);
         let empty_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let module_constants = cfg_analysis::module_constant_names(&self.file_cfg.bodies);
         for body in &self.file_cfg.bodies {
             let body_taint: Vec<_> = taint_results
                 .iter()
@@ -2172,6 +2298,18 @@ impl<'a> ParsedFile<'a> {
                 .cloned()
                 .collect();
             let body_const_facts = self.body_const_facts(body);
+            // Parameters a closure or nested function can read from the
+            // functions around it (the top-level body has none).
+            let mut captured_params: Vec<String> = Vec::new();
+            let mut parent = body.meta.parent_body_id;
+            while let Some(pid) = parent {
+                let outer = self.file_cfg.body(pid);
+                if outer.meta.kind == crate::cfg::BodyKind::TopLevel {
+                    break;
+                }
+                captured_params.extend(outer.meta.params.iter().cloned());
+                parent = outer.meta.parent_body_id;
+            }
             let cfg_ctx = cfg_analysis::AnalysisContext {
                 cfg: &body.graph,
                 entry: body.entry,
@@ -2192,6 +2330,9 @@ impl<'a> ParsedFile<'a> {
                         .unwrap_or(&empty_set),
                 ),
                 class_constant_scalars: Some(&self.file_cfg.class_constant_scalars),
+                body_params: &body.meta.params,
+                captured_params: &captured_params,
+                module_constants: Some(&module_constants),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
                 // Layer C4 mirror at the CFG-emission point: Python
@@ -2410,6 +2551,9 @@ impl<'a> ParsedFile<'a> {
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
     ) -> Vec<Diag> {
+        if !self.source.reports_auth_findings(cfg) {
+            return Vec::new();
+        }
         // Harvest SSA-derived variable types across every body in the
         // file so `run_auth_analysis` can refine sink classification by
         // receiver type (e.g. `HttpClient::send` → `OutboundNetwork`,
@@ -2485,7 +2629,7 @@ pub fn extract_summaries_from_bytes(
     cfg: &Config,
 ) -> NyxResult<Vec<FuncSummary>> {
     let _span = tracing::debug_span!("extract_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, None)? else {
         return Ok(vec![]);
     };
     let parsed = ParsedFile::from_source(source, cfg);
@@ -2501,7 +2645,7 @@ pub fn extract_summaries_from_bytes_with_root(
     scan_root: Option<&Path>,
 ) -> NyxResult<Vec<FuncSummary>> {
     let _span = tracing::debug_span!("extract_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         return Ok(vec![]);
     };
     let parsed = ParsedFile::from_source(source, cfg);
@@ -2523,7 +2667,7 @@ pub fn extract_summaries_from_file(path: &Path, cfg: &Config) -> NyxResult<Vec<F
 /// Intended for benchmarks and isolated testing of state analysis.
 pub fn build_cfg_for_file(path: &Path, cfg: &Config) -> NyxResult<Option<(FileCfg, Lang)>> {
     let bytes = std::fs::read(path)?;
-    let Some(source) = ParsedSource::try_new(&bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(&bytes, path, None)? else {
         return Ok(None);
     };
     let lang = Lang::from_slug(source.lang_slug).unwrap_or(Lang::C);
@@ -2540,7 +2684,7 @@ pub fn build_cfg_for_file(path: &Path, cfg: &Config) -> NyxResult<Option<(FileCf
 /// files / unsupported languages.
 #[doc(hidden)]
 pub fn bench_run_ast_queries(bytes: &[u8], path: &Path, cfg: &Config) -> Vec<Diag> {
-    match ParsedSource::try_new(bytes, path) {
+    match ParsedSource::try_new(bytes, path, None) {
         Ok(Some(source)) => source.run_ast_queries(cfg),
         _ => Vec::new(),
     }
@@ -2555,7 +2699,7 @@ pub fn bench_run_ast_queries(bytes: &[u8], path: &Path, cfg: &Config) -> Vec<Dia
 /// unsupported files.
 #[doc(hidden)]
 pub fn bench_node_text_walk(bytes: &[u8], path: &Path) -> usize {
-    let Ok(Some(source)) = ParsedSource::try_new(bytes, path) else {
+    let Ok(Some(source)) = ParsedSource::try_new(bytes, path, None) else {
         return 0;
     };
     fn walk(n: tree_sitter::Node, code: &[u8], total: &mut usize) {
@@ -2583,7 +2727,7 @@ pub fn extract_auth_model_for_debug(
     cfg: &Config,
 ) -> NyxResult<Option<auth_analysis::model::AuthorizationModel>> {
     let bytes = std::fs::read(path)?;
-    let Some(source) = ParsedSource::try_new(&bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(&bytes, path, None)? else {
         return Ok(None);
     };
     let rules = auth_analysis::config::build_auth_rules(cfg, source.lang_slug);
@@ -2623,7 +2767,7 @@ pub fn perf_stage_breakdown_fused(
 ) -> Option<([u128; 8], [u128; 7])> {
     use std::time::Instant;
     let s_parse = Instant::now();
-    let source = ParsedSource::try_new(bytes, path).ok()??;
+    let source = ParsedSource::try_new(bytes, path, scan_root).ok()??;
     let parsed = ParsedFile::from_source(source, cfg);
     let t_parse_cfg = s_parse.elapsed().as_micros();
 
@@ -2656,8 +2800,7 @@ pub fn perf_stage_breakdown_fused(
     let t_ast = s_ast.elapsed().as_micros();
 
     let s_suppr = Instant::now();
-    let suppression =
-        TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &taint_diags);
+    let suppression = TaintSuppressionCtx::build(&parsed, &taint_diags);
     let _filtered: Vec<_> = ast_findings
         .into_iter()
         .filter(|d| {
@@ -2706,7 +2849,7 @@ pub fn perf_stage_breakdown(
 ) -> Option<[u128; 6]> {
     use std::time::Instant;
     let s_parse = Instant::now();
-    let source = ParsedSource::try_new(bytes, path).ok()??;
+    let source = ParsedSource::try_new(bytes, path, scan_root).ok()??;
     let parsed = ParsedFile::from_source(source, cfg);
     let t_parse_cfg = s_parse.elapsed().as_micros();
 
@@ -2715,7 +2858,7 @@ pub fn perf_stage_breakdown(
     let t_taint = s_taint.elapsed().as_micros();
 
     let s_suppr = Instant::now();
-    let _ = TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &taint);
+    let _ = TaintSuppressionCtx::build(&parsed, &taint);
     let t_suppr = s_suppr.elapsed().as_micros();
 
     let s_ast = Instant::now();
@@ -2762,7 +2905,7 @@ pub fn extract_all_summaries_from_bytes(
     Option<(String, auth_analysis::router_facts::PerFileRouterFacts)>,
 )> {
     let _span = tracing::debug_span!("extract_all_summaries", file = %path.display()).entered();
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         return Ok((vec![], vec![], vec![], vec![], None, vec![], None));
     };
     let lang_slug = source.lang_slug;
@@ -6572,56 +6715,60 @@ fn pattern_category_cap(pattern_id: &str) -> Option<Cap> {
 /// Suppression context built from CFG + taint results. Used to decide whether
 /// an AST pattern finding can be safely suppressed because taint analysis
 /// evaluated the data flow and found it safe.
+///
+/// Evidence is kept per CFG body ([`crate::cfg::BodyId`]), not per function
+/// name: two `get` methods in different classes are different scopes, and a
+/// flow the engine tracked in one says nothing about the other.  Evidence
+/// that clears a flow (sanitizers, taint findings) also has to match the
+/// pattern's capability: an `html.escape` or a SQL finding in the same
+/// function does not show that the engine evaluated an `os.system` call.
 struct TaintSuppressionCtx {
-    /// For each function scope, the set of lines containing Source-labeled nodes.
-    source_lines_by_func: HashMap<Option<String>, HashSet<usize>>,
-    /// For each function scope, the set of lines containing Sanitizer-labeled
-    /// nodes.  Presence of an explicit sanitizer is the structural signal
-    /// that taint analysis successfully evaluated (and cleared) the flow,
-    /// so AST-pattern suppression is safe even when no taint findings
-    /// fired in the function.
-    sanitizer_lines_by_func: HashMap<Option<String>, HashSet<usize>>,
-    /// For each sink node line, its enclosing function scope.
-    sink_func_at_line: HashMap<usize, Option<String>>,
+    /// For each body, the lines containing Source-labeled nodes.
+    source_lines_by_body: HashMap<BodyId, HashSet<usize>>,
+    /// For each body, the union of the caps its Sanitizer-labeled nodes
+    /// clear.  An explicit sanitizer for the pattern's cap is the structural
+    /// signal that taint analysis evaluated (and cleared) the flow, so
+    /// AST-pattern suppression is safe even when no taint findings fired in
+    /// the body.
+    sanitizer_caps_by_body: HashMap<BodyId, Cap>,
+    /// For each line, the bodies with a Sink-labeled node on it.  More than
+    /// one body when a closure sits on the same line as its parent's sink.
+    sink_bodies_at_line: HashMap<usize, Vec<BodyId>>,
     /// Lines where taint emitted a `taint-unsanitised-flow` finding.
     taint_finding_lines: HashSet<usize>,
-    /// Per-function set of taint-finding lines.  Used by Condition 4 of
-    /// [`should_suppress`] alongside [`sanitizer_lines_by_func`] to
-    /// distinguish "taint proved safe" from "taint failed to track".
-    taint_finding_lines_by_func: HashMap<Option<String>, HashSet<usize>>,
-    /// Functions where the SSA engine emitted at least one
-    /// `all_validated` event, every tainted input to *some* sink in
-    /// the function passed through a recognised validation/
-    /// sanitisation predicate.  Drained from
+    /// For each body, the union of the sink caps of its
+    /// `taint-unsanitised-flow` findings.  Used by Condition 4 of
+    /// [`Self::should_suppress`] to distinguish "taint proved safe" from
+    /// "taint failed to track".
+    taint_finding_caps_by_body: HashMap<BodyId, Cap>,
+    /// Sink lines where the SSA engine emitted an `all_validated` event:
+    /// every tainted input to that sink passed through a recognised
+    /// validation/sanitisation predicate.  Drained from
     /// `take_all_validated_spans`; positive evidence that the engine
-    /// reached a sink in this function and proved safety, even when no
-    /// `taint-unsanitised-flow` finding fired and no Sanitizer label
-    /// is present.  Covers validation, dominator-based pruning,
-    /// early-return guards, type-check predicates, and interprocedural
-    /// sanitiser wrappers, all of which legitimately clear taint via
-    /// SSA branch-narrowing rather than a labelled sanitiser node.
-    engine_validated_funcs: HashSet<Option<String>>,
-    /// Functions where some Source's defining variable is later
-    /// rebound to a literal RHS (carries `TaintMeta.const_text`) in
-    /// the same scope, with no Source label on the rebinding node.
-    /// Positive evidence that the engine's SSA renaming structurally
-    /// kills the source's taint before any sink can read it, covers
-    /// `cmd = getenv(); cmd = "echo hello"; system(cmd)` patterns
-    /// where the rebind is what makes the code safe but the engine
-    /// has no `Sanitizer` label or `taint-unsanitised-flow` finding to
-    /// witness it.
-    source_killed_funcs: HashSet<Option<String>>,
-    /// Functions that call a same-file helper which itself contains a
-    /// labelled Sanitizer node.  Positive evidence that the engine's
-    /// interprocedural analysis cleared the flow through a
-    /// user-defined wrapper (e.g. `def sanitize(s): return
-    /// shlex.quote(s)`).  The current per-function `Sanitizer` check
-    /// only sees direct sanitisers in the *caller's* scope, without
-    /// this signal, every helper-wrapped sanitiser fires as an
-    /// AST-pattern FP because the engine cleared the value via Phase
-    /// 11 inline analysis but the sink's enclosing scope has no
-    /// labelled Sanitizer of its own.
-    interproc_sanitizer_callers: HashSet<Option<String>>,
+    /// reached this sink and proved safety, even when no
+    /// `taint-unsanitised-flow` finding fired and no Sanitizer label is
+    /// present.  Covers validation, dominator-based pruning, early-return
+    /// guards, type-check predicates, and interprocedural sanitiser
+    /// wrappers, all of which legitimately clear taint via SSA
+    /// branch-narrowing rather than a labelled sanitiser node.
+    engine_validated_lines: HashSet<usize>,
+    /// Bodies where some Source's defining variable is later rebound to a
+    /// literal RHS (carries `TaintMeta.const_text`) in the same scope, with
+    /// no Source label on the rebinding node.  Positive evidence that the
+    /// engine's SSA renaming structurally kills the source's taint before
+    /// any sink can read it, covers `cmd = getenv(); cmd = "echo hello";
+    /// system(cmd)` patterns where the rebind is what makes the code safe
+    /// but the engine has no `Sanitizer` label or `taint-unsanitised-flow`
+    /// finding to witness it.
+    source_killed_bodies: HashSet<BodyId>,
+    /// For each body, the union of the sanitizer caps of the same-file
+    /// helpers it calls (helpers whose own body contains a labelled
+    /// Sanitizer).  Positive evidence that the engine's interprocedural
+    /// analysis cleared the flow through a user-defined wrapper (e.g.
+    /// `def sanitize(s): return shlex.quote(s)`): the engine cleared the
+    /// value via Phase 11 inline analysis but the sink's own body has no
+    /// labelled Sanitizer.
+    interproc_sanitizer_caps_by_body: HashMap<BodyId, Cap>,
     /// Union of resolved sink-cap bits for cap-specific taint findings at
     /// each line.  Used by [`Self::is_redundant_ast_pattern`] to drop an
     /// AST-pattern finding only when the flow engine already emitted a
@@ -6638,43 +6785,70 @@ impl TaintSuppressionCtx {
     ///
     /// Scans every body's graph (not just top-level) so that Source/Sink
     /// nodes inside function bodies are visible for suppression decisions.
-    fn build(file_cfg: &FileCfg, tree: &tree_sitter::Tree, taint_diags: &[Diag]) -> Self {
-        let mut source_lines_by_func: HashMap<Option<String>, HashSet<usize>> = HashMap::new();
-        let mut sanitizer_lines_by_func: HashMap<Option<String>, HashSet<usize>> = HashMap::new();
-        let mut sink_func_at_line: HashMap<usize, Option<String>> = HashMap::new();
-        // Per-function (var_name, source_line) pairs for Source nodes whose
+    /// Only diags located in this file count: a finding whose primary
+    /// location was promoted to a sink in another file carries that file's
+    /// line numbers.
+    fn build(parsed: &ParsedFile, taint_diags: &[Diag]) -> Self {
+        let file_cfg = &parsed.file_cfg;
+        let tree = &parsed.source.tree;
+        let file_path: &str = &parsed.source.file_path_str;
+        let lang = parsed.source.lang_slug;
+        let extra = parsed.rules_ref().map(|r| r.extra_labels.as_slice());
+        // Same-file functions answer for themselves through
+        // `sanitizer_funcs`; only other callees are classified by label.
+        let local_fn_names: HashSet<&str> = file_cfg
+            .bodies
+            .iter()
+            .filter_map(|b| b.meta.name.as_deref())
+            .collect();
+        let mut source_lines_by_body: HashMap<BodyId, HashSet<usize>> = HashMap::new();
+        let mut sanitizer_caps_by_body: HashMap<BodyId, Cap> = HashMap::new();
+        let mut sink_bodies_at_line: HashMap<usize, Vec<BodyId>> = HashMap::new();
+        // Per-body (var_name, source_line) pairs for Source nodes whose
         // `defines` is set.  Used below to detect SSA source kills via
         // const reassignment (`cmd = getenv(); cmd = "echo hello"`).
-        let mut source_var_defs_by_func: HashMap<Option<String>, Vec<(String, usize)>> =
-            HashMap::new();
-        // Per-function (var_name, line) pairs for nodes that bind a
-        // variable to a literal RHS (carry `TaintMeta.const_text`).
-        // Used to match against `source_var_defs_by_func` for kill
-        // detection.
-        let mut const_def_var_by_func: HashMap<Option<String>, Vec<(String, usize)>> =
-            HashMap::new();
-        // Set of `enclosing_func` names whose body contains at least
-        // one labelled Sanitizer.  These are user-defined sanitiser
-        // wrappers callable from other functions in the same file
-        // (e.g. `def sanitize(s): return shlex.quote(s)`).
-        let mut sanitizer_funcs: HashSet<String> = HashSet::new();
-        // Per-function set of bare callee names invoked from this
-        // function's body.  Bare = last `.`-separated segment, so
-        // `this.sanitize`, `obj.sanitize`, and `sanitize` all collapse
-        // to the same key for matching against `sanitizer_funcs`.
-        let mut callees_by_func: HashMap<Option<String>, HashSet<String>> = HashMap::new();
+        let mut source_var_defs_by_body: HashMap<BodyId, Vec<(String, usize)>> = HashMap::new();
+        // Per-body (var_name, line) pairs for nodes that bind a variable to
+        // a literal RHS (carry `TaintMeta.const_text`).  Used to match
+        // against `source_var_defs_by_body` for kill detection.
+        let mut const_def_var_by_body: HashMap<BodyId, Vec<(String, usize)>> = HashMap::new();
+        // Sanitizer caps of each named function body.  These are
+        // user-defined sanitiser wrappers callable from other functions in
+        // the same file (e.g. `def sanitize(s): return shlex.quote(s)`).
+        // Keyed by name because that is all a call site has to match on.
+        let mut sanitizer_funcs: HashMap<String, Cap> = HashMap::new();
+        // Per-body set of bare callee names invoked from the body.  Bare =
+        // last `.`-separated segment, so `this.sanitize`, `obj.sanitize`,
+        // and `sanitize` all collapse to the same key for matching against
+        // `sanitizer_funcs`.
+        let mut callees_by_body: HashMap<BodyId, HashSet<String>> = HashMap::new();
 
         for body in &file_cfg.bodies {
+            let body_id = body.meta.id;
             for idx in body.graph.node_indices() {
                 let info = &body.graph[idx];
                 let mut has_source = false;
                 let mut has_sink = false;
-                let mut has_sanitizer = false;
+                let mut sanitizer_caps = Cap::empty();
                 for label in &info.taint.labels {
                     match label {
                         DataLabel::Source(_) => has_source = true,
                         DataLabel::Sink(_) => has_sink = true,
-                        DataLabel::Sanitizer(_) => has_sanitizer = true,
+                        DataLabel::Sanitizer(caps) => sanitizer_caps |= *caps,
+                    }
+                }
+                // A library sanitizer applied inline to an argument
+                // (`shell_exec('wc -l ' . escapeshellarg($f))`) has no node
+                // of its own; the taint engine subtracts its caps at the
+                // call, so it is the same evidence as a labelled node.
+                for callee in info.arg_callees.iter().flatten() {
+                    if local_fn_names.contains(crate::labels::bare_method_name(callee)) {
+                        continue;
+                    }
+                    for label in crate::labels::classify_all(lang, callee, extra) {
+                        if let DataLabel::Sanitizer(caps) = label {
+                            sanitizer_caps |= caps;
+                        }
                     }
                 }
                 // Skip synthetic source nodes emitted by `pre_emit_arg_source_nodes`
@@ -6696,28 +6870,29 @@ impl TaintSuppressionCtx {
                 let point = byte_offset_to_point(tree, byte);
                 let line = point.row + 1;
                 if has_source && !is_synth_source {
-                    source_lines_by_func
-                        .entry(info.ast.enclosing_func.clone())
+                    source_lines_by_body
+                        .entry(body_id)
                         .or_default()
                         .insert(line);
                     if let Some(var) = info.taint.defines.as_deref() {
-                        source_var_defs_by_func
-                            .entry(info.ast.enclosing_func.clone())
+                        source_var_defs_by_body
+                            .entry(body_id)
                             .or_default()
                             .push((var.to_string(), line));
                     }
                 }
-                if has_sanitizer {
-                    sanitizer_lines_by_func
-                        .entry(info.ast.enclosing_func.clone())
-                        .or_default()
-                        .insert(line);
+                if !sanitizer_caps.is_empty() {
+                    *sanitizer_caps_by_body.entry(body_id).or_default() |= sanitizer_caps;
                     if let Some(func_name) = info.ast.enclosing_func.as_deref() {
-                        sanitizer_funcs.insert(func_name.to_string());
+                        *sanitizer_funcs.entry(func_name.to_string()).or_default() |=
+                            sanitizer_caps;
                     }
                 }
                 if has_sink {
-                    sink_func_at_line.insert(line, info.ast.enclosing_func.clone());
+                    let bodies = sink_bodies_at_line.entry(line).or_default();
+                    if !bodies.contains(&body_id) {
+                        bodies.push(body_id);
+                    }
                 }
                 // Const-rebind detection: a node that defines a variable
                 // from a literal RHS and carries no Source label is a
@@ -6730,19 +6905,19 @@ impl TaintSuppressionCtx {
                         info.taint.const_text.as_ref(),
                     )
                 {
-                    const_def_var_by_func
-                        .entry(info.ast.enclosing_func.clone())
+                    const_def_var_by_body
+                        .entry(body_id)
                         .or_default()
                         .push((var.to_string(), line));
                 }
-                // Per-function callee inventory for interprocedural
-                // sanitiser detection.  `bare_method_name` collapses
-                // `this.sanitize` / `obj.sanitize` / `sanitize` to the
-                // same key so receiver-prefixed Java/Ruby/etc. calls
-                // match a bare-named helper definition.  Also include
-                // `arg_callees` so `println(... + sanitize(name) +
-                // ...)` recognises the inline sanitiser call buried
-                // inside the sink's argument expression.
+                // Per-body callee inventory for interprocedural sanitiser
+                // detection.  `bare_method_name` collapses `this.sanitize` /
+                // `obj.sanitize` / `sanitize` to the same key so
+                // receiver-prefixed Java/Ruby/etc. calls match a bare-named
+                // helper definition.  Also include `arg_callees` so
+                // `println(... + sanitize(name) + ...)` recognises the
+                // inline sanitiser call buried inside the sink's argument
+                // expression.
                 let bare_inserts: Vec<&str> = info
                     .call
                     .callee
@@ -6751,9 +6926,7 @@ impl TaintSuppressionCtx {
                     .chain(info.arg_callees.iter().filter_map(|c| c.as_deref()))
                     .collect();
                 if !bare_inserts.is_empty() {
-                    let entry = callees_by_func
-                        .entry(info.ast.enclosing_func.clone())
-                        .or_default();
+                    let entry = callees_by_body.entry(body_id).or_default();
                     for callee in bare_inserts {
                         let bare = crate::labels::bare_method_name(callee);
                         if !bare.is_empty() {
@@ -6764,16 +6937,16 @@ impl TaintSuppressionCtx {
             }
         }
 
-        // Source-kill detection: a function is "source-killed" when at
-        // least one of its Source-defined variables is re-bound to a
-        // literal at a later line in the same scope.  Captures
-        // `safe_reassigned`-style fixtures: the SSA engine renames the
-        // sink-read SSA value to a clean constant before any sink can
-        // observe taint, but neither a `Sanitizer` label nor a
-        // `taint-unsanitised-flow` finding fires to witness the kill.
-        let mut source_killed_funcs: HashSet<Option<String>> = HashSet::new();
-        for (func, src_defs) in &source_var_defs_by_func {
-            let Some(kills) = const_def_var_by_func.get(func) else {
+        // Source-kill detection: a body is "source-killed" when at least one
+        // of its Source-defined variables is re-bound to a literal at a
+        // later line in the same scope.  Captures `safe_reassigned`-style
+        // fixtures: the SSA engine renames the sink-read SSA value to a
+        // clean constant before any sink can observe taint, but neither a
+        // `Sanitizer` label nor a `taint-unsanitised-flow` finding fires to
+        // witness the kill.
+        let mut source_killed_bodies: HashSet<BodyId> = HashSet::new();
+        for (body, src_defs) in &source_var_defs_by_body {
+            let Some(kills) = const_def_var_by_body.get(body) else {
                 continue;
             };
             for (src_var, src_line) in src_defs {
@@ -6781,49 +6954,48 @@ impl TaintSuppressionCtx {
                     .iter()
                     .any(|(kill_var, kill_line)| kill_var == src_var && kill_line > src_line)
                 {
-                    source_killed_funcs.insert(func.clone());
+                    source_killed_bodies.insert(*body);
                     break;
                 }
             }
         }
 
-        // Interprocedural sanitiser caller detection: a function is
-        // an "interproc sanitiser caller" when its body invokes any
-        // helper whose own body contains a labelled Sanitizer.  This
-        // handles wrappers like `def sanitize(s): return
-        // shlex.quote(s)`, the engine clears taint via
-        // inline analysis, but the caller's scope has no labelled
-        // Sanitizer of its own to satisfy Condition 4(b).
-        let mut interproc_sanitizer_callers: HashSet<Option<String>> = HashSet::new();
+        // Interprocedural sanitiser callers: the caps a body can clear by
+        // calling a helper whose own body contains a labelled Sanitizer.
+        // This handles wrappers like `def sanitize(s): return
+        // shlex.quote(s)`, the engine clears taint via inline analysis, but
+        // the caller's scope has no labelled Sanitizer of its own to
+        // satisfy Condition 4(b).
+        let mut interproc_sanitizer_caps_by_body: HashMap<BodyId, Cap> = HashMap::new();
         if !sanitizer_funcs.is_empty() {
-            for (func, callees) in &callees_by_func {
-                if callees.iter().any(|c| sanitizer_funcs.contains(c)) {
-                    interproc_sanitizer_callers.insert(func.clone());
+            for (body, callees) in &callees_by_body {
+                let caps = callees
+                    .iter()
+                    .filter_map(|c| sanitizer_funcs.get(c))
+                    .fold(Cap::empty(), |acc, c| acc | *c);
+                if !caps.is_empty() {
+                    interproc_sanitizer_caps_by_body.insert(*body, caps);
                 }
             }
         }
 
-        // Drain the SSA engine's all-validated sink spans, attribute
-        // each to its enclosing function via `sink_func_at_line`, and
-        // record the function as "engine-validated".  The set was
-        // populated by `ssa_events_to_findings` whenever the engine
-        // emitted an `SsaTaintEvent { all_validated: true, .. }` ,
-        // i.e. the engine reached a sink and proved every tainted
-        // input passed validation.  This is the broadest form of
-        // engine-success evidence, covering predicate validation
-        // (`if !allowed[x]`), dominator early-return, type-check
-        // (`Atoi` / `typeof`), and interprocedural sanitiser
-        // wrappers.
-        let mut engine_validated_funcs: HashSet<Option<String>> = HashSet::new();
-        for (start, _end) in crate::taint::ssa_transfer::take_all_validated_spans() {
-            let line = byte_offset_to_point(tree, start).row + 1;
-            if let Some(func) = sink_func_at_line.get(&line) {
-                engine_validated_funcs.insert(func.clone());
-            }
-        }
+        // Drain the SSA engine's all-validated sink spans.  The set was
+        // populated by `ssa_events_to_findings` whenever the engine emitted
+        // an `SsaTaintEvent { all_validated: true, .. }`, i.e. the engine
+        // reached that sink and proved every tainted input passed
+        // validation (predicate validation such as `if !allowed[x]`,
+        // dominator early-return, type-check (`Atoi` / `typeof`), and
+        // interprocedural sanitiser wrappers).  It speaks for that sink
+        // only, so it is kept by line rather than spread over the body.
+        let engine_validated_lines: HashSet<usize> =
+            crate::taint::ssa_transfer::take_all_validated_spans()
+                .into_iter()
+                .map(|(start, _end)| byte_offset_to_point(tree, start).row + 1)
+                .collect();
 
-        let taint_finding_lines: HashSet<usize> = taint_diags
-            .iter()
+        let local_diags = || taint_diags.iter().filter(|d| d.path == file_path);
+
+        let taint_finding_lines: HashSet<usize> = local_diags()
             .filter(|d| d.id.starts_with("taint-unsanitised-flow"))
             .map(|d| d.line)
             .collect();
@@ -6836,7 +7008,7 @@ impl TaintSuppressionCtx {
         // `sqli`, etc. IDs are the canonical namespace many tests, SARIF
         // consumers, and dynamic-verification spec derivation rely on.
         let mut specific_taint_finding_caps_by_line: HashMap<usize, u32> = HashMap::new();
-        for d in taint_diags {
+        for d in local_diags() {
             if d.id.starts_with("taint-") && !d.id.starts_with("taint-unsanitised-flow") {
                 if let Some(caps) = d.evidence.as_ref().map(|e| e.sink_caps) {
                     if caps != 0 {
@@ -6848,29 +7020,26 @@ impl TaintSuppressionCtx {
             }
         }
 
-        // Per-function partition of taint findings.  Maps each finding's
-        // line to the enclosing function scope by reusing
-        // `sink_func_at_line` (the same span/function mapping the Sink-side
-        // of taint analysis populated above).
-        let mut taint_finding_lines_by_func: HashMap<Option<String>, HashSet<usize>> =
-            HashMap::new();
-        for line in &taint_finding_lines {
-            let func = sink_func_at_line.get(line).cloned().unwrap_or(None);
-            taint_finding_lines_by_func
-                .entry(func)
-                .or_default()
-                .insert(*line);
+        // Per-body sink caps of taint findings.  Maps each finding's line to
+        // the bodies with a sink on it (the same span/body mapping the
+        // Sink-side of taint analysis populated above).
+        let mut taint_finding_caps_by_body: HashMap<BodyId, Cap> = HashMap::new();
+        for d in local_diags().filter(|d| d.id.starts_with("taint-unsanitised-flow")) {
+            let caps = Cap::from_bits_truncate(d.evidence.as_ref().map_or(0, |e| e.sink_caps));
+            for body in sink_bodies_at_line.get(&d.line).into_iter().flatten() {
+                *taint_finding_caps_by_body.entry(*body).or_default() |= caps;
+            }
         }
 
         Self {
-            source_lines_by_func,
-            sanitizer_lines_by_func,
-            sink_func_at_line,
+            source_lines_by_body,
+            sanitizer_caps_by_body,
+            sink_bodies_at_line,
             taint_finding_lines,
-            taint_finding_lines_by_func,
-            engine_validated_funcs,
-            source_killed_funcs,
-            interproc_sanitizer_callers,
+            taint_finding_caps_by_body,
+            engine_validated_lines,
+            source_killed_bodies,
+            interproc_sanitizer_caps_by_body,
             specific_taint_finding_caps_by_line,
         }
     }
@@ -6898,58 +7067,67 @@ impl TaintSuppressionCtx {
     /// Returns `true` if this AST pattern finding should be suppressed.
     fn should_suppress(&self, pattern_id: &str, line: usize) -> bool {
         // Condition 1: pattern category maps to a Cap taint models
-        if pattern_category_cap(pattern_id).is_none() {
+        let Some(cap) = pattern_category_cap(pattern_id) else {
             return false;
-        }
-        // Condition 2: at least one Source exists in the same function scope
-        // at an EARLIER line (upstream in control flow). This prevents suppression
-        // when the only Source is co-located (dual-label) or downstream from the
-        // sink, since taint couldn't have evaluated a flow that doesn't exist.
-        let func = match self.sink_func_at_line.get(&line) {
-            Some(f) => f,
-            None => return false, // No CFG sink at this line, taint had no opportunity to evaluate
         };
-        match self.source_lines_by_func.get(func) {
-            Some(source_lines) => {
-                if !source_lines.iter().any(|&sl| sl < line) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
+        // No CFG sink at this line: taint had no opportunity to evaluate.
+        let Some(bodies) = self.sink_bodies_at_line.get(&line) else {
+            return false;
+        };
         // Condition 3: no taint finding at this line (taint found it safe)
         if self.taint_finding_lines.contains(&line) {
             return false;
         }
+        // When several bodies have a sink on the line we cannot tell which
+        // one the pattern matched, so every one of them has to qualify.
+        !bodies.is_empty()
+            && bodies
+                .iter()
+                .all(|body| self.body_proves_safe(*body, cap, line))
+    }
+
+    /// Conditions 2 and 4 of [`Self::should_suppress`] for one body.
+    fn body_proves_safe(&self, body: BodyId, cap: Cap, line: usize) -> bool {
+        // Condition 2: at least one Source exists in the same body at an
+        // EARLIER line (upstream in control flow). This prevents suppression
+        // when the only Source is co-located (dual-label) or downstream from
+        // the sink, since taint couldn't have evaluated a flow that doesn't
+        // exist.
+        let has_upstream_source = self
+            .source_lines_by_body
+            .get(&body)
+            .is_some_and(|lines| lines.iter().any(|&sl| sl < line));
+        if !has_upstream_source {
+            return false;
+        }
         // Condition 4: distinguish "taint proved safe" from "taint failed
         // to track".  Suppress only when there's a structural signal that
-        // taint analysis actually evaluated this flow:
-        //   (a) the function fired at least one taint-unsanitised-flow
-        //       finding (engine ran successfully and reached *some* sink),
+        // taint analysis actually evaluated a flow of the pattern's cap:
+        //   (a) the body fired a taint-unsanitised-flow finding at a sink
+        //       of the same cap (the engine ran and reached a sink of this
+        //       class),
         //       OR
-        //   (b) the function contains an explicit Sanitizer node (the
+        //   (b) the body contains an explicit Sanitizer for the cap (the
         //       canonical mechanism by which a flow is cleared, e.g.
         //       `escapeshellarg` between $_GET and `system`),
         //       OR
-        //   (c) the SSA engine emitted at least one `all_validated`
-        //       event in this function (engine reached *some* sink and
-        //       proved every tainted input was validated, covers
-        //       predicate validation, dominator early-return,
-        //       type-check predicates, and interprocedural sanitiser
-        //       wrappers that don't carry an explicit Sanitizer
-        //       label),
+        //   (c) the SSA engine emitted an `all_validated` event for the
+        //       sink on this line (it reached the sink and proved every
+        //       tainted input was validated: predicate validation,
+        //       dominator early-return, type-check predicates, and
+        //       interprocedural sanitiser wrappers that don't carry an
+        //       explicit Sanitizer label),
         //       OR
-        //   (d) the function rebinds a Source's defining variable to
-        //       a literal RHS at a later line (engine's SSA renaming
-        //       structurally kills taint before any sink reads it ,
-        //       covers `cmd = getenv(); cmd = "echo"; system(cmd)`),
+        //   (d) the body rebinds a Source's defining variable to a literal
+        //       RHS at a later line (the engine's SSA renaming structurally
+        //       kills taint before any sink reads it, covers `cmd =
+        //       getenv(); cmd = "echo"; system(cmd)`),
         //       OR
-        //   (e) the function calls a same-file helper whose body
-        //       contains a labelled Sanitizer (interprocedural
-        //       sanitiser wrapper, covers `def sanitize(s): return
-        //       shlex.quote(s)` patterns where the engine clears
-        //       taint via inline analysis but the caller's
-        //       scope has no Sanitizer label of its own).
+        //   (e) the body calls a same-file helper whose body contains a
+        //       labelled Sanitizer for the cap (interprocedural sanitiser
+        //       wrapper, covers `def sanitize(s): return shlex.quote(s)`
+        //       where the engine clears taint via inline analysis but the
+        //       caller's scope has no Sanitizer label of its own).
         //
         // When none hold, we can't distinguish silent engine failure
         // from real safety, e.g. Go points-to limitation on `&local`
@@ -6957,26 +7135,12 @@ impl TaintSuppressionCtx {
         // field-cell propagation dead, suppressing legitimate
         // AST-pattern findings on every Go CRUD handler whose Decode
         // destination is a stack-local address-of.
-        let func_has_taint_finding = self
-            .taint_finding_lines_by_func
-            .get(func)
-            .is_some_and(|s| !s.is_empty());
-        let func_has_sanitizer = self
-            .sanitizer_lines_by_func
-            .get(func)
-            .is_some_and(|s| !s.is_empty());
-        let func_engine_validated = self.engine_validated_funcs.contains(func);
-        let func_source_killed = self.source_killed_funcs.contains(func);
-        let func_interproc_sanitizer = self.interproc_sanitizer_callers.contains(func);
-        if !func_has_taint_finding
-            && !func_has_sanitizer
-            && !func_engine_validated
-            && !func_source_killed
-            && !func_interproc_sanitizer
-        {
-            return false;
-        }
-        true
+        let has = |m: &HashMap<BodyId, Cap>| m.get(&body).is_some_and(|c| c.intersects(cap));
+        has(&self.taint_finding_caps_by_body)
+            || has(&self.sanitizer_caps_by_body)
+            || self.engine_validated_lines.contains(&line)
+            || self.source_killed_bodies.contains(&body)
+            || has(&self.interproc_sanitizer_caps_by_body)
     }
 }
 
@@ -6996,7 +7160,7 @@ pub fn run_rules_on_bytes(
     let _span = tracing::debug_span!("run_rules", file = %path.display()).entered();
     maybe_inject_test_panic(path);
 
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         // Not a recognized tree-sitter language, try text-based patterns,
         // but first surface a parse-timeout synthetic diag if that's what
         // caused try_new to return None.
@@ -7020,8 +7184,7 @@ pub fn run_rules_on_bytes(
         out.extend(parsed.run_cfg_analyses(cfg, global_summaries, scan_root));
         if cfg.scanner.mode == AnalysisMode::Full {
             // Layer B: suppress AST findings where taint confirmed safety
-            let suppression =
-                TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
+            let suppression = TaintSuppressionCtx::build(&parsed, &out);
             let ast_findings = parsed.source.run_ast_queries(cfg);
             out.extend(ast_findings.into_iter().filter(|d| {
                 !suppression.should_suppress(&d.id, d.line)
@@ -7137,7 +7300,7 @@ pub fn analyse_file_fused(
     let _span = tracing::debug_span!("analyse_fused", file = %path.display()).entered();
     maybe_inject_test_panic(path);
 
-    let Some(source) = ParsedSource::try_new(bytes, path)? else {
+    let Some(source) = ParsedSource::try_new(bytes, path, scan_root)? else {
         // Not a recognized tree-sitter language, try text-based patterns,
         // and surface a parse-timeout synthetic diag if that's what caused
         // try_new to return None.
@@ -7229,8 +7392,7 @@ pub fn analyse_file_fused(
         let ast_findings = parsed.source.run_ast_queries(cfg);
         // Layer B only applies when taint had the opportunity to evaluate
         if needs_cfg && cfg.scanner.mode == AnalysisMode::Full {
-            let suppression =
-                TaintSuppressionCtx::build(&parsed.file_cfg, &parsed.source.tree, &out);
+            let suppression = TaintSuppressionCtx::build(&parsed, &out);
             out.extend(ast_findings.into_iter().filter(|d| {
                 !suppression.should_suppress(&d.id, d.line)
                     && !suppression.is_redundant_ast_pattern(&d.id, d.line)
@@ -7299,17 +7461,19 @@ pub fn analyse_file_fused(
                     parsed.source.bytes,
                 );
             }
-            let var_types = parsed.collect_file_var_types();
-            out.extend(auth_analysis::run_auth_analysis_with_model(
-                auth_model,
-                &parsed.source.tree,
-                parsed.source.lang_slug,
-                parsed.source.path,
-                &auth_rules,
-                var_types.as_ref(),
-                global_summaries,
-                scan_root,
-            ));
+            if parsed.source.reports_auth_findings(cfg) {
+                let var_types = parsed.collect_file_var_types();
+                out.extend(auth_analysis::run_auth_analysis_with_model(
+                    auth_model,
+                    &parsed.source.tree,
+                    parsed.source.lang_slug,
+                    parsed.source.path,
+                    &auth_rules,
+                    var_types.as_ref(),
+                    global_summaries,
+                    scan_root,
+                ));
+            }
         }
     }
     parsed.source.finalize_diags(&mut out, cfg);
@@ -7514,6 +7678,77 @@ fn nonprod_path_detection() {
     assert!(!is_nonprod_path(Path::new("src/main.rs")));
     assert!(!is_nonprod_path(Path::new("lib/handler.py")));
     assert!(!is_nonprod_path(Path::new("app/views.py")));
+
+    // Test modules count by file name, wherever they live.
+    assert!(is_nonprod_path(Path::new("pkg/api/conan_test.go")));
+    assert!(is_nonprod_path(Path::new("app/models/user_spec.rb")));
+    assert!(is_nonprod_path(Path::new("src/widget.test.ts")));
+
+    // RSpec and Jasmine `spec/` trees, Cucumber step definitions and hooks.
+    assert!(is_nonprod_path(Path::new("spec/models/user_spec.rb")));
+    assert!(is_nonprod_path(Path::new("spec/support/helper.rb")));
+    assert!(is_nonprod_path(Path::new("spec/helpers/render.js")));
+    assert!(is_nonprod_path(Path::new(
+        "features/step_definitions/login_steps.rb"
+    )));
+    assert!(is_nonprod_path(Path::new("features/support/env.rb")));
+
+    // `spec` is production code outside Ruby and JS/TS, and `features/` is a
+    // common JS/TS layout.
+    assert!(!is_nonprod_path(Path::new("pkg/spec/manifest.go")));
+    assert!(!is_nonprod_path(Path::new("web_src/js/features/repo.ts")));
+    assert!(!is_nonprod_path(Path::new(
+        "app/javascript/mastodon/features/status/index.tsx"
+    )));
+    assert!(!is_nonprod_path(Path::new("features/support/env.ts")));
+    assert!(!is_nonprod_path(Path::new("app/models/spec.rb")));
+}
+
+#[test]
+fn path_classification_is_relative_to_the_scan_root() {
+    let root = Path::new("/opt/build/repo");
+    let file = Path::new("/opt/build/repo/app/server.py");
+    assert_eq!(
+        scan_relative_path(file, Some(root)),
+        Path::new("app/server.py")
+    );
+    // Directories above the scan root do not make the file non-production.
+    assert!(is_nonprod_path(file));
+    assert!(!is_nonprod_path(scan_relative_path(file, Some(root))));
+
+    // A single-file scan (root is the file) and the single-file API (no
+    // root) classify on the file name.
+    assert_eq!(scan_relative_path(file, Some(file)), Path::new("server.py"));
+    assert_eq!(scan_relative_path(file, None), Path::new("server.py"));
+    let go_test = Path::new("/home/u/test/pkg/conan_test.go");
+    assert!(is_nonprod_path(scan_relative_path(go_test, None)));
+
+    // A path outside the root is classified as given.
+    assert_eq!(
+        scan_relative_path(Path::new("/elsewhere/tests/x.py"), Some(root)),
+        Path::new("/elsewhere/tests/x.py")
+    );
+}
+
+#[test]
+fn test_support_paths_cover_helpers_outside_test_modules() {
+    assert!(is_test_support_path(Path::new(
+        "core/tests/src/FieldTestBase.php"
+    )));
+    assert!(is_test_support_path(Path::new("src/FieldTestBase.php")));
+    assert!(is_test_support_path(Path::new("inc/GLPITestCase.php")));
+    assert!(is_test_support_path(Path::new("src/UploadTestTrait.php")));
+    assert!(is_test_support_path(Path::new("src/ApiTestHelper.php")));
+    assert!(is_test_support_path(Path::new(
+        "lib/sqlalchemy/testing/util.py"
+    )));
+    assert!(is_test_support_path(Path::new("spec/support/helper.rb")));
+    assert!(is_test_support_path(Path::new("src/__fixtures__/seed.ts")));
+
+    assert!(!is_test_support_path(Path::new("src/Field.php")));
+    assert!(!is_test_support_path(Path::new("src/Contest.php")));
+    assert!(!is_test_support_path(Path::new("app/views.py")));
+    assert!(!is_test_support_path(Path::new("pkg/spec/manifest.go")));
 }
 
 #[test]
@@ -7687,6 +7922,249 @@ fn nonprod_path_downgrades_findings() {
     // Not all diagnostics are necessarily high, but include_nonprod should not downgrade
     // Just verify that if there are findings, they weren't downgraded by the nonprod logic
     let _ = diags_prod;
+}
+
+/// Write `rel` under `root` and return its path.
+#[cfg(test)]
+fn write_under(root: &Path, rel: &str, body: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn nonprod_downgrade_ignores_directories_above_the_scan_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "import os\nfrom flask import Flask, request\napp = Flask(__name__)\n\n\
+               @app.route('/run')\ndef run():\n    os.system(request.args.get('cmd'))\n";
+    let file = write_under(dir.path(), "build/app/server.py", src);
+    let cfg = Config::default();
+
+    // Scanning the checkout that lives under `build/`: the file is
+    // production code and keeps its severity.
+    let root = dir.path().join("build/app");
+    let diags = run_rules_on_file(&file, &cfg, None, Some(&root)).unwrap();
+    assert!(
+        diags.iter().any(|d| d.severity == Severity::High),
+        "expected a High finding under an unrelated build/ ancestor: {diags:?}"
+    );
+
+    // Scanning the parent: `build/` is inside the scan and downgrades.
+    let diags = run_rules_on_file(&file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(!diags.is_empty());
+    assert!(
+        diags.iter().all(|d| d.severity != Severity::High),
+        "build/ inside the scan root must downgrade: {diags:?}"
+    );
+}
+
+#[test]
+fn vendored_skip_ignores_directories_above_the_scan_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "const express = require('express');\n\
+               const { exec } = require('child_process');\n\
+               const app = express();\n\
+               app.get('/run', (req, res) => {\n  exec(req.query.cmd);\n  res.send('ok');\n});\n";
+    let file = write_under(dir.path(), "vendor/app/server.js", src);
+    let cfg = Config::default();
+
+    let root = dir.path().join("vendor/app");
+    let diags = run_rules_on_file(&file, &cfg, None, Some(&root)).unwrap();
+    assert!(
+        diags.iter().any(|d| d.id.starts_with("taint-")),
+        "a project checked out under vendor/ must still be analysed: {diags:?}"
+    );
+
+    let diags = run_rules_on_file(&file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(
+        diags.is_empty(),
+        "vendor/ inside the scan is skipped: {diags:?}"
+    );
+}
+
+#[test]
+fn go_test_files_report_no_auth_findings_and_are_downgraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "package integration\n\nimport (\n\t\"net/http\"\n\t\"testing\"\n\n\t\"example.com/models/packages\"\n)\n\n\
+               func TestPackageConan(t *testing.T, req *http.Request) {\n\
+               \tloc := req.Header.Get(\"Location\")\n\
+               \t_ = loc\n\
+               \tpvs, _ := packages.GetVersionsByPackageType(t.Context(), 1, packages.TypeConan)\n\
+               \tpfs, _ := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)\n\
+               \t_ = pfs\n}\n";
+    let test_file = write_under(dir.path(), "pkg_test.go", src);
+    let prod_file = write_under(dir.path(), "pkg.go", src);
+
+    let cfg = Config::default();
+    let auth = |diags: &[Diag]| {
+        diags
+            .iter()
+            .filter(|d| d.id.starts_with("go.auth."))
+            .count()
+    };
+    let in_test = run_rules_on_file(&test_file, &cfg, None, Some(dir.path())).unwrap();
+    assert_eq!(auth(&in_test), 0, "{in_test:?}");
+    assert!(in_test.iter().all(|d| d.severity != Severity::High));
+
+    // The same code outside a `_test.go` file keeps its auth finding.
+    let in_prod = run_rules_on_file(&prod_file, &cfg, None, Some(dir.path())).unwrap();
+    assert!(auth(&in_prod) > 0, "{in_prod:?}");
+
+    // `--keep-nonprod-severity` keeps test-file findings as they are.
+    let mut keep = Config::default();
+    keep.scanner.include_nonprod = true;
+    let kept = run_rules_on_file(&test_file, &keep, None, Some(dir.path())).unwrap();
+    assert_eq!(auth(&kept), auth(&in_prod), "{kept:?}");
+}
+
+#[test]
+fn test_suppressible_patterns_skip_php_test_support_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "<?php\nabstract class FieldTestBase {\n    protected function randomValue() { return mt_rand(1, 127); }\n}\n";
+    let base = write_under(dir.path(), "core/tests/src/FieldTestBase.php", src);
+    let helper = write_under(dir.path(), "core/tests/src/Helpers.php", src);
+    let prod = write_under(dir.path(), "core/src/FieldBase.php", src);
+    let cfg = Config::default();
+    let rand = |p: &Path| {
+        run_rules_on_file(p, &cfg, None, Some(dir.path()))
+            .unwrap()
+            .iter()
+            .filter(|d| d.id == "php.crypto.rand")
+            .count()
+    };
+    assert_eq!(rand(&base), 0);
+    assert_eq!(rand(&helper), 0);
+    assert_eq!(rand(&prod), 1, "production code keeps the pattern");
+}
+
+/// Line numbers of `rule` findings after a full single-file analysis.
+#[cfg(test)]
+fn rule_lines(file: &str, src: &str, rule: &str) -> Vec<usize> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_under(dir.path(), file, src);
+    let mut lines: Vec<usize> =
+        run_rules_on_file(&path, &Config::default(), None, Some(dir.path()))
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.id == rule)
+            .map(|d| d.line)
+            .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn ast_pattern_suppression_keys_evidence_by_body_not_name() {
+    // `RunView.get` has a tracked flow to `os.system`; the engine loses the
+    // flow in `OtherView.get` (dict-key iteration).  The pattern in
+    // `OtherView.get` must survive: the other class's `get` is not the
+    // same scope.
+    let src = r#"import os
+from django.views import View
+from django.http import HttpResponse
+
+class RunView(View):
+    def get(self, request):
+        cmd = request.GET.get("cmd")
+        os.system(cmd)
+        return HttpResponse("ok")
+
+class OtherView(View):
+    def get(self, request):
+        name = request.GET.get("name")
+        d = {}
+        d[name] = 1
+        for k in d:
+            os.system(k)
+        return HttpResponse("ok")
+"#;
+    assert_eq!(
+        rule_lines("views.py", src, "py.cmdi.os_system"),
+        vec![8, 17]
+    );
+}
+
+#[test]
+fn ast_pattern_suppression_needs_evidence_of_the_pattern_cap() {
+    // An HTML escaper on another value is not evidence that the engine
+    // evaluated the shell sink.
+    let escape = r#"import os
+import html
+from flask import Flask, request
+app = Flask(__name__)
+
+@app.route("/b")
+def b():
+    name = request.args.get("name")
+    greeting = html.escape(request.args.get("greet"))
+    d = {}
+    d[name] = 1
+    for k in d:
+        os.system(k)
+    return greeting
+"#;
+    assert_eq!(rule_lines("app.py", escape, "py.cmdi.os_system"), vec![13]);
+
+    // Nor is a SQL taint finding in the same function.
+    let sql = r#"import os
+from flask import Flask, request
+app = Flask(__name__)
+
+@app.route("/b")
+def b(cursor):
+    name = request.args.get("name")
+    d = {}
+    d[name] = 1
+    for k in d:
+        os.system(k)
+    cursor.execute("SELECT * FROM t WHERE a = '" + name + "'")
+    return "ok"
+"#;
+    assert_eq!(rule_lines("app.py", sql, "py.cmdi.os_system"), vec![11]);
+
+    // A shell quoter in the function, or in a same-file helper it calls,
+    // is evidence: the engine cleared the flow and the pattern stays
+    // suppressed.
+    let quoted = r#"import os
+import shlex
+from flask import Flask, request
+app = Flask(__name__)
+
+@app.route("/q")
+def q():
+    name = request.args.get("name")
+    safe = shlex.quote(name)
+    os.system("echo " + safe)
+    return "ok"
+"#;
+    assert!(rule_lines("app.py", quoted, "py.cmdi.os_system").is_empty());
+    let helper = r#"import os
+import shlex
+from flask import Flask, request
+app = Flask(__name__)
+
+def clean(v):
+    return shlex.quote(v)
+
+@app.route("/q")
+def q():
+    name = request.args.get("name")
+    os.system("echo " + clean(name))
+    return "ok"
+"#;
+    assert!(rule_lines("app.py", helper, "py.cmdi.os_system").is_empty());
+
+    // A library sanitizer applied inline to the sink's argument counts; an
+    // HTML escaper elsewhere in the script does not.
+    let inline = "<?php\n$file = $_GET['file'];\n\
+                  $out = shell_exec('wc -l ' . escapeshellarg($file));\n\
+                  echo htmlspecialchars($out);\n";
+    assert!(rule_lines("run.php", inline, "php.cmdi.system").is_empty());
+    let wrong_cap = "<?php\n$file = $_GET['file'];\n\
+                     $out = shell_exec('wc -l ' . htmlspecialchars($file));\n\
+                     echo htmlspecialchars($out);\n";
+    assert_eq!(rule_lines("run.php", wrong_cap, "php.cmdi.system"), vec![3]);
 }
 
 #[test]

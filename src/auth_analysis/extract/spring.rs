@@ -16,8 +16,7 @@ pub struct SpringExtractor;
 impl AuthExtractor for SpringExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "java"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Spring))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Spring))
     }
 
     fn requires_top_level_units(&self) -> bool {

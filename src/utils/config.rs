@@ -954,6 +954,50 @@ pub struct Config {
 }
 
 impl Config {
+    /// Key for the per-file results the analysis index caches (function
+    /// and SSA summaries, SSA bodies, auth facts, AST issue rows).  It
+    /// covers every input besides the file's own bytes that changes those
+    /// results: the engine build, custom label rules, engine options,
+    /// detector options, the detected frameworks and the scanner switches
+    /// that gate analyses or severities.  The index drops its cache when the
+    /// key changes, so editing `nyx.conf` or adding a framework to a
+    /// manifest does not leave unchanged files on stale summaries.
+    pub fn analysis_cache_key(&self) -> String {
+        let mut frameworks: Vec<String> = self
+            .framework_ctx
+            .iter()
+            .flat_map(|fw| fw.frameworks.iter().map(|f| format!("{f:?}")))
+            .collect();
+        frameworks.sort();
+        frameworks.dedup();
+        let mut inspected: Vec<&str> = self
+            .framework_ctx
+            .iter()
+            .flat_map(|fw| fw.inspected_langs.iter().copied())
+            .collect();
+        inspected.sort_unstable();
+        // `serde_json::Value` objects are key-sorted maps, so the encoding
+        // does not depend on `HashMap` iteration order.
+        let inputs = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "source": env!("NYX_SOURCE_ID"),
+            "rules": &self.analysis,
+            "engine": crate::utils::analysis_options::current(),
+            "detectors": &self.detectors,
+            "mode": self.scanner.mode,
+            "min_severity": self.scanner.min_severity,
+            "include_nonprod": self.scanner.include_nonprod,
+            "state": self.scanner.enable_state_analysis,
+            "auth": self.scanner.enable_auth_analysis,
+            "auth_as_taint": self.scanner.enable_auth_as_taint,
+            "frameworks": frameworks,
+            "inspected_langs": inspected,
+        });
+        blake3::hash(inputs.to_string().as_bytes())
+            .to_hex()
+            .to_string()
+    }
+
     /// Load config and return `(config, optional_note)`.
     ///
     /// The note is a formatted status message about which config file was
@@ -1394,6 +1438,51 @@ fn merge_configs_dedupes_and_keeps_order() {
         merged.scanner.excluded_extensions,
         vec!["jpg", "rs", "toml"]
     );
+}
+
+#[test]
+fn analysis_cache_key_tracks_settings_that_change_per_file_results() {
+    let base = Config::default();
+    let key = base.analysis_cache_key();
+    assert_eq!(key, Config::default().analysis_cache_key(), "deterministic");
+
+    // Output-only settings do not touch the cached analysis.
+    let mut output_only = Config::default();
+    output_only.output.max_results = Some(3);
+    output_only.performance.worker_threads = Some(1);
+    assert_eq!(output_only.analysis_cache_key(), key);
+
+    let mut custom_sink = Config::default();
+    custom_sink.analysis.languages.insert(
+        "python".into(),
+        LanguageAnalysisConfig {
+            rules: vec![ConfigLabelRule {
+                matchers: vec!["my_exec".into()],
+                kind: RuleKind::Sink,
+                cap: CapName::ShellEscape,
+                case_sensitive: false,
+            }],
+            ..Default::default()
+        },
+    );
+    assert_ne!(custom_sink.analysis_cache_key(), key);
+
+    let flask = Config {
+        framework_ctx: Some(crate::utils::project::FrameworkContext {
+            frameworks: vec![crate::utils::project::DetectedFramework::Flask],
+            inspected_langs: ["python"].into_iter().collect(),
+        }),
+        ..Config::default()
+    };
+    assert_ne!(flask.analysis_cache_key(), key);
+
+    let mut ast_mode = Config::default();
+    ast_mode.scanner.mode = AnalysisMode::Ast;
+    assert_ne!(ast_mode.analysis_cache_key(), key);
+
+    let mut keep_severity = Config::default();
+    keep_severity.scanner.include_nonprod = true;
+    assert_ne!(keep_severity.analysis_cache_key(), key);
 }
 
 #[test]

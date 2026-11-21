@@ -1,6 +1,6 @@
 use super::helpers::first_member_label;
 use super::{
-    AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
+    AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, NullCheck, StmtKind,
     build_cond_arith, collect_idents, connect_all, detect_eq_with_const, detect_negation,
     has_call_descendant, member_expr_text, push_node, rmw_assignment, text_of,
     try_lower_jsx_dangerous_html,
@@ -63,6 +63,192 @@ pub(super) fn get_boolean_operands<'a>(node: Node<'a>) -> Option<(Node<'a>, Node
         return Some((named[0], named[named.len() - 1]));
     }
     None
+}
+
+/// Peel one logical-not wrapper (`!x`, `not x`), returning its operand.
+fn peel_logical_not(node: Node) -> Option<Node> {
+    if !matches!(
+        node.kind(),
+        "unary_expression"
+            | "not_operator"
+            | "prefix_unary_expression"
+            | "unary_not"
+            | "unary_op_expression"
+            | "unary"
+    ) {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let is_not = node
+        .children(&mut cursor)
+        .any(|c| !c.is_named() && matches!(c.kind(), "!" | "not"));
+    if !is_not {
+        return None;
+    }
+    node.child_by_field_name("argument")
+        .or_else(|| node.child_by_field_name("operand"))
+        .or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).last()
+        })
+}
+
+/// Name of a bare variable operand, spelled the way `collect_idents` spells
+/// it so it matches `taint.defines` (PHP `$fh` becomes `fh`).
+fn null_check_operand_name(node: Node, code: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => text_of(node, code),
+        "variable_name" => text_of(node, code).map(|t| t.trim_start_matches('$').to_string()),
+        _ => None,
+    }
+}
+
+/// True for a literal that means "no handle": `NULL` / `nullptr` / `null` /
+/// `nil` / `None` / `undefined`, plus PHP `false` (what `fopen` and friends
+/// return on failure).
+fn is_null_like_literal(node: Node, lang: &str, code: &[u8]) -> bool {
+    match node.kind() {
+        "null" | "nullptr" | "null_literal" | "nil" | "none" | "undefined" => true,
+        // Older C/C++ grammar shapes and macro spellings surface as a plain
+        // identifier.
+        "identifier" if matches!(lang, "c" | "cpp") => {
+            matches!(text_of(node, code).as_deref(), Some("NULL" | "nullptr"))
+        }
+        "boolean" if lang == "php" => {
+            text_of(node, code).is_some_and(|t| t.eq_ignore_ascii_case("false"))
+        }
+        _ => false,
+    }
+}
+
+/// Integer value of a C/C++ literal operand (`0`, `-1`, `- 1`).
+fn c_int_literal(node: Node, code: &[u8]) -> Option<i64> {
+    match node.kind() {
+        "number_literal" => text_of(node, code)?.trim().parse().ok(),
+        "unary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            let arg = node.child_by_field_name("argument")?;
+            if op.kind() != "-" || arg.kind() != "number_literal" {
+                return None;
+            }
+            text_of(arg, code)?.trim().parse::<i64>().ok().map(|v| -v)
+        }
+        _ => None,
+    }
+}
+
+/// Split a two-operand comparison into `(left, operator, right)`.  Covers
+/// `binary_expression` (C-family, Go, Java, JS/TS, PHP, Rust), Ruby
+/// `binary`, and a single Python `comparison_operator` (`f is None`;
+/// chained `a < b < c` is rejected).
+fn comparison_parts<'a>(node: Node<'a>, code: &[u8]) -> Option<(Node<'a>, String, Node<'a>)> {
+    match node.kind() {
+        "binary_expression" | "binary" => {
+            let left = node.child_by_field_name("left")?;
+            let right = node.child_by_field_name("right")?;
+            let op = node.child_by_field_name("operator")?;
+            Some((left, text_of(op, code)?, right))
+        }
+        "comparison_operator" => {
+            let mut cursor = node.walk();
+            let operands: Vec<Node> = node.named_children(&mut cursor).collect();
+            if operands.len() != 2 {
+                return None;
+            }
+            let mut cursor = node.walk();
+            let ops: Vec<Node> = node
+                .children_by_field_name("operators", &mut cursor)
+                .collect();
+            if ops.len() != 1 {
+                return None;
+            }
+            Some((operands[0], text_of(ops[0], code)?, operands[1]))
+        }
+        _ => None,
+    }
+}
+
+/// Recognise a single-variable null / failure test in a branch condition.
+///
+/// Peels parentheses and logical-not (each `!` / `not` flips polarity), then
+/// accepts:
+///   * a bare variable: `if (f)`, `if not conn` (null when false);
+///   * `v ==/===/is <null>` (null when true) or `v !=/!==/is not <null>`
+///     (null when false), with the literal on either side;
+///   * C/C++ only, the integer failure sentinel of `open` / `socket` /
+///     `accept` / `dup`: `fd < 0`, `fd <= -1`, `fd == -1` (failure when true)
+///     and `fd >= 0`, `fd > -1`, `fd != -1` (failure when false).  A bare
+///     `== 0` is not a failure test (descriptor 0 is valid), so it is
+///     rejected.
+///
+/// Everything else (calls, field access, `&&` / `||`, `a == b`) yields
+/// `None`.
+pub(super) fn extract_null_check(cond: Node, lang: &str, code: &[u8]) -> Option<NullCheck> {
+    let mut node = cond;
+    let mut flip = false;
+    // Bounded: real conditions nest a handful of parens / nots at most.
+    for _ in 0..16 {
+        if node.kind() == "parenthesized_expression" {
+            node = node.named_child(0)?;
+            continue;
+        }
+        // C++ wraps the condition as `condition_clause` (`if (init; value)`).
+        if node.kind() == "condition_clause" {
+            node = node.child_by_field_name("value")?;
+            continue;
+        }
+        if let Some(inner) = peel_logical_not(node) {
+            node = inner;
+            flip = !flip;
+            continue;
+        }
+        break;
+    }
+
+    let (var, null_on_true) = if let Some(var) = null_check_operand_name(node, code) {
+        (var, false)
+    } else {
+        let (left, op, right) = comparison_parts(node, code)?;
+        let (mut left, mut right) = (unwrap_parens(left), unwrap_parens(right));
+        let mut op = op.split_whitespace().collect::<Vec<_>>().join(" ");
+        let c_family = matches!(lang, "c" | "cpp");
+        let right_is_lit = is_null_like_literal(right, lang, code)
+            || (c_family && c_int_literal(right, code).is_some());
+        if !right_is_lit {
+            // Literal on the left (`NULL == f`, `0 > fd`): swap operands and
+            // mirror the ordering operators.
+            std::mem::swap(&mut left, &mut right);
+            op = match op.as_str() {
+                "<" => ">".into(),
+                ">" => "<".into(),
+                "<=" => ">=".into(),
+                ">=" => "<=".into(),
+                _ => op,
+            };
+        }
+        let var = null_check_operand_name(left, code)?;
+        let null_on_true = if is_null_like_literal(right, lang, code) {
+            match op.as_str() {
+                "==" | "===" | "is" => true,
+                "!=" | "!==" | "is not" | "<>" => false,
+                _ => return None,
+            }
+        } else if c_family {
+            match (op.as_str(), c_int_literal(right, code)?) {
+                ("<", 0) | ("<=", -1) | ("==", -1) => true,
+                (">=", 0) | (">", -1) | ("!=", -1) => false,
+                _ => return None,
+            }
+        } else {
+            return None;
+        };
+        (var, null_on_true)
+    };
+
+    Some(NullCheck {
+        var,
+        null_on_true: null_on_true ^ flip,
+    })
 }
 
 /// Create a `StmtKind::If` node for a sub-condition in a boolean chain.
@@ -136,6 +322,7 @@ pub(super) fn push_condition_node<'a>(
         info.condition_text = text;
         info.condition_vars = vars;
         info.condition_negated = negated;
+        info.null_check = extract_null_check(cond_ast, lang, code);
         // Union the condition idents into `taint.uses` so branch-predicate
         // lookup keeps working without clobbering the call's own arg uses.
         for v in &uses_for_taint {
@@ -155,6 +342,7 @@ pub(super) fn push_condition_node<'a>(
         condition_text: text,
         condition_vars: vars,
         condition_negated: negated,
+        null_check: extract_null_check(cond_ast, lang, code),
         taint: crate::cfg::TaintMeta {
             uses: uses_for_taint,
             ..Default::default()

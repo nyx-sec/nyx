@@ -1,5 +1,5 @@
 use super::config::AuthAnalysisRules;
-use super::model::{AuthorizationModel, CallSite};
+use super::model::{AuthCheck, AuthCheckKind, AuthorizationModel, CallSite, Framework};
 use crate::utils::project::{FrameworkContext, rust_file_imports_web_framework};
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,7 +15,9 @@ pub mod fastify;
 pub mod flask;
 pub mod gin;
 pub mod gitea;
+mod go_scope;
 pub mod graphene;
+mod js_scope;
 pub mod koa;
 pub mod rails;
 pub mod rocket;
@@ -132,6 +134,8 @@ pub fn extract_authorization_model(
     // suppresses it, `None` means no detection ran ─ behavior unchanged.
     model.lang_web_framework_signal = compute_web_framework_signal(lang, framework_ctx, bytes);
 
+    inject_route_level_middleware(&mut model, rules);
+
     // **Dedup units by span across extractors.**  Multiple extractors
     // (e.g. Flask + Django on a Python file) each call
     // `collect_top_level_units`, producing one unit per top-level
@@ -149,6 +153,93 @@ pub fn extract_authorization_model(
     deduplicate_units_by_span(&mut model);
 
     model
+}
+
+/// Copy the authorization-bearing middleware of Express, Koa, Fastify, Gin and
+/// Echo routes onto the handler unit as route-level checks, the way the
+/// Flask, Django, Spring and Rails extractors already do for decorators and
+/// filters.  `router.get('/docs/:id', checkOwnership, handler)` authorizes
+/// the whole handler, but the call is opaque to the per-subject coverage walk.
+///
+/// A handler registered on several routes keeps only the checks every
+/// registration carries: one bare registration leaves it reachable without
+/// the check.  Login-only middleware is left out because it never suppresses
+/// an ownership finding.
+fn inject_route_level_middleware(model: &mut AuthorizationModel, rules: &AuthAnalysisRules) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Registrations are grouped by the handler's source span, not its unit
+    // index: every `attach_route_handler` call after the first builds a fresh
+    // unit for the same function, and those copies are merged later.
+    #[derive(Default)]
+    struct Handler {
+        units: BTreeSet<usize>,
+        registrations: Vec<Vec<AuthCheck>>,
+    }
+    let mut per_handler: BTreeMap<(usize, usize), Handler> = BTreeMap::new();
+    for route in &model.routes {
+        if !matches!(
+            route.framework,
+            Framework::Express
+                | Framework::Koa
+                | Framework::Fastify
+                | Framework::Gin
+                | Framework::Echo
+        ) {
+            continue;
+        }
+        let Some(unit) = model.units.get(route.unit_idx) else {
+            continue;
+        };
+        let checks: Vec<AuthCheck> = route
+            .middleware_calls
+            .iter()
+            .filter_map(|call| common::auth_check_from_call_site(call, route.line, rules))
+            .filter(|check| {
+                !matches!(
+                    check.kind,
+                    AuthCheckKind::LoginGuard
+                        | AuthCheckKind::TokenExpiry
+                        | AuthCheckKind::TokenRecipient
+                )
+            })
+            .collect();
+        let handler = per_handler.entry(unit.span).or_default();
+        handler.units.insert(route.unit_idx);
+        handler.registrations.push(checks);
+    }
+
+    for handler in per_handler.into_values() {
+        let Some(first) = handler.registrations.first() else {
+            continue;
+        };
+        let shared: Vec<AuthCheck> = first
+            .iter()
+            .filter(|check| {
+                handler
+                    .registrations
+                    .iter()
+                    .all(|reg| reg.iter().any(|other| other.callee == check.callee))
+            })
+            .cloned()
+            .collect();
+        for unit_idx in handler.units {
+            let Some(unit) = model.units.get_mut(unit_idx) else {
+                continue;
+            };
+            for check in &shared {
+                let mut check = check.clone();
+                check.is_route_level = true;
+                let already = unit
+                    .auth_checks
+                    .iter()
+                    .any(|existing| existing.callee == check.callee && existing.span == check.span);
+                if !already {
+                    unit.auth_checks.push(check);
+                }
+            }
+        }
+    }
 }
 
 /// Compute the per-file web-framework signal used to gate the

@@ -25,15 +25,11 @@ fn is_privileged_sink(info: &crate::cfg::NodeInfo) -> bool {
 }
 
 /// Web handler parameter patterns by language.
-/// Returns true if the function's parameters suggest it handles HTTP requests.
-fn has_web_handler_params(ctx: &AnalysisContext, func_name: &str) -> bool {
-    // Find parameter names for this function from FuncSummaries
-    let param_names: Vec<&str> = ctx
-        .func_summaries
-        .values()
-        .filter(|s| ctx.cfg[s.entry].ast.enclosing_func.as_deref() == Some(func_name))
-        .flat_map(|s| s.param_names.iter().map(|p| p.as_str()))
-        .collect();
+/// Returns true if the parameters of the body under analysis suggest it
+/// handles HTTP requests.  Every node of a per-body CFG belongs to that one
+/// function, so its own parameter list is the one to check.
+fn has_web_handler_params(ctx: &AnalysisContext) -> bool {
+    let param_names: Vec<&str> = ctx.body_params.iter().map(String::as_str).collect();
 
     match ctx.lang {
         Lang::Rust => {
@@ -113,7 +109,7 @@ fn has_web_handler_params(ctx: &AnalysisContext, func_name: &str) -> bool {
 fn is_web_entrypoint(ctx: &AnalysisContext, func_name: &str) -> bool {
     // "main" without web params is a CLI entrypoint, skip
     if func_name == "main" {
-        return has_web_handler_params(ctx, func_name);
+        return has_web_handler_params(ctx);
     }
 
     // Must match entrypoint naming patterns
@@ -124,7 +120,7 @@ fn is_web_entrypoint(ctx: &AnalysisContext, func_name: &str) -> bool {
     // For named handlers (handle_*, route_*, api_*), check if they have web params.
     // If we can't determine params (e.g. no summary), fall back to name-only heuristic
     // for handler-style names (but NOT process_* or serve_* without params).
-    let has_params = has_web_handler_params(ctx, func_name);
+    let has_params = has_web_handler_params(ctx);
     let name_lower = func_name.to_ascii_lowercase();
     let strong_handler_name = name_lower.starts_with("handle_")
         || name_lower.starts_with("route_")

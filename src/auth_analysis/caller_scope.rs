@@ -270,7 +270,7 @@ pub fn apply_cross_file_caller_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth_analysis::model::{AnalysisUnit, CallSite};
+    use crate::auth_analysis::model::{AnalysisUnit, CallSite, UnitRuntime};
     use std::collections::{HashMap, HashSet};
 
     fn route_level_check(kind: AuthCheckKind) -> AuthCheck {
@@ -323,6 +323,9 @@ mod tests {
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
             is_nextauth_options_factory: false,
+            package_names: HashSet::new(),
+            runtime: UnitRuntime::Unknown,
+            request_roots: HashSet::new(),
         }
     }
 

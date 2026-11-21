@@ -530,6 +530,19 @@ fn collect_error_branch_defines(
     defs
 }
 
+/// A post-if sink whose injection payload is a constant cannot consume the
+/// value the failed call left behind (nor any other data), so it is not a
+/// dangerous operation for this rule: `if err != nil { log(err) };
+/// exec.Command("sync").Run()`.  Same constant-payload checks as
+/// `cfg-unguarded-sink`; a sink the taint engine confirms always counts.
+fn sink_payload_provably_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    if super::guards::taint_confirms_sink(ctx, sink) {
+        return false;
+    }
+    super::guards::sink_payload_args_syntactic_const(ctx, sink)
+        || super::guards::is_all_args_constant(ctx, sink)
+}
+
 impl CfgAnalysis for IncompleteErrorHandling {
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let mut findings = Vec::new();
@@ -634,6 +647,7 @@ impl CfgAnalysis for IncompleteErrorHandling {
                 .iter()
                 .copied()
                 .filter(|&s| is_sink(&ctx.cfg[s]))
+                .filter(|&s| !sink_payload_provably_constant(ctx, s))
                 .collect();
 
             if dangerous.is_empty() {

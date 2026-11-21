@@ -38,6 +38,7 @@ pub enum DetectedFramework {
     Koa,
     Fastify,
     React,
+    Next,
     Flask,
     Django,
     Spring,
@@ -49,6 +50,53 @@ pub enum DetectedFramework {
     ActixWeb,
     Rocket,
     Axum,
+}
+
+impl DetectedFramework {
+    /// Manifest ecosystem this framework belongs to, in the slugs
+    /// [`FrameworkContext::lang_has_web_framework`] uses.
+    fn ecosystem(self) -> &'static str {
+        match self {
+            DetectedFramework::Express
+            | DetectedFramework::Koa
+            | DetectedFramework::Fastify
+            | DetectedFramework::React
+            | DetectedFramework::Next => "javascript",
+            DetectedFramework::Flask | DetectedFramework::Django => "python",
+            DetectedFramework::Spring => "java",
+            DetectedFramework::Gin | DetectedFramework::Echo => "go",
+            DetectedFramework::Laravel => "php",
+            DetectedFramework::Rails | DetectedFramework::Sinatra => "ruby",
+            DetectedFramework::ActixWeb | DetectedFramework::Rocket | DetectedFramework::Axum => {
+                "rust"
+            }
+        }
+    }
+
+    /// True for frameworks that serve HTTP requests.  React is a browser
+    /// library and names no server.
+    fn is_server(self) -> bool {
+        !matches!(self, DetectedFramework::React)
+    }
+
+    /// True for the server frameworks whose routes the auth extractors model.
+    /// Next.js is a server framework too, but its handlers are plain
+    /// functions the top-level unit pass already finds, so naming it does not
+    /// rule any extractor out.
+    fn has_route_extractor(self) -> bool {
+        self.is_server() && !matches!(self, DetectedFramework::Next)
+    }
+}
+
+/// Manifest ecosystem for a language slug.
+fn lang_ecosystem(lang: &str) -> &str {
+    match lang {
+        "javascript" | "typescript" | "js" | "ts" => "javascript",
+        "python" | "py" => "python",
+        "ruby" | "rb" => "ruby",
+        "rust" | "rs" => "rust",
+        other => other,
+    }
 }
 
 /// Frameworks detected in the project root.
@@ -68,6 +116,42 @@ impl FrameworkContext {
         self.frameworks.contains(&fw)
     }
 
+    /// True when the project manifests name at least one server framework with
+    /// a route extractor for `lang` (a language slug such as `"javascript"` or
+    /// `"go"`).
+    pub fn has_server_framework_for(&self, lang: &str) -> bool {
+        let ecosystem = lang_ecosystem(lang);
+        self.frameworks
+            .iter()
+            .any(|fw| fw.has_route_extractor() && fw.ecosystem() == ecosystem)
+    }
+
+    /// May an extractor for `fw` run on a `lang` file?
+    ///
+    /// The framework list mixes languages and includes React, so "no
+    /// framework for this language" is not the same as an empty list.  A
+    /// Python backend with a UI `package.json` lists React and no Flask, and
+    /// its Flask and FastAPI extractor must still run.  Every language
+    /// follows that rule: the extractor runs when the manifests name `fw`, or
+    /// name no other server framework for `lang`.
+    ///
+    /// JS/TS is the exception.  Its files in a repo that lists only a
+    /// browser library or another language's server are front-end code, so
+    /// the extractors stay off there, as before.  They run when nothing is
+    /// listed at all, when `fw` is listed, or when the repo is a Next.js app,
+    /// whose API routes and server components are handler-shaped functions
+    /// with no router to name.
+    pub fn allows(&self, lang: &str, fw: DetectedFramework) -> bool {
+        if self.has(fw) {
+            return true;
+        }
+        if lang_ecosystem(lang) == "javascript" {
+            return self.frameworks.is_empty()
+                || (self.has(DetectedFramework::Next) && !self.has_server_framework_for(lang));
+        }
+        !self.has_server_framework_for(lang)
+    }
+
     /// Three-valued web-framework presence query for a language slug.
     ///
     /// * `Some(true)` ─ at least one framework for `lang` is in `frameworks`.
@@ -84,6 +168,7 @@ impl FrameworkContext {
                     DetectedFramework::Express,
                     DetectedFramework::Koa,
                     DetectedFramework::Fastify,
+                    DetectedFramework::Next,
                 ],
                 "node",
             ),
@@ -249,6 +334,9 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
         }
         if content.contains("\"react\"") {
             fws.push(DetectedFramework::React);
+        }
+        if content.contains("\"next\"") {
+            fws.push(DetectedFramework::Next);
         }
     }
 
@@ -666,4 +754,91 @@ fn detect_in_file_frameworks_plain_ruby_no_framework() {
     let src = b"require 'json'\nputs JSON.parse('{}')\n";
     let fws = detect_in_file_frameworks(src, "ruby");
     assert!(fws.is_empty());
+}
+
+#[test]
+fn allows_runs_an_extractor_unless_another_server_framework_is_named() {
+    // A Python backend with a UI package.json: the framework list holds only
+    // React, so the Python extractors still run.
+    let ui = FrameworkContext {
+        frameworks: vec![DetectedFramework::React],
+        ..Default::default()
+    };
+    assert!(ui.allows("python", DetectedFramework::Flask));
+    assert!(ui.allows("python", DetectedFramework::Django));
+    assert!(!ui.has_server_framework_for("python"));
+
+    // A Flask project does not run the Django extractor.
+    let flask = FrameworkContext {
+        frameworks: vec![DetectedFramework::Flask],
+        ..Default::default()
+    };
+    assert!(flask.allows("python", DetectedFramework::Flask));
+    assert!(!flask.allows("python", DetectedFramework::Django));
+}
+
+#[test]
+fn allows_does_not_cross_languages() {
+    // A Flask project says nothing about Go files, and a Gin project says
+    // nothing about Python ones.
+    let flask = FrameworkContext {
+        frameworks: vec![DetectedFramework::Flask],
+        ..Default::default()
+    };
+    assert!(flask.allows("go", DetectedFramework::Gin));
+    let gin = FrameworkContext {
+        frameworks: vec![DetectedFramework::Gin],
+        ..Default::default()
+    };
+    assert!(!gin.allows("go", DetectedFramework::Echo));
+    assert!(gin.allows("python", DetectedFramework::Flask));
+}
+
+#[test]
+fn js_extractors_run_for_next_and_unlisted_projects_only() {
+    // Next.js lists `next` and `react` and no Express: the API routes are
+    // handler-shaped functions, so the JS extractors run.
+    let next = FrameworkContext {
+        frameworks: vec![DetectedFramework::Next, DetectedFramework::React],
+        ..Default::default()
+    };
+    assert!(next.allows("javascript", DetectedFramework::Express));
+    assert!(next.allows("typescript", DetectedFramework::Koa));
+
+    // An empty list keeps the old behaviour.
+    assert!(FrameworkContext::default().allows("javascript", DetectedFramework::Express));
+
+    // A UI manifest, or another language's server, means front-end JS.
+    let ui = FrameworkContext {
+        frameworks: vec![DetectedFramework::React],
+        ..Default::default()
+    };
+    assert!(!ui.allows("javascript", DetectedFramework::Express));
+    let rails = FrameworkContext {
+        frameworks: vec![DetectedFramework::Rails, DetectedFramework::React],
+        ..Default::default()
+    };
+    assert!(!rails.allows("javascript", DetectedFramework::Express));
+    assert!(rails.allows("python", DetectedFramework::Flask));
+
+    // An Express repo does not run the Koa extractor, even beside Next.
+    let express_next = FrameworkContext {
+        frameworks: vec![DetectedFramework::Express, DetectedFramework::Next],
+        ..Default::default()
+    };
+    assert!(express_next.allows("javascript", DetectedFramework::Express));
+    assert!(!express_next.allows("javascript", DetectedFramework::Koa));
+}
+
+#[test]
+fn detect_frameworks_reads_next_from_package_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies":{"next":"14.2.3","react":"18.2.0"}}"#,
+    )
+    .unwrap();
+    let ctx = detect_frameworks(dir.path());
+    assert!(ctx.has(DetectedFramework::Next));
+    assert!(ctx.has(DetectedFramework::React));
 }
