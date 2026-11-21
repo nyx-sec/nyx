@@ -1775,8 +1775,10 @@ pub fn classify_condition(text: &str) -> PredicateKind {
 /// `err != nil` or `err == nil`), so the branch that makes the fact true
 /// depends on the operator.  Returns `Some(true)` for the negated form
 /// (`x != null`, `err == nil`, `.length != 0`), `Some(false)` for the plain
-/// form, and `None` for other kinds or when the text holds both forms
-/// (`a != null && b == null`), where no single bit describes the condition.
+/// form, and `None` when the text holds both forms (`a != null && b == null`),
+/// where no single bit describes the condition, or for kinds that carry no
+/// predicate bit.  The leading-slash and protocol-relative URL checks have a
+/// single spelling, so they return `Some(false)`.
 ///
 /// The negated markers are matched first and blanked out, because the `==`
 /// inside `!==` would otherwise read as the plain form.
@@ -1818,6 +1820,10 @@ pub fn predicate_bit_negative_form(kind: PredicateKind, text: &str) -> Option<bo
                 "== ''",
             ],
         ),
+        // One spelling only: the branch polarity alone states the fact.
+        PredicateKind::LeadingSlashCheck | PredicateKind::ProtocolRelativeCheck => {
+            return Some(false);
+        }
         _ => return None,
     };
     let mut rest = text.to_ascii_lowercase();

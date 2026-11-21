@@ -1427,7 +1427,14 @@ mod goto_succ_propagation_tests {
         let vars = ["next".to_string()];
         let apply = |st: &mut SsaTaintState, kind, polarity| {
             super::super::apply_branch_predicates(
-                st, &vars, kind, polarity, None, &interner, &ssa, None,
+                st,
+                &vars,
+                kind,
+                polarity,
+                crate::taint::path_state::predicate_bit_negative_form(kind, ""),
+                &interner,
+                &ssa,
+                None,
             )
         };
         let caps_of = |st: &SsaTaintState| st.get(SsaValue(0)).map(|t| t.caps);
