@@ -10895,3 +10895,109 @@ fn field_stored_by_a_helper_that_returns_the_object_stays_tainted() {
         "the stored value is still reachable through the returned object"
     );
 }
+
+/// Run the taint engine on `src` and return `(sink line-independent cap bits)`
+/// for each finding, so tests can tell the SQL finding from a response one.
+fn sql_result_flow_caps(
+    src: &[u8],
+    lang_name: &str,
+    lang: Lang,
+    ts: tree_sitter::Language,
+    file: &str,
+) -> Vec<u32> {
+    let file_cfg = parse_lang(src, lang_name, ts);
+    analyse_file(&file_cfg, &file_cfg.summaries, None, lang, file, &[], None)
+        .iter()
+        .map(|f| f.effective_sink_caps.bits())
+        .collect()
+}
+
+/// The rows a parameterised query returns do not carry the bound value's
+/// taint, so reaching `res.json` is clean (JS, pg-style gate).
+#[test]
+fn js_sql_bind_param_result_is_clean() {
+    let src = br#"const { Pool } = require('pg');
+const pool = new Pool();
+async function handler(req, res) {
+  const id = req.query.id;
+  const r = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  res.json(r.rows);
+}
+"#;
+    let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let caps = sql_result_flow_caps(src, "javascript", Lang::JavaScript, ts, "test.js");
+    assert!(
+        caps.is_empty(),
+        "bound value must not taint the result; got {caps:?}"
+    );
+}
+
+/// Tainted SQL text still fires the SQLi finding, and the rows keep the
+/// taint, so they still reach the response sink.
+#[test]
+fn js_sql_text_taint_fires_and_result_stays_tainted() {
+    let src = br#"const { Pool } = require('pg');
+const pool = new Pool();
+async function handler(req, res) {
+  const id = req.query.id;
+  const r = await pool.query('SELECT * FROM users WHERE id = ' + id);
+  res.json(r.rows);
+}
+"#;
+    let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let caps = sql_result_flow_caps(src, "javascript", Lang::JavaScript, ts, "test.js");
+    let sql = crate::labels::Cap::SQL_QUERY.bits();
+    assert!(
+        caps.iter().any(|c| c & sql != 0),
+        "missing SQLi finding: {caps:?}"
+    );
+    assert!(
+        caps.iter().any(|c| c & sql == 0),
+        "result of a tainted query text must still reach the response sink: {caps:?}"
+    );
+}
+
+/// Python DB-API: a bound parameter does not taint the fetched rows.
+#[test]
+fn python_sql_bind_param_result_is_clean() {
+    let src = br#"
+import sqlite3
+from flask import Flask, request, jsonify
+def handler():
+    uid = request.args.get("id")
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    rows = cur.execute("SELECT * FROM users WHERE id = ?", (uid,))
+    conn.close()
+    return jsonify(rows)
+"#;
+    let ts = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let caps = sql_result_flow_caps(src, "python", Lang::Python, ts, "test.py");
+    assert!(
+        caps.is_empty(),
+        "bound value must not taint the rows; got {caps:?}"
+    );
+}
+
+/// Python DB-API: tainted query text still fires and the rows stay tainted.
+#[test]
+fn python_sql_text_taint_fires() {
+    let src = br#"
+import sqlite3
+from flask import Flask, request, jsonify
+def handler():
+    uid = request.args.get("id")
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    rows = cur.execute("SELECT * FROM users WHERE id = " + uid)
+    conn.close()
+    return jsonify(rows)
+"#;
+    let ts = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let caps = sql_result_flow_caps(src, "python", Lang::Python, ts, "test.py");
+    let sql = crate::labels::Cap::SQL_QUERY.bits();
+    assert!(
+        caps.iter().any(|c| c & sql != 0),
+        "missing SQLi finding: {caps:?}"
+    );
+}

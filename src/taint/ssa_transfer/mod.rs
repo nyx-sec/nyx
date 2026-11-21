@@ -6647,8 +6647,25 @@ pub(super) fn transfer_inst(
                         }
                     }
 
-                    // No labels and no summary, default propagation (gen/kill)
-                    let (use_caps, use_origins) = collect_args_taint(args, receiver, state, &[]);
+                    // No labels and no summary, default propagation (gen/kill).
+                    // A SQL query call that declares its payload positions
+                    // (the query text) returns rows, not the text: values
+                    // bound through the other positions do not flow into the
+                    // result, only the receiver and the query text do.
+                    let (use_caps, use_origins) = match sql_query_payload_positions(info) {
+                        Some(payload) => {
+                            let (mut caps, mut origins) =
+                                collect_args_taint(args, &None, state, &payload);
+                            if let Some(taint) = receiver.as_ref().and_then(|rv| state.get(*rv)) {
+                                caps |= taint.caps;
+                                for orig in &taint.origins {
+                                    push_origin_bounded(&mut origins, *orig);
+                                }
+                            }
+                            (caps, origins)
+                        }
+                        None => collect_args_taint(args, receiver, state, &[]),
+                    };
                     if return_bits.is_empty() {
                         return_bits = use_caps;
                         return_origins = use_origins;
@@ -10243,6 +10260,48 @@ fn emit_ssa_taint_events(
             inline_source,
         });
     }
+}
+
+/// Argument positions holding the SQL text of a SQL query sink call.
+///
+/// `Some` only when the call is classified as a `SQL_QUERY` sink and its gate
+/// declares explicit payload positions (`pool.query(text, binds)`,
+/// `cursor.execute(text, params)`); the remaining positions are bind
+/// parameters, which the driver sends apart from the text.  `None` for every
+/// other call, including SQL sinks that treat all arguments as the query.
+fn sql_query_payload_positions(info: &NodeInfo) -> Option<Vec<usize>> {
+    let sql = Cap::SQL_QUERY;
+    let mut positions: Vec<usize> = Vec::new();
+    if !info.call.gate_filters.is_empty() {
+        for gate in info
+            .call
+            .gate_filters
+            .iter()
+            .filter(|g| g.label_caps.intersects(sql))
+        {
+            positions.extend(gate.payload_args.iter().copied());
+        }
+        // A callee carrying other gates (a non-SQL one) is not a plain query
+        // call; only an all-SQL gate set describes the return value.
+        if info
+            .call
+            .gate_filters
+            .iter()
+            .any(|g| !g.label_caps.intersects(sql))
+        {
+            return None;
+        }
+    } else if info
+        .taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(sql)))
+    {
+        positions.extend(info.call.sink_payload_args.as_deref()?.iter().copied());
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    (!positions.is_empty()).then_some(positions)
 }
 
 /// Collect taint from call arguments.
