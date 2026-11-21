@@ -58,6 +58,14 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     if info.decl_type.is_some() {
                         continue;
                     }
+                    // Skip Go map-membership lookups (`_, ok := m[k]`).  The
+                    // presence flag only shares its operand with the key; it
+                    // is not a copy of it.  Folding it would repoint the
+                    // `if !ok` condition at the key, and the allowlist
+                    // narrowing needs the condition to name the lookup.
+                    if info.membership_lookup.is_some() {
+                        continue;
+                    }
                     replace_map.insert(inst.value, src);
                 }
             }
@@ -851,5 +859,72 @@ mod tests {
             body.blocks[0].terminator,
             Terminator::Return(Some(SsaValue(1)))
         ));
+    }
+
+    /// `_, ok := allowed[cmd]` shares its operand with the key but is not a
+    /// copy of it, so it stays an assignment and the branch on `ok` keeps
+    /// naming the lookup.
+    #[test]
+    fn membership_lookup_is_not_a_copy() {
+        let mut cfg: Cfg = Graph::new();
+        let n0 = cfg.add_node(make_cfg_node(StmtKind::Seq));
+        let mut lookup = make_cfg_node(StmtKind::Seq);
+        lookup.membership_lookup = Some(crate::cfg::MembershipLookup {
+            result_var: "ok".into(),
+            base: "allowed".into(),
+            key: "cmd".into(),
+            value_var: None,
+        });
+        let n1 = cfg.add_node(lookup);
+
+        let mut body = SsaBody {
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![
+                    SsaInst {
+                        value: SsaValue(0),
+                        op: SsaOp::Const(Some("x".into())),
+                        cfg_node: n0,
+                        var_name: Some("cmd".into()),
+                        span: (0, 2),
+                    },
+                    SsaInst {
+                        value: SsaValue(1),
+                        op: SsaOp::Assign(SmallVec::from_elem(SsaValue(0), 1)),
+                        cfg_node: n1,
+                        var_name: Some("ok".into()),
+                        span: (3, 5),
+                    },
+                ],
+                terminator: Terminator::Return(Some(SsaValue(1))),
+                preds: SmallVec::new(),
+                succs: SmallVec::new(),
+            }],
+            entry: BlockId(0),
+            value_defs: vec![
+                ValueDef {
+                    var_name: Some("cmd".into()),
+                    cfg_node: n0,
+                    block: BlockId(0),
+                },
+                ValueDef {
+                    var_name: Some("ok".into()),
+                    cfg_node: n1,
+                    block: BlockId(0),
+                },
+            ],
+            cfg_node_map: [(n0, SsaValue(0)), (n1, SsaValue(1))].into_iter().collect(),
+            exception_edges: vec![],
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: Default::default(),
+            synthetic_externals: Default::default(),
+            slot_scoped_assigns: Default::default(),
+        };
+
+        let (eliminated, copy_map) = copy_propagate(&mut body, &cfg);
+        assert_eq!(eliminated, 0);
+        assert!(copy_map.is_empty());
+        assert!(matches!(body.blocks[0].body[1].op, SsaOp::Assign(_)));
     }
 }
