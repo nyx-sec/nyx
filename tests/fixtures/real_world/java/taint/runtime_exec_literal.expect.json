@@ -1,0 +1,37 @@
+{
+  "description": "A constant command string on the chained Runtime.getRuntime().exec(..) form is not a finding, neither as the AST pattern nor as a structural sink.  The pattern used to look at the zero-argument getRuntime() call instead of exec, and the literal check rejected the chain because of that inner call.  A request-derived command still fires in both the chained and the split-receiver form.",
+  "tags": ["java", "cmdi", "precision"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "line_range": [5, 7],
+      "must_not_match": true,
+      "notes": "literal argument"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "line_range": [5, 7],
+      "must_not_match": true,
+      "notes": "literal argument inside a method that has a parameter"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [11, 11],
+      "must_match": true,
+      "notes": "chained exec on a request parameter"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "line_range": [11, 11],
+      "must_match": true,
+      "notes": "the pattern still fires on a variable argument"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [17, 17],
+      "must_match": true,
+      "notes": "split receiver"
+    }
+  ]
+}

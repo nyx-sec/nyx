@@ -79,6 +79,11 @@ pub struct CombinedQuery {
     /// `slots[pattern_index]` → that pattern's rule metadata + primary capture.
     /// Length equals `query.pattern_count()`.
     pub slots: Vec<CombinedSlot>,
+    /// Capture index of `@vuln`, the whole matched node every rule names.
+    /// Captures share one name table across the combined query, so one index
+    /// serves every pattern.  Layer A reads the matched call from it when the
+    /// primary capture sits inside a nested call (see `ast_query_diag`).
+    pub vuln_capture_index: Option<u32>,
 }
 
 type CombinedSet = Arc<Option<CombinedQuery>>;
@@ -162,9 +167,11 @@ fn build_combined(lang: &'static str, ts_lang: Language) -> Option<CombinedQuery
         })
         .collect();
 
+    let vuln_capture_index = combined.capture_index_for_name("vuln");
     Some(CombinedQuery {
         query: combined,
         slots,
+        vuln_capture_index,
     })
 }
 

@@ -1,7 +1,7 @@
 use crate::labels::{
     Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
 };
-use crate::utils::project::{DetectedFramework, FrameworkContext};
+use crate::utils::project::FrameworkContext;
 use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
@@ -33,6 +33,9 @@ pub static RULES: &[LabelRule] = &[
             "getRequestURL",
             "getServletPath",
             "getContextPath",
+            // Multipart upload: the client-chosen file name of a
+            // `request.getPart(..)` part.
+            "getSubmittedFileName",
         ],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
@@ -118,12 +121,6 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::URL_ENCODE),
         case_sensitive: false,
     },
-    // Parameterized queries prevent SQL injection
-    LabelRule {
-        matchers: &["prepareStatement"],
-        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
-        case_sensitive: false,
-    },
     // Phase 15 — JPA / Hibernate `Query.setParameter(name, value)` /
     // `Query.setParameterList(...)` bind a positional / named parameter
     // and return the same query object.  The bind step does NOT inject
@@ -193,8 +190,8 @@ pub static RULES: &[LabelRule] = &[
     // arg→return propagation smears taint through `Paths.get(...)`
     // (forwarder) so the path arg of these calls inherits any taint
     // present on the components.  `FileInputStream` / `FileOutputStream` /
-    // `RandomAccessFile` are constructor-style sinks: `new
-    // FileInputStream(path)` reaches the FILE_IO sink at the
+    // `FileReader` / `FileWriter` / `RandomAccessFile` are constructor-style
+    // sinks: `new FileInputStream(path)` reaches the FILE_IO sink at the
     // `object_creation_expression` level (mapped to `Kind::CallFn` in
     // Java's KINDS).  Receiver-typing already maps these classes to
     // `TypeKind::FileHandle` (see `class_name_to_type_kind`) so chained
@@ -219,6 +216,8 @@ pub static RULES: &[LabelRule] = &[
             "Files.newBufferedWriter",
             "FileInputStream",
             "FileOutputStream",
+            "FileReader",
+            "FileWriter",
             "RandomAccessFile",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
@@ -260,8 +259,8 @@ pub static RULES: &[LabelRule] = &[
     // `response.getWriter().write(x)` to the callee text `response.write`
     // (the intermediate `getWriter()` call is dropped), so a receiver-typed
     // `HttpResponse.write` rule never sees it.  The breadth is bounded two
-    // ways: `System.out.println` / `System.err.println` are excluded by
-    // `suppress_known_safe_callees`, and `receiver_incompatible_sink_caps`
+    // ways: the `System.out` / `System.err` console streams are in
+    // [`EXCLUDES`], and `receiver_incompatible_sink_caps`
     // strips `HTML_ESCAPE` whenever the receiver resolves to a non-response
     // type (a `FileWriter` / `FileOutputStream` typed `FileHandle`, a DB
     // connection, etc.), so genuine file/stream writes do not register as XSS.
@@ -419,6 +418,15 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     // ─── Spring / JPA / Hibernate SQL sinks ───
+    //
+    // Spring `JdbcTemplate` statement verbs.  Case-insensitive, so the
+    // `JdbcTemplate.*` text that type-qualified resolution builds for a
+    // receiver declared `JdbcTemplate` / `NamedParameterJdbcTemplate`
+    // matches too, as does OWASP Benchmark's static
+    // `DatabaseHelper.JDBCtemplate`.  `getJdbcTemplate()` is the
+    // `JdbcDaoSupport` accessor.  The SQL is arg 0; the `sql_arg0_gate`
+    // entries in `GATED_SINKS` keep bind values and row mappers out of the
+    // sink.
     LabelRule {
         matchers: &[
             "jdbcTemplate.query",
@@ -426,6 +434,23 @@ pub static RULES: &[LabelRule] = &[
             "jdbcTemplate.execute",
             "jdbcTemplate.queryForObject",
             "jdbcTemplate.queryForList",
+            "jdbcTemplate.queryForMap",
+            "jdbcTemplate.queryForRowSet",
+            "jdbcTemplate.queryForStream",
+            "jdbcTemplate.queryForInt",
+            "jdbcTemplate.queryForLong",
+            "jdbcTemplate.batchUpdate",
+            "getJdbcTemplate.query",
+            "getJdbcTemplate.update",
+            "getJdbcTemplate.execute",
+            "getJdbcTemplate.queryForObject",
+            "getJdbcTemplate.queryForList",
+            "getJdbcTemplate.queryForMap",
+            "getJdbcTemplate.queryForRowSet",
+            "getJdbcTemplate.queryForStream",
+            "getJdbcTemplate.queryForInt",
+            "getJdbcTemplate.queryForLong",
+            "getJdbcTemplate.batchUpdate",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
@@ -639,14 +664,29 @@ pub static RULES: &[LabelRule] = &[
     // resolves to `XmlParser`).  Bare `parse` is intentionally avoided to
     // prevent collisions with `Integer.parseInt`, `LocalDate.parse`,
     // generic JSON parsers, etc.
+    //
+    // StAX parses straight off the factory
+    // (`xif.createXMLStreamReader(in)`) and dom4j through `SAXReader.read`.
+    // A fluent chain off a factory reads as the factory class plus the last
+    // method (`DocumentBuilderFactory.newInstance().newDocumentBuilder()
+    // .parse(x)` is `DocumentBuilderFactory.parse`), and such a chain never
+    // configures the factory.
     LabelRule {
         matchers: &[
             "DocumentBuilder.parse",
             "SAXParser.parse",
             "XMLReader.parse",
             "SAXBuilder.build",
+            "SAXReader.read",
+            "DocumentBuilderFactory.parse",
+            "SAXParserFactory.parse",
+            "XMLInputFactory.createXMLStreamReader",
+            "XMLInputFactory.createXMLEventReader",
             "XmlParser.parse",
             "XmlParser.build",
+            "XmlParser.read",
+            "XmlParser.createXMLStreamReader",
+            "XmlParser.createXMLEventReader",
         ],
         label: DataLabel::Sink(Cap::XXE),
         case_sensitive: true,
@@ -786,76 +826,66 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // Spring JdbcTemplate verbs.  All take SQL at arg 0; remaining args are
     // bind values (`Object[]` / varargs) or `RowMapper` / `ResultSetExtractor`
     // / class hints — all non-SQL payloads.
-    SinkGate {
-        callee_matcher: "jdbcTemplate.query",
-        arg_index: 0,
-        dangerous_values: &[],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::SQL_QUERY),
-        case_sensitive: false,
-        payload_args: &[0],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::Destination {
-            object_destination_fields: &[],
-        },
-    },
-    SinkGate {
-        callee_matcher: "jdbcTemplate.update",
-        arg_index: 0,
-        dangerous_values: &[],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::SQL_QUERY),
-        case_sensitive: false,
-        payload_args: &[0],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::Destination {
-            object_destination_fields: &[],
-        },
-    },
-    SinkGate {
-        callee_matcher: "jdbcTemplate.execute",
-        arg_index: 0,
-        dangerous_values: &[],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::SQL_QUERY),
-        case_sensitive: false,
-        payload_args: &[0],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::Destination {
-            object_destination_fields: &[],
-        },
-    },
-    SinkGate {
-        callee_matcher: "jdbcTemplate.queryForObject",
-        arg_index: 0,
-        dangerous_values: &[],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::SQL_QUERY),
-        case_sensitive: false,
-        payload_args: &[0],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::Destination {
-            object_destination_fields: &[],
-        },
-    },
-    SinkGate {
-        callee_matcher: "jdbcTemplate.queryForList",
-        arg_index: 0,
-        dangerous_values: &[],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::SQL_QUERY),
-        case_sensitive: false,
-        payload_args: &[0],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::Destination {
-            object_destination_fields: &[],
-        },
-    },
+    sql_arg0_gate("jdbcTemplate.query"),
+    sql_arg0_gate("jdbcTemplate.update"),
+    sql_arg0_gate("jdbcTemplate.execute"),
+    sql_arg0_gate("jdbcTemplate.queryForObject"),
+    sql_arg0_gate("jdbcTemplate.queryForList"),
+    sql_arg0_gate("jdbcTemplate.queryForMap"),
+    sql_arg0_gate("jdbcTemplate.queryForRowSet"),
+    sql_arg0_gate("jdbcTemplate.queryForStream"),
+    sql_arg0_gate("jdbcTemplate.queryForInt"),
+    sql_arg0_gate("jdbcTemplate.queryForLong"),
+    sql_arg0_gate("jdbcTemplate.batchUpdate"),
+    sql_arg0_gate("getJdbcTemplate.query"),
+    sql_arg0_gate("getJdbcTemplate.update"),
+    sql_arg0_gate("getJdbcTemplate.execute"),
+    sql_arg0_gate("getJdbcTemplate.queryForObject"),
+    sql_arg0_gate("getJdbcTemplate.queryForList"),
+    sql_arg0_gate("getJdbcTemplate.queryForMap"),
+    sql_arg0_gate("getJdbcTemplate.queryForRowSet"),
+    sql_arg0_gate("getJdbcTemplate.queryForStream"),
+    sql_arg0_gate("getJdbcTemplate.queryForInt"),
+    sql_arg0_gate("getJdbcTemplate.queryForLong"),
+    sql_arg0_gate("getJdbcTemplate.batchUpdate"),
+    // ── Spring RestTemplate ───────────────────────────────────────────────
+    //
+    // The flat SSRF / DATA_EXFIL rules above match every argument.  The URL
+    // is arg 0 (or the `RequestEntity` of `exchange(entity, T.class)`); the
+    // request body is arg 1 of the `post*` / `put` / `patchForObject`
+    // verbs and arg 2 of `exchange(url, method, entity, T.class)`.  Trailing
+    // `uriVariables` are expanded into the path or query of the template at
+    // arg 0 and cannot move the host, so a tainted body or path variable
+    // under a fixed origin is not SSRF.
+    destination_gate("getForObject", Cap::SSRF, &[0]),
+    destination_gate("getForEntity", Cap::SSRF, &[0]),
+    destination_gate("headForHeaders", Cap::SSRF, &[0]),
+    destination_gate("postForObject", Cap::SSRF, &[0]),
+    destination_gate("postForEntity", Cap::SSRF, &[0]),
+    destination_gate("RestTemplate.exchange", Cap::SSRF, &[0]),
+    destination_gate("postForObject", Cap::DATA_EXFIL, &[1]),
+    destination_gate("postForEntity", Cap::DATA_EXFIL, &[1]),
+    destination_gate("RestTemplate.put", Cap::DATA_EXFIL, &[1]),
+    destination_gate("RestTemplate.patchForObject", Cap::DATA_EXFIL, &[1]),
+    destination_gate("RestTemplate.exchange", Cap::DATA_EXFIL, &[0, 2]),
+    // ── Reflective dispatch by name ───────────────────────────────────────
+    //
+    // `cls.getMethod(name, paramTypes...)` / `getDeclaredMethod`: a
+    // request-chosen `name` is the Struts DispatchAction / DMI style of
+    // unsafe reflection (CWE-470), the method-level twin of
+    // `Class.forName(tainted)`.  A literal name never fires; a call with no
+    // arguments (`request.getMethod()`) has no name to be tainted.
+    method_name_gate("getMethod"),
+    method_name_gate("getDeclaredMethod"),
+    // A template that puts a variable in the scheme or authority
+    // (`"http://{host}/api"`) does let the uriVariables pick the host, so
+    // every argument is SSRF payload there.
+    host_template_gate("getForObject"),
+    host_template_gate("getForEntity"),
+    host_template_gate("headForHeaders"),
+    host_template_gate("postForObject"),
+    host_template_gate("postForEntity"),
+    host_template_gate("RestTemplate.exchange"),
     // JPA / Hibernate factories.  `createQuery(sql)` / `createQuery(sql, ResultClass)`
     // both take the SQL/JPQL/HQL string at arg 0; the optional `ResultClass`
     // at arg 1 is metadata, not SQL.
@@ -1079,6 +1109,84 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
 ];
 
+/// Case-insensitive SQL sink gate whose statement is arg 0, for the Spring
+/// `JdbcTemplate` verbs.
+const fn sql_arg0_gate(callee_matcher: &'static str) -> SinkGate {
+    SinkGate {
+        callee_matcher,
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    }
+}
+
+/// Case-insensitive gate that fires on taint at the `payload_args`
+/// positions only.
+const fn destination_gate(
+    callee_matcher: &'static str,
+    cap: Cap,
+    payload_args: &'static [usize],
+) -> SinkGate {
+    SinkGate {
+        callee_matcher,
+        arg_index: payload_args[0],
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(cap),
+        case_sensitive: false,
+        payload_args,
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    }
+}
+
+/// `Sink(CODE_EXEC)` on a reflective lookup whose first argument is the
+/// method name.  Value-match activation with no dangerous values: a string
+/// literal name suppresses, a computed one fires, and a call with no first
+/// argument stays inert.
+const fn method_name_gate(callee_matcher: &'static str) -> SinkGate {
+    SinkGate {
+        callee_matcher,
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    }
+}
+
+/// SSRF on every argument of a RestTemplate call whose literal URL template
+/// starts with a template variable in the scheme or authority.
+const fn host_template_gate(callee_matcher: &'static str) -> SinkGate {
+    SinkGate {
+        callee_matcher,
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &["{", "http://{", "https://{", "//{"],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: crate::labels::ALL_ARGS_PAYLOAD,
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::LiteralOnly,
+    }
+}
+
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow
     "if_statement"                 => Kind::If,
@@ -1146,6 +1254,27 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "package_declaration"          => Kind::Trivia,
 };
 
+/// Callee patterns that must never be classified as source/sanitizer/sink.
+/// The bare `println` / `print` / `write` response-writer sink would
+/// otherwise match the process console streams.  Excluding them at label
+/// time keeps the sink off the CFG node, so the taint engine, callee
+/// summaries (a `log(msg)` helper that prints) and the structural
+/// `cfg-unguarded-sink` rule all agree.
+pub static EXCLUDES: &[&str] = &[
+    "System.out.print",
+    "System.out.println",
+    "System.out.printf",
+    "System.out.format",
+    "System.out.write",
+    "System.out.append",
+    "System.err.print",
+    "System.err.println",
+    "System.err.printf",
+    "System.err.format",
+    "System.err.write",
+    "System.err.append",
+];
+
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
     param_node_kinds: &["formal_parameter", "spread_parameter"],
@@ -1153,20 +1282,15 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     ident_fields: &["name"],
 };
 
-/// Framework-conditional rules for Java.
-pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
-    let mut rules = Vec::new();
-
-    if ctx.has(DetectedFramework::Spring) {
-        // When Spring is detected, bare "send" is likely HttpClient.send()
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["send".into()],
-            label: DataLabel::Sink(Cap::SSRF),
-            case_sensitive: false,
-        });
-    }
-
-    rules
+/// Framework-conditional rules for Java.  None today: a Spring project used
+/// to get a bare `send` SSRF sink, which matched `KafkaTemplate.send`,
+/// `SseEmitter.send`, `JavaMailSender.send` and every service `send(..)`.
+/// The JDK client is covered by the type-qualified `HttpClient.send` /
+/// `sendAsync` rules, reached through `constructor_type` for
+/// `HttpClient.newHttpClient()` and through the declared type of a field,
+/// formal or local (`cfg::java_declared_receiver_kind`).
+pub fn framework_rules(_ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -1194,5 +1318,201 @@ mod tests {
                 "{kind} should map to Kind::Block so the CFG builder walks its body"
             );
         }
+    }
+
+    #[test]
+    fn console_streams_are_not_response_sinks() {
+        use crate::labels::{Cap, DataLabel, classify};
+        for callee in [
+            "System.out.println",
+            "System.out.print",
+            "System.err.println",
+            "System.out.write",
+            "java.lang.System.out.println",
+        ] {
+            assert_eq!(classify("java", callee, None), None, "{callee}");
+        }
+        for callee in ["out.println", "response.write", "writer.print"] {
+            assert_eq!(
+                classify("java", callee, None),
+                Some(DataLabel::Sink(Cap::HTML_ESCAPE)),
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_statement_is_not_a_sanitizer() {
+        use crate::labels::classify;
+        assert_eq!(classify("java", "conn.prepareStatement", None), None);
+    }
+
+    fn has_sink(labels: &[crate::labels::DataLabel], cap: crate::labels::Cap) -> bool {
+        labels
+            .iter()
+            .any(|l| matches!(l, crate::labels::DataLabel::Sink(c) if c.contains(cap)))
+    }
+
+    #[test]
+    fn spring_projects_get_no_bare_send_sink() {
+        use crate::labels::{Cap, classify_all};
+        use crate::utils::project::{DetectedFramework, FrameworkContext};
+        let ctx = FrameworkContext {
+            frameworks: vec![DetectedFramework::Spring],
+            ..Default::default()
+        };
+        let rules = super::framework_rules(&ctx);
+        for callee in [
+            "kafkaTemplate.send",
+            "emitter.send",
+            "mailSender.send",
+            "notificationService.send",
+        ] {
+            let labels = classify_all("java", callee, Some(&rules));
+            assert!(!has_sink(&labels, Cap::SSRF), "{callee}: {labels:?}");
+        }
+        let labels = classify_all("java", "HttpClient.send", Some(&rules));
+        assert!(
+            has_sink(&labels, Cap::SSRF),
+            "typed JDK client stays an SSRF sink"
+        );
+    }
+
+    #[test]
+    fn file_reader_and_writer_constructors_are_file_sinks() {
+        use crate::labels::{Cap, classify_all};
+        for callee in ["FileReader", "FileWriter", "java.io.FileWriter"] {
+            let labels = classify_all("java", callee, None);
+            assert!(has_sink(&labels, Cap::FILE_IO), "{callee}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn jdbc_template_verbs_match_any_receiver_through_the_declared_type() {
+        use crate::labels::{Cap, classify_all, classify_gated_sink};
+        for callee in [
+            "JdbcTemplate.query",
+            "JdbcTemplate.queryForMap",
+            "JdbcTemplate.queryForRowSet",
+            "JdbcTemplate.queryForStream",
+            "JdbcTemplate.batchUpdate",
+            "getJdbcTemplate.update",
+            "org.owasp.benchmark.helpers.DatabaseHelper.JDBCtemplate.batchUpdate",
+        ] {
+            let labels = classify_all("java", callee, None);
+            assert!(has_sink(&labels, Cap::SQL_QUERY), "{callee}: {labels:?}");
+            let gates = classify_gated_sink("java", callee, |_| None, |_| None, |_| true);
+            assert!(
+                gates.iter().any(|g| g.payload_args == [0]),
+                "{callee} gates the SQL text at arg 0 only: {gates:?}"
+            );
+        }
+        assert!(classify_all("java", "map.query", None).is_empty());
+    }
+
+    #[test]
+    fn rest_template_gates_split_url_and_body() {
+        use crate::labels::{ALL_ARGS_PAYLOAD, Cap, DataLabel, classify_gated_sink};
+        let payloads = |callee: &str, cap: Cap, first_arg: Option<&str>| -> Vec<Vec<usize>> {
+            let first = first_arg.map(str::to_string);
+            classify_gated_sink(
+                "java",
+                callee,
+                |i| if i == 0 { first.clone() } else { None },
+                |_| None,
+                |_| true,
+            )
+            .into_iter()
+            .filter(|g| matches!(g.label, DataLabel::Sink(c) if c == cap))
+            .map(|g| g.payload_args.to_vec())
+            .collect()
+        };
+        // A fixed template: the URL is SSRF payload, the body is DATA_EXFIL
+        // payload, and uriVariables are neither.
+        let url = "https://api.example.com/users/{id}";
+        assert_eq!(
+            payloads("restTemplate.postForObject", Cap::SSRF, Some(url)),
+            vec![vec![0]]
+        );
+        assert_eq!(
+            payloads("restTemplate.postForObject", Cap::DATA_EXFIL, Some(url)),
+            vec![vec![1]]
+        );
+        assert_eq!(
+            payloads("rt.getForObject", Cap::SSRF, Some(url)),
+            vec![vec![0]]
+        );
+        assert!(payloads("rt.getForObject", Cap::DATA_EXFIL, Some(url)).is_empty());
+        assert_eq!(
+            payloads("RestTemplate.exchange", Cap::DATA_EXFIL, Some(url)),
+            vec![vec![0, 2]]
+        );
+        // A variable in the scheme or authority lets uriVariables pick the host.
+        let hosted = payloads("rt.getForObject", Cap::SSRF, Some("http://{host}/api"));
+        assert!(
+            hosted.iter().any(|p| p == ALL_ARGS_PAYLOAD),
+            "host template widens SSRF to every argument: {hosted:?}"
+        );
+        assert!(
+            !payloads("rt.getForObject", Cap::SSRF, Some(url))
+                .iter()
+                .any(|p| p == ALL_ARGS_PAYLOAD)
+        );
+    }
+
+    #[test]
+    fn xml_factory_and_dom4j_parsers_are_xxe_sinks() {
+        use crate::labels::{Cap, classify_all};
+        for callee in [
+            "XmlParser.createXMLStreamReader",
+            "XmlParser.createXMLEventReader",
+            "XmlParser.read",
+            "XMLInputFactory.createXMLStreamReader",
+            "DocumentBuilderFactory.parse",
+            "SAXParserFactory.parse",
+            "SAXReader.read",
+        ] {
+            let labels = classify_all("java", callee, None);
+            assert!(has_sink(&labels, Cap::XXE), "{callee}: {labels:?}");
+        }
+        assert!(classify_all("java", "reader.read", None).is_empty());
+    }
+
+    #[test]
+    fn servlet_get_reader_is_user_input_and_read_line_is_file_data() {
+        use crate::labels::{Cap, SourceKind, infer_source_kind};
+        assert_eq!(
+            infer_source_kind(Cap::all(), "req.getReader"),
+            SourceKind::UserInput
+        );
+        assert_eq!(
+            infer_source_kind(Cap::all(), "br.readLine"),
+            SourceKind::FileSystem
+        );
+    }
+
+    #[test]
+    fn reflective_lookup_by_name_is_a_gated_code_exec_sink() {
+        use crate::labels::{Cap, DataLabel, classify_gated_sink_with_presence};
+        let fires = |callee: &str, first: Option<&str>, has_arg: bool| {
+            let first = first.map(str::to_string);
+            classify_gated_sink_with_presence(
+                "java",
+                callee,
+                |i| if i == 0 { first.clone() } else { None },
+                |_| None,
+                |_| false,
+                |i| has_arg && i == 0,
+            )
+            .iter()
+            .any(|g| matches!(g.label, DataLabel::Sink(c) if c.contains(Cap::CODE_EXEC)))
+        };
+        assert!(fires("this.getMethod", None, true), "computed name");
+        assert!(fires("cls.getDeclaredMethod", None, true), "computed name");
+        assert!(!fires("cls.getMethod", Some("list"), true), "literal name");
+        assert!(
+            !fires("request.getMethod", None, false),
+            "servlet getMethod() has no name"
+        );
     }
 }

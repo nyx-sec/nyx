@@ -165,13 +165,17 @@ fn classify_call(
             .and_then(|v| consts.get(v))
     };
     // Helper: text of the const lattice (for string/identifier comparison).
+    // An inline string literal has no SSA value, so fall back to the CFG's
+    // per-argument literal text: the OWASP cheat-sheet form is
+    // `setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)`.
     let arg_text = |n: usize| -> Option<String> {
-        match arg_const(n)? {
-            ConstLattice::Str(s) => Some(s.clone()),
-            ConstLattice::Bool(b) => Some(b.to_string()),
-            ConstLattice::Int(i) => Some(i.to_string()),
+        let from_const = match arg_const(n) {
+            Some(ConstLattice::Str(s)) => Some(s.clone()),
+            Some(ConstLattice::Bool(b)) => Some(b.to_string()),
+            Some(ConstLattice::Int(i)) => Some(i.to_string()),
             _ => None,
-        }
+        };
+        from_const.or_else(|| arg_literals.get(n).cloned().flatten())
     };
     // Helper: textual identifier(s) at arg N from the CFG node.  Non-literal
     // feature names (`XMLConstants.FEATURE_SECURE_PROCESSING`, bare
@@ -264,6 +268,35 @@ fn classify_call(
                     ConfigEffect::None
                 } else {
                     ConfigEffect::UpdateReceiver(cfg)
+                }
+            }
+            // StAX `xif.setProperty(XMLInputFactory.SUPPORT_DTD, false)` /
+            // `setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES,
+            // false)`, by constant or by property name.  Either one stops
+            // external entity resolution.
+            "setProperty" => {
+                if receiver.is_none() {
+                    return ConfigEffect::None;
+                }
+                let name_lit = arg_text(0).unwrap_or_default();
+                let names_property = |constant: &str, property: &str| {
+                    name_lit.contains(constant)
+                        || name_lit == property
+                        || arg_ident_text(0).iter().any(|s| s.contains(constant))
+                };
+                if (names_property("SUPPORT_DTD", "javax.xml.stream.supportDTD")
+                    || names_property(
+                        "IS_SUPPORTING_EXTERNAL_ENTITIES",
+                        "javax.xml.stream.isSupportingExternalEntities",
+                    ))
+                    && arg_bool(1) == Some(false)
+                {
+                    ConfigEffect::UpdateReceiver(XmlParserConfig {
+                        disallow_doctype: true,
+                        ..Default::default()
+                    })
+                } else {
+                    ConfigEffect::None
                 }
             }
             // `factory.setExpandEntityReferences(false)` —

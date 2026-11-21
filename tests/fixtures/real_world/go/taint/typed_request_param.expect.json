@@ -1,0 +1,97 @@
+{
+  "description": "Go *http.Request formals are request sources by declared type, whatever the binding is named (req, httpReq, in), including accessors that had no rule (PathValue, Form.Get, PostFormValue) and closures that capture the formal.",
+  "tags": [
+    "taint",
+    "go",
+    "source",
+    "request-type"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "req.FormValue flows to os.ReadFile",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "httpReq.Header.Get flows to exec.Command",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "in.URL.Query().Get flows to a shell command",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        28,
+        28
+      ],
+      "notes": "io.ReadAll(req.Body) flows to exec.Command",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "r.PathValue flows to os.ReadFile",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        40,
+        40
+      ],
+      "notes": "r.Form.Get flows to os.ReadFile",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        42,
+        42
+      ],
+      "notes": "r.PostFormValue flows to os.ReadFile",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        49,
+        49
+      ],
+      "notes": "closure reads the enclosing handler's req.FormValue",
+      "must_match": true
+    }
+  ]
+}

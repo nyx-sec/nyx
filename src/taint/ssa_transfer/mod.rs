@@ -244,14 +244,13 @@ pub struct SsaTaintTransfer<'a> {
     /// preserves today's per-callsite seeding (`global_seed`,
     /// `param_seed`, `auto_seed_handler_params`).
     pub entry_kind: Option<crate::entry_points::EntryKind>,
-    /// Per-formal route-capture flag, indexed by `SsaOp::Param.index`.
-    /// Used by the entry-kind seeding pass for Python `FlaskRoute`
-    /// (and any future per-formal-name framework gate) to restrict
-    /// `Source(UserInput)` painting to formals whose names appear as
-    /// path captures in the routing decorator.  Out-of-range indices
-    /// default to `false` and skip seeding.  `None` preserves today's
-    /// "seed every Param" behaviour for entry kinds without per-formal
-    /// gating (Spring, JaxRs, Sinatra, Express, Gin, AppRoute, ...).
+    /// Per-formal "bound from the request" flag, indexed by
+    /// `SsaOp::Param.index` (see `BodyMeta::param_route_capture`).
+    /// Used by the entry-kind seeding pass for Flask, Sinatra, FastAPI,
+    /// Spring and JAX-RS to restrict `Source(UserInput)` painting to
+    /// formals that are path captures (Python, Ruby) or request-bound
+    /// (Java).  `None` preserves the "seed every Param" behaviour for entry
+    /// kinds without per-formal gating (Express, Gin, AppRoute, ...).
     pub param_route_capture: Option<&'a [bool]>,
     /// True when the transfer is driving a per-parameter probe inside
     /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
@@ -304,6 +303,40 @@ pub fn run_ssa_taint_full_with_exits(
 ) {
     let result = run_ssa_taint_internal(ssa, cfg, transfer, true);
     (result.events, result.block_states, result.block_exit_states)
+}
+
+/// Request-bound flag of a Spring / JAX-RS entry `Param` (see
+/// `BodyMeta::param_route_capture`).  A formal reads its own flag.  A Param
+/// past the formals is a dotted projection of one (`dto.name`) and takes the
+/// flag of its root formal.  Without flags every Param counts as bound.
+fn java_param_is_request_bound(
+    ssa: &SsaBody,
+    inst: &SsaInst,
+    param_index: Option<usize>,
+    flags: Option<&[bool]>,
+) -> bool {
+    let Some(flags) = flags else {
+        return true;
+    };
+    let Some(index) = param_index else {
+        return false;
+    };
+    if let Some(&bound) = flags.get(index) {
+        return bound;
+    }
+    let Some((root, _)) = inst.var_name.as_deref().and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    ssa.blocks[ssa.entry.0 as usize]
+        .body
+        .iter()
+        .find_map(|i| match i.op {
+            SsaOp::Param { index } if i.var_name.as_deref() == Some(root) => {
+                flags.get(index).copied()
+            }
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 fn run_ssa_taint_internal(
@@ -377,7 +410,9 @@ fn run_ssa_taint_internal(
         // `None` seeds every Param.  `seed_at_all = false` skips seeding
         // entirely; the engine relies on existing label rules instead.
         let (skip_self, only_index, seed_at_all): (bool, Option<usize>, bool) = match entry_kind {
-            // Pure Param-only handlers, all named formals are request-bound.
+            // Param-only handlers.  Every named formal is a candidate; the
+            // per-formal gates below narrow Flask, Sinatra, FastAPI, Spring,
+            // JAX-RS and the Rust frameworks to the request-bound ones.
             EntryKind::AppRouteHandler { .. }
             | EntryKind::UseServerDirective
             | EntryKind::FormAction
@@ -563,6 +598,26 @@ fn run_ssa_taint_internal(
                 if !seed_capture && !seed_extractor && !body_model_field {
                     continue;
                 }
+            }
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::SpringMapping { .. } | EntryKind::JaxRsResource
+                )
+                && !java_param_is_request_bound(
+                    ssa,
+                    inst,
+                    param_index,
+                    transfer.param_route_capture,
+                )
+            {
+                // Spring and JAX-RS inject infrastructure objects next to the
+                // request-bound formals: the servlet response and request,
+                // `HttpSession`, `Model`, `Principal`,
+                // `@AuthenticationPrincipal`, `@Context SecurityContext`, ...
+                // Painting those makes a constant `resp.getWriter().write(..)`
+                // or `resp.addCookie(..)` fire on the receiver alone.
+                continue;
             }
             let origin = TaintOrigin {
                 node: inst.cfg_node,
@@ -5929,24 +5984,50 @@ pub(super) fn transfer_inst(
                 }
             }
 
-            // Output-parameter source tainting (C/C++): for known APIs that
-            // write to a buffer argument (fgets, getline, recv, etc.), taint
-            // the argument SSA values at the registered output positions.
+            // Output-parameter source tainting: for known APIs that write
+            // input into an argument (C `fgets` / `recv` buffers, Go request
+            // binders such as `c.ShouldBindJSON(&in)`), taint the argument
+            // SSA values at the registered output positions.
+            //
+            // A Go binder's only return value is the `error`, which carries
+            // no request data; `binder_error_return` keeps it clean even
+            // though the default arg-to-return propagation below would copy
+            // the now-tainted destination pointer into it.
+            let mut binder_error_return = false;
             if !return_bits.is_empty() {
                 if let Some(positions) =
                     crate::labels::output_param_source_positions(transfer.lang.as_str(), callee)
                 {
-                    for &pos in positions {
-                        if let Some(arg_group) = args.get(pos) {
-                            for &arg_v in arg_group {
-                                state.set(
-                                    arg_v,
-                                    VarTaint {
-                                        caps: return_bits,
-                                        origins: return_origins.clone(),
-                                        uses_summary: false,
-                                    },
-                                );
+                    if transfer.lang == Lang::Go {
+                        // A Go binder decodes into a struct pointer, so the
+                        // taint has to reach `in.Field` reads through the
+                        // heap and field-cell channels as well.
+                        let bound = VarTaint {
+                            caps: return_bits,
+                            origins: return_origins.clone(),
+                            uses_summary: false,
+                        };
+                        for &pos in positions {
+                            if let Some(arg_group) = args.get(pos) {
+                                taint_writeback_dest(state, transfer, arg_group, &bound);
+                            }
+                        }
+                        return_bits = Cap::empty();
+                        return_origins.clear();
+                        binder_error_return = true;
+                    } else {
+                        for &pos in positions {
+                            if let Some(arg_group) = args.get(pos) {
+                                for &arg_v in arg_group {
+                                    state.set(
+                                        arg_v,
+                                        VarTaint {
+                                            caps: return_bits,
+                                            origins: return_origins.clone(),
+                                            uses_summary: false,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -6383,41 +6464,59 @@ pub(super) fn transfer_inst(
             // callee name from the receiver's inferred type (e.g., client.send →
             // HttpClient.send when client is typed as HttpClient).
             if !resolved_callee && info.taint.labels.is_empty() {
-                if let Some(rv) = receiver {
-                    if transfer.type_facts.is_some() || state.path_env.is_some() {
-                        let tq_labels = resolve_type_qualified_labels(
-                            callee,
-                            *rv,
-                            transfer.type_facts,
-                            state.path_env.as_deref(),
-                            transfer.lang,
-                            transfer.extra_labels,
-                            Some(ssa),
-                        );
-                        for lbl in &tq_labels {
-                            match lbl {
-                                DataLabel::Source(bits) if !has_source_label => {
-                                    return_bits |= *bits;
-                                    let source_kind =
-                                        crate::labels::infer_source_kind(*bits, callee);
-                                    let origin = TaintOrigin {
-                                        node: inst.cfg_node,
-                                        source_kind,
-                                        source_span: None,
-                                    };
-                                    if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
-                                        return_origins.push(origin);
-                                    }
+                let declared = info.call.receiver_decl_type.as_ref();
+                if (receiver.is_some()
+                    && (transfer.type_facts.is_some() || state.path_env.is_some()))
+                    || declared.is_some()
+                {
+                    let tq_labels = resolve_type_qualified_labels(
+                        callee,
+                        *receiver,
+                        transfer.type_facts,
+                        state.path_env.as_deref(),
+                        declared,
+                        transfer.lang,
+                        transfer.extra_labels,
+                        Some(ssa),
+                    );
+                    // A callee whose own text already matches a Source rule but
+                    // reached here without the label had it withdrawn at CFG
+                    // construction (a process-output `readLine`, an excluded
+                    // callee).  The qualified form (`FileHandle.readLine`)
+                    // matches the same bare rule and would bring it back.
+                    let plain_text_is_source =
+                        tq_labels.iter().any(|l| matches!(l, DataLabel::Source(_)))
+                            && crate::labels::classify_all(
+                                transfer.lang.as_str(),
+                                callee,
+                                transfer.extra_labels,
+                            )
+                            .iter()
+                            .any(|l| matches!(l, DataLabel::Source(_)));
+                    for lbl in &tq_labels {
+                        match lbl {
+                            DataLabel::Source(bits)
+                                if !has_source_label && !plain_text_is_source =>
+                            {
+                                return_bits |= *bits;
+                                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                                let origin = TaintOrigin {
+                                    node: inst.cfg_node,
+                                    source_kind,
+                                    source_span: None,
+                                };
+                                if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
+                                    return_origins.push(origin);
                                 }
-                                DataLabel::Sanitizer(bits) => {
-                                    sanitizer_bits |= *bits;
-                                }
-                                DataLabel::Sink(_) => {
-                                    // Sink detection is handled separately in
-                                    // collect_block_events via resolve_sink_caps_typed
-                                }
-                                _ => {}
                             }
+                            DataLabel::Sanitizer(bits) => {
+                                sanitizer_bits |= *bits;
+                            }
+                            DataLabel::Sink(_) => {
+                                // Sink detection is handled separately in
+                                // collect_block_events via resolve_sink_caps_typed
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -7094,7 +7193,19 @@ pub(super) fn transfer_inst(
             //   - FMT_STRING: printf-style format args only.
             //   - URL_ENCODE: URL components only.
             //   - JSON_PARSE: parser inputs only.
-            if info.call.is_constructor && !return_bits.is_empty() {
+            //
+            // Classes whose instance IS the path or string value (Java
+            // `File`, `String`, `StringBuilder`; see
+            // `constructor_is_value_wrapper`) keep every cap.  When the CFG
+            // moved an inline source argument into the callee
+            // (`new File(req.getParameter("f"))`), the class name is in
+            // `outer_callee`.
+            let ctor_is_value =
+                crate::ssa::type_facts::constructor_is_value_wrapper(transfer.lang, callee)
+                    || info.call.outer_callee.as_deref().is_some_and(|oc| {
+                        crate::ssa::type_facts::constructor_is_value_wrapper(transfer.lang, oc)
+                    });
+            if info.call.is_constructor && !ctor_is_value && !return_bits.is_empty() {
                 let strip = Cap::FILE_IO | Cap::FMT_STRING | Cap::URL_ENCODE | Cap::JSON_PARSE;
                 return_bits &= !strip;
                 if return_bits.is_empty() {
@@ -7174,7 +7285,7 @@ pub(super) fn transfer_inst(
             }
 
             // Write result
-            if return_bits.is_empty() {
+            if return_bits.is_empty() || binder_error_return {
                 state.remove(inst.value);
             } else {
                 state.set(
@@ -8731,20 +8842,27 @@ fn collect_block_events(
         // For known type-qualified ORM raw-SQL methods (`TypeOrmRepo.query` et al.),
         // also capture the restricted payload-arg list so bind-array taint at arg 1+
         // does not fire.
-        let mut tq_payload_args: Option<&'static [usize]> = None;
+        let mut tq_filters: SmallVec<[TqSinkFilter; 2]> = SmallVec::new();
         if sink_caps.is_empty() {
             if let SsaOp::Call {
-                callee,
-                receiver: Some(rv),
-                ..
+                callee, receiver, ..
             } = &inst.op
             {
-                if transfer.type_facts.is_some() || state.path_env.is_some() {
+                // A declared receiver type needs no SSA receiver: a Java
+                // field read in a body lowered without its class scope has
+                // no value, but its declaration still names the type.
+                let declared = info.call.receiver_decl_type.as_ref();
+                if (receiver.is_some()
+                    && (transfer.type_facts.is_some() || state.path_env.is_some()))
+                    || declared.is_some()
+                {
                     let (tq_labels, tq_args) = resolve_type_qualified_labels_with_args(
                         callee,
-                        *rv,
+                        info.call.outer_callee.as_deref(),
+                        *receiver,
                         transfer.type_facts,
                         state.path_env.as_deref(),
+                        declared,
                         transfer.lang,
                         transfer.extra_labels,
                         Some(ssa),
@@ -8754,7 +8872,7 @@ fn collect_block_events(
                             sink_caps |= *bits;
                         }
                     }
-                    tq_payload_args = tq_args;
+                    tq_filters = tq_args;
                 }
             }
         }
@@ -9171,11 +9289,7 @@ fn collect_block_events(
                 // `template.HTML(x)` sink arg 0 is the payload, so a
                 // non-response arg type (e.g. a tainted `String`) must NOT
                 // strip the XSS label.
-                let is_fprintf = matches!(
-                    callee.as_str(),
-                    "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln"
-                );
-                if is_fprintf {
+                if crate::ssa::type_facts::is_go_writer_sink_callee(callee) {
                     if let Some(&first_val) = args.first().and_then(|g| g.first()) {
                         let writer_kind = transfer
                             .type_facts
@@ -9455,10 +9569,11 @@ fn collect_block_events(
         // returns an empty `param_to_sink_sites` for direct label / gated
         // sinks (the early `label_sink_caps` return) and for the type-qualified
         // ORM raw-SQL path, so those single-pass behaviors are byte-identical.
-        // The explicit `tq_payload_args.is_none()` guard keeps the ORM
-        // payload-restriction path single-pass even if it ever co-occurs.
+        // The explicit `tq_filters.is_empty()` guard keeps the type-qualified
+        // payload-restriction path on its own filters even if it ever
+        // co-occurs.
         let multi_sink_caps: smallvec::SmallVec<[Cap; 4]> =
-            if !multi_gate && !summary_per_position && tq_payload_args.is_none() {
+            if !multi_gate && !summary_per_position && tq_filters.is_empty() {
                 distinct_summary_sink_caps(&sink_info.param_to_sink_sites, sink_caps)
             } else {
                 smallvec::SmallVec::new()
@@ -9482,8 +9597,17 @@ fn collect_block_events(
                 .collect()
         } else if multi_sink_caps.len() > 1 {
             multi_sink_caps.iter().map(|&c| (c, None, None)).collect()
+        } else if tq_filters.len() > 1 {
+            // A typed receiver whose qualified callee carries one gate per
+            // cap (`HttpClient.Post`: SSRF on the URL, DATA_EXFIL on the
+            // body).  One pass per gate, as for `info.call.gate_filters`.
+            tq_filters
+                .iter()
+                .map(|&(caps, payload)| (sink_caps & caps, payload, None))
+                .collect()
         } else {
-            smallvec::smallvec![(sink_caps, tq_payload_args, None)]
+            let payload = tq_filters.first().and_then(|&(_, p)| p);
+            smallvec::smallvec![(sink_caps, payload, None)]
         };
 
         for (filter_caps, positions_override, destination_override) in filter_iter {
@@ -9583,6 +9707,22 @@ fn collect_block_events(
             if tainted.is_empty() {
                 continue;
             }
+            // A summary-resolved call reports the caps of the parameters the
+            // tainted arguments reach, not the union over every parameter of
+            // the callee.  Without this a helper such as
+            // `writeResponse(w, code, body, mime)` (body → HTML_ESCAPE,
+            // mime → HEADER_INJECTION) turns a tainted `body` into a
+            // header-injection finding, and that wrong cap is recorded in the
+            // caller's own summary and repeated at each of its call sites.
+            if positions_override.is_none()
+                && let Some(reached) =
+                    summary_caps_reached(inst, &tainted, &sink_info.param_to_sink)
+            {
+                filter_caps &= reached;
+                if filter_caps.is_empty() {
+                    continue;
+                }
+            }
             // Compute all_validated: check if all tainted vars are validated
             let all_validated = tainted.iter().all(|(val, _, _)| {
                 let var_name = ssa
@@ -9672,6 +9812,37 @@ fn collect_block_events(
             );
         }
     }
+}
+
+/// Union of the summary sink caps of the parameters whose argument carries
+/// one of the `tainted` values, or `None` when the call has no per-parameter
+/// summary detail or a tainted value is not a positional argument of a
+/// summarised parameter (the event's caps are then left alone).
+fn summary_caps_reached(
+    inst: &SsaInst,
+    tainted: &[(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)],
+    param_to_sink: &[(usize, Cap)],
+) -> Option<Cap> {
+    if param_to_sink.is_empty() {
+        return None;
+    }
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return None;
+    };
+    let mut reached = Cap::empty();
+    for (value, _, _) in tainted {
+        let mut found = false;
+        for &(idx, caps) in param_to_sink {
+            if args.get(idx).is_some_and(|group| group.contains(value)) {
+                reached |= caps;
+                found = true;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    Some(reached)
 }
 
 fn refine_exec_argv_array_shell_taint(
@@ -10446,6 +10617,26 @@ fn resolve_op_slot(
     HeapSlot::Elements
 }
 
+/// True when `v` is the synthetic Param scoped lowering made for a free
+/// Java name that is a class (`Paths`, `java.nio.file.Files`): a free name
+/// whose last segment is UpperCamelCase.  Free fields are lowerCamelCase and
+/// constants UPPER_SNAKE_CASE, so neither matches.
+fn is_java_class_receiver(ssa: &SsaBody, v: SsaValue) -> bool {
+    if !ssa.synthetic_externals.contains(&v) {
+        return false;
+    }
+    let Some(name) = ssa
+        .value_defs
+        .get(v.0 as usize)
+        .and_then(|d| d.var_name.as_deref())
+    else {
+        return false;
+    };
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    leaf.starts_with(|c: char| c.is_ascii_uppercase())
+        && leaf.chars().any(|c| c.is_ascii_lowercase())
+}
+
 /// Handle container operations: propagate taint between receiver and arguments.
 ///
 /// **Store** operations (push, append, set, add, insert, etc.):
@@ -10473,6 +10664,13 @@ fn try_container_propagation(
         Some(op) => op,
         None => return false,
     };
+
+    // A static call on a Java class (`Paths.get(p)`) is not a container
+    // operation.  Scoped lowering gives the free class name a synthetic
+    // Param, so it would read as a load from a container named `Paths` and
+    // drop the argument taint.  Plain lowering leaves that receiver unset;
+    // treat the class receiver the same way.
+    let receiver = &receiver.filter(|&r| !(lang == Lang::Java && is_java_class_receiver(ssa, r)));
 
     // Resolve the container SSA value.
     // Languages with `Kind::CallMethod` (Java, Ruby, PHP, Rust, etc.) set
@@ -10771,47 +10969,55 @@ fn try_container_propagation(
                 return false;
             };
             // For method-call form, the receiver is implicit in the callee
-            // string and `args` holds positional args starting at 0.  Taint
-            // the destination at three layers: (1) the SSA-value level so
-            // downstream uses of the pointer itself see taint; (2) the
-            // heap-Elements slot via the simpler-tier `lookup_pts` channel;
-            // and (3) the field-cell channel via `pointer_facts.pt(v)` with
-            // [`FieldId::ELEM`] as a tainted-at-all-fields wildcard so
-            // subsequent `dest.Field` projections (which read through the
-            // higher-tier `pointer_facts.pt(receiver)` channel, see the
-            // `SsaOp::FieldProj` arm) inherit the taint.  Without (3), CVE
-            // shapes like `json.NewDecoder(r.Body).Decode(&dest)` followed
-            // by `os.Remove(filepath.Join(_, dest.Name))` left the dest
-            // field channel empty even though the heap was tainted; the
-            // [`FieldId::ELEM`] wildcard bridges the two channels and is
-            // read back by the `FieldProj` arm's ELEM fallback.
+            // string and `args` holds positional args starting at 0.
             if let Some(arg_vals) = args.get(dest_arg) {
-                for &v in arg_vals {
-                    merge_taint_into(state, v, recv_taint.caps, &recv_taint.origins);
-                    if let Some(pts) = lookup_pts(transfer, v) {
-                        state.heap.store_set(
-                            &pts,
-                            crate::ssa::heap::HeapSlot::Elements,
-                            recv_taint.caps,
-                            &recv_taint.origins,
-                        );
-                    }
-                    if let Some(pf) = transfer.pointer_facts {
-                        let pt_arg = pf.pt(v);
-                        if !pt_arg.is_empty() && !pt_arg.is_top() {
-                            let cell_taint = recv_taint.clone();
-                            for loc in pt_arg.iter() {
-                                let key = crate::taint::ssa_transfer::state::FieldTaintKey {
-                                    loc,
-                                    field: crate::ssa::ir::FieldId::ANY_FIELD,
-                                };
-                                state.add_field(key, cell_taint.clone(), false, false);
-                            }
-                        }
-                    }
-                }
+                taint_writeback_dest(state, transfer, arg_vals, &recv_taint);
             }
             true
+        }
+    }
+}
+
+/// Taint the destination pointer of a decode-into call
+/// (`dec.Decode(&dest)`, `c.ShouldBindJSON(&dest)`) at three layers:
+/// (1) the SSA-value level so downstream uses of the pointer itself see
+/// taint; (2) the heap-Elements slot via the simpler-tier `lookup_pts`
+/// channel; and (3) the field-cell channel via `pointer_facts.pt(v)` with
+/// [`FieldId::ANY_FIELD`] as a tainted-at-all-fields wildcard so subsequent
+/// `dest.Field` projections (which read through the higher-tier
+/// `pointer_facts.pt(receiver)` channel, see the `SsaOp::FieldProj` arm)
+/// inherit the taint.  Without (3), CVE shapes like
+/// `json.NewDecoder(r.Body).Decode(&dest)` followed by
+/// `os.Remove(filepath.Join(_, dest.Name))` left the dest field channel empty
+/// even though the heap was tainted; the wildcard bridges the two channels
+/// and is read back by the `FieldProj` arm's fallback.
+fn taint_writeback_dest(
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    dest_vals: &[SsaValue],
+    taint: &VarTaint,
+) {
+    for &v in dest_vals {
+        merge_taint_into(state, v, taint.caps, &taint.origins);
+        if let Some(pts) = lookup_pts(transfer, v) {
+            state.heap.store_set(
+                &pts,
+                crate::ssa::heap::HeapSlot::Elements,
+                taint.caps,
+                &taint.origins,
+            );
+        }
+        if let Some(pf) = transfer.pointer_facts {
+            let pt_arg = pf.pt(v);
+            if !pt_arg.is_empty() && !pt_arg.is_top() {
+                for loc in pt_arg.iter() {
+                    let key = crate::taint::ssa_transfer::state::FieldTaintKey {
+                        loc,
+                        field: crate::ssa::ir::FieldId::ANY_FIELD,
+                    };
+                    state.add_field(key, taint.clone(), false, false);
+                }
+            }
         }
     }
 }
@@ -11256,15 +11462,32 @@ fn sink_fully_type_suppressible(sink_caps: Cap) -> bool {
 fn apply_arg_type_safe_suppression(
     result: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
     sink_caps: Cap,
-    _type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     inst: &SsaInst,
     info: &NodeInfo,
     ssa: &SsaBody,
     lang: Lang,
 ) {
-    use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
+    use crate::ssa::type_facts::{
+        TypeKind, is_int_producing_callee, is_safe_string_producing_callee,
+    };
     if result.is_empty() {
         return;
+    }
+    // Value-level drop for header and redirect sinks: a tainted operand
+    // whose SSA type fact is `Int` / `Bool` (`n := len(q)`,
+    // `s := strconv.Itoa(n)`) cannot carry CRLF, a header-meaningful token
+    // or a redirect target.  Limited to these two classes; SQL / FILE_IO /
+    // shell sinks keep their stricter rules (a bounded integer alone does
+    // not clear them).
+    if let Some(tf) = type_facts
+        && !sink_caps.is_empty()
+        && (sink_caps & !(Cap::HEADER_INJECTION | Cap::OPEN_REDIRECT)).is_empty()
+    {
+        result.retain(|(v, _, _)| !matches!(tf.get_type(*v), Some(TypeKind::Int | TypeKind::Bool)));
+        if result.is_empty() {
+            return;
+        }
     }
     if !sink_fully_type_suppressible(sink_caps) {
         return;
@@ -12161,11 +12384,15 @@ fn all_args_const(inst: &SsaInst, const_values: &crate::ssa::const_prop::ConstVa
 /// Resolution order:
 /// 1. Static type from [`TypeFactResult`] (constructor/const inference)
 /// 2. Flow-sensitive type from [`PathEnv`] (branch narrowing, casts)
+/// 3. The receiver's declared type recorded at CFG construction
+///    ([`crate::cfg::CallMeta::receiver_decl_type`])
+#[allow(clippy::too_many_arguments)]
 fn resolve_type_qualified_labels(
     callee: &str,
-    receiver: SsaValue,
+    receiver: Option<SsaValue>,
     type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     path_env: Option<&constraint::PathEnv>,
+    declared: Option<&crate::ssa::type_facts::TypeKind>,
     lang: Lang,
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa: Option<&SsaBody>,
@@ -12183,7 +12410,9 @@ fn resolve_type_qualified_labels(
     // chains (Rust parses `conn.execute(&sql, []).unwrap()` as one outer
     // call whose receiver is another call, and so on).  We stop once we find
     // a typed value or run out of receivers.
-    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+    let receiver_candidates = receiver
+        .map(|rv| receiver_candidates_for_type_lookup(rv, ssa, lang))
+        .unwrap_or_default();
 
     // 1. Try static type first (existing behavior)
     if let Some(tf) = type_facts {
@@ -12222,70 +12451,157 @@ fn resolve_type_qualified_labels(
         }
     }
 
+    // 3. Declared receiver type
+    if let Some(prefix) = declared.and_then(|t| t.label_prefix()) {
+        for method in &method_candidates {
+            let qualified = format!("{}.{}", prefix, method);
+            let labels = crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+            if !labels.is_empty() {
+                return labels;
+            }
+        }
+    }
+
     SmallVec::new()
 }
 
+/// Per-cap payload restriction for a sink found by type-qualified
+/// resolution: `(caps, payload arg positions)`, `None` scanning every
+/// argument.
+type TqSinkFilter = (Cap, Option<&'static [usize]>);
+
+/// Labels for a type-qualified callee plus its per-cap payload filters.
+type TqResolution = (SmallVec<[DataLabel; 2]>, SmallVec<[TqSinkFilter; 2]>);
+
 /// Sibling of [`resolve_type_qualified_labels`] used at sink-firing time.
 ///
-/// Returns the resolved sink labels plus, when the matched qualified
-/// callee has a known restricted payload arg list (Phase 07 ORM raw-SQL
-/// receiver methods such as `TypeOrmRepo.query`), the static slice
-/// describing which positional args carry the SQL payload. The caller
-/// uses this slice to override `positions_override` so taint flowing
-/// only into the bind-array argument (arg 1+) does not fire.
+/// Returns the resolved labels plus the payload restriction for the sink
+/// caps.  Restrictions come from the language's gated sinks keyed on the
+/// qualified name (`HttpClient.Post` is SSRF on arg 0 and DATA_EXFIL on
+/// arg 2), or, for flat type-qualified rules with no gate, from
+/// [`crate::labels::type_qualified_sink_payload_args`] (Phase 07 ORM raw-SQL
+/// receiver methods such as `TypeOrmRepo.query`).  The caller scans each
+/// filter separately so taint in the body of a typed client call does not
+/// fire SSRF, and bind-array taint at arg 1+ of `TypeOrmRepo.query` does not
+/// fire SQL.  An empty list means the whole call is scanned.
+///
+/// `outer_callee` is the call's own text when CFG construction relabelled
+/// the node with a source nested in its arguments
+/// (`c.Get(r.FormValue("u"))` becomes callee `r.FormValue`); the SSA
+/// receiver still belongs to the outer call, so its method is tried too.
 #[allow(clippy::too_many_arguments)]
 fn resolve_type_qualified_labels_with_args(
     callee: &str,
-    receiver: SsaValue,
+    outer_callee: Option<&str>,
+    receiver: Option<SsaValue>,
     type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
     path_env: Option<&constraint::PathEnv>,
+    declared: Option<&crate::ssa::type_facts::TypeKind>,
     lang: Lang,
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa: Option<&SsaBody>,
-) -> (SmallVec<[DataLabel; 2]>, Option<&'static [usize]>) {
-    let method_candidates = method_candidates_from_chain(callee, lang);
-    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+) -> TqResolution {
+    let mut method_candidates = method_candidates_from_chain(callee, lang);
+    if let Some(outer) = outer_callee {
+        for m in method_candidates_from_chain(outer, lang) {
+            if !method_candidates.contains(&m) {
+                method_candidates.push(m);
+            }
+        }
+    }
+    let receiver_candidates = receiver
+        .map(|rv| receiver_candidates_for_type_lookup(rv, ssa, lang))
+        .unwrap_or_default();
 
+    let mut prefixes: SmallVec<[&'static str; 4]> = SmallVec::new();
     if let Some(tf) = type_facts {
         for rv in &receiver_candidates {
-            if let Some(receiver_type) = tf.get_type(*rv) {
-                if let Some(prefix) = receiver_type.label_prefix() {
-                    for method in &method_candidates {
-                        let qualified = format!("{}.{}", prefix, method);
-                        let labels =
-                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
-                        if !labels.is_empty() {
-                            let payload =
-                                crate::labels::type_qualified_sink_payload_args(&qualified);
-                            return (labels, payload);
-                        }
-                    }
-                }
+            if let Some(prefix) = tf.get_type(*rv).and_then(|t| t.label_prefix()) {
+                prefixes.push(prefix);
             }
         }
     }
-
     if let Some(env) = path_env {
         for rv in &receiver_candidates {
-            let types = env.get(*rv).types;
-            if let Some(kind) = types.as_singleton() {
-                if let Some(prefix) = kind.label_prefix() {
-                    for method in &method_candidates {
-                        let qualified = format!("{}.{}", prefix, method);
-                        let labels =
-                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
-                        if !labels.is_empty() {
-                            let payload =
-                                crate::labels::type_qualified_sink_payload_args(&qualified);
-                            return (labels, payload);
-                        }
-                    }
-                }
+            if let Some(prefix) = env
+                .get(*rv)
+                .types
+                .as_singleton()
+                .and_then(|t| t.label_prefix())
+            {
+                prefixes.push(prefix);
+            }
+        }
+    }
+    if let Some(prefix) = declared.and_then(|t| t.label_prefix()) {
+        prefixes.push(prefix);
+    }
+
+    for prefix in prefixes {
+        for method in &method_candidates {
+            let qualified = format!("{}.{}", prefix, method);
+            if let Some(found) = classify_type_qualified_sink(lang, &qualified, extra_labels) {
+                return found;
             }
         }
     }
 
-    (SmallVec::new(), None)
+    (SmallVec::new(), SmallVec::new())
+}
+
+/// Labels and payload filters for one qualified callee
+/// (`HttpClient.Post`), or `None` when nothing matches.  Flat rules and
+/// destination gates are merged: the gates give per-cap payload positions,
+/// and any flat sink cap no gate covers is scanned over every argument.
+/// Gates that narrow by object-literal field are left out, since the field
+/// bindings are only lifted for the call's own callee at CFG construction.
+fn classify_type_qualified_sink(
+    lang: Lang,
+    qualified: &str,
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<TqResolution> {
+    let mut labels = crate::labels::classify_all(lang.as_str(), qualified, extra_labels);
+    let mut filters: SmallVec<[TqSinkFilter; 2]> = SmallVec::new();
+    for gate in
+        crate::labels::classify_gated_sink(lang.as_str(), qualified, |_| None, |_| None, |_| false)
+    {
+        let DataLabel::Sink(caps) = gate.label else {
+            continue;
+        };
+        if !gate.object_destination_fields.is_empty() {
+            continue;
+        }
+        let payload = (!gate.payload_args.is_empty()
+            && gate.payload_args != crate::labels::ALL_ARGS_PAYLOAD)
+            .then_some(gate.payload_args);
+        filters.push((caps, payload));
+        if !labels.contains(&gate.label) {
+            labels.push(gate.label);
+        }
+    }
+    if labels.is_empty() {
+        return None;
+    }
+    if filters.is_empty() {
+        if let Some(payload) = crate::labels::type_qualified_sink_payload_args(qualified) {
+            let caps = labels.iter().fold(Cap::empty(), |acc, l| match l {
+                DataLabel::Sink(c) => acc | *c,
+                _ => acc,
+            });
+            filters.push((caps, Some(payload)));
+        }
+    } else {
+        let gated = filters.iter().fold(Cap::empty(), |acc, (c, _)| acc | *c);
+        let flat = labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        });
+        let ungated = flat & !gated;
+        if !ungated.is_empty() {
+            filters.push((ungated, None));
+        }
+    }
+    Some((labels, filters))
 }
 
 /// The instruction that defines `v`. The value table names the defining block,
@@ -12358,9 +12674,11 @@ fn literal_arg_call_has_tainted_subject_receiver(
     }
     let (labels, _) = resolve_type_qualified_labels_with_args(
         callee,
-        *rv,
+        None,
+        Some(*rv),
         transfer.type_facts,
         state.path_env.as_deref(),
+        None,
         transfer.lang,
         transfer.extra_labels,
         Some(ssa),
@@ -12463,20 +12781,15 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
     out
 }
 
-/// Suppress sinks from known non-sink callees (e.g., `System.out.println` in Java).
+/// Suppress sinks from known non-sink callees (e.g., Go `fmt.Fprintf(os.Stderr, ..)`).
 ///
 /// These are callees whose suffix matches a broad sink rule but whose
 /// receiver is known to be safe (console output, not HTTP response).
 fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &NodeInfo) -> Cap {
     match lang {
-        Lang::Java => {
-            if callee.starts_with("System.out.") || callee.starts_with("System.err.") {
-                sink_caps & !Cap::HTML_ESCAPE
-            } else {
-                sink_caps
-            }
-        }
-        // Go `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln` carry an HTML_ESCAPE
+        // Java `System.out` / `System.err` prints never carry the sink: they
+        // are in `labels::java::EXCLUDES`, so the CFG node has no label.
+        // Go `fmt.Fprint*` / `io.WriteString` carry an HTML_ESCAPE
         // sink label because they CAN write to an `http.ResponseWriter`.  When
         // the writer (positional arg 0) is a known non-response stream
         // (stderr/stdout/discard/gin's package-level debug writers), the call
@@ -12489,8 +12802,7 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
             if !sink_caps.intersects(Cap::HTML_ESCAPE) {
                 return sink_caps;
             }
-            let is_fprintf = matches!(callee, "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln");
-            if !is_fprintf {
+            if !crate::ssa::type_facts::is_go_writer_sink_callee(callee) {
                 return sink_caps;
             }
             let Some(first_arg) = info.call.arg_uses.first() else {
@@ -12498,7 +12810,7 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
             };
             if first_arg
                 .iter()
-                .any(|s| is_go_non_response_writer(s.as_str()))
+                .any(|s| crate::ssa::type_facts::is_go_non_response_writer(s.as_str()))
             {
                 sink_caps & !Cap::HTML_ESCAPE
             } else {
@@ -12507,27 +12819,6 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &
         }
         _ => sink_caps,
     }
-}
-
-/// Recognise Go writer identifiers that are categorically not
-/// `http.ResponseWriter` and therefore should not host an XSS sink for
-/// `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln`.  The set covers the
-/// stdlib stdout/stderr/discard streams plus gin's package-level
-/// `DefaultWriter` / `DefaultErrorWriter` (both are `io.Writer` aliases for
-/// `os.Stdout` / `os.Stderr`).  Both qualified (`gin.DefaultErrorWriter`)
-/// and bare (`DefaultErrorWriter`, intra-package) shapes match.
-fn is_go_non_response_writer(text: &str) -> bool {
-    matches!(
-        text,
-        "os.Stderr"
-            | "os.Stdout"
-            | "io.Discard"
-            | "ioutil.Discard"
-            | "DefaultErrorWriter"
-            | "DefaultWriter"
-            | "gin.DefaultErrorWriter"
-            | "gin.DefaultWriter"
-    )
 }
 
 /// Check if a sink is type-safe (e.g., SQL injection or path traversal with int-typed argument).
@@ -14029,6 +14320,14 @@ fn resolve_callee_full(
     arity_hint: Option<usize>,
     receiver_type: Option<&str>,
 ) -> Option<Rc<ResolvedSummary>> {
+    // A callee the language lists in its label EXCLUDES is a library API
+    // (Java `System.out.println`, Express `app.get`), never project code,
+    // so its leaf name must not bind to a same-named project function such
+    // as a `println(PrintWriter, String)` helper in another class.
+    let head = callee.split(['(', '<']).next().unwrap_or(callee).trim();
+    if crate::labels::is_excluded(transfer.lang.as_str(), head.as_bytes()) {
+        return None;
+    }
     let owner = std::ptr::from_ref(transfer) as usize;
     let key = resolve_memo_key(callee, caller_func, call_ordinal, arity_hint, receiver_type);
     let hit = RESOLVE_MEMO.with(|m| {

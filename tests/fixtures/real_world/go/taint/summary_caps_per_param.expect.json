@@ -1,0 +1,21 @@
+{
+  "description": "A call resolved through a summary reports the sink classes of the parameters its taint reaches.  writeResponse sends body to an XSS sink and mime to a header sink; through the writeError wrapper only body is tainted, so the flow is XSS and never header injection.",
+  "tags": ["taint", "go", "interprocedural", "summary"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [18, 26],
+      "notes": "the request path reaches fmt.Fprintf through writeError and writeResponse"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "severity": null,
+      "line_range": [1, 27],
+      "notes": "only the constant mime reaches the header value",
+      "must_not_match": true
+    }
+  ]
+}

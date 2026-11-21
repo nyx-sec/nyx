@@ -470,14 +470,14 @@ static RUST_RESOURCES: &[ResourcePair] = &[
     },
 ];
 
+// `URL.openConnection()` is deliberately not an acquire here.  A
+// `URLConnection` / `HttpURLConnection` has no `close()`: the release is
+// closing the stream from `getInputStream()` / `getOutputStream()` (often in a
+// try-with-resources) or the optional `disconnect()`, neither of which is a
+// release of the connection variable the pair would track.
 static JAVA_RESOURCES: &[ResourcePair] = &[
     ResourcePair {
-        acquire: &[
-            "FileInputStream",
-            "FileOutputStream",
-            "BufferedReader",
-            "openConnection",
-        ],
+        acquire: &["FileInputStream", "FileOutputStream", "BufferedReader"],
         release: &[".close"],
         exclude_acquire: &[],
         resource_name: "stream/connection",

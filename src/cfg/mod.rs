@@ -330,15 +330,24 @@ pub(crate) fn lookup_local_receiver_type(
 /// Public entry consulted by `find_classifiable_inner_call`: given the
 /// inner call's AST node and its bare receiver text, return the
 /// `label_prefix()` for the receiver's locally-bound TypeKind, when
-/// available.  Returns `None` when no enclosing function is found, no
-/// binding was recorded, or the bound `TypeKind` has no label prefix.
+/// available.  Java falls back to the receiver's declared type
+/// ([`java_declared_receiver_kind`]), so a chain hop on an injected field
+/// (`em.createQuery(q).getResultList()`, `http.send(req).body()`) is typed
+/// too.  Returns `None` when neither source types the receiver or the
+/// `TypeKind` has no label prefix.
 pub(crate) fn local_receiver_type_prefix(
     inner_call: Node<'_>,
     receiver: &str,
     lang: &str,
+    code: &[u8],
 ) -> Option<&'static str> {
-    let fn_start = enclosing_fn_start(inner_call, lang)?;
-    let kind = lookup_local_receiver_type(fn_start, receiver)?;
+    let local = enclosing_fn_start(inner_call, lang)
+        .and_then(|fn_start| lookup_local_receiver_type(fn_start, receiver));
+    let kind = match local {
+        Some(kind) => kind,
+        None if lang == "java" => java_call_receiver_decl_type(inner_call, code)?,
+        None => return None,
+    };
     kind.label_prefix()
 }
 
@@ -721,6 +730,15 @@ pub struct CallMeta {
     /// `arg_uses` / `taint.uses` view already describes exactly.
     #[serde(default)]
     pub nested_calls: Option<Box<NestedCallTree>>,
+    /// Java: service kind of the call's receiver taken from its declared
+    /// type (a field, formal or local such as `private JdbcTemplate jdbc;`).
+    /// Spring injects these receivers, so no constructor in the method body
+    /// types them for SSA type facts.  Type-qualified label resolution uses
+    /// it after the SSA type facts and path environment.  Only set when the
+    /// call carries no `Sink` label of its own; see
+    /// [`java_declared_receiver_kind`] for the kinds that qualify.
+    #[serde(default)]
+    pub receiver_decl_type: Option<crate::ssa::type_facts::TypeKind>,
 }
 
 /// Recorded provenance of a callback-nested inner sink call whose `Sink` label
@@ -1249,15 +1267,17 @@ pub struct BodyMeta {
     /// machine consumes this to seed the entry `AuthLevel` for privileged-sink
     /// checks. Empty for top-level and for functions without auth markers.
     pub auth_decorators: Vec<String>,
-    /// Per-formal route-capture flag. Same length as `params`. `true` at
-    /// position `i` iff the formal name appears as a path capture in a
-    /// framework routing decorator on this function (Flask
-    /// `@app.route("/users/<name>")`, blueprint-prefixed `@bp.get("/u/<int:id>")`,
-    /// FastAPI / Starlette verb decorators). Today populated only for Python.
-    /// The entry-kind seeding pass consults this for `FlaskRoute` so only
-    /// path-bound formals (not implicit globals or DI handles) are painted
-    /// as adversary input. Empty for top-level and for functions without
-    /// matching decorators.
+    /// Per-formal "bound from the request" flag. Same length as `params`.
+    /// For Python and Ruby, `true` at position `i` iff the formal name
+    /// appears as a path capture in a framework routing decorator on this
+    /// function (Flask `@app.route("/users/<name>")`, blueprint-prefixed
+    /// `@bp.get("/u/<int:id>")`, FastAPI / Starlette verb decorators,
+    /// Sinatra `:name` segments). For Java, `true` iff the formal carries a
+    /// Spring / JAX-RS binding annotation or has a non-infrastructure type
+    /// (see `params::java_formal_is_request_bound`). The entry-kind seeding
+    /// pass consults this so only request-bound formals (not implicit
+    /// globals, DI handles or injected response / session objects) are
+    /// painted as adversary input. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
 }
 
@@ -3007,6 +3027,20 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // Java stream accessors are sources only when the stream can carry
+    // attacker bytes.  The label belongs to the call `text` came from.
+    if lang == "java" && labels.iter().any(|l| matches!(l, DataLabel::Source(_))) {
+        let source_call = match inner_text_span {
+            Some((start, end)) => ast.descendant_for_byte_range(start, end).filter(|c| {
+                c.start_byte() == start && c.end_byte() == end && c.kind() == "method_invocation"
+            }),
+            None => find_call_node(ast, lang),
+        };
+        if source_call.is_some_and(|call| java_stream_source_is_local(call, code)) {
+            labels.retain(|l| !matches!(l, DataLabel::Source(_)));
+        }
+    }
+
     // Rust chain-text classification.  The default `text` for a Rust
     // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
     // is the leftmost identifier after walking through every nested
@@ -3195,6 +3229,12 @@ pub(super) fn push_node<'a>(
         } else {
             find_inner_sink_call(ast, lang, code, extra)
         };
+        // A nested `p.getInputStream()` on a child process is not a source.
+        let inner = inner.filter(|(_, label, node)| {
+            !(lang == "java"
+                && matches!(label, DataLabel::Source(_))
+                && java_stream_source_is_local(*node, code))
+        });
         if let Some((inner_text, inner_label, inner_node)) = inner {
             let inner_is_sink = matches!(inner_label, DataLabel::Sink(_));
             labels.push(inner_label);
@@ -3557,7 +3597,7 @@ pub(super) fn push_node<'a>(
             } else {
                 function_field_text.unwrap_or_else(|| text.clone())
             };
-            let matches = classify_gated_sink_with_presence(
+            let mut matches = classify_gated_sink_with_presence(
                 lang,
                 &gate_callee_text,
                 |idx| {
@@ -3602,6 +3642,10 @@ pub(super) fn push_node<'a>(
                 },
                 |idx| call_has_arg_at(cn, idx),
             );
+
+            if lang == "java" && !matches.is_empty() {
+                java_veto_non_reflective_lookup(ast, &gate_callee_text, code, &mut matches);
+            }
 
             if !matches.is_empty() {
                 // Per-gate filter accumulation.  Each match contributes:
@@ -3905,6 +3949,29 @@ pub(super) fn push_node<'a>(
                 }
             }
         }
+    }
+
+    // Go `fmt.Fprint*` / `io.WriteString` into `os.Stderr` / `os.Stdout`
+    // or into a formal declared as a byte writer that is not a response
+    // (`out io.Writer`, `buf *bytes.Buffer`) is a log, stream or buffer
+    // write, not response rendering, so the call is not an XSS sink for any
+    // consumer (taint, `cfg-unguarded-sink`, `cfg-error-fallthrough`).  The
+    // SSA writer gate sees locals through type facts, but a top-level body
+    // is lowered without its formals, so a formal writer has no SSA value
+    // there.
+    if lang == "go"
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::HTML_ESCAPE)))
+        && crate::ssa::type_facts::is_go_writer_sink_callee(&text)
+        && call_ast.is_some_and(|cn| go_writer_arg_is_non_response(cn, code))
+    {
+        for label in labels.iter_mut() {
+            if let DataLabel::Sink(c) = label {
+                *c &= !Cap::HTML_ESCAPE;
+            }
+        }
+        labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
     }
 
     // React JSX text-content auto-escape sanitizer synthesis.  When the
@@ -4520,6 +4587,16 @@ pub(super) fn push_node<'a>(
     let produces_null_proto = matches!(lang, "javascript" | "typescript")
         && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
 
+    // Java receivers typed only by a declaration (injected fields, formals,
+    // locals bound to an untyped call).  Skipped when the node already has a
+    // sink: type-qualified resolution only runs on calls with none.
+    let receiver_decl_type =
+        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
+        } else {
+            None
+        };
+
     let numeric_confined_uses = scope
         .map(|s| collect_numeric_confined_value_idents(s, lang, code, &labels))
         .unwrap_or_default();
@@ -4551,6 +4628,7 @@ pub(super) fn push_node<'a>(
             produces_null_proto,
             hoisted_sink,
             nested_calls,
+            receiver_decl_type,
         },
         taint: TaintMeta {
             labels,
@@ -4625,7 +4703,7 @@ pub(super) fn push_node<'a>(
 /// Simple leaf name of a Java type text: strip generic arguments
 /// (`Session<T>` → `Session`), array brackets (`Foo[]` → `Foo`), and any
 /// package qualifier (`liquibase.database.Database` → `Database`).
-fn java_type_leaf(type_text: &str) -> &str {
+pub(crate) fn java_type_leaf(type_text: &str) -> &str {
     let no_generics = type_text.split('<').next().unwrap_or(type_text);
     let no_array = no_generics.split('[').next().unwrap_or(no_generics);
     no_array.rsplit('.').next().unwrap_or(no_array).trim()
@@ -4717,6 +4795,407 @@ fn java_receiver_var_name(obj: Node, code: &[u8]) -> Option<String> {
     }
 }
 
+/// Where the bytes behind a Java stream expression come from, as far as the
+/// expression and the declarations in the same method show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum JavaStreamRoot {
+    /// `Process.getInputStream()` and friends: output of a child process.
+    Process,
+    /// Classpath / zip entries and Spring `*Resource` objects: files that
+    /// ship with the application.
+    LocalResource,
+    /// An `HttpServletRequest`-like receiver.  Its `getInputStream()` /
+    /// `getReader()` is the source and `readLine()` on what it returns
+    /// carries that taint by propagation.
+    Request,
+    /// Anything else, including everything the file does not settle.
+    Other,
+}
+
+/// Wrapper streams that read from their first constructor argument.
+fn java_is_stream_wrapper(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "BufferedReader"
+            | "InputStreamReader"
+            | "LineNumberReader"
+            | "PushbackReader"
+            | "Scanner"
+            | "BufferedInputStream"
+            | "DataInputStream"
+            | "PushbackInputStream"
+            | "GZIPInputStream"
+            | "InflaterInputStream"
+    )
+}
+
+fn java_type_stream_root(type_text: &str) -> JavaStreamRoot {
+    let leaf = java_type_leaf(type_text);
+    if leaf == "Process" {
+        JavaStreamRoot::Process
+    } else if matches!(
+        leaf,
+        "ZipFile"
+            | "JarFile"
+            | "Resource"
+            | "ClassPathResource"
+            | "FileSystemResource"
+            | "PathResource"
+            | "ByteArrayResource"
+            | "ServletContextResource"
+    ) {
+        JavaStreamRoot::LocalResource
+    } else if leaf.ends_with("Request") || leaf.ends_with("RequestWrapper") {
+        JavaStreamRoot::Request
+    } else {
+        JavaStreamRoot::Other
+    }
+}
+
+/// Initialiser expression of local variable `var` in the Java scopes
+/// enclosing `from`: a block-level declaration or a try-with-resources
+/// binding.  Formals, fields and loop variables have none.
+fn java_local_initializer<'a>(from: Node<'a>, var: &str, code: &[u8]) -> Option<Node<'a>> {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "block" | "constructor_body" => {
+                let mut cursor = parent.walk();
+                for decl in parent.named_children(&mut cursor) {
+                    if decl.kind() != "local_variable_declaration" {
+                        continue;
+                    }
+                    let mut c2 = decl.walk();
+                    for d in decl.children(&mut c2) {
+                        if d.kind() == "variable_declarator"
+                            && d.child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return d.child_by_field_name("value");
+                        }
+                    }
+                }
+            }
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return res.child_by_field_name("value");
+                        }
+                    }
+                }
+            }
+            "method_declaration" | "constructor_declaration" | "lambda_expression" => {
+                return None;
+            }
+            _ => {}
+        }
+        cur = parent;
+    }
+    None
+}
+
+/// Classify a Java stream expression.  `depth` bounds the walk through
+/// wrapper constructors and local initialisers.
+fn java_stream_root(expr: Node, code: &[u8], depth: u8) -> JavaStreamRoot {
+    if depth == 0 {
+        return JavaStreamRoot::Other;
+    }
+    match expr.kind() {
+        "parenthesized_expression" => expr.named_child(0).map_or(JavaStreamRoot::Other, |e| {
+            java_stream_root(e, code, depth - 1)
+        }),
+        "object_creation_expression" => {
+            let Some(leaf) = expr
+                .child_by_field_name("type")
+                .and_then(|t| text_of(t, code))
+            else {
+                return JavaStreamRoot::Other;
+            };
+            let leaf = java_type_leaf(&leaf).to_string();
+            if java_is_stream_wrapper(&leaf) {
+                expr.child_by_field_name("arguments")
+                    .and_then(|a| a.named_child(0))
+                    .map_or(JavaStreamRoot::Other, |a| {
+                        java_stream_root(a, code, depth - 1)
+                    })
+            } else {
+                java_type_stream_root(&leaf)
+            }
+        }
+        "method_invocation" => {
+            let name = expr
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(code).ok())
+                .unwrap_or("");
+            match name {
+                "exec" | "start" => JavaStreamRoot::Process,
+                "getResourceAsStream" => JavaStreamRoot::LocalResource,
+                "getInputStream" | "getReader" | "getErrorStream" => expr
+                    .child_by_field_name("object")
+                    .map_or(JavaStreamRoot::Other, |o| {
+                        java_stream_root(o, code, depth - 1)
+                    }),
+                _ => JavaStreamRoot::Other,
+            }
+        }
+        "identifier" => {
+            let Some(var) = text_of(expr, code) else {
+                return JavaStreamRoot::Other;
+            };
+            if let Some(ty) = resolve_java_var_declared_type(expr, &var, code)
+                && java_type_leaf(&ty) != "var"
+            {
+                let root = java_type_stream_root(&ty);
+                if root != JavaStreamRoot::Other {
+                    return root;
+                }
+            }
+            // A wrapper-typed or `var` local takes the root of what it was
+            // built from.
+            java_local_initializer(expr, &var, code).map_or(JavaStreamRoot::Other, |init| {
+                java_stream_root(init, code, depth - 1)
+            })
+        }
+        _ => JavaStreamRoot::Other,
+    }
+}
+
+/// Every `method_invocation` under `ast` named `name`, outermost first,
+/// without entering lambdas, nested classes or method declarations.
+fn find_java_invocation_named<'a>(ast: Node<'a>, name: &str, code: &[u8]) -> Vec<Node<'a>> {
+    fn walk<'a>(n: Node<'a>, name: &str, code: &[u8], out: &mut Vec<Node<'a>>) {
+        if n.kind() == "method_invocation"
+            && n.child_by_field_name("name")
+                .and_then(|m| m.utf8_text(code).ok())
+                == Some(name)
+        {
+            out.push(n);
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            if matches!(
+                child.kind(),
+                "lambda_expression" | "class_body" | "method_declaration"
+            ) {
+                continue;
+            }
+            walk(child, name, code, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(ast, name, code, &mut out);
+    out
+}
+
+/// Whether `call` can be `java.lang.Class.getMethod` / `getDeclaredMethod`:
+/// it names a method (one argument or more) on a receiver that can hold a
+/// `Class`.  `Class` is final, so an unqualified call, a `this.` / `super.`
+/// call and a call on a receiver declared as another type are the
+/// enclosing code's own helpers or other APIs (`ZipEntry.getMethod()`).  A
+/// bare class name receiver (`Util.getMethod(..)`) is a static helper.
+/// Receivers the file does not settle stay plausible.
+fn java_may_be_class_method_lookup(call: Node, code: &[u8]) -> bool {
+    let has_name_arg = call
+        .child_by_field_name("arguments")
+        .is_some_and(|a| a.named_child(0).is_some());
+    if !has_name_arg {
+        return false;
+    }
+    let Some(object) = call.child_by_field_name("object") else {
+        return false;
+    };
+    match object.kind() {
+        "this" | "super" => false,
+        "identifier" | "field_access" => match java_receiver_declared_type(call, code) {
+            Some(ty) => {
+                let leaf = java_type_leaf(&ty);
+                leaf == "Class"
+                    || leaf == "var"
+                    || (leaf.len() <= 2 && leaf.chars().all(|c| c.is_ascii_uppercase()))
+            }
+            None => {
+                !(object.kind() == "identifier"
+                    && object.utf8_text(code).is_ok_and(|t| {
+                        t.starts_with(|c: char| c.is_ascii_uppercase())
+                            && t.chars().any(|c| c.is_ascii_lowercase())
+                    }))
+            }
+        },
+        _ => true,
+    }
+}
+
+/// Drop the reflective-lookup gate match when no `getMethod` /
+/// `getDeclaredMethod` call in the statement can be `Class.getMethod`.  The
+/// gate is keyed on the callee name, which user helpers and unrelated APIs
+/// share.
+fn java_veto_non_reflective_lookup(
+    ast: Node,
+    callee_text: &str,
+    code: &[u8],
+    matches: &mut SmallVec<[crate::labels::GateMatch; 2]>,
+) {
+    let leaf = callee_text.rsplit('.').next().unwrap_or(callee_text);
+    if !matches!(leaf, "getMethod" | "getDeclaredMethod") {
+        return;
+    }
+    let calls = find_java_invocation_named(ast, leaf, code);
+    if !calls.is_empty()
+        && !calls
+            .iter()
+            .any(|c| java_may_be_class_method_lookup(*c, code))
+    {
+        matches.retain(
+            |g| !matches!(g.label, DataLabel::Sink(c) if c.contains(crate::labels::Cap::CODE_EXEC)),
+        );
+    }
+}
+
+/// Whether the Java call `call` is a stream accessor whose `Source` label
+/// does not apply.
+///
+/// `getInputStream` / `getReader` are request accessors by name, but the same
+/// names read a child process's output and classpath or zip entries.  Those
+/// are local data, not input.  `readLine` is a file-content source on its own
+/// (a config file read into a command is the engine's FileSystem model), but
+/// not when its reader is built on a process, a local resource, or the
+/// request itself.  The request case keeps its flow: the reader's receiver
+/// taint, which comes from the `getInputStream` / `getReader` source,
+/// propagates into the line, and the source stays attributed to the request
+/// instead of to a generic file read.  A receiver the file does not settle
+/// keeps the label.
+fn java_stream_source_is_local(call: Node, code: &[u8]) -> bool {
+    if call.kind() != "method_invocation" {
+        return false;
+    }
+    let Some(name) = call
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(code).ok())
+    else {
+        return false;
+    };
+    if !matches!(name, "getInputStream" | "getReader" | "readLine") {
+        return false;
+    }
+    let Some(object) = call.child_by_field_name("object") else {
+        return false;
+    };
+    let root = java_stream_root(object, code, 6);
+    match name {
+        "readLine" => matches!(
+            root,
+            JavaStreamRoot::Process | JavaStreamRoot::LocalResource | JavaStreamRoot::Request
+        ),
+        _ => matches!(
+            root,
+            JavaStreamRoot::Process | JavaStreamRoot::LocalResource
+        ),
+    }
+}
+
+/// Service kind of a Java declared receiver type, for type-qualified label
+/// resolution on receivers whose type is only visible in a declaration: an
+/// injected field (`private JdbcTemplate jdbc;`), a formal
+/// (`void f(DirContext ctx)`), or a local bound to an untyped call
+/// (`DirContext c = lookup();`).  Only library service types whose
+/// `TypeKind` prefixes label rules are mapped.  Value and stream types
+/// (`String`, `Writer`, `HttpServletResponse`) are not: a declared
+/// `PrintWriter out` is normally the servlet response writer, whose
+/// `println` must stay an XSS sink, and `HttpResponse` would also match
+/// `java.net.http.HttpResponse`.
+pub(crate) fn java_declared_receiver_kind(
+    type_text: &str,
+) -> Option<crate::ssa::type_facts::TypeKind> {
+    use crate::ssa::type_facts::TypeKind;
+    let leaf = java_type_leaf(type_text);
+    match leaf {
+        "JdbcTemplate"
+        | "NamedParameterJdbcTemplate"
+        | "JdbcOperations"
+        | "NamedParameterJdbcOperations" => Some(TypeKind::JdbcTemplate),
+        // JPA `EntityManager` has the same `createQuery` /
+        // `createNativeQuery` statement API as the Hibernate session.
+        "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
+        "CallableStatement" => Some(TypeKind::DatabaseConnection),
+        "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+        // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
+        // `dbf.parse`, and StAX parses straight off the factory
+        // (`xif.createXMLStreamReader(in)`).
+        "SAXReader" | "XMLInputFactory" | "DocumentBuilderFactory" | "SAXParserFactory" => {
+            Some(TypeKind::XmlParser)
+        }
+        _ => match crate::constraint::solver::class_name_to_type_kind(leaf)? {
+            k @ (TypeKind::HttpClient
+            | TypeKind::DatabaseConnection
+            | TypeKind::LdapClient
+            | TypeKind::XPathClient
+            | TypeKind::XmlParser
+            | TypeKind::Template
+            | TypeKind::Runtime) => Some(k),
+            _ => None,
+        },
+    }
+}
+
+/// Declared service kind of the receiver of a Java `method_invocation`: a
+/// plain identifier resolved through the enclosing scopes, or `this.f`
+/// resolved against the enclosing class fields.  A class name used as a
+/// static receiver (`Files.readString`) binds no variable and gives `None`.
+fn java_call_receiver_decl_type(
+    call: Node,
+    code: &[u8],
+) -> Option<crate::ssa::type_facts::TypeKind> {
+    java_receiver_declared_type(call, code).and_then(|ty| java_declared_receiver_kind(&ty))
+}
+
+/// Declared type text of the receiver of a Java `method_invocation`: a plain
+/// identifier resolved through the enclosing scopes (formals, locals, `for` /
+/// `catch` / `try` bindings, fields), or `this.f` resolved against the
+/// enclosing class fields.  `None` for a static receiver (a class name binds
+/// no variable), a chained or otherwise computed receiver, `var` locals
+/// excepted: those return the literal text `var`.
+pub(crate) fn java_receiver_declared_type(call: Node, code: &[u8]) -> Option<String> {
+    if call.kind() != "method_invocation" {
+        return None;
+    }
+    let obj = call.child_by_field_name("object")?;
+    match obj.kind() {
+        "identifier" => resolve_java_var_declared_type(call, &text_of(obj, code)?, code),
+        "field_access"
+            if obj
+                .child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "this") =>
+        {
+            let field = text_of(obj.child_by_field_name("field")?, code)?;
+            resolve_java_field_declared_type(call, &field, code)
+        }
+        _ => None,
+    }
+}
+
+/// Declared type of field `var` in the class enclosing `from` (the inner
+/// class first, then outer classes).
+fn resolve_java_field_declared_type(from: Node, var: &str, code: &[u8]) -> Option<String> {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        if matches!(parent.kind(), "class_body" | "interface_body" | "enum_body")
+            && let Some(t) = java_field_declared_type(parent, var, code)
+        {
+            return Some(t);
+        }
+        cur = parent;
+    }
+    None
+}
+
 /// Pre-order search for a `method_invocation` named `getConnection` within
 /// (or equal to) `ast`.  Does not descend into nested method / lambda bodies
 /// (those own their own scope and acquire nodes).  Returns the first match.
@@ -4752,6 +5231,60 @@ fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<
             "method_declaration" | "constructor_declaration" | "lambda_expression" => {
                 if let Some(t) = java_param_declared_type(parent, var, code) {
                     return Some(t);
+                }
+                // An untyped lambda formal (`jdbc -> jdbc.update(..)`) may
+                // shadow a field of the same name; its type is unknown.
+                if parent.kind() == "lambda_expression"
+                    && java_lambda_binds_untyped(parent, var, code)
+                {
+                    return None;
+                }
+            }
+            // `for (T x : xs)` and `catch (T e)` bind their own variable.
+            "enhanced_for_statement" => {
+                if parent
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(code).ok())
+                    == Some(var)
+                {
+                    return parent
+                        .child_by_field_name("type")
+                        .and_then(|t| text_of(t, code));
+                }
+            }
+            "catch_clause" => {
+                let mut cursor = parent.walk();
+                if let Some(fp) = parent
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "catch_formal_parameter")
+                    && fp
+                        .child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(code).ok())
+                        == Some(var)
+                {
+                    let mut c2 = fp.walk();
+                    return fp
+                        .named_children(&mut c2)
+                        .find(|c| c.kind() == "catch_type")
+                        .and_then(|t| text_of(t, code));
+                }
+            }
+            // `try (T x = ...) { ... }`
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var)
+                        {
+                            return res
+                                .child_by_field_name("type")
+                                .and_then(|t| text_of(t, code));
+                        }
+                    }
                 }
             }
             "block" | "constructor_body" => {
@@ -4791,6 +5324,21 @@ fn java_param_declared_type(method: Node, var: &str, code: &[u8]) -> Option<Stri
         }
     }
     None
+}
+
+/// Whether a Java lambda binds `var` as an untyped formal (`x -> ...`,
+/// `(x, y) -> ...`).
+fn java_lambda_binds_untyped(lambda: Node, var: &str, code: &[u8]) -> bool {
+    let Some(params) = lambda.child_by_field_name("parameters") else {
+        return false;
+    };
+    if params.kind() == "identifier" {
+        return params.utf8_text(code).ok() == Some(var);
+    }
+    let mut cursor = params.walk();
+    params
+        .named_children(&mut cursor)
+        .any(|p| p.kind() == "identifier" && p.utf8_text(code).ok() == Some(var))
 }
 
 /// Declared type of `var` among the direct `local_variable_declaration`
@@ -4908,35 +5456,86 @@ fn extract_decl_type(
     crate::ssa::type_facts::rust_annotation_type_kind(&type_text)
 }
 
-/// Go local-binding writer-type inference.
+/// Go local-binding type inference.
 ///
-/// A local writer bound to a byte-buffer constructor —
-/// `stdIn := new(bytes.Buffer)`, `buf := &bytes.Buffer{}`,
-/// `sb := new(strings.Builder)` — is a non-response byte sink, exactly like
-/// a `w bytes.Buffer` parameter.  The `new(T)` type argument (and the
-/// `&T{}` composite-literal type) is dropped from the CFG's `arg_uses` (the
-/// type node is not a value use), so the value's `TypeFact` stays `Unknown`
-/// and the Go `fmt.Fprintf` XSS gate cannot recognise the writer as
-/// non-response.  This recovers the type by reading the RHS constructor text
-/// and mapping it through the shared [`params::go_writer_type_to_kind`]
-/// table, so `fmt.Fprintf(stdIn, "0 %s\t%s\x00", ...)` (gitea
-/// `temp_repo.go`) is not flagged as reflected XSS.  Only writer buffer
-/// types resolve; every other constructor returns `None`, so the inference
-/// stays conservative (never suppresses a real `http.ResponseWriter`).
+/// A local bound to a constructor, `buf := &bytes.Buffer{}`,
+/// `stdIn := new(bytes.Buffer)`, `c := &http.Client{Timeout: t}`, or
+/// declared with a type and no initialiser, `var sb strings.Builder`,
+/// `var c http.Client`, has that type.  The type node is not a value use, so
+/// without this the binding's `TypeFact` stays `Unknown`: the Go
+/// `fmt.Fprint*` XSS gate cannot see that `fmt.Fprintf(&sb, ...)` writes to
+/// a buffer (gitea `temp_repo.go` `fmt.Fprintf(stdIn, ...)`), and
+/// `c.Get(u)` never reaches the `HttpClient.Get` SSRF gate.  The type text
+/// goes through the shared [`params::go_decl_type_to_kind`] table, so only
+/// byte writers, `http.ResponseWriter` and `http.Client` resolve.
+///
+/// A declared type with an initialiser (`var out io.Writer = w`) is not
+/// used: the interface type says nothing about the value it holds.
 fn extract_decl_type_go(ast: Node, code: &[u8]) -> Option<crate::ssa::type_facts::TypeKind> {
-    // Resolve the initialiser expression for the binding statement.
-    let rhs = match ast.kind() {
+    let ty_text = match ast.kind() {
         // `x := <rhs>` / `x = <rhs>`
         "short_var_declaration" | "assignment_statement" => {
             let right = ast.child_by_field_name("right")?;
-            first_go_expr(right)
+            go_constructor_type_text(first_go_expr(right)?, code)?
         }
-        // `var x = <rhs>` (a var_spec carries the value directly)
-        "var_spec" => ast.child_by_field_name("value").and_then(first_go_expr),
-        _ => None,
-    }?;
-    let ty_text = go_constructor_type_text(rhs, code)?;
-    params::go_writer_type_to_kind(&ty_text)
+        // `var x T` / `var x = <rhs>`, possibly under a single-spec
+        // `var_declaration`.
+        "var_declaration" => {
+            let mut cursor = ast.walk();
+            let specs: Vec<Node> = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "var_spec")
+                .collect();
+            if specs.len() != 1 {
+                return None;
+            }
+            go_var_spec_type_text(specs[0], code)?
+        }
+        "var_spec" => go_var_spec_type_text(ast, code)?,
+        _ => return None,
+    };
+    params::go_decl_type_to_kind(&ty_text)
+}
+
+/// Type text for one `var_spec`: the constructor type of its value when it
+/// has one, otherwise the declared type of a zero-value declaration.
+fn go_var_spec_type_text(spec: Node, code: &[u8]) -> Option<String> {
+    match spec.child_by_field_name("value") {
+        Some(value) => go_constructor_type_text(first_go_expr(value)?, code),
+        None => text_of(spec.child_by_field_name("type")?, code),
+    }
+}
+
+/// True when the writer argument (arg 0) of a Go `fmt.Fprint*` /
+/// `io.WriteString` call is never an `http.ResponseWriter`: a stdlib stream
+/// such as `os.Stderr` ([`crate::ssa::type_facts::is_go_non_response_writer`]),
+/// or a formal of the enclosing function declared as a byte writer
+/// (`out io.Writer`, `buf *bytes.Buffer`, `f *os.File`), passed directly or
+/// by address.  Formals are read from the receiver-alias frame, so only the
+/// declared type counts, never the name.
+fn go_writer_arg_is_non_response(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(mut writer) = args.named_children(&mut cursor).next() else {
+        return false;
+    };
+    if writer.kind() == "unary_expression" {
+        match writer.child_by_field_name("operand") {
+            Some(operand) => writer = operand,
+            None => return false,
+        }
+    }
+    let Some(writer_text) = text_of(writer, code) else {
+        return false;
+    };
+    if crate::ssa::type_facts::is_go_non_response_writer(&writer_text) {
+        return true;
+    }
+    let file_handle = crate::ssa::type_facts::TypeKind::FileHandle.label_prefix();
+    writer.kind() == "identifier"
+        && crate::labels::receiver_alias_prefix(&writer_text) == file_handle
 }
 
 /// `_, ok := m[k]` / `v, ok := m[k]` / `ok := m[k]` where `m` and `k` are
@@ -8009,6 +8608,14 @@ pub(super) fn build_sub<'a>(
                 Some(&fn_name),
             );
 
+            // Go typed formals (`req *http.Request`, `ctx *gin.Context`,
+            // `w http.ResponseWriter`, `c *http.Client`) classify under their
+            // canonical receiver prefix while this body (and any closure
+            // nested in it) is built.
+            let receiver_aliases = (lang == "go").then(|| {
+                crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
+            });
+
             let mut fn_call_ordinal: u32 = 0;
             let mut fn_breaks = Vec::new();
             let mut fn_continues = Vec::new();
@@ -8031,6 +8638,7 @@ pub(super) fn build_sub<'a>(
                 next_body_id,
                 fn_body_id,
             );
+            drop(receiver_aliases);
 
             // ── 3) Wire exits to Exit node ────────────────────────────────────
             for &b in &body_exits {
@@ -8203,7 +8811,9 @@ pub(super) fn build_sub<'a>(
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let auth_decorators = extract_auth_decorators(ast, lang, code);
             let route_captures = extract_route_path_captures(ast, lang, code);
-            let param_route_capture: Vec<bool> = if route_captures.is_empty() {
+            let param_route_capture: Vec<bool> = if lang == "java" {
+                params::java_request_bound_flags(ast, code, param_names.len())
+            } else if route_captures.is_empty() {
                 vec![false; param_names.len()]
             } else {
                 param_names
@@ -8750,6 +9360,9 @@ pub(crate) fn build_cfg<'a>(
             *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
         });
     }
+    // Receiver-alias frames are scoped to function bodies by guards in
+    // `build_sub`; start from an empty stack regardless.
+    crate::labels::clear_receiver_aliases();
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -8913,6 +9526,7 @@ pub(crate) fn build_cfg<'a>(
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
     PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
+    crate::labels::clear_receiver_aliases();
 
     // collect every
     // declared inheritance / impl / implements relationship in the

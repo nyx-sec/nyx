@@ -1,0 +1,21 @@
+{
+  "description": "exec.CommandContext with a constant program and arguments is not a command-injection sink: the context argument is not part of the command.  http.ServeFile with a constant name is not a path sink.",
+  "tags": ["cfg", "taint", "go", "negative", "cmdi"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [9, 25],
+      "notes": "every payload position is a literal",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [9, 25],
+      "notes": "no tainted payload",
+      "must_not_match": true
+    }
+  ]
+}

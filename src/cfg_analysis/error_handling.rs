@@ -93,43 +93,162 @@ fn contains_negated_err_identifier(text: &str) -> bool {
     false
 }
 
+/// Does the condition text compare an error identifier for equality with
+/// nil (`err == nil`, `nil == err`, `err === null`, `error is None`)?  That
+/// is a success check: its TRUE branch is the happy path and the error path
+/// is the FALSE edge.
+///
+/// Returns false when the same condition also checks an error positively
+/// (`err == nil || close_err != nil`), so mixed shapes keep the TRUE-branch
+/// reading.
+fn contains_err_nil_equality(text: &str) -> bool {
+    let mut success = false;
+    for cmp in nil_comparisons(text) {
+        let err_operand = [cmp.left, cmp.right]
+            .into_iter()
+            .any(|operand| is_error_var_ident(operand.rsplit('.').next().unwrap_or(operand)));
+        if !err_operand {
+            continue;
+        }
+        if cmp.equal {
+            success = true;
+        } else {
+            return false;
+        }
+    }
+    success
+}
+
+/// One `<a> ==|!=|===|!==|is|is not <b>` comparison in a condition text
+/// where at least one side is a nil literal.  `equal` is true for the
+/// equality forms.
+struct NilComparison<'a> {
+    left: &'a str,
+    right: &'a str,
+    equal: bool,
+}
+
+fn is_nil_literal(token: &str) -> bool {
+    matches!(token, "nil" | "null" | "undefined" | "None" | "NULL")
+}
+
+/// Scan a condition text for comparisons against a nil literal.  The
+/// operands are the identifier / member chains directly left and right of
+/// the operator; a single `(` or `)` next to an operand is skipped.
+fn nil_comparisons(text: &str) -> Vec<NilComparison<'_>> {
+    fn is_operand_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'$'
+    }
+    fn operand_before(text: &str, end: usize) -> &str {
+        let bytes = text.as_bytes();
+        let mut j = end;
+        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+            j -= 1;
+        }
+        if j > 0 && bytes[j - 1] == b')' {
+            j -= 1;
+        }
+        let stop = j;
+        while j > 0 && is_operand_byte(bytes[j - 1]) {
+            j -= 1;
+        }
+        &text[j..stop]
+    }
+    fn operand_after(text: &str, start: usize) -> &str {
+        let bytes = text.as_bytes();
+        let mut j = start;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            j += 1;
+        }
+        let begin = j;
+        while j < bytes.len() && is_operand_byte(bytes[j]) {
+            j += 1;
+        }
+        &text[begin..j]
+    }
+
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // `==` / `===` / `!=` / `!==`.  A lone `=` (assignment, `<=`, `>=`)
+        // is not an equality operator.
+        let equality = match (bytes[i], bytes.get(i + 1)) {
+            (b'!', Some(b'=')) => Some(false),
+            (b'=', Some(b'=')) => Some(true),
+            _ => None,
+        };
+        let op = if let Some(equal) = equality {
+            let mut op_end = i + 2;
+            if bytes.get(op_end) == Some(&b'=') {
+                op_end += 1;
+            }
+            Some((i, op_end, equal))
+        } else if bytes[i..].starts_with(b" is ") {
+            // Python `x is None` / `x is not None`.
+            if bytes[i + 4..].starts_with(b"not ") {
+                Some((i, i + 8, false))
+            } else {
+                Some((i, i + 4, true))
+            }
+        } else {
+            None
+        };
+        let Some((op_start, op_end, equal)) = op else {
+            i += 1;
+            continue;
+        };
+        let left = operand_before(text, op_start);
+        let right = operand_after(text, op_end);
+        if is_nil_literal(left) || is_nil_literal(right) {
+            out.push(NilComparison { left, right, equal });
+        }
+        i = op_end;
+    }
+    out
+}
+
 pub struct IncompleteErrorHandling;
 
 /// Check if the true branch of an If node terminates (has Return/Break/Continue).
+#[cfg(test)]
+fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> bool {
+    let join = super::dominators::compute_post_dominators(cfg)
+        .and_then(|pd| pd.immediate_dominator(if_node));
+    error_branch_terminates(cfg, if_node, EdgeKind::True, join)
+}
+
+/// Check if the branch an If node takes on `error_edge` terminates (has
+/// Return/Break/Continue or a never-returning call) before `join`.
 ///
-/// `join` is the If node's immediate post-dominator (see the comment below).
-/// The caller computes the post-dominator tree once per body and passes the
-/// join in, so a body with many error checks does not rebuild the tree per
-/// check.
-fn branch_terminates(cfg: &crate::cfg::Cfg, if_node: NodeIndex, join: Option<NodeIndex>) -> bool {
-    // Follow the True edge from the If node
-    let true_successors: Vec<NodeIndex> = cfg
-        .edges(if_node)
-        .filter(|e| matches!(e.weight(), EdgeKind::True))
-        .map(|e| e.target())
-        .collect();
+/// `join` is the if statement's immediate post-dominator: the first node
+/// every branch reconverges on.  The branch walk must stop there: reaching
+/// the join means the body fell through *past* the if without terminating,
+/// so any `return` in the function tail past the join must NOT count as the
+/// error branch terminating.  Without this bound, a trailing `return nil`
+/// (present in essentially every Go `func(...) error`) makes the walk report
+/// "all paths terminate" and silently suppresses the rule.
+fn error_branch_terminates(
+    cfg: &crate::cfg::Cfg,
+    if_node: NodeIndex,
+    error_edge: EdgeKind,
+    join: Option<NodeIndex>,
+) -> bool {
+    cfg.edges(if_node)
+        .filter(|e| *e.weight() == error_edge)
+        .any(|e| terminates_on_all_paths(cfg, e.target(), join))
+}
 
-    if true_successors.is_empty() {
-        return false;
-    }
-
-    // The join point of the if statement is its immediate post-dominator:
-    // the first node every branch reconverges on.  The true-branch walk
-    // must stop there — reaching the join means the body fell through
-    // *past* the if without terminating, so any `return` in the function
-    // tail past the join must NOT count as the error branch terminating.
-    // Without this bound, a trailing `return nil` (present in essentially
-    // every Go `func(...) error`) makes the walk report "all paths
-    // terminate" and silently suppresses the rule.
-    //
-    // Check if any path through the true branch terminates before the join.
-    for &start in &true_successors {
-        if terminates_on_all_paths(cfg, start, join) {
-            return true;
-        }
-    }
-
-    false
+/// The synthetic pass-through node the CFG builder places on the FALSE edge
+/// of an `if` without an `else` (zero-width span, no call, no labels).
+fn is_no_else_pass_through(info: &crate::cfg::NodeInfo) -> bool {
+    info.kind == StmtKind::Seq
+        && info.ast.span.0 == info.ast.span.1
+        && info.call.callee.is_none()
+        && info.taint.labels.is_empty()
 }
 
 /// Recognise calls that never return on the success path.
@@ -296,18 +415,24 @@ fn terminates_on_all_paths(
 /// For `if err != nil { warn(); } sink(x)`, the False edge leads to
 /// `sink(x)` and the rule fires correctly.
 fn find_post_if_sinks(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> Vec<NodeIndex> {
-    let mut sinks_after = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-
     // Seed from the False edge only.  If the if has no explicit False
     // edge (some CFG shapes omit it for one-branch ifs), fall back to
     // Seq edges from the if node, but never follow True edges, which
     // lead into the body.
-    let mut stack: Vec<NodeIndex> = cfg
+    let seeds: Vec<NodeIndex> = cfg
         .edges(if_node)
         .filter(|e| matches!(e.weight(), EdgeKind::False | EdgeKind::Seq))
         .map(|e| e.target())
         .collect();
+    collect_calls_from(cfg, seeds)
+}
+
+/// Sink and call nodes reachable from `seeds`, not following loop back
+/// edges or exception edges.
+fn collect_calls_from(cfg: &crate::cfg::Cfg, seeds: Vec<NodeIndex>) -> Vec<NodeIndex> {
+    let mut sinks_after = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = seeds;
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current) {
@@ -333,7 +458,8 @@ fn find_post_if_sinks(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> Vec<NodeInde
 }
 
 /// Collect the variable names DEFINED (assigned / re-bound) anywhere in
-/// the if's TRUE branch, bounded at the if's post-dominator `join`.
+/// the if's error branch (the TRUE branch of `if err != nil`, the `else` of
+/// `if err == nil`), bounded at the if's post-dominator `join`.
 ///
 /// This recognises the **default-on-error recovery idiom** — the single
 /// most common `cfg-error-fallthrough` false positive on real Go code
@@ -360,9 +486,10 @@ fn find_post_if_sinks(cfg: &crate::cfg::Cfg, if_node: NodeIndex) -> Vec<NodeInde
 ///
 /// The walk is bounded at the if's join (post-dominator) so assignments in
 /// the function tail past the if are not attributed to the error branch.
-fn collect_true_branch_defines(
+fn collect_error_branch_defines(
     cfg: &crate::cfg::Cfg,
     if_node: NodeIndex,
+    error_edge: EdgeKind,
     join: Option<NodeIndex>,
 ) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
@@ -371,7 +498,7 @@ fn collect_true_branch_defines(
     let mut visited: HashSet<NodeIndex> = HashSet::new();
     let mut stack: Vec<NodeIndex> = cfg
         .edges(if_node)
-        .filter(|e| matches!(e.weight(), EdgeKind::True))
+        .filter(|e| *e.weight() == error_edge)
         .map(|e| e.target())
         .collect();
 
@@ -407,9 +534,9 @@ impl CfgAnalysis for IncompleteErrorHandling {
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let mut findings = Vec::new();
 
-        // Post-dominators are needed both to bound `branch_terminates`'s
-        // walk and to bound the recovery-idiom true-branch walk; compute
-        // once per CFG and reuse for every error check below.
+        // Post-dominators bound both the error-branch termination walk and
+        // the recovery-idiom walk; compute once per CFG rather than once per
+        // error check.
         let post_doms = super::dominators::compute_post_dominators(ctx.cfg);
 
         for idx in ctx.cfg.node_indices() {
@@ -455,19 +582,54 @@ impl CfgAnalysis for IncompleteErrorHandling {
                 continue;
             }
 
-            // The if statement's join point: its immediate post-dominator.
-            // Bounds both the termination walk and the recovery walk below.
             let join = post_doms
                 .as_ref()
                 .and_then(|pd| pd.immediate_dominator(idx));
 
-            // Check: does the true branch terminate?
-            if branch_terminates(ctx.cfg, idx, join) {
+            // Success check (`if err == nil { use(v) }`, `if (err ===
+            // null)`): the TRUE branch is the happy path and the error path
+            // is the FALSE edge.  With no `else` there is no error handler
+            // to judge; this is the best-effort idiom whose results are
+            // scoped to the if body, so the rule does not apply.  With an
+            // `else`, that branch is the error handler and is held to the
+            // same standard as the body of `if err != nil`.
+            let success_check = info
+                .condition_text
+                .as_deref()
+                .is_some_and(contains_err_nil_equality);
+            let error_edge = if success_check {
+                let mut else_succs = ctx
+                    .cfg
+                    .edges(idx)
+                    .filter(|e| *e.weight() == EdgeKind::False)
+                    .map(|e| e.target())
+                    .peekable();
+                if else_succs.peek().is_none()
+                    || else_succs.all(|n| is_no_else_pass_through(&ctx.cfg[n]))
+                {
+                    continue;
+                }
+                EdgeKind::False
+            } else {
+                EdgeKind::True
+            };
+
+            // Check: does the error branch terminate?
+            if error_branch_terminates(ctx.cfg, idx, error_edge, join) {
                 continue;
             }
 
             // Check: are there dangerous calls/sinks after this error check?
-            let post_sinks = find_post_if_sinks(ctx.cfg, idx);
+            // For a success check the FALSE edge runs through the error
+            // handler itself, so start from the join instead.
+            let post_sinks = if success_check {
+                match join {
+                    Some(j) => collect_calls_from(ctx.cfg, vec![j]),
+                    None => continue,
+                }
+            } else {
+                find_post_if_sinks(ctx.cfg, idx)
+            };
             let dangerous: Vec<NodeIndex> = post_sinks
                 .iter()
                 .copied()
@@ -486,7 +648,7 @@ impl CfgAnalysis for IncompleteErrorHandling {
             // consumes a recovered variable — a sink reading a
             // non-recovered failed value (`if err != nil { log(err) };
             // sink(failed)`) still fires.
-            let recovered = collect_true_branch_defines(ctx.cfg, idx, join);
+            let recovered = collect_error_branch_defines(ctx.cfg, idx, error_edge, join);
             if !recovered.is_empty()
                 && dangerous
                     .iter()
@@ -509,6 +671,44 @@ impl CfgAnalysis for IncompleteErrorHandling {
         }
 
         findings
+    }
+}
+
+#[cfg(test)]
+mod err_nil_equality_tests {
+    use super::contains_err_nil_equality;
+
+    #[test]
+    fn detects_success_checks() {
+        for text in [
+            "err == nil",
+            "nil == err",
+            "err === null",
+            "err == null",
+            "error === undefined",
+            "error is None",
+            "resp.err == nil",
+            "(err == nil)",
+            "err == nil && n > 0",
+        ] {
+            assert!(contains_err_nil_equality(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn rejects_error_checks_and_unrelated_comparisons() {
+        for text in [
+            "err != nil",
+            "err !== null",
+            "error is not None",
+            "result == nil",
+            "errCount == 0",
+            "err == nil || close_err != nil",
+            "x <= nil",
+            "err",
+        ] {
+            assert!(!contains_err_nil_equality(text), "{text}");
+        }
     }
 }
 
@@ -594,14 +794,12 @@ mod err_ident_tests {
 #[cfg(test)]
 mod join_boundary_tests {
     use crate::cfg::{CallMeta, Cfg, EdgeKind, NodeInfo, StmtKind};
-    use crate::cfg_analysis::dominators::compute_post_dominators;
     use petgraph::graph::NodeIndex;
 
-    /// Run `super::branch_terminates` with the join `run` would pass: the
-    /// If node's immediate post-dominator.
+    /// Run `super::branch_terminates`, which bounds the walk by the If node's
+    /// immediate post-dominator the same way `run` does.
     fn branch_terminates(cfg: &Cfg, if_n: NodeIndex) -> bool {
-        let join = compute_post_dominators(cfg).and_then(|pd| pd.immediate_dominator(if_n));
-        super::branch_terminates(cfg, if_n, join)
+        super::branch_terminates(cfg, if_n)
     }
 
     fn node(kind: StmtKind) -> NodeInfo {

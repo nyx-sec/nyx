@@ -1226,11 +1226,16 @@ impl<'a> ParsedSource<'a> {
                 if in_test_file && is_test_suppressible_pattern(slot.meta.id) {
                     continue;
                 }
+                let vuln = m
+                    .captures
+                    .iter()
+                    .find(|c| Some(c.index) == cq.vuln_capture_index)
+                    .map(|c| c.node);
                 if let Some(cap) = m
                     .captures
                     .iter()
                     .find(|c| c.index == slot.primary_capture_index)
-                    && let Some(diag) = self.ast_query_diag(&slot.meta, cap.node)
+                    && let Some(diag) = self.ast_query_diag(&slot.meta, cap.node, vuln)
                 {
                     out.push(diag);
                 }
@@ -1249,10 +1254,16 @@ impl<'a> ParsedSource<'a> {
             if in_test_file && is_test_suppressible_pattern(cq.meta.id) {
                 continue;
             }
+            let vuln_idx = cq.query.capture_index_for_name("vuln");
             let mut matches = cursor.matches(&cq.query, root, self.bytes);
             while let Some(m) = matches.next() {
+                let vuln = m
+                    .captures
+                    .iter()
+                    .find(|c| Some(c.index) == vuln_idx)
+                    .map(|c| c.node);
                 if let Some(cap) = m.captures.iter().find(|c| c.index == 0)
-                    && let Some(diag) = self.ast_query_diag(&cq.meta, cap.node)
+                    && let Some(diag) = self.ast_query_diag(&cq.meta, cap.node, vuln)
                 {
                     out.push(diag);
                 }
@@ -1268,11 +1279,21 @@ impl<'a> ParsedSource<'a> {
     /// the enclosing call) and as the finding span position. Returns `None`
     /// when a recogniser suppresses the match. Shared verbatim by the
     /// combined-query fast path and the legacy per-rule loop so they cannot drift.
+    ///
+    /// `vuln_node` is the rule's `@vuln` capture.  Layer A checks the
+    /// arguments of that call when it is one: the primary capture of
+    /// `java.cmdi.runtime_exec` is the `getRuntime` name inside the
+    /// zero-arg receiver call, whose enclosing call is not the `exec`
+    /// call being judged.
     fn ast_query_diag(
         &self,
         meta: &crate::patterns::Pattern,
         cap_node: tree_sitter::Node,
+        vuln_node: Option<tree_sitter::Node>,
     ) -> Option<Diag> {
+        let layer_a_node = vuln_node
+            .filter(|v| find_enclosing_call(*v) == Some(*v))
+            .unwrap_or(cap_node);
         // Layer A: suppress Security findings on calls with all-literal args.
         //
         // Carve-outs for categories where the literal argument IS
@@ -1290,7 +1311,7 @@ impl<'a> ParsedSource<'a> {
                     | PatternCategory::InsecureConfig
                     | PatternCategory::InsecureTransport
             )
-            && is_call_all_args_literal(cap_node, self.bytes, self.lang_slug)
+            && is_call_all_args_literal(layer_a_node, self.bytes, self.lang_slug)
         {
             return None;
         }
@@ -1579,6 +1600,20 @@ impl<'a> ParsedSource<'a> {
             meta.id,
             "js.config.verbose_error_response" | "ts.config.verbose_error_response"
         ) && is_js_error_shorthand_a_message(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer J: Java `x.invoke(..)` that cannot be
+        // `java.lang.reflect.Method.invoke`.  The query matches any call
+        // named `invoke` with a receiver and an argument, which also picks
+        // up user interfaces, builder DSLs, JMX and Mockito verifications.
+        // A lambda in the first slot or a receiver declared as some other
+        // type rules the reflective method out; an undeclared or computed
+        // receiver stays flagged.
+        if meta.id == "java.reflection.method_invoke"
+            && self.lang_slug == "java"
+            && let Some(call) = vuln_node.or_else(|| find_enclosing_call(cap_node))
+            && !java_invoke_may_be_reflective(call, self.bytes)
         {
             return None;
         }
@@ -6008,6 +6043,83 @@ fn is_php_weak_hash_non_crypto_use(cap_node: tree_sitter::Node, bytes: &[u8]) ->
     false
 }
 
+/// Whether a Java `x.invoke(..)` call can be `java.lang.reflect.Method.invoke`
+/// (or its `MethodHandle` sibling), judged from what the call itself shows:
+///
+/// * A lambda or method reference in the first slot cannot be an `Object`
+///   argument, so the callee takes a functional interface.
+/// * A receiver declared as any other type (`OperationInvoker invoker`,
+///   `MBeanServer server`, `Invocation inv`) is not a `Method`: `Method` is
+///   final, so no subclass or user wrapper can stand in for it.  The
+///   declaration is resolved the way the CFG resolves Java receivers
+///   (formals, locals, `for` / `catch` / `try` bindings, fields).
+/// * A bare class name (`Stapler.invoke(..)`, an unresolved UpperCamelCase
+///   identifier) is a static call, and `Method.invoke` is an instance method.
+/// * `x.should().invoke(..)` and `verify(x).invoke(..)` are Mockito
+///   verifications.
+///
+/// Anything the file does not settle (an inherited field, a `var` local, an
+/// element of a collection, a chained call) is kept.
+fn java_invoke_may_be_reflective(call: tree_sitter::Node, bytes: &[u8]) -> bool {
+    if call.kind() != "method_invocation" {
+        return true;
+    }
+    if let Some(args) = call.child_by_field_name("arguments")
+        && let Some(first) = args.named_child(0)
+        && matches!(first.kind(), "lambda_expression" | "method_reference")
+    {
+        return false;
+    }
+    let Some(obj) = call.child_by_field_name("object") else {
+        return true;
+    };
+    let mut recv = obj;
+    while recv.kind() == "parenthesized_expression"
+        && let Some(inner) = recv.named_child(0)
+    {
+        recv = inner;
+    }
+    match recv.kind() {
+        "method_invocation" => !recv
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .is_some_and(|n| matches!(n, "should" | "verify")),
+        "cast_expression" => recv
+            .child_by_field_name("type")
+            .and_then(|t| t.utf8_text(bytes).ok())
+            .is_none_or(java_type_may_be_reflective_method),
+        "identifier" | "field_access" => {
+            match crate::cfg::java_receiver_declared_type(call, bytes) {
+                Some(ty) => java_type_may_be_reflective_method(&ty),
+                None => {
+                    // A free UpperCamelCase identifier names a class.  Fields
+                    // and locals are lowerCamelCase, constants UPPER_SNAKE.
+                    let class_like = recv.kind() == "identifier"
+                        && recv.utf8_text(bytes).is_ok_and(|t| {
+                            t.starts_with(|c: char| c.is_ascii_uppercase())
+                                && t.chars().any(|c| c.is_ascii_lowercase())
+                        });
+                    !class_like
+                }
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Whether a declared Java type text could hold a `java.lang.reflect.Method`
+/// (or `MethodHandle`).  `var` and single-letter style type variables are
+/// undecided and count as possible.
+fn java_type_may_be_reflective_method(type_text: &str) -> bool {
+    let leaf = crate::cfg::java_type_leaf(type_text);
+    leaf == "var"
+        || matches!(leaf, "Method" | "MethodHandle")
+        || (leaf.len() <= 2
+            && leaf
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+}
+
 /// Layer H — PHP `assert()` first-argument string check.
 ///
 /// PHP's `assert()` evaluates a *string FIRST argument* as live PHP code
@@ -9562,4 +9674,74 @@ fn python_binary_operator_over_literals_is_a_literal_call_argument() {
         verdicts.push(is_call_all_args_literal(cap, src.as_bytes(), "python"));
     }
     assert_eq!(verdicts, [true, false]);
+}
+
+#[cfg(test)]
+fn java_pattern_lines(src: &str, rule_id: &str) -> Vec<usize> {
+    let cfg = Config::default();
+    let mut lines: Vec<usize> = bench_run_ast_queries(src.as_bytes(), Path::new("T.java"), &cfg)
+        .into_iter()
+        .filter(|d| d.id == rule_id)
+        .map(|d| d.line)
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
+#[test]
+fn java_method_invoke_needs_a_receiver_that_can_be_a_method() {
+    let src = "\
+class T extends Base {
+    interface Invocation { Object invoke(String realm); }
+    private final Invocation invoker;
+    private Method field;
+    private Object invoke(Object o) { return o; }
+    // line 7 onward: none of these can be Method.invoke
+    void bare() { invoke(\"x\"); }
+    void viaThis() { this.invoke(\"x\"); }
+    void viaSuper() { super.invoke(\"x\"); }
+    void zeroArg(Helper h) { h.invoke(); }
+    void lambda(Callbacks c) { c.invoke(x -> x); }
+    void methodRef(Callbacks c) { c.invoke(String::length); }
+    void created() { new Scanner(\"**\").invoke(f, null); }
+    void typedField(String ctx) { this.invoker.invoke(ctx); }
+    void typedParam(MBeanServer server) { server.invoke(name, \"stop\", null, null); }
+    void typedLocal() { Invocation inv = lookup(); inv.invoke(\"r\"); }
+    void forEach(List<Invocation> all) { for (Invocation i : all) { i.invoke(\"r\"); } }
+    void staticCall() { Stapler.invoke(req, rsp, node); }
+    void mockito(Ctx c) { then(target).should().invoke(c); }
+    void castOther(Object o) { ((Invocation) o).invoke(\"r\"); }
+    // line 22 onward: a Method receiver, or one the file does not settle
+    void localMethod(Object t) throws Exception { Method m = t.getClass().getMethod(\"run\"); m.invoke(t); }
+    void qualified(Object t, java.lang.reflect.Method q) throws Exception { q.invoke(t); }
+    void fieldMethod(Object t) throws Exception { field.invoke(t); }
+    void thisField(Object t) throws Exception { this.field.invoke(t); }
+    void varLocal(Object t) throws Exception { var m = lookup(t); m.invoke(t); }
+    void chained(Object t) throws Exception { t.getClass().getMethod(\"run\").invoke(t); }
+    void inherited(Object t) throws Exception { inheritedMethod.invoke(t); }
+    void indexed(Method[] ms, Object t) throws Exception { ms[0].invoke(t); }
+    void castMethod(Object o, Object t) throws Exception { ((Method) o).invoke(t); }
+    void handle(MethodHandle h) throws Throwable { h.invoke(1); }
+}
+";
+    let lines = java_pattern_lines(src, "java.reflection.method_invoke");
+    let expected: Vec<usize> = (22..=31).collect();
+    assert_eq!(lines, expected, "only the Method-shaped receivers survive");
+}
+
+#[test]
+fn java_runtime_exec_literal_command_is_not_flagged_but_variable_is() {
+    let src = "\
+class T {
+    void literal() throws Exception { Runtime.getRuntime().exec(\"uptime\"); }
+    void variable(String cmd) throws Exception { Runtime.getRuntime().exec(cmd); }
+    void split(String cmd) throws Exception { Runtime rt = Runtime.getRuntime(); rt.exec(cmd); }
+}
+";
+    let lines = java_pattern_lines(src, "java.cmdi.runtime_exec");
+    assert_eq!(
+        lines,
+        vec![3],
+        "an all-literal exec is judged on the exec call's own arguments, not on getRuntime()"
+    );
 }

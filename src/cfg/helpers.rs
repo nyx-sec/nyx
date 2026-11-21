@@ -633,10 +633,27 @@ fn find_inner_call_impl<'a>(
                 );
                 if parent_is_call
                     && let (Some(recv), Some(method)) = (method_receiver, method_name)
-                    && let Some(prefix) = crate::cfg::local_receiver_type_prefix(c, &recv, lang)
+                    && let Some(prefix) =
+                        crate::cfg::local_receiver_type_prefix(c, &recv, lang, code)
                 {
                     let alt = format!("{prefix}.{method}");
-                    if let Some(lbl) = classify(lang, &alt, extra)
+                    // Java: when the outer call is itself a sink on the same
+                    // typed receiver (`client.newCall(req).execute()`, with
+                    // `HttpClient.execute` a body-exfil sink), the SSA
+                    // type-qualified pass resolves it.  Rewriting the hop to
+                    // `HttpClient.newCall` would shadow that with a URL-only
+                    // SSRF label.
+                    let outer_is_sink = lang == "java"
+                        && n.child_by_field_name("name")
+                            .and_then(|m| text_of(m, code))
+                            .is_some_and(|outer| {
+                                matches!(
+                                    classify(lang, &format!("{prefix}.{outer}"), extra),
+                                    Some(DataLabel::Sink(_))
+                                )
+                            });
+                    if !outer_is_sink
+                        && let Some(lbl) = classify(lang, &alt, extra)
                         && accept(&lbl)
                     {
                         return Some((alt, lbl, c));

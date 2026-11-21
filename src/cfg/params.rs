@@ -1,11 +1,11 @@
 use super::{
     AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, PYTHON_NORETURN_IMPORTS, StmtKind, TaintMeta,
-    collect_idents, connect_all, is_anon_fn_name, text_of,
+    collect_idents, connect_all, is_anon_fn_name, node_str, text_of,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify, param_config};
 use crate::ssa::type_facts::TypeKind;
 use petgraph::graph::NodeIndex;
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 use tree_sitter::Node;
 
 /// resolve a syntactic class / struct / interface / model
@@ -586,9 +586,12 @@ pub(super) fn classify_param_type<'a>(
 /// strip `HTML_ESCAPE` at the sink.
 ///
 /// A *real* reflected-XSS handler declares its writer explicitly as
-/// `http.ResponseWriter` (or a framework response type).  Those are left
-/// untyped here so the gate's conservative unknown-type path keeps firing —
-/// i.e. this recogniser only ever *suppresses* the FP family, never the TP.
+/// `http.ResponseWriter`.  That formal is typed [`TypeKind::HttpResponse`],
+/// which `go_writer_is_non_response` reports as a possible response, so the
+/// `fmt.Fprint*` gate keeps firing, and which lets type-qualified resolution
+/// turn `w.Write(b)` into the `HttpResponse.Write` sink.  A `*http.Client`
+/// formal is typed [`TypeKind::HttpClient`] so `c.Get(u)` resolves to the
+/// `HttpClient.Get` SSRF gate.  See [`go_decl_type_to_kind`].
 ///
 /// Precision/recall note: an `io.Writer` parameter *could* dynamically be
 /// bound to an `http.ResponseWriter` at some call site (an interprocedural
@@ -608,7 +611,70 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
     }
     let type_node = param.child_by_field_name("type")?;
     let type_text = text_of(type_node, code)?;
-    go_writer_type_to_kind(&type_text)
+    go_decl_type_to_kind(&type_text)
+}
+
+/// Receiver-alias frame for a Go function / method / func literal: every
+/// formal name paired with the canonical receiver prefix of its declared
+/// type, or `None` for any other type so the formal shadows a same-named
+/// binding of an enclosing function.  Request types use their request prefix
+/// (`req *http.Request` → `("req", Some("Request"))`); the types
+/// [`go_decl_type_to_kind`] knows use the [`TypeKind::label_prefix`] the SSA
+/// type-qualified rules are keyed on (`w http.ResponseWriter` →
+/// `HttpResponse`, `c *http.Client` → `HttpClient`, `out io.Writer` →
+/// `FileHandle`).  Pushed via [`crate::labels::push_receiver_aliases`] while
+/// the body is built.  `a, b *http.Request` binds both names.
+pub(super) fn go_receiver_alias_frame(
+    func_node: Node<'_>,
+    code: &[u8],
+) -> crate::labels::ReceiverAliasFrame {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut frame = Vec::new();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter_declaration"
+            && param.kind() != "variadic_parameter_declaration"
+        {
+            continue;
+        }
+        let prefix = if param.kind() == "parameter_declaration" {
+            param
+                .child_by_field_name("type")
+                .and_then(|t| text_of(t, code))
+                .and_then(|t| {
+                    crate::labels::go_request_receiver_prefix(&t)
+                        .or_else(|| go_decl_type_to_kind(&t).and_then(|k| k.label_prefix()))
+                })
+        } else {
+            None
+        };
+        let mut name_cursor = param.walk();
+        for name in param.children_by_field_name("name", &mut name_cursor) {
+            if let Some(n) = text_of(name, code) {
+                frame.push((n, prefix));
+            }
+        }
+    }
+    frame
+}
+
+/// Map a declared Go type (a formal's type, a `var x T` declaration, or the
+/// `T` of a `&T{...}` / `new(T)` constructor) to the [`TypeKind`] the
+/// analysis tracks: byte writers that are not a response
+/// ([`go_writer_type_to_kind`]), `http.ResponseWriter` as
+/// [`TypeKind::HttpResponse`], and `http.Client` (by value or pointer) as
+/// [`TypeKind::HttpClient`].  Every other type returns `None`.
+pub(super) fn go_decl_type_to_kind(t: &str) -> Option<TypeKind> {
+    if let Some(kind) = go_writer_type_to_kind(t) {
+        return Some(kind);
+    }
+    match t.trim().trim_start_matches('*').trim() {
+        "http.ResponseWriter" => Some(TypeKind::HttpResponse),
+        "http.Client" => Some(TypeKind::HttpClient),
+        _ => None,
+    }
 }
 
 /// Map a Go parameter / local type-text to [`TypeKind::FileHandle`] when the
@@ -617,7 +683,7 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
 /// surrounding whitespace, then matches the qualified type name.  Returns
 /// `None` for `http.ResponseWriter` and every unrecognised type so the sink
 /// gate stays conservative.
-pub(super) fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
+fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
     let head = t.trim().trim_start_matches('*').trim();
     match head {
         // Generic writer interfaces — a bare `io.Writer` is written to be
@@ -669,48 +735,187 @@ fn classify_param_type_java<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
     lookup_dto_class(last)
 }
 
-/// Walk the parameter's modifiers (annotations) and check if any of
-/// them are a recognised Spring web binding annotation.  Spring's
-/// annotation grammar exposes annotations as `marker_annotation` /
-/// `annotation` siblings inside the formal_parameter's `modifiers`
-/// child.
+/// Check whether the parameter carries a Spring web binding annotation
+/// whose value has a typed shape worth recording in `param_types`.
 fn has_java_framework_annotation(param: Node<'_>, code: &[u8]) -> bool {
     const KNOWN: &[&str] = &[
-        "@PathVariable",
-        "@RequestParam",
-        "@RequestBody",
-        "@RequestHeader",
-        "@CookieValue",
-        "@MatrixVariable",
-        "@ModelAttribute",
+        "PathVariable",
+        "RequestParam",
+        "RequestBody",
+        "RequestHeader",
+        "CookieValue",
+        "MatrixVariable",
+        "ModelAttribute",
     ];
-    // Inspect modifiers child first.
-    if let Some(modifiers) = param.child_by_field_name("modifiers") {
-        if let Some(text) = text_of(modifiers, code) {
-            for k in KNOWN {
-                if text.contains(k) {
-                    return true;
-                }
-            }
+    java_annotation_leaves(param, code)
+        .iter()
+        .any(|a| KNOWN.contains(a))
+}
+
+/// Leaf names of the annotations on a Java formal (`@RequestParam` and
+/// `@org.springframework.web.bind.annotation.RequestParam` both give
+/// `RequestParam`).  tree-sitter-java puts the annotations inside the
+/// formal's `modifiers` child; direct annotation children are read too.
+fn java_annotation_leaves<'a>(param: Node<'_>, code: &'a [u8]) -> SmallVec<[&'a str; 4]> {
+    fn push_leaf<'a>(ann: Node<'_>, code: &'a [u8], out: &mut SmallVec<[&'a str; 4]>) {
+        if matches!(ann.kind(), "marker_annotation" | "annotation")
+            && let Some(name) = ann
+                .child_by_field_name("name")
+                .and_then(|n| node_str(n, code))
+        {
+            out.push(name.rsplit('.').next().unwrap_or(name).trim());
         }
     }
-    // Fall back to scanning all named children: tree-sitter-java emits
-    // annotations as direct children of formal_parameter in some grammar
-    // versions.
+    let mut out = SmallVec::new();
     let mut cursor = param.walk();
     for child in param.children(&mut cursor) {
-        let kind = child.kind();
-        if matches!(kind, "marker_annotation" | "annotation" | "modifiers")
-            && let Some(text) = text_of(child, code)
-        {
-            for k in KNOWN {
-                if text.contains(k) {
-                    return true;
-                }
+        if child.kind() == "modifiers" {
+            let mut inner = child.walk();
+            for ann in child.children(&mut inner) {
+                push_leaf(ann, code, &mut out);
+            }
+        } else {
+            push_leaf(child, code, &mut out);
+        }
+    }
+    out
+}
+
+/// Spring MVC and JAX-RS annotations that bind a handler formal from the
+/// request (query, path, form, header, cookie, body, multipart part).
+const JAVA_REQUEST_BINDING_ANNOTATIONS: &[&str] = &[
+    "RequestParam",
+    "PathVariable",
+    "RequestBody",
+    "RequestHeader",
+    "CookieValue",
+    "MatrixVariable",
+    "ModelAttribute",
+    "RequestPart",
+    "QueryParam",
+    "PathParam",
+    "FormParam",
+    "HeaderParam",
+    "CookieParam",
+    "MatrixParam",
+    "BeanParam",
+];
+
+/// Annotations that inject server-side state into a handler formal: the
+/// authenticated principal, request or session attributes the server set,
+/// configuration values, beans, and the JAX-RS async response handle.
+const JAVA_SERVER_INJECTED_ANNOTATIONS: &[&str] = &[
+    "AuthenticationPrincipal",
+    "CurrentSecurityContext",
+    "RequestAttribute",
+    "SessionAttribute",
+    "Value",
+    "Autowired",
+    "Suspended",
+];
+
+/// Handler formal types the framework fills with infrastructure objects
+/// rather than request data.  The servlet request is here too: its
+/// accessors (`getParameter`, `getHeader`, ...) are sources by label, the
+/// same policy a plain servlet `doGet` gets, so painting the whole object
+/// only adds flows that start at the bare receiver.  JAX-RS `UriInfo` and
+/// `HttpHeaders` are left out because no label covers their accessors yet.
+const JAVA_INFRA_FORMAL_TYPES: &[&str] = &[
+    "HttpServletRequest",
+    "ServletRequest",
+    "HttpServletResponse",
+    "ServletResponse",
+    "ServerHttpResponse",
+    "HttpSession",
+    "WebRequest",
+    "NativeWebRequest",
+    "Model",
+    "ModelMap",
+    "ModelAndView",
+    "RedirectAttributes",
+    "BindingResult",
+    "Errors",
+    "SessionStatus",
+    "UriComponentsBuilder",
+    "ServletUriComponentsBuilder",
+    "Principal",
+    "Authentication",
+    "Locale",
+    "TimeZone",
+    "ZoneId",
+    "OutputStream",
+    "ServletOutputStream",
+    "Writer",
+    "PrintWriter",
+    "SecurityContext",
+    "AsyncResponse",
+    "Sse",
+    "SseEventSink",
+    "ServletContext",
+    "ServletConfig",
+    "Providers",
+    "ResourceContext",
+    "PushBuilder",
+    "HttpMethod",
+];
+
+/// Whether a Spring / JAX-RS handler formal is bound from the request, and
+/// so is adversary input.  A request-binding annotation decides yes and a
+/// server-injection annotation decides no.  Otherwise the declared type
+/// decides: infrastructure types ([`JAVA_INFRA_FORMAL_TYPES`]) are not
+/// request data, and every other type is (Spring binds an unannotated
+/// `String q` or DTO from the request, JAX-RS binds an unannotated formal
+/// from the entity body).
+pub(super) fn java_formal_is_request_bound(param: Node<'_>, code: &[u8]) -> bool {
+    let annotations = java_annotation_leaves(param, code);
+    if annotations
+        .iter()
+        .any(|a| JAVA_REQUEST_BINDING_ANNOTATIONS.contains(a))
+    {
+        return true;
+    }
+    if annotations
+        .iter()
+        .any(|a| JAVA_SERVER_INJECTED_ANNOTATIONS.contains(a))
+    {
+        return false;
+    }
+    let Some(type_text) = param
+        .child_by_field_name("type")
+        .and_then(|t| node_str(t, code))
+    else {
+        return true;
+    };
+    let head = type_text.split('<').next().unwrap_or(type_text);
+    let head = head.trim_end_matches(|c: char| c == '[' || c == ']' || c.is_whitespace());
+    let leaf = head.rsplit('.').next().unwrap_or(head).trim();
+    !JAVA_INFRA_FORMAL_TYPES.contains(&leaf)
+}
+
+/// Per-formal [`java_formal_is_request_bound`] flags for a Java method, in
+/// the order [`extract_param_meta`] lists the formals.  When the walk does
+/// not line up with the `expected` formal count, every formal is reported
+/// bound, which is the behaviour without this gate.
+pub(super) fn java_request_bound_flags(
+    func_node: Node<'_>,
+    code: &[u8],
+    expected: usize,
+) -> Vec<bool> {
+    let cfg = param_config("java");
+    let mut flags = Vec::with_capacity(expected);
+    if let Some(params) = func_node.child_by_field_name(cfg.params_field) {
+        let mut cursor = params.walk();
+        for child in params.children(&mut cursor) {
+            if cfg.param_node_kinds.contains(&child.kind()) {
+                flags.push(java_formal_is_request_bound(child, code));
             }
         }
     }
-    false
+    if flags.len() == expected {
+        flags
+    } else {
+        vec![true; expected]
+    }
 }
 
 /// Map a Java type-text fragment to a [`TypeKind`].  Public to the
@@ -1984,5 +2189,105 @@ def read(item_id: int = Path(..., gt=0), tok: str = Header(None), body = Body(..
         // pathlib's `Path("..")` default is not FastAPI's marker.
         assert_eq!(kind_of(&f, "p"), None);
         assert_eq!(kind_of(&f, "d"), None);
+    }
+}
+
+#[cfg(test)]
+mod java_request_bound_tests {
+    use super::{extract_param_meta, java_formal_is_request_bound, java_request_bound_flags};
+    use tree_sitter::{Language, Node, Parser};
+
+    fn parse(src: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+            .unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    fn first_method(node: Node<'_>) -> Option<Node<'_>> {
+        if node.kind() == "method_declaration" {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        node.children(&mut cursor).find_map(first_method)
+    }
+
+    /// Request-bound verdict of the single formal in `formal`.
+    fn bound(formal: &str) -> bool {
+        let src = format!("class C {{ void m({formal}) {{}} }}");
+        let tree = parse(&src);
+        let method = first_method(tree.root_node()).expect("method");
+        let params = method.child_by_field_name("parameters").unwrap();
+        let mut cursor = params.walk();
+        let param = params
+            .named_children(&mut cursor)
+            .find(|c| matches!(c.kind(), "formal_parameter" | "spread_parameter"))
+            .expect("formal");
+        java_formal_is_request_bound(param, src.as_bytes())
+    }
+
+    #[test]
+    fn binding_annotations_and_plain_values_are_request_bound() {
+        for formal in [
+            "@RequestParam String a",
+            "@org.springframework.web.bind.annotation.PathVariable Long id",
+            "@Valid @RequestBody CreateUser dto",
+            "@RequestHeader(\"X-A\") String h",
+            "@RequestPart MultipartFile f",
+            "String q",
+            "MultipartFile f",
+            "InputStream body",
+            "Pageable page",
+            "@Context UriInfo ui",
+            "@Context HttpHeaders h",
+            "@QueryParam(\"q\") String q",
+            "@BeanParam Filter filter",
+            "String payload",
+            "String... tags",
+            "@RequestParam HttpServletRequest odd",
+        ] {
+            assert!(bound(formal), "{formal} should be request-bound");
+        }
+    }
+
+    #[test]
+    fn injected_infrastructure_formals_are_not_request_bound() {
+        for formal in [
+            "HttpServletResponse r",
+            "javax.servlet.http.HttpServletRequest r",
+            "HttpSession s",
+            "Model m",
+            "Principal p",
+            "@AuthenticationPrincipal UserDetails u",
+            "@Context SecurityContext sc",
+            "@Context HttpServletResponse r",
+            "@Suspended AsyncResponse ar",
+            "Locale l",
+            "OutputStream os",
+            "BindingResult br",
+            "@Value(\"${app.dir}\") String dir",
+            "@RequestAttribute(\"user\") String user",
+        ] {
+            assert!(!bound(formal), "{formal} should not be request-bound");
+        }
+    }
+
+    #[test]
+    fn flags_follow_formal_order() {
+        let src = "class C { void m(HttpServletResponse resp, @RequestParam String name, \
+                   Principal p, String... rest) {} }";
+        let tree = parse(src);
+        let method = first_method(tree.root_node()).unwrap();
+        assert_eq!(extract_param_meta(method, "java", src.as_bytes()).len(), 4);
+        assert_eq!(
+            java_request_bound_flags(method, src.as_bytes(), 4),
+            vec![false, true, false, true]
+        );
+        // A count that does not line up falls back to seeding every formal.
+        assert_eq!(
+            java_request_bound_flags(method, src.as_bytes(), 3),
+            vec![true; 3]
+        );
     }
 }

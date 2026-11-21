@@ -1,8 +1,8 @@
 // Phase 13 path-traversal sanitized (Go).  Canonicalises the path via
 // `filepath.Clean(filepath.Join(base, name))` (existing
 // `Sanitizer(FILE_IO)` rule on `filepath.Clean`) and validates
-// containment with `strings.HasPrefix(candidate, base)`.  The canonical
-// path is written as a response body, not a FILE_IO sink.
+// containment with `strings.HasPrefix(candidate, base)` before serving the
+// file with `http.ServeFile` (FILE_IO sink on the name argument).
 package handlers
 
 import (
@@ -19,5 +19,5 @@ func SafeHandle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "escape", 400)
 		return
 	}
-	w.Write([]byte(candidate))
+	http.ServeFile(w, r, candidate)
 }

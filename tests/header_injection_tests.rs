@@ -195,6 +195,25 @@ fn go_strip_crlf_sanitizes() {
 }
 
 #[test]
+fn go_response_header_add_and_inline_reflection_fire() {
+    assert_unsafe("go", "unsafe_add_header.go");
+}
+
+/// `r.Header.Set` / `out.Header.Set` write the `Header` field of an
+/// `*http.Request`, not the response; a tainted header name with a constant
+/// value is not a payload.
+#[test]
+fn go_request_side_header_and_tainted_name_are_clean() {
+    assert_clean("go", "safe_request_side_header.go");
+}
+
+/// `strconv.Itoa(len(q))` and friends emit digits only.
+#[test]
+fn go_numeric_header_values_are_clean() {
+    assert_clean("go", "safe_numeric_header.go");
+}
+
+#[test]
 fn rust_set_header_with_tainted_value_fires() {
     assert_unsafe("rust", "unsafe_set_header.rs");
 }

@@ -50,6 +50,14 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     if info.string_prefix.is_some() {
                         continue;
                     }
+                    // Skip bindings with a declared type
+                    // (`c := &http.Client{Timeout: t}` lowers to
+                    // `Assign([t])`).  The type belongs to the destination,
+                    // not to the single operand, so folding the copy would
+                    // hand the call receiver the operand's type instead.
+                    if info.decl_type.is_some() {
+                        continue;
+                    }
                     replace_map.insert(inst.value, src);
                 }
             }

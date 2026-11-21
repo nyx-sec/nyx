@@ -285,6 +285,40 @@ fn positive_java() {
 }
 
 #[test]
+fn go_exec_command_needs_the_exec_package_operand() {
+    let hit = |src: &str| run_patterns("go", src.as_bytes()).contains("go.cmdi.exec_command");
+    assert!(hit(
+        "package main\nfunc f(c string) { exec.Command(\"sh\", \"-c\", c) }\n"
+    ));
+    assert!(hit(
+        "package main\nfunc f(c string) { execabs.Command(c) }\n"
+    ));
+    assert!(!hit(
+        "package main\nfunc f(h string) { app.Command(\"check\", h) }\n"
+    ));
+    assert!(!hit("package main\nfunc f() { rdb.Command(ctx) }\n"));
+}
+
+#[test]
+fn java_method_invoke_query_needs_a_receiver_and_an_argument() {
+    let hit = |body: &str| {
+        run_patterns(
+            "java",
+            format!("class T {{ void f(Object o) {{ {body} }} }}").as_bytes(),
+        )
+        .contains("java.reflection.method_invoke")
+    };
+    assert!(hit("m.invoke(o);"));
+    assert!(hit("t.getClass().getMethod(\"run\").invoke(o);"));
+    assert!(hit("((Method) x).invoke(o, 1);"));
+    assert!(!hit("invoke(o);"));
+    assert!(!hit("this.invoke(o);"));
+    assert!(!hit("super.invoke(o);"));
+    assert!(!hit("h.invoke();"));
+    assert!(!hit("new Helper().invoke(o);"));
+}
+
+#[test]
 fn positive_python() {
     assert_positive_match(
         "python",

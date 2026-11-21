@@ -30,6 +30,97 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // `*http.Request` accessors keyed on the canonical `Request` receiver.
+    // A formal declared `*http.Request` is classified with its root
+    // identifier rewritten to `Request` whatever the binding is named
+    // (`req.FormValue` → `Request.FormValue`, see
+    // `request_receiver_prefix`), and a struct field named `Request` (gin's
+    // `c.Request.Header.Get`) suffix-matches directly.  Case-sensitive so a
+    // local that merely happens to be named `request` does not match.
+    LabelRule {
+        matchers: &[
+            "Request.Body",
+            "Request.Header",
+            "Request.Header.Get",
+            "Request.Header.Values",
+            "Request.URL.Query",
+            "Request.URL.Query.Get",
+            "Request.Cookie",
+            "Request.Cookies",
+            "Request.PathValue",
+            "Request.PostFormValue",
+            "Request.Form",
+            "Request.Form.Get",
+            "Request.PostForm",
+            "Request.PostForm.Get",
+            "Request.FormFile",
+            "Request.MultipartForm",
+            "Request.Referer",
+            "Request.UserAgent",
+            "Request.RequestURI",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
+    // Framework request contexts keyed on their declared type: a formal
+    // `ctx *gin.Context` is classified as `GinContext.<method>` and a formal
+    // `c echo.Context` as `EchoContext.<method>`.  The declared type is the
+    // framework witness, so these do not wait on manifest detection the way
+    // the receiver-name rules in `framework_rules` do.  The bind helpers
+    // write the request body into their pointer argument; see
+    // `OUTPUT_PARAM_SOURCES`.
+    LabelRule {
+        matchers: &[
+            "GinContext.Param",
+            "GinContext.Query",
+            "GinContext.GetQuery",
+            "GinContext.DefaultQuery",
+            "GinContext.QueryArray",
+            "GinContext.GetQueryArray",
+            "GinContext.PostForm",
+            "GinContext.GetPostForm",
+            "GinContext.DefaultPostForm",
+            "GinContext.PostFormArray",
+            "GinContext.GetPostFormArray",
+            "GinContext.GetHeader",
+            "GinContext.Cookie",
+            "GinContext.FormFile",
+            "GinContext.GetRawData",
+            "GinContext.Bind",
+            "GinContext.BindJSON",
+            "GinContext.BindQuery",
+            "GinContext.BindUri",
+            "GinContext.BindHeader",
+            "GinContext.BindXML",
+            "GinContext.BindYAML",
+            "GinContext.BindWith",
+            "GinContext.ShouldBind",
+            "GinContext.ShouldBindJSON",
+            "GinContext.ShouldBindQuery",
+            "GinContext.ShouldBindUri",
+            "GinContext.ShouldBindHeader",
+            "GinContext.ShouldBindXML",
+            "GinContext.ShouldBindYAML",
+            "GinContext.ShouldBindWith",
+            "GinContext.ShouldBindBodyWith",
+            "EchoContext.Param",
+            "EchoContext.QueryParam",
+            "EchoContext.FormValue",
+            "EchoContext.Bind",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
+    // Router path parameters.  gorilla/mux `mux.Vars(r)` returns the route
+    // variables as a `map[string]string`; chi `chi.URLParam(r, key)` and
+    // `chi.URLParamFromCtx(ctx, key)` return one value.  The package
+    // qualifier is specific to each router, so these do not wait on
+    // manifest detection.
+    LabelRule {
+        matchers: &["mux.Vars", "chi.URLParam", "chi.URLParamFromCtx"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &[
@@ -39,6 +130,15 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
+    },
+    // encoding/json escapes `<`, `>`, `&`, U+2028 and U+2029 inside string
+    // values by default (`json.Marshal`, `json.MarshalIndent`), so the bytes
+    // cannot open a tag or script context.  This is the serialiser, not a
+    // parser: decoding (`json.Unmarshal`) is not a sanitizer.
+    LabelRule {
+        matchers: &["json.Marshal", "json.MarshalIndent"],
+        label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
+        case_sensitive: true,
     },
     LabelRule {
         matchers: &["url.QueryEscape", "url.PathEscape"],
@@ -189,12 +289,39 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: true,
     },
     // fmt.Printf/Sprintf write to stdout or build strings in memory, not
-    // security sinks.  fmt.Fprintf writes to an io.Writer (often http.ResponseWriter)
-    // so it IS a security sink for XSS.
+    // security sinks.  `fmt.Fprint*` and `io.WriteString` write to the
+    // io.Writer at arg 0, which is often the http.ResponseWriter, so they are
+    // XSS sinks.  When the writer is typed as something else (a
+    // `*bytes.Buffer`, a `strings.Builder`, an `*os.File`, an `io.Writer`
+    // formal, os.Stderr) the taint engine and `cfg-unguarded-sink` drop the
+    // label; see `type_facts::is_go_writer_sink_callee`.
     LabelRule {
-        matchers: &["fmt.Fprintf"],
+        matchers: &[
+            "fmt.Fprintf",
+            "fmt.Fprint",
+            "fmt.Fprintln",
+            "io.WriteString",
+        ],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
+    },
+    // `w.Write(b)` / `w.WriteString(s)` on a value typed `http.ResponseWriter`
+    // (a formal or local declared with that type).  Reached only through
+    // type-qualified resolution, so a `Write` on a buffer, file or hash is
+    // never a sink.
+    LabelRule {
+        matchers: &["HttpResponse.Write", "HttpResponse.WriteString"],
+        label: DataLabel::Sink(Cap::HTML_ESCAPE),
+        case_sensitive: true,
+    },
+    // Echo writes the string or bytes given to `c.HTML` / `c.HTMLBlob` as
+    // `text/html` without escaping.  The typed form fires for a formal
+    // declared `echo.Context` whatever it is named; the receiver-name form
+    // waits on framework detection (`framework_rules`).
+    LabelRule {
+        matchers: &["EchoContext.HTML", "EchoContext.HTMLBlob"],
+        label: DataLabel::Sink(Cap::HTML_ESCAPE),
+        case_sensitive: true,
     },
     LabelRule {
         matchers: &[
@@ -222,11 +349,10 @@ pub static RULES: &[LabelRule] = &[
     // ── Outbound HTTP clients (SSRF) ───────────────────────────────────
     //
     // These are modeled as destination-aware gated sinks in `GATED_SINKS`
-    // below.  Flat Sink rules would over-flag every positional argument as
-    // SSRF (so a tainted body in `http.Post(url, contentType, body)` would
-    // fire SSRF on the body), and the gate machinery short-circuits when a
-    // flat Sink label is already attached to the callee, blocking DATA_EXFIL
-    // body-flow gates from running.
+    // below.  A flat Sink rule alone would over-flag every positional
+    // argument as SSRF (so a tainted body in `http.Post(url, contentType,
+    // body)` would fire SSRF on the body).  When a flat Sink does exist, the
+    // CFG gate pass still narrows it to each gate's payload positions.
     //
     // `net.Dial` / `net.DialTimeout` keep their flat-sink modeling: the
     // first positional arg is the network address with no body / payload
@@ -279,20 +405,9 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
         case_sensitive: true,
     },
-    // ─── Header / CRLF injection sinks ───
+    // Header injection sinks (`w.Header().Set(name, val)`) are argument-role
+    // aware and live in `GATED_SINKS`.
     //
-    // `net/http` `ResponseWriter.Header()` returns a `Header` map; calls to
-    // `Set(name, val)` / `Add(name, val)` write a single header value.
-    // After paren-group stripping the chain text becomes
-    // `w.Header.Set` / `w.Header.Add`, so suffix matchers on `Header.Set` /
-    // `Header.Add` cover both the bound-receiver form (`w.Header().Set(...)`)
-    // and the documentation-style class-qualified form (`Header.Set`).
-    // Tainted strings without `\r\n` stripping enable response splitting.
-    LabelRule {
-        matchers: &["Header.Set", "Header.Add"],
-        label: DataLabel::Sink(Cap::HEADER_INJECTION),
-        case_sensitive: true,
-    },
     // ─── Header / CRLF sanitizers ───
     //
     // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
@@ -510,6 +625,68 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // A `*http.Client` the code builds itself (`&http.Client{Timeout: t}`, a
+    // formal or local declared `*http.Client`) is typed `HttpClient`, and
+    // type-qualified resolution rewrites `c.Get(u)` to `HttpClient.Get`.  The
+    // argument roles match the `http.DefaultClient.*` gates above.  These
+    // names are case-sensitive so they never match a lowercase method on an
+    // untyped receiver.
+    SinkGate {
+        callee_matcher: "HttpClient.Get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.PostForm",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
     // ── DATA_EXFIL gates (body-bearing position) ─────────────────────────
     // `http.Post(url, contentType, body)` — body is arg 2.
     SinkGate {
@@ -586,6 +763,50 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Typed `*http.Client` body positions, same roles as the
+    // `http.DefaultClient.*` gates above.
+    SinkGate {
+        callee_matcher: "HttpClient.Do",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.Post",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.PostForm",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[1],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
@@ -670,6 +891,85 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `exec.CommandContext(ctx, name, args...)` is `exec.Command` with a
+    // leading `context.Context`.  The context is not part of the command, so
+    // only the program name and its arguments are payloads.
+    SinkGate {
+        callee_matcher: "exec.CommandContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4, 5, 6, 7, 8],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.ServeFile(w, r, name)` opens and streams the file at `name`.  The
+    // `..` rejection it applies looks at `r.URL.Path`, not at `name`, so a name
+    // built from a query value or form field can still leave the served root.
+    SinkGate {
+        callee_matcher: "http.ServeFile",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Response header writes (HEADER_INJECTION) ────────────────────────
+    //
+    // `http.ResponseWriter` exposes its header map through the `Header()`
+    // METHOD, while `*http.Request` and `*http.Response` expose `Header` as a
+    // struct FIELD.  Matching the call form `Header().Set` keeps the sink on
+    // the response the server sends (`w.Header().Set`,
+    // `c.Writer.Header().Set`, `c.Response().Header().Set`) and leaves
+    // inbound-request rewrites (`r.Header.Set`) and outbound client requests
+    // (`req.Header.Set`) alone.  The matcher sees the raw callee text, where
+    // the call's parentheses are still present.
+    //
+    // Only the value (arg 1) is a payload, so a receiver that merely carries
+    // taint does not fire.  net/http replaces CR and LF in header values with
+    // spaces when it writes the response, so the risk here is an
+    // attacker-chosen value in a header with meaning (`Location`,
+    // `Set-Cookie`, `Access-Control-Allow-Origin`, `Content-Type`), not
+    // response splitting.
+    SinkGate {
+        callee_matcher: "Header().Set",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Header().Add",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+        payload_args: &[1],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
@@ -1297,6 +1597,45 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     ident_fields: &["name"],
 };
 
+/// Canonical receiver prefix for a request-carrying formal parameter type.
+/// The prefix keys the type-qualified source rules above (`Request.*`,
+/// `GinContext.*`, `EchoContext.*`).  Strips one pointer marker; everything
+/// else, including unqualified or differently qualified `Context` types,
+/// returns `None`.
+pub fn request_receiver_prefix(type_text: &str) -> Option<&'static str> {
+    match type_text.trim().trim_start_matches('*').trim() {
+        "http.Request" => Some("Request"),
+        "gin.Context" => Some("GinContext"),
+        "echo.Context" => Some("EchoContext"),
+        _ => None,
+    }
+}
+
+/// Request binders that decode the request into the pointer passed at the
+/// listed argument positions and return only an `error`
+/// (`c.ShouldBindJSON(&in)`, `c.Bind(&in)`).  Consulted only when the call
+/// already carries a `Source` label, so a same-named method on an unrelated
+/// receiver is never treated as a binder.
+pub static OUTPUT_PARAM_SOURCES: &[(&str, &[usize])] = &[
+    ("Bind", &[0]),
+    ("BindJSON", &[0]),
+    ("BindQuery", &[0]),
+    ("BindUri", &[0]),
+    ("BindHeader", &[0]),
+    ("BindXML", &[0]),
+    ("BindYAML", &[0]),
+    ("BindWith", &[0]),
+    ("ShouldBind", &[0]),
+    ("ShouldBindJSON", &[0]),
+    ("ShouldBindQuery", &[0]),
+    ("ShouldBindUri", &[0]),
+    ("ShouldBindHeader", &[0]),
+    ("ShouldBindXML", &[0]),
+    ("ShouldBindYAML", &[0]),
+    ("ShouldBindWith", &[0]),
+    ("ShouldBindBodyWith", &[0]),
+];
+
 /// Framework-conditional rules for Go.
 pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     let mut rules = Vec::new();
@@ -1327,11 +1666,10 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["c.HTML".into(), "c.String".into()],
-            label: DataLabel::Sink(Cap::HTML_ESCAPE),
-            case_sensitive: false,
-        });
+        // No gin response method is modelled as an XSS sink.  `c.String`
+        // sends `text/plain`, `c.JSON` sends JSON, and `c.HTML(code, name,
+        // obj)` executes a named html/template, which escapes `obj`.  Raw
+        // HTML handed to a template still fires at `template.HTML`.
     }
 
     if ctx.has(DetectedFramework::Echo) {
@@ -1345,8 +1683,12 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
         });
+        // Echo `c.HTML(code, html)` and `c.HTMLBlob(code, b)` write raw
+        // HTML.  `c.String` is `text/plain` and `c.JSON` is
+        // `application/json` with encoding/json's HTML escaping, so neither
+        // renders markup.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["c.HTML".into(), "c.String".into(), "c.JSON".into()],
+            matchers: vec!["c.HTML".into(), "c.HTMLBlob".into()],
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: false,
         });
@@ -1375,6 +1717,29 @@ mod tests {
             PARAM_CONFIG
                 .param_node_kinds
                 .contains(&"variadic_parameter_declaration")
+        );
+    }
+
+    #[test]
+    fn header_sink_is_response_side_and_value_only() {
+        use crate::labels::{Cap, DataLabel, classify_all, classify_gated_sink};
+        let header = |callee: &str| {
+            classify_gated_sink("go", callee, |_| None, |_| None, |_| false)
+                .into_iter()
+                .filter(|g| g.label == DataLabel::Sink(Cap::HEADER_INJECTION))
+                .map(|g| g.payload_args.to_vec())
+                .collect::<Vec<_>>()
+        };
+        // `Header()` is a ResponseWriter method; only the value is a payload.
+        assert_eq!(header("w.Header().Set"), vec![vec![1]]);
+        assert_eq!(header("w.Header().Add"), vec![vec![1]]);
+        assert_eq!(header("c.Writer.Header().Set"), vec![vec![1]]);
+        // `Header` as a field belongs to *http.Request / *http.Response.
+        assert!(header("r.Header.Set").is_empty());
+        assert!(header("req.Header.Add").is_empty());
+        assert!(
+            !classify_all("go", "r.Header.Set", None)
+                .contains(&DataLabel::Sink(Cap::HEADER_INJECTION))
         );
     }
 }

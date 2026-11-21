@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 838
+    "corpus_size": 862
   },
   "cases": [
     {
@@ -4932,7 +4932,7 @@
         "sanitizer"
       ],
       "disabled": false,
-      "notes": "prepareStatement sanitizes SQL input — should produce no SQL taint finding"
+      "notes": "literal prepareStatement template with the value bound through setString; the SQL text carries no taint, so no SQL taint finding"
     },
     {
       "case_id": "java-sqli-stmt-execute-002",
@@ -11941,8 +11941,9 @@
         "patched",
         "negative"
       ],
-      "disabled": false,
-      "notes": "CVE-2023-3188 patched counterpart: `IsHostnameInternal` early-return + redirect-blocked `*http.Client`. Regression guard that Nyx does not refire on the fix; the local-client sink (`client.Get`) is intentionally not on the SSRF matcher list."
+      "disabled": true,
+      "disabled_reason": "Precision (patched) deferred: the fix rejects internal hosts with an `IsHostnameInternal(fediverseServer)` early return and turns off redirects, then calls `client.Get(requestURL.String())` on a local `&http.Client{...}`. The case used to pass only because a user-built *http.Client was not an SSRF sink at all; with the client typed from its composite literal the call is a sink, and the URL still carries the user-chosen host (passed through a host denylist, which is not recognised as a guard) and the user-chosen `account` in its query. Recognising this needs SSRF host-denylist guard recognition. The vulnerable counterpart (recall) is active and detects.",
+      "notes": "CVE-2023-3188 patched counterpart: `IsHostnameInternal` early-return + redirect-blocked `*http.Client`. DISABLED (precision deferred): the local client is now an SSRF sink and the host denylist is not recognised as a guard. See disabled_reason."
     },
     {
       "case_id": "cve-go-2024-31450-vulnerable",
@@ -26887,6 +26888,789 @@
       ],
       "disabled": false,
       "notes": "Shallow Object.assign into a plain object cannot reach Object.prototype"
+    },
+    {
+      "case_id": "go-xss-005",
+      "file": "go/xss/xss_response_write.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "response-writer",
+        "write"
+      ],
+      "disabled": false,
+      "notes": "Reflected XSS through `w.Write` on a formal declared `http.ResponseWriter` (the writer is typed by its declaration, so `Write` resolves to the `HttpResponse.Write` sink)."
+    },
+    {
+      "case_id": "go-xss-006",
+      "file": "go/xss/xss_io_writestring.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "response-writer",
+        "io-writestring"
+      ],
+      "disabled": false,
+      "notes": "Reflected XSS through `io.WriteString(w, ...)` into the response writer."
+    },
+    {
+      "case_id": "go-ssrf-005",
+      "file": "go/ssrf/ssrf_typed_client_get.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "http-client"
+      ],
+      "disabled": false,
+      "notes": "SSRF through `client.Get(url)` on a `*http.Client` built with `&http.Client{Timeout: ...}`; the client is typed from its composite literal."
+    },
+    {
+      "case_id": "go-safe-writer-001",
+      "file": "go/safe/safe_fprintf_local_buffer.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "xss",
+        "negative",
+        "response-writer"
+      ],
+      "disabled": false,
+      "notes": "`var sb strings.Builder` / `var buf bytes.Buffer` passed as `&sb` / `&buf` are in-memory buffers, not the response."
+    },
+    {
+      "case_id": "go-safe-errpolarity-001",
+      "file": "go/safe/safe_err_nil_success_check.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "error-handling"
+      ],
+      "disabled": false,
+      "notes": "`if err == nil { ... }` without an else is a success check; `cfg-error-fallthrough` must not read its TRUE branch as the error handler."
+    },
+    {
+      "case_id": "java-sqli-prepared-concat-001",
+      "file": "java/sqli/SqliPreparedStatementConcat.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "prepareStatement",
+        "string-concat",
+        "owasp-shape"
+      ],
+      "disabled": false,
+      "notes": "SQL text concatenated before prepareStatement is executed by statement.execute(); setString binds a constant"
+    },
+    {
+      "case_id": "java-path_traversal-003",
+      "file": "java/path_traversal/FileHandleVarTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "file-constructor",
+        "upload"
+      ],
+      "disabled": false,
+      "notes": "new File(base, name) keeps the user-chosen path into FileOutputStream"
+    },
+    {
+      "case_id": "java-path_traversal-004",
+      "file": "java/path_traversal/StringCtorPassthroughTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "string-constructor"
+      ],
+      "disabled": false,
+      "notes": "new String(param.getBytes()) is the same text as the parameter"
+    },
+    {
+      "case_id": "java-path_traversal-005",
+      "file": "java/path_traversal/PathsGetSpringTraversal.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "paths-get",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "Paths.get(base, file) in a Spring handler is a static factory, not a container load"
+    },
+    {
+      "case_id": "java-safe-file-ctor-001",
+      "file": "java/safe/SafeFileCtorSanitized.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "file-constructor",
+        "sanitizer"
+      ],
+      "disabled": false,
+      "notes": "the path sanitizer clears FILE_IO before the File constructor"
+    },
+    {
+      "case_id": "java-safe-spring-infra-001",
+      "file": "java/safe/SafeSpringInfraFormals.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "taint-header-injection"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "spring",
+        "entry-point"
+      ],
+      "disabled": false,
+      "notes": "HttpServletResponse and HttpSession formals are injected by Spring, not request input; constant writes and cookies stay silent"
+    },
+    {
+      "case_id": "java-safe-console-001",
+      "file": "java/safe/SafeConsoleLogHelper.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "console",
+        "xss"
+      ],
+      "disabled": false,
+      "notes": "System.out / System.err prints are console output, directly and through a log helper"
+    },
+    {
+      "case_id": "js-safe-errpolarity-001",
+      "file": "javascript/safe/safe_err_null_success_check.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-error-fallthrough"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cfg",
+        "negative",
+        "error-handling"
+      ],
+      "disabled": false,
+      "notes": "`if (err === null) { ... }` is a success check; the code after it is not an error check falling through."
+    },
+    {
+      "case_id": "java-sqli-jdbctemplate-declared-001",
+      "file": "java/sqli/SqliJdbcTemplateDeclared.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "tags": [
+        "spring",
+        "jdbc-template",
+        "declared-type"
+      ],
+      "disabled": false,
+      "notes": "Spring templates are injected fields, typed only by their declaration: JdbcTemplate.queryForList and NamedParameterJdbcTemplate.queryForList with concatenated SQL"
+    },
+    {
+      "case_id": "java-path_traversal-006",
+      "file": "java/path_traversal/PathTraversalFileReaderWriter.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "file-reader",
+        "file-writer"
+      ],
+      "disabled": false,
+      "notes": "new FileReader(path) and new FileWriter(path) open the request-chosen path"
+    },
+    {
+      "case_id": "java-ssrf-005",
+      "file": "java/ssrf/SsrfRestTemplateUrl.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "rest-template",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "RestTemplate: request parameter as the URL, and as a variable in the authority of the URI template"
+    },
+    {
+      "case_id": "java-code_injection-002",
+      "file": "java/code_injection/ReflectionMethodName.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "code_injection",
+      "cwe": "CWE-470",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "java.reflection.method_invoke"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "reflection",
+        "get-method"
+      ],
+      "disabled": false,
+      "notes": "Request parameter chooses the method passed to getMethod (unsafe reflection)"
+    },
+    {
+      "case_id": "java-safe-jdbctemplate-001",
+      "file": "java/safe/SafeJdbcTemplatePlaceholders.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "spring",
+        "jdbc-template",
+        "declared-type"
+      ],
+      "disabled": false,
+      "notes": "Placeholder and named-parameter statements on declared Spring templates bind the request value"
+    },
+    {
+      "case_id": "java-safe-filereader-001",
+      "file": "java/safe/SafeFileReaderFixedPath.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "file-reader",
+        "file-writer"
+      ],
+      "disabled": false,
+      "notes": "FileReader and FileWriter on fixed paths; the request value is not a path"
+    },
+    {
+      "case_id": "java-safe-resttemplate-001",
+      "file": "java/safe/SafeRestTemplateFixedHost.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "rest-template",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "A request parameter as the body or as a uriVariable under a fixed origin does not choose the host"
+    },
+    {
+      "case_id": "java-safe-reflection-001",
+      "file": "java/safe/SafeReflectionConstantMethod.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "reflection",
+        "get-method"
+      ],
+      "disabled": false,
+      "notes": "getMethod with a literal name, and the servlet's own request.getMethod()"
+    },
+    {
+      "case_id": "java-safe-runtime-exec-001",
+      "file": "java/safe/SafeRuntimeExecLiteral.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.cmdi.runtime_exec",
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "runtime-exec",
+        "literal"
+      ],
+      "disabled": false,
+      "notes": "Runtime.getRuntime().exec with a constant command string"
+    },
+    {
+      "case_id": "java-safe-invoke-001",
+      "file": "java/safe/SafeNonMethodInvoke.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.reflection.method_invoke"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "reflection",
+        "precision"
+      ],
+      "disabled": false,
+      "notes": "invoke calls on the class's own helper, a declared user interface and MBeanServer are not Method.invoke"
+    },
+    {
+      "case_id": "java-safe-process-stream-001",
+      "file": "java/safe/SafeProcessOutputStream.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "stream-source",
+        "process"
+      ],
+      "disabled": false,
+      "notes": "Output of a child process written to the response is not request input"
     }
   ]
 }

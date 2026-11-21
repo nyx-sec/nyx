@@ -2703,3 +2703,204 @@ function show(db, error, version) {
 "#;
     assert_eq!(fallthrough(js_if, "javascript", ts()), 1);
 }
+
+/// Type fact of the first SSA def named `var` in the first body of `src`.
+fn go_binding_type(src: &[u8], var: &str) -> Option<crate::ssa::type_facts::TypeKind> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg.first_body();
+    let facts = build_body_const_facts(body, Lang::Go).expect("body const facts");
+    let val = facts
+        .ssa
+        .blocks
+        .iter()
+        .flat_map(|b| b.body.iter())
+        .find(|i| i.var_name.as_deref() == Some(var))
+        .map(|i| i.value)?;
+    facts.type_facts.get_type(val).cloned()
+}
+
+#[test]
+fn go_declared_bindings_carry_their_type() {
+    use crate::ssa::type_facts::TypeKind;
+    // Zero-value declarations lower to a Nop; the declared type is the
+    // only evidence of what the binding holds.
+    let src = br#"package main
+import ("fmt"; "strings")
+func h(name string) {
+    var sb strings.Builder
+    fmt.Fprintf(&sb, "%s", name)
+}
+"#;
+    assert_eq!(go_binding_type(src, "sb"), Some(TypeKind::FileHandle));
+
+    // `&http.Client{Timeout: t}` lowers to a single-operand Assign; copy
+    // propagation must not fold it into `t` and lose the client type.
+    let src = br#"package main
+import "net/http"
+func h(t int, u string) {
+    c := &http.Client{Timeout: t}
+    c.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+
+    let src = br#"package main
+import "net/http"
+func h(u string) {
+    var c http.Client
+    c.Get(u)
+    d := http.Client{}
+    d.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+    assert_eq!(go_binding_type(src, "d"), Some(TypeKind::HttpClient));
+}
+
+#[test]
+fn go_initialised_interface_declaration_is_not_typed() {
+    // `var out io.Writer = w` says nothing about the value it holds, so the
+    // declared interface type is not used.
+    let src = br#"package main
+import ("fmt"; "io"; "net/http")
+func h(w http.ResponseWriter, name string) {
+    var out io.Writer = w
+    fmt.Fprintf(out, "%s", name)
+}
+"#;
+    assert_ne!(
+        go_binding_type(src, "out"),
+        Some(crate::ssa::type_facts::TypeKind::FileHandle)
+    );
+}
+
+#[test]
+fn go_response_writer_and_client_formals_are_typed() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"package main
+import "net/http"
+func h(w http.ResponseWriter, c *http.Client, n int) {
+    c.Get("x")
+    w.Write(nil)
+}
+"#;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg
+        .bodies
+        .iter()
+        .find(|b| b.meta.name.as_deref() == Some("h"))
+        .expect("h body");
+    assert_eq!(
+        body.meta.param_types,
+        vec![
+            Some(TypeKind::HttpResponse),
+            Some(TypeKind::HttpClient),
+            None
+        ]
+    );
+}
+
+fn go_error_fallthrough_lines(src: &[u8]) -> usize {
+    parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    )
+    .iter()
+    .filter(|f| f.rule_id == "cfg-error-fallthrough")
+    .count()
+}
+
+#[test]
+fn go_err_nil_success_check_without_else_does_not_fire() {
+    let src = br#"
+        package main
+        import ("os/exec"; "strconv")
+        func h(id string, x string) {
+            if n, err := strconv.Atoi(id); err == nil {
+                _ = n
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    let src = br#"
+        package main
+        import ("os"; "os/exec")
+        func h(x string) {
+            f, err := os.Open("/tmp/x")
+            if nil == err {
+                defer f.Close()
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+}
+
+#[test]
+fn go_err_nil_success_check_reads_else_as_error_branch() {
+    // The else branch returns: the error is handled.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                return
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    // The else branch only logs and falls through into the sink.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                fmt.Println("warn")
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 1);
+}
+
+#[test]
+fn js_err_null_success_check_without_else_does_not_fire() {
+    let src = br#"
+        const child_process = require('child_process');
+        function h(err, cmd) {
+            if (err === null) {
+                console.log("ok");
+            }
+            child_process.exec(cmd);
+        }"#;
+    let findings = parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.rule_id == "cfg-error-fallthrough"),
+        "success-polarity `err === null` must not fire; got {findings:?}"
+    );
+}
