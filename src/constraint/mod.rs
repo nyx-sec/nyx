@@ -55,5 +55,5 @@ pub use solver::{is_satisfiable, refine_env};
 /// The legacy `NYX_CONSTRAINT` env var is consulted only when no runtime has
 /// been installed (library use / legacy tests).
 pub fn is_enabled() -> bool {
-    crate::utils::analysis_options::current().constraint_solving
+    crate::utils::analysis_options::constraint_solving()
 }

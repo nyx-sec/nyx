@@ -207,6 +207,57 @@ pub fn current() -> AnalysisOptions {
     }
 }
 
+/// Installed runtime options, if any.  `AnalysisOptions` is `Copy`, so this
+/// is a read-lock plus a copy.
+fn installed() -> Option<AnalysisOptions> {
+    *RUNTIME.read().expect("analysis options RwLock poisoned")
+}
+
+/// Env-derived fallback for the hot-path scalar accessors below.  Resolved
+/// once per process: `current()` re-reads every `NYX_*` variable on each
+/// call, which is a libc `getenv` scan under a global lock and dominates
+/// taint-engine self-time when no runtime is installed (library use,
+/// benches).  Only the fields read by the cheap accessors are cached; the
+/// toggles that tests flip mid-process (`NYX_CONTEXT_SENSITIVE`,
+/// `NYX_BACKWARDS`) keep going through `current()`.
+fn env_fallback() -> &'static AnalysisOptions {
+    static FALLBACK: std::sync::OnceLock<AnalysisOptions> = std::sync::OnceLock::new();
+    FALLBACK.get_or_init(|| AnalysisOptions {
+        constraint_solving: env_bool_default("NYX_CONSTRAINT", true),
+        abstract_interpretation: env_bool_default("NYX_ABSTRACT_INTERP", true),
+        max_origins: env_u32_default("NYX_MAX_ORIGINS", DEFAULT_MAX_ORIGINS).max(MIN_MAX_ORIGINS),
+        max_pointsto: env_u32_default("NYX_MAX_POINTSTO", DEFAULT_MAX_POINTSTO)
+            .max(MIN_MAX_POINTSTO),
+        ..AnalysisOptions::default()
+    })
+}
+
+/// Same value as `current().constraint_solving`, without the per-call env scan.
+pub fn constraint_solving() -> bool {
+    installed().map_or_else(
+        || env_fallback().constraint_solving,
+        |o| o.constraint_solving,
+    )
+}
+
+/// Same value as `current().abstract_interpretation`, without the per-call env scan.
+pub fn abstract_interpretation() -> bool {
+    installed().map_or_else(
+        || env_fallback().abstract_interpretation,
+        |o| o.abstract_interpretation,
+    )
+}
+
+/// Same value as `current().max_origins`, without the per-call env scan.
+pub fn max_origins() -> u32 {
+    installed().map_or_else(|| env_fallback().max_origins, |o| o.max_origins)
+}
+
+/// Same value as `current().max_pointsto`, without the per-call env scan.
+pub fn max_pointsto() -> u32 {
+    installed().map_or_else(|| env_fallback().max_pointsto, |o| o.max_pointsto)
+}
+
 fn env_bool_default(key: &str, default: bool) -> bool {
     match std::env::var(key) {
         Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),

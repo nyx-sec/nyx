@@ -119,7 +119,7 @@ pub(super) fn effective_max_origins() -> usize {
     if o != 0 {
         return o;
     }
-    crate::utils::analysis_options::current().max_origins as usize
+    crate::utils::analysis_options::max_origins() as usize
 }
 
 /// Observability: total origins dropped by the engine since the most
