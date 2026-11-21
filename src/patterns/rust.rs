@@ -12,10 +12,11 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         id: "rs.memory.transmute",
         description: "std::mem::transmute performs unchecked type reinterpretation",
+        // `mem::`, `std::mem::`, `core::mem::`, the turbofish form, and a bare
+        // `transmute` after `use std::mem::transmute`.
         query: r#"(call_expression
-                     function: (scoped_identifier
-                       path: (identifier) @p (#eq? @p "mem")
-                       name: (identifier) @f (#eq? @f "transmute")))
+                     function: (_) @fn
+                     (#match? @fn "(?s)^(((::)?(std|core)::)?mem::)?transmute(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
@@ -26,9 +27,8 @@ pub const PATTERNS: &[Pattern] = &[
         id: "rs.memory.copy_nonoverlapping",
         description: "ptr::copy_nonoverlapping is a raw pointer memcpy",
         query: r#"(call_expression
-                     function: (scoped_identifier
-                       path: (identifier) @p (#eq? @p "ptr")
-                       name: (identifier) @f (#eq? @f "copy_nonoverlapping")))
+                     function: (_) @fn
+                     (#match? @fn "(?s)^(((::)?(std|core)::)?ptr::)?copy_nonoverlapping(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
@@ -52,9 +52,8 @@ pub const PATTERNS: &[Pattern] = &[
         id: "rs.memory.mem_zeroed",
         description: "std::mem::zeroed is UB for non-POD types since the zero pattern may not be a valid value",
         query: r#"(call_expression
-                     function: (scoped_identifier
-                       path: (identifier) @p (#eq? @p "mem")
-                       name: (identifier) @n (#eq? @n "zeroed")))
+                     function: (_) @fn
+                     (#match? @fn "(?s)^((::)?(std|core)::)?mem::zeroed(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
@@ -65,9 +64,8 @@ pub const PATTERNS: &[Pattern] = &[
         id: "rs.memory.ptr_read",
         description: "ptr::read / ptr::read_volatile dereferences a raw pointer",
         query: r#"(call_expression
-                     function: (scoped_identifier
-                       path: (identifier) @p (#eq? @p "ptr")
-                       name: (identifier) @n (#match? @n "^read(_volatile)?$")))
+                     function: (_) @fn
+                     (#match? @fn "(?s)^((::)?(std|core)::)?ptr::read(_volatile)?(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
@@ -158,9 +156,8 @@ pub const PATTERNS: &[Pattern] = &[
         id: "rs.memory.mem_forget",
         description: "std::mem::forget can leak resources",
         query: r#"(call_expression
-                     function: (scoped_identifier
-                       path: (identifier) @p (#eq? @p "mem")
-                       name: (identifier) @n (#eq? @n "forget")))
+                     function: (_) @fn
+                     (#match? @fn "(?s)^((::)?(std|core)::)?mem::forget(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::Low,
         tier: PatternTier::A,
