@@ -164,6 +164,7 @@ static JS_AUTH: &[AuthRule] = &[AuthRule {
         "verify_token",
         "validate_token",
         // JS/TS middleware & JWT
+        "isAuthenticated",
         "ensureAuthenticated",
         "ensureAuth",
         "requireAuth",
