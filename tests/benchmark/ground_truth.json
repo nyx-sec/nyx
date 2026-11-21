@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 898
+    "corpus_size": 910
   },
   "cases": [
     {
@@ -28709,6 +28709,363 @@
       ],
       "disabled": false,
       "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-as-turbofish",
+      "file": "rust/sqli/sqli_sqlx_query_as_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to sqlx::query_as::<_, User>; the turbofish must not hide the sink"
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-scalar-turbofish",
+      "file": "rust/sqli/sqli_sqlx_query_scalar_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to sqlx::query_scalar::<_, i64>"
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-format-with-bind",
+      "file": "rust/sqli/sqli_sqlx_query_bind_literal_and_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "bind",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "Table name spliced into the SQL text; a literal .bind() value does not make it safe"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-execute-format",
+      "file": "rust/sqli/sqli_rusqlite_execute_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "format-macro",
+        "unwrap-chain"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to Connection::execute with an empty parameter set"
+    },
+    {
+      "case_id": "rs-sqli-diesel-sql-query-format",
+      "file": "rust/sqli/sqli_diesel_sql_query_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "diesel",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to diesel::sql_query"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-as-turbofish-bind",
+      "file": "rust/safe/safe_sqlx_query_as_turbofish_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value only reaches sqlx::query_as::<_, User> through .bind(); SQL text is a literal"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-scalar-turbofish-bind",
+      "file": "rust/safe/safe_sqlx_query_scalar_turbofish_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value only reaches sqlx::query_scalar through .bind()"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-bind",
+      "file": "rust/safe/safe_sqlx_query_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Bound parameter on sqlx::query with a literal SQL string"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-params-macro",
+      "file": "rust/safe/safe_rusqlite_params_macro.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "params-macro",
+        "unwrap-chain"
+      ],
+      "disabled": false,
+      "notes": "Tainted value passed through params![] with a literal SQL string, chain split over lines"
+    },
+    {
+      "case_id": "rs-safe-diesel-sql-query-bind",
+      "file": "rust/safe/safe_diesel_sql_query_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "diesel",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value bound with diesel's .bind::<Text, _>() on a literal SQL string"
+    },
+    {
+      "case_id": "rs-safe-actix-reqwest-json-turbofish",
+      "file": "rust/safe/safe_actix_reqwest_json_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "actix",
+        "reqwest",
+        "turbofish"
+      ],
+      "disabled": false,
+      "notes": "res.json::<T>() decodes an upstream reqwest response; it is not the actix response-builder json sink"
+    },
+    {
+      "case_id": "rs-safe-toml-config-turbofish",
+      "file": "rust/safe/safe_toml_config_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "turbofish",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "Operator config file decoded into a concrete type with toml::from_str::<Config>; not a polymorphic deserialization sink"
     }
   ]
 }
