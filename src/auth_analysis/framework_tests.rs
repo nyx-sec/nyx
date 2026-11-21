@@ -617,7 +617,7 @@ end
 
         let scoped = "\
 class NotesController < ApplicationController
-  authorize_resource only: %i[destroy]
+  load_and_authorize_resource only: %i[destroy]
 
   def destroy
     note = Note.find(params[:id])
@@ -1343,6 +1343,339 @@ module.exports = router;
         assert_eq!(
             lines(&found, "admin_route_missing_admin_check"),
             vec![17, 21, 25],
+            "{found:?}"
+        );
+    }
+}
+
+mod caller_scope_limits {
+    use super::*;
+
+    #[test]
+    fn rails_association_writes_and_model_lookups_are_not_scoped_by_the_caller() {
+        let src = "\
+class MembershipsController < ApplicationController
+  before_action :authenticate_user!
+
+  def create
+    current_user.memberships.create(project_id: params[:project_id])
+  end
+
+  def show
+    current_user.class.find(params[:id])
+  end
+
+  def mine
+    current_user.memberships.find(params[:id])
+  end
+
+  def comment
+    Comment.create(post_id: params[:post_id], author: current_user)
+  end
+end
+";
+        let found = rules("ruby", "memberships_controller.rb", src);
+        // The association lookup on line 12 stays clean.
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![5, 9, 17],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn django_whole_user_kwarg_is_a_pin_for_a_lookup_not_for_a_write() {
+        let src = "\
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
+from .models import Document, Share, Task
+
+
+@login_required
+def new_task(request, project_id):
+    Task.objects.create(project_id=project_id, created_by=request.user)
+    return JsonResponse({})
+
+
+@login_required
+def share(request, doc_id):
+    Share.objects.create(document_id=doc_id, shared_by=request.user)
+    return JsonResponse({})
+
+
+@login_required
+def favorite(request, doc_id):
+    request.user.favorites.create(document_id=doc_id)
+    return JsonResponse({})
+
+
+@login_required
+def mine(request, doc_id):
+    doc = Document.objects.filter(owner=request.user, id=doc_id).first()
+    return JsonResponse({\"t\": doc.title})
+";
+        let found = rules("python", "views.py", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![8, 14, 20],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn express_association_writes_and_model_lookups_are_not_scoped() {
+        let src = "\
+const express = require('express');
+const router = express.Router();
+
+router.post('/memberships', requireAuth, async (req, res) => {
+  await req.user.createMembership({ projectId: req.body.projectId });
+  res.json({});
+});
+
+router.get('/docs/:docId', requireAuth, async (req, res) => {
+  res.json(await req.user.constructor.findById(req.params.docId));
+});
+
+router.get('/mine/:docId', requireAuth, async (req, res) => {
+  res.json(await req.user.getDocuments({ where: { id: req.params.docId } }));
+});
+module.exports = router;
+";
+        let found = rules("javascript", "routes.js", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![5, 10],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn python_gets_on_querysets_and_model_classes_are_ownership_reads() {
+        let src = "\
+from rest_framework import viewsets
+from rest_framework.response import Response
+from .models import Note
+
+
+class NoteViewSet(viewsets.ViewSet):
+    def retrieve(self, request, pk=None):
+        obj = self.queryset.get(pk=pk)
+        return Response(obj.title)
+
+    def update(self, request, pk=None):
+        qs = Note.objects.all()
+        obj = qs.get(pk=pk)
+        return Response(obj.title)
+
+    def destroy(self, request, pk=None):
+        note = Note.get_by_id(pk)
+        note.delete_instance()
+        return Response(status=204)
+
+    def options(self, request, pk=None):
+        settings = {}
+        return Response(settings.get(pk))
+";
+        let found = rules("python", "views.py", src);
+        // The three row lookups; the dictionary `get` stays out.
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![8, 13, 17],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn authorize_resource_authorizes_the_class_not_the_row() {
+        let src = "\
+class NotesController < ApplicationController
+  authorize_resource only: %i[destroy]
+  load_and_authorize_resource only: %i[update]
+
+  def destroy
+    note = Note.find(params[:id])
+    note.destroy
+  end
+
+  def update
+    note = Note.find(params[:id])
+    note.update(body: params[:body])
+  end
+end
+";
+        let found = rules("ruby", "notes_controller.rb", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![6],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn model_permissions_do_not_scope_rows_and_read_only_variants_do_not_guard_reads() {
+        let model = "\
+from rest_framework import viewsets
+from rest_framework.permissions import DjangoModelPermissions
+from .models import Note
+
+
+class NoteViewSet(viewsets.ModelViewSet):
+    permission_classes = [DjangoModelPermissions]
+
+    def destroy(self, request, pk=None):
+        Note.objects.filter(pk=pk).delete()
+";
+        let found = rules("python", "views.py", model);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![10],
+            "{found:?}"
+        );
+
+        let read_only = "\
+from rest_framework import viewsets
+from rest_framework.permissions import DjangoObjectPermissions, IsAuthenticatedOrReadOnly
+from .models import Note
+
+
+class NoteViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def retrieve(self, request, pk=None):
+        return Note.objects.get(pk=pk)
+
+    def destroy(self, request, pk=None):
+        Note.objects.filter(pk=pk).delete()
+";
+        let found = rules("python", "views.py", read_only);
+        // Login is required for the delete only, and login is not ownership.
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![10, 13],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn action_permission_override_and_get_permissions_replace_the_class_list() {
+        let src = "\
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny, DjangoObjectPermissions
+from .models import Document
+
+
+class DocViewSet(viewsets.ModelViewSet):
+    permission_classes = [DjangoObjectPermissions]
+
+    def destroy(self, request, pk=None):
+        Document.objects.filter(pk=pk).delete()
+
+    @action(detail=True, permission_classes=[AllowAny])
+    def export(self, request, pk=None):
+        return Document.objects.get(pk=pk)
+
+    @action(detail=True, permission_classes=[DjangoObjectPermissions])
+    def archive(self, request, pk=None):
+        return Document.objects.get(pk=pk)
+
+
+class DynamicViewSet(viewsets.ModelViewSet):
+    permission_classes = [DjangoObjectPermissions]
+
+    def get_permissions(self):
+        return [AllowAny()]
+
+    def destroy(self, request, pk=None):
+        Document.objects.filter(pk=pk).delete()
+";
+        let found = rules("python", "views.py", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![15, 29],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn injected_current_user_id_stays_the_caller() {
+        let fastapi = "\
+from fastapi import APIRouter, Depends
+
+router = APIRouter()
+
+
+@router.put(\"/items/{item_id}\")
+def update(item_id: int, current_user_id: int = Depends(get_user_id)):
+    return db.query(Item).filter(Item.id == item_id, Item.owner_id == current_user_id).first()
+";
+        let found = rules("python", "app.py", fastapi);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn role_lists_and_substring_roles_are_not_admin_guards() {
+        let java = "\
+package com.example;
+
+@RestController
+@RequestMapping(\"/admin/reports\")
+public class AdminReportController {
+    private final ReportRepository reportRepository;
+
+    @GetMapping(\"/a\")
+    @Secured({\"ROLE_ADMIN\", \"ROLE_USER\"})
+    public Object mixed() {
+        return reportRepository.findAll();
+    }
+
+    @GetMapping(\"/b\")
+    @RolesAllowed({\"ADMIN\", \"USER\"})
+    public Object mixedJsr() {
+        return reportRepository.findAll();
+    }
+
+    @GetMapping(\"/c\")
+    @PreAuthorize(\"hasRole('MANAGE_OWN_NOTES')\")
+    public Object narrow() {
+        return reportRepository.findAll();
+    }
+
+    @GetMapping(\"/d\")
+    @Secured({\"ROLE_ADMIN\", \"ROLE_SUPERUSER\"})
+    public Object admins() {
+        return reportRepository.findAll();
+    }
+}
+";
+        let found = rules("java", "AdminReportController.java", java);
+        assert_eq!(
+            lines(&found, "admin_route_missing_admin_check"),
+            vec![8, 14, 20],
+            "{found:?}"
+        );
+
+        let js = "\
+const express = require('express');
+const router = express.Router();
+
+router.delete('/admin/users/:id', requireAuth, requireRoles('viewer'), async (req, res) => {
+  res.json(await User.find());
+});
+
+router.delete('/admin/teams/:id', requireAuth, requireRoles('admin'), async (req, res) => {
+  res.json(await Team.find());
+});
+module.exports = router;
+";
+        let found = rules("javascript", "routes.js", js);
+        assert_eq!(
+            lines(&found, "admin_route_missing_admin_check"),
+            vec![4],
             "{found:?}"
         );
     }

@@ -1341,6 +1341,17 @@ fn rails_cancan_macros_authorize_the_actions_they_cover() {
     assert_no_auth_diags_for(scan_all_fixtures(), "rails_load_and_authorize_clean.rb");
 }
 
+/// `authorize_resource` does not load the record, so CanCanCan authorizes the
+/// class and the row found by the action is not covered.
+#[test]
+fn rails_authorize_resource_does_not_authorize_the_row() {
+    assert_lines(
+        "rails_authorize_resource_class_only_missing.rb",
+        "rb.auth.missing_ownership_check",
+        &[5],
+    );
+}
+
 #[test]
 fn rails_policy_scope_read_is_owner_scoped() {
     assert_no_auth_diags_for(scan_all_fixtures(), "rails_policy_scope_clean.rb");
