@@ -182,7 +182,8 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
         if *calls >= 2 {
             return;
         }
-        match lookup(lang, n.kind()) {
+        let kind = n.kind();
+        match lookup(lang, kind) {
             Kind::Function => return,
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
                 *calls += 1;
@@ -194,13 +195,13 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
             }
             _ => {}
         }
-        if is_value_leaf(n.kind()) {
+        if is_value_leaf(kind) {
             if !in_call {
                 *outside = true;
             }
             return;
         }
-        let skip = assignment_target(n, code);
+        let skip = assignment_target(n, kind, code);
         let mut c = n.walk();
         for ch in n.children(&mut c) {
             if Some(ch) == skip {
@@ -241,8 +242,8 @@ fn is_splat(kind: &str) -> bool {
 /// The child of an assignment-like node that is only written: the target of
 /// a plain assignment or the name of a declarator.  Compound assignments
 /// (`x += y`) read their target, so nothing is skipped for them.
-fn assignment_target<'a>(n: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
-    match n.kind() {
+fn assignment_target<'a>(n: Node<'a>, kind: &str, code: &[u8]) -> Option<Node<'a>> {
+    match kind {
         "assignment_expression" | "assignment" | "assignment_statement" => {
             if let Some(op) = n.child_by_field_name("operator")
                 && !matches!(text_of(op, code).as_deref(), Some("=" | ":="))
@@ -346,7 +347,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        let skip = assignment_target(n, self.code);
+        let skip = assignment_target(n, n.kind(), self.code);
         let mut c = n.walk();
         for ch in n.children(&mut c) {
             if Some(ch) == skip {

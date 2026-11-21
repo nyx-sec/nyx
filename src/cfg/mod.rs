@@ -196,6 +196,17 @@ fn populate_local_receiver_types(tree: &Tree, lang: &str, code: &[u8]) {
     let Some(lang_enum) = Lang::from_slug(lang) else {
         return;
     };
+    // The walk only records children of kind `variable_declarator`; a
+    // grammar without that node kind (Go, Rust, C, Python, ...) can never
+    // produce a binding, so skip the whole-tree walk.
+    if tree
+        .language()
+        .id_for_node_kind("variable_declarator", true)
+        == 0
+    {
+        LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+        return;
+    }
     let mut out: HashMap<(usize, String), TypeKind> = HashMap::new();
     walk_functions_for_locals(tree.root_node(), lang, lang_enum, code, &mut out);
     LOCAL_RECEIVER_TYPES.with(|cell| *cell.borrow_mut() = out);
@@ -355,20 +366,65 @@ pub(crate) fn local_receiver_type_prefix(
 /// tree-sitter AST.  Every node classifying as `Kind::Function` gets
 /// a monotonically increasing `u32` starting at 0.
 fn populate_fn_dfs_indices(tree: &Tree, lang: &str) {
-    fn walk(n: Node, lang: &str, counter: &mut u32, map: &mut HashMap<usize, u32>) {
-        if lookup(lang, n.kind()) == Kind::Function {
-            map.insert(n.start_byte(), *counter);
-            *counter += 1;
-        }
-        let mut c = n.walk();
-        for child in n.children(&mut c) {
-            walk(child, lang, counter, map);
-        }
-    }
+    let is_fn = function_kind_table(tree, lang);
     let mut map = HashMap::new();
     let mut counter: u32 = 0;
-    walk(tree.root_node(), lang, &mut counter, &mut map);
+    // Preorder walk on one cursor; the order and the counter are the same as
+    // a recursive descent over `children()`.
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let n = cursor.node();
+        if is_fn.get(n.kind_id() as usize).copied().unwrap_or(false) {
+            map.insert(n.start_byte(), counter);
+            counter += 1;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
     FN_DFS_INDICES.with(|cell| *cell.borrow_mut() = map);
+}
+
+/// One cached [`function_kind_table`]: grammar, language slug, table.
+type FunctionKindEntry = (tree_sitter::Language, String, std::rc::Rc<Vec<bool>>);
+
+thread_local! {
+    /// Per-thread cache of [`function_kind_table`] results, one entry per
+    /// (grammar, language slug) pair seen on this thread.
+    static FUNCTION_KIND_TABLES: RefCell<Vec<FunctionKindEntry>>
+        = const { RefCell::new(Vec::new()) };
+}
+
+/// For every node-kind id of the tree's grammar, whether `lookup(lang, kind)`
+/// is [`Kind::Function`].  Lets a walk test `node.kind_id()` instead of
+/// resolving the kind name and hashing it on every node.
+fn function_kind_table(tree: &Tree, lang: &str) -> std::rc::Rc<Vec<bool>> {
+    let language = tree.language();
+    FUNCTION_KIND_TABLES.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if let Some((_, _, table)) = cache
+            .iter()
+            .find(|(l, name, _)| *l == *language && name == lang)
+        {
+            return table.clone();
+        }
+        let count = language.node_kind_count();
+        let table: Vec<bool> = (0..count)
+            .map(|id| {
+                language
+                    .node_kind_for_id(id as u16)
+                    .is_some_and(|name| lookup(lang, name) == Kind::Function)
+            })
+            .collect();
+        let table = std::rc::Rc::new(table);
+        cache.push(((*language).clone(), lang.to_string(), table.clone()));
+        table
+    })
 }
 
 /// Clear the per-file DFS-index map.  Called at the end of `build_cfg`
@@ -7815,13 +7871,16 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
 /// (including receivers and named results) and local declarations in any
 /// nested scope.  Over-approximate on purpose: a name counted as local here
 /// keeps its resource tracking.
-fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut HashSet<String>) {
-    fn push_text(n: Node, code: &[u8], out: &mut HashSet<String>) {
-        if let Some(t) = text_of(n, code) {
-            out.insert(t);
+fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut PendingStores) {
+    if out.is_resolved() {
+        return;
+    }
+    fn push_text(n: Node, code: &[u8], out: &mut PendingStores) {
+        if let Some(t) = node_str(n, code) {
+            out.declare(t);
         }
     }
-    fn push_identifiers(n: Node, code: &[u8], out: &mut HashSet<String>) {
+    fn push_identifiers(n: Node, code: &[u8], out: &mut PendingStores) {
         if n.kind() == "identifier" {
             push_text(n, code, out);
             return;
@@ -7833,7 +7892,7 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut HashSet<
             }
         }
     }
-    fn c_declarator_names(mut d: Node, code: &[u8], out: &mut HashSet<String>) {
+    fn c_declarator_names(mut d: Node, code: &[u8], out: &mut PendingStores) {
         for _ in 0..16 {
             match d.kind() {
                 "identifier" | "field_identifier" => {
@@ -7878,7 +7937,7 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut HashSet<
             let mut cursor = n.walk();
             let is_static = n.children(&mut cursor).any(|c| {
                 c.kind() == "storage_class_specifier"
-                    && text_of(c, code).is_some_and(|t| t == "static")
+                    && node_str(c, code).is_some_and(|t| t == "static")
             });
             if !is_static {
                 let mut cursor = n.walk();
@@ -7934,6 +7993,22 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut HashSet<
     }
 }
 
+/// Candidate store targets of a body that no declaration has accounted for
+/// yet.  Declarations remove their name; whatever remains is non-local.
+struct PendingStores {
+    names: HashSet<String>,
+}
+
+impl PendingStores {
+    fn declare(&mut self, name: &str) {
+        self.names.remove(name);
+    }
+
+    fn is_resolved(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
 /// Flag nodes of a C / C++ / Go / Java body that assign a name the function
 /// never declares (a global, package variable or unqualified field).  See
 /// [`NodeInfo::escaping_store`].
@@ -7941,18 +8016,39 @@ fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], param
     if !matches!(lang, "c" | "cpp" | "go" | "java") {
         return;
     }
-    let mut locals: HashSet<String> = params.iter().cloned().collect();
-    collect_local_decl_names(func, lang, code, &mut locals);
+    let is_candidate = |def: &str| {
+        !def.is_empty()
+            && !def.starts_with("__")
+            && def != "_"
+            && def.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    };
+    // Only names some node actually stores to need a verdict, so the
+    // declaration walk can stop as soon as every one of them is declared.
+    let mut pending = PendingStores {
+        names: HashSet::new(),
+    };
+    for idx in g.node_indices() {
+        if let Some(def) = g[idx].taint.defines.as_deref()
+            && is_candidate(def)
+            && !params.iter().any(|p| p == def)
+            && !pending.names.contains(def)
+        {
+            pending.names.insert(def.to_string());
+        }
+    }
+    if pending.is_resolved() {
+        return;
+    }
+    collect_local_decl_names(func, lang, code, &mut pending);
+    if pending.is_resolved() {
+        return;
+    }
     for idx in g.node_indices().collect::<Vec<_>>() {
         let info = &mut g[idx];
         let Some(def) = info.taint.defines.as_deref() else {
             continue;
         };
-        let plain_ident = !def.is_empty()
-            && !def.starts_with("__")
-            && def != "_"
-            && def.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
-        if plain_ident && !locals.contains(def) {
+        if pending.names.contains(def) {
             info.escaping_store = true;
         }
     }
