@@ -283,18 +283,12 @@ fn rust_memory_patterns_match_every_path_spelling() {
             "std::mem::transmute::<[u8; 4], u32>(x);",
             "rs.memory.transmute",
         ),
-        ("transmute(x);", "rs.memory.transmute"),
-        ("transmute::<u32, f32>(x);", "rs.memory.transmute"),
         (
             "std::ptr::copy_nonoverlapping(a, b, 4);",
             "rs.memory.copy_nonoverlapping",
         ),
         (
             "ptr::copy_nonoverlapping::<u8>(a, b, 4);",
-            "rs.memory.copy_nonoverlapping",
-        ),
-        (
-            "copy_nonoverlapping(a, b, 4);",
             "rs.memory.copy_nonoverlapping",
         ),
         ("std::mem::zeroed();", "rs.memory.mem_zeroed"),
@@ -308,6 +302,13 @@ fn rust_memory_patterns_match_every_path_spelling() {
     // Generic names that are not the unsafe primitive stay quiet.
     for (call, id) in [
         ("x.transmute(y);", "rs.memory.transmute"),
+        // Bare names cannot be told from user-defined helpers without import
+        // resolution, so they stay quiet.
+        ("transmute(x);", "rs.memory.transmute"),
+        (
+            "copy_nonoverlapping(a, b, 4);",
+            "rs.memory.copy_nonoverlapping",
+        ),
         ("other::transmute(y);", "rs.memory.transmute"),
         ("read(p);", "rs.memory.ptr_read"),
         ("forget(v);", "rs.memory.mem_forget"),

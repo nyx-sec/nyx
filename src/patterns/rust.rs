@@ -12,11 +12,12 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         id: "rs.memory.transmute",
         description: "std::mem::transmute performs unchecked type reinterpretation",
-        // `mem::`, `std::mem::`, `core::mem::`, the turbofish form, and a bare
-        // `transmute` after `use std::mem::transmute`.
+        // `mem::`, `std::mem::`, `core::mem::` and the turbofish form.  A bare
+        // `transmute(..)` is not matched: without import resolution it cannot
+        // be told apart from a user-defined helper of the same name.
         query: r#"(call_expression
                      function: (_) @fn
-                     (#match? @fn "(?s)^(((::)?(std|core)::)?mem::)?transmute(::\\s*<.*>)?$"))
+                     (#match? @fn "(?s)^((::)?(std|core)::)?mem::transmute(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
@@ -28,7 +29,7 @@ pub const PATTERNS: &[Pattern] = &[
         description: "ptr::copy_nonoverlapping is a raw pointer memcpy",
         query: r#"(call_expression
                      function: (_) @fn
-                     (#match? @fn "(?s)^(((::)?(std|core)::)?ptr::)?copy_nonoverlapping(::\\s*<.*>)?$"))
+                     (#match? @fn "(?s)^((::)?(std|core)::)?ptr::copy_nonoverlapping(::\\s*<.*>)?$"))
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
