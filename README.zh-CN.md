@@ -5,7 +5,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/nyx-scanner.svg)](https://crates.io/crates/nyx-scanner)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/nyx-sec/nyx/ci.yml?branch=master)](https://github.com/nyx-sec/nyx/actions)
 [![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
@@ -111,7 +111,7 @@ git clone https://github.com/nyx-sec/nyx.git
 cd nyx && cargo build --release
 ```
 
-需要 stable Rust 1.88+。前端会在编译期被打包嵌入二进制中，因此 `nyx serve` 没有单独的安装步骤。
+需要 stable Rust 1.89+。前端会在编译期被打包嵌入二进制中，因此 `nyx serve` 没有单独的安装步骤。
 
 ---
 

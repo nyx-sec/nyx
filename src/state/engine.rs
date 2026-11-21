@@ -255,6 +255,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -327,6 +328,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -546,6 +548,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -586,6 +589,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -620,6 +624,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -664,6 +669,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = run_forward(&cfg, entry, &transfer, ProductState::initial());

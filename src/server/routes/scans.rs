@@ -401,7 +401,7 @@ fn load_scan_info(state: &AppState, id: &str) -> Result<CompareScanInfo, StatusC
         if job.scan_root == scan_root {
             return Ok(CompareScanInfo {
                 id: job.id.clone(),
-                started_at: job.started_at.map(|t| t.to_rfc3339()),
+                started_at: job.started_at.map(crate::utils::time::rfc3339),
                 finding_count: job.findings.as_ref().map(|f| f.len()).unwrap_or(0),
             });
         }
@@ -723,8 +723,8 @@ fn job_to_view(job: &crate::server::jobs::ScanJob) -> ScanView {
         id: job.id.clone(),
         status: format!("{:?}", job.status).to_ascii_lowercase(),
         scan_root: job.scan_root.display().to_string(),
-        started_at: job.started_at.map(|t| t.to_rfc3339()),
-        finished_at: job.finished_at.map(|t| t.to_rfc3339()),
+        started_at: job.started_at.map(crate::utils::time::rfc3339),
+        finished_at: job.finished_at.map(crate::utils::time::rfc3339),
         duration_secs: job.duration_secs,
         finding_count: job.findings.as_ref().map(|f| f.len()),
         error: job.error.clone(),

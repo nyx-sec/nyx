@@ -237,6 +237,8 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // Runtime is likewise a type-qualified-resolver-only receiver kind
         // (`Runtime.exec`); no dedicated bitset slot, share the Object index.
         TypeKind::Runtime => 3,
+        // Spring JdbcTemplate is the same kind of resolver-only receiver.
+        TypeKind::JdbcTemplate => 3,
     }
 }
 
@@ -1335,7 +1337,14 @@ impl PathEnv {
         }
         for (v, tf) in &type_facts.facts {
             let mut fact = ValueFact::top();
-            fact.types = TypeSet::singleton(&tf.kind);
+            // `Unknown` means the type pass found nothing, so it must not
+            // narrow the type set: `{Unknown}` met with the `{Int}` of a
+            // constant fact on the same value (a loop counter whose phi
+            // folded to `0` because `i++` is not a definition) is empty and
+            // would mark the whole entry environment unsatisfiable.
+            if tf.kind != TypeKind::Unknown {
+                fact.types = TypeSet::singleton(&tf.kind);
+            }
             if !tf.nullable && tf.kind != TypeKind::Null {
                 fact.null = Nullability::NonNull;
             }

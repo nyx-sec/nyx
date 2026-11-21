@@ -29,6 +29,28 @@ pub fn is_shell_safe_literal(s: &str) -> bool {
     !s.chars().any(|c| SHELL_METACHARS.contains(&c))
 }
 
+/// True when a URL whose constant prefix is `prefix` cannot leave the
+/// origin the prefix names, whatever follows it:
+///
+/// * `scheme://host/...`: a non-empty host closed by a path separator;
+/// * `/x...` with `x` neither `/` nor `\`: a same-origin absolute path.
+///   A bare `/`, `//...` and `/\...` are not locked, since browsers and most
+///   HTTP clients read `//host` and `/\host` as protocol-relative.
+///
+/// Shared by the SSRF and open-redirect prefix suppressions.
+pub fn prefix_locks_origin(prefix: &str) -> bool {
+    if let Some(rest) = prefix.strip_prefix('/') {
+        return rest.chars().next().is_some_and(|c| c != '/' && c != '\\');
+    }
+    if let Some(after_scheme) = prefix.find("://") {
+        let host_and_rest = &prefix[after_scheme + 3..];
+        if let Some(slash_pos) = host_and_rest.find('/') {
+            return slash_pos > 0;
+        }
+    }
+    false
+}
+
 /// String abstract domain: tracks known prefix, suffix, and finite domain.
 ///
 /// Lattice ordering:

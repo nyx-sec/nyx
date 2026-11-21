@@ -4852,3 +4852,706 @@ fn cross_package_imports_merged_across_thread_local_summaries() {
             .is_some()
     );
 }
+
+// ── SCC change tracking and canonical sink sets ─────────────────────────
+
+/// The change log must report exactly the keys a whole-map snapshot diff
+/// reports: a changed key, a key that did not exist before, and nothing
+/// for a rewrite with an identical value.
+#[test]
+fn summary_change_log_matches_snapshot_diff() {
+    let mut gs = GlobalSummaries::new();
+    let (k_same, s_same) = free_summary("src/a.java", "same", 1, 0x01);
+    let (k_grow, s_grow) = free_summary("src/a.java", "grow", 1, 0x01);
+    let (k_untouched, s_untouched) = free_summary("src/b.java", "untouched", 1, 0x01);
+    gs.insert(k_same.clone(), s_same.clone());
+    gs.insert(k_grow.clone(), s_grow.clone());
+    gs.insert(k_untouched.clone(), s_untouched);
+    gs.insert_ssa(k_same.clone(), SsaFuncSummary::default());
+    gs.insert_ssa(k_grow.clone(), SsaFuncSummary::default());
+
+    let caps_before = gs.snapshot_caps();
+    let ssa_before = gs.snapshot_ssa().clone();
+
+    let mut log = SummaryChangeLog::new();
+    gs.insert_tracked(k_same.clone(), s_same, &mut log);
+    gs.insert_ssa_tracked(k_same.clone(), SsaFuncSummary::default(), &mut log);
+    let grown = FuncSummary {
+        sink_caps: 0x03,
+        ..s_grow
+    };
+    gs.insert_tracked(k_grow.clone(), grown, &mut log);
+    let grown_ssa = SsaFuncSummary {
+        source_caps: Cap::ENV_VAR,
+        ..Default::default()
+    };
+    gs.insert_ssa_tracked(k_grow.clone(), grown_ssa, &mut log);
+    let (k_new, s_new) = free_summary("src/a.java", "fresh", 1, 0x01);
+    gs.insert_tracked(k_new.clone(), s_new, &mut log);
+    gs.insert_ssa_tracked(k_new.clone(), SsaFuncSummary::default(), &mut log);
+
+    let caps_after = gs.snapshot_caps();
+    let mut want_caps: Vec<FuncKey> = caps_after
+        .iter()
+        .filter(|(k, v)| caps_before.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let mut want_ssa: Vec<FuncKey> = gs
+        .snapshot_ssa()
+        .iter()
+        .filter(|(k, v)| ssa_before.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let mut got_caps: Vec<FuncKey> = log.changed_cap_keys(&gs).into_iter().collect();
+    let mut got_ssa: Vec<FuncKey> = log.changed_ssa_keys(&gs).into_iter().collect();
+    for v in [&mut want_caps, &mut want_ssa, &mut got_caps, &mut got_ssa] {
+        v.sort_by_key(|k| k.to_string());
+    }
+    assert_eq!(got_caps, want_caps);
+    assert_eq!(got_ssa, want_ssa);
+    assert_eq!(got_caps.len(), 2, "grow and fresh changed caps");
+    assert_eq!(got_ssa.len(), 2, "grow and fresh changed SSA");
+    assert!(!got_caps.contains(&k_same) && !got_ssa.contains(&k_same));
+    assert!(!got_caps.contains(&k_untouched));
+    assert_eq!(
+        log.ssa_before(&k_grow),
+        Some(&SsaFuncSummary::default()),
+        "the log keeps the value from before the first write"
+    );
+
+    // Rewriting a summary with the same facts in a different order is not
+    // a change.
+    let site = |line| SinkSite {
+        file_rel: "a.java".into(),
+        line,
+        col: 1,
+        snippet: String::new(),
+        cap: Cap::SQL_QUERY,
+        from_chain: true,
+    };
+    let ordered = SsaFuncSummary {
+        param_to_sink: vec![(0, smallvec![site(3), site(9)])],
+        ..Default::default()
+    };
+    let flipped = SsaFuncSummary {
+        param_to_sink: vec![(0, smallvec![site(9), site(3)])],
+        ..Default::default()
+    };
+    let (k_order, _) = free_summary("src/c.java", "reorder", 1, 0x01);
+    gs.insert_ssa(k_order.clone(), ordered);
+    let mut log = SummaryChangeLog::new();
+    gs.insert_ssa_tracked(k_order, flipped, &mut log);
+    assert!(log.changed_ssa_keys(&gs).is_empty());
+}
+
+fn site(line: u32, cap: Cap, from_chain: bool) -> SinkSite {
+    SinkSite {
+        file_rel: "main.go".into(),
+        line,
+        col: 2,
+        snippet: format!("line {line}"),
+        cap,
+        from_chain,
+    }
+}
+
+/// Two summaries holding the same sink facts in a different order must
+/// compare equal after canonicalisation, and `same_facts` must say so
+/// without canonicalising either.  The SCC fixed-point loop compares
+/// summaries this way; an order that flips on every iteration otherwise
+/// keeps a recursive batch running to its cap.
+#[test]
+fn canonicalize_makes_sink_set_order_irrelevant() {
+    let a = SsaFuncSummary {
+        param_to_sink: vec![
+            (1, smallvec![site(9, Cap::SQL_QUERY, false)]),
+            (
+                0,
+                smallvec![
+                    site(34, Cap::HEADER_INJECTION, true),
+                    site(53, Cap::HEADER_INJECTION, true)
+                ],
+            ),
+        ],
+        param_to_sink_param: vec![
+            (0, 2, Cap::HEADER_INJECTION),
+            (0, 0, Cap::HEADER_INJECTION),
+            (0, 0, Cap::HEADER_INJECTION),
+        ],
+        param_to_gate_filters: vec![(1, Cap::SSRF), (0, Cap::SSRF), (1, Cap::SSRF)],
+        validated_params_to_return: smallvec![2, 0, 2],
+        ..Default::default()
+    };
+    let b = SsaFuncSummary {
+        param_to_sink: vec![
+            (0, smallvec![site(53, Cap::HEADER_INJECTION, true)]),
+            (1, smallvec![site(9, Cap::SQL_QUERY, false)]),
+            // A second entry for the same parameter, as a merge of two
+            // extraction passes can produce.  The duplicate site upgrades
+            // to `from_chain` like `union_sink_sites` does.
+            (
+                0,
+                smallvec![
+                    site(34, Cap::HEADER_INJECTION, false),
+                    site(34, Cap::HEADER_INJECTION, true)
+                ],
+            ),
+        ],
+        param_to_sink_param: vec![(0, 0, Cap::HEADER_INJECTION), (0, 2, Cap::HEADER_INJECTION)],
+        param_to_gate_filters: vec![(0, Cap::SSRF), (1, Cap::SSRF)],
+        validated_params_to_return: smallvec![0, 2],
+        ..Default::default()
+    };
+    assert_ne!(a, b);
+    assert!(a.same_facts(&b) && b.same_facts(&a));
+    let mut fewer = b.clone();
+    fewer.param_to_sink.pop();
+    assert!(!a.same_facts(&fewer), "a dropped site is a different fact");
+    let (mut a, mut b) = (a, b);
+    a.canonicalize();
+    b.canonicalize();
+    assert_eq!(a, b);
+    assert_eq!(
+        a.param_to_sink
+            .iter()
+            .map(|(i, s)| (*i, s.iter().map(|s| s.line).collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+        vec![(0, vec![34, 53]), (1, vec![9])]
+    );
+    assert!(a.param_to_sink[0].1.iter().all(|s| s.from_chain));
+    assert_eq!(
+        a.param_to_sink_param,
+        vec![(0, 0, Cap::HEADER_INJECTION), (0, 2, Cap::HEADER_INJECTION)]
+    );
+    assert_eq!(
+        a.param_to_gate_filters,
+        vec![(0, Cap::SSRF), (1, Cap::SSRF)]
+    );
+    assert_eq!(a.validated_params_to_return.as_slice(), &[0, 2]);
+
+    // Idempotent.
+    let once = a.clone();
+    a.canonicalize();
+    assert_eq!(a, once);
+}
+
+// ── Receiver-aware caller-container resolution ──────────────────────────
+
+#[test]
+fn classify_call_receiver_shapes() {
+    use crate::summary::{CallReceiver, classify_call_receiver};
+    let own = |lang, r: Option<&str>| classify_call_receiver(lang, r, Some("Person"));
+    assert_eq!(own(Lang::Java, None), CallReceiver::Own);
+    for r in ["this", "self", "$this", "static", "Self", "cls", "Person"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Own, "{r}");
+    }
+    for r in ["super", "super()", "super(Sub, self)", "parent"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Super, "{r}");
+    }
+    for r in ["repo", "name", "sb", "$this->inner", "@repo", "json"] {
+        assert_eq!(own(Lang::Java, Some(r)), CallReceiver::Other, "{r}");
+    }
+    // Go names its method receiver freely, so a plain identifier may be
+    // the caller's own receiver.
+    assert_eq!(own(Lang::Go, Some("h")), CallReceiver::Own);
+}
+
+fn query_with<'a>(
+    name: &'a str,
+    caller_namespace: &'a str,
+    caller_container: Option<&'a str>,
+    receiver_var: Option<&'a str>,
+    arity: usize,
+) -> CalleeQuery<'a> {
+    CalleeQuery {
+        name,
+        caller_lang: Lang::Java,
+        caller_namespace,
+        caller_container,
+        receiver_type: None,
+        namespace_qualifier: None,
+        receiver_var,
+        arity: Some(arity),
+    }
+}
+
+/// `repo.find(id)` inside `Person.find` names another object's `find`, so
+/// the caller-container step must not bind it to `Person.find`; `this.find`
+/// and a bare `find` still resolve to the caller's own method.
+#[test]
+fn caller_container_step_only_for_own_receiver() {
+    let mut gs = GlobalSummaries::new();
+    let (k_person, s_person) = method_summary("src/Person.java", "Person", "find", 1, 0x01);
+    let (k_repo, s_repo) = method_summary("src/Person.java", "Repo", "find", 1, 0x02);
+    let (k_cache, s_cache) = method_summary("src/Cache.java", "Cache", "find", 1, 0x04);
+    gs.insert(k_person.clone(), s_person);
+    gs.insert(k_repo, s_repo);
+    gs.insert(k_cache, s_cache);
+
+    let ns = "src/Person.java";
+    for rv in [None, Some("this")] {
+        assert_eq!(
+            gs.resolve_callee(&query_with("find", ns, Some("Person"), rv, 1)),
+            CalleeResolution::Resolved(k_person.clone()),
+            "receiver {rv:?}"
+        );
+    }
+    assert!(matches!(
+        gs.resolve_callee(&query_with("find", ns, Some("Person"), Some("repo"), 1)),
+        CalleeResolution::Ambiguous(_)
+    ));
+}
+
+/// `super.init(cfg)` inside `Sub.init` resolves to the closest supertype
+/// that defines `init`, never to `Sub.init` itself, and is unresolved
+/// when no supertype is known.
+#[test]
+fn super_call_resolves_through_type_hierarchy() {
+    let mut gs = GlobalSummaries::new();
+    let (k_sub, mut s_sub) = method_summary("src/Sub.java", "Sub", "init", 1, 0x01);
+    s_sub.hierarchy_edges = vec![("Sub".into(), "Mid".into())];
+    let (k_mid, mut s_mid) = method_summary("src/Mid.java", "Mid", "other", 0, 0x00);
+    s_mid.hierarchy_edges = vec![("Mid".into(), "Base".into())];
+    let (k_base, s_base) = method_summary("src/Base.java", "Base", "init", 1, 0x02);
+    gs.insert(k_sub.clone(), s_sub);
+    gs.insert(k_mid, s_mid);
+    gs.insert(k_base.clone(), s_base);
+
+    let q = query_with("init", "src/Sub.java", Some("Sub"), Some("super"), 1);
+    assert_eq!(
+        gs.resolve_callee(&q),
+        CalleeResolution::NotFound,
+        "without an installed hierarchy a super call has no target"
+    );
+    gs.install_hierarchy();
+    assert_eq!(gs.supertypes_of(Lang::Java, "Sub"), vec!["Mid", "Base"]);
+    assert_eq!(gs.resolve_callee(&q), CalleeResolution::Resolved(k_base));
+    let parent = query_with("init", "src/Sub.java", Some("Sub"), Some("parent"), 1);
+    assert_ne!(
+        gs.resolve_callee(&parent),
+        CalleeResolution::Resolved(k_sub)
+    );
+}
+
+// ── Resolver oracle ─────────────────────────────────────────────────────
+//
+// `resolve_callee` counts candidate sets in place and clones keys only for
+// the answer it returns. The version below is the resolver as it was before
+// that change (it builds a Vec per step and clones the ambiguous list). Both
+// have to agree on every query, including the order of an ambiguous list.
+mod resolve_callee_oracle_tests {
+    use super::*;
+
+    /// The pre-refactor resolver, kept verbatim as an oracle.
+    #[allow(clippy::needless_borrow)]
+    fn reference_resolve_callee(gs: &GlobalSummaries, q: &CalleeQuery<'_>) -> CalleeResolution {
+        // ── Helpers ─────────────────────────────────────────────────
+        let arity_matches = |k: &FuncKey| match q.arity {
+            Some(a) => k.arity == Some(a),
+            None => true,
+        };
+
+        // Look up `{container}::{name}` and return a single arity-matched
+        // candidate if one exists (using same-namespace to break ties).
+        let try_qualified = |container: &str| -> Option<FuncKey> {
+            if container.is_empty() {
+                return None;
+            }
+            let qual = format!("{container}::{}", q.name);
+            let candidates: Vec<&FuncKey> = gs
+                .lookup_qualified(q.caller_lang, &qual)
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| arity_matches(k))
+                .collect();
+            match candidates.len() {
+                0 => None,
+                1 => Some(candidates[0].clone()),
+                _ => {
+                    let same_ns: Vec<&FuncKey> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|k| k.namespace == q.caller_namespace)
+                        .collect();
+                    if same_ns.len() == 1 {
+                        Some(same_ns[0].clone())
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+
+        // ── Step 1: receiver_type (authoritative) ───────────────────
+        if let Some(rt) = q.receiver_type {
+            if let Some(key) = try_qualified(rt) {
+                return CalleeResolution::Resolved(key);
+            }
+            // Authoritative miss: before returning, check whether any
+            // candidate exists at all for the leaf name.  If there are
+            // some, report Ambiguous with the leaf candidates (so the
+            // caller knows we saw the name but refused to pick the
+            // wrong container).  If there are none, return NotFound.
+            let bare: Vec<&FuncKey> = gs
+                .lookup_same_lang(q.caller_lang, q.name)
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| arity_matches(k))
+                .collect();
+            return if bare.is_empty() {
+                CalleeResolution::NotFound
+            } else {
+                CalleeResolution::Ambiguous(bare.into_iter().cloned().collect())
+            };
+        }
+
+        // ── Step 2: namespace_qualifier (authoritative for `::` paths) ──
+        if let Some(nq) = q.namespace_qualifier {
+            if let Some(key) = try_qualified(nq) {
+                return CalleeResolution::Resolved(key);
+            }
+            // A `::`-qualified callee names a concrete type or module.  With
+            // no summary in that container it is an external associated
+            // function (stdlib / third-party crate) or a module-path free
+            // function — never a same-leaf METHOD in an unrelated container.
+            // Refuse the caller-container (step 3) and leaf/arity fallbacks
+            // (steps 4/6) that would bind the stdlib `File::open` to the
+            // enclosing `impl V5Reader { fn open }`, or `BufReader::new` to a
+            // unique-arity `UpdateFile::new`.  Allow only a unique same-leaf
+            // FREE function (`crate::util::sanitize` → top-level `fn
+            // sanitize`).  `Self::` / `self::` is a real self-call and defers
+            // to the caller-container step below.
+            if !matches!(nq, "Self" | "self") {
+                let free: Vec<FuncKey> = gs
+                    .lookup_same_lang(q.caller_lang, q.name)
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .filter(|k| k.container.is_empty() && arity_matches(k))
+                    .cloned()
+                    .collect();
+                return match free.len() {
+                    1 => CalleeResolution::Resolved(free[0].clone()),
+                    0 => CalleeResolution::NotFound,
+                    _ => CalleeResolution::Ambiguous(free),
+                };
+            }
+        }
+
+        // ── Step 3: caller self-container ───────────────────────────
+        // Only a call on the caller's own instance can land in the
+        // caller's container.  `repo.find(id)` inside `find` names another
+        // object's method, and `super.init(cfg)` inside `init` names the
+        // supertype's, so neither may resolve to the caller.
+        match q.receiver() {
+            CallReceiver::Own => {
+                if let Some(cc) = q.caller_container
+                    && let Some(key) = try_qualified(cc)
+                {
+                    return CalleeResolution::Resolved(key);
+                }
+            }
+            CallReceiver::Super => {
+                // The nearest supertype that defines the method.  Like step
+                // 4, tolerate a declaration with more parameters than the
+                // call passes (defaults, or Python's explicit `self`).
+                let in_supertype = |sup: &str| -> Option<FuncKey> {
+                    try_qualified(sup).or_else(|| {
+                        let a = q.arity?;
+                        let qual = format!("{sup}::{}", q.name);
+                        let wider: Vec<&FuncKey> = gs
+                            .lookup_qualified(q.caller_lang, &qual)
+                            .into_iter()
+                            .map(|(k, _)| k)
+                            .filter(|k| matches!(k.arity, Some(p) if p > a))
+                            .collect();
+                        (wider.len() == 1).then(|| wider[0].clone())
+                    })
+                };
+                return match q.caller_container {
+                    Some(cc) => gs
+                        .supertypes_of(q.caller_lang, cc)
+                        .iter()
+                        .find_map(|sup| in_supertype(sup))
+                        .map_or(CalleeResolution::NotFound, CalleeResolution::Resolved),
+                    None => CalleeResolution::NotFound,
+                };
+            }
+            CallReceiver::Other => {}
+        }
+
+        // ── Step 4: same-namespace unique leaf ──────────────────────
+        let all_candidates: Vec<&FuncKey> = gs
+            .lookup_same_lang(q.caller_lang, q.name)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        if all_candidates.is_empty() {
+            return CalleeResolution::NotFound;
+        }
+
+        let mut arity_filtered: Vec<&FuncKey> = all_candidates
+            .iter()
+            .copied()
+            .filter(|k| arity_matches(k))
+            .collect();
+        if arity_filtered.is_empty() {
+            // Exact-arity match found nothing. Tolerate under-application:
+            // `FuncKey::arity` is the *total* parameter count, so a call
+            // supplying `a` arguments to a function declared with more
+            // parameters (the surplus being default-valued / optional) is a
+            // routine, valid call shape in Python, JS/TS, PHP, and Ruby. Retry
+            // with `param_count >= call_arity` so these calls still resolve.
+            //
+            // This only ever WIDENS the candidate set, and resolution below
+            // still requires a unique candidate, so a genuinely ambiguous name
+            // degrades to `Ambiguous`, never a wrong `Resolved`. Exact-arity
+            // matches always take precedence (this branch runs only when none
+            // exist), so no existing exact-match resolution regresses.
+            if let Some(a) = q.arity {
+                arity_filtered = all_candidates
+                    .iter()
+                    .copied()
+                    .filter(|k| matches!(k.arity, Some(p) if p >= a))
+                    .collect();
+            }
+            if arity_filtered.is_empty() {
+                return CalleeResolution::NotFound;
+            }
+        }
+
+        let same_ns: Vec<&FuncKey> = arity_filtered
+            .iter()
+            .copied()
+            .filter(|k| k.namespace == q.caller_namespace)
+            .collect();
+        if same_ns.len() == 1 {
+            return CalleeResolution::Resolved(same_ns[0].clone());
+        }
+
+        // ── Step 5: receiver_var tie-break (soft) ───────────────────
+        if let Some(rv) = q.receiver_var
+            && let Some(key) = try_qualified(rv)
+        {
+            return CalleeResolution::Resolved(key);
+        }
+
+        // ── Step 5.5: bare-call free-function preference ────────────
+        // A call with no receiver, no namespace qualifier, and no
+        // authoritative receiver type is syntactically a free-function
+        // invocation: a class method cannot be invoked that way from
+        // outside its own class (intra-class self-calls were already
+        // resolved by step 3).  When the same-namespace candidate set
+        // contains exactly one empty-container entry, it is the
+        // unambiguous target, returning Ambiguous here would be a
+        // silent false negative whenever a top-level helper happens to
+        // share a name with some method elsewhere in the file.
+        let syntactic_bare = q.receiver_type.is_none()
+            && q.namespace_qualifier.is_none()
+            && q.receiver_var.is_none();
+        if syntactic_bare {
+            let empty_container_same_ns: Vec<&FuncKey> = same_ns
+                .iter()
+                .copied()
+                .filter(|k| k.container.is_empty())
+                .collect();
+            if empty_container_same_ns.len() == 1 {
+                return CalleeResolution::Resolved(empty_container_same_ns[0].clone());
+            }
+        }
+
+        // ── Step 6: leaf fallback ───────────────────────────────────
+        if arity_filtered.len() == 1 {
+            return CalleeResolution::Resolved(arity_filtered[0].clone());
+        }
+
+        // Multiple arity-matched candidates remain.  When a qualified
+        // hint was supplied but missed, refuse to guess, a silent
+        // leaf-name pick would defeat the point of qualified-first
+        // resolution.  (`receiver_type` is handled in Step 1 and never
+        // reaches here; `namespace_qualifier` / `caller_container`
+        // missing their target flow through as a soft miss.)
+        if q.has_qualified_hint() {
+            return CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect());
+        }
+
+        // No qualified hints whatsoever, tolerate namespace narrowing.
+        match same_ns.len() {
+            1 => CalleeResolution::Resolved(same_ns[0].clone()),
+            0 => CalleeResolution::Ambiguous(arity_filtered.into_iter().cloned().collect()),
+            _ => CalleeResolution::Ambiguous(same_ns.into_iter().cloned().collect()),
+        }
+    }
+
+    fn populated() -> GlobalSummaries {
+        let mut gs = GlobalSummaries::new();
+        let langs = [Lang::Java, Lang::Python];
+        let namespaces = ["a.java", "b.java", "c.java"];
+        let containers = ["", "A", "B"];
+        let names = ["get", "run", "id"];
+        let mut n = 0u32;
+        for lang in langs {
+            for ns in namespaces {
+                for container in containers {
+                    for name in names {
+                        for arity in 0..3usize {
+                            n += 1;
+                            // Leave gaps so some names are unique in a namespace,
+                            // some ambiguous and some missing.
+                            if (n * 7 + arity as u32).is_multiple_of(3) {
+                                continue;
+                            }
+                            let kind = if container.is_empty() {
+                                FuncKind::Function
+                            } else {
+                                FuncKind::Method
+                            };
+                            let key = FuncKey::from_parts(
+                                lang,
+                                ns,
+                                container,
+                                name,
+                                Some(arity),
+                                Some(n),
+                                kind,
+                            );
+                            let mut summary = FuncSummary {
+                                name: name.into(),
+                                file_path: ns.into(),
+                                lang: lang.as_str().into(),
+                                param_count: arity,
+                                container: container.into(),
+                                disambig: Some(n),
+                                kind,
+                                ..Default::default()
+                            };
+                            if container == "A" {
+                                summary.hierarchy_edges = vec![("A".into(), "B".into())];
+                            }
+                            gs.insert(key, summary);
+                        }
+                    }
+                }
+            }
+        }
+        gs.install_hierarchy();
+        gs
+    }
+
+    #[test]
+    fn resolve_callee_matches_the_reference_on_every_query_shape() {
+        let gs = populated();
+        let (mut resolved, mut ambiguous, mut not_found) = (0usize, 0usize, 0usize);
+        for lang in [Lang::Java, Lang::Python] {
+            for name in ["get", "run", "id", "missing"] {
+                for caller_namespace in ["a.java", "c.java", "elsewhere.java"] {
+                    for caller_container in [None, Some("A"), Some("B"), Some("Z")] {
+                        for receiver_type in [None, Some("A"), Some("B"), Some("Z")] {
+                            for namespace_qualifier in [None, Some("A"), Some("Self"), Some("util")]
+                            {
+                                for receiver_var in
+                                    [None, Some("this"), Some("super"), Some("A"), Some("other")]
+                                {
+                                    for arity in [None, Some(0), Some(1), Some(3)] {
+                                        let q = CalleeQuery {
+                                            name,
+                                            caller_lang: lang,
+                                            caller_namespace,
+                                            caller_container,
+                                            receiver_type,
+                                            namespace_qualifier,
+                                            receiver_var,
+                                            arity,
+                                        };
+                                        let got = gs.resolve_callee(&q);
+                                        let want = reference_resolve_callee(&gs, &q);
+                                        assert_eq!(got, want, "{q:?}");
+                                        let unique = gs.resolve_callee_unique(&q);
+                                        match &want {
+                                            CalleeResolution::Resolved(k) => {
+                                                resolved += 1;
+                                                assert_eq!(unique.as_ref(), Some(k), "{q:?}");
+                                            }
+                                            CalleeResolution::Ambiguous(_) => {
+                                                ambiguous += 1;
+                                                assert_eq!(unique, None, "{q:?}");
+                                            }
+                                            CalleeResolution::NotFound => {
+                                                not_found += 1;
+                                                assert_eq!(unique, None, "{q:?}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The grid must exercise every outcome, or the comparison proves little.
+        assert!(
+            resolved > 500 && ambiguous > 500 && not_found > 500,
+            "resolved={resolved} ambiguous={ambiguous} not_found={not_found}"
+        );
+    }
+
+    /// A name shared by many functions answers `resolve_callee_unique` without
+    /// the candidate list, and keeps the same answer as `resolve_callee`.
+    #[test]
+    fn unique_resolution_of_a_widely_shared_name() {
+        let mut gs = GlobalSummaries::new();
+        for i in 0..300 {
+            let (k, s) = method_summary(
+                &format!("src/M{i}.java"),
+                &format!("Model{i}"),
+                "getId",
+                0,
+                0,
+            );
+            gs.insert(k, s);
+        }
+        let (k_free, s_free) = free_summary("src/Caller.java", "getId", 0, 0);
+        gs.insert(k_free.clone(), s_free);
+        let q = CalleeQuery {
+            name: "getId",
+            caller_lang: Lang::Java,
+            caller_namespace: "src/Caller.java",
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: Some(0),
+        };
+        // Bare call, one free function in the caller's namespace: it wins.
+        assert_eq!(gs.resolve_callee_unique(&q), Some(k_free));
+        // A call on some object cannot pick among 301 candidates.
+        let on_object = CalleeQuery {
+            receiver_var: Some("order"),
+            caller_namespace: "src/Other.java",
+            ..q.clone()
+        };
+        assert_eq!(gs.resolve_callee_unique(&on_object), None);
+        match gs.resolve_callee(&on_object) {
+            CalleeResolution::Ambiguous(keys) => assert_eq!(keys.len(), 301),
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keys_same_lang_borrows_the_index_in_insertion_order() {
+        let mut gs = GlobalSummaries::new();
+        let (k1, s1) = method_summary("src/a.java", "A", "run", 0, 0);
+        let (k2, s2) = method_summary("src/b.java", "B", "run", 0, 0);
+        gs.insert(k1.clone(), s1);
+        gs.insert(k2.clone(), s2);
+        assert_eq!(
+            gs.keys_same_lang(Lang::Java, "run"),
+            &[k1.clone(), k2.clone()]
+        );
+        assert!(gs.keys_same_lang(Lang::Python, "run").is_empty());
+        assert!(gs.keys_same_lang(Lang::Java, "walk").is_empty());
+        assert_eq!(gs.keys_qualified(Lang::Java, "A::run"), &[k1]);
+        // The owned view agrees with the borrowed one.
+        assert_eq!(gs.lookup_same_lang(Lang::Java, "run").len(), 2);
+    }
+}

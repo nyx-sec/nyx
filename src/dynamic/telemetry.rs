@@ -89,9 +89,7 @@ const fn assert_corpus_version_str_matches_u32() {
         // Reverse the first `len` bytes so the most-significant digit lands first.
         let mut i: usize = 0;
         while i < len / 2 {
-            let tmp = buf[i];
-            buf[i] = buf[len - 1 - i];
-            buf[len - 1 - i] = tmp;
+            buf.swap(i, len - 1 - i);
             i += 1;
         }
     }
@@ -158,7 +156,7 @@ impl TelemetryEvent {
             nyx_version: NYX_VERSION,
             corpus_version: CORPUS_VERSION,
             kind: "verdict",
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: crate::utils::time::now_rfc3339(),
             finding_id: spec.finding_id.clone(),
             spec_hash: spec.spec_hash.clone(),
             lang: format!("{:?}", spec.lang).to_ascii_lowercase(),
@@ -198,7 +196,7 @@ impl TelemetryEvent {
             nyx_version: NYX_VERSION,
             corpus_version: CORPUS_VERSION,
             kind: "verdict",
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: crate::utils::time::now_rfc3339(),
             finding_id: format!("{:016x}", diag.stable_hash),
             spec_hash: String::new(),
             lang: lang_from_path(&diag.path),
@@ -231,7 +229,7 @@ impl TelemetryEvent {
             nyx_version: NYX_VERSION,
             corpus_version: CORPUS_VERSION,
             kind: "verdict",
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: crate::utils::time::now_rfc3339(),
             finding_id: String::new(),
             spec_hash: String::new(),
             lang: lang_from_path(path),
@@ -578,7 +576,7 @@ impl RankDeltaEvent {
             nyx_version: NYX_VERSION,
             corpus_version: CORPUS_VERSION,
             kind: "rank_delta",
-            ts: chrono::Utc::now().to_rfc3339(),
+            ts: crate::utils::time::now_rfc3339(),
             finding_id,
             status,
             delta,

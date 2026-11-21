@@ -1,6 +1,5 @@
 use crate::errors::NyxResult;
 use bytesize::ByteSize;
-use chrono::{DateTime, Local};
 use console::style;
 use std::fs;
 
@@ -33,12 +32,12 @@ pub fn handle(verbose: bool, database_dir: &std::path::Path) -> NyxResult<()> {
         if verbose {
             let meta = fs::metadata(path)?;
             let size = ByteSize::b(meta.len());
-            let mtime: DateTime<Local> = meta.modified()?.into();
+            let mtime = crate::utils::time::local_datetime(meta.modified()?);
             println!(
                 "  {} {} {}",
                 style(name).white().bold(),
                 style(format!("({size})")).dim(),
-                style(format!("· {}", mtime.format("%Y-%m-%d %H:%M:%S"))).dim()
+                style(format!("· {mtime}")).dim()
             );
             println!("    {}", style(path.display()).dim().underlined());
         } else {

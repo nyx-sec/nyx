@@ -35,6 +35,9 @@ fn parse_and_analyse<A: CfgAnalysis>(
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     analysis.run(&ctx)
 }
@@ -65,6 +68,9 @@ fn parse_and_run_all(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<CfgFi
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     run_all(&ctx)
 }
@@ -100,6 +106,9 @@ fn parse_and_run_all_with_taint(
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     run_all(&ctx)
 }
@@ -219,6 +228,9 @@ fn parse_and_analyse_with_ssa<A: CfgAnalysis>(
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     analysis.run(&ctx)
 }
@@ -337,6 +349,197 @@ fn js_raw_sql_interpolated_payload_still_flagged() {
     assert!(
         !guard.is_empty(),
         "an interpolated SQL payload (arg 0) must still fire cfg-unguarded-sink"
+    );
+}
+
+/// Run `UnguardedSink` over every body of the file with the file-scope
+/// context `ast.rs` builds (module constants, captured parameters).
+/// Returns `(line, severity)` per finding.
+fn unguarded_sink_file(
+    src: &[u8],
+    lang_str: &str,
+    ts_lang: Language,
+) -> Vec<(usize, crate::patterns::Severity)> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, lang_str, "test.rs", None);
+    let lang = Lang::from_slug(lang_str).unwrap();
+    let module_constants = module_constant_names(&file_cfg.bodies);
+    let mut out = Vec::new();
+    for body in &file_cfg.bodies {
+        let facts = build_body_const_facts(body, lang);
+        let mut captured: Vec<String> = Vec::new();
+        let mut parent = body.meta.parent_body_id;
+        while let Some(pid) = parent {
+            let outer = file_cfg.body(pid);
+            if outer.meta.kind == crate::cfg::BodyKind::TopLevel {
+                break;
+            }
+            captured.extend(outer.meta.params.iter().cloned());
+            parent = outer.meta.parent_body_id;
+        }
+        let ctx = AnalysisContext {
+            cfg: &body.graph,
+            entry: body.entry,
+            lang,
+            source_bytes: src,
+            func_summaries: &file_cfg.summaries,
+            global_summaries: None,
+            ssa_summaries: None,
+            taint_findings: &[],
+            analysis_rules: None,
+            taint_active: true,
+            body_const_facts: facts.as_ref(),
+            type_facts: facts.as_ref().map(|f| &f.type_facts),
+            auth_decorators: &[],
+            closure_released_var_names: None,
+            class_constant_scalars: None,
+            body_params: &body.meta.params,
+            captured_params: &captured,
+            module_constants: Some(&module_constants),
+        };
+        for f in guards::UnguardedSink.run(&ctx) {
+            let line = src[..f.span.0].iter().filter(|&&b| b == b'\n').count() + 1;
+            out.push((line, f.severity));
+        }
+    }
+    out
+}
+
+#[test]
+fn unguarded_sink_bind_values_are_not_the_payload() {
+    // The request value only travels in the pg bind array; the query text
+    // is a module constant (handler 1) or a local constant (handler 2).
+    let src = b"const { Pool } = require('pg');
+const pool = new Pool();
+const FIND_USER = 'SELECT * FROM users WHERE email = $1';
+app.get('/u', async (req, res) => {
+  const { rows } = await pool.query(FIND_USER, [req.query.email]);
+  res.end();
+});
+app.get('/v', async (req, res) => {
+  const sql = 'SELECT * FROM users WHERE email = $1';
+  const { rows } = await pool.query(sql, [req.query.email]);
+  res.end();
+});
+";
+    let found = unguarded_sink_file(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        found.is_empty(),
+        "bind values are not the payload: {found:?}"
+    );
+}
+
+#[test]
+fn unguarded_sink_request_value_in_query_text_is_high() {
+    let src = b"const { Pool } = require('pg');
+const pool = new Pool();
+app.get('/u', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM users WHERE email = ' + req.query.email, []);
+  res.end();
+});
+";
+    let found = unguarded_sink_file(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert_eq!(found, vec![(4, crate::patterns::Severity::High)]);
+}
+
+#[test]
+fn unguarded_sink_rebound_chained_sink_reads_every_use() {
+    // The SSRF gate belongs to the inner `http.get`, but the node records the
+    // arguments of the outer `.on('error', ..)`: payload positions cannot be
+    // trusted, so the source-derived `target` still makes the finding High.
+    let src = b"const http = require('http');
+app.get('/probe', (req, res) => {
+  const target = req.query.url;
+  http.get(target, response => {
+    res.send('ok');
+  }).on('error', e => {
+    res.status(500).send(e.message);
+  });
+});
+";
+    let found = unguarded_sink_file(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        found.contains(&(4, crate::patterns::Severity::High)),
+        "got {found:?}"
+    );
+}
+
+#[test]
+fn unguarded_sink_module_constant_needs_an_unshadowed_single_binding() {
+    let py = || Language::from(tree_sitter_python::LANGUAGE);
+    // `fixed` reads the module constant; `run` takes its own `QUERY`.
+    let shadowed = b"QUERY = 'SELECT 1'
+
+def run(cursor, QUERY, request):
+    cursor.execute(QUERY, (request.args.get('x'),))
+
+def fixed(cursor, request):
+    cursor.execute(QUERY, (request.args.get('x'),))
+";
+    let lines: Vec<usize> = unguarded_sink_file(shadowed, "python", py())
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![4],
+        "only the parameter-shadowed payload may fire"
+    );
+
+    // A module name also assigned inside a function is not a constant.
+    let reassigned = b"QUERY = 'SELECT 1'
+
+def configure(q):
+    global QUERY
+    QUERY = q
+
+def fixed(cursor, request):
+    cursor.execute(QUERY, (request.args.get('x'),))
+";
+    let lines: Vec<usize> = unguarded_sink_file(reassigned, "python", py())
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
+    assert_eq!(lines, vec![8]);
+}
+
+#[test]
+fn unguarded_sink_honours_library_sanitizer_around_argument() {
+    let js = || Language::from(tree_sitter_javascript::LANGUAGE);
+    let escaped = b"const escapeHtml = require('escape-html');
+app.get('/a', (req, res) => {
+  res.send(escapeHtml(req.query.name));
+});
+app.get('/b', (req, res) => {
+  res.send('<h1>' + escapeHtml(req.query.name) + '</h1>');
+});
+";
+    assert!(unguarded_sink_file(escaped, "javascript", js()).is_empty());
+
+    // An HTML escaper does not cover a shell sink.
+    let wrong_cap = b"const { exec } = require('child_process');
+const escapeHtml = require('escape-html');
+app.get('/a', (req, res) => {
+  exec(escapeHtml(req.query.dir));
+});
+";
+    assert_eq!(
+        unguarded_sink_file(wrong_cap, "javascript", js()),
+        vec![(4, crate::patterns::Severity::High)]
     );
 }
 
@@ -630,6 +833,100 @@ fn proper_error_return_no_finding_go() {
     );
 }
 
+fn error_fallthrough_count(src: &[u8], lang: &str, ts_lang: Language) -> usize {
+    parse_and_analyse_with_ssa(&error_handling::IncompleteErrorHandling, src, lang, ts_lang)
+        .iter()
+        .filter(|f| f.rule_id == "cfg-error-fallthrough")
+        .count()
+}
+
+#[test]
+fn error_fallthrough_ignores_constant_payload_sinks() {
+    let go = || Language::from(tree_sitter_go::LANGUAGE);
+    // A logged error followed by a command with literal arguments only.
+    let stat = br#"
+        package main
+        import ("log"; "os"; "os/exec")
+        func cleanup() {
+            _, err := os.Stat("/tmp/x")
+            if err != nil {
+                log.Println(err)
+            }
+            exec.Command("sync").Run()
+        }"#;
+    assert_eq!(error_fallthrough_count(stat, "go", go()), 0);
+
+    let remove = br#"
+        package main
+        import ("database/sql"; "log"; "os")
+        func expire(db *sql.DB, p string) {
+            if err := os.Remove(p); err != nil {
+                log.Println(err)
+            }
+            db.Exec("DELETE FROM sessions WHERE expired = 1")
+        }"#;
+    assert_eq!(error_fallthrough_count(remove, "go", go()), 0);
+
+    let js = br#"
+        function save(err, res) {
+            if (err) {
+                console.error(err);
+            }
+            res.send('saved');
+        }"#;
+    assert_eq!(
+        error_fallthrough_count(
+            js,
+            "javascript",
+            Language::from(tree_sitter_javascript::LANGUAGE)
+        ),
+        0
+    );
+}
+
+#[test]
+fn error_fallthrough_still_fires_on_non_constant_sinks() {
+    let go = || Language::from(tree_sitter_go::LANGUAGE);
+    // The failed call's own result reaches the command.
+    let failed_value = br#"
+        package main
+        import ("log"; "os/exec")
+        func run() {
+            cmd, err := load()
+            if err != nil {
+                log.Println(err)
+            }
+            exec.Command(cmd).Run()
+        }"#;
+    assert_eq!(error_fallthrough_count(failed_value, "go", go()), 1);
+
+    let free_arg = br#"
+        package main
+        import "os/exec"
+        func run(input string) {
+            err := doSomething()
+            if err != nil {
+                log(err)
+            }
+            exec.Command("sh", input).Run()
+        }"#;
+    assert_eq!(error_fallthrough_count(free_arg, "go", go()), 1);
+
+    // One constant sink does not hide a later non-constant one.
+    let mixed = br#"
+        package main
+        import ("log"; "os/exec")
+        func run(input string) {
+            err := doSomething()
+            if err != nil {
+                log.Println(err)
+            }
+            exec.Command("sync").Run()
+            exec.Command("sh", "-c", input).Run()
+        }"#;
+    assert_eq!(error_fallthrough_count(mixed, "go", go()), 1);
+}
+
 // ─── Resource misuse tests ────────────────────────────────────────────
 
 #[test]
@@ -803,6 +1100,69 @@ fn find_exit_node_exists() {
     assert!(exit.is_some(), "Should find an exit node");
 }
 
+/// Post-dominators over a hand-built CFG: an if/else diamond, a loop with a
+/// back edge, and a node with no path to Exit.  Pins the semantics of
+/// `compute_post_dominators` (dominators of the reversed graph from Exit).
+#[test]
+fn post_dominators_diamond_loop_and_dead_end() {
+    use crate::cfg::{Cfg, EdgeKind, NodeInfo, StmtKind};
+
+    fn node(kind: StmtKind) -> NodeInfo {
+        NodeInfo {
+            kind,
+            ..Default::default()
+        }
+    }
+
+    let mut cfg = Cfg::new();
+    let entry = cfg.add_node(node(StmtKind::Entry));
+    let if_n = cfg.add_node(node(StmtKind::If));
+    let then_n = cfg.add_node(node(StmtKind::Seq));
+    let else_n = cfg.add_node(node(StmtKind::Seq));
+    let join = cfg.add_node(node(StmtKind::Seq));
+    let header = cfg.add_node(node(StmtKind::Loop));
+    let body = cfg.add_node(node(StmtKind::Seq));
+    let after = cfg.add_node(node(StmtKind::Seq));
+    let exit = cfg.add_node(node(StmtKind::Exit));
+    // Reachable from the else branch but never reaches Exit (an infinite
+    // spin with no edge out).
+    let dead_end = cfg.add_node(node(StmtKind::Seq));
+
+    cfg.add_edge(entry, if_n, EdgeKind::Seq);
+    cfg.add_edge(if_n, then_n, EdgeKind::True);
+    cfg.add_edge(if_n, else_n, EdgeKind::False);
+    cfg.add_edge(then_n, join, EdgeKind::Seq);
+    cfg.add_edge(else_n, join, EdgeKind::Seq);
+    cfg.add_edge(else_n, dead_end, EdgeKind::Seq);
+    cfg.add_edge(dead_end, dead_end, EdgeKind::Back);
+    cfg.add_edge(join, header, EdgeKind::Seq);
+    cfg.add_edge(header, body, EdgeKind::True);
+    cfg.add_edge(header, after, EdgeKind::False);
+    cfg.add_edge(body, header, EdgeKind::Back);
+    cfg.add_edge(after, exit, EdgeKind::Seq);
+
+    let pd = dominators::compute_post_dominators(&cfg).expect("cfg has an Exit node");
+    assert_eq!(pd.immediate_dominator(if_n), Some(join));
+    assert_eq!(pd.immediate_dominator(then_n), Some(join));
+    assert_eq!(pd.immediate_dominator(else_n), Some(join));
+    assert_eq!(pd.immediate_dominator(join), Some(header));
+    assert_eq!(pd.immediate_dominator(body), Some(header));
+    assert_eq!(pd.immediate_dominator(header), Some(after));
+    assert_eq!(pd.immediate_dominator(after), Some(exit));
+    assert_eq!(pd.immediate_dominator(exit), None);
+    assert!(dominators::dominates(&pd, header, body));
+    assert!(dominators::dominates(&pd, exit, entry));
+    assert!(!dominators::dominates(&pd, then_n, if_n));
+    // A node with no path to Exit has no post-dominator.
+    assert_eq!(pd.immediate_dominator(dead_end), None);
+    assert!(!dominators::dominates(&pd, exit, dead_end));
+
+    // No Exit node: no post-dominator tree.
+    let mut no_exit = Cfg::new();
+    no_exit.add_node(node(StmtKind::Entry));
+    assert!(dominators::compute_post_dominators(&no_exit).is_none());
+}
+
 #[test]
 fn shortest_distance_basic() {
     let src = br#"
@@ -887,6 +1247,75 @@ fn unguarded_sink_wrapper_param_only_is_low() {
     );
 }
 
+fn unguarded_sink_lines(src: &[u8], lang: &str, ts_lang: Language) -> Vec<usize> {
+    parse_and_analyse(&guards::UnguardedSink, src, lang, ts_lang)
+        .iter()
+        .filter(|f| f.rule_id == "cfg-unguarded-sink")
+        .map(|f| src[..f.span.0].iter().filter(|&&b| b == b'\n').count() + 1)
+        .collect()
+}
+
+#[test]
+fn unguarded_sink_no_params_check_reads_the_sink_function() {
+    // A function with no parameters and no sources: taint found nothing
+    // because there is nothing to find.  An unrelated function with a
+    // parameter later in the file must not change that.
+    let ruby = || Language::from(tree_sitter_ruby::LANGUAGE);
+    let alone = b"class User < ApplicationRecord
+  def post_default_aspects
+    x = aspects.where(Principal.fields_for_order_statement)
+    x
+  end
+end
+";
+    let with_sibling = b"class User < ApplicationRecord
+  def post_default_aspects
+    x = aspects.where(Principal.fields_for_order_statement)
+    x
+  end
+
+  def unrelated(y)
+    y + 1
+  end
+end
+";
+    assert!(unguarded_sink_lines(alone, "ruby", ruby()).is_empty());
+    assert!(unguarded_sink_lines(with_sibling, "ruby", ruby()).is_empty());
+
+    let js = b"const cp = require('child_process');
+function rotateLogs() {
+  const cmd = buildCmd();
+  cp.exec(cmd);
+}
+function handle(req, res) {
+  res.send('ok');
+}
+";
+    assert!(
+        unguarded_sink_lines(
+            js,
+            "javascript",
+            Language::from(tree_sitter_javascript::LANGUAGE)
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn unguarded_sink_kept_when_the_sink_function_has_params() {
+    let src = b"class User < ApplicationRecord
+  def lookup(order)
+    x = aspects.where(Principal.fields_for_order_statement)
+    x
+  end
+end
+";
+    assert_eq!(
+        unguarded_sink_lines(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE)),
+        vec![3]
+    );
+}
+
 // ─── Auth gap refinement tests ──────────────────────────────────────
 
 #[test]
@@ -914,6 +1343,35 @@ fn cli_main_no_auth_gap() {
         "CLI main() should NOT trigger auth-gap; got {:?}",
         auth_findings
     );
+}
+
+#[test]
+fn auth_gap_web_params_come_from_the_function_itself() {
+    // `process_jobs` takes a job queue, not a request.  A `(req, res)`
+    // handler elsewhere in the file must not make it a web entry point.
+    let js = || Language::from(tree_sitter_javascript::LANGUAGE);
+    let batch = b"const cp = require('child_process');
+function process_jobs(queue) {
+  cp.exec(queue.cmd);
+}
+function handle(req, res) {
+  res.send('ok');
+}
+";
+    let gaps = |src: &[u8]| {
+        parse_and_analyse(&auth::AuthGap, src, "javascript", js())
+            .into_iter()
+            .filter(|f| f.rule_id == "cfg-auth-gap")
+            .count()
+    };
+    assert_eq!(gaps(batch), 0);
+
+    let web = b"const cp = require('child_process');
+function process_upload(req, res) {
+  cp.exec(req.query.cmd);
+}
+";
+    assert_eq!(gaps(web), 1);
 }
 
 #[test]
@@ -1382,6 +1840,9 @@ fn config_sanitizer_suppresses_unguarded_sink() {
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     let findings = run_all(&ctx);
 
@@ -1862,6 +2323,9 @@ fn cfg_only_no_taint_produces_low_severity() {
         auth_decorators: &[],
         closure_released_var_names: None,
         class_constant_scalars: None,
+        body_params: &file_cfg.first_body().meta.params,
+        captured_params: &[],
+        module_constants: None,
     };
     let findings = guards::UnguardedSink.run(&ctx);
 
@@ -2521,5 +2985,426 @@ func h() {
         facts.type_facts.get_type(val),
         Some(&crate::ssa::type_facts::TypeKind::FileHandle),
         "new(non-writer-struct) must not type as FileHandle"
+    );
+}
+
+/// `cfg-unguarded-sink` findings for a JS snippet.
+fn js_unguarded_sinks(src: &[u8]) -> Vec<CfgFinding> {
+    parse_and_analyse(
+        &guards::UnguardedSink,
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    )
+    .into_iter()
+    .filter(|f| f.rule_id == "cfg-unguarded-sink")
+    .collect()
+}
+
+#[test]
+fn equality_pin_guards_only_the_pinned_edge() {
+    // Both clauses pin `dir`, so the body only runs with a literal.
+    let pinned = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    if (dir === 'asc' || dir === 'desc') {
+        eval(dir);
+    }
+}
+"#;
+    assert!(js_unguarded_sinks(pinned).is_empty());
+
+    // After the join `dir` is anything again.
+    let after_join = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    if (dir === 'asc') {
+        console.log('ascending');
+    }
+    eval(dir);
+}
+"#;
+    assert_eq!(js_unguarded_sinks(after_join).len(), 1);
+
+    // The second disjunct does not pin `dir`.
+    let mixed = br#"
+async function handler(req) {
+    const dir = req.query.dir;
+    const flag = req.query.flag;
+    if (dir === 'asc' || flag) {
+        eval(dir);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(mixed).len(), 1);
+
+    // A pin on another variable does not guard this sink.
+    let unrelated = br#"
+async function handler(req) {
+    const cmd = req.query.cmd;
+    const mode = req.query.mode;
+    if (mode === 'debug') {
+        eval(cmd);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(unrelated).len(), 1);
+}
+
+#[test]
+fn relative_url_guard_covers_only_the_passing_edge() {
+    let safe = br#"
+function login(req, res) {
+    const next = req.query.next;
+    if (!next.startsWith('/') || next.startsWith('//')) {
+        return res.redirect('/');
+    }
+    res.redirect(next);
+}
+"#;
+    assert!(js_unguarded_sinks(safe).is_empty());
+
+    let reject_branch = br#"
+function login(req, res) {
+    const next = req.query.next;
+    if (!next.startsWith('/') || next.startsWith('//')) {
+        res.redirect(next);
+    }
+}
+"#;
+    assert_eq!(js_unguarded_sinks(reject_branch).len(), 1);
+}
+
+#[test]
+fn error_fallthrough_skips_conditional_expression_conditions() {
+    let fallthrough = |src: &[u8], lang: &str, ts: Language| {
+        parse_and_analyse(&error_handling::IncompleteErrorHandling, src, lang, ts)
+            .into_iter()
+            .filter(|f| f.rule_id == "cfg-error-fallthrough")
+            .count()
+    };
+    // The ternary picks a message on both arms; nothing should return.
+    let js = br#"
+function show(db, error, version) {
+  const message = error > 0 ? 'too old' : 'ok';
+  db.query('INSERT INTO log VALUES (' + version + ')');
+  return message;
+}
+"#;
+    let ts = || Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(fallthrough(js, "javascript", ts()), 0);
+    // The statement form still reports an error check that falls through.
+    let js_if = br#"
+function show(db, error, version) {
+  if (error) {
+    console.log('too old');
+  }
+  db.query('INSERT INTO log VALUES (' + version + ')');
+}
+"#;
+    assert_eq!(fallthrough(js_if, "javascript", ts()), 1);
+}
+
+/// Type fact of the first SSA def named `var` in the first body of `src`.
+fn go_binding_type(src: &[u8], var: &str) -> Option<crate::ssa::type_facts::TypeKind> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg.first_body();
+    let facts = build_body_const_facts(body, Lang::Go).expect("body const facts");
+    let val = facts
+        .ssa
+        .blocks
+        .iter()
+        .flat_map(|b| b.body.iter())
+        .find(|i| i.var_name.as_deref() == Some(var))
+        .map(|i| i.value)?;
+    facts.type_facts.get_type(val).cloned()
+}
+
+#[test]
+fn go_declared_bindings_carry_their_type() {
+    use crate::ssa::type_facts::TypeKind;
+    // Zero-value declarations lower to a Nop; the declared type is the
+    // only evidence of what the binding holds.
+    let src = br#"package main
+import ("fmt"; "strings")
+func h(name string) {
+    var sb strings.Builder
+    fmt.Fprintf(&sb, "%s", name)
+}
+"#;
+    assert_eq!(go_binding_type(src, "sb"), Some(TypeKind::FileHandle));
+
+    // `&http.Client{Timeout: t}` lowers to a single-operand Assign; copy
+    // propagation must not fold it into `t` and lose the client type.
+    let src = br#"package main
+import "net/http"
+func h(t int, u string) {
+    c := &http.Client{Timeout: t}
+    c.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+
+    let src = br#"package main
+import "net/http"
+func h(u string) {
+    var c http.Client
+    c.Get(u)
+    d := http.Client{}
+    d.Get(u)
+}
+"#;
+    assert_eq!(go_binding_type(src, "c"), Some(TypeKind::HttpClient));
+    assert_eq!(go_binding_type(src, "d"), Some(TypeKind::HttpClient));
+}
+
+#[test]
+fn go_initialised_interface_declaration_is_not_typed() {
+    // `var out io.Writer = w` says nothing about the value it holds, so the
+    // declared interface type is not used.
+    let src = br#"package main
+import ("fmt"; "io"; "net/http")
+func h(w http.ResponseWriter, name string) {
+    var out io.Writer = w
+    fmt.Fprintf(out, "%s", name)
+}
+"#;
+    assert_ne!(
+        go_binding_type(src, "out"),
+        Some(crate::ssa::type_facts::TypeKind::FileHandle)
+    );
+}
+
+#[test]
+fn go_response_writer_and_client_formals_are_typed() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"package main
+import "net/http"
+func h(w http.ResponseWriter, c *http.Client, n int) {
+    c.Get("x")
+    w.Write(nil)
+}
+"#;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_go::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let file_cfg = build_cfg(&tree, src, "go", "test.go", None);
+    let body = file_cfg
+        .bodies
+        .iter()
+        .find(|b| b.meta.name.as_deref() == Some("h"))
+        .expect("h body");
+    assert_eq!(
+        body.meta.param_types,
+        vec![
+            Some(TypeKind::HttpResponse),
+            Some(TypeKind::HttpClient),
+            None
+        ]
+    );
+}
+
+fn go_error_fallthrough_lines(src: &[u8]) -> usize {
+    parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    )
+    .iter()
+    .filter(|f| f.rule_id == "cfg-error-fallthrough")
+    .count()
+}
+
+#[test]
+fn go_err_nil_success_check_without_else_does_not_fire() {
+    let src = br#"
+        package main
+        import ("os/exec"; "strconv")
+        func h(id string, x string) {
+            if n, err := strconv.Atoi(id); err == nil {
+                _ = n
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    let src = br#"
+        package main
+        import ("os"; "os/exec")
+        func h(x string) {
+            f, err := os.Open("/tmp/x")
+            if nil == err {
+                defer f.Close()
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+}
+
+#[test]
+fn go_err_nil_success_check_reads_else_as_error_branch() {
+    // The else branch returns: the error is handled.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                return
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 0);
+
+    // The else branch only logs and falls through into the sink.
+    let src = br#"
+        package main
+        import ("fmt"; "os/exec"; "strconv")
+        func h(x string) {
+            _, err := strconv.Atoi(x)
+            if err == nil {
+                fmt.Println("ok")
+            } else {
+                fmt.Println("warn")
+            }
+            exec.Command("sh", x).Run()
+        }"#;
+    assert_eq!(go_error_fallthrough_lines(src), 1);
+}
+
+#[test]
+fn js_err_null_success_check_without_else_does_not_fire() {
+    let src = br#"
+        const child_process = require('child_process');
+        function h(err, cmd) {
+            if (err === null) {
+                console.log("ok");
+            }
+            child_process.exec(cmd);
+        }"#;
+    let findings = parse_and_analyse(
+        &error_handling::IncompleteErrorHandling,
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.rule_id == "cfg-error-fallthrough"),
+        "success-polarity `err === null` must not fire; got {findings:?}"
+    );
+}
+
+// ─── Resource leak: null / err guards and returned handles ─────────────
+
+fn cfg_leaks(src: &[u8], lang: &str, ts_lang: Language) -> usize {
+    parse_and_analyse(&resources::ResourceMisuse, src, lang, ts_lang)
+        .iter()
+        .filter(|f| f.rule_id == "cfg-resource-leak")
+        .count()
+}
+
+fn c_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "c", Language::from(tree_sitter_c::LANGUAGE))
+}
+
+fn go_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "go", Language::from(tree_sitter_go::LANGUAGE))
+}
+
+fn py_leaks(src: &[u8]) -> usize {
+    cfg_leaks(src, "python", Language::from(tree_sitter_python::LANGUAGE))
+}
+
+#[test]
+fn resource_null_guard_early_return_not_leak_c() {
+    for guard in ["!f", "f == NULL", "NULL == f", "(f) == NULL"] {
+        let src = format!(
+            "int g(const char *p) {{\n    FILE *f = fopen(p, \"r\");\n    if ({guard}) return -1;\n    fgetc(f);\n    fclose(f);\n    return 0;\n}}\n"
+        );
+        assert_eq!(c_leaks(src.as_bytes()), 0, "guard `{guard}`");
+    }
+    let fd = b"int g(const char *p) {\n    int fd = open(p, 0);\n    if (fd < 0) return -1;\n    close(fd);\n    return 0;\n}\n";
+    assert_eq!(c_leaks(fd), 0);
+}
+
+#[test]
+fn resource_null_guard_does_not_hide_later_leak_c() {
+    let src = b"int g(const char *p, int x) {\n    FILE *f = fopen(p, \"r\");\n    if (!f) return -1;\n    if (x) return -2;\n    fclose(f);\n    return 0;\n}\n";
+    assert_eq!(c_leaks(src), 1);
+}
+
+#[test]
+fn resource_returned_handle_not_leak_c() {
+    let src = b"char *dup(const char *s) {\n    char *b = malloc(10);\n    if (b == NULL) return NULL;\n    strcpy(b, s);\n    return b;\n}\n";
+    assert_eq!(c_leaks(src), 0);
+}
+
+#[test]
+fn resource_go_err_guard_factory_not_leak() {
+    let src = b"package m\nfunc open(p string) (*os.File, error) {\n\tf, err := os.Open(p)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn f, nil\n}\n";
+    assert_eq!(go_leaks(src), 0);
+    let direct = b"package m\nfunc open(p string) (*os.File, error) {\n\treturn os.Open(p)\n}\n";
+    assert_eq!(go_leaks(direct), 0);
+    let wrapped =
+        b"package m\nfunc open(p string) *W {\n\tf, _ := os.Open(p)\n\treturn &W{f: f}\n}\n";
+    assert_eq!(go_leaks(wrapped), 0);
+}
+
+#[test]
+fn resource_go_reassigned_err_still_leaks() {
+    // The second `err != nil` tests the Write error, not the Open error, so
+    // its early return leaks `f`.
+    let src = b"package m\nfunc w(p string, d []byte) error {\n\tf, err := os.Create(p)\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = f.Write(d)\n\tif err != nil {\n\t\treturn err\n\t}\n\tf.Close()\n\treturn nil\n}\n";
+    assert_eq!(go_leaks(src), 1);
+}
+
+#[test]
+fn resource_go_handle_passed_to_returned_call_still_leaks() {
+    let src = b"package m\nfunc r(p string) *bufio.Reader {\n\tf, _ := os.Open(p)\n\treturn bufio.NewReader(f)\n}\n";
+    assert_eq!(go_leaks(src), 1);
+}
+
+#[test]
+fn resource_python_return_escape_shapes() {
+    assert_eq!(py_leaks(b"def g(p):\n    f = open(p)\n    return f\n"), 0);
+    assert_eq!(py_leaks(b"def g(p):\n    return open(p)\n"), 0);
+    assert_eq!(
+        py_leaks(b"def g(p):\n    f = open(p)\n    return f, 1\n"),
+        0
+    );
+    assert_eq!(
+        py_leaks(b"def g(p):\n    f = open(p)\n    return f.read()\n"),
+        1
+    );
+    assert_eq!(
+        py_leaks(b"def g(p, x):\n    f = open(p)\n    if x:\n        return None\n    return f\n"),
+        1,
+        "the `return None` path leaks"
+    );
+    assert_eq!(
+        py_leaks(b"def g(p):\n    return json.load(open(p))\n"),
+        1,
+        "the returned value is json.load's, not the handle"
+    );
+}
+
+#[test]
+fn resource_java_returned_wrapper_not_leak() {
+    let src = b"class A {\n  Reader g(String p) throws Exception {\n    return new BufferedReader(new FileReader(p));\n  }\n}\n";
+    assert_eq!(
+        cfg_leaks(src, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        0
     );
 }

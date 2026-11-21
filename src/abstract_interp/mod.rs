@@ -38,7 +38,7 @@ use smallvec::SmallVec;
 /// flag.  The legacy `NYX_ABSTRACT_INTERP` env var is consulted only when no
 /// runtime has been installed (library use / legacy tests).
 pub fn is_enabled() -> bool {
-    crate::utils::analysis_options::current().abstract_interpretation
+    crate::utils::analysis_options::abstract_interpretation()
 }
 
 // ── AbstractValue ───────────────────────────────────────────────────────

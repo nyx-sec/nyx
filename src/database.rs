@@ -294,6 +294,27 @@ pub mod index {
     /// Engine version used to detect stale caches across upgrades.
     pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+    /// `nyx_metadata` key holding the [`crate::utils::Config::analysis_cache_key`]
+    /// the cached per-file results were produced under.
+    const ANALYSIS_CACHE_KEY: &str = "analysis_cache_key";
+
+    /// Delete every cached per-file analysis result and file hash, so the
+    /// next scan re-extracts each file.
+    fn wipe_analysis_cache(conn: &Connection) -> NyxResult<()> {
+        conn.execute_batch(
+            "DELETE FROM issues;
+             DELETE FROM function_summaries;
+             DELETE FROM ssa_function_summaries;
+             DELETE FROM ssa_function_bodies;
+             DELETE FROM auth_check_summaries;
+             DELETE FROM cross_package_imports;
+             DELETE FROM caller_scope_edges;
+             DELETE FROM router_facts;
+             DELETE FROM files;",
+        )?;
+        Ok(())
+    }
+
     /// On-disk schema version for cached analysis data.
     ///
     /// Bumped independently of `ENGINE_VERSION` whenever the serialized
@@ -889,13 +910,7 @@ pub mod index {
 
                     // Wipe all cached summaries and file hashes so everything
                     // gets rescanned.
-                    conn.execute_batch(
-                        "DELETE FROM function_summaries;
-                         DELETE FROM ssa_function_summaries;
-                         DELETE FROM ssa_function_bodies;
-                         DELETE FROM auth_check_summaries;
-                         DELETE FROM files;",
-                    )?;
+                    wipe_analysis_cache(conn)?;
 
                     conn.execute(
                         "INSERT OR REPLACE INTO nyx_metadata (key, value) VALUES ('engine_version', ?1)",
@@ -904,6 +919,22 @@ pub mod index {
                 }
             }
             Ok(())
+        }
+
+        /// Drop every cached per-file analysis result when `key` (see
+        /// [`crate::utils::Config::analysis_cache_key`]) differs from the
+        /// key the cache was built with, then record `key`.  Returns `true`
+        /// when the cache was dropped.  A database without a key (new, or
+        /// written by an older build) counts as a mismatch.
+        pub fn reconcile_analysis_cache_key(&self, key: &str) -> NyxResult<bool> {
+            let stored = self.get_metadata(ANALYSIS_CACHE_KEY)?;
+            if stored.as_deref() == Some(key) {
+                return Ok(false);
+            }
+            tracing::info!("analysis settings changed, dropping cached summaries");
+            wipe_analysis_cache(self.c())?;
+            self.set_metadata(ANALYSIS_CACHE_KEY, key)?;
+            Ok(true)
         }
 
         /// Persist the current engine version into metadata.
@@ -2631,7 +2662,7 @@ pub mod index {
             for log in logs {
                 stmt.execute(params![
                     scan_id,
-                    log.timestamp.to_rfc3339(),
+                    crate::utils::time::rfc3339(log.timestamp),
                     log.level.to_string(),
                     log.message,
                     log.file_path,
@@ -2681,9 +2712,7 @@ pub mod index {
                 })?
                 .filter_map(Result::ok)
                 .filter_map(|(ts_str, level_str, message, file_path, detail)| {
-                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                        .ok()?
-                        .with_timezone(&chrono::Utc);
+                    let timestamp = crate::utils::time::parse_rfc3339(&ts_str)?;
                     let level = level_str.parse().ok()?;
                     Some(crate::server::scan_log::ScanLogEntry {
                         timestamp,
@@ -2726,7 +2755,7 @@ pub mod index {
             note: &str,
             action: &str,
         ) -> NyxResult<String> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             let prev: String = self
                 .c()
                 .query_row(
@@ -2762,7 +2791,7 @@ pub mod index {
             note: &str,
             action: &str,
         ) -> NyxResult<Vec<(String, String)>> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             let mut results = Vec::with_capacity(fingerprints.len());
 
             // Read all previous states first
@@ -2939,7 +2968,7 @@ pub mod index {
             state: &str,
             note: &str,
         ) -> NyxResult<i64> {
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = crate::utils::time::now_rfc3339();
             self.c().execute(
                 "INSERT OR REPLACE INTO triage_suppression_rules
                  (suppress_by, match_value, state, note, created_at)
@@ -4282,6 +4311,58 @@ fn populate_project(
 }
 
 // ── 1. Engine Version Tests ─────────────────────────────────────────────────
+
+#[test]
+fn analysis_cache_key_change_drops_cached_summaries() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let pool = index::Indexer::init(&db).unwrap();
+    let idx = index::Indexer::from_pool("proj", &pool).unwrap();
+
+    // A database without a key was written by an older build or under
+    // unknown settings.
+    populate_project(&pool, "proj", td.path());
+    assert!(idx.reconcile_analysis_cache_key("k1").unwrap());
+    assert_eq!(
+        index::Indexer::count_rows(&pool, "function_summaries", "proj").unwrap(),
+        0
+    );
+
+    // Same key: the cache is kept.
+    populate_project(&pool, "proj", td.path());
+    assert!(!idx.reconcile_analysis_cache_key("k1").unwrap());
+    for table in [
+        "function_summaries",
+        "ssa_function_summaries",
+        "ssa_function_bodies",
+        "files",
+    ] {
+        assert_eq!(
+            index::Indexer::count_rows(&pool, table, "proj").unwrap(),
+            1,
+            "{table}"
+        );
+    }
+
+    // New key: every cached per-file result goes.
+    assert!(idx.reconcile_analysis_cache_key("k2").unwrap());
+    for table in [
+        "function_summaries",
+        "ssa_function_summaries",
+        "ssa_function_bodies",
+        "files",
+    ] {
+        assert_eq!(
+            index::Indexer::count_rows(&pool, table, "proj").unwrap(),
+            0,
+            "{table}"
+        );
+    }
+    assert_eq!(
+        idx.get_metadata("analysis_cache_key").unwrap().as_deref(),
+        Some("k2")
+    );
+}
 
 #[test]
 fn version_match_no_reset() {

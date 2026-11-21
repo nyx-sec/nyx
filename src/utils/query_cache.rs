@@ -11,7 +11,14 @@ pub struct CompiledQuery {
 }
 
 type QuerySet = Arc<Vec<CompiledQuery>>;
-static CACHE: LazyLock<RwLock<HashMap<&'static str, QuerySet>>> =
+
+/// Cache key: the language slug plus the grammar the queries were compiled
+/// against.  One slug can map to several grammars (`typescript` covers both
+/// the TypeScript and the TSX grammar), and a `Query` only matches trees from
+/// the grammar it was compiled for, so the slug alone is not enough.
+type CacheKey = (&'static str, Language);
+
+static CACHE: LazyLock<RwLock<HashMap<CacheKey, QuerySet>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Return **one shared Arc** to the per-language query set.
@@ -26,16 +33,18 @@ static CACHE: LazyLock<RwLock<HashMap<&'static str, QuerySet>>> =
 /// Lock poisoning on the shared cache is recovered transparently, a
 /// panic in another thread must not brick pattern loading process-wide.
 pub fn for_lang(lang: &'static str, ts_lang: Language) -> std::sync::Arc<Vec<CompiledQuery>> {
+    let key = (lang, ts_lang);
     // fast path
-    if let Some(v) = CACHE.read().unwrap_or_else(|p| p.into_inner()).get(lang) {
+    if let Some(v) = CACHE.read().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return v.clone();
     }
+    let ts_lang = &key.1;
 
     // slow path, compile
     let patterns = patterns::load(lang);
     let compiled: Vec<_> = patterns
         .into_iter()
-        .filter_map(|p| match Query::new(&ts_lang, p.query) {
+        .filter_map(|p| match Query::new(ts_lang, p.query) {
             Ok(q) => Some(CompiledQuery {
                 meta: p,
                 query: std::sync::Arc::new(q),
@@ -50,7 +59,7 @@ pub fn for_lang(lang: &'static str, ts_lang: Language) -> std::sync::Arc<Vec<Com
     let compiled = std::sync::Arc::new(compiled);
 
     let mut w = CACHE.write().unwrap_or_else(|p| p.into_inner());
-    w.entry(lang).or_insert_with(|| compiled.clone()).clone()
+    w.entry(key).or_insert_with(|| compiled.clone()).clone()
 }
 
 /// One pattern's metadata inside a [`CombinedQuery`], indexed by the pattern's
@@ -79,10 +88,15 @@ pub struct CombinedQuery {
     /// `slots[pattern_index]` → that pattern's rule metadata + primary capture.
     /// Length equals `query.pattern_count()`.
     pub slots: Vec<CombinedSlot>,
+    /// Capture index of `@vuln`, the whole matched node every rule names.
+    /// Captures share one name table across the combined query, so one index
+    /// serves every pattern.  Layer A reads the matched call from it when the
+    /// primary capture sits inside a nested call (see `ast_query_diag`).
+    pub vuln_capture_index: Option<u32>,
 }
 
 type CombinedSet = Arc<Option<CombinedQuery>>;
-static COMBINED_CACHE: LazyLock<RwLock<HashMap<&'static str, CombinedSet>>> =
+static COMBINED_CACHE: LazyLock<RwLock<HashMap<CacheKey, CombinedSet>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Return a process-lifetime [`CombinedQuery`] for `lang`, or `None` when no
@@ -94,18 +108,19 @@ static COMBINED_CACHE: LazyLock<RwLock<HashMap<&'static str, CombinedSet>>> =
 /// [`for_lang`], so a single bad rule never poisons the combined query: it was
 /// already dropped upstream and simply never enters the concatenation.
 pub fn combined_for_lang(lang: &'static str, ts_lang: Language) -> CombinedSet {
+    let key = (lang, ts_lang);
     if let Some(v) = COMBINED_CACHE
         .read()
         .unwrap_or_else(|p| p.into_inner())
-        .get(lang)
+        .get(&key)
     {
         return v.clone();
     }
 
-    let built = Arc::new(build_combined(lang, ts_lang));
+    let built = Arc::new(build_combined(lang, key.1.clone()));
 
     let mut w = COMBINED_CACHE.write().unwrap_or_else(|p| p.into_inner());
-    w.entry(lang).or_insert_with(|| built.clone()).clone()
+    w.entry(key).or_insert_with(|| built.clone()).clone()
 }
 
 fn build_combined(lang: &'static str, ts_lang: Language) -> Option<CombinedQuery> {
@@ -162,9 +177,11 @@ fn build_combined(lang: &'static str, ts_lang: Language) -> Option<CombinedQuery
         })
         .collect();
 
+    let vuln_capture_index = combined.capture_index_for_name("vuln");
     Some(CombinedQuery {
         query: combined,
         slots,
+        vuln_capture_index,
     })
 }
 
@@ -281,5 +298,31 @@ mod combined_tests {
     fn combined_matches_legacy_python() {
         let src = b"import pickle, subprocess\ndef f(x):\n    eval(x)\n    pickle.loads(x)\n    subprocess.call(x, shell=True)\n";
         assert_equiv("python", tree_sitter_python::LANGUAGE.into(), src);
+    }
+
+    /// `.ts` and `.tsx` files share the `typescript` slug but parse with
+    /// different grammars, whose node-kind ids differ.  A query compiled for
+    /// one grammar matches nothing on the other's trees, so whichever grammar
+    /// filled a slug-keyed cache first silenced every AST rule for the other
+    /// file type, and parallel scans flipped between the two outcomes.
+    #[test]
+    fn typescript_and_tsx_grammars_get_their_own_query_sets() {
+        let src = b"function f(x: any) {\n  const y = x as any;\n  eval(y);\n}\n";
+        let ts: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        let tsx: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TSX.into();
+        for (first, second) in [(&ts, &tsx), (&tsx, &ts)] {
+            for grammar in [first, second] {
+                assert_equiv("typescript", grammar.clone(), src);
+                let hits = legacy_matches("typescript", grammar.clone(), src);
+                assert!(
+                    hits.iter().any(|(id, _)| id == "ts.quality.as_any"),
+                    "as_any must fire under every TypeScript grammar, got {hits:?}"
+                );
+            }
+        }
+        assert!(!Arc::ptr_eq(
+            &for_lang("typescript", ts.clone()),
+            &for_lang("typescript", tsx.clone())
+        ));
     }
 }

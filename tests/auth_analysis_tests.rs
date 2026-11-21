@@ -1060,6 +1060,26 @@ fn go_self_method_receiver_does_not_flag() {
     );
 }
 
+/// A net/http handler's `r *http.Request` formal is user-input evidence by
+/// its declared type; the name `r` is not on the Go request-name allow-list.
+#[test]
+fn go_request_typed_param_opens_ownership_rule() {
+    assert_has(
+        "go_nethttp_request_typed_idor.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+/// The type, not the name, carries the evidence: an `r *bufio.Reader`
+/// helper stays closed.
+#[test]
+fn go_non_request_param_named_r_does_not_flag() {
+    assert_absent(
+        "go_reader_named_r_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
 #[test]
 fn auth_analysis_does_not_run_in_taint_mode() {
     let cfg = common::test_config(AnalysisMode::Taint);
@@ -1075,4 +1095,107 @@ fn auth_analysis_does_not_run_in_taint_mode() {
     ] {
         assert_no_auth_diags_for(&diags, filename);
     }
+}
+
+/// Go request-context scope and actor chains (`ctx.Repo.Repository.ID`,
+/// `ctx.Doer.ID`, a co-passed scope id) are not foreign ids.
+#[test]
+fn go_request_context_scope_does_not_flag() {
+    assert_absent("go_ctx_scope_clean.go", "go.auth.missing_ownership_check");
+}
+
+#[test]
+fn go_unscoped_lookup_by_request_id_still_flags() {
+    let lines: Vec<usize> = auth_diags_for("go_ctx_unscoped_missing.go")
+        .iter()
+        .filter(|d| d.id == "go.auth.missing_ownership_check")
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(lines, vec![15, 21], "got {lines:?}");
+}
+
+/// In-memory sets, atomics, url.Values, request header and form accessors,
+/// stdlib slice helpers and route registrations are not data-layer sinks.
+#[test]
+fn go_in_memory_values_do_not_flag() {
+    assert_absent(
+        "go_in_memory_values_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+/// `Get`, `Query` and `Param` on a cache, a response header or an ORM do not
+/// open a helper as a request entry point.
+#[test]
+fn go_non_request_accessors_do_not_open_a_helper() {
+    assert_absent(
+        "go_non_request_accessors_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+#[test]
+fn go_request_accessors_on_the_request_still_flag() {
+    let lines: Vec<usize> = auth_diags_for("go_gin_param_delete_missing.go")
+        .iter()
+        .filter(|d| d.id == "go.auth.missing_ownership_check")
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(lines, vec![14, 21], "got {lines:?}");
+}
+
+#[test]
+fn go_package_level_symbols_do_not_flag() {
+    assert_absent(
+        "go_package_symbols_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+#[test]
+fn go_shadowed_package_names_still_flag() {
+    let lines: Vec<usize> = auth_diags_for("go_package_symbols_shadowed_missing.go")
+        .iter()
+        .filter(|d| d.id == "go.auth.missing_ownership_check")
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(lines, vec![11, 16], "got {lines:?}");
+}
+
+#[test]
+fn go_named_id_type_helpers_do_not_flag() {
+    assert_absent(
+        "go_named_id_helpers_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+#[test]
+fn go_fetch_then_authorize_does_not_flag() {
+    assert_absent(
+        "go_fetch_then_authorize_clean.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+#[test]
+fn go_fetch_without_authorize_still_flags() {
+    assert_has(
+        "go_fetch_without_authorize_missing.go",
+        "go.auth.missing_ownership_check",
+    );
+}
+
+/// Words that merely end in "id" are not identifiers.
+#[test]
+fn id_like_words_do_not_flag() {
+    assert_absent("idlike_words_clean.py", "py.auth.missing_ownership_check");
+}
+
+#[test]
+fn real_id_params_still_flag() {
+    assert_has(
+        "idlike_real_id_missing.py",
+        "py.auth.missing_ownership_check",
+    );
 }

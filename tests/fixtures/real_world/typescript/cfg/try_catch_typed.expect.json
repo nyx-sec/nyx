@@ -26,6 +26,12 @@
       "line_range": [7, 7],
       "evidence_contains": [],
       "notes": "TP: fs.openSync resource at line 7 has a possible leak path when exceptions bypass close() [per-body: sensitivity change]"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "must_not_match": true,
+      "line_range": [34, 34],
+      "notes": "safeUsage returns inside try and closes in finally: the finally clause runs on the return path (regression guard)"
     }
   ]
 }

@@ -1,0 +1,61 @@
+{
+  "description": "java.io.File, String and StringBuilder constructors produce the path or text value of their arguments, so a tainted name stays a path-traversal source through them.  A name cleaned by a path sanitizer stays clean through the File constructor.  A multipart part's submitted file name is a source.",
+  "tags": ["taint", "java", "path-traversal", "constructor"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [8, 8],
+      "must_match": true,
+      "notes": "inline header source in new File(..) reaches FileInputStream"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [14, 14],
+      "must_match": true,
+      "notes": "new File(base, name) keeps FILE_IO"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [20, 20],
+      "must_match": true,
+      "notes": "upload destination built from the name"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [27, 27],
+      "must_match": true,
+      "notes": "Files.copy reads from the user-chosen path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [33, 33],
+      "must_match": true,
+      "notes": "new String(bytes) is the same text"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [39, 39],
+      "must_match": true,
+      "notes": "StringBuilder(body).toString() is the same text"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [42, 47],
+      "must_not_match": true,
+      "notes": "the sanitizer helper clears FILE_IO before the File constructor"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [52, 52],
+      "must_match": true,
+      "notes": "the multipart part's file name reaches the upload destination"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [58, 58],
+      "must_match": true,
+      "notes": "Files.newBufferedWriter opens the user-chosen path"
+    }
+  ]
+}

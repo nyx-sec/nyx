@@ -208,6 +208,61 @@ pub struct AnalysisContext<'a> {
     /// `cfg-unguarded-sink` all-args-constant check.  `None` outside Java
     /// and on call sites that have not threaded the map through.
     pub class_constant_scalars: Option<&'a std::collections::HashMap<String, String>>,
+    /// Parameters declared by the body under analysis.
+    pub body_params: &'a [String],
+    /// Parameters of the enclosing function bodies (never the top level)
+    /// that a closure, block or nested function can read.  Empty for
+    /// top-level functions and methods.
+    pub captured_params: &'a [String],
+    /// File-scope names bound once to a literal (see
+    /// [`module_constant_names`]).  A use of one of these names in a body
+    /// that neither assigns it nor takes it as a parameter is a constant.
+    /// `None` on call sites that have not threaded the set through.
+    pub module_constants: Option<&'a HashSet<String>>,
+}
+
+/// Names bound once, at file scope, to a literal: `const FIND_USER = 'SELECT
+/// ..'` in JS, `QUERY = """.."""` in Python, a Go package `const`.  The
+/// per-body analyses cannot see these bindings.  A name assigned anywhere
+/// else in the file (a second top-level assignment, or any function body)
+/// is left out, so a value that changes at run time never counts.
+pub fn module_constant_names(bodies: &[crate::cfg::BodyCfg]) -> HashSet<String> {
+    let Some(top) = bodies
+        .iter()
+        .find(|b| b.meta.kind == crate::cfg::BodyKind::TopLevel)
+    else {
+        return HashSet::new();
+    };
+    let mut def_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for body in bodies {
+        for info in body.graph.node_weights() {
+            for d in info.taint.defines.iter().chain(&info.taint.extra_defines) {
+                *def_counts.entry(d.as_str()).or_default() += 1;
+            }
+        }
+    }
+    top.graph
+        .node_weights()
+        .filter_map(|info| {
+            let d = info.taint.defines.as_deref()?;
+            let literal = info.taint.const_text.is_some()
+                && info.taint.uses.is_empty()
+                && info.taint.labels.is_empty();
+            (literal && def_counts.get(d) == Some(&1)).then(|| d.to_string())
+        })
+        .collect()
+}
+
+impl<'a> AnalysisContext<'a> {
+    /// Parameter names in scope for the body under analysis: its own, then
+    /// the ones it captures from enclosing functions.
+    ///
+    /// `func_summaries` cannot answer this: it covers the whole file, and a
+    /// summary's `entry` indexes its own body's graph, not `self.cfg`.
+    pub fn scope_param_names(&self) -> impl Iterator<Item = &'a str> + use<'a> {
+        let (own, captured) = (self.body_params, self.captured_params);
+        own.iter().chain(captured).map(String::as_str)
+    }
 }
 
 pub trait CfgAnalysis {
@@ -236,10 +291,7 @@ pub fn run_all(ctx: &AnalysisContext) -> Vec<CfgFinding> {
     findings.retain(|f| {
         // If both taint and cfg-unguarded-sink fire on the same span,
         // suppress the structural CFG finding (taint is the primary signal).
-        if f.rule_id == "cfg-unguarded-sink" && taint_spans.contains(&f.span) {
-            return false;
-        }
-        true
+        !(f.rule_id == "cfg-unguarded-sink" && taint_spans.contains(&f.span))
     });
 
     // ── Dedup: suppress cfg-unguarded-sink when cfg-unreachable-sink covers the span ──
@@ -249,12 +301,8 @@ pub fn run_all(ctx: &AnalysisContext) -> Vec<CfgFinding> {
         .map(|f| f.span)
         .collect();
 
-    findings.retain(|f| {
-        if f.rule_id == "cfg-unguarded-sink" && unreachable_spans.contains(&f.span) {
-            return false;
-        }
-        true
-    });
+    findings
+        .retain(|f| !(f.rule_id == "cfg-unguarded-sink" && unreachable_spans.contains(&f.span)));
 
     scoring::score_findings(&mut findings, ctx);
     findings.sort_by(|a, b| {

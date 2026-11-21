@@ -1,0 +1,80 @@
+{
+  "description": "A one-line helper that returns a member source (req.query.cmd, req.body, process.env.CMD) is a source for its callers. A constant getter and a getter that returns a closure are not.",
+  "tags": [
+    "taint",
+    "interproc",
+    "getter",
+    "member-source",
+    "javascript"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "fromQuery returns req.query.cmd"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "fromBody returns req.body"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        27
+      ],
+      "evidence_contains": [],
+      "notes": "fromEnv returns process.env.CMD"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        29,
+        33
+      ],
+      "notes": "constant getter"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        35,
+        39
+      ],
+      "notes": "makeReader returns a closure, not the value its body reads"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        29,
+        39
+      ],
+      "evidence_contains": [],
+      "notes": "structural rule on the exec calls"
+    }
+  ]
+}

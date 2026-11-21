@@ -1,0 +1,31 @@
+{
+  "description": "Express fluent response chains in TypeScript classify by their final method, and taint on the response object (res.locals, a fetch Response named res) is not a body payload.",
+  "tags": ["taint", "xss", "express"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [7, 7],
+      "notes": "res.status(200).send(html)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "res.type('html').send(html)"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [15, 19],
+      "notes": "res.locals field taint does not reach the constant json body"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [24, 24],
+      "notes": "zero-arg res.json() on a fetch Response has no payload"
+    }
+  ]
+}

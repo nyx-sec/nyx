@@ -50,6 +50,22 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     if info.string_prefix.is_some() {
                         continue;
                     }
+                    // Skip bindings with a declared type
+                    // (`c := &http.Client{Timeout: t}` lowers to
+                    // `Assign([t])`).  The type belongs to the destination,
+                    // not to the single operand, so folding the copy would
+                    // hand the call receiver the operand's type instead.
+                    if info.decl_type.is_some() {
+                        continue;
+                    }
+                    // Skip Go map-membership lookups (`_, ok := m[k]`).  The
+                    // presence flag only shares its operand with the key; it
+                    // is not a copy of it.  Folding it would repoint the
+                    // `if !ok` condition at the key, and the allowlist
+                    // narrowing needs the condition to name the lookup.
+                    if info.membership_lookup.is_some() {
+                        continue;
+                    }
                     replace_map.insert(inst.value, src);
                 }
             }
@@ -80,6 +96,11 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                 }
             }
         }
+
+        // Rewrite what the terminator reads.  The copy is turned into a Nop
+        // below, so a `Return(Some(v))`, branch condition or switch scrutinee
+        // left on it would read a value with no definition.
+        rewrite_terminator_uses(&mut block.terminator, &resolved);
 
         // Rewrite body instructions
         for inst in &mut block.body {
@@ -121,6 +142,34 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
     }
 
     (count, resolved)
+}
+
+/// Point the values a terminator reads at their copy roots.
+fn rewrite_terminator_uses(term: &mut Terminator, resolved: &HashMap<SsaValue, SsaValue>) {
+    use crate::constraint::lower::{ConditionExpr, Operand};
+    let fix = |v: &mut SsaValue| {
+        if let Some(&root) = resolved.get(v) {
+            *v = root;
+        }
+    };
+    match term {
+        Terminator::Return(Some(v)) => fix(v),
+        Terminator::Switch { scrutinee, .. } => fix(scrutinee),
+        Terminator::Branch { condition, .. } => match condition.as_deref_mut() {
+            Some(ConditionExpr::BoolTest { var })
+            | Some(ConditionExpr::NullCheck { var, .. })
+            | Some(ConditionExpr::TypeCheck { var, .. }) => fix(var),
+            Some(ConditionExpr::Comparison { lhs, rhs, .. }) => {
+                for operand in [lhs, rhs] {
+                    if let Operand::Value(v) = operand {
+                        fix(v);
+                    }
+                }
+            }
+            Some(ConditionExpr::Unknown) | None => {}
+        },
+        Terminator::Return(None) | Terminator::Goto(_) | Terminator::Unreachable => {}
+    }
 }
 
 /// Chase the replacement chain to find the root value.
@@ -733,5 +782,149 @@ mod tests {
         let (eliminated, map) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 0);
         assert!(map.is_empty());
+    }
+
+    /// `return b` lowers to a copy of `b` that only the terminator reads.
+    /// The copy becomes a Nop, so the terminator has to move to the root or
+    /// the returned value has no definition (and no taint) any more.
+    #[test]
+    fn return_terminator_follows_the_copy_root() {
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Return(Some(SsaValue(1)));
+        let (eliminated, _map) = copy_propagate(&mut body, &cfg);
+        assert_eq!(eliminated, 1);
+        assert!(matches!(body.blocks[0].body[1].op, SsaOp::Nop));
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Return(Some(SsaValue(0)))
+        ));
+    }
+
+    #[test]
+    fn branch_condition_and_switch_scrutinee_follow_the_copy_root() {
+        use crate::constraint::lower::{CompOp, ConditionExpr, Operand};
+        use petgraph::graph::NodeIndex;
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Branch {
+            cond: NodeIndex::new(1),
+            true_blk: BlockId(0),
+            false_blk: BlockId(0),
+            condition: Some(Box::new(ConditionExpr::Comparison {
+                lhs: Operand::Value(SsaValue(1)),
+                op: CompOp::Eq,
+                rhs: Operand::Unknown,
+            })),
+        };
+        copy_propagate(&mut body, &cfg);
+        match &body.blocks[0].terminator {
+            Terminator::Branch {
+                condition: Some(c), ..
+            } => match &**c {
+                ConditionExpr::Comparison { lhs, .. } => {
+                    assert!(matches!(lhs, Operand::Value(SsaValue(0))))
+                }
+                other => panic!("unexpected condition {other:?}"),
+            },
+            other => panic!("unexpected terminator {other:?}"),
+        }
+
+        let (cfg, mut body) = build_two_inst_body(|_| {});
+        body.blocks[0].terminator = Terminator::Switch {
+            scrutinee: SsaValue(1),
+            targets: SmallVec::new(),
+            default: BlockId(0),
+            case_values: SmallVec::new(),
+        };
+        copy_propagate(&mut body, &cfg);
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Switch {
+                scrutinee: SsaValue(0),
+                ..
+            }
+        ));
+    }
+
+    /// A copy that is kept (labelled node) must leave its terminator alone.
+    #[test]
+    fn return_terminator_of_a_kept_copy_is_unchanged() {
+        use crate::labels::{Cap, DataLabel};
+        use smallvec::smallvec;
+        let (cfg, mut body) = build_two_inst_body(|info| {
+            info.taint.labels = smallvec![DataLabel::Sanitizer(Cap::SHELL_ESCAPE)];
+        });
+        body.blocks[0].terminator = Terminator::Return(Some(SsaValue(1)));
+        copy_propagate(&mut body, &cfg);
+        assert!(matches!(
+            body.blocks[0].terminator,
+            Terminator::Return(Some(SsaValue(1)))
+        ));
+    }
+
+    /// `_, ok := allowed[cmd]` shares its operand with the key but is not a
+    /// copy of it, so it stays an assignment and the branch on `ok` keeps
+    /// naming the lookup.
+    #[test]
+    fn membership_lookup_is_not_a_copy() {
+        let mut cfg: Cfg = Graph::new();
+        let n0 = cfg.add_node(make_cfg_node(StmtKind::Seq));
+        let mut lookup = make_cfg_node(StmtKind::Seq);
+        lookup.membership_lookup = Some(crate::cfg::MembershipLookup {
+            result_var: "ok".into(),
+            base: "allowed".into(),
+            key: "cmd".into(),
+            value_var: None,
+        });
+        let n1 = cfg.add_node(lookup);
+
+        let mut body = SsaBody {
+            blocks: vec![SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![
+                    SsaInst {
+                        value: SsaValue(0),
+                        op: SsaOp::Const(Some("x".into())),
+                        cfg_node: n0,
+                        var_name: Some("cmd".into()),
+                        span: (0, 2),
+                    },
+                    SsaInst {
+                        value: SsaValue(1),
+                        op: SsaOp::Assign(SmallVec::from_elem(SsaValue(0), 1)),
+                        cfg_node: n1,
+                        var_name: Some("ok".into()),
+                        span: (3, 5),
+                    },
+                ],
+                terminator: Terminator::Return(Some(SsaValue(1))),
+                preds: SmallVec::new(),
+                succs: SmallVec::new(),
+            }],
+            entry: BlockId(0),
+            value_defs: vec![
+                ValueDef {
+                    var_name: Some("cmd".into()),
+                    cfg_node: n0,
+                    block: BlockId(0),
+                },
+                ValueDef {
+                    var_name: Some("ok".into()),
+                    cfg_node: n1,
+                    block: BlockId(0),
+                },
+            ],
+            cfg_node_map: [(n0, SsaValue(0)), (n1, SsaValue(1))].into_iter().collect(),
+            exception_edges: vec![],
+            field_interner: crate::ssa::ir::FieldInterner::default(),
+            field_writes: Default::default(),
+            synthetic_externals: Default::default(),
+            slot_scoped_assigns: Default::default(),
+        };
+
+        let (eliminated, copy_map) = copy_propagate(&mut body, &cfg);
+        assert_eq!(eliminated, 0);
+        assert!(copy_map.is_empty());
+        assert!(matches!(body.blocks[0].body[1].op, SsaOp::Assign(_)));
     }
 }

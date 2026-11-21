@@ -3,13 +3,15 @@ package main
 import (
 	"net/http"
 	"os/exec"
-	"strings"
+	"strconv"
 )
 
-// validate strips shell metacharacters; the returned string is safe
-// to pass to exec.Command.  Modeled as a sanitiser by the engine.
+// validate parses the argument as an integer and returns its decimal form,
+// so the returned string can only hold digits and is safe to pass to
+// exec.Command.  Modeled as a sanitiser by the engine.
 func validate(s string) string {
-	return strings.ReplaceAll(s, ";", "")
+	n, _ := strconv.Atoi(s)
+	return strconv.Itoa(n)
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {

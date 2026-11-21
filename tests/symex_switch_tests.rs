@@ -69,27 +69,32 @@ fn assert_at_least_one_finding(diags: &[Diag], label: &str) {
 fn symex_match_suppresses_safe_arm() {
     let path = fixture_path("match_suppresses_safe_arm.rs");
     let diags = scan_isolated(&path);
-    // Rust match arms currently don't reliably surface taint flows from
-    // the existing engine for this scenario (see
-    // tests/fixtures/real_world/rust/cfg/match_arms.rs which also only
-    // emits quality findings, not taint). The acceptance for this
-    // fixture is therefore: (1) the scan runs to completion without a
-    // panic, covered by the call to `scan_isolated` returning, and
-    // (2) at least one finding lands on the Raw arm body (lines
-    // 22-29). The Safe arm at lines 31-36 must not regress beyond the
-    // existing baseline.
-    let raw_arm: Vec<&Diag> = diags
-        .iter()
-        .filter(|d| d.path.ends_with("match_suppresses_safe_arm.rs"))
-        .filter(|d| d.line >= 22 && d.line <= 29)
-        .collect();
-    assert!(
-        !raw_arm.is_empty(),
-        "[rust_match] expected ≥1 finding on the Raw arm body (lines 22-29), got 0.\n  diags = {:#?}",
+    // Each match arm is lowered on its own, so the tainted `user_cmd` must
+    // surface as a taint flow on the Raw arm body (lines 22-29), and the
+    // allowlist-guarded Safe arm (lines 31-36) must not get a taint flow.
+    let in_lines = |lo: usize, hi: usize| -> Vec<&Diag> {
+        diags
+            .iter()
+            .filter(|d| d.path.ends_with("match_suppresses_safe_arm.rs"))
+            .filter(|d| d.line >= lo && d.line <= hi)
+            .filter(|d| d.id.starts_with("taint-"))
+            .collect()
+    };
+    let all = || {
         diags
             .iter()
             .map(|d| format!("{}:{} {}", d.path, d.line, d.id))
             .collect::<Vec<_>>()
+    };
+    assert!(
+        !in_lines(22, 29).is_empty(),
+        "[rust_match] expected a taint finding on the Raw arm body (lines 22-29).\n  diags = {:#?}",
+        all()
+    );
+    assert!(
+        in_lines(31, 36).is_empty(),
+        "[rust_match] the Safe arm (lines 31-36) must not get a taint finding.\n  diags = {:#?}",
+        all()
     );
 }
 

@@ -1,0 +1,50 @@
+{
+  "description": "Equality chains against literals act as an inline allowlist: on the equal edge the variable holds a constant, and a `||` / `&&` chain is split per clause so the join intersects the per-edge facts. The not-equal edge, a post-join sink and a disjunct on another variable stay tainted.",
+  "tags": [
+    "taint",
+    "allowlist",
+    "equality",
+    "sqli"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        7,
+        21
+      ],
+      "notes": "`dir === 'asc' || dir === 'desc'` and the `!==` early return pin dir to a literal"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        27,
+        27
+      ],
+      "notes": "sink on the `dir !== 'asc'` edge"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        37,
+        37
+      ],
+      "notes": "sink after the join of an equality guard on a logging branch"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        45,
+        45
+      ],
+      "notes": "`dir === 'asc' || flag` lets any dir through when flag is set"
+    }
+  ]
+}

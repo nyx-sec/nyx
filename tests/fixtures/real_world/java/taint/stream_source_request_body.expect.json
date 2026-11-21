@@ -1,0 +1,39 @@
+{
+  "description": "Streams that can carry attacker or external bytes keep their source: the request body (through getInputStream and getReader, as user input), a socket, a config file and standard input.  The request body flows are reported with the request accessor as the origin, not as a generic file read.",
+  "tags": ["taint", "java", "cmdi", "sources"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "line_range": [13, 13],
+      "must_match": true,
+      "notes": "request.getInputStream is the source"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": "HIGH",
+      "line_range": [20, 20],
+      "must_match": true,
+      "notes": "request.getReader is the source"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [27, 27],
+      "must_match": true,
+      "notes": "socket input stream"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [34, 34],
+      "must_match": true,
+      "notes": "config file content"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [41, 41],
+      "must_match": true,
+      "notes": "standard input"
+    }
+  ]
+}

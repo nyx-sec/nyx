@@ -1,0 +1,35 @@
+{
+  "description": "gorilla/mux and chi route parameters are user input; exec.CommandContext is a command sink on its program and arguments; http.ServeFile is a file sink on its name argument.",
+  "tags": ["taint", "go", "router", "cmdi", "path-traversal"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [18, 18],
+      "notes": "mux.Vars(r) route variable reaches a formatted SQL string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [23, 23],
+      "notes": "chi.URLParam route value reaches sh -c"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [27, 27],
+      "notes": "exec.CommandContext with a form value in the command arguments"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [33, 33],
+      "notes": "http.ServeFile name joined from a query value; the .. check only covers r.URL.Path"
+    }
+  ]
+}

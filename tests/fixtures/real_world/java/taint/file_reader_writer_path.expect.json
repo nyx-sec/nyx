@@ -1,0 +1,26 @@
+{
+  "description": "FileReader and FileWriter take a path like FileInputStream and FileOutputStream do.  A request parameter reaching either constructor is path traversal; a fixed path with a tainted value elsewhere is not.",
+  "tags": ["taint", "java", "path-traversal"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-", "cfg-unguarded-sink"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [10, 10],
+      "must_match": true,
+      "notes": "new FileReader(name) inside a BufferedReader"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [17, 17],
+      "must_match": true,
+      "notes": "new FileWriter(name)"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [22, 35],
+      "must_not_match": true,
+      "notes": "fixed paths"
+    }
+  ]
+}

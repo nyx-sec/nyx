@@ -236,13 +236,17 @@ fn module_graph_is_cheap() {
 
     let r = root();
 
-    // Warm up: the first build pays cold filesystem-cache I/O (directory
-    // walk + file reads) which on a loaded CI runner can swamp the actual
-    // CPU cost we want to bound. Run once untimed to seed the page cache,
-    // and use this build for the RSS + packages assertions.
+    // Warm up: the first build pays one-time process costs (cold
+    // filesystem-cache I/O, first-touch paging of code and allocator
+    // arenas) that say nothing about the graph's own footprint and vary
+    // with toolchain and binary layout. Run once untimed and keep the
+    // result alive, so the measured build below cannot reuse its memory
+    // and the RSS delta covers only what a warm build allocates.
+    let warm = build_module_graph(std::slice::from_ref(&r));
     let bytes_before = approximate_rss_kib();
     let graph = build_module_graph(std::slice::from_ref(&r));
     let bytes_after = approximate_rss_kib();
+    std::hint::black_box(&warm);
 
     // Time the steady-state cost as the best of several warm runs. Min,
     // not a single sample, drops scheduler / disk jitter that would

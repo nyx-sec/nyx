@@ -1,0 +1,50 @@
+{
+  "description": "Spring SQL receivers are injected fields, so the template or entity manager is typed only by its declaration.  The declared type, not the field name, selects the SQL sink: JdbcTemplate, NamedParameterJdbcTemplate, the getJdbcTemplate() accessor and EntityManager all fire on a concatenated statement, and the placeholder forms stay quiet.",
+  "tags": ["taint", "java", "sqli", "spring", "type-aware"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-", "cfg-unguarded-sink"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [16, 16],
+      "must_match": true,
+      "notes": "field typed JdbcTemplate, named template"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [21, 21],
+      "must_match": true,
+      "notes": "field typed NamedParameterJdbcTemplate, the receiver name does not end in jdbcTemplate"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [26, 26],
+      "must_match": true,
+      "notes": "getJdbcTemplate().queryForMap"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [31, 31],
+      "must_match": true,
+      "notes": "batchUpdate was not a SQL verb"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [36, 36],
+      "must_match": true,
+      "notes": "field typed EntityManager, chained createQuery(..).getResultList()"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [39, 59],
+      "must_not_match": true,
+      "notes": "placeholder and named-parameter forms bind the value"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "line_range": [39, 59],
+      "must_not_match": true,
+      "notes": "the parameterised statements are not structural sinks either"
+    }
+  ]
+}

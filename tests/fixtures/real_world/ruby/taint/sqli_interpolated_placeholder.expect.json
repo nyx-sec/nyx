@@ -1,0 +1,47 @@
+{
+  "description": "Rails where() with an interpolated fragment and a bound ? argument: the interpolation is injectable, a constant table-name interpolation or plain placeholders are not.",
+  "tags": [
+    "taint",
+    "sqli",
+    "parameterized",
+    "rails",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        2,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "params[:q] interpolated into the where fragment"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        12
+      ],
+      "notes": "constant table-name interpolation, user value bound"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        18
+      ],
+      "notes": "plain placeholders"
+    }
+  ]
+}

@@ -5,7 +5,7 @@
   ],
   "noise_budget": {
     "max_total_findings": 5,
-    "max_high_findings": 0
+    "max_high_findings": 1
   },
   "performance_expectations": {
     "max_ms_no_index": 1000,

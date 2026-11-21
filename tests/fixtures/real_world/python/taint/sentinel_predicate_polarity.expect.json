@@ -1,0 +1,60 @@
+{
+  "description": "Python validator results compared with `== False` / `is False`, and indirect `ok = is_valid(x); if not ok:` guards.",
+  "tags": [
+    "taint",
+    "predicate-polarity",
+    "sentinel",
+    "indirect-validator",
+    "cmdi"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        27
+      ],
+      "notes": "`== False` / `is False` reject before the sink"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        27
+      ],
+      "notes": "validated flow also keeps the AST pattern quiet"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        32,
+        33
+      ],
+      "notes": "sink runs when the validator returned False"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        38,
+        45
+      ],
+      "notes": "`if not ok: return` rejects before the sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        51,
+        52
+      ],
+      "notes": "sink inside `if not ok:` runs exactly when validation failed"
+    }
+  ]
+}

@@ -76,7 +76,7 @@ pub fn effective_max_pointsto() -> usize {
     if o != 0 {
         return o;
     }
-    crate::utils::analysis_options::current().max_pointsto as usize
+    crate::utils::analysis_options::max_pointsto() as usize
 }
 
 /// Observability: total heap-object members dropped by the points-to

@@ -1,0 +1,61 @@
+{
+  "description": "Koa / Fastify redirects are open redirects (not SSRF) and their header setters are header-injection sinks (not XSS); ctx.response.body is the same XSS sink as ctx.body.",
+  "tags": ["taint", "koa", "fastify", "open-redirect", "header-injection"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [8, 8],
+      "notes": "ctx.redirect(ctx.query.next)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [8, 8],
+      "notes": "a redirect is not SSRF"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "must_match": true,
+      "line_range": [12, 12],
+      "notes": "ctx.set('X-Trace', ctx.query.t)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [12, 12],
+      "notes": "a header setter is not an XSS sink"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [16, 16],
+      "notes": "ctx.response.body = ctx.request.query.name"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [20, 20],
+      "notes": "reply.redirect(request.query.next)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [20, 20],
+      "notes": "a redirect is not SSRF"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "must_match": true,
+      "line_range": [24, 24],
+      "notes": "reply.header('X-Trace', request.query.t)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [24, 24],
+      "notes": "a header setter is not an XSS sink"
+    }
+  ]
+}

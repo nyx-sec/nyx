@@ -17,8 +17,7 @@ pub struct SinatraExtractor;
 impl AuthExtractor for SinatraExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "ruby"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Sinatra))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::Sinatra))
     }
 
     fn extract(

@@ -801,8 +801,7 @@ pub fn handle(
         retain_converged_findings(&mut diags);
     }
 
-    // ── Apply inline suppressions ───────────────────────────────────
-    apply_suppressions(&mut diags);
+    // Inline suppressions were applied in `post_process_diags`.
     if !show_suppressed {
         let triage_summary =
             crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
@@ -1033,12 +1032,24 @@ pub fn handle(
 
 // Shared post-processing helpers
 
-/// Assign confidence, rank, and truncate diagnostics.
+/// Apply inline suppressions, assign confidence, rank, and truncate
+/// diagnostics.  Shared by every front end (CLI, `serve`, library API).
 pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
+    // Put findings in a fixed order first.  Pass 2 emits them in call-graph
+    // batch order, which varies between runs; the tie-breaks below
+    // (duplicate-flow survivor, unranked output order, `max_results`
+    // truncation) must not depend on it.
+    diags.sort_by(canonical_diag_order);
+
     // 0. Collapse duplicate taint-unsanitised-flow findings at the same
     //    primary location. Runs first so subsequent confidence / ranking
     //    sees a single representative per (sink, rule_base, severity).
     deduplicate_taint_flows(diags);
+
+    // Inline `nyx:ignore` directives flag (not drop) the findings they
+    // cover, so the server can show them as suppressed and the CLI can
+    // decide whether to print them.
+    apply_suppressions(diags);
 
     // 1. Compute confidence first (needed by ranking).
     for d in diags.iter_mut() {
@@ -1053,6 +1064,13 @@ pub(crate) fn post_process_diags(diags: &mut Vec<Diag>, cfg: &Config) {
     if let Some(max) = cfg.output.max_results {
         diags.truncate(max as usize);
     }
+}
+
+/// Total order over findings by location, rule and message, independent of
+/// the order the analysis produced them in.
+fn canonical_diag_order(a: &Diag, b: &Diag) -> std::cmp::Ordering {
+    (&a.path, a.line, a.col, &a.id, a.severity, &a.message)
+        .cmp(&(&b.path, b.line, b.col, &b.id, b.severity, &b.message))
 }
 
 /// Drop diagnostics whose engine provenance notes indicate the analysis
@@ -1256,62 +1274,102 @@ pub const SCC_UNCONVERGED_NOTE_PREFIX: &str = "scc_unconverged:";
 /// can match on this tighter string.
 pub const SCC_UNCONVERGED_CROSS_FILE_NOTE_PREFIX: &str = "scc_unconverged:cross-file ";
 
-/// Return the set of FuncKeys whose cap snapshot changed between two
-/// [`GlobalSummaries::snapshot_caps`] results.
+/// Spots an SCC fixed-point loop whose summaries come back to a state
+/// they already had.
 ///
-/// Used by the Phase-B worklist to derive the next iteration's dirty
-/// file set.  Semantics match [`diff_cap_snapshots`], a key that
-/// appears or disappears counts as changed.
-fn changed_cap_keys_of(
-    before: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
-    after: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
-) -> HashSet<crate::symbol::FuncKey> {
-    let mut changed = HashSet::new();
-    for (k, v_after) in after {
-        match before.get(k) {
-            Some(v_before) if v_before == v_after => {}
-            _ => {
-                changed.insert(k.clone());
-            }
-        }
-    }
-    for k in before.keys() {
-        if !after.contains_key(k) {
-            changed.insert(k.clone());
-        }
-    }
-    changed
+/// An iteration re-analyses files against the summaries the previous
+/// iteration left, so once the batch's summaries equal those after an
+/// earlier iteration the loop repeats that cycle until the cap and can
+/// never converge.  The state is a sum of per-key fingerprints, kept up to
+/// date from each iteration's changed keys only, so tracking it costs
+/// O(changed keys) per iteration.
+#[derive(Default)]
+struct SccCycleDetector {
+    /// Fingerprint each changed key held after the last iteration.
+    key_fps: HashMap<crate::symbol::FuncKey, u64>,
+    /// Sum of `key_contribution` over every key, relative to the state
+    /// before the loop (which is 0).
+    state: u64,
+    /// State after each completed iteration (0 = before the loop).
+    seen: HashMap<u64, usize>,
 }
 
-/// Return the set of FuncKeys whose SSA summary changed between two
-/// snapshots.  Semantics match [`diff_ssa_snapshots`].
-fn changed_ssa_keys_of(
-    before: &HashMap<crate::symbol::FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
-    after: &HashMap<crate::symbol::FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
-) -> HashSet<crate::symbol::FuncKey> {
-    let mut changed = HashSet::new();
-    for (k, v_after) in after {
-        match before.get(k) {
-            Some(v_before) if v_before == v_after => {}
-            _ => {
-                changed.insert(k.clone());
-            }
+impl SccCycleDetector {
+    fn new() -> Self {
+        Self {
+            seen: HashMap::from([(0, 0)]),
+            ..Self::default()
         }
     }
-    for k in before.keys() {
-        if !after.contains_key(k) {
-            changed.insert(k.clone());
-        }
+
+    /// Whether `key` changed in an earlier iteration, in which case its
+    /// fingerprint before the current iteration is already known and the
+    /// caller need not compute it.
+    fn knows(&self, key: &crate::symbol::FuncKey) -> bool {
+        self.key_fps.contains_key(key)
     }
-    changed
+
+    /// Record the state after iteration `iteration` (1-based).  `changes`
+    /// yields `(key, fingerprint before the iteration, fingerprint now)`
+    /// for every key the iteration changed; the first fingerprint is only
+    /// read for a key [`Self::knows`] does not.  Returns the cycle length
+    /// when an earlier iteration already reached this state.
+    fn observe(
+        &mut self,
+        iteration: usize,
+        changes: impl IntoIterator<Item = (crate::symbol::FuncKey, u64, u64)>,
+    ) -> Option<usize> {
+        for (key, before, now) in changes {
+            let old = self.key_fps.get(&key).copied().unwrap_or(before);
+            self.state = self
+                .state
+                .wrapping_sub(key_contribution(&key, old))
+                .wrapping_add(key_contribution(&key, now));
+            self.key_fps.insert(key, now);
+        }
+        if let Some(&earlier) = self.seen.get(&self.state) {
+            return Some(iteration - earlier);
+        }
+        self.seen.insert(self.state, iteration);
+        None
+    }
+}
+
+/// Fingerprint of one function's convergence-relevant summary values.
+fn summary_fingerprint(
+    caps: Option<&crate::summary::CapsFingerprint>,
+    ssa: Option<&crate::summary::ssa_summary::SsaFuncSummary>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    caps.hash(&mut h);
+    // `SsaFuncSummary` has no `Hash`; the `Debug` text of its canonical form
+    // is a faithful, deterministic rendering (no hash-ordered fields) that,
+    // like the convergence check, ignores the order of its set fields.
+    let canonical = ssa.map(|s| {
+        let mut c = s.clone();
+        c.canonicalize();
+        c
+    });
+    format!("{canonical:?}").hash(&mut h);
+    h.finish()
+}
+
+fn key_contribution(key: &crate::symbol::FuncKey, value_fp: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    value_fp.hash(&mut h);
+    h.finish()
 }
 
 /// Attach a low-confidence tag and a diagnostic note to every finding
-/// produced by an SCC batch that did not converge within the safety cap.
+/// produced by an SCC fixed-point group that did not converge within the
+/// safety cap.
 ///
-/// Called once per unconverged batch (after the pass-2 rayon parallelism
-/// has collected `iteration_diags`) so the cost is O(n) over the batch's
-/// findings, much cheaper than a per-finding `warn!`.
+/// Called once per file of an unconverged group (after the pass-2 rayon
+/// parallelism has collected the per-file diags) so the cost is O(n) over
+/// the group's findings, much cheaper than a per-finding `warn!`.
 ///
 /// Confidence is **capped** at `Low` rather than unconditionally set:
 /// upstream analysis may have proven something particularly strong about
@@ -1378,11 +1436,13 @@ fn tag_unconverged_findings(
 
 /// Safety cap on SCC fixed-point iterations.
 ///
-/// The convergence predicate is *snapshot equality*, we break as soon as
-/// an iteration leaves both `snapshot_caps()` and `snapshot_ssa()`
-/// unchanged.  The cap only triggers if something prevents monotone
-/// progress (e.g. a non-monotone SSA summary refinement or an SCC larger
-/// than the cap length in the worst Jacobi propagation order).
+/// The convergence predicate is *summary equality*: we break as soon as
+/// an iteration leaves every coarse cap tuple and every SSA summary it
+/// wrote unchanged (tracked per write through
+/// [`crate::summary::SummaryChangeLog`]).  The cap only triggers if
+/// something prevents monotone progress (e.g. a non-monotone SSA summary
+/// refinement or an SCC larger than the cap length in the worst Jacobi
+/// propagation order).
 ///
 /// Why 64 and not 3?
 /// -----------------
@@ -1399,13 +1459,23 @@ fn tag_unconverged_findings(
 /// monotone (OR on caps, union on param vectors).  `SsaFuncSummary` is
 /// inserted with last-writer-wins semantics but its extraction is
 /// input-monotone in practice (richer `global_summaries` produce
-/// at-least-as-precise summaries).  Therefore the real fixed-point is
-/// always reached in `O(|SCC| × 16)` iterations.  64 covers every
+/// at-least-as-precise summaries), and it is compared on its facts, not on
+/// the order extraction listed its set-valued sink fields in
+/// ([`crate::summary::ssa_summary::SsaFuncSummary::same_facts`]).  Without
+/// that, a recursive call that fed the callee's site order back into the
+/// caller flipped the order on every iteration and ran the batch to the
+/// cap.  Therefore the real fixed-point is always reached in
+/// `O(|SCC| × 16)` iterations.  64 covers every
 /// realistic cross-file SCC we have seen while still bounding worst-case
 /// cost for pathological cases.
 ///
-/// If the cap *is* hit we emit a `warn!` so the operator knows the
-/// result is potentially imprecise rather than silently truncated.
+/// If the summaries come back to a state an earlier iteration produced,
+/// the loop stops at once instead of running to the cap, since the rest
+/// could only repeat that cycle (see [`SccCycleDetector`]).
+///
+/// If the cap *is* hit, or a cycle stops the loop, we emit a `warn!` so the
+/// operator knows the result is potentially imprecise rather than silently
+/// truncated.
 const SCC_FIXPOINT_SAFETY_CAP: usize = 64;
 
 /// Observability hook: records the maximum number of SCC fixed-point
@@ -1474,9 +1544,13 @@ fn topo_refine_enabled() -> bool {
 
 /// Run pass 2 analysis on a sequence of topo-ordered file batches.
 ///
-/// For batches with mutual recursion, iterates until summaries converge
-/// (bounded by [`SCC_FIXPOINT_SAFETY_CAP`]).  Updates `global_summaries`
-/// between batches so later callers see refined callee context.
+/// Batches come from [`crate::callgraph::scc_file_batches_with_metadata`],
+/// one level of the file dependency DAG each, so the files of a batch run
+/// in parallel against the same `global_summaries` state and their
+/// refinements are merged back in batch order after the parallel section.
+/// For batches with recursion, iterates until summaries converge (bounded
+/// by [`SCC_FIXPOINT_SAFETY_CAP`]).  Updates `global_summaries` between
+/// batches so later callers see refined callee context.
 ///
 /// `call_graph` is required by the Phase-B worklist: after each
 /// iteration we compute the set of FuncKeys whose summary changed,
@@ -1562,11 +1636,22 @@ fn run_topo_batches(
             // completeness.
             let mut diags_by_file: HashMap<std::path::PathBuf, Vec<Diag>> = HashMap::new();
 
+            // Namespaces that own a key whose summary changed in the most
+            // recent iteration.  Read after a cap hit to find the
+            // fixed-point groups that were still moving.
+            let mut last_changed_namespaces: HashSet<String> = HashSet::new();
+
+            // Set when the summaries return to an earlier state, so the
+            // loop could only repeat that cycle until the cap.
+            let mut cycle = SccCycleDetector::new();
+            let mut cycle_period: Option<usize> = None;
+
             for iter in 0..scc_cap {
                 iters_used = iter + 1;
-                let snap_before = global_summaries.snapshot_caps();
-
-                let ssa_snap_before = global_summaries.snapshot_ssa().clone();
+                // Only the summaries of the files re-analysed below can
+                // change in this iteration, so the log of their pre-write
+                // values is all the convergence check needs.
+                let mut change_log = crate::summary::SummaryChangeLog::new();
 
                 // Phase-B: restrict this iteration's analysis to dirty
                 // files only.  `batch.files` is the authoritative list
@@ -1686,18 +1771,14 @@ fn run_topo_batches(
 
                     for s in summaries {
                         let key = s.func_key_with_resolver(root_str_ref, mg);
-                        global_summaries.insert(key, s);
+                        global_summaries.insert_tracked(key, s, &mut change_log);
                     }
 
                     for (key, ssa_sum) in ssa_summaries {
-                        global_summaries.insert_ssa(key, ssa_sum);
+                        global_summaries.insert_ssa_tracked(key, ssa_sum, &mut change_log);
                         ssa_count += 1;
                     }
                 }
-
-                let snap_after = global_summaries.snapshot_caps();
-                let ssa_converged = ssa_snap_before == *global_summaries.snapshot_ssa();
-                let iter_converged = snap_before == snap_after && ssa_converged;
 
                 // Phase-B: collect the exact set of FuncKeys whose
                 // summary changed this iteration, and derive the next
@@ -1706,13 +1787,31 @@ fn run_topo_batches(
                 // A file becomes dirty for iteration N+1 iff it
                 // contains at least one caller of a FuncKey that
                 // changed in iteration N.  If no key changed, the
-                // dirty set is empty, which implies convergence (and
-                // matches `iter_converged` above).
-                let changed_cap_keys = changed_cap_keys_of(&snap_before, &snap_after);
-                let changed_ssa_keys =
-                    changed_ssa_keys_of(&ssa_snap_before, global_summaries.snapshot_ssa());
+                // iteration converged and the dirty set is empty.
+                let changed_cap_keys = change_log.changed_cap_keys(global_summaries);
+                let changed_ssa_keys = change_log.changed_ssa_keys(global_summaries);
+                let ssa_converged = changed_ssa_keys.is_empty();
+                let iter_converged = changed_cap_keys.is_empty() && ssa_converged;
+                // Both values of every changed SSA summary, for tracking
+                // down a batch that does not converge.
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    for k in &changed_ssa_keys {
+                        tracing::trace!(
+                            batch = batch_idx,
+                            iteration = iter,
+                            key = %k,
+                            before = ?change_log.ssa_before(k),
+                            after = ?global_summaries.snapshot_ssa().get(k),
+                            "SCC SSA summary changed"
+                        );
+                    }
+                }
                 let all_changed_keys: HashSet<crate::symbol::FuncKey> =
                     changed_cap_keys.union(&changed_ssa_keys).cloned().collect();
+                last_changed_namespaces = all_changed_keys
+                    .iter()
+                    .map(|k| k.namespace.clone())
+                    .collect();
                 let changed_caps_count = changed_cap_keys.len();
                 let changed_ssa_count = changed_ssa_keys.len();
                 let iter_delta = changed_caps_count + changed_ssa_count;
@@ -1780,16 +1879,31 @@ fn run_topo_batches(
                     converged = true;
                     break;
                 }
-            }
-            // After the loop, flatten per-file diags into the
-            // iteration_diags vector in batch order for deterministic
-            // output.  Files that were in the batch but never made
-            // dirty (shouldn't happen, iter 0 runs all of them) are
-            // skipped silently.
-            let mut iteration_diags: Vec<Diag> = Vec::new();
-            for p in &batch.files {
-                if let Some(v) = diags_by_file.remove(*p) {
-                    iteration_diags.extend(v);
+
+                let gs: &GlobalSummaries = global_summaries;
+                let changes: Vec<(crate::symbol::FuncKey, u64, u64)> = all_changed_keys
+                    .iter()
+                    .map(|k| {
+                        let before = if cycle.knows(k) {
+                            0
+                        } else {
+                            let (caps, ssa) = change_log.values_before(gs, k);
+                            summary_fingerprint(caps.as_ref(), ssa)
+                        };
+                        let caps_now = gs.get(k).map(crate::summary::caps_fingerprint);
+                        let now = summary_fingerprint(caps_now.as_ref(), gs.get_ssa(k));
+                        (k.clone(), before, now)
+                    })
+                    .collect();
+                if let Some(period) = cycle.observe(iters_used, changes) {
+                    tracing::debug!(
+                        batch = batch_idx,
+                        iteration = iter,
+                        period,
+                        "SCC batch summaries repeat an earlier state; stopping"
+                    );
+                    cycle_period = Some(period);
+                    break;
                 }
             }
             LAST_SCC_MAX_ITERATIONS.fetch_max(iters_used, Ordering::Relaxed);
@@ -1813,25 +1927,64 @@ fn run_topo_batches(
                 ),
             );
 
-            if !converged {
-                let reason = crate::engine_notes::CapHitReason::classify(&delta_trajectory);
+            // A recursive batch holds every recursive file of one level,
+            // so it can mix unrelated fixed-point groups.  On a cap hit,
+            // only a group whose own summaries still changed in the last
+            // iteration is unconverged.  A group that settled earlier keeps
+            // its findings untagged, even when one of its files was
+            // re-analysed because it calls into a group that kept moving;
+            // that matches how callers outside the SCC were always
+            // treated.  If no changed key maps to a file of the batch,
+            // fall back to tagging every group.
+            let cap_hit = if converged {
+                None
+            } else {
+                let reason = match cycle_period {
+                    Some(period) => crate::engine_notes::CapHitReason::SuspectedOscillation {
+                        period: u8::try_from(period).unwrap_or(u8::MAX),
+                        trajectory: delta_trajectory.clone(),
+                    },
+                    None => crate::engine_notes::CapHitReason::classify(&delta_trajectory),
+                };
+                let mg = cfg.module_graph.as_deref();
+                let mut unconverged_groups: HashSet<usize> = batch
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| {
+                        let abs = p.to_string_lossy();
+                        let ns = crate::symbol::namespace_with_package(&abs, root_str_ref, mg);
+                        last_changed_namespaces.contains(&ns)
+                    })
+                    .map(|(i, _)| batch.group_of(i))
+                    .collect();
+                if unconverged_groups.is_empty() {
+                    unconverged_groups =
+                        (0..batch.files.len()).map(|i| batch.group_of(i)).collect();
+                }
+                let unconverged_files = (0..batch.files.len())
+                    .filter(|&i| unconverged_groups.contains(&batch.group_of(i)))
+                    .count();
                 tracing::warn!(
                     batch = batch_idx,
                     files = batch.files.len(),
+                    unconverged_files,
                     iterations = iters_used,
                     cap = scc_cap,
                     cross_file = cross_file_scc,
                     reason = reason.tag(),
-                    "SCC batch did not converge within safety cap, results \
-                     may be imprecise. This usually indicates a very large \
-                     mutually-recursive region or a non-monotone summary \
-                     refinement; please file a bug with a reproducer."
+                    "SCC batch did not converge, results may be imprecise. \
+                     Hitting the cap usually indicates a very large \
+                     mutually-recursive region; summaries that cycle \
+                     (reason suspected_oscillation) indicate a non-monotone \
+                     summary refinement. Please file a bug with a reproducer."
                 );
                 if let Some(l) = logs {
                     l.warn(
                         format!(
-                            "SCC batch {batch_idx} ({} files, cross_file={cross_file_scc}) \
-                             did not converge within {scc_cap} iterations (reason={})",
+                            "SCC batch {batch_idx} ({unconverged_files} of {} files, \
+                             cross_file={cross_file_scc}) did not converge in \
+                             {iters_used} iterations (cap {scc_cap}, reason={})",
                             batch.files.len(),
                             reason.tag()
                         ),
@@ -1839,20 +1992,38 @@ fn run_topo_batches(
                         None,
                     );
                 }
+                Some((reason, unconverged_groups))
+            };
 
-                // Tag findings from an unconverged batch so operators know
-                // the results are potentially imprecise. Cap confidence at
-                // Low (overriding any higher pre-set) and append a note to
-                // the evidence so downstream UIs / reviewers can surface
-                // the degradation.  Cross-file SCCs get a
-                // tighter note prefix so the precision cause is explicit.
-                tag_unconverged_findings(
-                    &mut iteration_diags,
-                    iters_used,
-                    scc_cap,
-                    cross_file_scc,
-                    reason,
-                );
+            // Flatten per-file diags in batch order for deterministic
+            // output.  Files that were in the batch but never made dirty
+            // (shouldn't happen, iter 0 runs all of them) are skipped
+            // silently.
+            //
+            // Findings of an unconverged group are tagged so operators
+            // know the results are potentially imprecise. Cap confidence
+            // at Low (overriding any higher pre-set) and append a note to
+            // the evidence so downstream UIs / reviewers can surface the
+            // degradation.  Cross-file groups get a tighter note prefix
+            // so the precision cause is explicit.
+            let mut iteration_diags: Vec<Diag> = Vec::new();
+            for (i, p) in batch.files.iter().enumerate() {
+                let Some(mut v) = diags_by_file.remove(*p) else {
+                    continue;
+                };
+                if let Some((reason, unconverged_groups)) = &cap_hit {
+                    let group = batch.group_of(i);
+                    if unconverged_groups.contains(&group) {
+                        tag_unconverged_findings(
+                            &mut v,
+                            iters_used,
+                            scc_cap,
+                            batch.group_is_cross_file(group),
+                            reason.clone(),
+                        );
+                    }
+                }
+                iteration_diags.extend(v);
             }
             // Count progress for these files once.
             pb.inc(batch.files.len() as u64);
@@ -2466,6 +2637,7 @@ pub(crate) fn scan_filesystem_with_observer(
     // `GlobalSummaries::resolve_callee_widened`.
     global_summaries.install_hierarchy();
     let (call_graph, cg_analysis) = build_and_analyse_call_graph(&global_summaries);
+    global_summaries.install_called_keys(&call_graph);
     log_unresolved_callees(&call_graph);
     if let Some(p) = progress {
         p.record_call_graph_ms(cg_start.elapsed().as_millis() as u64);
@@ -2533,6 +2705,7 @@ pub(crate) fn scan_filesystem_with_observer(
         );
         tracing::info!(
             batches = batches.len(),
+            largest_batch = batches.iter().map(|b| b.files.len()).max().unwrap_or(0),
             orphan_files = orphans.len(),
             "topo-ordered file batches computed"
         );
@@ -2688,6 +2861,16 @@ pub fn scan_with_index_parallel_observer(
     let walk_start = std::time::Instant::now();
     let indexed_files = {
         let idx = Indexer::from_pool(project, &pool)?;
+        // Cached summaries depend on the settings as well as the file bytes;
+        // drop them when the settings changed since they were written.
+        if idx.reconcile_analysis_cache_key(&cfg.analysis_cache_key())?
+            && let Some(l) = logs
+        {
+            l.info(
+                "Analysis settings changed since the last scan; re-analysing every file",
+                None,
+            );
+        }
         idx.get_files(project)?
     };
     let (rx, handle) = spawn_file_walker(scan_root, cfg);
@@ -3212,7 +3395,7 @@ pub fn scan_with_index_parallel_observer(
             l.info(
                 format!(
                     "Loaded {} coarse summaries, {} SSA summaries, {} SSA bodies, {} auth summaries from DB",
-                    gs.snapshot_caps().len(),
+                    gs.func_count(),
                     ssa_count,
                     body_count,
                     auth_count,
@@ -3227,7 +3410,7 @@ pub fn scan_with_index_parallel_observer(
     };
 
     if !needs_taint {
-        // ── AST-only: existing parallel scan with caching ────────────────
+        // ── AST-only: parallel scan, index tracks changed files ──────────
         if let Some(p) = progress {
             p.set_stage(ScanStage::Analyzing);
         }
@@ -3243,12 +3426,12 @@ pub fn scan_with_index_parallel_observer(
         );
         let diag_map: DashMap<String, Vec<Diag>> = DashMap::new();
         let persist_errors = Arc::new(Mutex::new(Vec::new()));
-        let skipped_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let unchanged_files = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let writer = IndexWriteQueue::start(project.to_owned(), Arc::clone(&pool));
         let write_tx = writer.sender();
 
         let persist_errors_ref = Arc::clone(&persist_errors);
-        let skipped_files_ref = Arc::clone(&skipped_files);
+        let unchanged_files_ref = Arc::clone(&unchanged_files);
         let progress_ref = progress.cloned();
         files.into_par_iter().for_each_init(
             || Indexer::from_pool(project, &pool).expect("db pool"),
@@ -3259,30 +3442,34 @@ pub fn scan_with_index_parallel_observer(
                 let bytes_opt = std::fs::read(&path).ok();
                 let hash = bytes_opt.as_ref().map(|b| Indexer::digest_bytes(b));
 
-                let needs_scan = match (&hash, &bytes_opt) {
+                let changed = match (&hash, &bytes_opt) {
                     (Some(h), _) => idx.should_scan_with_hash(&path, h).unwrap_or(true),
                     _ => true,
                 };
 
-                let mut diags = if needs_scan {
-                    if let Some(p) = &progress_ref {
-                        p.inc_parsed(1);
-                        p.inc_analyzed(1);
-                    }
-                    let d = recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        &path,
-                        logs,
-                        || match &bytes_opt {
+                // Every file is analysed, changed or not.  The `issues` rows
+                // keep only (rule, severity, line, col), so a Diag rebuilt
+                // from them has no message, evidence or confidence; AST rules
+                // are cheap next to the taint passes the index exists to
+                // skip.  The index records which files changed and which
+                // were removed.
+                if let Some(p) = &progress_ref {
+                    p.inc_parsed(1);
+                    p.inc_analyzed(1);
+                }
+                let mut diags =
+                    recover_or_propagate(cfg.scanner.enable_panic_recovery, &path, logs, || {
+                        match &bytes_opt {
                             Some(bytes) => {
                                 run_rules_on_bytes(bytes, &path, cfg, None, Some(scan_root))
                             }
                             None => run_rules_on_file(&path, cfg, None, Some(scan_root)),
-                        },
-                    )
+                        }
+                    })
                     .unwrap_or_default();
 
-                    let issue_rows: Vec<(String, String, i64, i64)> = d
+                if changed {
+                    let issue_rows: Vec<(String, String, i64, i64)> = diags
                         .iter()
                         .map(|d| {
                             (
@@ -3319,14 +3506,9 @@ pub fn scan_with_index_parallel_observer(
                             format!("queue issues {path_label}: {e}"),
                         );
                     }
-                    d
                 } else {
-                    skipped_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if let Some(p) = &progress_ref {
-                        p.inc_skipped(1);
-                    }
-                    idx.get_issues_from_file(&path).unwrap_or_default()
-                };
+                    unchanged_files_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
 
                 // AST-only: drop taint/cfg findings
                 diags.retain(|d| !d.id.starts_with("taint") && !d.id.starts_with("cfg-"));
@@ -3343,15 +3525,10 @@ pub fn scan_with_index_parallel_observer(
         drop(write_tx);
         let writer_result = writer.finish("AST-only pass 2");
         pb2.finish_and_clear();
-        let skipped = skipped_files.load(std::sync::atomic::Ordering::Relaxed);
+        let unchanged = unchanged_files.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(p) = progress {
-            p.set_files_skipped(skipped);
             p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
             p.set_stage(ScanStage::PostProcessing);
-        }
-        if let Some(m) = metrics {
-            m.summaries_reused
-                .store(skipped, std::sync::atomic::Ordering::Relaxed);
         }
         fail_if_persist_errors("AST-only pass 2", persist_errors)?;
         writer_result?;
@@ -3366,10 +3543,10 @@ pub fn scan_with_index_parallel_observer(
         if let Some(l) = logs {
             l.info(
                 format!(
-                    "AST-only indexed scan complete in {}ms: {} findings, {} reused files",
+                    "AST-only indexed scan complete in {}ms: {} findings, {} unchanged files",
                     pass2_start.elapsed().as_millis(),
                     diags.len(),
-                    skipped
+                    unchanged
                 ),
                 None,
             );
@@ -3395,6 +3572,7 @@ pub fn scan_with_index_parallel_observer(
     // `GlobalSummaries::resolve_callee_widened`.
     global_summaries.install_hierarchy();
     let (call_graph, cg_analysis) = build_and_analyse_call_graph(&global_summaries);
+    global_summaries.install_called_keys(&call_graph);
     log_unresolved_callees(&call_graph);
     if let Some(p) = progress {
         p.record_call_graph_ms(cg_start.elapsed().as_millis() as u64);
@@ -3440,6 +3618,7 @@ pub fn scan_with_index_parallel_observer(
     );
     tracing::info!(
         batches = batches.len(),
+        largest_batch = batches.iter().map(|b| b.files.len()).max().unwrap_or(0),
         orphan_files = orphans.len(),
         "topo-ordered file batches computed (indexed)"
     );
@@ -4343,6 +4522,78 @@ mod scc_tagging_tests {
             ev.notes
         );
     }
+
+    fn key(name: &str) -> crate::symbol::FuncKey {
+        crate::symbol::FuncKey::from_parts(
+            crate::symbol::Lang::Go,
+            "main.go",
+            String::new(),
+            name,
+            Some(1),
+            None,
+            crate::symbol::FuncKind::Function,
+        )
+    }
+
+    /// Two summaries that flip between two values every iteration repeat
+    /// the state from two iterations back.
+    #[test]
+    fn cycle_detector_reports_period_two_flip() {
+        let mut d = SccCycleDetector::new();
+        let (a, b) = (key("serveHTTP"), key("handleError"));
+        // Iteration 1 moves both keys off their pre-loop values.
+        assert_eq!(
+            d.observe(1, [(a.clone(), 10, 11), (b.clone(), 20, 21)]),
+            None
+        );
+        // Iteration 2 flips both to a second value.
+        assert_eq!(d.observe(2, [(a.clone(), 0, 12), (b.clone(), 0, 22)]), None);
+        // Iteration 3 flips back: the state after iteration 1 again.
+        assert_eq!(
+            d.observe(3, [(a.clone(), 0, 11), (b.clone(), 0, 21)]),
+            Some(2)
+        );
+    }
+
+    /// Returning to the values the summaries had before the loop counts.
+    #[test]
+    fn cycle_detector_reports_return_to_initial_state() {
+        let mut d = SccCycleDetector::new();
+        let a = key("walk");
+        assert_eq!(d.observe(1, [(a.clone(), 5, 6)]), None);
+        assert_eq!(d.observe(2, [(a.clone(), 0, 5)]), Some(2));
+    }
+
+    /// Monotone growth never revisits a state, and two keys swapping
+    /// values is a different state, not a repeat.
+    #[test]
+    fn cycle_detector_ignores_progress_and_swaps() {
+        let mut d = SccCycleDetector::new();
+        let (a, b) = (key("a"), key("b"));
+        for i in 1..=8u64 {
+            assert_eq!(d.observe(i as usize, [(a.clone(), i, i + 1)]), None);
+        }
+        let mut d = SccCycleDetector::new();
+        assert_eq!(d.observe(1, [(a.clone(), 1, 2), (b.clone(), 3, 4)]), None);
+        assert_eq!(d.observe(2, [(a.clone(), 0, 4), (b.clone(), 0, 2)]), None);
+        assert!(d.knows(&a) && d.knows(&b) && !d.knows(&key("c")));
+    }
+
+    #[test]
+    fn summary_fingerprint_tells_values_apart() {
+        use crate::summary::ssa_summary::SsaFuncSummary;
+        let caps: crate::summary::CapsFingerprint = (1, 0, 4, vec![0]);
+        let ssa = SsaFuncSummary::default();
+        let base = summary_fingerprint(Some(&caps), Some(&ssa));
+        assert_eq!(base, summary_fingerprint(Some(&caps), Some(&ssa.clone())));
+        assert_ne!(base, summary_fingerprint(None, Some(&ssa)));
+        assert_ne!(base, summary_fingerprint(Some(&caps), None));
+        let other = SsaFuncSummary {
+            source_caps: crate::labels::Cap::ENV_VAR,
+            ..SsaFuncSummary::default()
+        };
+        assert_ne!(base, summary_fingerprint(Some(&caps), Some(&other)));
+    }
 }
 
 #[test]
@@ -4410,6 +4661,201 @@ fn scan_with_index_parallel_discovers_new_files_after_index_build() {
         2,
         "new files should be discovered without rebuild"
     );
+}
+
+#[test]
+fn indexed_scan_drops_cached_summaries_when_rules_change() {
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(project_dir.join("util.py"), "def run(x):\n    my_exec(x)\n").unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "from flask import Flask, request\nfrom util import run\napp = Flask(__name__)\n\n\
+         @app.route('/a')\ndef a():\n    run(request.args.get('v'))\n    return 'ok'\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let taint = |diags: &[Diag]| diags.iter().filter(|d| d.id.starts_with("taint-")).count();
+    let before =
+        scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+            .unwrap();
+    assert_eq!(taint(&before), 0, "my_exec is not a sink yet: {before:?}");
+
+    // Declaring `my_exec` a sink changes util.py's summary although its
+    // bytes did not change.
+    let mut with_sink = cfg.clone();
+    with_sink.analysis.languages.insert(
+        "python".into(),
+        crate::utils::config::LanguageAnalysisConfig {
+            rules: vec![crate::utils::config::ConfigLabelRule {
+                matchers: vec!["my_exec".into()],
+                kind: crate::utils::config::RuleKind::Sink,
+                cap: crate::utils::config::CapName::ShellEscape,
+                case_sensitive: false,
+            }],
+            ..Default::default()
+        },
+    );
+    let after = scan_with_index_parallel(
+        &project_name,
+        Arc::clone(&pool),
+        &with_sink,
+        false,
+        &project_dir,
+    )
+    .unwrap();
+    let off = crate::scan_no_index(&project_dir, &with_sink).unwrap();
+    assert!(taint(&off) > 0, "{off:?}");
+    assert_eq!(
+        taint(&after),
+        taint(&off),
+        "indexed: {after:?}\noff: {off:?}"
+    );
+}
+
+#[test]
+fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
+    let td = tempfile::tempdir().unwrap();
+    let root = td.path();
+    std::fs::write(
+        root.join("helper.go"),
+        "package app\n\nimport \"net/http\"\n\n\
+         func Echo(w http.ResponseWriter, v string) {\n\tw.Header().Set(\"X-Echo\", v)\n}\n",
+    )
+    .unwrap();
+    let test_src = "package app\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"testing\"\n)\n\n\
+         func TestEcho(t *testing.T) {\n\
+         \tr := httptest.NewRequest(\"GET\", \"/?q=x\", nil)\n\
+         \tw := httptest.NewRecorder()\n\
+         \tEcho(w, r.URL.Query().Get(\"q\"))\n}\n";
+    std::fs::write(root.join("helper_test.go"), test_src).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.performance.worker_threads = Some(1);
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    let in_helper: Vec<&Diag> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
+        .collect();
+    assert!(!in_helper.is_empty(), "{diags:?}");
+    assert!(
+        in_helper.iter().all(|d| d.severity == Severity::Medium),
+        "test-origin flows keep the test file's downgrade: {in_helper:?}"
+    );
+
+    // The same caller in a production file reports at full severity.
+    std::fs::remove_file(root.join("helper_test.go")).unwrap();
+    std::fs::write(root.join("caller.go"), test_src).unwrap();
+    let diags = crate::scan_no_index(root, &cfg).unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.id.starts_with("taint-") && d.severity == Severity::High),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn ast_only_indexed_scan_keeps_messages_on_unchanged_files() {
+    let mut cfg = Config::default();
+    cfg.scanner.mode = crate::utils::config::AnalysisMode::Ast;
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.channel_multiplier = 1;
+
+    let td = tempfile::tempdir().unwrap();
+    let project_dir = td.path().join("proj");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("app.py"),
+        "import os\ndef run(cmd):\n    os.system(cmd)\n",
+    )
+    .unwrap();
+
+    let (project_name, db_path) = get_project_info(&project_dir, td.path()).unwrap();
+    crate::commands::index::build_index(&project_name, &project_dir, &db_path, &cfg, false)
+        .unwrap();
+    let pool = Indexer::init(&db_path).unwrap();
+    let off = crate::scan_no_index(&project_dir, &cfg).unwrap();
+    assert!(!off.is_empty());
+    for _ in 0..2 {
+        let indexed =
+            scan_with_index_parallel(&project_name, Arc::clone(&pool), &cfg, false, &project_dir)
+                .unwrap();
+        let view = |ds: &[Diag]| {
+            ds.iter()
+                .map(|d| (d.id.clone(), d.line, d.message.clone(), d.confidence))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(view(&indexed), view(&off));
+        assert!(indexed.iter().all(|d| d.message.is_some()), "{indexed:?}");
+    }
+}
+
+#[test]
+fn unranked_output_order_is_by_location() {
+    let mut cfg = Config::default();
+    cfg.output.attack_surface_ranking = false;
+    let diag = |path: &str, line: usize, id: &str| Diag {
+        path: path.into(),
+        line,
+        col: 1,
+        id: id.into(),
+        ..Default::default()
+    };
+    let mut a = vec![
+        diag("b.py", 3, "r1"),
+        diag("a.py", 9, "r2"),
+        diag("a.py", 2, "r2"),
+        diag("a.py", 2, "r1"),
+    ];
+    let mut b: Vec<Diag> = a.iter().rev().cloned().collect();
+    post_process_diags(&mut a, &cfg);
+    post_process_diags(&mut b, &cfg);
+    let key = |ds: &[Diag]| {
+        ds.iter()
+            .map(|d| (d.path.clone(), d.line, d.id.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(key(&a), key(&b));
+    assert_eq!(
+        key(&a),
+        vec![
+            ("a.py".to_string(), 2, "r1".to_string()),
+            ("a.py".to_string(), 2, "r2".to_string()),
+            ("a.py".to_string(), 9, "r2".to_string()),
+            ("b.py".to_string(), 3, "r1".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn post_processing_flags_inline_suppressions() {
+    let td = tempfile::tempdir().unwrap();
+    let file = td.path().join("server.jsx");
+    std::fs::write(&file, "exec(cmd); // nyx:ignore js.cmdi.exec\nexec(cmd);\n").unwrap();
+    let path = file.to_string_lossy().into_owned();
+    let mut diags: Vec<Diag> = [1, 2]
+        .into_iter()
+        .map(|line| Diag {
+            path: path.clone(),
+            line,
+            col: 1,
+            id: "js.cmdi.exec".into(),
+            ..Default::default()
+        })
+        .collect();
+    post_process_diags(&mut diags, &Config::default());
+    let flagged: Vec<(usize, bool)> = diags.iter().map(|d| (d.line, d.suppressed)).collect();
+    assert_eq!(flagged, vec![(1, true), (2, false)]);
 }
 
 #[test]

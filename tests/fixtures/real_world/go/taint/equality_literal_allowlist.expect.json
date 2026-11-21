@@ -1,0 +1,32 @@
+{
+  "description": "Go `dir != \"asc\" && dir != \"desc\"` early return pins dir to a literal; a sink on the not-equal edge is still tainted.",
+  "tags": [
+    "taint",
+    "allowlist",
+    "equality",
+    "sqli"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        10,
+        16
+      ],
+      "notes": "dir is 'asc' or 'desc' at the query"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "sink on the `dir != \"asc\"` edge"
+    }
+  ]
+}

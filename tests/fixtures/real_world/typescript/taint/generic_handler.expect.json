@@ -16,10 +16,10 @@
       "must_match": true,
       "line_range": [
         2,
-        6
+        9
       ],
       "evidence_contains": [],
-      "notes": "input.cmd flows to child_process.exec via handler param-as-source heuristic"
+      "notes": "input.cmd flows to child_process.exec. executeCommand has a caller in the file, so the handler param-as-source heuristic seeds the caller's userInput instead, and the flow is reported at the executeCommand({ cmd: userInput }) call on line 8"
     },
     {
       "rule_id": "cfg-unguarded-sink",

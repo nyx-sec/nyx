@@ -1,0 +1,60 @@
+{
+  "description": "A helper that returns a subscript source (request.args['dir'], os.environ['CMD']) is a source for its callers; a getter of a constant is not.",
+  "tags": [
+    "taint",
+    "interproc",
+    "getter",
+    "subscript-source",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        19,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "requested_dir returns request.args['dir']"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        26,
+        30
+      ],
+      "evidence_contains": [],
+      "notes": "configured_cmd returns os.environ['CMD']"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        33,
+        37
+      ],
+      "notes": "fixed_dir returns a constant"
+    },
+    {
+      "rule_id": "py.cmdi.os_system",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        19,
+        37
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on os.system with a dynamic argument"
+    }
+  ]
+}

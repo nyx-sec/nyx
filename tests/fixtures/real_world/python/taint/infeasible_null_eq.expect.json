@@ -10,6 +10,13 @@
       "line_range": [5, 10],
       "evidence_contains": [],
       "notes": "os.environ.get flows to outer subprocess.call — reachable path"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [7, 7],
+      "notes": "The inner `if` header stands for its condition only; it must not take the body's subprocess.call sink and report the tainted condition variable at the header line"
     }
   ]
 }

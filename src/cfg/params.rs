@@ -1,11 +1,11 @@
 use super::{
-    AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, StmtKind, TaintMeta, collect_idents,
-    connect_all, is_anon_fn_name, text_of,
+    AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, PYTHON_NORETURN_IMPORTS, StmtKind, TaintMeta,
+    collect_idents, connect_all, is_anon_fn_name, node_str, text_of,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify, param_config};
 use crate::ssa::type_facts::TypeKind;
 use petgraph::graph::NodeIndex;
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 use tree_sitter::Node;
 
 /// resolve a syntactic class / struct / interface / model
@@ -42,6 +42,18 @@ pub(super) fn extract_param_meta<'a>(
 ) -> Vec<(String, Option<TypeKind>, Vec<String>)> {
     let cfg = param_config(lang);
     let mut out: Vec<(String, Option<TypeKind>, Vec<String>)> = Vec::new();
+    // A FastAPI route binds its plain annotated formals from the request, so
+    // the Python classifier needs to know whether it is looking at one.
+    let in_fastapi_route = matches!(lang, "python" | "py")
+        && func_node.kind() == "function_definition"
+        && crate::entry_points::python_is_fastapi_route(func_node, code);
+    let classify = |param: Node<'a>| {
+        if matches!(lang, "python" | "py") {
+            classify_param_type_python(param, code, in_fastapi_route)
+        } else {
+            classify_param_type(param, lang, code)
+        }
+    };
     // Try the params_field directly on the function node first.
     // For C/C++, the parameter list is nested inside the declarator
     // (function_definition > declarator:function_declarator > parameters:parameter_list),
@@ -125,7 +137,7 @@ pub(super) fn extract_param_meta<'a>(
                         Some(tmp.remove(0))
                     };
                     if let Some(name) = primary {
-                        let ty = classify_param_type(child, lang, code);
+                        let ty = classify(child);
                         // Surface destructured siblings only when the
                         // pattern node is a destructure container.  For
                         // ordinary (non-destructured) params, `tmp` is
@@ -153,7 +165,7 @@ pub(super) fn extract_param_meta<'a>(
                 let mut tmp = Vec::new();
                 collect_idents(child, code, &mut tmp);
                 if let Some(last) = tmp.pop() {
-                    let ty = classify_param_type(child, lang, code);
+                    let ty = classify(child);
                     out.push((last, ty, Vec::new()));
                     found = true;
                 }
@@ -178,7 +190,7 @@ pub(super) fn extract_param_meta<'a>(
                 collect_idents(child, code, &mut tmp);
                 if !tmp.is_empty() {
                     let first = tmp.remove(0);
-                    let ty = classify_param_type(child, lang, code);
+                    let ty = classify(child);
                     let siblings = sibling_names_for_destructure(child, &tmp, lang);
                     out.push((first, ty, siblings));
                 }
@@ -538,8 +550,9 @@ pub(super) fn inject_framework_param_sources(
 /// * Rust (Axum / Rocket / Actix), `Path<i64>` / `Path<u32>` /
 ///   `web::Path<i64>` → [`TypeKind::Int`]; `Path<String>` →
 ///   [`TypeKind::String`].
-/// * Python (FastAPI), `def h(x: int)` → [`TypeKind::Int`];
-///   `Annotated[int, Path()]` → [`TypeKind::Int`].
+/// * Python (FastAPI), `def h(x: int)` under a route decorator →
+///   [`TypeKind::Int`]; `Annotated[int, Path()]` → [`TypeKind::Int`].  The same
+///   annotation on an undecorated function classifies as nothing.
 pub(super) fn classify_param_type<'a>(
     param: Node<'a>,
     lang: &str,
@@ -550,7 +563,7 @@ pub(super) fn classify_param_type<'a>(
         "typescript" | "ts" => classify_param_type_ts(param, code),
         "javascript" | "js" => classify_param_type_ts(param, code),
         "rust" | "rs" => classify_param_type_rust(param, code),
-        "python" | "py" => classify_param_type_python(param, code),
+        "python" | "py" => classify_param_type_python(param, code, false),
         "go" => classify_param_type_go(param, code),
         _ => None,
     }
@@ -573,9 +586,12 @@ pub(super) fn classify_param_type<'a>(
 /// strip `HTML_ESCAPE` at the sink.
 ///
 /// A *real* reflected-XSS handler declares its writer explicitly as
-/// `http.ResponseWriter` (or a framework response type).  Those are left
-/// untyped here so the gate's conservative unknown-type path keeps firing —
-/// i.e. this recogniser only ever *suppresses* the FP family, never the TP.
+/// `http.ResponseWriter`.  That formal is typed [`TypeKind::HttpResponse`],
+/// which `go_writer_is_non_response` reports as a possible response, so the
+/// `fmt.Fprint*` gate keeps firing, and which lets type-qualified resolution
+/// turn `w.Write(b)` into the `HttpResponse.Write` sink.  A `*http.Client`
+/// formal is typed [`TypeKind::HttpClient`] so `c.Get(u)` resolves to the
+/// `HttpClient.Get` SSRF gate.  See [`go_decl_type_to_kind`].
 ///
 /// Precision/recall note: an `io.Writer` parameter *could* dynamically be
 /// bound to an `http.ResponseWriter` at some call site (an interprocedural
@@ -595,7 +611,70 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
     }
     let type_node = param.child_by_field_name("type")?;
     let type_text = text_of(type_node, code)?;
-    go_writer_type_to_kind(&type_text)
+    go_decl_type_to_kind(&type_text)
+}
+
+/// Receiver-alias frame for a Go function / method / func literal: every
+/// formal name paired with the canonical receiver prefix of its declared
+/// type, or `None` for any other type so the formal shadows a same-named
+/// binding of an enclosing function.  Request types use their request prefix
+/// (`req *http.Request` → `("req", Some("Request"))`); the types
+/// [`go_decl_type_to_kind`] knows use the [`TypeKind::label_prefix`] the SSA
+/// type-qualified rules are keyed on (`w http.ResponseWriter` →
+/// `HttpResponse`, `c *http.Client` → `HttpClient`, `out io.Writer` →
+/// `FileHandle`).  Pushed via [`crate::labels::push_receiver_aliases`] while
+/// the body is built.  `a, b *http.Request` binds both names.
+pub(super) fn go_receiver_alias_frame(
+    func_node: Node<'_>,
+    code: &[u8],
+) -> crate::labels::ReceiverAliasFrame {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut frame = Vec::new();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter_declaration"
+            && param.kind() != "variadic_parameter_declaration"
+        {
+            continue;
+        }
+        let prefix = if param.kind() == "parameter_declaration" {
+            param
+                .child_by_field_name("type")
+                .and_then(|t| text_of(t, code))
+                .and_then(|t| {
+                    crate::labels::go_request_receiver_prefix(&t)
+                        .or_else(|| go_decl_type_to_kind(&t).and_then(|k| k.label_prefix()))
+                })
+        } else {
+            None
+        };
+        let mut name_cursor = param.walk();
+        for name in param.children_by_field_name("name", &mut name_cursor) {
+            if let Some(n) = text_of(name, code) {
+                frame.push((n, prefix));
+            }
+        }
+    }
+    frame
+}
+
+/// Map a declared Go type (a formal's type, a `var x T` declaration, or the
+/// `T` of a `&T{...}` / `new(T)` constructor) to the [`TypeKind`] the
+/// analysis tracks: byte writers that are not a response
+/// ([`go_writer_type_to_kind`]), `http.ResponseWriter` as
+/// [`TypeKind::HttpResponse`], and `http.Client` (by value or pointer) as
+/// [`TypeKind::HttpClient`].  Every other type returns `None`.
+pub(super) fn go_decl_type_to_kind(t: &str) -> Option<TypeKind> {
+    if let Some(kind) = go_writer_type_to_kind(t) {
+        return Some(kind);
+    }
+    match t.trim().trim_start_matches('*').trim() {
+        "http.ResponseWriter" => Some(TypeKind::HttpResponse),
+        "http.Client" => Some(TypeKind::HttpClient),
+        _ => None,
+    }
 }
 
 /// Map a Go parameter / local type-text to [`TypeKind::FileHandle`] when the
@@ -604,7 +683,7 @@ fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKin
 /// surrounding whitespace, then matches the qualified type name.  Returns
 /// `None` for `http.ResponseWriter` and every unrecognised type so the sink
 /// gate stays conservative.
-pub(super) fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
+fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
     let head = t.trim().trim_start_matches('*').trim();
     match head {
         // Generic writer interfaces — a bare `io.Writer` is written to be
@@ -656,48 +735,187 @@ fn classify_param_type_java<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
     lookup_dto_class(last)
 }
 
-/// Walk the parameter's modifiers (annotations) and check if any of
-/// them are a recognised Spring web binding annotation.  Spring's
-/// annotation grammar exposes annotations as `marker_annotation` /
-/// `annotation` siblings inside the formal_parameter's `modifiers`
-/// child.
+/// Check whether the parameter carries a Spring web binding annotation
+/// whose value has a typed shape worth recording in `param_types`.
 fn has_java_framework_annotation(param: Node<'_>, code: &[u8]) -> bool {
     const KNOWN: &[&str] = &[
-        "@PathVariable",
-        "@RequestParam",
-        "@RequestBody",
-        "@RequestHeader",
-        "@CookieValue",
-        "@MatrixVariable",
-        "@ModelAttribute",
+        "PathVariable",
+        "RequestParam",
+        "RequestBody",
+        "RequestHeader",
+        "CookieValue",
+        "MatrixVariable",
+        "ModelAttribute",
     ];
-    // Inspect modifiers child first.
-    if let Some(modifiers) = param.child_by_field_name("modifiers") {
-        if let Some(text) = text_of(modifiers, code) {
-            for k in KNOWN {
-                if text.contains(k) {
-                    return true;
-                }
-            }
+    java_annotation_leaves(param, code)
+        .iter()
+        .any(|a| KNOWN.contains(a))
+}
+
+/// Leaf names of the annotations on a Java formal (`@RequestParam` and
+/// `@org.springframework.web.bind.annotation.RequestParam` both give
+/// `RequestParam`).  tree-sitter-java puts the annotations inside the
+/// formal's `modifiers` child; direct annotation children are read too.
+fn java_annotation_leaves<'a>(param: Node<'_>, code: &'a [u8]) -> SmallVec<[&'a str; 4]> {
+    fn push_leaf<'a>(ann: Node<'_>, code: &'a [u8], out: &mut SmallVec<[&'a str; 4]>) {
+        if matches!(ann.kind(), "marker_annotation" | "annotation")
+            && let Some(name) = ann
+                .child_by_field_name("name")
+                .and_then(|n| node_str(n, code))
+        {
+            out.push(name.rsplit('.').next().unwrap_or(name).trim());
         }
     }
-    // Fall back to scanning all named children: tree-sitter-java emits
-    // annotations as direct children of formal_parameter in some grammar
-    // versions.
+    let mut out = SmallVec::new();
     let mut cursor = param.walk();
     for child in param.children(&mut cursor) {
-        let kind = child.kind();
-        if matches!(kind, "marker_annotation" | "annotation" | "modifiers")
-            && let Some(text) = text_of(child, code)
-        {
-            for k in KNOWN {
-                if text.contains(k) {
-                    return true;
-                }
+        if child.kind() == "modifiers" {
+            let mut inner = child.walk();
+            for ann in child.children(&mut inner) {
+                push_leaf(ann, code, &mut out);
+            }
+        } else {
+            push_leaf(child, code, &mut out);
+        }
+    }
+    out
+}
+
+/// Spring MVC and JAX-RS annotations that bind a handler formal from the
+/// request (query, path, form, header, cookie, body, multipart part).
+const JAVA_REQUEST_BINDING_ANNOTATIONS: &[&str] = &[
+    "RequestParam",
+    "PathVariable",
+    "RequestBody",
+    "RequestHeader",
+    "CookieValue",
+    "MatrixVariable",
+    "ModelAttribute",
+    "RequestPart",
+    "QueryParam",
+    "PathParam",
+    "FormParam",
+    "HeaderParam",
+    "CookieParam",
+    "MatrixParam",
+    "BeanParam",
+];
+
+/// Annotations that inject server-side state into a handler formal: the
+/// authenticated principal, request or session attributes the server set,
+/// configuration values, beans, and the JAX-RS async response handle.
+const JAVA_SERVER_INJECTED_ANNOTATIONS: &[&str] = &[
+    "AuthenticationPrincipal",
+    "CurrentSecurityContext",
+    "RequestAttribute",
+    "SessionAttribute",
+    "Value",
+    "Autowired",
+    "Suspended",
+];
+
+/// Handler formal types the framework fills with infrastructure objects
+/// rather than request data.  The servlet request is here too: its
+/// accessors (`getParameter`, `getHeader`, ...) are sources by label, the
+/// same policy a plain servlet `doGet` gets, so painting the whole object
+/// only adds flows that start at the bare receiver.  JAX-RS `UriInfo` and
+/// `HttpHeaders` are left out because no label covers their accessors yet.
+const JAVA_INFRA_FORMAL_TYPES: &[&str] = &[
+    "HttpServletRequest",
+    "ServletRequest",
+    "HttpServletResponse",
+    "ServletResponse",
+    "ServerHttpResponse",
+    "HttpSession",
+    "WebRequest",
+    "NativeWebRequest",
+    "Model",
+    "ModelMap",
+    "ModelAndView",
+    "RedirectAttributes",
+    "BindingResult",
+    "Errors",
+    "SessionStatus",
+    "UriComponentsBuilder",
+    "ServletUriComponentsBuilder",
+    "Principal",
+    "Authentication",
+    "Locale",
+    "TimeZone",
+    "ZoneId",
+    "OutputStream",
+    "ServletOutputStream",
+    "Writer",
+    "PrintWriter",
+    "SecurityContext",
+    "AsyncResponse",
+    "Sse",
+    "SseEventSink",
+    "ServletContext",
+    "ServletConfig",
+    "Providers",
+    "ResourceContext",
+    "PushBuilder",
+    "HttpMethod",
+];
+
+/// Whether a Spring / JAX-RS handler formal is bound from the request, and
+/// so is adversary input.  A request-binding annotation decides yes and a
+/// server-injection annotation decides no.  Otherwise the declared type
+/// decides: infrastructure types ([`JAVA_INFRA_FORMAL_TYPES`]) are not
+/// request data, and every other type is (Spring binds an unannotated
+/// `String q` or DTO from the request, JAX-RS binds an unannotated formal
+/// from the entity body).
+pub(super) fn java_formal_is_request_bound(param: Node<'_>, code: &[u8]) -> bool {
+    let annotations = java_annotation_leaves(param, code);
+    if annotations
+        .iter()
+        .any(|a| JAVA_REQUEST_BINDING_ANNOTATIONS.contains(a))
+    {
+        return true;
+    }
+    if annotations
+        .iter()
+        .any(|a| JAVA_SERVER_INJECTED_ANNOTATIONS.contains(a))
+    {
+        return false;
+    }
+    let Some(type_text) = param
+        .child_by_field_name("type")
+        .and_then(|t| node_str(t, code))
+    else {
+        return true;
+    };
+    let head = type_text.split('<').next().unwrap_or(type_text);
+    let head = head.trim_end_matches(|c: char| c == '[' || c == ']' || c.is_whitespace());
+    let leaf = head.rsplit('.').next().unwrap_or(head).trim();
+    !JAVA_INFRA_FORMAL_TYPES.contains(&leaf)
+}
+
+/// Per-formal [`java_formal_is_request_bound`] flags for a Java method, in
+/// the order [`extract_param_meta`] lists the formals.  When the walk does
+/// not line up with the `expected` formal count, every formal is reported
+/// bound, which is the behaviour without this gate.
+pub(super) fn java_request_bound_flags(
+    func_node: Node<'_>,
+    code: &[u8],
+    expected: usize,
+) -> Vec<bool> {
+    let cfg = param_config("java");
+    let mut flags = Vec::with_capacity(expected);
+    if let Some(params) = func_node.child_by_field_name(cfg.params_field) {
+        let mut cursor = params.walk();
+        for child in params.children(&mut cursor) {
+            if cfg.param_node_kinds.contains(&child.kind()) {
+                flags.push(java_formal_is_request_bound(child, code));
             }
         }
     }
-    false
+    if flags.len() == expected {
+        flags
+    } else {
+        vec![true; expected]
+    }
 }
 
 /// Map a Java type-text fragment to a [`TypeKind`].  Public to the
@@ -1067,15 +1285,190 @@ pub(super) fn rust_primitive_to_kind(t: &str) -> Option<TypeKind> {
     }
 }
 
-/// Python (FastAPI), recognise typed-extractor parameters via the
-/// `Annotated[X, Path()/Query()/Body()/Header()/Cookie()]` shape.  Per
-/// Hard Rule 3, a bare `def h(id: int)` is **not** a framework
-/// extractor, the function may be a plain Python function and the
-/// type annotation provides no runtime gate.
-fn classify_param_type_python<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKind> {
-    let type_node = param.child_by_field_name("type")?;
-    let type_text = text_of(type_node, code)?;
-    python_type_to_kind(&type_text)
+/// Python (FastAPI), recognise request-bound formals.  Per Hard Rule 3, a
+/// bare `def h(id: int)` is **not** a framework extractor on its own: the
+/// function may be a plain Python function and the annotation provides no
+/// runtime gate.  A formal counts as request-bound when:
+///
+/// * its annotation is `Annotated[T, Path()/Query()/Body()/...]`, or
+/// * its default is a `Query(..)` / `Body(..)` / `Header(..)` / `Cookie(..)` /
+///   `Form(..)` / `File(..)` / `Path(..)` marker call, or
+/// * the function carries a FastAPI route decorator (`in_route`) and the
+///   annotation is a plain scalar, a container of scalars, or a same-file
+///   Pydantic model, which FastAPI binds from the query string or the body.
+///
+/// A `Depends(..)` / `Security(..)` default is never request-bound, and
+/// neither are formals whose annotation is not one of the above
+/// (`Request`, `Session`, an `Annotated` dependency alias such as
+/// `SessionDep`): those stay unseeded.
+fn classify_param_type_python<'a>(
+    param: Node<'a>,
+    code: &'a [u8],
+    in_route: bool,
+) -> Option<TypeKind> {
+    let default_marker = param
+        .child_by_field_name("value")
+        .and_then(|v| python_default_marker(v, code));
+    if matches!(default_marker.as_deref(), Some("Depends" | "Security")) {
+        return None;
+    }
+    let type_text = param
+        .child_by_field_name("type")
+        .and_then(|t| text_of(t, code));
+    if let Some(kind) = type_text.as_deref().and_then(python_type_to_kind) {
+        return Some(kind);
+    }
+    // pathlib's `Path("..")` default is not FastAPI's `Path(..)` marker.
+    let marker = default_marker.filter(|m| {
+        m != "Path"
+            || !type_text.as_deref().is_some_and(|t| {
+                matches!(
+                    t.trim().rsplit('.').next(),
+                    Some("Path" | "PurePath" | "PosixPath" | "WindowsPath")
+                )
+            })
+    });
+    let marker = marker.filter(|m| {
+        matches!(
+            m.as_str(),
+            "Query" | "Body" | "Form" | "Header" | "Cookie" | "File" | "Path"
+        )
+    });
+    if let Some(kind) = type_text.as_deref().and_then(python_request_value_kind) {
+        // A bare annotation on a route is a request value, but a plain
+        // number is validated by the framework and cannot carry a payload,
+        // so it is only painted when a marker says so.
+        if marker.is_some() || (in_route && !python_annotation_is_numeric(type_text.as_deref())) {
+            return Some(kind);
+        }
+    }
+    // An explicit marker with an annotation we cannot read still says the
+    // value comes from the request.
+    match marker.as_deref() {
+        Some("Body" | "File") => Some(TypeKind::Object),
+        Some(_) => Some(TypeKind::String),
+        None => None,
+    }
+}
+
+/// Last dotted segment of the callee when `default` is a call
+/// (`Query(None)` and `fastapi.Query(None)` both give `Query`).
+fn python_default_marker(default: Node<'_>, code: &[u8]) -> Option<String> {
+    if default.kind() != "call" {
+        return None;
+    }
+    let callee = text_of(default.child_by_field_name("function")?, code)?;
+    callee.rsplit('.').next().map(|s| s.trim().to_string())
+}
+
+/// `X` for `Optional[X]`, `Union[X, None]` and `X | None`; `None` when `t`
+/// is not one of those or has more than one non-`None` member.
+fn strip_optional(t: &str) -> Option<&str> {
+    let t = t.trim();
+    let members: Vec<&str> = if let Some(inner) = t
+        .strip_prefix("Optional[")
+        .or_else(|| t.strip_prefix("typing.Optional["))
+        .or_else(|| t.strip_prefix("Union["))
+        .or_else(|| t.strip_prefix("typing.Union["))
+    {
+        split_top_level(inner.strip_suffix(']')?, ',')
+    } else {
+        split_top_level(t, '|')
+    };
+    let mut rest = members.iter().map(|m| m.trim()).filter(|m| *m != "None");
+    let only = rest.next()?;
+    (rest.next().is_none() && (members.len() > 1 || only != t)).then_some(only)
+}
+
+/// True for an annotation that names only numbers: `int`, `float`, `bool`,
+/// their `Optional` / `| None` forms and lists of them.
+fn python_annotation_is_numeric(t: Option<&str>) -> bool {
+    let Some(mut t) = t.map(str::trim) else {
+        return false;
+    };
+    if let Some(inner) = t
+        .strip_prefix("Annotated[")
+        .or_else(|| t.strip_prefix("typing.Annotated["))
+        && let Some(inside) = inner.strip_suffix(']')
+    {
+        return python_annotation_is_numeric(Some(split_top_level(inside, ',')[0]));
+    }
+    while let Some(inner) = strip_optional(t) {
+        t = inner;
+    }
+    let numeric = |h: &str| matches!(h.trim(), "int" | "float" | "bool");
+    if numeric(t) {
+        return true;
+    }
+    // `list[int]`, `List[float]`, `set[int]`.
+    let Some((head, elem)) = t.split_once('[') else {
+        return false;
+    };
+    matches!(
+        head.trim(),
+        "list" | "List" | "set" | "Set" | "frozenset" | "FrozenSet" | "Sequence"
+    ) && elem.strip_suffix(']').is_some_and(numeric)
+}
+
+/// Kind of a request-bound FastAPI formal from its annotation text:
+/// `str`, `int`, `Optional[str]`, `str | None`, `list[str]` or a same-file
+/// Pydantic model.  `None` for annotations that name types we cannot tell
+/// from an injected dependency, and for `Literal[..]` and validated value
+/// types (`UUID`, `date`), whose values are constrained by the framework.
+fn python_request_value_kind(t: &str) -> Option<TypeKind> {
+    let mut t = t.trim();
+    // `Annotated[X, Field(..)]` is `X`, unless a metadata entry makes it a
+    // dependency (`Annotated[Session, Depends(get_db)]`).
+    if let Some(inner) = t
+        .strip_prefix("Annotated[")
+        .or_else(|| t.strip_prefix("typing.Annotated["))
+    {
+        let parts = split_top_level(inner.strip_suffix(']')?, ',');
+        if parts
+            .iter()
+            .skip(1)
+            .any(|p| p.contains("Depends(") || p.contains("Security("))
+        {
+            return None;
+        }
+        return python_request_value_kind(parts[0]);
+    }
+    // `Optional[X]`, `Union[X, None]` and `X | None` reduce to `X`.
+    while let Some(inner) = strip_optional(t) {
+        t = inner;
+    }
+    if t == "None" {
+        return None;
+    }
+    let head = t.split('[').next().unwrap_or(t).trim();
+    match head.rsplit('.').next().unwrap_or(head) {
+        "list" | "List" | "set" | "Set" | "frozenset" | "FrozenSet" | "tuple" | "Tuple"
+        | "Sequence" => Some(TypeKind::Array),
+        "bytes" => Some(TypeKind::String),
+        "dict" | "Dict" | "Mapping" | "MutableMapping" => Some(TypeKind::Object),
+        "Literal" | "UUID" | "date" | "datetime" | "time" | "timedelta" | "Decimal" => None,
+        _ => python_primitive_to_kind(head).or_else(|| lookup_dto_class(head)),
+    }
+}
+
+/// Split `s` at `sep` outside any bracket nesting.
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            c if c == sep && depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 fn python_type_to_kind(t: &str) -> Option<TypeKind> {
@@ -1091,15 +1484,11 @@ fn python_type_to_kind(t: &str) -> Option<TypeKind> {
         if !contains_fastapi_marker(inside) {
             return None;
         }
-        let first = inside.split(',').next().unwrap_or("").trim();
-        if let Some(k) = python_primitive_to_kind(first) {
-            return Some(k);
-        }
-        // `Annotated[CreateUser, Body()]` with a same-file
-        // Pydantic model, resolve via the DTO map.  Generic args are
-        // dropped via the same head-split as `python_primitive_to_kind`.
-        let head = first.split('[').next().unwrap_or(first).trim();
-        return lookup_dto_class(head);
+        // `Annotated[CreateUser, Body()]` resolves a same-file Pydantic
+        // model through the DTO map; `Annotated[Optional[int], Query()]`
+        // unwraps to its scalar.
+        let first = split_top_level(inside, ',')[0];
+        return python_request_value_kind(first);
     }
     None
 }
@@ -1163,12 +1552,30 @@ pub(super) fn python_primitive_to_kind(t: &str) -> Option<TypeKind> {
 ///    friends are excluded — they are conditional.
 ///  * Bare `Exit` / `exit` on an arbitrary receiver (`session.exit()`) is
 ///    *not* matched; only the qualified std forms are.
+///  * Framework request-abort helpers are included when they cannot return
+///    by contract and the name is specific to the framework: WordPress
+///    `wp_die` / `wp_send_json*`, the Laravel `abort` helper (not the
+///    conditional `abort_if` / `abort_unless`), Koa `ctx.throw`, Sinatra
+///    `halt`, and the module-qualified Flask / Werkzeug / Bottle `abort`.
+///    A bare Python `abort` is a terminator only when the file imports it
+///    from one of those modules; see [`is_terminator_call`].
 fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
     // Receiver-qualified std terminators are matched on the full callee text,
     // never on the trailing segment, so a user-defined `server.Exit()` or
     // `session.exit()` is not mistaken for `os.Exit` / `sys.exit`.
     match lang {
-        "php" => matches!(callee, "die" | "exit"),
+        // A leading `\` is the global-namespace qualifier (`\abort(403)`
+        // inside a namespaced Laravel controller).
+        "php" => matches!(
+            callee.strip_prefix('\\').unwrap_or(callee),
+            "die"
+                | "exit"
+                | "wp_die"
+                | "wp_send_json"
+                | "wp_send_json_success"
+                | "wp_send_json_error"
+                | "abort"
+        ),
         // `_Exit` / `quick_exit` are C11; `err`/`errx` are BSD and exit(3)
         // internally.  `abort` raises SIGABRT and never returns.
         "c" | "cpp" => matches!(
@@ -1188,7 +1595,15 @@ fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
                 | "std::process::exit"
                 | "std::process::abort"
         ),
-        "python" => matches!(callee, "sys.exit" | "os._exit" | "os.abort"),
+        "python" => matches!(
+            callee,
+            "sys.exit"
+                | "os._exit"
+                | "os.abort"
+                | "flask.abort"
+                | "werkzeug.exceptions.abort"
+                | "bottle.abort"
+        ),
         "go" => matches!(
             callee,
             "panic"
@@ -1203,11 +1618,15 @@ fn is_builtin_terminator(lang: &str, callee: &str) -> bool {
                 | "log.Panicln"
         ),
         "java" => matches!(callee, "System.exit"),
-        "javascript" | "typescript" | "tsx" => matches!(callee, "process.exit"),
-        // Ruby `exit`/`exit!`/`abort` raise SystemExit / terminate.  `raise`
-        // is deliberately absent: it is modelled as `Kind::Throw`, which the
-        // CFG already routes to handlers rather than to a dead end.
-        "ruby" => matches!(callee, "exit" | "exit!" | "abort" | "Kernel.exit"),
+        // Koa / Egg `ctx.throw` always throws an HttpError.  Matched on the
+        // conventional context parameter name only, like the `ctx.query`
+        // source rules.
+        "javascript" | "typescript" | "tsx" => matches!(callee, "process.exit" | "ctx.throw"),
+        // Ruby `exit`/`exit!`/`abort` raise SystemExit / terminate, and
+        // Sinatra / Roda `halt` throws `:halt`.  `raise` is deliberately
+        // absent: it is modelled as `Kind::Throw`, which the CFG already
+        // routes to handlers rather than to a dead end.
+        "ruby" => matches!(callee, "exit" | "exit!" | "abort" | "Kernel.exit" | "halt"),
         _ => false,
     }
 }
@@ -1228,6 +1647,11 @@ pub(super) fn is_terminator_call(
     if is_builtin_terminator(lang, callee) {
         return true;
     }
+    // Bare `abort(400)` is Flask's / Werkzeug's only when the file imported
+    // it from there.  A local `def abort(...)` keeps its fall-through edge.
+    if lang == "python" && PYTHON_NORETURN_IMPORTS.with(|s| s.borrow().contains(callee)) {
+        return true;
+    }
     if let Some(rules) = analysis_rules {
         let callee_lower = callee.to_ascii_lowercase();
         rules
@@ -1236,6 +1660,50 @@ pub(super) fn is_terminator_call(
             .any(|t| callee_lower == t.to_ascii_lowercase())
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod terminator_tests {
+    use super::is_builtin_terminator;
+
+    #[test]
+    fn framework_abort_helpers_are_terminators() {
+        for (lang, callee) in [
+            ("php", "wp_die"),
+            ("php", "\\wp_die"),
+            ("php", "abort"),
+            ("php", "\\abort"),
+            ("php", "wp_send_json_error"),
+            ("javascript", "ctx.throw"),
+            ("typescript", "ctx.throw"),
+            ("ruby", "halt"),
+            ("python", "flask.abort"),
+            ("python", "werkzeug.exceptions.abort"),
+        ] {
+            assert!(is_builtin_terminator(lang, callee), "{lang} {callee}");
+        }
+    }
+
+    #[test]
+    fn conditional_or_receiver_abort_forms_are_not_terminators() {
+        for (lang, callee) in [
+            // conditional Laravel helpers
+            ("php", "abort_if"),
+            ("php", "abort_unless"),
+            // method on an arbitrary receiver
+            ("php", "$this->abort"),
+            // redirects return
+            ("php", "wp_safe_redirect"),
+            ("javascript", "res.throw"),
+            ("javascript", "throw"),
+            // bare Python `abort` needs the flask/werkzeug import binding
+            ("python", "abort"),
+            ("python", "self.abort"),
+            ("ruby", "r.halt"),
+        ] {
+            assert!(!is_builtin_terminator(lang, callee), "{lang} {callee}");
+        }
     }
 }
 
@@ -1574,5 +2042,252 @@ mod typed_extractor_tests {
         // Unrelated user types.
         assert_eq!(rust_type_to_local_collection("MyDao<User>"), None);
         assert_eq!(rust_type_to_local_collection("Connection"), None);
+    }
+
+    // ── FastAPI request-bound formals ────────────────────────────────────
+
+    use super::{python_request_value_kind, split_top_level};
+
+    /// `(name, kind)` of every formal of the first function named `name`.
+    fn formal_kinds(src: &str, name: &str) -> Vec<(String, Option<TypeKind>)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let file = crate::cfg::build_cfg(&tree, src.as_bytes(), "python", "t.py", None);
+        let body = file
+            .bodies
+            .iter()
+            .find(|b| b.meta.name.as_deref() == Some(name))
+            .expect("function body");
+        body.meta
+            .params
+            .iter()
+            .cloned()
+            .zip(body.meta.param_types.iter().cloned())
+            .collect()
+    }
+
+    fn kind_of(formals: &[(String, Option<TypeKind>)], param: &str) -> Option<TypeKind> {
+        formals
+            .iter()
+            .find(|(n, _)| n == param)
+            .and_then(|(_, k)| k.clone())
+    }
+
+    #[test]
+    fn python_request_value_kinds() {
+        let kind = python_request_value_kind;
+        assert_eq!(kind("str"), Some(TypeKind::String));
+        assert_eq!(kind("int"), Some(TypeKind::Int));
+        assert_eq!(kind("bool"), Some(TypeKind::Bool));
+        assert_eq!(kind("bytes"), Some(TypeKind::String));
+        assert_eq!(kind("Optional[str]"), Some(TypeKind::String));
+        assert_eq!(kind("typing.Optional[int]"), Some(TypeKind::Int));
+        assert_eq!(kind("Union[str, None]"), Some(TypeKind::String));
+        assert_eq!(kind("str | None"), Some(TypeKind::String));
+        assert_eq!(kind("None | str"), Some(TypeKind::String));
+        assert_eq!(kind("list[str]"), Some(TypeKind::Array));
+        assert_eq!(kind("List[str] | None"), Some(TypeKind::Array));
+        assert_eq!(kind("Optional[List[str]]"), Some(TypeKind::Array));
+        assert_eq!(kind("dict[str, Any]"), Some(TypeKind::Object));
+        assert_eq!(
+            kind("Annotated[str, Field(max_length=5)]"),
+            Some(TypeKind::String)
+        );
+        // Values the framework constrains, ambiguous unions, dependencies and
+        // names we cannot tell from an injected handle.
+        assert_eq!(kind("Literal['a', 'b']"), None);
+        assert_eq!(kind("UUID"), None);
+        assert_eq!(kind("Union[int, str]"), None);
+        assert_eq!(kind("Annotated[Session, Depends(get_db)]"), None);
+        assert_eq!(kind("Session"), None);
+        assert_eq!(kind("Request"), None);
+        assert_eq!(kind("SessionDep"), None);
+        assert_eq!(kind("None"), None);
+    }
+
+    #[test]
+    fn split_top_level_ignores_brackets() {
+        assert_eq!(
+            split_top_level("a, b[c, d], e", ','),
+            ["a", " b[c, d]", " e"]
+        );
+        assert_eq!(
+            split_top_level("list[int | str] | None", '|'),
+            ["list[int | str] ", " None"]
+        );
+    }
+
+    #[test]
+    fn fastapi_route_formals_are_request_bound() {
+        let src = "\
+from fastapi import FastAPI, Query, Depends
+from pydantic import BaseModel
+app = FastAPI()
+class Item(BaseModel):
+    name: str
+@app.get('/a')
+def a(q: str, n: int, nums: list[int], page: Optional[int] = None, limit: int = Query(5), tags: list[str] = None, opt: Optional[str] = None, m: str = Query(None)):
+    pass
+@app.post('/b')
+def b(item: Item, payload: dict, request: Request, db: Session = Depends(get_db), user: CurrentUser = None):
+    pass
+@app.get('/c')
+def c(x: str = Depends(get_x), session: SessionDep = None):
+    pass
+";
+        let a = formal_kinds(src, "a");
+        assert_eq!(kind_of(&a, "q"), Some(TypeKind::String));
+        // A bare number is validated by the framework and is not painted.
+        assert_eq!(kind_of(&a, "n"), None);
+        assert_eq!(kind_of(&a, "nums"), None);
+        assert_eq!(kind_of(&a, "page"), None);
+        assert_eq!(kind_of(&a, "limit"), Some(TypeKind::Int));
+        assert_eq!(kind_of(&a, "tags"), Some(TypeKind::Array));
+        assert_eq!(kind_of(&a, "opt"), Some(TypeKind::String));
+        assert_eq!(kind_of(&a, "m"), Some(TypeKind::String));
+        let b = formal_kinds(src, "b");
+        assert!(matches!(kind_of(&b, "item"), Some(TypeKind::Dto(_))));
+        assert_eq!(kind_of(&b, "payload"), Some(TypeKind::Object));
+        // Injected handles stay unseeded.
+        assert_eq!(kind_of(&b, "request"), None);
+        assert_eq!(kind_of(&b, "db"), None);
+        assert_eq!(kind_of(&b, "user"), None);
+        let c = formal_kinds(src, "c");
+        assert_eq!(kind_of(&c, "x"), None);
+        assert_eq!(kind_of(&c, "session"), None);
+    }
+
+    #[test]
+    fn plain_python_functions_keep_bare_annotations_unclassified() {
+        // Hard Rule 3: an annotation alone is no framework gate.
+        let src = "\
+def helper(q: str, n: int):
+    pass
+@app.route('/x/<id>')
+def flask_view(id: int, q: str):
+    pass
+";
+        for name in ["helper", "flask_view"] {
+            let f = formal_kinds(src, name);
+            assert!(f.iter().all(|(_, k)| k.is_none()), "{name}: {f:?}");
+        }
+    }
+
+    #[test]
+    fn default_marker_calls_bind_outside_a_route() {
+        let src = "\
+def read(item_id: int = Path(..., gt=0), tok: str = Header(None), body = Body(...), p: Path = Path('/tmp'), d: str = Depends(dep)):
+    pass
+";
+        let f = formal_kinds(src, "read");
+        assert_eq!(kind_of(&f, "item_id"), Some(TypeKind::Int));
+        assert_eq!(kind_of(&f, "tok"), Some(TypeKind::String));
+        assert_eq!(kind_of(&f, "body"), Some(TypeKind::Object));
+        // pathlib's `Path("..")` default is not FastAPI's marker.
+        assert_eq!(kind_of(&f, "p"), None);
+        assert_eq!(kind_of(&f, "d"), None);
+    }
+}
+
+#[cfg(test)]
+mod java_request_bound_tests {
+    use super::{extract_param_meta, java_formal_is_request_bound, java_request_bound_flags};
+    use tree_sitter::{Language, Node, Parser};
+
+    fn parse(src: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+            .unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    fn first_method(node: Node<'_>) -> Option<Node<'_>> {
+        if node.kind() == "method_declaration" {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        node.children(&mut cursor).find_map(first_method)
+    }
+
+    /// Request-bound verdict of the single formal in `formal`.
+    fn bound(formal: &str) -> bool {
+        let src = format!("class C {{ void m({formal}) {{}} }}");
+        let tree = parse(&src);
+        let method = first_method(tree.root_node()).expect("method");
+        let params = method.child_by_field_name("parameters").unwrap();
+        let mut cursor = params.walk();
+        let param = params
+            .named_children(&mut cursor)
+            .find(|c| matches!(c.kind(), "formal_parameter" | "spread_parameter"))
+            .expect("formal");
+        java_formal_is_request_bound(param, src.as_bytes())
+    }
+
+    #[test]
+    fn binding_annotations_and_plain_values_are_request_bound() {
+        for formal in [
+            "@RequestParam String a",
+            "@org.springframework.web.bind.annotation.PathVariable Long id",
+            "@Valid @RequestBody CreateUser dto",
+            "@RequestHeader(\"X-A\") String h",
+            "@RequestPart MultipartFile f",
+            "String q",
+            "MultipartFile f",
+            "InputStream body",
+            "Pageable page",
+            "@Context UriInfo ui",
+            "@Context HttpHeaders h",
+            "@QueryParam(\"q\") String q",
+            "@BeanParam Filter filter",
+            "String payload",
+            "String... tags",
+            "@RequestParam HttpServletRequest odd",
+        ] {
+            assert!(bound(formal), "{formal} should be request-bound");
+        }
+    }
+
+    #[test]
+    fn injected_infrastructure_formals_are_not_request_bound() {
+        for formal in [
+            "HttpServletResponse r",
+            "javax.servlet.http.HttpServletRequest r",
+            "HttpSession s",
+            "Model m",
+            "Principal p",
+            "@AuthenticationPrincipal UserDetails u",
+            "@Context SecurityContext sc",
+            "@Context HttpServletResponse r",
+            "@Suspended AsyncResponse ar",
+            "Locale l",
+            "OutputStream os",
+            "BindingResult br",
+            "@Value(\"${app.dir}\") String dir",
+            "@RequestAttribute(\"user\") String user",
+        ] {
+            assert!(!bound(formal), "{formal} should not be request-bound");
+        }
+    }
+
+    #[test]
+    fn flags_follow_formal_order() {
+        let src = "class C { void m(HttpServletResponse resp, @RequestParam String name, \
+                   Principal p, String... rest) {} }";
+        let tree = parse(src);
+        let method = first_method(tree.root_node()).unwrap();
+        assert_eq!(extract_param_meta(method, "java", src.as_bytes()).len(), 4);
+        assert_eq!(
+            java_request_bound_flags(method, src.as_bytes(), 4),
+            vec![false, true, false, true]
+        );
+        // A count that does not line up falls back to seeding every formal.
+        assert_eq!(
+            java_request_bound_flags(method, src.as_bytes(), 3),
+            vec![true; 3]
+        );
     }
 }

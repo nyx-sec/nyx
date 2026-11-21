@@ -1,0 +1,68 @@
+{
+  "description": "gin.Context formals are request sources by declared type (ctx, c), the embedded c.Request is a request, and gin binders taint the struct they decode into while leaving the returned error clean.",
+  "tags": [
+    "taint",
+    "go",
+    "gin",
+    "source",
+    "request-type"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "ctx.Query flows to exec.Command",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "c.Request.Header.Get flows to exec.Command",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        33,
+        33
+      ],
+      "notes": "c.ShouldBindJSON(&in) taints in.Path",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        39,
+        39
+      ],
+      "notes": "c.BindJSON(&in) taints in.Cmd",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        46,
+        46
+      ],
+      "notes": "the binder's error return carries no request data",
+      "must_not_match": true
+    }
+  ]
+}

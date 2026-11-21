@@ -34,14 +34,12 @@
     },
     {
       "rule_id": "cfg-resource-leak",
-      "severity": "MEDIUM",
-      "must_match": false,
+      "must_not_match": true,
       "line_range": [
         15,
         15
       ],
-      "evidence_contains": [],
-      "notes": "noise: cfg-resource-leak \u2014 low-value duplicate of more specific findings"
+      "notes": "process_with_guard returns inside try and closes in finally: the finally clause runs on the return path (regression guard)"
     }
   ]
 }

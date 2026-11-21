@@ -7,7 +7,6 @@ use crate::utils::Config;
 use crate::utils::project::get_project_info;
 use crate::walk::spawn_file_walker;
 use bytesize::ByteSize;
-use chrono::{DateTime, Local};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -74,12 +73,12 @@ pub fn handle(
             if db_path.exists() {
                 let meta = fs::metadata(&db_path)?;
                 let size = ByteSize::b(meta.len());
-                let mtime: DateTime<Local> = meta.modified()?.into();
+                let mtime = crate::utils::time::local_datetime(meta.modified()?);
                 println!(
                     "  {:10} {} {}",
                     style("Indexed").dim(),
                     style("✔").green().bold(),
-                    style(mtime.format("%Y-%m-%d %H:%M:%S")).dim()
+                    style(mtime).dim()
                 );
                 println!("  {:10} {}", style("Size").dim(), size);
             } else {
@@ -193,6 +192,7 @@ pub fn build_index_with_observer(
     {
         let idx = Indexer::from_pool(project_name, &pool)?;
         idx.clear()?;
+        idx.reconcile_analysis_cache_key(&config.analysis_cache_key())?;
     }
 
     tracing::debug!("Cleaned index for: {}", project_name);

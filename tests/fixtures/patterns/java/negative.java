@@ -31,6 +31,16 @@ class Negative {
         Object data = yaml.load(body);
     }
 
+    // Safe: an `invoke` of the class's own, never java.lang.reflect.Method.invoke:
+    // unqualified, via `this` / `super`, with no argument, or on a new object.
+    // (Receiver types and lambda arguments are judged after the query, see the
+    // unit tests in src/ast.rs.)
+    Object own(String realm) { return invoke(realm); }
+    Object ownViaThis(String realm) { return this.invoke(realm); }
+    Object ownViaSuper(String realm) { return super.invoke(realm); }
+    Object noArgument(Helper h) { return h.invoke(); }
+    Object freshReceiver(String realm) { return new Helper().invoke(realm, realm); }
+
     // Safe: empty StringSubstitutor — no interpolator factory — CVE-2022-42889 fix shape.
     String safeStringSubstitutorPassthrough(String input) {
         StringSubstitutor s = new StringSubstitutor();

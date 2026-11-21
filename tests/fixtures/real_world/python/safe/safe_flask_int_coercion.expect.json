@@ -1,0 +1,61 @@
+{
+  "description": "request.args.get(.., type=int) returns a number, so SQL built from it is not injectable; str and untyped reads still are",
+  "tags": [
+    "taint",
+    "sqli",
+    "flask",
+    "safe",
+    "coercion"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        9,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "type=int coerces the value",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "py.sqli.execute_format",
+      "severity": null,
+      "line_range": [
+        9,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "pattern is cleared along with the taint flow",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        18,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "type=str is not a numeric coercion",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        27,
+        32
+      ],
+      "evidence_contains": [],
+      "notes": "no type argument",
+      "must_match": true
+    }
+  ]
+}

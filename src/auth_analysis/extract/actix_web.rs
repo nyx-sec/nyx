@@ -19,8 +19,7 @@ pub struct ActixWebExtractor;
 impl AuthExtractor for ActixWebExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
         lang == "rust"
-            && framework_ctx
-                .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::ActixWeb))
+            && framework_ctx.is_none_or(|ctx| ctx.allows(lang, DetectedFramework::ActixWeb))
     }
 
     fn extract(

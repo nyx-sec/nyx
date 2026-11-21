@@ -1,0 +1,13 @@
+{
+  "description": "Express handler in TS: `body` is a copy of req.body, so `body.file` carries its taint into execSync even though the property is never written in the body.",
+  "tags": ["taint", "field-access", "express", "false-negative-fix"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [8, 8],
+      "notes": "body = req.body; execSync(\"cat \" + body.file)"
+    }
+  ]
+}

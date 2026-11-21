@@ -1,0 +1,37 @@
+{
+  "description": "SQL text concatenated before conn.prepareStatement(..) is injected into the statement: the later execute* runs it.  A literal template with bind values set through setString stays clean.",
+  "tags": ["taint", "java", "sqli", "jdbc"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [10, 10],
+      "must_match": true,
+      "notes": "split prepareStatement(concat) then executeQuery()"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [20, 20],
+      "must_match": true,
+      "notes": "OWASP Benchmark shape: concatenated sql, setString on a constant, execute()"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [26, 26],
+      "must_match": true,
+      "notes": "try-with-resources executeUpdate()"
+    },
+    {
+      "rule_id": "taint-",
+      "line_range": [30, 37],
+      "must_not_match": true,
+      "notes": "literal template; the bound value never reaches the SQL text"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "line_range": [30, 37],
+      "must_not_match": true,
+      "notes": "the structural rule stays silent on the parameterised statement"
+    }
+  ]
+}

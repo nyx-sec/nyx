@@ -135,6 +135,8 @@ pub static RULES: &[LabelRule] = &[
             // disclosure / glob-injection vector.
             "File.write",
             "IO.write",
+            "File.binwrite",
+            "IO.binwrite",
             "Pathname.new",
             "Dir.entries",
             "Dir.glob",
@@ -550,6 +552,14 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
+    // ── File-writing path positions ──────────────────────────────────────
+    //
+    // `File.write(path, data, mode: 'a')` and friends: only the path is a
+    // traversal vector.  The data and the options hash are not.
+    SinkGate::payload_positions("File.write", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("IO.write", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("File.binwrite", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
+    SinkGate::payload_positions("IO.binwrite", DataLabel::Sink(Cap::FILE_IO), false, &[0]),
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -581,7 +591,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "begin"                 => Kind::Try,
     "rescue"                => Kind::Block,
     "ensure"                => Kind::Block,
-    "case"                  => Kind::Block,
+    // `case`/`when`/`else` lowers through `build_switch`; `case ... in`
+    // pattern matching is a separate `case_match` node.
+    "case"                  => Kind::Switch,
     "when"                  => Kind::Block,
     "class"                 => Kind::Block,
     "module"                => Kind::Block,
@@ -593,8 +605,9 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "assignment"            => Kind::Assignment,
     // Ruby augmented assignment (`x ||= y`, `x += y`, `x <<= y`, …).  Shares
     // the `left`/`right` fields with `assignment`; modelling it as an
-    // Assignment makes the LHS depend on the RHS for taint/type purposes
-    // (sound: `x op= y` always reads `y` into `x`).  Covers the memoised-
+    // Assignment makes the LHS depend on the RHS for taint/type purposes.
+    // `x op= y` reads both `x` and `y`, so `def_use` also lists the target
+    // as a use (see `cfg::rmw_assignment`).  Covers the memoised-
     // connection idiom `@@conn ||= PG::Connection.new(...)` (CVE-2026-42087).
     "operator_assignment"   => Kind::Assignment,
     "method"                => Kind::Function,
@@ -766,5 +779,26 @@ mod kinds_tests {
         // it must be a Block so multi-statement bodies are walked instead of
         // collapsing into one leaf Seq node and losing intra-body taint flow.
         assert_eq!(KINDS.get("block_body"), Some(&Kind::Block));
+    }
+}
+
+#[cfg(test)]
+mod file_write_tests {
+    use crate::labels::{Cap, DataLabel, classify_all, classify_gated_sink};
+
+    #[test]
+    fn file_write_sinks_check_the_path_only() {
+        for callee in ["File.write", "IO.write", "File.binwrite", "IO.binwrite"] {
+            assert!(
+                classify_all("ruby", callee, None).contains(&DataLabel::Sink(Cap::FILE_IO)),
+                "{callee}"
+            );
+            let gates = classify_gated_sink("ruby", callee, |_| None, |_| None, |_| false);
+            let gate = gates
+                .iter()
+                .find(|g| g.label == DataLabel::Sink(Cap::FILE_IO))
+                .unwrap_or_else(|| panic!("{callee} gate"));
+            assert_eq!(gate.payload_args, &[0], "{callee}");
+        }
     }
 }

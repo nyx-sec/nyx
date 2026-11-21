@@ -1,0 +1,14 @@
+{
+  "description": "getInputStream, getReader and readLine are request or file-content sources only when the stream can carry them.  The output of a child process and a classpath resource are the application's own data.  The sinks here are real (the SQL is concatenated, exec takes the line), so a source would show as a flow; none is expected.",
+  "tags": ["taint", "java", "precision", "sources"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "line_range": [1, 45],
+      "must_not_match": true,
+      "notes": "no stream here is attacker input"
+    }
+  ]
+}

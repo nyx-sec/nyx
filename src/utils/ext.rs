@@ -12,8 +12,10 @@ pub fn lowercase_ext(path: &std::path::Path) -> Option<&'static str> {
         "go" => Some("go"),
         "php" => Some("php"),
         "py" | "PY" => Some("py"),
-        "ts" | "TSX" | "tsx" => Some("ts"),
-        "js" => Some("js"),
+        // `.mts` / `.cts` and `.mjs` / `.cjs` are the ES-module and CommonJS
+        // forms of TypeScript and JavaScript; the grammars are the same.
+        "ts" | "TSX" | "tsx" | "mts" | "cts" => Some("ts"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("js"),
         "rb" | "RB" => Some("rb"),
         "ejs" | "EJS" => Some("ejs"),
         _ => None,
@@ -64,6 +66,11 @@ fn lowercase_ext_all_supported_extensions() {
         ("app.tsx", "ts"),
         ("app.TSX", "ts"),
         ("bundle.js", "js"),
+        ("view.jsx", "js"),
+        ("server.mjs", "js"),
+        ("config.cjs", "js"),
+        ("server.mts", "ts"),
+        ("config.cts", "ts"),
         ("app.rb", "rb"),
         ("app.RB", "rb"),
     ];

@@ -1248,11 +1248,33 @@ fn clone_preserves_all_sub_structs() {
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
+            ctor_owned_args: vec!["in".into()],
             produces_null_proto: false,
             hoisted_sink: Some(Box::new(crate::cfg::HoistedSink {
                 payload_args: Some(vec![0]),
                 arg_string_literals: vec![Some("SELECT 1".into())],
             })),
+            nested_calls: Some(Box::new(NestedCallTree {
+                calls: vec![NestedCall {
+                    callee: "foo".into(),
+                    span: (7, 17),
+                    parent: None,
+                    slot: CallSlot::Other,
+                    arity: Some(1),
+                    exact_arg: false,
+                    label_source: crate::labels::Cap::empty(),
+                    label_strip: crate::labels::Cap::HTML_ESCAPE,
+                    label_sink: false,
+                    labelled: true,
+                }],
+                anchor: Some(0),
+                uses: vec![NestedUse {
+                    text: "a".into(),
+                    call: None,
+                    slot: CallSlot::Other,
+                }],
+            })),
+            receiver_decl_type: Some(crate::ssa::type_facts::TypeKind::JdbcTemplate),
         },
         taint: TaintMeta {
             labels: {
@@ -1266,6 +1288,10 @@ fn clone_preserves_all_sub_structs() {
             extra_defines: vec!["c".into()],
             array_pattern_indices: smallvec::SmallVec::new(),
             rhs_array_elements: smallvec::SmallVec::new(),
+            rhs_object_literal: Some(Box::new(crate::cfg::RhsObjectLiteral {
+                fields: smallvec::smallvec![("k".into(), crate::cfg::RhsObjectSlot::Literal)],
+                open: false,
+            })),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -1290,11 +1316,19 @@ fn clone_preserves_all_sub_structs() {
         original.call.sink_reaching_uses
     );
     assert_eq!(cloned.call.kwargs, original.call.kwargs);
+    assert_eq!(
+        cloned.call.receiver_decl_type,
+        original.call.receiver_decl_type
+    );
     assert_eq!(cloned.taint.labels.len(), original.taint.labels.len());
     assert_eq!(cloned.taint.const_text, original.taint.const_text);
     assert_eq!(cloned.taint.defines, original.taint.defines);
     assert_eq!(cloned.taint.uses, original.taint.uses);
     assert_eq!(cloned.taint.extra_defines, original.taint.extra_defines);
+    assert_eq!(
+        cloned.taint.rhs_object_literal,
+        original.taint.rhs_object_literal
+    );
     assert_eq!(cloned.ast.span, original.ast.span);
     assert_eq!(cloned.ast.enclosing_func, original.ast.enclosing_func);
     assert_eq!(cloned.all_args_literal, original.all_args_literal);
@@ -1847,6 +1881,220 @@ fn js_promisify_non_call_value_ignored() {
     assert!(file_cfg.promisify_aliases.is_empty());
 }
 
+/// Every call node in `file_cfg` whose callee text is `callee`.
+fn js_call_nodes<'a>(file_cfg: &'a FileCfg, callee: &str) -> Vec<&'a NodeInfo> {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| n.call.callee.as_deref() == Some(callee))
+        .collect()
+}
+
+fn has_sink(n: &NodeInfo, cap: Cap) -> bool {
+    n.taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+}
+
+#[test]
+fn js_regex_and_query_exec_are_not_shell_sinks() {
+    let src = b"const re = /a(b)/;\n\
+                function f(x, Model) { re.exec(x); Model.find({ a: x }).exec(); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let shell_nodes: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::SHELL_ESCAPE))
+        .map(|n| n.call.callee.clone())
+        .collect();
+    assert!(
+        shell_nodes.is_empty(),
+        "unexpected shell sinks: {shell_nodes:?}"
+    );
+}
+
+#[test]
+fn js_child_process_alias_is_import_gated_shell_sink() {
+    // `cp.spawn` is a sink only because `cp` is bound to child_process; arg 0
+    // is the payload, and `{ shell: true }` adds the argv array at arg 1.
+    let src = b"const cp = require('child_process');\n\
+                function a(bin, args) { cp.spawn(bin, args); }\n\
+                function b(bin, args) { cp.spawn(bin, args, { shell: true }); }\n\
+                function c(bin, args) { cp.spawn(bin, args, { shell: false, cwd: '/' }); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "cp.spawn");
+    assert_eq!(nodes.len(), 3);
+    let mut payloads: Vec<Vec<usize>> = nodes
+        .iter()
+        .map(|n| {
+            assert!(
+                has_sink(n, Cap::SHELL_ESCAPE),
+                "cp.spawn should be a shell sink"
+            );
+            n.call.sink_payload_args.clone().unwrap_or_default()
+        })
+        .collect();
+    payloads.sort();
+    assert_eq!(payloads, vec![vec![0], vec![0], vec![0, 1]]);
+}
+
+#[test]
+fn js_import_gated_chain_head_sink_checks_head_payload() {
+    // `execFileSync` is a sink only through the import binding, so the gated
+    // post-pass labels the chained call `execFileSync(..).toString()`.  The
+    // head call's payload (arg 0) is what reaches the sink; a constant
+    // binary with request data in the argv array is not a sink at all.
+    let src = b"const { execFileSync } = require('child_process');\n\
+                function f(bin) { return execFileSync(bin).toString(); }\n\
+                function g(file) { return execFileSync('docker', ['ps', file]).trim(); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let shell: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::SHELL_ESCAPE))
+        .collect();
+    assert!(
+        !shell.is_empty(),
+        "execFileSync(bin).toString() is a shell sink"
+    );
+    for n in &shell {
+        assert_eq!(
+            n.call.sink_reaching_uses.as_deref(),
+            Some(&["bin".to_string()][..]),
+            "only the head call's binary argument reaches the sink"
+        );
+    }
+}
+
+#[test]
+fn js_require_member_call_uses_module_callee() {
+    let src = b"function f(x) { require('node:child_process').exec(x, { cwd: x }); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "child_process.exec");
+    assert_eq!(
+        nodes.len(),
+        1,
+        "require('node:child_process').exec canonicalises"
+    );
+    assert!(has_sink(nodes[0], Cap::SHELL_ESCAPE));
+    assert_eq!(
+        nodes[0].call.sink_payload_args.as_deref(),
+        Some(&[0usize][..])
+    );
+}
+
+#[test]
+fn js_split_shell_argv_array_is_shell_payload() {
+    // `spawnSync('bash', ['-c', cmd])`: the shell is arg 0, its `-c` command
+    // lives in the argv array at arg 1.
+    let src = b"function f(spawnSync, cmd) { spawnSync('bash', ['-c', 'ls ' + cmd]); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "spawnSync");
+    assert_eq!(nodes.len(), 1);
+    assert!(has_sink(nodes[0], Cap::SHELL_ESCAPE));
+    assert_eq!(
+        nodes[0].call.sink_payload_args.as_deref(),
+        Some(&[1usize][..])
+    );
+    assert_eq!(
+        nodes[0].call.destination_uses.as_deref(),
+        Some(&["cmd".to_string()][..])
+    );
+}
+
+#[test]
+fn js_timer_string_arg_is_code_exec_but_callbacks_are_not() {
+    // Only a string-valued first argument is compiled.  Callbacks (literal,
+    // named, bound, a Promise `resolve`) and unresolved names are not.
+    let src = b"function retry() {}\n\
+                class P { start() { setInterval(this.poll, 10); } poll() {} }\n\
+                function f(cb, name) {\n\
+                  const code = location.hash.substring(1);\n\
+                  setTimeout(code, 10);\n\
+                  setTimeout('render(' + name + ')', 10);\n\
+                  setTimeout(() => console.log(name), 10);\n\
+                  setTimeout(retry, 10);\n\
+                  setTimeout(cb, 10);\n\
+                  setTimeout(this.tick.bind(this, name), 10);\n\
+                  return new Promise((resolve) => setTimeout(resolve, 10));\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let mut code_exec: Vec<Vec<String>> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| has_sink(n, Cap::CODE_EXEC))
+        .map(|n| n.call.arg_uses.first().cloned().unwrap_or_default())
+        .collect();
+    code_exec.sort();
+    assert_eq!(
+        code_exec,
+        vec![vec!["code".to_string()], vec!["name".to_string()]],
+        "only the string-valued timer arguments compile code"
+    );
+}
+
+#[test]
+fn js_inner_sink_under_zero_arg_chain_keeps_its_sink() {
+    // The inner `child_process.execSync(cmd)` call supplies the node's sink;
+    // the outer zero-arg `.toString().trim()` call must not empty its
+    // payload set.
+    let src = b"function f(hash) {\n\
+                  return require('child_process').execSync('git show ' + hash).toString().trim();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = js_call_nodes(&file_cfg, "child_process.execSync");
+    assert!(
+        !nodes.is_empty(),
+        "the inner execSync call classifies the node"
+    );
+    assert!(nodes.iter().all(|n| has_sink(n, Cap::SHELL_ESCAPE)));
+}
+
+#[test]
+fn js_fluent_response_chain_classifies_by_final_method() {
+    let src = b"function h(req, res) {\n\
+                  res.status(200).send(req.query.q);\n\
+                  res.set('Content-Type', 'text/html').send(req.query.q);\n\
+                  res.status(204).json();\n\
+                  return res.status(302).redirect(req.query.next);\n\
+                }\n\
+                function g(db, q) { db.collection('users').find(q); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let sends = js_call_nodes(&file_cfg, "res.send");
+    assert_eq!(sends.len(), 2, "both chains end in res.send");
+    for n in &sends {
+        assert!(has_sink(n, Cap::HTML_ESCAPE));
+        assert!(
+            !has_sink(n, Cap::HEADER_INJECTION),
+            "the res.set chain head must not label the send call"
+        );
+        assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+    }
+    // The `return` wrapper and its call both carry the callee.
+    let redirects = js_call_nodes(&file_cfg, "res.redirect");
+    assert!(!redirects.is_empty());
+    assert!(redirects.iter().all(|n| has_sink(n, Cap::OPEN_REDIRECT)));
+    // `res.status(204).json()` passes no body, so it is not a sink.
+    let empty_bodies: Vec<_> = js_call_nodes(&file_cfg, "res.json");
+    assert_eq!(empty_bodies.len(), 1);
+    assert!(!has_sink(empty_bodies[0], Cap::HTML_ESCAPE));
+    // `collection` is not a fluent response method: the chain keeps its text.
+    assert!(js_call_nodes(&file_cfg, "db.find").is_empty());
+}
+
 #[test]
 fn sql_placeholder_detection() {
     // Positive cases
@@ -1863,6 +2111,192 @@ fn sql_placeholder_detection() {
     assert!(!has_sql_placeholders("SELECT $dollar FROM t")); // $d not $N
     assert!(!has_sql_placeholders("SELECT * FROM t WHERE x = $0")); // $0 not valid
     assert!(!has_sql_placeholders("ratio = 50%")); // %<not s>
+}
+
+/// The first node whose callee ends with `suffix`, across all bodies.
+fn node_with_callee_suffix(file_cfg: &FileCfg, suffix: &str) -> NodeInfo {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .find(|n| {
+            n.call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.ends_with(suffix))
+        })
+        .unwrap_or_else(|| panic!("no call ending with {suffix}"))
+        .clone()
+}
+
+#[test]
+fn parameterized_query_constant_text_is_skipped() {
+    let src = b"def f(cur, uid):\n    cur.execute(\"SELECT * FROM t WHERE id = ?\", (uid,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_python_fstring_keeps_the_sink_on_arg0() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(f\"SELECT * FROM t ORDER BY {sort} LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_python_concatenated_fstring_part() {
+    let src = b"def f(cur, sort, n):\n    cur.execute(\"SELECT * FROM t ORDER BY \" f\"{sort}\" \" LIMIT ?\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_placeholder_inside_interpolation_is_not_a_placeholder() {
+    // The `?` belongs to the embedded expression, so this is not a
+    // parameterized query at all: no skip, and no payload narrowing.
+    let src = b"def f(cur, a, b, n):\n    cur.execute(f\"SELECT {a if b else 1} FROM t\", (n,))\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "python", ts_lang), "execute");
+    assert!(!n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_ruby_interpolated_where() {
+    let src = b"def index\n  q = params[:q]\n  User.where(\"name LIKE '%#{q}%' AND active = ?\", true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+#[test]
+fn parameterized_query_ruby_constant_where_is_skipped() {
+    let src = b"def index\n  User.where(\"name = ? AND active = ?\", params[:q], true)\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "ruby", ts_lang), "where");
+    assert!(n.parameterized_query);
+    assert!(!n.parameterized_query_interpolated);
+}
+
+#[test]
+fn parameterized_query_js_template_with_substitution() {
+    let src = b"async function f(pool, t, id) { await pool.query(`SELECT * FROM ${t} WHERE id = $1`, [id]); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let n = node_with_callee_suffix(&parse_to_file_cfg(src, "javascript", ts_lang), "query");
+    assert!(!n.parameterized_query);
+    assert!(n.parameterized_query_interpolated);
+    assert_eq!(n.call.sink_payload_args.as_deref(), Some(&[0usize][..]));
+}
+
+/// Every Sanitizer cap set that landed on a node of a Go snippet.
+fn go_body_sanitizer_caps(src: &[u8]) -> Vec<Cap> {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
+    cfg.node_indices()
+        .flat_map(|i| cfg[i].taint.labels.clone())
+        .filter_map(|l| match l {
+            DataLabel::Sanitizer(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn go_replace_single_metachar_strip_earns_no_credit() {
+    for call in [
+        r#"strings.ReplaceAll(s, ";", "")"#,
+        r#"strings.ReplaceAll(s, "|", "")"#,
+        r#"strings.ReplaceAll(s, "'", "")"#,
+        r#"strings.Replace(s, ";", "", -1)"#,
+    ] {
+        let src = format!("package main\nfunc f(s string) string {{\n\treturn {call}\n}}\n");
+        let caps = go_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{call} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn go_replace_complete_escape_earns_credit() {
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"<\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "tag strip should earn HTML_ESCAPE; got {caps:?}"
+    );
+    let src = b"package main\nfunc f(s string) string {\n\treturn strings.ReplaceAll(s, \"..\", \"\")\n}\n";
+    let caps = go_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "traversal strip should earn FILE_IO; got {caps:?}"
+    );
+}
+
+#[test]
+fn go_replace_with_count_is_only_a_full_replace_for_minus_one() {
+    let full = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", -1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(full)
+            .iter()
+            .any(|c| c.contains(Cap::HTML_ESCAPE)),
+        "Replace(.., -1) is a full replace"
+    );
+    let first_only = b"package main\nfunc f(s string) string {\n\treturn strings.Replace(s, \"<\", \"\", 1)\n}\n";
+    assert!(
+        go_body_sanitizer_caps(first_only).is_empty(),
+        "Replace(.., 1) only strips the first match"
+    );
+}
+
+#[test]
+fn replace_chain_single_shell_or_quote_strip_earns_no_credit() {
+    for body in [
+        r#"s.replace(";", "")"#,
+        r#"s.replace("|", "").replace("&", "")"#,
+        r#"s.replace("'", "")"#,
+        r#"s.replace("--", "")"#,
+    ] {
+        let src = format!("fn f(s: &str) -> String {{\n    {body}\n}}\n");
+        let caps = rust_body_sanitizer_caps(src.as_bytes());
+        assert!(
+            caps.is_empty(),
+            "{body} must not earn sanitizer credit; got {caps:?}"
+        );
+    }
+}
+
+#[test]
+fn replace_chain_replacen_hop_earns_no_credit_but_keeps_the_walk() {
+    // replacen only strips the first n matches.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replacen("<", "", 1)
+}
+"#;
+    assert!(rust_body_sanitizer_caps(src).is_empty());
+    // A real full strip beneath a replacen hop still counts.
+    let src = br#"
+fn f(s: &str) -> String {
+    s.replace("..", "").replacen("x", "y", 1)
+}
+"#;
+    let caps = rust_body_sanitizer_caps(src);
+    assert!(
+        caps.iter().any(|c| c.contains(Cap::FILE_IO)),
+        "the replace hop under replacen should still earn FILE_IO; got {caps:?}"
+    );
 }
 
 #[test]
@@ -4365,6 +4799,100 @@ class C {
     assert_eq!(arith[0].eval_bool(&r), Some(true));
 }
 
+// ── rhs_object_literal (JS/TS object-literal property shape) ──────────────
+
+fn object_literal_of<'a>(cfg: &'a Cfg, name: &str) -> Option<&'a crate::cfg::RhsObjectLiteral> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.taint.defines.as_deref() == Some(name))
+        .and_then(|n| n.taint.rhs_object_literal.as_deref())
+}
+
+#[test]
+fn rhs_object_literal_records_property_shape() {
+    use crate::cfg::RhsObjectSlot;
+    let src = b"function f(req) {\n\
+        const a = { k: 'v', \"q\": 1, n: null, t: `x`, i: req.query.x, s, id: other, o: { p: 'c' } };\n\
+        const b = { ...req.body, safe: 'x' };\n\
+        const c = { [req.query.k]: 1 };\n\
+        const d = ({ m() { return 1; } });\n\
+        const e = req.body;\n\
+        const g = { u: `a${req.query.x}` }, h = { v: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+
+    let a = object_literal_of(&cfg, "a").expect("`a` binds an object literal");
+    assert!(!a.open);
+    let slot = |k: &str| {
+        a.fields
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, s)| s.clone())
+    };
+    assert_eq!(slot("k"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("q"),
+        Some(RhsObjectSlot::Literal),
+        "quoted key is unquoted"
+    );
+    assert_eq!(slot("n"), Some(RhsObjectSlot::Literal));
+    assert_eq!(
+        slot("t"),
+        Some(RhsObjectSlot::Literal),
+        "template without substitutions"
+    );
+    assert_eq!(slot("i"), Some(RhsObjectSlot::Complex));
+    assert_eq!(
+        slot("s"),
+        Some(RhsObjectSlot::Ident("s".into())),
+        "shorthand"
+    );
+    assert_eq!(slot("id"), Some(RhsObjectSlot::Ident("other".into())));
+    match slot("o") {
+        Some(RhsObjectSlot::Object(inner)) => {
+            assert_eq!(inner.fields.len(), 1);
+            assert_eq!(inner.fields[0], ("p".into(), RhsObjectSlot::Literal));
+        }
+        other => panic!("nested literal expected, got {other:?}"),
+    }
+
+    assert!(object_literal_of(&cfg, "b").expect("spread literal").open);
+    assert!(
+        object_literal_of(&cfg, "c")
+            .expect("computed key literal")
+            .open
+    );
+    assert!(
+        object_literal_of(&cfg, "d")
+            .expect("parenthesised literal")
+            .open
+    );
+    assert!(object_literal_of(&cfg, "e").is_none(), "non-literal RHS");
+    assert!(
+        object_literal_of(&cfg, "g").is_none() && object_literal_of(&cfg, "h").is_none(),
+        "multi-declarator statements are not single bindings"
+    );
+}
+
+#[test]
+fn rhs_object_literal_unwraps_ts_assertions() {
+    let src = b"function f(req: any) {\n\
+        const a = { k: 'v' } as const;\n\
+        const b = { k: req.query.x } satisfies Record<string, unknown>;\n\
+        let c: any;\n\
+        c = { k: 1 };\n\
+    }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let (cfg, _entry) = parse_and_build(src, "typescript", ts_lang);
+    assert!(object_literal_of(&cfg, "a").is_some(), "`as const` literal");
+    assert!(
+        object_literal_of(&cfg, "b").is_some(),
+        "`satisfies` literal"
+    );
+    assert!(object_literal_of(&cfg, "c").is_some(), "plain assignment");
+}
+
 // ── numeric_confined_uses (inline numeric-chain confinement) ──────────────
 
 /// Find the sink node carrying a non-empty `numeric_confined_uses`, plus the
@@ -4442,6 +4970,30 @@ fn numeric_confined_only_on_sink_nodes() {
 }
 
 #[test]
+fn numeric_confined_js_parse_method_is_not_numeric() {
+    // Outside Rust a `.parse` method returns an object (`url.parse`,
+    // `JSON.parse`), so `x` inside `url.parse(x)` must not be confined, while
+    // `parseInt(y)` still confines `y`.
+    let src = b"var fs = require('fs'); function h(req) { var x = req.query.a; \
+                var y = req.query.b; fs.readFile(url.parse(x).pathname); \
+                fs.readFile('/d/' + parseInt(y)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined: Vec<&String> = cfg
+        .node_indices()
+        .flat_map(|i| cfg[i].numeric_confined_uses.iter())
+        .collect();
+    assert!(
+        !confined.iter().any(|u| *u == "x"),
+        "`url.parse(x)` must not numeric-confine `x`; got {confined:?}"
+    );
+    assert!(
+        confined.iter().any(|u| *u == "y"),
+        "`parseInt(y)` must numeric-confine `y`; got {confined:?}"
+    );
+}
+
+#[test]
 fn numeric_confined_format_macro_parse_chain() {
     // `fs::read(format!("/d/{}", g.parse::<u32>().unwrap()))` — tree-sitter
     // flattens the macro body to a token_tree, so `g` is recovered as confined
@@ -4506,6 +5058,37 @@ fn numeric_confined_format_macro_blocked_by_raw_occurrence() {
     assert!(
         !confined.iter().any(|u| u == "v"),
         "raw `v` occurrence must block confinement; got {confined:?}"
+    );
+}
+
+#[test]
+fn numeric_confined_shares_enclosing_call_verdict_across_callbacks() {
+    // Sink argument is a chained call whose callee text carries a whole
+    // callback body.  Each identifier is judged by its nearest enclosing
+    // call: `n` and `m` only ever feed `parseInt`, so they are confined
+    // (both occurrences of `m`); `x` and `items` feed `filter` and stay raw.
+    let src = b"function h(req, res) { \
+                res.send(items.filter(function (x) { return parseInt(n + m) > x; }).size(), parseInt(m)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined = confined_uses_of(&cfg, "res.send").expect("sink node present");
+    let mut got: Vec<&str> = confined.iter().map(String::as_str).collect();
+    got.sort_unstable();
+    assert_eq!(got, ["m", "n"], "confined idents");
+}
+
+#[test]
+fn numeric_confined_raw_occurrence_inside_callback_blocks() {
+    // `n` feeds `parseInt` in the outer argument but appears raw (argument
+    // of the non-numeric `log`) inside the callback, so it is not confined.
+    let src = b"function h(req, res) { \
+                res.send(items.map(function (y) { log(n); return y; }).size(), parseInt(n)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let confined = confined_uses_of(&cfg, "res.send").expect("sink node present");
+    assert!(
+        !confined.iter().any(|u| u == "n"),
+        "raw `log(n)` occurrence must block confinement; got {confined:?}"
     );
 }
 
@@ -4799,4 +5382,2347 @@ app.get('/probe', (req, res) => {
             );
         }
     }
+}
+
+// ── Read-modify-write assignments (`x += y`, `x ||= y`) ─────────────────
+
+fn rmw_all_nodes(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<NodeInfo> {
+    let fc = parse_to_file_cfg(src, lang_str, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights().cloned().collect::<Vec<_>>())
+        .collect()
+}
+
+/// The single node that defines `var` from a read-modify-write.
+fn rmw_def_node(nodes: &[NodeInfo], var: &str) -> NodeInfo {
+    let defs: Vec<&NodeInfo> = nodes
+        .iter()
+        .filter(|n| n.rmw_assign && n.taint.defines.as_deref() == Some(var))
+        .collect();
+    assert_eq!(
+        defs.len(),
+        1,
+        "expected one read-modify-write def of `{var}`, got {defs:#?}"
+    );
+    defs[0].clone()
+}
+
+fn assert_compound_reads_target(src: &[u8], lang_str: &str, ts_lang: Language) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(
+        n.taint.uses.first().map(String::as_str),
+        Some("x"),
+        "{lang_str}: the target must be the first use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.uses.iter().any(|u| u == "y"),
+        "{lang_str}: the right-hand side must stay a use: {:?}",
+        n.taint.uses
+    );
+    assert!(
+        n.taint.const_text.is_none(),
+        "{lang_str}: a compound assignment is not a literal def"
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_javascript() {
+    assert_compound_reads_target(
+        b"function f(y) { let x = 'a'; x += y; return x; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_typescript() {
+    assert_compound_reads_target(
+        b"function f(y: string) { let x = 'a'; x ??= y; return x; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_python() {
+    assert_compound_reads_target(
+        b"def f(y):\n    x = 'a'\n    x += y\n    return x\n",
+        "python",
+        Language::from(tree_sitter_python::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_php() {
+    assert_compound_reads_target(
+        b"<?php function f($y) { $x = 'a'; $x .= $y; return $x; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_rust() {
+    assert_compound_reads_target(
+        b"fn f(y: &str) -> String { let mut x = String::new(); x += y; x }",
+        "rust",
+        Language::from(tree_sitter_rust::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_java() {
+    assert_compound_reads_target(
+        b"class A { String f(String y) { String x = \"a\"; x += y; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_go() {
+    assert_compound_reads_target(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx += y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_c() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x += y; return x; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_cpp() {
+    assert_compound_reads_target(
+        b"int f(int y) { int x = 1; x <<= y; return x; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+    );
+}
+
+#[test]
+fn compound_assign_reads_target_ruby() {
+    assert_compound_reads_target(
+        b"def f(y)\n  x = 'a'\n  x ||= y\n  x\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+}
+
+/// A plain `x = y` must not start reading its own target.
+#[test]
+fn plain_assign_does_not_read_target() {
+    let nodes = rmw_all_nodes(
+        b"package main\nfunc f(y string) string {\n\tx := \"a\"\n\tx = y\n\treturn x\n}\n",
+        "go",
+        Language::from(tree_sitter_go::LANGUAGE),
+    );
+    let n = nodes
+        .iter()
+        .find(|n| n.taint.defines.as_deref() == Some("x") && n.taint.uses == ["y"])
+        .expect("`x = y` should define x from y alone");
+    assert!(!n.rmw_assign);
+}
+
+/// `n += 1` keeps its literal operand as an Add, so SSA lowering builds
+/// `n' = n + 1` instead of a stale copy or the constant `1`.
+#[test]
+fn compound_assign_literal_operand_is_bin_op() {
+    let nodes = rmw_all_nodes(
+        b"class A { void f(int n) { n += 1; g(n); } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "n");
+    assert_eq!(n.taint.uses, vec!["n".to_string()]);
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+    assert_eq!(n.bin_op_const, Some(1));
+    assert!(n.taint.const_text.is_none());
+}
+
+/// The operator comes from the compound token, not from a binary
+/// expression inside the right-hand side.
+#[test]
+fn compound_assign_bin_op_ignores_rhs_operator() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String s, int a, int b) { s += a - b; return s; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(rmw_def_node(&nodes, "s").bin_op, Some(BinOp::Add));
+}
+
+/// Python `*=` / `%=` / `/=` work on strings and paths, so they must not
+/// type the result as an integer.
+#[test]
+fn compound_assign_python_overloaded_ops_have_no_bin_op() {
+    for op in ["*=", "%=", "/=", "|="] {
+        let src = format!("def f(s, y):\n    s {op} y\n    return s\n");
+        let nodes = rmw_all_nodes(
+            src.as_bytes(),
+            "python",
+            Language::from(tree_sitter_python::LANGUAGE),
+        );
+        assert_eq!(rmw_def_node(&nodes, "s").bin_op, None, "python `{op}`");
+    }
+}
+
+/// A member target reads its own dotted path only, never the receiver:
+/// `el.innerHTML += "<b>"` does not read `el` as a value.
+#[test]
+fn compound_assign_member_target_reads_path_only() {
+    let nodes = rmw_all_nodes(
+        b"function f(el) { el.innerHTML += '<b>x</b>'; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "el.innerHTML");
+    assert_eq!(n.taint.uses, vec!["el.innerHTML".to_string()]);
+}
+
+/// `q += fmt(x)` splits into the call (which neither reads nor defines
+/// `q`) and an unlabelled combine node `q = q + <call>` fed by the call.
+#[test]
+fn compound_assign_call_rhs_splits_off_combine_node() {
+    let src = b"function f(x) { let q = 'a'; q += fmt(x); return q; }";
+    let fc = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let body = &fc.bodies[1];
+    let g = &body.graph;
+    let call = g
+        .node_indices()
+        .find(|&i| g[i].call.callee.as_deref() == Some("fmt"))
+        .expect("call node for fmt");
+    assert!(g[call].taint.defines.is_none());
+    assert!(!g[call].taint.uses.iter().any(|u| u == "q"));
+    let succs: Vec<_> = g.neighbors(call).collect();
+    assert_eq!(
+        succs.len(),
+        1,
+        "call should flow only into the combine node"
+    );
+    let combine = &g[succs[0]];
+    assert!(combine.rmw_assign && combine.rmw_rhs_from_pred);
+    assert_eq!(combine.taint.defines.as_deref(), Some("q"));
+    assert_eq!(combine.taint.uses, vec!["q".to_string()]);
+    assert!(combine.taint.labels.is_empty());
+    assert_eq!(combine.bin_op, Some(BinOp::Add));
+}
+
+/// `conn ||= Conn.new(..)` stays a single node that defines the target, so
+/// the memoised-acquire idiom keeps its type and resource tracking.
+#[test]
+fn logical_assign_call_rhs_is_not_split() {
+    let nodes = rmw_all_nodes(
+        b"def f(dsn)\n  conn ||= PG::Connection.new(dsn)\n  conn\nend\n",
+        "ruby",
+        Language::from(tree_sitter_ruby::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "conn");
+    assert_eq!(n.kind, StmtKind::Call);
+    assert!(!n.rmw_rhs_from_pred);
+}
+
+/// Java `x += c ? a : b` must not take the ternary diamond, which rebinds
+/// the target as a plain overwrite.
+#[test]
+fn compound_assign_ternary_rhs_keeps_target() {
+    let nodes = rmw_all_nodes(
+        b"class A { String f(String x, boolean c, String a, String b) { x += c ? a : b; return x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "x");
+    assert_eq!(n.taint.uses.first().map(String::as_str), Some("x"));
+    assert!(n.taint.uses.iter().any(|u| u == "a"));
+    assert!(n.taint.uses.iter().any(|u| u == "b"));
+}
+
+/// `counts[k] += 1` updates an existing slot; it is not a
+/// prototype-pollution write even with an attacker-chosen key.
+#[test]
+fn compound_subscript_write_is_not_prototype_pollution_sink() {
+    let nodes = rmw_all_nodes(
+        b"function f(req) { const counts = {}; counts[req.query.k] += 1; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert!(
+        !nodes.iter().any(|n| n
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::PROTOTYPE_POLLUTION)))),
+        "compound subscript store must not carry a PROTOTYPE_POLLUTION sink"
+    );
+}
+
+/// `i++` / `--i` define their operand from its old value plus one, so SSA
+/// lowering builds `i' = i + 1` instead of leaving `i` unchanged.
+fn assert_update_defines_operand(
+    src: &[u8],
+    lang_str: &str,
+    ts_lang: Language,
+    var: &str,
+    op: BinOp,
+) {
+    let nodes = rmw_all_nodes(src, lang_str, ts_lang);
+    let n = rmw_def_node(&nodes, var);
+    assert_eq!(n.taint.uses, vec![var.to_string()], "{lang_str}");
+    assert_eq!(n.bin_op, Some(op), "{lang_str}");
+    assert_eq!(n.bin_op_const, Some(1), "{lang_str}");
+    assert!(n.taint.const_text.is_none(), "{lang_str}");
+}
+
+#[test]
+fn update_expr_defines_operand_javascript() {
+    assert_update_defines_operand(
+        b"function f() { let i = 0; i++; return i; }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_typescript() {
+    assert_update_defines_operand(
+        b"function f(): number { let i = 0; --i; return i; }",
+        "typescript",
+        Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        "i",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_java() {
+    assert_update_defines_operand(
+        b"class A { int f() { int i = 0; i++; return i; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_c() {
+    assert_update_defines_operand(
+        b"char *f(char *p) { ++p; return p; }",
+        "c",
+        Language::from(tree_sitter_c::LANGUAGE),
+        "p",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_cpp() {
+    assert_update_defines_operand(
+        b"int f() { int n = 3; n--; return n; }",
+        "cpp",
+        Language::from(tree_sitter_cpp::LANGUAGE),
+        "n",
+        BinOp::Sub,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_php() {
+    assert_update_defines_operand(
+        b"<?php function f() { $i = 0; $i++; return $i; }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+        "i",
+        BinOp::Add,
+    );
+}
+
+#[test]
+fn update_expr_defines_operand_go() {
+    for (stmt, op) in [("i++", BinOp::Add), ("i--", BinOp::Sub)] {
+        let src = format!("package main\nfunc f() int {{\n\ti := 0\n\t{stmt}\n\treturn i\n}}\n");
+        assert_update_defines_operand(
+            src.as_bytes(),
+            "go",
+            Language::from(tree_sitter_go::LANGUAGE),
+            "i",
+            op,
+        );
+    }
+}
+
+/// The `for` update clause is a real definition, so the loop header gets a
+/// phi joining the initial value and the incremented one.
+#[test]
+fn for_update_clause_defines_counter() {
+    let nodes = rmw_all_nodes(
+        b"function f(xs) { for (let i = 0; i < xs.length; i++) { g(xs[i]); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let n = rmw_def_node(&nodes, "i");
+    assert_eq!(n.bin_op, Some(BinOp::Add));
+}
+
+//   Multi-way branches: match / select / case / arrow switch
+
+/// The Call node whose callee is exactly `callee`.
+fn call_named(cfg: &Cfg, callee: &str) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .unwrap_or_else(|| panic!("expected a Call node for `{callee}`"))
+}
+
+/// Nodes reachable from `from` over forward (Seq/True/False) edges,
+/// skipping `blocked` nodes.
+fn forward_reach(
+    cfg: &Cfg,
+    from: NodeIndex,
+    blocked: &[NodeIndex],
+) -> std::collections::HashSet<NodeIndex> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![from];
+    while let Some(n) = stack.pop() {
+        if blocked.contains(&n) || !seen.insert(n) {
+            continue;
+        }
+        for e in cfg.edges(n) {
+            if matches!(e.weight(), EdgeKind::Seq | EdgeKind::True | EdgeKind::False) {
+                stack.push(e.target());
+            }
+        }
+    }
+    seen
+}
+
+fn rust_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "rust", Language::from(tree_sitter_rust::LANGUAGE))
+}
+
+fn go_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "go", Language::from(tree_sitter_go::LANGUAGE))
+}
+
+fn java_cfg(src: &[u8]) -> (Cfg, NodeIndex) {
+    parse_and_build(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+}
+
+/// Go cases never fall through on their own: case 1's exits leave the
+/// switch instead of entering case 2's body.
+#[test]
+fn go_switch_cases_do_not_fall_through() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\tcase 2:\n\t\tb()\n\t}\n\tafter()\n}\n",
+    );
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(
+        !reach.contains(&call_named(&cfg, "b")),
+        "case 1 must not fall into case 2"
+    );
+    assert!(
+        reach.contains(&call_named(&cfg, "after")),
+        "case 1 must exit the switch"
+    );
+}
+
+/// An explicit `fallthrough` still chains into the next case body.
+#[test]
+fn go_switch_explicit_fallthrough_chains_next_case() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(reach.contains(&call_named(&cfg, "b")));
+}
+
+/// `fallthrough` into a default that sits mid-switch: the default keeps its
+/// source position, is entered from case 1 and on no-match, and does not
+/// fall into the case after it.
+#[test]
+fn go_switch_explicit_fallthrough_into_mid_default() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\ta()\n\t\tfallthrough\n\tdefault:\n\t\td()\n\tcase 2:\n\t\tb()\n\t}\n}\n",
+    );
+    let (a, b, d) = (
+        call_named(&cfg, "a"),
+        call_named(&cfg, "b"),
+        call_named(&cfg, "d"),
+    );
+    assert!(forward_reach(&cfg, a, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, d, &[]).contains(&b));
+    assert!(
+        forward_reach(&cfg, entry, &[a]).contains(&d),
+        "default must be reachable on the no-match path"
+    );
+}
+
+/// `select` runs exactly one case: a returning case does not make the code
+/// after the select unreachable, and cases do not flow into each other.
+#[test]
+fn go_select_cases_are_exclusive() {
+    let (cfg, entry) = go_cfg(
+        b"package p\nfunc f(ch chan int, done chan bool) {\n\tselect {\n\tcase <-done:\n\t\treturn\n\tcase <-ch:\n\t\ta()\n\t}\n\tafter()\n}\n",
+    );
+    let after = call_named(&cfg, "after");
+    assert!(forward_reach(&cfg, entry, &[]).contains(&after));
+    assert!(forward_reach(&cfg, call_named(&cfg, "a"), &[]).contains(&after));
+    // The last case is the fallback, so the only dispatch test is case 1's.
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// The Go switch initializer and a call in the tag expression both get
+/// CFG nodes ahead of the dispatch.
+#[test]
+fn go_switch_init_and_call_tag_are_lowered() {
+    let (cfg, _) =
+        go_cfg(b"package p\nfunc f() {\n\tswitch x := g(); h(x) {\n\tcase 1:\n\t\ta()\n\t}\n}\n");
+    let g_node = call_named(&cfg, "g");
+    assert_eq!(cfg[g_node].taint.defines.as_deref(), Some("x"));
+    let h = call_named(&cfg, "h");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&h));
+    assert!(forward_reach(&cfg, h, &[]).contains(&call_named(&cfg, "a")));
+}
+
+/// `switch t := v.(type)` binds `t` from `v` for every clause.
+#[test]
+fn go_type_switch_alias_is_bound() {
+    let (cfg, _) = go_cfg(
+        b"package p\nfunc f(v interface{}) {\n\tswitch t := v.(type) {\n\tcase string:\n\t\tuse(t)\n\t}\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "t").expect("alias binding node");
+    assert_eq!(bind.taint.uses, vec!["v".to_string()]);
+}
+
+/// A statement-level `match` lowers to one dispatch header per non-default
+/// arm, every arm body gets its own nodes, and arms do not flow into each
+/// other.
+#[test]
+fn rust_match_stmt_builds_dispatch_cascade() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: u8) {\n    match m {\n        1 => a(),\n        2 => { b(); }\n        _ => c(),\n    }\n    after();\n}\n",
+    );
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let a = call_named(&cfg, "a");
+    let reach = forward_reach(&cfg, a, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == 1".to_string()), "got {conds:?}");
+}
+
+/// `match` is exhaustive: the last arm is the fallback, so control cannot
+/// reach the code after the match without running one of the arms.
+#[test]
+fn rust_match_last_arm_is_default() {
+    let (cfg, entry) = rust_cfg(
+        b"fn f(r: Result<u8, u8>) {\n    match r {\n        Ok(v) => a(v),\n        Err(e) => b(e),\n    }\n    after();\n}\n",
+    );
+    let (a, b) = (call_named(&cfg, "a"), call_named(&cfg, "b"));
+    assert!(forward_reach(&cfg, entry, &[]).contains(&call_named(&cfg, "after")));
+    assert!(
+        !forward_reach(&cfg, entry, &[a, b]).contains(&call_named(&cfg, "after")),
+        "no no-match path may skip both arms"
+    );
+}
+
+/// Pattern bindings are defined from the scrutinee at the start of the arm.
+#[test]
+fn rust_match_arm_binding_defines_from_scrutinee() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(r: Result<String, E>) {\n    match r {\n        Ok(Foo { x, y: z }) => sink(x, z),\n        _ => {}\n    }\n}\n",
+    );
+    let bind = find_node_defining(&cfg, "x").expect("binding node for x");
+    assert_eq!(bind.taint.extra_defines, vec!["z".to_string()]);
+    assert_eq!(bind.taint.uses, vec!["r".to_string()]);
+    let sink = call_named(&cfg, "sink");
+    let bind_idx = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .unwrap();
+    assert!(forward_reach(&cfg, bind_idx, &[]).contains(&sink));
+}
+
+/// A call scrutinee gets its own Call node, and its value reaches the arm
+/// bindings through a synthetic name.
+#[test]
+fn rust_match_call_scrutinee_gets_own_node() {
+    let (cfg, _) = rust_cfg(
+        b"fn f() {\n    match env::var(\"X\") {\n        Ok(v) => run(v),\n        Err(_) => {}\n    }\n}\n",
+    );
+    let scrut = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n].kind == StmtKind::Call
+                && cfg[n]
+                    .call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.contains("env::var"))
+        })
+        .expect("scrutinee Call node");
+    let synth = cfg[scrut].taint.defines.clone().expect("synthetic define");
+    assert!(synth.starts_with("__nyx_scrut_"));
+    let bind = find_node_defining(&cfg, "v").expect("binding node for v");
+    assert_eq!(bind.taint.uses, vec![synth]);
+}
+
+/// A guarded arm is a second test: its guard header carries the guard as
+/// its condition, and the guard's False edge continues the dispatch.
+#[test]
+fn rust_match_guard_gets_its_own_branch() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(x: Option<String>) {\n    match x {\n        Some(v) if ok(&v) => a(v),\n        _ => b(),\n    }\n}\n",
+    );
+    let guard = if_nodes(&cfg)
+        .into_iter()
+        .find(|&n| cfg[n].condition_text.as_deref() == Some("ok(&v)"))
+        .expect("guard header");
+    let a = call_named(&cfg, "a");
+    let b = call_named(&cfg, "b");
+    assert!(
+        cfg.edges(guard)
+            .any(|e| matches!(e.weight(), EdgeKind::False))
+    );
+    assert!(forward_reach(&cfg, guard, &[a]).contains(&b));
+    // The binding runs before the guard reads it.
+    let bind = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("v"))
+        .expect("binding node");
+    assert!(forward_reach(&cfg, bind, &[]).contains(&guard));
+}
+
+/// `break` inside a match arm leaves the enclosing loop, not the match.
+#[test]
+fn rust_match_break_in_arm_targets_loop_exit() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(rx: R) {\n    loop {\n        match rx.recv() {\n            Ok(m) => h(m),\n            Err(_) => break,\n        }\n        tick();\n    }\n    after();\n}\n",
+    );
+    let brk = cfg
+        .node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Break)
+        .expect("break node");
+    let reach = forward_reach(&cfg, brk, &[]);
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    assert!(
+        !reach.contains(&call_named(&cfg, "tick")),
+        "break must skip the rest of the loop body"
+    );
+}
+
+/// `let y = match ..` keeps its single-node lowering.
+#[test]
+fn rust_let_match_stays_single_node() {
+    let (cfg, _) = rust_cfg(b"fn f(m: u8) {\n    let y = match m { 1 => a(), _ => b() };\n}\n");
+    assert!(if_nodes(&cfg).is_empty());
+    assert!(find_node_defining(&cfg, "y").is_some());
+}
+
+/// Statement-level `unsafe { .. }` and bare `{ .. }` blocks are walked, so
+/// the calls inside them get their own nodes.
+#[test]
+fn rust_stmt_unsafe_and_bare_blocks_are_walked() {
+    let (cfg, _) = rust_cfg(b"fn f() {\n    unsafe { a(); }\n    { b(); }\n}\n");
+    let a = call_named(&cfg, "a");
+    assert!(forward_reach(&cfg, a, &[]).contains(&call_named(&cfg, "b")));
+}
+
+/// An arm that emits no node still gets a branch target, so the header keeps
+/// distinct True and False successors.
+#[test]
+fn empty_match_arm_keeps_branch_labels() {
+    let (cfg, _) = rust_cfg(
+        b"fn f(m: &str) {\n    match m {\n        \"q\" => return,\n        _ => {}\n    }\n    after();\n}\n",
+    );
+    let [header] = if_nodes(&cfg)[..] else {
+        panic!("expected one dispatch header");
+    };
+    let true_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::True))
+        .map(|e| e.target());
+    let false_tgt = cfg
+        .edges(header)
+        .find(|e| matches!(e.weight(), EdgeKind::False))
+        .map(|e| e.target());
+    assert!(true_tgt.is_some() && false_tgt.is_some() && true_tgt != false_tgt);
+    assert!(forward_reach(&cfg, false_tgt.unwrap(), &[]).contains(&call_named(&cfg, "after")));
+}
+
+/// Python `match`: cases are exclusive, `case _` is the default, and a
+/// capture pattern binds from the subject.
+#[test]
+fn python_match_cases_exclusive_with_bindings() {
+    let src = b"def f(m, d):\n    match m:\n        case \"a\":\n            x = 1\n        case str(v):\n            run(v)\n        case _:\n            other()\n    after()\n";
+    let (cfg, _) = parse_and_build(src, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let x_def = cfg
+        .node_indices()
+        .find(|&n| cfg[n].taint.defines.as_deref() == Some("x"))
+        .expect("x = 1");
+    let reach = forward_reach(&cfg, x_def, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "run")));
+    assert!(!reach.contains(&call_named(&cfg, "other")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+    let bind = find_node_defining(&cfg, "v").expect("capture binding");
+    assert_eq!(bind.taint.uses, vec!["m".to_string()]);
+}
+
+/// Ruby `case`/`when`/`else`: `else` is the default arm and `when` arms
+/// are exclusive.
+#[test]
+fn ruby_case_when_else_is_default() {
+    let src = b"def f(m)\n  case m\n  when \"a\" then a()\n  when \"b\" then b()\n  else c()\n  end\n  after()\nend\n";
+    let (cfg, _) = parse_and_build(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let reach = forward_reach(&cfg, call_named(&cfg, "a"), &[]);
+    assert!(!reach.contains(&call_named(&cfg, "b")));
+    assert!(!reach.contains(&call_named(&cfg, "c")));
+    assert!(reach.contains(&call_named(&cfg, "after")));
+}
+
+/// Java arrow rules are recognised as cases: their bodies are lowered
+/// statement by statement and do not fall into the next rule.
+#[test]
+fn java_arrow_switch_rule_bodies_lowered() {
+    let src = b"class S { void m(String m, String p) {\n  switch (m) {\n    case \"a\" -> Runtime.getRuntime().exec(p);\n    case \"b\" -> { x = 1; foo(x); }\n    default -> bar();\n  }\n} }\n";
+    let (cfg, _) = java_cfg(src);
+    assert_eq!(if_nodes(&cfg).len(), 2);
+    let exec = cfg
+        .node_indices()
+        .find(|&n| {
+            cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains("exec"))
+        })
+        .expect("exec Call node");
+    let reach = forward_reach(&cfg, exec, &[]);
+    assert!(!reach.contains(&call_named(&cfg, "foo")));
+    assert!(!reach.contains(&call_named(&cfg, "bar")));
+    let conds: Vec<_> = if_nodes(&cfg)
+        .into_iter()
+        .filter_map(|n| cfg[n].condition_text.clone())
+        .collect();
+    assert!(conds.contains(&"m == \"a\"".to_string()), "got {conds:?}");
+}
+
+/// Java's `default` sits inside the `switch_label`; the colon form must
+/// still treat it as the default arm (no dispatch header of its own).
+#[test]
+fn java_colon_switch_default_detected() {
+    let (cfg, _) =
+        java_cfg(b"class S { void m(int x) { switch (x) { case 1: a(); break; default: c(); } } }");
+    assert_eq!(if_nodes(&cfg).len(), 1);
+}
+
+/// `case String s ->` binds `s` and synthesizes no `==` condition.
+#[test]
+fn java_type_pattern_case_binds_without_condition() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(Object o) { switch (o) { case String s -> use(s); default -> {} } } }",
+    );
+    let bind = find_node_defining(&cfg, "s").expect("pattern binding");
+    assert_eq!(bind.taint.uses, vec!["o".to_string()]);
+    assert!(
+        if_nodes(&cfg)
+            .iter()
+            .all(|&n| cfg[n].condition_text.is_none())
+    );
+}
+
+/// `outer: for (..) { .. }` walks the labeled loop.
+#[test]
+fn java_labeled_for_walks_body() {
+    let (cfg, _) = java_cfg(
+        b"class S { void m(String[] ids) { outer: for (String id : ids) { st.executeUpdate(id); } } }",
+    );
+    assert!(cfg.node_indices().any(|n| {
+        cfg[n]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("executeUpdate"))
+    }));
+}
+
+/// A call in a JS switch discriminant gets its own Call node.
+#[test]
+fn js_switch_call_discriminant_lowered() {
+    let (cfg, _) = parse_and_build(
+        b"function f(x) { switch (g(x)) { case 1: a(); } }",
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    let g_node = call_named(&cfg, "g");
+    assert!(forward_reach(&cfg, g_node, &[]).contains(&call_named(&cfg, "a")));
+}
+
+//   Branch and loop headers: classified from the condition only
+
+fn lang_cfg(lang: &str, src: &[u8]) -> (Cfg, NodeIndex) {
+    let ts_lang = match lang {
+        "javascript" => Language::from(tree_sitter_javascript::LANGUAGE),
+        "python" => Language::from(tree_sitter_python::LANGUAGE),
+        "ruby" => Language::from(tree_sitter_ruby::LANGUAGE),
+        "rust" => Language::from(tree_sitter_rust::LANGUAGE),
+        "go" => Language::from(tree_sitter_go::LANGUAGE),
+        "java" => Language::from(tree_sitter_java::LANGUAGE),
+        "c" => Language::from(tree_sitter_c::LANGUAGE),
+        "php" => Language::from(tree_sitter_php::LANGUAGE_PHP),
+        other => panic!("unsupported test language {other}"),
+    };
+    parse_and_build(src, lang, ts_lang)
+}
+
+fn header_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| matches!(cfg[n].kind, StmtKind::If | StmtKind::Loop))
+        .collect()
+}
+
+fn has_any_sink(info: &NodeInfo) -> bool {
+    info.taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(_)))
+}
+
+/// A sink call in a branch or loop body labels its own node, never the
+/// header: neither the gated-sink walk nor the statement text may reach
+/// into the body.
+#[test]
+fn header_nodes_do_not_take_labels_from_the_body() {
+    let cases: &[(&str, &[u8], &str)] = &[
+        (
+            "javascript",
+            b"function h(req, db) { const f = req.query.f; if (f === \"y\") { db.query(\"SELECT 1\"); } }",
+            "db.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { let n = req.query.n; while (n > 0) { fetch(\"https://x\"); n--; } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, cp) { const flag = req.query.f; do { cp.exec(\"ls\"); } while (flag); }",
+            "cp.exec",
+        ),
+        (
+            "javascript",
+            b"function h(req, pool) { const id = req.query.id; for (let i = 0; i < id.length; i++) { pool.query(\"SELECT now()\"); } }",
+            "pool.query",
+        ),
+        (
+            "javascript",
+            b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }",
+            "fetch",
+        ),
+        (
+            "javascript",
+            b"function h(req, exec) { const c = req.query.c; if (c) exec(\"ls\"); }",
+            "exec",
+        ),
+        (
+            "python",
+            b"def h(self, flag):\n    if flag:\n        self.cursor.execute(\"select 1\")\n",
+            "self.cursor.execute",
+        ),
+        (
+            "python",
+            b"def h(event):\n    if event == \"a\":\n        pass\n    elif event == \"push\":\n        requests.post(\"https://h\", json={})\n",
+            "requests.post",
+        ),
+        (
+            "python",
+            b"def h(cmd):\n    while cmd:\n        subprocess.run(cmd, shell=True)\n        break\n",
+            "subprocess.run",
+        ),
+        (
+            "ruby",
+            b"def h(mode)\n  if mode == \"x\"\n    User.connection.execute(\"SELECT 1\")\n  end\nend\n",
+            "execute",
+        ),
+        (
+            "ruby",
+            b"def h(payload)\n  unless payload =~ /a/\n    x = 1\n  else\n    STDOUT.print(payload)\n  end\nend\n",
+            "STDOUT.print",
+        ),
+        (
+            "rust",
+            b"fn h(p: &str, flag: bool) { if flag { std::fs::remove_file(p).unwrap(); } }",
+            "std::fs::remove_file",
+        ),
+        (
+            "c",
+            b"int main(int argc, char **argv) { if (argc > 1) { execv(\"/bin/ls\", argv); } return 0; }",
+            "execv",
+        ),
+        (
+            "go",
+            b"package main\nfunc h(flag bool) {\n\tif flag {\n\t\texec.Command(\"ls\").Run()\n\t}\n}\n",
+            "exec.Command",
+        ),
+    ];
+    for (lang, src, body_callee) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        let headers = header_nodes(&cfg);
+        assert!(!headers.is_empty(), "{lang}: no header node");
+        for h in headers {
+            let info = &cfg[h];
+            assert!(
+                info.taint.labels.is_empty(),
+                "{lang}: header took labels {:?} from its body",
+                info.taint.labels
+            );
+            assert!(info.call.callee.is_none(), "{lang}: {:?}", info.call.callee);
+            assert!(info.call.sink_payload_args.is_none(), "{lang}");
+            assert!(info.call.gate_filters.is_empty(), "{lang}");
+        }
+        assert!(
+            cfg.node_indices().any(|n| cfg[n]
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| c.contains(body_callee))),
+            "{lang}: the body call `{body_callee}` lost its node"
+        );
+    }
+}
+
+/// A Rust `loop {}` header evaluates nothing: no uses, no labels.
+#[test]
+fn rust_loop_header_is_empty() {
+    let (cfg, _) = rust_cfg(
+        b"fn h(name: String) { loop { std::process::Command::new(\"ls\").status().unwrap(); println!(\"{}\", name); break; } }",
+    );
+    let headers = header_nodes(&cfg);
+    assert_eq!(headers.len(), 1);
+    let info = &cfg[headers[0]];
+    assert!(info.taint.uses.is_empty(), "{:?}", info.taint.uses);
+    assert!(info.taint.labels.is_empty());
+}
+
+/// Header uses are the condition's identifiers.  A C-style `for` keeps its
+/// init / update clauses (Go and Java do not lower them separately) but
+/// never the body.
+#[test]
+fn header_uses_come_from_the_condition() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(f, q, db) { if (f === \"y\") { db.query(q); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert_eq!(cfg[h].taint.uses, vec!["f".to_string()]);
+
+    let (cfg, _) = lang_cfg(
+        "python",
+        b"def h(a, mode, payload):\n    if a:\n        pass\n    elif mode == \"x\":\n        send(payload)\n",
+    );
+    for h in header_nodes(&cfg) {
+        assert!(
+            !cfg[h].taint.uses.contains(&"payload".to_string()),
+            "{:?}",
+            cfg[h].taint.uses
+        );
+    }
+
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(n int, body string) {\n\tfor i := 0; i < n; i++ {\n\t\tuse(body)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    let uses = &cfg[h].taint.uses;
+    assert!(uses.contains(&"i".to_string()) && uses.contains(&"n".to_string()));
+    assert!(!uses.contains(&"body".to_string()), "{uses:?}");
+}
+
+/// Header work is proportional to the condition, not the nested body: the
+/// uses summed over a long else-if chain stay linear in its length.
+#[test]
+fn else_if_chain_header_uses_are_linear() {
+    let mut src = String::from("function h(x, y) {\n");
+    for i in 0..20 {
+        let kw = if i == 0 { "if" } else { "} else if" };
+        src.push_str(&format!("  {kw} (x === {i}) {{\n    y = g{i}(y);\n"));
+    }
+    src.push_str("  }\n}\n");
+    let (cfg, _) = lang_cfg("javascript", src.as_bytes());
+    let headers: Vec<_> = if_nodes(&cfg);
+    assert_eq!(headers.len(), 20);
+    let total: usize = headers.iter().map(|&h| cfg[h].taint.uses.len()).sum();
+    assert_eq!(total, 20, "each header reads only `x`");
+}
+
+/// Calls in the condition still classify the header: an output-parameter
+/// source (`fgets`) in `if`, `while`, `do .. while` and a C-style `for`, a
+/// bare call condition (Python, Ruby), an elif condition, and an `if let`
+/// value.
+#[test]
+fn header_condition_calls_still_classify() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "c",
+            b"void f(void) { char buf[10]; if (!fgets(buf, 10, stdin)) return; system(buf); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; while (fgets(buf, 10, stdin)) { system(buf); } }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; do { puts(\"x\"); } while (!fgets(buf, 10, stdin)); }",
+        ),
+        (
+            "c",
+            b"void f(void) { char buf[10]; for (; fgets(buf, 10, stdin); ) { system(buf); } }",
+        ),
+        ("python", b"def h(cmd):\n    if os.system(cmd):\n        pass\n"),
+        (
+            "python",
+            b"def h(cmd):\n    if cmd == \"a\":\n        pass\n    elif os.system(cmd):\n        pass\n",
+        ),
+        ("ruby", b"def h(cmd)\n  if system(cmd)\n    x = 1\n  end\nend\n"),
+        (
+            "rust",
+            b"fn h() { if let Ok(c) = std::env::var(\"X\") { run(c); } }",
+        ),
+    ];
+    for (lang, src) in cases {
+        let (cfg, _) = lang_cfg(lang, src);
+        assert!(
+            header_nodes(&cfg)
+                .iter()
+                .any(|&h| !cfg[h].taint.labels.is_empty()),
+            "{lang}: condition call lost its label:\n{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+}
+
+/// A gated sink in the condition (`await axios.get(url)`) gates on the
+/// condition call itself, with its own argument positions.
+#[test]
+fn header_condition_gated_sink_uses_condition_call() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"async function h(url) { if (await axios.get(url)) { log(1); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(has_any_sink(&cfg[h]), "{:?}", cfg[h].taint.labels);
+    assert_eq!(cfg[h].call.callee.as_deref(), Some("axios.get"));
+    assert_eq!(cfg[h].call.arg_uses, vec![vec!["url".to_string()]]);
+}
+
+/// A for-each header classifies on its iterable, in every language.
+#[test]
+fn for_each_header_classifies_iterable() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function h(req) { for (const x of req.body) { use(x); } }",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+
+    // Go: the iterable is `range_clause.right`; an index iterable
+    // classifies on its base call.
+    let (cfg, _) = go_cfg(
+        b"package main\nfunc h(w http.ResponseWriter, r *http.Request) {\n\tfor _, v := range r.URL.Query()[\"c\"] {\n\t\tuse(v)\n\t}\n}\n",
+    );
+    let h = header_nodes(&cfg)[0];
+    assert!(
+        cfg[h]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_))),
+        "{:?}",
+        cfg[h].taint.labels
+    );
+    let info = &cfg[h];
+    assert!(
+        info.taint.defines.as_deref() == Some("v")
+            || info.taint.extra_defines.contains(&"v".into())
+    );
+}
+
+//   try / finally and begin / ensure on early exits
+
+fn exit_node(cfg: &Cfg) -> NodeIndex {
+    cfg.node_indices()
+        .find(|&n| cfg[n].kind == StmtKind::Exit)
+        .expect("function body has an Exit node")
+}
+
+fn return_nodes(cfg: &Cfg) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].kind == StmtKind::Return)
+        .collect()
+}
+
+fn calls_named(cfg: &Cfg, callee: &str) -> Vec<NodeIndex> {
+    cfg.node_indices()
+        .filter(|&n| cfg[n].call.callee.as_deref() == Some(callee))
+        .collect()
+}
+
+fn reachable_from_entry(cfg: &Cfg, entry: NodeIndex) -> usize {
+    let mut bfs = petgraph::visit::Bfs::new(cfg, entry);
+    let mut n = 0;
+    while bfs.next(cfg).is_some() {
+        n += 1;
+    }
+    n
+}
+
+/// `return` in the try body runs the finally clause before leaving: the
+/// clause is reachable (it used to be an orphan when every path returned),
+/// the return reaches the exit only through it, and the clause is lowered
+/// once, not once per path.
+#[test]
+fn return_in_try_runs_finally_in_every_language() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            "javascript",
+            b"function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "java",
+            b"class C { int f() { try { return a(); } finally { cleanup(); } } }",
+        ),
+        (
+            "python",
+            b"def f():\n    try:\n        return a()\n    finally:\n        cleanup()\n",
+        ),
+        (
+            "php",
+            b"<?php function f() { try { return a(); } finally { cleanup(); } }",
+        ),
+        (
+            "ruby",
+            b"def f\n  begin\n    return a()\n  ensure\n    cleanup()\n  end\nend\n",
+        ),
+        // Method-level `ensure` without a `begin`.
+        ("ruby", b"def f\n  return a()\nensure\n  cleanup()\nend\n"),
+    ];
+    for (lang, src) in cases {
+        let (cfg, entry) = lang_cfg(lang, src);
+        let src_text = String::from_utf8_lossy(src);
+        assert_eq!(
+            reachable_from_entry(&cfg, entry),
+            cfg.node_count(),
+            "{lang}: orphan node:\n{src_text}"
+        );
+        let cleanup = calls_named(&cfg, "cleanup");
+        assert_eq!(cleanup.len(), 1, "{lang}: finally lowered once\n{src_text}");
+        let cleanup = cleanup[0];
+
+        let exit = exit_node(&cfg);
+        let (tails, real): (Vec<NodeIndex>, Vec<NodeIndex>) = return_nodes(&cfg)
+            .into_iter()
+            .partition(|&r| cfg[r].finally_tail);
+        assert_eq!((real.len(), tails.len()), (1, 1), "{lang}\n{src_text}");
+        let (ret, tail) = (real[0], tails[0]);
+        assert!(cfg[ret].finally_return, "{lang}");
+        assert!(
+            !cfg.contains_edge(ret, exit),
+            "{lang}: the return left the function without running the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, ret, &[]).contains(&cleanup),
+            "{lang}: the return does not reach the finally clause"
+        );
+        assert!(
+            forward_reach(&cfg, cleanup, &[]).contains(&tail),
+            "{lang}: the finally clause does not reach the tail"
+        );
+        assert!(
+            cfg.contains_edge(tail, exit),
+            "{lang}: tail must reach Exit"
+        );
+    }
+}
+
+/// A return in a catch handler runs the clause too, and with every path
+/// returning there is no normal-path copy left over.
+#[test]
+fn return_in_catch_runs_finally_once() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { return b(); } finally { c(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    assert_eq!(calls_named(&cfg, "c").len(), 1);
+    let exit = exit_node(&cfg);
+    let c = calls_named(&cfg, "c")[0];
+    let rerouted: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_return)
+        .collect();
+    assert_eq!(rerouted.len(), 2);
+    for r in rerouted {
+        assert!(!cfg.contains_edge(r, exit));
+        assert!(forward_reach(&cfg, r, &[]).contains(&c));
+    }
+}
+
+/// A return on only some paths: the clause exists on the normal path and on
+/// the return path, and both reach the exit.
+#[test]
+fn partial_return_runs_finally_on_both_paths() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f(x) { try { if (x) { return a(); } b(); } finally { c(); } d(); }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let copies = calls_named(&cfg, "c");
+    assert_eq!(copies.len(), 2, "normal-path copy and early-exit copy");
+    let exit = exit_node(&cfg);
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .expect("the return is rerouted");
+    let reached_from_ret = forward_reach(&cfg, ret, &[]);
+    let early = copies
+        .iter()
+        .copied()
+        .find(|c| reached_from_ret.contains(c))
+        .unwrap();
+    let normal = copies.iter().copied().find(|&c| c != early).unwrap();
+    // The code after the try follows the normal copy only.
+    let d = call_named(&cfg, "d");
+    assert!(forward_reach(&cfg, normal, &[]).contains(&d));
+    assert!(!forward_reach(&cfg, early, &[]).contains(&d));
+    assert!(forward_reach(&cfg, early, &[]).contains(&exit));
+}
+
+/// The inner clause runs before the outer one on the return path.
+#[test]
+fn nested_finally_runs_inner_before_outer() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { try { return a(); } finally { inner(); } } finally { outer(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let (inner, outer) = (call_named(&cfg, "inner"), call_named(&cfg, "outer"));
+    let ret = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_return)
+        .unwrap();
+    assert!(forward_reach(&cfg, ret, &[]).contains(&inner));
+    assert!(
+        !forward_reach(&cfg, ret, &[inner]).contains(&outer),
+        "the outer clause ran without the inner one"
+    );
+    assert!(forward_reach(&cfg, inner, &[]).contains(&outer));
+    // Only the outermost tail is a Return: the inner tail flows on.
+    let tails: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| cfg[r].finally_tail)
+        .collect();
+    assert_eq!(tails.len(), 1);
+    assert!(forward_reach(&cfg, outer, &[]).contains(&tails[0]));
+}
+
+/// A return inside the clause is the clause's own and is not rerouted
+/// through the clause it sits in.
+#[test]
+fn return_inside_finally_is_not_rerouted() {
+    let (cfg, entry) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } finally { return b(); } }",
+    );
+    assert_eq!(reachable_from_entry(&cfg, entry), cfg.node_count());
+    let exit = exit_node(&cfg);
+    let own: Vec<_> = return_nodes(&cfg)
+        .into_iter()
+        .filter(|&r| !cfg[r].finally_return && !cfg[r].finally_tail)
+        .collect();
+    assert!(!own.is_empty());
+    for r in own {
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// Without a finally clause nothing changes: the return goes to the exit.
+#[test]
+fn return_without_finally_keeps_exit_edge() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f() { try { return a(); } catch (e) { b(); } }",
+    );
+    let exit = exit_node(&cfg);
+    for r in return_nodes(&cfg) {
+        assert!(!cfg[r].finally_return && !cfg[r].finally_tail);
+        assert!(cfg.contains_edge(r, exit));
+    }
+}
+
+/// The tail returns what the original returns returned, so ownership of a
+/// returned resource still reads as handed to the caller.
+#[test]
+fn finally_tail_carries_the_returned_names() {
+    let (cfg, _) = lang_cfg(
+        "javascript",
+        b"function f(r) { try { if (r) { return r; } return s; } finally { audit(); } }",
+    );
+    let tail = return_nodes(&cfg)
+        .into_iter()
+        .find(|&r| cfg[r].finally_tail)
+        .unwrap();
+    let mut uses = cfg[tail].taint.uses.clone();
+    uses.sort();
+    assert_eq!(uses, vec!["r".to_string(), "s".to_string()]);
+}
+
+/// A function declared in the clause is registered once even though the
+/// clause is lowered for two paths.
+#[test]
+fn closure_in_duplicated_finally_has_one_body() {
+    let src = b"function f(x) { try { if (x) { return a(); } b(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    // top level, f, and the closure
+    assert_eq!(file_cfg.bodies.len(), 3);
+    let spans: std::collections::HashSet<_> = file_cfg
+        .bodies
+        .iter()
+        .skip(1)
+        .map(|b| b.meta.span)
+        .collect();
+    assert_eq!(spans.len(), 2, "no body is registered twice");
+}
+
+/// With every path returning there is no normal-path copy, so a closure in
+/// the clause is still registered by the early-exit copy.
+#[test]
+fn closure_in_only_finally_copy_is_registered() {
+    let src = b"function f() { try { return a(); } finally { run(function () { inner(); }); } }";
+    let file_cfg = parse_to_file_cfg(
+        src,
+        "javascript",
+        Language::from(tree_sitter_javascript::LANGUAGE),
+    );
+    assert_eq!(file_cfg.bodies.len(), 3);
+}
+
+// ── nested_calls (per-operand call nesting) ──────────────────────────────
+
+/// The nested-call record of the first node whose callee is `callee`.
+fn nested_calls_of<'a>(cfg: &'a Cfg, callee: &str) -> Option<&'a NestedCallTree> {
+    cfg.node_indices()
+        .map(|i| &cfg[i])
+        .find(|n| n.call.callee.as_deref() == Some(callee))
+        .and_then(|n| n.call.nested_calls.as_deref())
+}
+
+fn occ<'a>(tree: &'a NestedCallTree, text: &'a str) -> Vec<&'a NestedUse> {
+    tree.uses_of(text).collect()
+}
+
+#[test]
+fn nested_calls_separates_sanitized_and_sibling_operands() {
+    let src =
+        b"function f(name, bio) { const html = \"<p>\" + escapeHtml(name) + \"</p>\" + bio; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record for a call beside an operand");
+    assert_eq!(tree.calls.len(), 1);
+    assert_eq!(tree.anchor, Some(0));
+    let name = occ(tree, "name");
+    assert_eq!(name.len(), 1);
+    assert_eq!((name[0].call, name[0].slot), (Some(0), CallSlot::Arg(0)));
+    let bio = occ(tree, "bio");
+    assert_eq!(bio.len(), 1);
+    assert_eq!(bio[0].call, None, "`bio` sits outside every call");
+    assert!(
+        occ(tree, "html").is_empty(),
+        "the declared name is written, not read"
+    );
+}
+
+#[test]
+fn nested_calls_absent_for_a_single_call_statement() {
+    let src = b"function f(x) { const y = g(x); h(y.a, y); return k(x); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    for i in cfg.node_indices() {
+        assert!(
+            cfg[i].call.nested_calls.is_none(),
+            "single-call node {:?} must not carry a record",
+            cfg[i].call.callee
+        );
+    }
+}
+
+#[test]
+fn nested_calls_records_wrapper_argument_positions_go() {
+    let src = b"package main\nfunc h(w W, f string, a string, b string) { fmt.Fprintf(w, f, html.EscapeString(a), b) }\n";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "go", ts_lang);
+    let tree = nested_calls_of(&cfg, "fmt.Fprintf").expect("record for a nested call");
+    let anchor = tree.anchor.expect("anchor is the Fprintf call") as usize;
+    assert_eq!(tree.calls[anchor].callee, "fmt.Fprintf");
+    assert_eq!(tree.calls[anchor].arity, Some(4));
+    let esc = tree
+        .calls
+        .iter()
+        .position(|c| c.callee == "html.EscapeString")
+        .expect("inner call recorded");
+    assert_eq!(tree.calls[esc].parent, Some(anchor as u16));
+    assert_eq!(tree.calls[esc].slot, CallSlot::Arg(2));
+    let a = occ(tree, "a");
+    assert_eq!((a[0].call, a[0].slot), (Some(esc as u16), CallSlot::Arg(0)));
+    let b = occ(tree, "b");
+    assert_eq!(
+        (b[0].call, b[0].slot),
+        (Some(anchor as u16), CallSlot::Arg(3))
+    );
+}
+
+#[test]
+fn nested_calls_template_substitution_operand_is_a_sibling() {
+    let src = b"function f(n, bio) { const h = `<p>${escapeHtml(n)}</p>${bio}`; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    assert_eq!(occ(tree, "bio")[0].call, None);
+    assert_eq!(occ(tree, "n")[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_compound_assignment_reads_its_target() {
+    let src = b"function f(html, n) { html += escapeHtml(n); return html; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "escapeHtml").expect("record");
+    let html = occ(tree, "html");
+    assert_eq!(html.len(), 1, "`+=` reads the target");
+    assert_eq!(html[0].call, None);
+}
+
+#[test]
+fn nested_calls_plain_assignment_skips_member_target() {
+    // `alias.data = sanitize(alias.data)`: the written target must not count
+    // as an operand beside the sanitizer call.
+    let src = b"function f(alias) { alias.data = DOMPurify.sanitize(alias.data) + x; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "DOMPurify.sanitize").expect("record");
+    let data = occ(tree, "alias.data");
+    assert_eq!(data.len(), 1, "only the read inside the call: {data:?}");
+    assert_eq!(data[0].call, Some(0));
+}
+
+#[test]
+fn nested_calls_receiver_and_member_path() {
+    let src = b"function f(req, y) { const s = req.query.name.trim() + escape(y); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let tree = nested_calls_of(&cfg, "req.trim").or_else(|| {
+        cfg.node_indices()
+            .find_map(|i| cfg[i].call.nested_calls.as_deref())
+    });
+    let tree = tree.expect("record");
+    let path = occ(tree, "req.query.name");
+    assert_eq!(path.len(), 1);
+    assert_eq!(path[0].slot, CallSlot::Receiver);
+    let trim = path[0].call.expect("inside the trim call") as usize;
+    assert!(tree.calls[trim].callee.ends_with("trim"));
+}
+
+#[test]
+fn nested_calls_python_keyword_value_and_positions() {
+    let src = b"def f(a, b):\n    subprocess.run(quote(a), shell=b)\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "python", ts_lang);
+    let tree = nested_calls_of(&cfg, "subprocess.run").expect("record");
+    let anchor = tree.anchor.expect("anchor");
+    assert_eq!(
+        tree.calls[anchor as usize].arity,
+        Some(1),
+        "keyword args are not positional"
+    );
+    let b = occ(tree, "b");
+    assert_eq!((b[0].call, b[0].slot), (Some(anchor), CallSlot::Other));
+    assert!(occ(tree, "shell").is_empty(), "keyword names are not reads");
+}
+
+#[test]
+fn nested_calls_rust_macro_has_no_record() {
+    let src = b"fn f(a: String, b: String) { let s = format!(\"{}{}\", esc(&a), b); run(s); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "rust", ts_lang);
+    for i in cfg.node_indices() {
+        if cfg[i]
+            .call
+            .callee
+            .as_deref()
+            .is_some_and(|c| c.contains("format"))
+        {
+            assert!(cfg[i].call.nested_calls.is_none());
+        }
+    }
+}
+
+#[test]
+fn nested_calls_marks_whole_argument_calls() {
+    let src =
+        b"function f(res, n, x) { res.setHeader('X', String(n)); res.send('a' + String(x)); }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "javascript", ts_lang);
+    let exact = nested_calls_of(&cfg, "res.setHeader").expect("record");
+    let inner = exact
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(inner.exact_arg, "String(n) is the whole argument");
+    let concat = nested_calls_of(&cfg, "res.send").expect("record");
+    let inner = concat
+        .calls
+        .iter()
+        .find(|c| c.callee == "String")
+        .expect("inner call");
+    assert!(!inner.exact_arg, "String(x) is one operand of the argument");
+}
+
+/// Outgoing non-exception edge count of the first Call node whose callee is
+/// `callee`, across every body of `src`.
+fn call_fallthrough_count(src: &[u8], lang: &str, ts_lang: Language, callee: &str) -> usize {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    for body in &fc.bodies {
+        let g = &body.graph;
+        if let Some(n) = g
+            .node_indices()
+            .find(|&i| g[i].kind == StmtKind::Call && g[i].call.callee.as_deref() == Some(callee))
+        {
+            return g
+                .edges(n)
+                .filter(|e| !matches!(e.weight(), EdgeKind::Exception))
+                .count();
+        }
+    }
+    panic!("no call to {callee}");
+}
+
+#[test]
+fn python_flask_abort_import_dead_ends_the_call() {
+    let ts = || Language::from(tree_sitter_python::LANGUAGE);
+    let src = b"from flask import request, abort\ndef h():\n    x = request.args.get('x')\n    if x not in A:\n        abort(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(src, "python", ts(), "abort"), 0);
+
+    let aliased = b"from werkzeug.exceptions import abort as deny\ndef h(x):\n    if x not in A:\n        deny(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(aliased, "python", ts(), "deny"), 0);
+
+    let qualified =
+        b"import flask\ndef h(x):\n    if x not in A:\n        flask.abort(400)\n    run(x)\n";
+    assert_eq!(
+        call_fallthrough_count(qualified, "python", ts(), "flask.abort"),
+        0
+    );
+}
+
+#[test]
+fn python_local_abort_without_framework_import_falls_through() {
+    let ts = Language::from(tree_sitter_python::LANGUAGE);
+    let src = b"def abort(c):\n    print(c)\ndef h(x):\n    if x not in A:\n        abort(400)\n    run(x)\n";
+    assert_eq!(call_fallthrough_count(src, "python", ts, "abort"), 1);
+}
+
+#[test]
+fn php_wp_die_and_namespaced_abort_dead_end() {
+    let ts = || Language::from(tree_sitter_php::LANGUAGE_PHP);
+    let src = b"<?php\nfunction h($c) {\n  if (!in_array($c, ['a'], true)) { wp_die('bad'); }\n  system($c);\n}\n";
+    assert_eq!(call_fallthrough_count(src, "php", ts(), "wp_die"), 0);
+    let ns = b"<?php\nnamespace App;\nfunction h($c) {\n  if (!in_array($c, ['a'], true)) { \\abort(403); }\n  system($c);\n}\n";
+    let fc = parse_to_file_cfg(ns, "php", ts());
+    let callee = fc
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter_map(|n| n.call.callee.clone())
+        .find(|c| c.ends_with("abort"))
+        .expect("abort call");
+    assert_eq!(call_fallthrough_count(ns, "php", ts(), &callee), 0);
+}
+
+#[test]
+fn koa_ctx_throw_dead_ends_the_call() {
+    let ts = Language::from(tree_sitter_javascript::LANGUAGE);
+    let src = b"async function h(ctx) {\n  const c = ctx.query.c;\n  if (!A.includes(c)) { ctx.throw(400, 'bad'); }\n  run(c);\n}\n";
+    assert_eq!(
+        call_fallthrough_count(src, "javascript", ts, "ctx.throw"),
+        0
+    );
+}
+
+/// Condition texts of every `If` node in `src`, across all bodies.
+fn if_condition_texts(src: &[u8], lang: &str, ts_lang: Language) -> Vec<String> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::If)
+        .filter_map(|n| n.condition_text.clone())
+        .collect()
+}
+
+#[test]
+fn conditional_expression_assignments_lower_to_a_diamond() {
+    let py = b"def h(s):\n    sort = s if s in SORTABLE else 'name'\n    run(sort)\n";
+    let conds = if_condition_texts(py, "python", Language::from(tree_sitter_python::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c == "s in SORTABLE"),
+        "python: {conds:?}"
+    );
+
+    let rb = b"def h\n  sort = SORTABLE.include?(params[:sort]) ? params[:sort] : 'created_at'\n  run(sort)\nend\n";
+    let conds = if_condition_texts(rb, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    assert!(
+        conds.iter().any(|c| c.starts_with("SORTABLE.include?")),
+        "ruby: {conds:?}"
+    );
+
+    let php = b"<?php\nfunction h($a) {\n  $sort = in_array($_GET['s'], $a, true) ? $_GET['s'] : 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(php, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(
+        conds.iter().any(|c| c.starts_with("in_array(")),
+        "php: {conds:?}"
+    );
+
+    // PHP `a ?: b` has no separate consequence and stays a plain assignment.
+    let short = b"<?php\nfunction h() {\n  $sort = $_GET['s'] ?: 'name';\n  run($sort);\n}\n";
+    let conds = if_condition_texts(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    assert!(conds.is_empty(), "php short ternary: {conds:?}");
+    let fc = parse_to_file_cfg(short, "php", Language::from(tree_sitter_php::LANGUAGE_PHP));
+    let defines_sort = fc
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .any(|n| n.taint.defines.as_deref() == Some("sort"));
+    assert!(defines_sort, "php short ternary assignment was dropped");
+}
+#[test]
+fn js_object_assign_pollutes_only_a_prototype_target() {
+    let src = b"function h(body) {\n\
+                  Object.assign({}, body);\n\
+                  Object.assign(Session.prototype, body);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let assigns = js_call_nodes(&file_cfg, "Object.assign");
+    assert_eq!(assigns.len(), 2);
+    assert!(!has_sink(assigns[0], Cap::PROTOTYPE_POLLUTION));
+    assert!(has_sink(assigns[1], Cap::PROTOTYPE_POLLUTION));
+}
+
+/// Go request formals are classified by declared type: `req *http.Request`
+/// reads are sources under any binding name, an inner closure formal of an
+/// unrelated type shadows the outer one, and the alias stack is empty again
+/// once the CFG is built.
+#[test]
+fn go_request_typed_formal_classifies_as_source() {
+    fn source_callees(cfg: &Cfg) -> Vec<String> {
+        cfg.node_indices()
+            .filter(|&n| {
+                cfg[n]
+                    .taint
+                    .labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Source(_)))
+            })
+            .filter_map(|n| cfg[n].call.callee.clone())
+            .collect()
+    }
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+
+    let src = b"package main\nfunc h(w http.ResponseWriter, req *http.Request) {\n\tx := req.Header.Get(\"a\")\n\t_ = x\n}\n";
+    let (cfg, _) = parse_and_build(src, "go", ts_lang.clone());
+    assert!(
+        source_callees(&cfg).iter().any(|c| c == "req.Header.Get"),
+        "req.Header.Get on a *http.Request formal must be a Source; got {:?}",
+        source_callees(&cfg)
+    );
+
+    let src = b"package main\nfunc h(c *gin.Context) {\n\tx := c.ShouldBindJSON(&in)\n\t_ = x\n}\n";
+    let (cfg, _) = parse_and_build(src, "go", ts_lang.clone());
+    assert!(
+        source_callees(&cfg).iter().any(|c| c == "c.ShouldBindJSON"),
+        "gin binder on a *gin.Context formal must be a Source; got {:?}",
+        source_callees(&cfg)
+    );
+
+    let src = b"package main\nfunc h(w http.ResponseWriter, req *http.Request) {\n\tf := func(req *Spec) {\n\t\tx := req.Header.Get(\"a\")\n\t\t_ = x\n\t}\n\t_ = f\n}\n";
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let inner_sources: Vec<String> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| source_callees(&b.graph))
+        .collect();
+    assert!(
+        inner_sources.is_empty(),
+        "the closure's own `req *Spec` formal shadows the request; got {inner_sources:?}"
+    );
+    assert!(
+        crate::labels::classify("go", "req.Header.Get", None).is_none(),
+        "receiver aliases must not outlive build_cfg"
+    );
+}
+
+/// Callee text and `all_args_literal` of every call node with a callee in a
+/// Java snippet's method body.
+fn java_call_literal_flags(src: &[u8]) -> Vec<(String, bool)> {
+    let (cfg, _) = parse_and_build(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    cfg.node_indices()
+        .filter_map(|n| {
+            let callee = cfg[n].call.callee.clone()?;
+            Some((callee, cfg[n].all_args_literal))
+        })
+        .collect()
+}
+
+#[test]
+fn java_chained_literal_call_is_all_literal_despite_zero_arg_inner_call() {
+    let literal = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { Runtime.getRuntime().exec(\"uptime\"); } }",
+    );
+    assert!(
+        literal.iter().any(|(c, lit)| c.ends_with("exec") && *lit),
+        "a literal argument on the exec call makes the chain literal, got {literal:?}"
+    );
+
+    let variable = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { Runtime.getRuntime().exec(p); } }",
+    );
+    assert!(
+        variable.iter().any(|(c, lit)| c.ends_with("exec") && !*lit),
+        "a variable argument keeps the call non-literal, got {variable:?}"
+    );
+
+    // The zero-argument guard still applies to the call that is the sink
+    // itself: `ois.readObject()` has no arguments to prove safe.
+    let receiver_sink =
+        java_call_literal_flags(b"class T { Object f(ObjectInputStream ois) throws Exception { return ois.readObject(); } }");
+    assert!(
+        receiver_sink
+            .iter()
+            .any(|(c, lit)| c.ends_with("readObject") && !*lit),
+        "a zero-arg outer call is not literal, got {receiver_sink:?}"
+    );
+
+    // An inner call that takes a variable still rejects the chain.
+    let inner_variable = java_call_literal_flags(
+        b"class T { void f(String p) throws Exception { a.b(p).c(\"lit\"); } }",
+    );
+    assert!(
+        inner_variable
+            .iter()
+            .any(|(c, lit)| c.ends_with('c') && !*lit),
+        "a variable argument on an inner chain call rejects the chain, got {inner_variable:?}"
+    );
+}
+
+/// Declared receiver type recorded on the Java call nodes of a snippet,
+/// keyed by callee text.
+fn java_receiver_decl_types(src: &[u8]) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>)> {
+    let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter_map(|n| {
+                    let callee = b.graph[n].call.callee.clone()?;
+                    Some((callee, b.graph[n].call.receiver_decl_type.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn java_receiver_decl_type_follows_the_declaration() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import org.springframework.jdbc.core.JdbcTemplate;
+class T {
+    private JdbcTemplate jdbc;
+    private final javax.naming.directory.DirContext dirCtx;
+    private Object other;
+    void field(String q) { jdbc.queryForList(q); }
+    void thisField(String q) { this.jdbc.update(q); }
+    void formal(DirContext dc, String q) throws Exception { dc.search("", q, null); }
+    void local(String q) { EntityManager mgr = lookup(); mgr.createQuery(q); }
+    void catchBound() { try { run(); } catch (Exception jdbc) { jdbc.getMessage(); } }
+    void lambdaShadow() { run(jdbc -> jdbc.update("x")); }
+    void unrelated(String q) { other.update(q); }
+    void staticCall(String q) { Files.readString(q); }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(kind_of("jdbc.queryForList"), Some(TypeKind::JdbcTemplate));
+    assert_eq!(kind_of("this.jdbc.update"), Some(TypeKind::JdbcTemplate));
+    assert_eq!(kind_of("dc.search"), Some(TypeKind::LdapClient));
+    assert_eq!(kind_of("mgr.createQuery"), Some(TypeKind::HibernateSession));
+    assert_eq!(
+        kind_of("jdbc.getMessage"),
+        None,
+        "a catch parameter shadows the field of the same name"
+    );
+    assert_eq!(
+        kind_of("jdbc.update"),
+        None,
+        "an untyped lambda formal shadows the field of the same name"
+    );
+    assert_eq!(kind_of("other.update"), None);
+    assert_eq!(kind_of("Files.readString"), None);
+}
+
+/// Callee text of every Java call node that carries a `Source` label.
+fn java_source_callees(src: &[u8]) -> Vec<String> {
+    let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter(|&n| {
+                    b.graph[n]
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, crate::labels::DataLabel::Source(_)))
+                })
+                .filter_map(|n| b.graph[n].call.callee.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn java_process_and_resource_streams_are_not_sources() {
+    // Child-process output, through a declared `Process`, a chained
+    // `exec(..)`, or a `ProcessBuilder.start()`.
+    for body in [
+        "Process p = Runtime.getRuntime().exec(cmd); InputStream in = p.getInputStream();",
+        "Process p = new ProcessBuilder(cmd).start(); BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String l = r.readLine();",
+        "InputStream in = Runtime.getRuntime().exec(cmd).getInputStream();",
+        "String l = new BufferedReader(new InputStreamReader(proc.getInputStream())).readLine();",
+        // Classpath and zip entries ship with the application.
+        "InputStream in = new ClassPathResource(\"app.properties\").getInputStream();",
+        "InputStream in = zip.getInputStream(entry);",
+    ] {
+        let src = format!(
+            "class T {{ void f(String cmd, Process proc, java.util.zip.ZipFile zip, Object entry) throws Exception {{ {body} }} }}"
+        );
+        assert_eq!(
+            java_source_callees(src.as_bytes()),
+            Vec::<String>::new(),
+            "no source expected in: {body}"
+        );
+    }
+}
+
+#[test]
+fn java_request_and_unresolved_streams_stay_sources() {
+    let sources = |body: &str| {
+        java_source_callees(
+            format!(
+                "class T {{ void f(HttpServletRequest req, Socket sock, Stream unknown) throws Exception {{ {body} }} }}"
+            )
+            .as_bytes(),
+        )
+    };
+    assert_eq!(
+        sources("InputStream in = req.getInputStream();"),
+        vec!["req.getInputStream"]
+    );
+    assert_eq!(
+        sources("BufferedReader r = req.getReader();"),
+        vec!["req.getReader"]
+    );
+    // A socket, and a receiver the method does not declare, are not ruled out.
+    assert_eq!(
+        sources("InputStream in = sock.getInputStream();"),
+        vec!["sock.getInputStream"]
+    );
+    assert_eq!(
+        sources("InputStream in = unknown.getInputStream();"),
+        vec!["unknown.getInputStream"]
+    );
+    assert_eq!(
+        sources("InputStream in = other().getInputStream();"),
+        vec!["other().getInputStream"],
+        "a computed receiver is not ruled out"
+    );
+}
+
+#[test]
+fn java_read_line_source_follows_the_reader_root() {
+    let sources = |body: &str| {
+        java_source_callees(
+            format!(
+                "class T {{ void f(HttpServletRequest req, Process p) throws Exception {{ {body} }} }}"
+            )
+            .as_bytes(),
+        )
+    };
+    // A file reader keeps the engine's file-content source.
+    assert_eq!(
+        sources(
+            "BufferedReader br = new BufferedReader(new FileReader(\"/etc/app/hosts\")); String h = br.readLine();"
+        ),
+        vec!["br.readLine"]
+    );
+    // Stdin and an undeclared reader keep it too.
+    assert_eq!(
+        sources(
+            "BufferedReader br = new BufferedReader(new InputStreamReader(System.in)); String h = br.readLine();"
+        ),
+        vec!["br.readLine"]
+    );
+    // Over the request the getInputStream / getReader source is the origin,
+    // and readLine is not a second one.
+    assert_eq!(
+        sources(
+            "BufferedReader r = new BufferedReader(new InputStreamReader(req.getInputStream())); String l = r.readLine();"
+        ),
+        vec!["req.getInputStream"]
+    );
+    assert_eq!(
+        sources("BufferedReader r = req.getReader(); String l = r.readLine();"),
+        vec!["req.getReader"]
+    );
+}
+
+#[test]
+fn java_get_method_sink_needs_a_class_receiver_and_a_name() {
+    // Callee text of every call node carrying a CODE_EXEC sink.
+    let sinks = |body: &str| -> Vec<String> {
+        let src = format!(
+            "class T {{ void f(Class<?> cls, ZipEntry entry, String n, HttpServletRequest req) throws Exception {{ {body} }} }}"
+        );
+        let file_cfg = parse_to_file_cfg(
+            src.as_bytes(),
+            "java",
+            Language::from(tree_sitter_java::LANGUAGE),
+        );
+        file_cfg
+            .bodies
+            .iter()
+            .flat_map(|b| {
+                b.graph
+                    .node_indices()
+                    .filter(|&i| {
+                        b.graph[i].taint.labels.iter().any(|l| {
+                            matches!(l, crate::labels::DataLabel::Sink(c) if c.contains(crate::labels::Cap::CODE_EXEC))
+                        })
+                    })
+                    .filter_map(|i| b.graph[i].call.callee.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    // A computed name on a Class-typed or unresolved receiver is a sink.
+    assert_eq!(sinks("cls.getMethod(n);"), vec!["cls.getMethod"]);
+    assert_eq!(
+        sinks("cls.getDeclaredMethod(n, String.class);"),
+        vec!["cls.getDeclaredMethod"]
+    );
+    assert_eq!(sinks("this.getClass().getMethod(n);").len(), 1);
+    assert_eq!(sinks("Object m = Foo.class.getMethod(n);").len(), 1);
+    assert_eq!(
+        sinks("Object m = other.getMethod(n);").len(),
+        1,
+        "undeclared receiver is not ruled out"
+    );
+    // A literal name, no name at all, another declared type, a bare class
+    // name and an unqualified or this-call are not.
+    assert!(sinks("cls.getMethod(\"run\");").is_empty());
+    assert!(sinks("String v = req.getMethod();").is_empty());
+    assert!(sinks("int m = entry.getMethod();").is_empty());
+    assert!(sinks("Object m = entry.getMethod(n);").is_empty());
+    assert!(sinks("Object m = Util.getMethod(cls, n);").is_empty());
+    assert!(sinks("Object m = getMethod(cls, n);").is_empty());
+    assert!(sinks("Object m = this.getMethod(cls, n);").is_empty());
+    assert!(sinks("int m = (entry.getMethod() != 8) ? 1 : build(n);").is_empty());
+}
+
+// ── NullCheck extraction (resource null / failure guards) ───────────────
+
+/// `(var, null_on_true)` of the single null-check `If` node built from
+/// `src`, or `None` when no `If` node carries one.
+fn null_checks(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(String, bool)> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::If)
+        .filter_map(|n| n.null_check.as_ref())
+        .map(|nc| (nc.var.clone(), nc.null_on_true))
+        .collect()
+}
+
+fn one_null_check(src: &[u8], lang: &str, ts_lang: Language) -> Option<(String, bool)> {
+    let all = null_checks(src, lang, ts_lang);
+    assert!(
+        all.len() <= 1,
+        "expected at most one null check, got {all:?}"
+    );
+    all.into_iter().next()
+}
+
+#[test]
+fn null_check_c_shapes() {
+    let c = || Language::from(tree_sitter_c::LANGUAGE);
+    let case = |cond: &str| {
+        let src = format!("void g(void) {{ if ({cond}) {{ h(); }} }}");
+        one_null_check(src.as_bytes(), "c", c())
+    };
+    assert_eq!(case("f"), Some(("f".into(), false)));
+    assert_eq!(case("!f"), Some(("f".into(), true)));
+    assert_eq!(case("!(f)"), Some(("f".into(), true)));
+    assert_eq!(case("f == NULL"), Some(("f".into(), true)));
+    assert_eq!(case("NULL == f"), Some(("f".into(), true)));
+    assert_eq!(case("f != NULL"), Some(("f".into(), false)));
+    assert_eq!(case("NULL != f"), Some(("f".into(), false)));
+    assert_eq!(case("!(f == NULL)"), Some(("f".into(), false)));
+    assert_eq!(case("fd < 0"), Some(("fd".into(), true)));
+    assert_eq!(case("fd == -1"), Some(("fd".into(), true)));
+    assert_eq!(case("fd >= 0"), Some(("fd".into(), false)));
+    assert_eq!(case("0 > fd"), Some(("fd".into(), true)));
+    // Not a failure test: descriptor 0 is valid, and these are not
+    // single-variable null tests at all.
+    assert_eq!(case("fd == 0"), None);
+    assert_eq!(case("f == g"), None);
+    assert_eq!(case("x == 1"), None);
+    assert_eq!(case("f->ok"), None);
+    assert_eq!(case("valid(f)"), None);
+}
+
+#[test]
+fn null_check_cpp_nullptr() {
+    let src = b"int g() { FILE* fp = fopen(p, \"r\"); if (fp == nullptr) return -1; return 0; }";
+    assert_eq!(
+        one_null_check(src, "cpp", Language::from(tree_sitter_cpp::LANGUAGE)),
+        Some(("fp".into(), true))
+    );
+}
+
+#[test]
+fn null_check_short_circuit_operand() {
+    // `if (f && g)` is decomposed into one If node per operand; each bare
+    // operand carries its own null check.
+    let src = b"void g(void) { if (f && g) { h(); } }";
+    let mut got = null_checks(src, "c", Language::from(tree_sitter_c::LANGUAGE));
+    got.sort();
+    assert_eq!(got, vec![("f".into(), false), ("g".into(), false)]);
+}
+
+#[test]
+fn null_check_python_shapes() {
+    let py = || Language::from(tree_sitter_python::LANGUAGE);
+    let case = |cond: &str| {
+        let src = format!("def g(f):\n    if {cond}:\n        h()\n");
+        one_null_check(src.as_bytes(), "python", py())
+    };
+    assert_eq!(case("not f"), Some(("f".into(), true)));
+    assert_eq!(case("f is None"), Some(("f".into(), true)));
+    assert_eq!(case("f is not None"), Some(("f".into(), false)));
+    assert_eq!(case("f"), Some(("f".into(), false)));
+    assert_eq!(case("f.closed"), None);
+}
+
+#[test]
+fn null_check_php_js_java_go_shapes() {
+    let php = b"<?php function g($p) { $fh = fopen($p, 'r'); if ($fh === false) { return null; } }";
+    assert_eq!(
+        one_null_check(php, "php", Language::from(tree_sitter_php::LANGUAGE_PHP)),
+        Some(("fh".into(), true))
+    );
+    let php_not = b"<?php function g($p) { $fh = fopen($p, 'r'); if (!$fh) { return null; } }";
+    assert_eq!(
+        one_null_check(
+            php_not,
+            "php",
+            Language::from(tree_sitter_php::LANGUAGE_PHP)
+        ),
+        Some(("fh".into(), true))
+    );
+    let js = b"function g(p) { const fd = open(p); if (fd === null) { return -1; } }";
+    assert_eq!(
+        one_null_check(
+            js,
+            "javascript",
+            Language::from(tree_sitter_javascript::LANGUAGE)
+        ),
+        Some(("fd".into(), true))
+    );
+    let java = b"class A { void g() { if (s != null) { s.close(); } } }";
+    assert_eq!(
+        one_null_check(java, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        Some(("s".into(), false))
+    );
+    let go = b"package m\nfunc g() error { f, err := os.Open(p)\n if err != nil { return err }\n return f.Close() }";
+    assert_eq!(
+        one_null_check(go, "go", Language::from(tree_sitter_go::LANGUAGE)),
+        Some(("err".into(), false))
+    );
+}
+
+// ── Return escapes (ownership handed to the caller) ─────────────────────
+
+fn return_escapes(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(Vec<String>, Vec<String>)> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .filter(|n| n.kind == StmtKind::Return)
+        .map(|n| (n.returned_idents.clone(), n.returned_call_callees.clone()))
+        .collect()
+}
+
+#[test]
+fn return_escapes_go_shapes() {
+    let go = |body: &str| {
+        let src = format!("package m\nfunc g() {{ {body} }}");
+        return_escapes(
+            src.as_bytes(),
+            "go",
+            Language::from(tree_sitter_go::LANGUAGE),
+        )
+    };
+    assert_eq!(go("return f, nil"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(go("return &W{f: f}"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(go("return W{f}"), vec![(vec!["f".to_string()], vec![])]);
+    assert_eq!(
+        go("return os.Open(p)"),
+        vec![(vec![], vec!["os.Open".to_string()])]
+    );
+    // The handle is an argument of a plain call: it does not escape.
+    assert_eq!(
+        go("return io.ReadAll(f)"),
+        vec![(vec![], vec!["io.ReadAll".to_string()])]
+    );
+    let (idents, _) = &go("return f.Name()")[0];
+    assert!(
+        idents.is_empty(),
+        "method receiver does not escape: {idents:?}"
+    );
+}
+
+#[test]
+fn return_escapes_python_java_c_shapes() {
+    let py = |body: &str| {
+        let src = format!("def g(p):\n    {body}\n");
+        return_escapes(
+            src.as_bytes(),
+            "python",
+            Language::from(tree_sitter_python::LANGUAGE),
+        )
+    };
+    assert_eq!(py("return f")[0].0, vec!["f".to_string()]);
+    assert_eq!(py("return f, 1")[0].0, vec!["f".to_string()]);
+    assert_eq!(py("return {'h': f}")[0].0, vec!["f".to_string()]);
+    assert!(py("return f.read()")[0].0.is_empty());
+    assert_eq!(py("return open(p)")[0].1, vec!["open".to_string()]);
+    assert_eq!(py("return self.conn")[0].0, vec!["self.conn".to_string()]);
+
+    let java = b"class A { Reader g(InputStream in) { return new BufferedReader(new InputStreamReader(in)); } }";
+    let got = return_escapes(java, "java", Language::from(tree_sitter_java::LANGUAGE));
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        got[0].0,
+        vec!["in".to_string()],
+        "a wrapped stream escapes with its wrapper"
+    );
+    assert!(got[0].1.iter().any(|c| c.contains("BufferedReader")));
+
+    let c = b"char *g(void) { char *b = malloc(4); return (char *)b; }";
+    let got = return_escapes(c, "c", Language::from(tree_sitter_c::LANGUAGE));
+    assert_eq!(got[0].0, vec!["b".to_string()]);
+}
+
+// ── Stores that leave the body, constructor ownership ───────────────────
+
+fn all_nodes(src: &[u8], lang: &str, ts_lang: Language) -> Vec<NodeInfo> {
+    let fc = parse_to_file_cfg(src, lang, ts_lang);
+    fc.bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| b.graph[i].clone()))
+        .collect()
+}
+
+fn escaping_defines(src: &[u8], lang: &str, ts_lang: Language) -> Vec<String> {
+    let mut out: Vec<String> = all_nodes(src, lang, ts_lang)
+        .into_iter()
+        .filter(|n| n.escaping_store)
+        .filter_map(|n| n.taint.defines.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn escaping_store_c_deref_global_and_static() {
+    let c = || Language::from(tree_sitter_c::LANGUAGE);
+    let src = b"static char *g;\n\
+        int out_param(char **out) { char *b = malloc(4); *out = b; return 0; }\n\
+        void global(void) { g = malloc(4); }\n\
+        void keep(void) { static char *s; s = malloc(4); }\n\
+        void late_local(void) { char *p; p = malloc(4); }\n";
+    assert_eq!(
+        escaping_defines(src, "c", c()),
+        vec!["g".to_string(), "out".to_string(), "s".to_string()],
+        "`p` is a plain local and must stay tracked"
+    );
+}
+
+#[test]
+fn escaping_store_java_unqualified_field_only() {
+    let src = b"class A {\n  java.io.InputStream in;\n\
+        void field(String p) throws Exception { in = new java.io.FileInputStream(p); }\n\
+        void local(String p) throws Exception { java.io.InputStream s; s = new java.io.FileInputStream(p); }\n}\n";
+    assert_eq!(
+        escaping_defines(src, "java", Language::from(tree_sitter_java::LANGUAGE)),
+        vec!["in".to_string()]
+    );
+}
+
+#[test]
+fn escaping_store_go_package_var() {
+    let src = b"package m\nvar logFile *os.File\nfunc init() {\n\tvar err error\n\tlogFile, err = os.Create(\"x\")\n\t_ = err\n}\nfunc local() {\n\tf, err := os.Create(\"y\")\n\t_, _ = f, err\n}\n";
+    assert_eq!(
+        escaping_defines(src, "go", Language::from(tree_sitter_go::LANGUAGE)),
+        vec!["logFile".to_string()]
+    );
+}
+
+#[test]
+fn ctor_owned_args_java_wrappers() {
+    let src = b"class A { void m(java.io.InputStream in) throws Exception {\n\
+        java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(in));\n\
+        Object o = new Object();\n} }\n";
+    let owned: Vec<Vec<String>> =
+        all_nodes(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+            .into_iter()
+            .map(|n| n.call.ctor_owned_args)
+            .filter(|a| !a.is_empty())
+            .collect();
+    assert_eq!(owned, vec![vec!["in".to_string()]]);
+}
+
+#[test]
+fn cpp_smart_pointer_declarations() {
+    let cpp = || Language::from(tree_sitter_cpp::LANGUAGE);
+    let src = b"struct Foo { int x; };\n\
+        void a() { std::unique_ptr<Foo> p(new Foo()); }\n\
+        void b(Foo *raw) { std::unique_ptr<Foo> q(raw); }\n\
+        void c() { Foo *plain = new Foo(); }\n";
+    let nodes = all_nodes(src, "cpp", cpp());
+    let news: Vec<bool> = nodes
+        .iter()
+        .filter(|n| n.call.callee.as_deref() == Some("new"))
+        .map(|n| n.managed_resource)
+        .collect();
+    assert_eq!(
+        news,
+        vec![true, false],
+        "only the smart-pointer `new` is managed"
+    );
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.call.ctor_owned_args == vec!["raw".to_string()]),
+        "`std::unique_ptr<Foo> q(raw)` adopts raw"
+    );
+}
+
+// ── Assignment targets for Java / PHP member LHS ────────────────────────
+
+fn defines_of(src: &[u8], lang: &str, ts_lang: Language) -> Vec<(Option<String>, Vec<String>)> {
+    all_nodes(src, lang, ts_lang)
+        .into_iter()
+        .filter(|n| n.taint.defines.is_some())
+        .map(|n| (n.taint.defines.clone(), n.taint.extra_defines.clone()))
+        .collect()
+}
+
+#[test]
+fn java_php_member_lhs_defines_whole_path() {
+    let java = defines_of(
+        b"class A { String cmd; void f(A o, String x) { o.cmd = x; this.cmd = x; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(
+        java,
+        vec![
+            (Some("o.cmd".to_string()), vec![]),
+            (Some("cmd".to_string()), vec![])
+        ],
+        "Java `this.f` keeps the bare field name, and `cmd` is not an extra define"
+    );
+
+    let php = defines_of(
+        b"<?php class A { function f($p) { $this->fh = fopen($p, 'r'); } }",
+        "php",
+        Language::from(tree_sitter_php::LANGUAGE_PHP),
+    );
+    assert_eq!(php, vec![(Some("this.fh".to_string()), vec![])]);
+
+    let java_arr = defines_of(
+        b"class A { void f(String[] arr, int i, String v) { arr[i] = v; } }",
+        "java",
+        Language::from(tree_sitter_java::LANGUAGE),
+    );
+    assert_eq!(
+        java_arr,
+        vec![(Some("arr".to_string()), vec![])],
+        "the index is read, not assigned"
+    );
 }

@@ -215,6 +215,129 @@ pub(crate) fn root_member_receiver(n: Node, code: &[u8]) -> Option<String> {
     None
 }
 
+/// Callee text for a call's `function` node.  For JS/TS this applies
+/// [`js_canonical_callee`] first; every other case is the node's source
+/// text.
+pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option<String> {
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && let Some(canonical) = js_canonical_callee(func, code)
+    {
+        return Some(canonical);
+    }
+    text_of(func, code)
+}
+
+/// Canonical callee text for a JS/TS member call whose raw source text hides
+/// the API being called from the label rules:
+///
+/// * `require('child_process').exec` becomes `child_process.exec` (and
+///   `require('node:fs').readFileSync` becomes `fs.readFileSync`).  Only bare
+///   identifier-shaped module names are rewritten, never relative paths.
+/// * A fluent response chain `res.status(404).type('html').send` becomes
+///   `res.send` when every intermediate link is a method in
+///   [`crate::labels::javascript::FLUENT_RESPONSE_METHODS`] (methods that
+///   return the response object) and the chain is rooted at a plain
+///   identifier or member path.  This is the JS counterpart of the
+///   `{root_receiver}.{method}` text the method-call languages already build.
+///   The intermediate links' own arguments are not part of the rewritten
+///   call.
+///
+/// `None` when neither shape applies.
+pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
+    let func = unwrap_parens(func);
+    if func.kind() != "member_expression" {
+        return None;
+    }
+    let property = func.child_by_field_name("property")?;
+    if property.kind() != "property_identifier" {
+        return None;
+    }
+    let method = text_of(property, code)?;
+    let object = unwrap_parens(func.child_by_field_name("object")?);
+    if object.kind() != "call_expression" {
+        return None;
+    }
+    if let Some(module) = js_required_module_name(object, code) {
+        return Some(format!("{module}.{method}"));
+    }
+
+    let fluent = crate::labels::javascript::FLUENT_RESPONSE_METHODS;
+    let mut link = object;
+    // Bounded walk down the chain's receivers.
+    for _ in 0..16 {
+        let link_func = unwrap_parens(link.child_by_field_name("function")?);
+        if link_func.kind() != "member_expression" {
+            return None;
+        }
+        let link_method = link_func
+            .child_by_field_name("property")
+            .and_then(|p| text_of(p, code))?;
+        if !fluent.contains(&link_method.as_str()) {
+            return None;
+        }
+        let receiver = unwrap_parens(link_func.child_by_field_name("object")?);
+        match receiver.kind() {
+            "call_expression" => link = receiver,
+            "identifier" | "this" | "member_expression" if is_plain_member_path(receiver) => {
+                let root: String = text_of(receiver, code)?
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                return Some(format!("{root}.{method}"));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Module name of a `require('<name>')` call, with any `node:` scheme
+/// stripped.  `None` unless the single argument is a string literal naming
+/// a bare identifier-shaped module (`child_process`, `fs`, `vm`).
+fn js_required_module_name(call: Node, code: &[u8]) -> Option<String> {
+    let callee = call.child_by_field_name("function")?;
+    if callee.kind() != "identifier" || text_of(callee, code).as_deref() != Some("require") {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut named = args.named_children(&mut cursor);
+    let arg = named.next()?;
+    if named.next().is_some() || arg.kind() != "string" {
+        return None;
+    }
+    let raw = text_of(arg, code)?;
+    let spec = raw.trim_matches(|c| c == '\'' || c == '"');
+    let name = spec.strip_prefix("node:").unwrap_or(spec);
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+/// True when `n` is an identifier, `this`, or a member access chain built
+/// only from those (`res`, `this.res`, `ctx.res`), with no calls or
+/// subscripts along the way.
+fn is_plain_member_path(n: Node) -> bool {
+    let mut cur = n;
+    for _ in 0..16 {
+        match cur.kind() {
+            "identifier" | "this" => return true,
+            "member_expression" => match cur.child_by_field_name("object") {
+                Some(obj) => cur = obj,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Check if a callee represents an RAII-managed factory whose resources are
 /// automatically cleaned up by language semantics (Rust ownership/Drop, C++
 /// smart pointers).  Returns `true` to set `managed_resource` on the acquire
@@ -286,59 +409,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
     for c in n.children(&mut cursor) {
         match lookup(lang, c.kind()) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
-                let span = (c.start_byte(), c.end_byte());
-                // C++ new/delete: normalize callee before returning.
-                if lang == "cpp" && c.kind() == "new_expression" {
-                    return Some(("new".to_string(), span));
-                }
-                if lang == "cpp" && c.kind() == "delete_expression" {
-                    return Some(("delete".to_string(), span));
-                }
-                // Ruby backtick subshell: no `function` field, normalise to
-                // the synthetic callee so assignment-wrapped subshells classify.
-                if lang == "ruby" && c.kind() == "subshell" {
-                    return Some(("subshell".to_string(), span));
-                }
-                let ident = match lookup(lang, c.kind()) {
-                    Kind::CallFn => c
-                        .child_by_field_name("function")
-                        .or_else(|| c.child_by_field_name("method"))
-                        .or_else(|| c.child_by_field_name("name"))
-                        .or_else(|| c.child_by_field_name("type"))
-                        .or_else(|| c.child_by_field_name("constructor"))
-                        // Fallback for constructors whose grammar lacks field names
-                        // (e.g. PHP `object_creation_expression` has positional children).
-                        .or_else(|| find_constructor_type_child(c))
-                        .and_then(|f| {
-                            let unwrapped = unwrap_parens(f);
-                            if lookup(lang, unwrapped.kind()) == Kind::Function {
-                                Some(anon_fn_name(unwrapped.start_byte()))
-                            } else {
-                                text_of(f, code)
-                            }
-                        }),
-                    Kind::CallMethod => {
-                        let func = c
-                            .child_by_field_name("method")
-                            .or_else(|| c.child_by_field_name("name"))
-                            .and_then(|f| text_of(f, code));
-                        let recv = c
-                            .child_by_field_name("object")
-                            .or_else(|| c.child_by_field_name("receiver"))
-                            .or_else(|| c.child_by_field_name("scope"))
-                            .and_then(|f| root_receiver_text(f, lang, code));
-                        match (recv, func) {
-                            (Some(r), Some(f)) => Some(format!("{r}.{f}")),
-                            (_, Some(f)) => Some(f),
-                            _ => None,
-                        }
-                    }
-                    Kind::CallMacro => c
-                        .child_by_field_name("macro")
-                        .and_then(|f| text_of(f, code)),
-                    _ => None,
-                };
-                return ident.map(|s| (s, span));
+                return call_node_ident_with_span(c, lang, code);
             }
             Kind::Function => {
                 // Do not descend into nested function/lambda bodies ,
@@ -355,6 +426,83 @@ pub(crate) fn first_call_ident_with_span<'a>(
         }
     }
     None
+}
+
+/// [`first_call_ident_with_span`] that also accepts `n` being the call
+/// itself, as a bare call condition is (`if os.system(cmd):`, Go
+/// `if f(x) {`, Ruby `if system(cmd)`).
+pub(crate) fn call_ident_at_or_under<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Option<(String, (usize, usize))> {
+    match lookup(lang, n.kind()) {
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
+            call_node_ident_with_span(n, lang, code)
+        }
+        _ => first_call_ident_with_span(n, lang, code),
+    }
+}
+
+/// Callee identifier and byte span of the call / method / macro node `c`.
+fn call_node_ident_with_span<'a>(
+    c: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Option<(String, (usize, usize))> {
+    let span = (c.start_byte(), c.end_byte());
+    // C++ new/delete: normalize callee before returning.
+    if lang == "cpp" && c.kind() == "new_expression" {
+        return Some(("new".to_string(), span));
+    }
+    if lang == "cpp" && c.kind() == "delete_expression" {
+        return Some(("delete".to_string(), span));
+    }
+    // Ruby backtick subshell: no `function` field, normalise to
+    // the synthetic callee so assignment-wrapped subshells classify.
+    if lang == "ruby" && c.kind() == "subshell" {
+        return Some(("subshell".to_string(), span));
+    }
+    let ident = match lookup(lang, c.kind()) {
+        Kind::CallFn => c
+            .child_by_field_name("function")
+            .or_else(|| c.child_by_field_name("method"))
+            .or_else(|| c.child_by_field_name("name"))
+            .or_else(|| c.child_by_field_name("type"))
+            .or_else(|| c.child_by_field_name("constructor"))
+            // Fallback for constructors whose grammar lacks field names
+            // (e.g. PHP `object_creation_expression` has positional children).
+            .or_else(|| find_constructor_type_child(c))
+            .and_then(|f| {
+                let unwrapped = unwrap_parens(f);
+                if lookup(lang, unwrapped.kind()) == Kind::Function {
+                    Some(anon_fn_name(unwrapped.start_byte()))
+                } else {
+                    call_fn_callee_text(f, lang, code)
+                }
+            }),
+        Kind::CallMethod => {
+            let func = c
+                .child_by_field_name("method")
+                .or_else(|| c.child_by_field_name("name"))
+                .and_then(|f| text_of(f, code));
+            let recv = c
+                .child_by_field_name("object")
+                .or_else(|| c.child_by_field_name("receiver"))
+                .or_else(|| c.child_by_field_name("scope"))
+                .and_then(|f| root_receiver_text(f, lang, code));
+            match (recv, func) {
+                (Some(r), Some(f)) => Some(format!("{r}.{f}")),
+                (_, Some(f)) => Some(f),
+                _ => None,
+            }
+        }
+        Kind::CallMacro => c
+            .child_by_field_name("macro")
+            .and_then(|f| text_of(f, code)),
+        _ => None,
+    };
+    ident.map(|s| (s, span))
 }
 
 /// Convenience wrapper around [`first_call_ident_with_span`] that discards
@@ -432,7 +580,7 @@ fn find_inner_call_impl<'a>(
                         .or_else(|| c.child_by_field_name("method"))
                         .or_else(|| c.child_by_field_name("name"))
                         .or_else(|| c.child_by_field_name("type"))
-                        .and_then(|f| text_of(f, code)),
+                        .and_then(|f| call_fn_callee_text(f, lang, code)),
                     Kind::CallMethod => {
                         let func = c
                             .child_by_field_name("method")
@@ -485,10 +633,27 @@ fn find_inner_call_impl<'a>(
                 );
                 if parent_is_call
                     && let (Some(recv), Some(method)) = (method_receiver, method_name)
-                    && let Some(prefix) = crate::cfg::local_receiver_type_prefix(c, &recv, lang)
+                    && let Some(prefix) =
+                        crate::cfg::local_receiver_type_prefix(c, &recv, lang, code)
                 {
                     let alt = format!("{prefix}.{method}");
-                    if let Some(lbl) = classify(lang, &alt, extra)
+                    // Java: when the outer call is itself a sink on the same
+                    // typed receiver (`client.newCall(req).execute()`, with
+                    // `HttpClient.execute` a body-exfil sink), the SSA
+                    // type-qualified pass resolves it.  Rewriting the hop to
+                    // `HttpClient.newCall` would shadow that with a URL-only
+                    // SSRF label.
+                    let outer_is_sink = lang == "java"
+                        && n.child_by_field_name("name")
+                            .and_then(|m| text_of(m, code))
+                            .is_some_and(|outer| {
+                                matches!(
+                                    classify(lang, &format!("{prefix}.{outer}"), extra),
+                                    Some(DataLabel::Sink(_))
+                                )
+                            });
+                    if !outer_is_sink
+                        && let Some(lbl) = classify(lang, &alt, extra)
                         && accept(&lbl)
                     {
                         return Some((alt, lbl, c));
@@ -516,13 +681,14 @@ fn find_inner_call_impl<'a>(
 /// in `push_node` cannot see the per-file import view, so an import-gated sink
 /// (`fsp.readFile`) shadowed under a non-sink outer call
 /// (`JSON.parse(await fsp.readFile(tainted))`, vite CVE-2026-39365) is invisible
-/// until the import view is built.  Returns `(callee_text, label, span)`.
+/// until the import view is built.  Returns `(callee_text, match, span)`,
+/// where the match carries the rule's sink label and payload positions.
 pub(crate) fn find_inner_gated_sink_call<'a>(
     n: Node<'a>,
     lang: &str,
     code: &'a [u8],
     ctx: &crate::labels::ClassificationContext<'_>,
-) -> Option<(String, DataLabel, (usize, usize))> {
+) -> Option<(String, crate::labels::GatedLabelMatch, (usize, usize))> {
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
         if lookup(lang, c.kind()) == Kind::Function {
@@ -553,15 +719,15 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
                     .child_by_field_name("function")
                     .or_else(|| c.child_by_field_name("method"))
                     .or_else(|| c.child_by_field_name("name"))
-                    .and_then(|f| text_of(f, code)),
+                    .and_then(|f| call_fn_callee_text(f, lang, code)),
             };
             if let Some(id) = ident {
-                if let Some(lbl) = crate::labels::classify_gated_only(lang, &id, Some(ctx))
+                if let Some(m) = crate::labels::classify_gated_matches(lang, &id, Some(ctx))
                     .iter()
-                    .find(|l| matches!(l, DataLabel::Sink(_)))
+                    .find(|m| matches!(m.label, DataLabel::Sink(_)))
                     .copied()
                 {
-                    return Some((id, lbl, (c.start_byte(), c.end_byte())));
+                    return Some((id, m, (c.start_byte(), c.end_byte())));
                 }
             }
         }
@@ -592,6 +758,33 @@ pub(crate) fn member_expr_text(n: Node, code: &[u8]) -> Option<String> {
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
     match n.kind() {
+        // Java `field_access` (`object` / `field`) and PHP
+        // `member_access_expression` (`object` / `name`).  PHP's `$this` is
+        // spelled without the sigil, like every other PHP variable name.
+        // Java `this.x` stays the bare `x`: an unqualified read of the same
+        // field in the class body spells it that way, so both forms must
+        // name one variable.
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            let obj = n.child_by_field_name("object");
+            let prop = n
+                .child_by_field_name("field")
+                .or_else(|| n.child_by_field_name("name"))
+                .and_then(|p| text_of(p, code))
+                .map(|p| p.trim_start_matches('$').to_string());
+            if obj.is_some_and(|o| o.kind() == "this") {
+                return prop;
+            }
+            let obj_text = obj.and_then(|o| match o.kind() {
+                "variable_name" => text_of(o, code).map(|t| t.trim_start_matches('$').to_string()),
+                _ => member_expr_text_inner(o, code),
+            });
+            match (obj_text, prop) {
+                (Some(o), Some(p)) => Some(format!("{o}.{p}")),
+                (_, Some(p)) => Some(p),
+                (Some(o), _) => Some(o),
+                _ => text_of(n, code),
+            }
+        }
         "member_expression" | "attribute" | "selector_expression" => {
             // Tree-sitter exposes the receiver under `object` (JS/TS, Python),
             // `value` (Rust field_expression, handled in the matching arm
@@ -809,6 +1002,14 @@ pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
     }
 }
 
+/// Check whether any descendant of `n` is a function or closure literal.
+pub(crate) fn has_function_descendant(n: Node, lang: &str) -> bool {
+    let mut cursor = n.walk();
+    n.children(&mut cursor).any(|c| {
+        matches!(lookup(lang, c.kind()), Kind::Function) || has_function_descendant(c, lang)
+    })
+}
+
 /// Check whether any descendant of `n` is a call expression.
 /// Collect function-expression nodes nested inside a call's arguments.
 ///
@@ -1004,6 +1205,253 @@ pub(crate) fn has_call_descendant(n: Node, lang: &str) -> bool {
     false
 }
 
+/// Read-modify-write view of an assignment-like node.
+///
+/// Covers compound assignment (`x += y`, PHP `$x .= $y`, `x ??= y`, Ruby
+/// `x ||= y`, Java/C/Go `x <<= y`) and increment / decrement (`i++`, `--i`,
+/// Go `i++` statements).  The new value of `target` depends on its old value,
+/// so the node both reads and writes `target`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RmwAssign<'a> {
+    /// The assigned place (`x`, `obj.f`, `arr[i]`, `*p`).
+    pub target: Node<'a>,
+    /// Right-hand operand; `None` for `++` / `--`.
+    pub value: Option<Node<'a>>,
+    /// Operator token (`"+="`, `".="`, `"||="`, `"++"`, ...).
+    pub op: &'static str,
+}
+
+impl RmwAssign<'_> {
+    /// `||=`, `&&=`, `??=`: the result is either the old value or the
+    /// right-hand side, never a combination of the two.
+    pub(crate) fn is_logical(&self) -> bool {
+        matches!(self.op, "||=" | "&&=" | "??=")
+    }
+}
+
+/// Recognise `n` as a read-modify-write assignment.  Purely structural:
+/// keyed on the grammar's node kind plus its operator token, so a plain
+/// `x = y` (no operator field, or operator `=`) and Go's `x := y`
+/// (`short_var_declaration`) never match.
+pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
+    match n.kind() {
+        "update_expression" | "inc_statement" | "dec_statement" => {
+            let target = n
+                .child_by_field_name("argument")
+                .or_else(|| n.named_child(0))?;
+            let op = match n.kind() {
+                "inc_statement" => "++",
+                "dec_statement" => "--",
+                _ => {
+                    let mut cursor = n.walk();
+                    n.children(&mut cursor)
+                        .map(|c| c.kind())
+                        .find(|k| matches!(*k, "++" | "--"))?
+                }
+            };
+            Some(RmwAssign {
+                target,
+                value: None,
+                op,
+            })
+        }
+        "augmented_assignment_expression"
+        | "augmented_assignment"
+        | "compound_assignment_expr"
+        | "operator_assignment"
+        | "assignment_expression"
+        | "assignment_statement" => {
+            let op = n.child_by_field_name("operator")?.kind();
+            if matches!(op, "=" | ":=") {
+                return None;
+            }
+            Some(RmwAssign {
+                target: n.child_by_field_name("left")?,
+                value: n.child_by_field_name("right"),
+                op,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The read-modify-write assignment a CFG statement node stands for: `n`
+/// itself (Go / Ruby statements, `for` update clauses) or the single named
+/// child of a statement wrapper (`expression_statement`), which is how JS,
+/// TS, Python, PHP, Rust, Java and C/C++ wrap a statement-level `x += y`.
+/// Only nodes the language's KINDS table maps to `Kind::Assignment` count,
+/// matching what `def_use` treats as a definition.
+pub(crate) fn rmw_statement<'a>(n: Node<'a>, lang: &str) -> Option<RmwAssign<'a>> {
+    let node = match lookup(lang, n.kind()) {
+        Kind::Assignment => n,
+        Kind::CallWrapper if n.named_child_count() == 1 => n.named_child(0)?,
+        _ => return None,
+    };
+    if lookup(lang, node.kind()) != Kind::Assignment {
+        return None;
+    }
+    rmw_assignment(node)
+}
+
+/// Names a read-modify-write node reads from its own target, in the order
+/// `def_use` places them at the front of `uses`.  A member target reads its
+/// dotted path only (`el.innerHTML`), never the bare receiver idents it
+/// decomposes into: `el.innerHTML += "<b>"` does not read `el` as a value.
+/// Other targets (`x`, `arr[i]`, `*p`) read every identifier they mention.
+pub(crate) fn rmw_target_reads(target: Node, code: &[u8]) -> Vec<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    match paths.pop() {
+        Some(path) => vec![path],
+        None => idents,
+    }
+}
+
+/// The variable a read-modify-write node defines: the dotted path of a
+/// member target, otherwise the first identifier (the container of
+/// `arr[i] += x`, never the index).
+pub(crate) fn rmw_target_define(target: Node, code: &[u8]) -> Option<String> {
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(target, code, &mut idents, &mut paths);
+    paths.pop().or_else(|| idents.into_iter().next())
+}
+
+/// True when `n` is itself a call or contains one.
+pub(crate) fn subtree_has_call(n: Node, lang: &str) -> bool {
+    matches!(
+        lookup(lang, n.kind()),
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+    ) || has_call_descendant(n, lang)
+}
+
+/// Condition expression of an `if` / `while` / `do` / elif-style node: the
+/// `condition` field, or for a grammar that leaves it positional the first
+/// child that is not a keyword, brace or block.
+pub(crate) fn find_condition_subtree<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
+    ast.child_by_field_name("condition").or_else(|| {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor).find(|c| {
+            let k = c.kind();
+            !matches!(lookup(lang, k), Kind::Block | Kind::Trivia)
+                && !matches!(k, "if" | "else" | "let" | "{" | "}" | "(" | ")")
+        })
+    })
+}
+
+/// Binding pattern and iterable of a for-each loop: JS `for (x of xs)`,
+/// Python / C++ `for x in xs`, Java `for (T x : xs)`, Rust / Ruby
+/// `for x in xs`, Go `for k, v := range xs`, PHP `foreach ($xs as $v)`.
+/// Both are `None` for a C-style three-clause loop.
+pub(crate) fn for_each_parts<'a>(
+    ast: Node<'a>,
+    lang: &str,
+) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    let mut left = ast.child_by_field_name("left");
+    let mut right = ast.child_by_field_name("right");
+    // Go keeps the pattern and iterable on a `range_clause` child.
+    if left.is_none() && right.is_none() {
+        let mut cursor = ast.walk();
+        if let Some(rc) = ast
+            .children(&mut cursor)
+            .find(|c| c.kind() == "range_clause")
+        {
+            left = rc.child_by_field_name("left");
+            right = rc.child_by_field_name("right");
+        }
+    }
+    // Java `enhanced_for_statement` (`name` / `value`), Ruby `for` and Rust
+    // `for_expression` (`pattern` / `value`).
+    if left.is_none() && right.is_none() {
+        if let Some(v) = ast.child_by_field_name("value") {
+            left = ast
+                .child_by_field_name("name")
+                .or_else(|| ast.child_by_field_name("pattern"));
+            right = Some(v);
+        }
+    }
+    // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`: the
+    // iterable and binding are unnamed children either side of `as`.
+    if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
+        let mut cursor = ast.walk();
+        let kids: Vec<Node> = ast.children(&mut cursor).collect();
+        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
+            right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
+            left = kids[as_pos + 1..]
+                .iter()
+                .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
+                .copied();
+        }
+    }
+    (left, right)
+}
+
+/// What a control-flow header node evaluates.  See [`control_header_expr`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum HeaderExpr<'a> {
+    /// Branch or loop condition: `if`, elif, `while`, `do`, the condition of
+    /// a C-style `for`.
+    Condition(Node<'a>),
+    /// Iterable of a for-each loop.
+    Iterable(Node<'a>),
+    /// Nothing to evaluate: Rust `loop`, `for (;;)`, the switch fallback
+    /// header.
+    Empty,
+}
+
+impl<'a> HeaderExpr<'a> {
+    pub(crate) fn node(self) -> Option<Node<'a>> {
+        match self {
+            HeaderExpr::Condition(n) | HeaderExpr::Iterable(n) => Some(n),
+            HeaderExpr::Empty => None,
+        }
+    }
+}
+
+/// Header expression of an `if` / elif / loop / `switch` statement.
+///
+/// The builder pushes a branch or loop header node over the whole statement,
+/// but the node stands for this expression only: the branches and the loop
+/// body are lowered as nodes of their own.  Labels, call metadata and uses on
+/// a header come from here, never from the body.  `None` when `ast` is not
+/// such a statement.
+pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<HeaderExpr<'a>> {
+    let cond = |n: Option<Node<'a>>| Some(n.map_or(HeaderExpr::Empty, HeaderExpr::Condition));
+    if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
+        return cond(ast.child_by_field_name("condition"));
+    }
+    match lookup(lang, ast.kind()) {
+        Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
+        Kind::For => {
+            if let (_, Some(iter)) = for_each_parts(ast, lang) {
+                return Some(HeaderExpr::Iterable(iter));
+            }
+            if let Some(c) = ast.child_by_field_name("condition") {
+                return cond(Some(c));
+            }
+            // Go: the `for_clause` condition, or the bare condition of
+            // `for cond {}`.
+            if lang != "go" {
+                return cond(None);
+            }
+            let mut cursor = ast.walk();
+            let go_cond = ast
+                .named_children(&mut cursor)
+                .find_map(|c| match c.kind() {
+                    "for_clause" => c.child_by_field_name("condition"),
+                    "block" | "comment" => None,
+                    _ => Some(c),
+                });
+            cond(go_cond)
+        }
+        // `build_switch` lowers the scrutinee ahead of the dispatch, so its
+        // fallback header has nothing left to evaluate.
+        Kind::InfiniteLoop | Kind::Switch => Some(HeaderExpr::Empty),
+        _ => None,
+    }
+}
+
 /// Recursively collect identifiers AND full dotted member-expression paths.
 ///
 /// For `member_expression` / `attribute` / `selector_expression` / `field_expression`
@@ -1041,6 +1489,47 @@ pub(crate) fn collect_idents_with_paths(
             let mut c = n.walk();
             for ch in n.children(&mut c) {
                 collect_idents_with_paths(ch, code, idents, paths);
+            }
+        }
+    }
+}
+
+/// Assignment targets of a Java / PHP LHS in source order: each plain
+/// variable, and each member path (`o.cmd`, `this.fh`) as one name.  The
+/// pieces a member path is built from are not targets: `o.cmd = x` assigns
+/// `o.cmd`, never a local `cmd`, and `$this->fh = ..` assigns `this.fh`,
+/// not `this`.  For a subscript only the container is a target
+/// (`arr[i] = v` does not assign `i`).
+pub(crate) fn collect_assign_targets(n: Node, code: &[u8], out: &mut Vec<String>) {
+    match n.kind() {
+        "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
+            if let Some(path) = member_expr_text(n, code) {
+                out.push(path);
+            }
+        }
+        "array_access" | "subscript_expression" => {
+            let base = n
+                .child_by_field_name("array")
+                .or_else(|| n.child_by_field_name("object"))
+                .or_else(|| n.named_child(0));
+            if let Some(base) = base {
+                collect_assign_targets(base, code, out);
+            }
+        }
+        "identifier" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t);
+            }
+        }
+        "variable_name" => {
+            if let Some(t) = text_of(n, code) {
+                out.push(t.trim_start_matches('$').to_string());
+            }
+        }
+        _ => {
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                collect_assign_targets(ch, code, out);
             }
         }
     }
@@ -1269,6 +1758,173 @@ pub(crate) fn collect_rhs_array_literal_elements(
     out
 }
 
+/// Property shape of the object literal that `ast` binds to `defines`.
+///
+/// Recognised bindings (JS/TS only): `const o = {..}` / `let` / `var` with a
+/// single declarator, `export const o = {..}`, and the plain assignment
+/// `o = {..}`.  The RHS may be wrapped in parentheses or a TS `as` /
+/// `satisfies` / `!` / `<T>` assertion.  Returns `None` when the node binds
+/// something else, binds more than one name, or the bound name differs from
+/// `defines`.
+pub(crate) fn collect_rhs_object_literal(
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+    defines: &str,
+) -> Option<Box<crate::cfg::RhsObjectLiteral>> {
+    if !matches!(lang, "javascript" | "typescript") {
+        return None;
+    }
+    let (name, value) = single_binding_name_value(ast)?;
+    if name.kind() != "identifier" || text_of(name, code).as_deref() != Some(defines) {
+        return None;
+    }
+    let value = unwrap_ts_expression_wrappers(value);
+    if value.kind() != "object" {
+        return None;
+    }
+    Some(Box::new(object_literal_shape(value, code, 0)))
+}
+
+/// `(binding name, value)` of a single-binding JS/TS declaration or
+/// assignment node.
+fn single_binding_name_value(ast: Node) -> Option<(Node, Node)> {
+    match ast.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = ast.walk();
+            let mut declarators = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "variable_declarator");
+            let only = declarators.next()?;
+            if declarators.next().is_some() {
+                return None;
+            }
+            single_binding_name_value(only)
+        }
+        "variable_declarator" => Some((
+            ast.child_by_field_name("name")?,
+            ast.child_by_field_name("value")?,
+        )),
+        "assignment_expression" => Some((
+            ast.child_by_field_name("left")?,
+            ast.child_by_field_name("right")?,
+        )),
+        "export_statement" => single_binding_name_value(ast.child_by_field_name("declaration")?),
+        "expression_statement" => {
+            let mut cursor = ast.walk();
+            let mut inner = ast
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() != "comment");
+            let only = inner.next()?;
+            if inner.next().is_some() {
+                return None;
+            }
+            single_binding_name_value(only)
+        }
+        _ => None,
+    }
+}
+
+/// Strip parentheses and TS type-only wrappers (`x as T`, `x satisfies T`,
+/// `x!`, `<T>x`) that do not change the runtime value.
+fn unwrap_ts_expression_wrappers(mut n: Node) -> Node {
+    loop {
+        let inner = match n.kind() {
+            "parenthesized_expression"
+            | "as_expression"
+            | "satisfies_expression"
+            | "non_null_expression" => n.named_child(0),
+            // `<T>expr`: the type comes first, the expression last.
+            "type_assertion" => n.named_child(n.named_child_count().saturating_sub(1) as u32),
+            _ => None,
+        };
+        match inner {
+            Some(i) => n = i,
+            None => return n,
+        }
+    }
+}
+
+/// Nested object literals deeper than this are recorded as `Complex`.
+const MAX_OBJECT_LITERAL_DEPTH: usize = 4;
+
+fn object_literal_shape(obj: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectLiteral {
+    use crate::cfg::{RhsObjectLiteral, RhsObjectSlot};
+    let mut out = RhsObjectLiteral {
+        fields: SmallVec::new(),
+        open: false,
+    };
+    let mut cursor = obj.walk();
+    for child in obj.named_children(&mut cursor) {
+        match child.kind() {
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    out.open = true;
+                    continue;
+                };
+                let key_text = match key.kind() {
+                    "property_identifier" | "number" => text_of(key, code),
+                    "string" => text_of(key, code).map(|t| {
+                        t.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                            .to_string()
+                    }),
+                    // `[k]: v` can name any key.
+                    _ => None,
+                };
+                let Some(key_text) = key_text else {
+                    out.open = true;
+                    continue;
+                };
+                let slot = match child.child_by_field_name("value") {
+                    Some(v) => object_slot(v, code, depth),
+                    None => RhsObjectSlot::Complex,
+                };
+                out.fields.push((key_text, slot));
+            }
+            "shorthand_property_identifier" => {
+                if let Some(t) = text_of(child, code) {
+                    out.fields.push((t.clone(), RhsObjectSlot::Ident(t)));
+                }
+            }
+            "comment" => {}
+            // `...rest`, methods, getters / setters, and anything this
+            // walker does not model.
+            _ => out.open = true,
+        }
+    }
+    out
+}
+
+fn object_slot(value: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectSlot {
+    use crate::cfg::RhsObjectSlot;
+    let value = unwrap_ts_expression_wrappers(value);
+    match value.kind() {
+        "string" | "number" | "true" | "false" | "null" | "undefined" | "regex" => {
+            RhsObjectSlot::Literal
+        }
+        "template_string" => {
+            let mut cursor = value.walk();
+            let interpolated = value
+                .named_children(&mut cursor)
+                .any(|c| c.kind() == "template_substitution");
+            if interpolated {
+                RhsObjectSlot::Complex
+            } else {
+                RhsObjectSlot::Literal
+            }
+        }
+        "identifier" => match text_of(value, code) {
+            Some(t) if t == "undefined" => RhsObjectSlot::Literal,
+            Some(t) => RhsObjectSlot::Ident(t),
+            None => RhsObjectSlot::Complex,
+        },
+        "object" if depth < MAX_OBJECT_LITERAL_DEPTH => {
+            RhsObjectSlot::Object(Box::new(object_literal_shape(value, code, depth + 1)))
+        }
+        _ => RhsObjectSlot::Complex,
+    }
+}
+
 /// Recursively collect every identifier that occurs inside `n`.
 ///
 /// Recognises `identifier` (most languages), `variable_name` (PHP),
@@ -1382,6 +2038,187 @@ pub(crate) fn subscript_components<'a>(n: Node<'a>, code: &'a [u8]) -> Option<(S
     // don't use it for local array identifiers.
     let idx_text = text_of(idx, code)?;
     Some((arr_text, idx_text))
+}
+
+/// Values that leave a function through a `return` statement.
+///
+/// `idents` holds the variable names (and member paths such as `self.conn`)
+/// that sit in an *escape position* of the returned expression: the value
+/// itself, an element of a returned tuple / list / object / struct literal,
+/// the operand of `&` / a cast / `std::move`, a ternary arm, or an argument of
+/// a returned constructor (`new BufferedReader(r)`).  `call_callees` holds the
+/// callee text (as [`super::literals::call_ident_of`] spells it, so it
+/// matches `CallMeta::callee`) of each call or constructor whose result is
+/// returned directly (`return os.Open(p)`, `return new Foo()`).
+///
+/// A plain call's arguments and receiver are NOT escape positions: in
+/// `return f.read()` / `return io.ReadAll(f)` / `return json.load(f)` the
+/// handle `f` stays with this function, so it must not count as handed to
+/// the caller.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReturnEscapes {
+    pub idents: Vec<String>,
+    pub call_callees: Vec<String>,
+}
+
+/// Collect [`ReturnEscapes`] from a return statement node.
+pub(crate) fn collect_return_escapes(ret: Node, lang: &str, code: &[u8]) -> ReturnEscapes {
+    let mut out = ReturnEscapes::default();
+    let mut cursor = ret.walk();
+    for child in ret.named_children(&mut cursor) {
+        return_escape_walk(child, lang, code, &mut out, 0);
+    }
+    out
+}
+
+/// [`ReturnEscapes`] of a value expression that is returned implicitly
+/// (Ruby's last statement), walked exactly like a `return` operand.
+pub(crate) fn collect_value_escapes(expr: Node, lang: &str, code: &[u8]) -> ReturnEscapes {
+    let mut out = ReturnEscapes::default();
+    return_escape_walk(expr, lang, code, &mut out, 0);
+    out
+}
+
+fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes, depth: u32) {
+    if depth > 12 {
+        return;
+    }
+    let recurse_named = |n: Node, out: &mut ReturnEscapes| {
+        let mut cursor = n.walk();
+        for child in n.named_children(&mut cursor) {
+            return_escape_walk(child, lang, code, out, depth + 1);
+        }
+    };
+    match n.kind() {
+        "identifier" | "shorthand_property_identifier" => {
+            if let Some(t) = text_of(n, code) {
+                out.idents.push(t);
+            }
+        }
+        "variable_name" => {
+            if let Some(t) = text_of(n, code) {
+                out.idents.push(t.trim_start_matches('$').to_string());
+            }
+        }
+        // A returned field read hands the field's value to the caller, not
+        // the object it hangs off.
+        "member_expression"
+        | "attribute"
+        | "selector_expression"
+        | "field_expression"
+        | "field_access" => {
+            if let Some(t) = member_expr_text(n, code) {
+                out.idents.push(t);
+            }
+            if let Some(t) = text_of(n, code) {
+                let compact: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                if !out.idents.contains(&compact) {
+                    out.idents.push(compact);
+                }
+            }
+        }
+        // Transparent containers: every element escapes.
+        "parenthesized_expression"
+        | "expression_list"
+        | "tuple"
+        | "list"
+        | "array"
+        | "array_creation_expression"
+        | "array_initializer"
+        | "argument_list"
+        | "literal_value"
+        | "literal_element"
+        | "initializer_list"
+        | "field_initializer_list"
+        | "shorthand_field_initializer"
+        | "object"
+        | "dictionary"
+        | "array_element_initializer"
+        | "composite_literal"
+        | "condition_clause" => recurse_named(n, out),
+        // Keyed elements: only the value escapes, never the key.
+        "pair" | "keyed_element" | "field_initializer" => {
+            if let Some(v) = n.child_by_field_name("value") {
+                return_escape_walk(v, lang, code, out, depth + 1);
+            } else {
+                let mut cursor = n.walk();
+                if let Some(last) = n.named_children(&mut cursor).last() {
+                    return_escape_walk(last, lang, code, out, depth + 1);
+                }
+            }
+        }
+        // Address-of / casts / type assertions: the operand escapes.
+        "unary_expression" | "pointer_expression" | "reference_expression" => {
+            let is_addr = n
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&");
+            if is_addr || n.kind() == "reference_expression" {
+                if let Some(arg) = n
+                    .child_by_field_name("argument")
+                    .or_else(|| n.child_by_field_name("operand"))
+                    .or_else(|| n.child_by_field_name("value"))
+                {
+                    return_escape_walk(arg, lang, code, out, depth + 1);
+                }
+            }
+        }
+        "cast_expression"
+        | "type_assertion_expression"
+        | "as_expression"
+        | "type_conversion_expression"
+        | "non_null_expression"
+        | "satisfies_expression" => {
+            if let Some(v) = n
+                .child_by_field_name("value")
+                .or_else(|| n.child_by_field_name("operand"))
+            {
+                return_escape_walk(v, lang, code, out, depth + 1);
+            } else {
+                let mut cursor = n.walk();
+                if let Some(first) = n.named_children(&mut cursor).next() {
+                    return_escape_walk(first, lang, code, out, depth + 1);
+                }
+            }
+        }
+        "conditional_expression" | "ternary_expression" => {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = n.child_by_field_name(field) {
+                    return_escape_walk(arm, lang, code, out, depth + 1);
+                }
+            }
+        }
+        // Constructors: the new object escapes, and so does every argument
+        // handed to it (a wrapper owns what it wraps).
+        "object_creation_expression" | "new_expression" => {
+            if let Some(callee) = super::literals::call_ident_of(n, lang, code) {
+                out.call_callees.push(callee);
+            }
+            if let Some(args) = n.child_by_field_name("arguments").or_else(|| {
+                let mut cursor = n.walk();
+                n.named_children(&mut cursor)
+                    .find(|c| c.kind() == "argument_list" || c.kind() == "arguments")
+            }) {
+                recurse_named(args, out);
+            }
+        }
+        _ => {
+            if matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod) {
+                let callee = super::literals::call_ident_of(n, lang, code);
+                // C++ `std::move(x)` hands `x` itself to the caller.
+                let is_move = lang == "cpp"
+                    && callee
+                        .as_deref()
+                        .is_some_and(|c| c == "std::move" || c == "move");
+                if is_move {
+                    if let Some(args) = n.child_by_field_name("arguments") {
+                        recurse_named(args, out);
+                    }
+                } else if let Some(callee) = callee {
+                    out.call_callees.push(callee);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

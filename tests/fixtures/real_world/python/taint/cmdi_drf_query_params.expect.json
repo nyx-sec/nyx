@@ -1,0 +1,36 @@
+{
+  "description": "DRF request.query_params and Starlette request.path_params are request sources",
+  "tags": [
+    "taint",
+    "cmdi",
+    "drf",
+    "starlette"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        7,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "DRF query_params.get into os.system",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        12,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "Starlette path_params subscript into os.system",
+      "must_match": true
+    }
+  ]
+}

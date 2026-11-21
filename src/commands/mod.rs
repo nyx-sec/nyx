@@ -523,7 +523,7 @@ fn handle_verify_feedback(
     };
 
     let record = serde_json::json!({
-        "ts": chrono::Utc::now().to_rfc3339(),
+        "ts": crate::utils::time::now_rfc3339(),
         "event": "verify_feedback",
         "finding_id": finding_id,
         "feedback": feedback_kind,

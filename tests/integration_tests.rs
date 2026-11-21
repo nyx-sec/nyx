@@ -82,6 +82,25 @@ fn auth_analysis_noise_frameworks() {
     validate_expectations(&diags, &dir);
 }
 
+/// A Next.js manifest lists `next` and `react` and no Express, Koa or Fastify.
+/// The JS route extractors must still run, so the API route's unchecked
+/// delete is reported.
+#[test]
+fn auth_analysis_next_react_manifest_keeps_js_extractors() {
+    let dir = fixture_path("auth_analysis_next_react");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// A Python backend with a UI `package.json` that lists only React.  The
+/// FastAPI extractor must still read the route dependency.
+#[test]
+fn auth_analysis_python_backend_with_ui_manifest_keeps_fastapi_extractor() {
+    let dir = fixture_path("auth_analysis_python_ui_manifest");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 #[test]
 fn auth_analysis_python_frameworks_integration() {
     let dir = fixture_path("auth_analysis_python_frameworks_integration");
@@ -372,6 +391,33 @@ fn cross_file_js_sqli() {
     let dir = fixture_path("cross_file_js_sqli");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
     validate_expectations(&diags, &dir);
+}
+
+/// JS: helpers in lib.js have parameter names the handler-param seed treats
+/// as user input, but route.js calls both.  The call graph shows the
+/// callers, so the seed stays off: the tainted call is reported at the call
+/// site and the literal-only call reports nothing inside lib.js.
+#[test]
+fn cross_file_js_seed_named_helper() {
+    let dir = fixture_path("cross_file_js_seed_named_helper");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+    // The real flow starts at req.body.target in route.js.  A finding whose
+    // source is a parameter in lib.js could only come from the seed.
+    let seeded: Vec<&nyx_scanner::commands::scan::Diag> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-"))
+        .filter(|d| {
+            d.evidence
+                .as_ref()
+                .and_then(|e| e.source.as_ref())
+                .is_some_and(|s| s.path.ends_with("lib.js"))
+        })
+        .collect();
+    assert!(
+        seeded.is_empty(),
+        "no flow may start at a lib.js parameter: {seeded:#?}"
+    );
 }
 
 /// Python: 3-file chain, os.environ in input_reader.py → passthrough in

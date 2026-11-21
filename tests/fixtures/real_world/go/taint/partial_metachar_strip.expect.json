@@ -1,0 +1,73 @@
+{
+  "description": "strings.ReplaceAll over ';' and strings.Replace with n=1 over '|' remove at most part of the shell metacharacter set; neither is a sanitizer.",
+  "tags": [
+    "taint",
+    "sanitizer",
+    "replace",
+    "cmdi",
+    "go"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "ReplaceAll over ';' in a helper"
+    },
+    {
+      "rule_id": "go.cmdi.exec_command",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "Replace(.., 1) strips only the first '|'"
+    },
+    {
+      "rule_id": "go.cmdi.exec_command",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    },
+    {
+      "rule_id": "state-unauthed-access",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "noise: no auth model in the fixture"
+    }
+  ]
+}

@@ -160,8 +160,12 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
     },
+    // File-writing path sinks.  The matching `GATED_SINKS` entries restrict
+    // each to its path arguments.  `fwrite($fh, $data)` / `fputs` take a
+    // handle and the data, never a path; the path was checked where the
+    // handle was opened.
     LabelRule {
-        matchers: &["move_uploaded_file", "copy", "file_put_contents", "fwrite"],
+        matchers: &["move_uploaded_file", "copy", "file_put_contents"],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
@@ -631,6 +635,26 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // ── File-writing path positions ──────────────────────────────────────
+    //
+    // Path traversal needs taint in a path.  `file_put_contents($path,
+    // $data)` writes arg 1, which is content.  `copy($from, $to)` reads and
+    // writes a path each.  `move_uploaded_file($tmp, $dest)` only lets the
+    // caller choose the destination: PHP refuses a `$tmp` that is not a
+    // fresh upload.
+    SinkGate::payload_positions(
+        "file_put_contents",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions("copy", DataLabel::Sink(Cap::FILE_IO), false, &[0, 1]),
+    SinkGate::payload_positions(
+        "move_uploaded_file",
+        DataLabel::Sink(Cap::FILE_IO),
+        false,
+        &[1],
+    ),
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -683,6 +707,10 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "member_call_expression"        => Kind::CallMethod,
     "scoped_call_expression"        => Kind::CallMethod,
     "assignment_expression"         => Kind::Assignment,
+    // `$x .= $y`, `$x ??= $y`: read-modify-write, see `cfg::rmw_assignment`.
+    "augmented_assignment_expression" => Kind::Assignment,
+    // `$i++` / `--i`: read-modify-write, see `cfg::rmw_assignment`.
+    "update_expression"             => Kind::Assignment,
     "expression_statement"          => Kind::CallWrapper,
     "echo_statement"                => Kind::CallWrapper,
 
@@ -723,4 +751,29 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     }
 
     rules
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::{Cap, DataLabel, classify_all, classify_gated_sink};
+
+    fn payload(callee: &str) -> Option<Vec<usize>> {
+        classify_gated_sink("php", callee, |_| None, |_| None, |_| false)
+            .iter()
+            .find(|g| g.label == DataLabel::Sink(Cap::FILE_IO))
+            .map(|g| g.payload_args.to_vec())
+    }
+
+    #[test]
+    fn file_write_sinks_check_path_arguments_only() {
+        assert_eq!(payload("file_put_contents"), Some(vec![0]));
+        assert_eq!(payload("copy"), Some(vec![0, 1]));
+        assert_eq!(payload("move_uploaded_file"), Some(vec![1]));
+        // `fwrite($fh, $data)` takes a handle and content, never a path.
+        assert!(
+            !classify_all("php", "fwrite", None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::FILE_IO)))
+        );
+    }
 }

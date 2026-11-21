@@ -1,0 +1,15 @@
+{
+  "description": "A source read passed straight through a labelled sanitiser wrapper before the sink. The outer call's argument is a nested call, which is the shape the chain-wrapper resolution walks.",
+  "tags": ["taint", "xss", "chain-wrapper", "safe"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "line_range": [5, 7],
+      "evidence_contains": [],
+      "notes": "DOMPurify.sanitize wraps the only source read, so nothing tainted reaches res.send"
+    }
+  ]
+}

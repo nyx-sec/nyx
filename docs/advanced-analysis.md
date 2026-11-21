@@ -218,8 +218,12 @@ Two nested switches refine the scope without disabling symex entirely:
 
 **Limitations.** Expression trees are bounded at `MAX_EXPR_DEPTH=32`;
 deeper expressions degrade to `Unknown` rather than growing unboundedly.
-Sanitizer detection is informational: string-replace sanitizer patterns
-are reported as witness metadata, not used to clear taint.
+The symbolic string theory does not clear taint through `replace`. The
+taint engine does credit a literal `replace` at the call site, but only a
+complete escape: angle brackets removed or entity-escaped, a quote rewritten
+to its HTML entity, or a quote doubled or backslash-escaped for SQL. Removing
+one shell or SQL metacharacter (`replace(";", "")`, `replace("'", "")`) is a
+partial filter and clears nothing.
 
 **Source**: [`src/symex/`](https://github.com/nyx-sec/nyx/tree/master/src/symex/).
 

@@ -1,0 +1,40 @@
+{
+  "description": "`return params[:id]` makes the helper a source for its callers.",
+  "tags": [
+    "taint",
+    "interproc",
+    "getter",
+    "rails",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "requested_id returns params[:id]"
+    },
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        6,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on system with interpolation"
+    }
+  ]
+}

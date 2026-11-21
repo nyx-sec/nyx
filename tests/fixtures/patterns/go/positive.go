@@ -7,12 +7,18 @@ import (
 	"encoding/gob"
 	"os"
 	"os/exec"
+	"golang.org/x/sys/execabs"
 	"unsafe"
 )
 
 // go.cmdi.exec_command
 func triggerExecCommand(cmd string) {
 	exec.Command("bash", "-c", cmd)
+}
+
+// go.cmdi.exec_command through the hardened os/exec replacement
+func triggerExecabsCommand(cmd string) {
+	execabs.Command("bash", "-c", cmd)
 }
 
 // go.memory.unsafe_pointer

@@ -1,7 +1,7 @@
 use super::{
     ImportBinding, ImportBindings, PromisifyAlias, PromisifyAliases, member_expr_text, text_of,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Tree};
 
 /// File-local view of every JS/TS import binding: local-name → source-module
@@ -27,6 +27,102 @@ pub(super) fn extract_local_import_view(tree: &Tree, code: &[u8]) -> HashMap<Str
         out.insert(raw.local, raw.source_spec);
     }
     extend_with_promises_alias(tree, code, &mut out);
+    out
+}
+
+/// File-local view of the Python names bound to a module-qualified path:
+/// bound name → dotted path.
+///
+/// - `from subprocess import check_output` binds `check_output` to
+///   `subprocess.check_output`; `from html import escape as esc` binds `esc`
+///   to `html.escape`.
+/// - `import numpy.linalg as la` binds `la` to `numpy.linalg`.
+///
+/// A plain `import os` or `import os.path` binds a name that already spells
+/// its own path, so it gets no entry. Relative imports and `*` imports are
+/// skipped: the first is project code resolved through summaries, the second
+/// binds nothing nameable. Imports inside functions, classes and conditional
+/// blocks are collected too; the view is per file, not per scope.
+///
+/// Label rules are keyed on module-qualified callees (`os.system`,
+/// `html.escape`, `pickle.loads`), so classification consults this view to
+/// recognise the bare spelling a `from M import n` file uses.
+pub(super) fn extract_python_import_paths(tree: &Tree, code: &[u8]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "import_statement" => {
+                let mut cursor = node.walk();
+                for item in node.children_by_field_name("name", &mut cursor) {
+                    if item.kind() != "aliased_import" {
+                        continue;
+                    }
+                    if let (Some(path), Some(alias)) = (
+                        item.child_by_field_name("name")
+                            .and_then(|n| text_of(n, code)),
+                        item.child_by_field_name("alias")
+                            .and_then(|n| text_of(n, code)),
+                    ) {
+                        out.insert(alias, path);
+                    }
+                }
+            }
+            "import_from_statement" => {
+                let Some(module) = node
+                    .child_by_field_name("module_name")
+                    .filter(|m| m.kind() == "dotted_name")
+                    .and_then(|m| text_of(m, code))
+                else {
+                    continue;
+                };
+                let mut cursor = node.walk();
+                for item in node.children_by_field_name("name", &mut cursor) {
+                    let (name, bound) = match item.kind() {
+                        "dotted_name" => {
+                            let Some(n) = text_of(item, code) else {
+                                continue;
+                            };
+                            (n.clone(), n)
+                        }
+                        "aliased_import" => {
+                            let (Some(n), Some(a)) = (
+                                item.child_by_field_name("name")
+                                    .and_then(|n| text_of(n, code)),
+                                item.child_by_field_name("alias")
+                                    .and_then(|n| text_of(n, code)),
+                            ) else {
+                                continue;
+                            };
+                            (n, a)
+                        }
+                        _ => continue,
+                    };
+                    out.insert(bound, format!("{module}.{name}"));
+                }
+            }
+            // Only statement containers can hold an import statement.
+            "module"
+            | "block"
+            | "function_definition"
+            | "class_definition"
+            | "decorated_definition"
+            | "if_statement"
+            | "elif_clause"
+            | "else_clause"
+            | "try_statement"
+            | "except_clause"
+            | "except_group_clause"
+            | "finally_clause"
+            | "with_statement"
+            | "for_statement"
+            | "while_statement" => {
+                let mut cursor = node.walk();
+                stack.extend(node.named_children(&mut cursor));
+            }
+            _ => {}
+        }
+    }
     out
 }
 
@@ -614,3 +710,119 @@ fn scoped_identifier_matches(node: Node, code: &[u8], crate_prefix: &str, leaf: 
 }
 
 //  === PUBLIC ENTRY POINT =================================================
+
+/// Python modules whose `abort` helper always raises an `HTTPException`.
+const PYTHON_ABORT_MODULES: &[&str] = &[
+    "flask",
+    "quart",
+    "werkzeug",
+    "werkzeug.exceptions",
+    "bottle",
+    "flask_restful",
+    "flask_restx",
+];
+
+/// Local names bound to a never-returning Python framework `abort` helper:
+/// `from flask import abort` binds `abort`, `from werkzeug.exceptions import
+/// abort as deny` binds `deny`.  Function-level imports count too, since the
+/// binding is what the call site resolves against.  Wildcard and relative
+/// imports are ignored.
+pub(super) fn collect_python_noreturn_imports(root: Node, code: &[u8]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if !code.windows(5).any(|w| w == b"abort") {
+        return out;
+    }
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "import_from_statement" {
+            let from_abort_module = node
+                .child_by_field_name("module_name")
+                .filter(|m| m.kind() == "dotted_name")
+                .and_then(|m| text_of(m, code))
+                .is_some_and(|m| PYTHON_ABORT_MODULES.contains(&m.as_str()));
+            if from_abort_module {
+                let mut c = node.walk();
+                for name in node.children_by_field_name("name", &mut c) {
+                    match name.kind() {
+                        "dotted_name" if text_of(name, code).as_deref() == Some("abort") => {
+                            out.insert("abort".to_string());
+                        }
+                        "aliased_import" => {
+                            let original = name
+                                .child_by_field_name("name")
+                                .and_then(|n| text_of(n, code));
+                            let alias = name
+                                .child_by_field_name("alias")
+                                .and_then(|a| text_of(a, code));
+                            if original.as_deref() == Some("abort")
+                                && let Some(alias) = alias
+                            {
+                                out.insert(alias);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+        // Imports are statements; expressions never contain one.
+        if node.kind().ends_with("expression") || node.kind() == "call" {
+            continue;
+        }
+        let mut c = node.walk();
+        for ch in node.named_children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod python_import_path_tests {
+    use super::*;
+
+    fn paths(src: &str) -> HashMap<String, String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        extract_python_import_paths(&tree, src.as_bytes())
+    }
+
+    #[test]
+    fn from_imports_bind_the_qualified_path() {
+        let p =
+            paths("from subprocess import check_output, Popen as P\nfrom os.path import abspath\n");
+        assert_eq!(p["check_output"], "subprocess.check_output");
+        assert_eq!(p["P"], "subprocess.Popen");
+        assert_eq!(p["abspath"], "os.path.abspath");
+        assert!(!p.contains_key("Popen"));
+    }
+
+    #[test]
+    fn only_aliased_module_imports_are_bound() {
+        let p = paths("import os\nimport os.path\nimport numpy.linalg as la\nimport yaml as y\n");
+        assert_eq!(p.len(), 2);
+        assert_eq!(p["la"], "numpy.linalg");
+        assert_eq!(p["y"], "yaml");
+    }
+
+    #[test]
+    fn relative_and_star_imports_are_skipped() {
+        let p = paths("from . import helper\nfrom .db import get\nfrom os import *\n");
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn imports_inside_functions_and_try_blocks_are_collected() {
+        let p = paths(
+            "try:\n    from json import loads\nexcept ImportError:\n    pass\n\
+             def f():\n    from pickle import loads as pl\n    if True:\n        from html import escape\n",
+        );
+        assert_eq!(p["loads"], "json.loads");
+        assert_eq!(p["pl"], "pickle.loads");
+        assert_eq!(p["escape"], "html.escape");
+    }
+}

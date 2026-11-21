@@ -1,0 +1,19 @@
+{
+  "description": "HttpURLConnection has no close(); its stream is the resource, and closing that stream (or calling disconnect()) is the cleanup.  The connection variable is not reported as leaked.  A FileInputStream that is never closed in the same file still is.",
+  "tags": ["state", "resource-leak", "precision"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "resource-leak",
+      "line_range": [8, 26],
+      "must_not_match": true,
+      "notes": "the connection from openConnection() is not a closeable resource"
+    },
+    {
+      "rule_id": "resource-leak",
+      "line_range": [27, 30],
+      "must_match": true,
+      "notes": "fis is never closed"
+    }
+  ]
+}

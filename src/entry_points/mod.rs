@@ -764,6 +764,18 @@ where
     }
 }
 
+/// True when `func_node` is a Python function under a FastAPI-style route
+/// decorator (`@app.get(..)`, `@router.post(..)`, `@app.websocket(..)`): the
+/// same classification [`detect_python`] records as
+/// [`EntryKind::FastApiRoute`].  Flask's `@app.route(..)` is not one.
+pub(crate) fn python_is_fastapi_route(func_node: Node, bytes: &[u8]) -> bool {
+    func_node
+        .parent()
+        .filter(|p| p.kind() == "decorated_definition")
+        .and_then(|dec| python_decorator_entry_kind(dec, bytes))
+        .is_some_and(|k| matches!(k, EntryKind::FastApiRoute { .. }))
+}
+
 fn python_decorator_entry_kind(decorated: Node, bytes: &[u8]) -> Option<EntryKind> {
     let mut cursor = decorated.walk();
     for ch in decorated.children(&mut cursor) {
@@ -1342,6 +1354,51 @@ async def read_item(id: str):
                 }
             )),
             "expected FastApiRoute(GET); got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn python_is_fastapi_route_matches_only_fastapi_style_decorators() {
+        let src = r#"
+@app.get("/a")
+def a(q): pass
+@router.post("/b")
+def b(q): pass
+@app.route("/c")
+def c(q): pass
+def d(q): pass
+@cache
+def e(q): pass
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let mut verdicts = Vec::new();
+        let mut stack = vec![tree.root_node()];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "function_definition" {
+                let name = n
+                    .child_by_field_name("name")
+                    .and_then(|x| crate::cfg::node_str(x, src.as_bytes()))
+                    .unwrap_or("")
+                    .to_string();
+                verdicts.push((name, python_is_fastapi_route(n, src.as_bytes())));
+            }
+            let mut c = n.walk();
+            stack.extend(n.children(&mut c));
+        }
+        verdicts.sort();
+        assert_eq!(
+            verdicts,
+            [
+                ("a".to_string(), true),
+                ("b".to_string(), true),
+                ("c".to_string(), false),
+                ("d".to_string(), false),
+                ("e".to_string(), false),
+            ]
         );
     }
 

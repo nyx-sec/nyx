@@ -1,0 +1,44 @@
+{
+  "description": "Only formals declared as *http.Request are request sources: a struct param named req, a closure formal that shadows the handler's req, and a locally built outbound request stay clean.",
+  "tags": [
+    "taint",
+    "go",
+    "negative",
+    "request-type"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "req is a *LoadRequest; req.Body is a plain field",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "the closure's req formal shadows the handler's *http.Request",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "req comes from http.NewRequest, not from the client",
+      "must_not_match": true
+    }
+  ]
+}

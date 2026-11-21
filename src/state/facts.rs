@@ -295,12 +295,14 @@ pub fn extract_findings(
             // confirmed to be a locally-acquired `Connection` via its own
             // acquire node.  A statement on a long-lived / field / parameter
             // connection this body does not track is KEPT (it genuinely
-            // accumulates).  Java-only; twin of the suppression in
+            // accumulates).  Twin of the suppression in
             // `cfg_analysis::resources`.  Interior-node sibling of the
-            // `ResultSet` leaf suppression above.
-            if lang == Lang::Java
-                && let Some(acq) = acquire_node
-                && let Some(owner) = crate::cfg_analysis::rules::jdbc_statement_owning_connection(
+            // `ResultSet` leaf suppression above.  The same holds for a
+            // Python DB-API cursor opened on a connection this body acquired
+            // (`with sqlite3.connect(p) as conn: cur = conn.cursor()`).
+            if let Some(acq) = acquire_node
+                && let Some(owner) = crate::cfg_analysis::rules::derived_resource_owner(
+                    lang,
                     cfg[acq].call.callee.as_deref(),
                 )
             {
@@ -308,7 +310,8 @@ pub fn extract_findings(
                 if let Some(owner_sym) = interner.get_scoped(owner_scope, owner)
                     && let Some(owner_acq) =
                         find_acquire_node(cfg, owner_sym, interner, owner_scope)
-                    && crate::cfg_analysis::rules::is_jdbc_connection_acquire(
+                    && crate::cfg_analysis::rules::is_owning_connection_acquire(
+                        lang,
                         cfg[owner_acq].call.callee.as_deref(),
                     )
                 {
@@ -378,12 +381,13 @@ pub fn extract_findings(
                     // Only Return nodes can transfer resource ownership to the
                     // caller.  Non-Return predecessors (exception edges, implicit
                     // fallthrough) with OPEN resources represent genuine leaks.
-                    let returns_var = cfg[pred].kind == StmtKind::Return
-                        && cfg[pred]
-                            .taint
-                            .uses
-                            .iter()
-                            .any(|u| interner.get_scoped(scope, u) == Some(sym));
+                    // The handle must be in an escape position of the returned
+                    // expression (`return f`, `return f, nil`,
+                    // `return &W{f: f}`); `return f.read()` merely mentions it.
+                    // C / C++ keep the mention rule, see `return_hands_off`.
+                    let returns_var = super::transfer::return_hands_off(lang, &cfg[pred], |u| {
+                        interner.get_scoped(scope, u) == Some(sym)
+                    });
                     if returns_var {
                         returned_open += 1;
                     } else {
@@ -772,6 +776,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -834,6 +839,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
@@ -950,6 +956,8 @@ mod tests {
                 uses: vec!["f".into()],
                 ..Default::default()
             },
+            // `return f;`: the handle itself is the returned value.
+            returned_idents: vec!["f".into()],
             ast: AstMeta {
                 enclosing_func: Some(func.into()),
                 ..Default::default()
@@ -962,33 +970,111 @@ mod tests {
         cfg.add_edge(open_node, ret, EdgeKind::Seq);
         cfg.add_edge(ret, exit, EdgeKind::Seq);
 
-        let interner = SymbolInterner::from_cfg_scoped(&cfg);
-        let transfer = DefaultTransfer {
-            lang: Lang::C,
-            resource_pairs: rules::resource_pairs(Lang::C),
-            interner: &interner,
-            resource_method_summaries: &[],
-            ptr_proxy_hints: None,
-            nonescaping_field_containers: None,
-        };
-
-        let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());
-        let findings = extract_findings(
-            &result,
-            &cfg,
-            &interner,
-            Lang::C,
-            &HashMap::new(),
-            false,
-            &std::collections::HashSet::new(),
-            None,
-        );
-
+        let findings = run_factory_cfg(&cfg, entry);
         assert!(
             findings.is_empty(),
             "Resource returned from factory must not produce leak finding.\n  Got: {:?}",
             findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
         );
+    }
+
+    fn run_factory_cfg(cfg: &Cfg, entry: petgraph::graph::NodeIndex) -> Vec<StateFinding> {
+        run_factory_cfg_in(Lang::C, cfg, entry)
+    }
+
+    fn run_factory_cfg_in(
+        lang: Lang,
+        cfg: &Cfg,
+        entry: petgraph::graph::NodeIndex,
+    ) -> Vec<StateFinding> {
+        let interner = SymbolInterner::from_cfg_scoped(cfg);
+        let transfer = DefaultTransfer {
+            lang,
+            resource_pairs: rules::resource_pairs(lang),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+            nonescaping_field_containers: None,
+            closeable_wrappers: None,
+        };
+        let result = engine::run_forward(cfg, entry, &transfer, ProductState::initial());
+        extract_findings(
+            &result,
+            cfg,
+            &interner,
+            lang,
+            &HashMap::new(),
+            false,
+            &std::collections::HashSet::new(),
+            None,
+        )
+    }
+
+    /// `<handle> = <acquire>(..); return <reader>(<handle>);` in `lang`.
+    fn return_mentions_handle_cfg(
+        acquire: &str,
+        reader: &str,
+    ) -> (Cfg, petgraph::graph::NodeIndex) {
+        let func = "reader";
+        let mut cfg: Cfg = Graph::new();
+        let entry = cfg.add_node(make_func_node(StmtKind::Entry, func));
+        let open_node = cfg.add_node(NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta {
+                span: (10, 20),
+                enclosing_func: Some(func.into()),
+            },
+            taint: TaintMeta {
+                defines: Some("f".into()),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some(acquire.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let ret = cfg.add_node(NodeInfo {
+            kind: StmtKind::Return,
+            taint: TaintMeta {
+                uses: vec![reader.into(), "f".into()],
+                ..Default::default()
+            },
+            returned_call_callees: vec![reader.into()],
+            ast: AstMeta {
+                enclosing_func: Some(func.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let exit = cfg.add_node(make_func_node(StmtKind::Exit, func));
+        cfg.add_edge(entry, open_node, EdgeKind::Seq);
+        cfg.add_edge(open_node, ret, EdgeKind::Seq);
+        cfg.add_edge(ret, exit, EdgeKind::Seq);
+        (cfg, entry)
+    }
+
+    #[test]
+    fn per_body_return_mentioning_handle_without_escape_leaks() {
+        // Python `f = open(p); return json.load(f)`: the caller gets the
+        // parsed value, not the file.
+        let (cfg, entry) = return_mentions_handle_cfg("open", "json.load");
+        let findings = run_factory_cfg_in(Lang::Python, &cfg, entry);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|f| f.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["state-resource-leak"],
+        );
+    }
+
+    #[test]
+    fn per_body_c_return_mentioning_pointer_hands_it_off() {
+        // C `b = malloc(n); return insert(t, b);`: ownership commonly moves
+        // into the callee, and there is no model of what it keeps.
+        let (cfg, entry) = return_mentions_handle_cfg("malloc", "insert");
+        assert!(run_factory_cfg_in(Lang::C, &cfg, entry).is_empty());
     }
 
     #[test]
@@ -1037,6 +1123,7 @@ mod tests {
             resource_method_summaries: &[],
             ptr_proxy_hints: None,
             nonescaping_field_containers: None,
+            closeable_wrappers: None,
         };
 
         let result = engine::run_forward(&cfg, entry, &transfer, ProductState::initial());

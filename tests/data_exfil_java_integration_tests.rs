@@ -136,3 +136,26 @@ fn ssrf_url_only_emits_ssrf_not_data_exfil() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
 }
+
+#[test]
+fn rest_template_ssrf_follows_the_url_position_only() {
+    // The fixture keeps the safe_* methods ahead of the unsafe_* ones.  A
+    // request parameter in the body or in a uriVariable under a fixed
+    // origin is not SSRF; a parameter as the URL, or as a variable in the
+    // authority of the template, is.
+    let diags = diags_for("ssrf_resttemplate_positions.java");
+    let mut flow_lines: Vec<usize> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-"))
+        .map(|d| d.line)
+        .collect();
+    flow_lines.sort_unstable();
+    flow_lines.dedup();
+    assert_eq!(
+        flow_lines,
+        vec![38, 43, 48],
+        "only unsafe_url, unsafe_post_url and unsafe_host_template may fire.\n\
+         Diags: {:#?}",
+        diags.iter().map(|d| (&d.id, d.line)).collect::<Vec<_>>(),
+    );
+}

@@ -153,6 +153,9 @@ pub fn run_state_analysis(
     // (a non-escaping stack struct) — lift the ownership-transfer
     // suppression for those.  Empty for other languages.
     let nonescaping_field_containers = transfer::nonescaping_local_field_containers(cfg, lang);
+    // Java wrapper objects whose lifetime this body accounts for; a stream
+    // handed to one of their constructors is owned by the wrapper.
+    let closeable_wrappers = transfer::closeable_wrapper_names(cfg, lang);
     let transfer = DefaultTransfer {
         lang,
         resource_pairs,
@@ -160,6 +163,7 @@ pub fn run_state_analysis(
         resource_method_summaries,
         ptr_proxy_hints,
         nonescaping_field_containers: Some(&nonescaping_field_containers),
+        closeable_wrappers: Some(&closeable_wrappers),
     };
 
     // Seed initial auth level from decorator-based authorization markers.
@@ -250,6 +254,61 @@ pub fn collect_closure_released_var_names(
         }
     }
 
+    // Step 1b: receiver fields released by a sibling method.  A handle
+    // stored on the object (`self.fh = open(p)`) belongs to the object, and
+    // a method of the same class that releases that field
+    // (`def close(self): self.fh.close()`) is where it is closed.  Unlike
+    // plain locals, receiver fields are shared between sibling methods, so
+    // the release counts for every method of the class.  A class with no
+    // such method keeps the leak.  JS / TS are left out: their class-field
+    // acquire is reported on purpose (see
+    // `transfer::acquire_into_field_transfers_ownership`).
+    let mut sibling_field_releases: std::collections::HashMap<
+        BodyId,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
+    if matches!(lang, Lang::Python | Lang::Php | Lang::Ruby) {
+        for body in bodies {
+            let Some(class_id) = body.meta.parent_body_id else {
+                continue;
+            };
+            for (_idx, info) in body.graph.node_references() {
+                if info.kind != StmtKind::Call {
+                    continue;
+                }
+                let Some(callee) = info.call.callee.as_deref() else {
+                    continue;
+                };
+                let cl = callee.to_ascii_lowercase();
+                let is_release = pairs.iter().any(|p| {
+                    p.release
+                        .iter()
+                        .any(|r| transfer::callee_matches_pub(&cl, r))
+                });
+                if !is_release {
+                    continue;
+                }
+                // Method form `self.fh.close()` / `$this->conn->close()`:
+                // the receiver chain.  Function form `os.close(self.fd)`:
+                // the first argument.
+                let mut candidates: Vec<&str> = Vec::new();
+                if let Some((rcv, _)) = callee.rsplit_once('.') {
+                    candidates.push(rcv);
+                } else if let Some(first) = info.call.arg_uses.first() {
+                    candidates.extend(first.iter().map(String::as_str));
+                }
+                for c in candidates {
+                    if let Some(field) = receiver_field_name(c) {
+                        sibling_field_releases
+                            .entry(class_id)
+                            .or_default()
+                            .insert(field);
+                    }
+                }
+            }
+        }
+    }
+
     // Step 2: roll up into ancestor bodies.  Walk each non-top body's
     // parent chain and union its release set into every ancestor's
     // entry.  Class methods at the same nesting level (siblings under a
@@ -269,12 +328,103 @@ pub fn collect_closure_released_var_names(
             cur = by_id.get(&pid).and_then(|b| b.meta.parent_body_id);
         }
     }
+    for body in bodies {
+        if let Some(class_id) = body.meta.parent_body_id
+            && let Some(fields) = sibling_field_releases.get(&class_id)
+        {
+            rollup
+                .entry(body.meta.id)
+                .or_default()
+                .extend(fields.iter().cloned());
+        }
+    }
     rollup
+}
+
+/// A field on the method's own receiver (`self.x`, `this.x`, `@x`, PHP
+/// `$this->x`), spelled the way the CFG names its define (`this.x` for
+/// PHP).  `None` for anything else.
+fn receiver_field_name(name: &str) -> Option<String> {
+    let (prefix, rest) = [
+        ("self.", "self."),
+        ("this.", "this."),
+        ("$this->", "this."),
+        ("@", "@"),
+    ]
+    .into_iter()
+    .find_map(|(spelled, canonical)| name.strip_prefix(spelled).map(|r| (canonical, r)))?;
+    let plain = !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    plain.then(|| format!("{prefix}{rest}"))
+}
+
+/// Names local to `body`: its parameters and the plain variables it assigns,
+/// minus assignments the CFG marked as stores to storage the body does not
+/// declare (Java / C++ unqualified members, Go package vars).
+fn body_local_names(body: &crate::cfg::BodyCfg) -> std::collections::HashSet<&str> {
+    let plain = |n: &str| {
+        !n.is_empty()
+            && n.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    };
+    let mut locals: std::collections::HashSet<&str> =
+        body.meta.params.iter().map(String::as_str).collect();
+    for info in body.graph.node_weights() {
+        if let Some(d) = info.taint.defines.as_deref()
+            && !info.escaping_store
+            && plain(d)
+        {
+            locals.insert(d);
+        }
+        locals.extend(
+            info.taint
+                .extra_defines
+                .iter()
+                .map(String::as_str)
+                .filter(|d| plain(d)),
+        );
+    }
+    locals
+}
+
+/// Whether `name` is state owned by the method's receiver rather than a
+/// local of the method body: `self.x` / `this.x` / `$this->x` / `@x`, the
+/// receiver itself, a Go field path on a name the method neither declares
+/// nor takes as a parameter (its named receiver), or a Java / C++ member
+/// reached without `this`.
+fn names_receiver_state(lang: Lang, name: &str, locals: &std::collections::HashSet<&str>) -> bool {
+    if name.starts_with('@') {
+        return true;
+    }
+    let name = name.trim_start_matches('$');
+    let root_end = name
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(name.len());
+    let root = &name[..root_end];
+    if root.is_empty() {
+        return false;
+    }
+    if matches!(root, "self" | "this") {
+        return true;
+    }
+    if locals.contains(root) || locals.contains(name) {
+        return false;
+    }
+    match lang {
+        Lang::Go => root_end < name.len(),
+        Lang::Java | Lang::Cpp => true,
+        _ => false,
+    }
 }
 
 /// Build resource method summaries by pre-scanning all method bodies for known
 /// resource acquire/release operations. Only creates summaries for methods whose
 /// bodies actually contain matching operations, never infers from names alone.
+///
+/// A summary stands for "calling this method opens / closes its receiver", so
+/// only operations on receiver state count (see `names_receiver_state`).  A
+/// function that opens and closes a local handle (`func write(p string) { f,
+/// _ := os.Create(p); ..; f.Close() }`) says nothing about the receiver of a
+/// same-named call elsewhere (`buf.Write(..)`).
 pub fn build_resource_method_summaries(
     bodies: &[crate::cfg::BodyCfg],
     lang: Lang,
@@ -293,6 +443,8 @@ pub fn build_resource_method_summaries(
             Some(pid) => pid,
             None => continue, // top-level functions are not class methods
         };
+        let locals = body_local_names(body);
+        let is_receiver_state = |name: &str| names_receiver_state(lang, name, &locals);
 
         for (_, info) in body.graph.node_references() {
             // Check both Call and Seq (Assignment) nodes, resource operations
@@ -321,33 +473,48 @@ pub fn build_resource_method_summaries(
                 if pair
                     .acquire
                     .iter()
-                    .any(|a| transfer::callee_matches_pub(&callee, a))
+                    .any(|a| transfer::acquire_callee_matches(lang, &callee, a))
                 {
                     // The receiver-proxy mechanism (state/transfer.rs)
                     // matches a method-name summary against `recv.method()`
                     // call sites and marks the receiver as OPEN.  This is
-                    // only meaningful when the acquire actually binds a
-                    // resource into receiver state (`self.fd = open(...)`,
-                    // `this.fd = fs.openSync(...)`).  Acquires with no
-                    // binding (`return open(...)`) or with a local-only
-                    // binding (`f = open(...); f.close()`) do not transfer
-                    // ownership onto the caller's receiver.  Gate the
-                    // summary on a defines field so anonymous and local-
-                    // only acquires no longer leak through this path.
-                    if info.taint.defines.is_none() {
-                        continue;
+                    // only meaningful when the acquire binds a resource into
+                    // receiver state (`self.fd = open(...)`, `this.fd =
+                    // fs.openSync(...)`).  Acquires with no binding (`return
+                    // open(...)`) or with a local binding (`f = open(...);
+                    // f.close()`) do not transfer ownership onto the
+                    // caller's receiver.
+                    if info.taint.defines.as_deref().is_some_and(is_receiver_state) {
+                        summaries.push(transfer::ResourceMethodSummary {
+                            method_name: method_name.clone(),
+                            effect: transfer::ResourceEffect::Acquire,
+                            class_group,
+                            original_span: info.ast.span,
+                        });
                     }
-                    summaries.push(transfer::ResourceMethodSummary {
-                        method_name: method_name.clone(),
-                        effect: transfer::ResourceEffect::Acquire,
-                        class_group,
-                        original_span: info.ast.span,
-                    });
                 }
+                // Release of receiver state: the method-call receiver
+                // (`self.fh.close()`, `c.conn.Close()`) or, for the function
+                // form, the first argument (`fs.closeSync(this.fd)`,
+                // `os.close(self.fd)`).
+                let releases_receiver_state = || {
+                    let method_receiver = info.call.receiver.as_deref().into_iter().chain(
+                        info.call
+                            .callee
+                            .as_deref()
+                            .and_then(|c| c.rsplit_once('.'))
+                            .map(|(r, _)| r),
+                    );
+                    let first_arg = info.call.arg_uses.first().into_iter().flatten();
+                    method_receiver
+                        .chain(first_arg.map(String::as_str))
+                        .any(is_receiver_state)
+                };
                 if pair
                     .release
                     .iter()
                     .any(|r| transfer::callee_matches_pub(&callee, r))
+                    && releases_receiver_state()
                 {
                     summaries.push(transfer::ResourceMethodSummary {
                         method_name: method_name.clone(),
@@ -360,4 +527,33 @@ pub fn build_resource_method_summaries(
         }
     }
     summaries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receiver_state_names() {
+        let locals: std::collections::HashSet<&str> = ["f", "buf", "in", "self"].into();
+        let rs = |lang, name| names_receiver_state(lang, name, &locals);
+        // Explicit receiver spellings.
+        assert!(rs(Lang::Python, "self.fh"));
+        assert!(rs(Lang::JavaScript, "this.fd"));
+        assert!(rs(Lang::Php, "$this->fh"));
+        assert!(rs(Lang::Php, "this.fh"));
+        assert!(rs(Lang::Ruby, "@file"));
+        // Locals, params and modules are not receiver state.
+        assert!(!rs(Lang::Python, "f"));
+        assert!(!rs(Lang::Python, "app.db"));
+        assert!(!rs(Lang::JavaScript, "fs"));
+        assert!(!rs(Lang::Java, "in"));
+        assert!(!rs(Lang::Go, "buf.inner"));
+        // Go: a field path on the named receiver (never declared locally).
+        assert!(rs(Lang::Go, "c.conn"));
+        assert!(!rs(Lang::Go, "os"));
+        // Java / C++ members reached without `this`.
+        assert!(rs(Lang::Java, "conn"));
+        assert!(rs(Lang::Cpp, "fd_"));
+    }
 }

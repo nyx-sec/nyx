@@ -1,0 +1,13 @@
+{
+  "description": "A foreach binder that reuses the name of an earlier validated variable binds new, unvalidated values.",
+  "tags": ["taint", "validation", "redefinition", "foreach"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [8, 8],
+      "notes": "$value now holds $_POST['names'] elements, never checked by is_numeric"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "description": "A catch handler reads the value the try body assigned before it raised, not the default set before an earlier branch",
+  "tags": ["taint", "cmdi", "try-catch", "reaching-definitions"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [16, 16],
+      "evidence_contains": [],
+      "notes": "cmd = req.query.cmd in the try body reaches exec in the handler"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [31, 31],
+      "notes": "the handler only sees constants here (regression guard)"
+    }
+  ]
+}
