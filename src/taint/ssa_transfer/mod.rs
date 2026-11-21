@@ -12696,20 +12696,23 @@ fn literal_arg_call_has_tainted_subject_receiver(
     let is_subject = |k: &TypeKind| matches!(k, TypeKind::FileHandle | TypeKind::HttpClient);
     let typed = receiver_candidates_for_type_lookup(*rv, Some(ssa), transfer.lang)
         .iter()
-        .any(|cand| {
+        .find_map(|cand| {
             transfer
                 .type_facts
                 .and_then(|tf| tf.get_type(*cand))
-                .is_some_and(is_subject)
-                || state
-                    .path_env
-                    .as_deref()
-                    .and_then(|env| env.get(*cand).types.as_singleton())
-                    .is_some_and(|k| is_subject(&k))
+                .cloned()
+                .filter(is_subject)
+                .or_else(|| {
+                    state
+                        .path_env
+                        .as_deref()
+                        .and_then(|env| env.get(*cand).types.as_singleton())
+                        .filter(is_subject)
+                })
         });
-    if !typed {
+    let Some(kind) = typed else {
         return false;
-    }
+    };
     let (labels, _) = resolve_type_qualified_labels_with_args(
         callee,
         None,
@@ -12722,15 +12725,12 @@ fn literal_arg_call_has_tainted_subject_receiver(
         Some(ssa),
     );
     // The qualified lookup (`FileHandle.write`) also matches bare suffix
-    // rules (`write`), so a sink the callee text already carries on its own
-    // says nothing about the receiver being the subject.  Only a sink the
-    // qualified form adds counts; otherwise `out.write("done")` on a
-    // tainted `FileWriter` would report the servlet-response `write` rule
-    // the receiver type just ruled out.
-    let flat = crate::labels::classify_all(transfer.lang.as_str(), callee, transfer.extra_labels);
-    labels
-        .iter()
-        .any(|l| matches!(l, DataLabel::Sink(_)) && !flat.contains(l))
+    // rules (`write`).  Caps the receiver type rules out (the servlet
+    // response `write` rule on a `FileWriter`) do not make it the subject.
+    labels.iter().any(|l| {
+        matches!(l, DataLabel::Sink(bits)
+            if !(*bits & !receiver_incompatible_sink_caps(&kind, *bits)).is_empty())
+    })
 }
 
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
