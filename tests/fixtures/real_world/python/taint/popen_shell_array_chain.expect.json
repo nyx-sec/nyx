@@ -1,0 +1,38 @@
+{
+  "description": "Popen reached through a method chain: a shell array with an f-string payload and shell=True",
+  "tags": [
+    "taint",
+    "cmdi",
+    "python",
+    "chain"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        6,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "input() reaches bash -c through the f-string payload"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        13,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "input() reaches Popen(shell=True) through .communicate()"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "description": "Tainted keyword lands on a parameter that never reaches the sink; reordering must not misattribute it to dir",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby",
+    "kwargs",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "mode: is not used by the shell command; dir: is constant"
+    }
+  ]
+}

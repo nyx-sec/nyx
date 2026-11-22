@@ -590,17 +590,20 @@ pub static RECEIVER_VALIDATORS: &[(&str, Cap)] = &[
 ];
 
 pub static GATED_SINKS: &[SinkGate] = &[
-    // Legacy single-kwarg gate retained for back-compat: Popen(cmd, shell=True).
+    // `Popen(cmd, shell=True)` after `from subprocess import Popen`.  Like the
+    // qualified forms below, an absent `shell` keyword means argv form, which
+    // never starts a shell; the shell-array shape `Popen(["bash", "-c", x])`
+    // is recognised separately from the call's argument list.
     SinkGate {
         callee_matcher: "Popen",
         arg_index: 0,
-        dangerous_values: &["True", "true"],
+        dangerous_values: &[],
         dangerous_prefixes: &[],
         label: DataLabel::Sink(Cap::SHELL_ESCAPE),
         case_sensitive: true,
         payload_args: &[0],
-        keyword_name: Some("shell"),
-        dangerous_kwargs: &[],
+        keyword_name: None,
+        dangerous_kwargs: &[("shell", &["True", "true"])],
         activation: GateActivation::ValueMatch,
     },
     // subprocess.run(cmd, shell=True), multi-kwarg gate using the new

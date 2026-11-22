@@ -43,8 +43,10 @@ pub const PATTERNS: &[Pattern] = &[
     // ── Tier A: Command execution ──────────────────────────────────────
     Pattern {
         id: "rb.cmdi.backtick",
-        description: "Backtick shell execution",
-        query: r#"(subshell) @vuln"#,
+        description: "Backtick shell execution with interpolation",
+        // A backtick string with no `#{...}` is a fixed command and carries no
+        // caller-controlled data.
+        query: r#"(subshell (interpolation)) @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
         category: PatternCategory::CommandExec,
@@ -53,16 +55,49 @@ pub const PATTERNS: &[Pattern] = &[
     // ── Tier A: Shell execution ─────────────────────────────────────────
     Pattern {
         id: "rb.cmdi.system_interp",
-        description: "system/exec call runs a command",
+        description: "system/exec call runs a shell command",
         // `!receiver` restricts the match to the receiver-less Kernel#system /
         // Kernel#exec primitives.  A same-named method on a typed receiver
         // (`conn.exec(sql)` on a `PG::Connection`, `obj.system(...)`) is not a
         // shell-execution sink and must not fire this cmdi rule — it is routed
         // by its receiver type instead.  Motivated by CVE-2026-42087.
-        query: r#"(call
+        //
+        // The `arguments` alternatives drop only the shell-free argv form:
+        // two or more command words whose program is a fixed string that is
+        // not a shell, interpreter or wrapper (`system("git", "log", x)`),
+        // which execs the program directly.  They keep the single command
+        // string (optionally after an environment hash and before option
+        // pairs), a dynamic program (`system(cmd, "x")`), and a shell,
+        // interpreter or wrapper program (`system("sh", "-c", x)`).  The
+        // program list mirrors `labels::is_command_runner_program`.
+        query: r##"(call
                      !receiver
-                     method: (identifier) @m (#match? @m "^(system|exec)$"))
-                   @vuln"#,
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) .)
+                       (argument_list . (_) . (pair))
+                       (argument_list . (hash) . (_) .)
+                       (argument_list . (hash) . (_) . (pair))
+                     ])
+                   @vuln
+                   (call
+                     !receiver
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) @first . (_))
+                       (argument_list . (hash) . (_) @first . (_))
+                     ]
+                     (#not-match? @first "(?s)^(\"[^\"#]*\"|'[^']*'|\\{.*)$"))
+                   @vuln
+                   (call
+                     !receiver
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) @first)
+                       (argument_list . (hash) . (_) @first)
+                     ]
+                     (#match? @first "(?i)^[\"'](.*[/\\\\])?(sh|bash|zsh|dash|ksh|ash|fish|csh|tcsh|cmd|powershell|pwsh|python[0-9.]*|pypy[0-9.]*|ruby[0-9.]*|perl[0-9.]*|php[0-9.]*|lua[0-9.]*|node|nodejs|deno|bun|env|sudo|doas|nice|nohup|timeout|stdbuf|setsid|xargs|busybox|command|exec|time|ionice|chroot|su|runuser)(\\.exe)?[\"']$"))
+                   @vuln"##,
         severity: Severity::High,
         tier: PatternTier::A,
         category: PatternCategory::CommandExec,

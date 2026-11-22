@@ -1802,6 +1802,7 @@ pub(crate) fn collect_idents_with_paths(
                 idents.push(txt.trim_start_matches('$').to_string());
             }
         }
+        "block_argument" => {}
         _ => {
             let mut c = n.walk();
             for ch in n.children(&mut c) {
@@ -2271,6 +2272,9 @@ pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
                 out.push(txt.trim_start_matches('$').to_string());
             }
         }
+        // Ruby `&blk` passes a block, not a value: it is neither a positional
+        // argument nor a data operand of the call.
+        "block_argument" => {}
         _ => {
             let mut c = n.walk();
             for ch in n.children(&mut c) {

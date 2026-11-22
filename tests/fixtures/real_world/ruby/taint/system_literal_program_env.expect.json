@@ -1,0 +1,38 @@
+{
+  "description": "A fixed non-shell program with an environment hash and option pairs never starts a shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "argv form"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "argv form"
+    }
+  ]
+}

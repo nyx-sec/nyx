@@ -1,0 +1,25 @@
+{
+  "description": "A backtick command with no interpolation is a fixed command",
+  "tags": [
+    "cmdi",
+    "ruby",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.cmdi.backtick",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        3
+      ],
+      "evidence_contains": [],
+      "notes": "no interpolated data"
+    }
+  ]
+}

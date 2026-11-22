@@ -646,6 +646,11 @@ pub(super) fn extract_const_keyword_arg(
                 continue;
             }
             let value_node = child.child_by_field_name("value")?;
+            if keyword_name == "shell" && !python_literal_is_falsy(value_node, code) {
+                // Any truthy value starts a shell (`shell=1`, `shell="yes"`),
+                // so only a falsy literal counts as a known value.
+                return python_truthy_literal_is_true(value_node, code).then(|| "True".to_string());
+            }
             // Only return a literal, identifiers / calls / complex exprs are
             // "dynamic" and must be reported as `None` so the gate can
             // distinguish literal-safe from dynamic.
@@ -667,7 +672,72 @@ pub(super) fn extract_const_keyword_arg(
             });
         }
     }
+    if keyword_name == "shell" {
+        // Not given by name: the ninth positional argument of the `subprocess`
+        // family, when present.
+        return python_positional_shell(call_node, code).flatten();
+    }
     None
+}
+
+/// Position of `shell` in the positional arguments of `Popen` (and of `run`,
+/// `call` and `check_*`, which forward their positionals to it).
+const PY_POPEN_SHELL_POSITION: usize = 8;
+
+/// Whether a Python call passes `shell` other than by name, as the ninth
+/// positional argument or through a `*args` spread that could hold it.
+/// `Some(None)` means present with an unknown value, `Some(Some("True"))` a
+/// literal truthy value, and `None` that it is not passed this way.
+fn python_positional_shell(call_node: Node, code: &[u8]) -> Option<Option<String>> {
+    // Only a Python call: its callee is a `function` field.
+    call_node.child_by_field_name("function")?;
+    let args = call_node.child_by_field_name("arguments")?;
+    if args.kind() != "argument_list" {
+        return None;
+    }
+    let mut cursor = args.walk();
+    let mut pos = 0usize;
+    for child in args.named_children(&mut cursor) {
+        match child.kind() {
+            "keyword_argument" | "dictionary_splat" | "comment" => {}
+            "list_splat" => return Some(None),
+            _ => {
+                if pos == PY_POPEN_SHELL_POSITION {
+                    if python_literal_is_falsy(child, code) {
+                        return None;
+                    }
+                    return Some(
+                        python_truthy_literal_is_true(child, code).then(|| "True".to_string()),
+                    );
+                }
+                pos += 1;
+            }
+        }
+    }
+    None
+}
+
+/// A Python literal that is false in a boolean context.
+fn python_literal_is_falsy(node: Node, code: &[u8]) -> bool {
+    match node.kind() {
+        "false" | "none" => true,
+        "integer" | "float" => text_of(node, code).is_some_and(|t| {
+            t.chars()
+                .all(|c| matches!(c, '0' | '.' | '_' | 'x' | 'X' | 'b' | 'B' | 'o' | 'O'))
+        }),
+        "string" => text_of(node, code).is_some_and(|t| {
+            let body = t.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+            body.len() == 2
+        }),
+        "identifier" => text_of(node, code).is_some_and(|t| matches!(t.as_str(), "False" | "None")),
+        _ => false,
+    }
+}
+
+/// A truthy value is the literal `True` only when spelled so; any other
+/// literal is truthy too but reported as unknown, which the gate also fires on.
+fn python_truthy_literal_is_true(node: Node, code: &[u8]) -> bool {
+    node.kind() == "true" || text_of(node, code).is_some_and(|t| t == "True")
 }
 
 /// Return `true` if the call node has a keyword/named argument whose name
@@ -690,7 +760,55 @@ pub(super) fn has_keyword_arg(call_node: Node, keyword_name: &str, code: &[u8]) 
             return true;
         }
     }
-    false
+    // A `**opts` spread may carry `shell`, and so may the ninth positional
+    // argument; neither is visible, so the keyword counts as passed with an
+    // unknown value.
+    keyword_name == "shell"
+        && (args
+            .named_children(&mut args.walk())
+            .any(|c| c.kind() == "dictionary_splat" && splat_may_carry_shell(c, code))
+            || python_positional_shell(call_node, code).is_some())
+}
+
+/// Whether a `**value` spread may contain a `shell` key.  A literal dict or a
+/// `dict(...)` call whose keys are all visible and none is `shell` cannot; any
+/// other value (a variable, a call, a nested spread) might.
+fn splat_may_carry_shell(splat: Node, code: &[u8]) -> bool {
+    let Some(inner) = splat.named_child(0) else {
+        return true;
+    };
+    let inner = unwrap_parens(inner);
+    let mut cursor = inner.walk();
+    match inner.kind() {
+        "dictionary" => inner.named_children(&mut cursor).any(|pair| {
+            if pair.kind() != "pair" {
+                return true;
+            }
+            match pair.child_by_field_name("key") {
+                Some(key) if key.kind() == "string" => {
+                    const_string_value(key, code).is_none_or(|k| k == "shell")
+                }
+                _ => true,
+            }
+        }),
+        "call" => {
+            let is_dict = inner
+                .child_by_field_name("function")
+                .and_then(|f| text_of(f, code))
+                .is_some_and(|t| t == "dict");
+            let Some(args) = inner.child_by_field_name("arguments") else {
+                return true;
+            };
+            !is_dict
+                || args.named_children(&mut args.walk()).any(|a| {
+                    a.kind() != "keyword_argument"
+                        || a.child_by_field_name("name")
+                            .and_then(|n| text_of(n, code))
+                            .is_none_or(|n| n == "shell")
+                })
+        }
+        _ => true,
+    }
 }
 
 /// Extract the literal value of a property `prop_name` from the object
@@ -1321,6 +1439,54 @@ pub(super) fn find_orm_query_chain_call<'a>(
     None
 }
 
+/// Gated-sink matches for the call `call` whose callee text is `callee`,
+/// reading the activation arguments (constants, keywords, presence) from the
+/// call itself.  Shared by the chain rebinding and hoisted-sink paths so a
+/// gate keyed on `shell=True` is judged against the call that carries it.
+pub(super) fn classify_gates_at_call(
+    lang: &str,
+    callee: &str,
+    call: Node,
+    code: &[u8],
+) -> SmallVec<[crate::labels::GateMatch; 2]> {
+    crate::labels::classify_gated_sink_with_presence(
+        lang,
+        callee,
+        |idx| {
+            extract_const_string_arg(call, idx, code).or_else(|| {
+                if matches!(lang, "c" | "cpp" | "c++" | "php" | "ruby" | "rb") {
+                    extract_const_macro_arg(call, idx, code)
+                } else {
+                    None
+                }
+            })
+        },
+        |kw| {
+            extract_const_keyword_arg(call, kw, code).or_else(|| {
+                if matches!(lang, "javascript" | "typescript") {
+                    extract_object_arg_property(call, 1, kw, code)
+                } else {
+                    None
+                }
+            })
+        },
+        |kw| {
+            has_keyword_arg(call, kw, code)
+                || (matches!(lang, "javascript" | "typescript")
+                    && has_object_arg_property(call, 1, kw, code))
+        },
+        |idx| call_has_arg_at(call, idx),
+    )
+}
+
+/// Whether `callee` is a gated sink at the chain level `call`: either a gate
+/// that fires without inspecting arguments, or one whose activation
+/// arguments on `call` itself select it.
+pub(super) fn chain_level_is_gated(lang: &str, callee: &str, call: Node, code: &[u8]) -> bool {
+    !crate::labels::classify_gated_sink(lang, callee, |_| None, |_| None, |_| false).is_empty()
+        || !classify_gates_at_call(lang, callee, call, code).is_empty()
+}
+
 /// For a chained method call (`a.b().c().d()`), walk down the receiver
 /// chain (`function.object`) and return the innermost call_expression
 /// alongside its callee text (e.g. `"http.get"`).
@@ -1482,10 +1648,15 @@ pub(super) fn find_chained_gated_sink_call<'a>(
         // to the inner gate, so we must NOT claim the outer application call
         // here — skip it and let the `find_chained_inner_call` fallback bind
         // the real inner call.
+        //
+        // A Python call through a bare imported name (`Popen(..)` after
+        // `from subprocess import Popen`) has an identifier callee, which is
+        // the whole callee of this level.
         let has_own_method = function.child_by_field_name("property").is_some()
             || function.child_by_field_name("field").is_some()
             || function.child_by_field_name("attribute").is_some()
-            || function.child_by_field_name("name").is_some();
+            || function.child_by_field_name("name").is_some()
+            || (matches!(lang, "python" | "py") && function.kind() == "identifier");
         // Callee text of THIS chain level: the call's `function`/`method`
         // field text, whitespace-stripped (mirrors `find_chained_inner_call`
         // so the gate's suffix matchers hit on both single- and multi-line
@@ -1494,9 +1665,7 @@ pub(super) fn find_chained_gated_sink_call<'a>(
             && let Some(raw) = super::helpers::call_fn_callee_text(function, lang, code)
         {
             let callee: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-            if !crate::labels::classify_gated_sink(lang, &callee, |_| None, |_| None, |_| false)
-                .is_empty()
-            {
+            if chain_level_is_gated(lang, &callee, cur, code) {
                 return Some((cur, callee));
             }
         }
@@ -2235,7 +2404,7 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         {
             return Vec::new();
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         let mut idents = Vec::new();
@@ -2247,6 +2416,42 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         result.push(combined);
     }
     result
+}
+
+/// Ruby keyword arguments written at the call site (`f(a, dir: x)`), as
+/// `(name, position)` pairs where `position` indexes the call's positional
+/// argument list as [`extract_arg_uses`] numbers it.  Ruby passes keywords as
+/// a trailing `pair` in the argument list, so each one occupies a positional
+/// slot there.  Braced hash literals (`f({dir: x})`) are not keywords and are
+/// not listed.  Empty when a splat makes positions unreliable.
+pub(super) fn extract_ruby_kw_arg_positions(call_node: Node, code: &[u8]) -> Vec<(String, usize)> {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = args_node.walk();
+    for (pos, child) in args_node.named_children(&mut cursor).enumerate() {
+        match child.kind() {
+            "splat_argument" | "hash_splat_argument" => return Vec::new(),
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    continue;
+                };
+                let name = match key.kind() {
+                    "hash_key_symbol" => text_of(key, code),
+                    "simple_symbol" => {
+                        text_of(key, code).map(|t| t.trim_start_matches(':').to_string())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    out.push((name, pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `tokio::join!` / `futures::join!` (and their `try_*` variants) bundle
@@ -2720,7 +2925,7 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
         // Named / keyword arguments are tracked separately in `kwargs` and
         // don't participate in positional indexing, skip them here so this
         // vector stays aligned with `arg_uses`.
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         // PHP wraps each call argument in an `argument` node whose first
@@ -2830,7 +3035,7 @@ pub(super) fn extract_arg_string_prefixes(
         {
             return Vec::new();
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         result.push(super::arg_prefix_of_expression(child, lang, code));
@@ -2864,7 +3069,7 @@ pub(super) fn extract_arg_bare_name_mask(call_node: Node) -> u64 {
         ) {
             return 0;
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         if pos < 64 && is_bare_name(child) {
@@ -2942,6 +3147,9 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     for child in args_node.named_children(&mut cursor) {
         // Bail on spread/splat like extract_arg_uses does
         let kind = child.kind();
+        if kind == "block_argument" {
+            continue;
+        }
         if kind == "spread_element"
             || kind == "dictionary_splat"
             || kind == "list_splat"
@@ -3608,6 +3816,35 @@ fn header_uses(cond: Option<Node>, code: &[u8]) -> Vec<String> {
     paths
 }
 
+/// The calls whose results a method chain passes through, innermost last:
+/// for `Popen([...]).wait()` called on `.wait()`, the `Popen([...])` call.
+/// Empty when `outer` is not a call on a call.
+pub(super) fn chain_receiver_calls<'a>(outer: Node<'a>, lang: &str) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut cur = outer;
+    while matches!(lookup(lang, cur.kind()), Kind::CallFn | Kind::CallMethod) {
+        let Some(function) = cur
+            .child_by_field_name("function")
+            .or_else(|| cur.child_by_field_name("method"))
+        else {
+            break;
+        };
+        let Some(object) = function
+            .child_by_field_name("object")
+            .or_else(|| function.child_by_field_name("value"))
+            .or_else(|| function.child_by_field_name("operand"))
+        else {
+            break;
+        };
+        if !matches!(lookup(lang, object.kind()), Kind::CallFn | Kind::CallMethod) {
+            break;
+        }
+        out.push(object);
+        cur = object;
+    }
+    out
+}
+
 /// One match from [`extract_shell_array_payload_idents`].
 ///
 /// `arg_position` is the positional argument index of the call where the
@@ -3659,6 +3896,12 @@ pub(super) fn extract_shell_array_payload_idents(
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return out;
     };
+    // `Popen(...)` (Python): the program is the first element of its argv.
+    let is_popen = call_node.kind() == "call"
+        && call_node
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|t| t == "Popen" || t.ends_with(".Popen"));
     // Shell named by the previous positional argument, for the split form.
     let mut prev_shell: Option<String> = None;
     let mut cursor = args_node.walk();
@@ -3677,14 +3920,34 @@ pub(super) fn extract_shell_array_payload_idents(
         let kind = child.kind();
         // Splats break positional indexing; bail conservatively on the whole call.
         if kind == "spread_element"
-            || kind == "dictionary_splat"
             || kind == "list_splat"
             || kind == "splat_argument"
             || kind == "hash_splat_argument"
         {
             return Vec::new();
         }
+        // `**opts` adds keywords only; it does not shift positions.
+        if kind == "dictionary_splat" {
+            continue;
+        }
         if kind == "keyword_argument" || kind == "named_argument" {
+            // Python `Popen(args=[...])` is the first positional argument
+            // spelled by name.
+            if kind == "keyword_argument"
+                && child
+                    .child_by_field_name("name")
+                    .and_then(|n| text_of(n, code))
+                    .as_deref()
+                    == Some("args")
+                && let Some(value) = child.child_by_field_name("value")
+            {
+                push_argv_matches(value, 0, is_popen, code, &mut out);
+            }
+            continue;
+        }
+
+        if is_popen && idx == 0 {
+            push_argv_matches(child, idx, true, code, &mut out);
             continue;
         }
 
@@ -3723,6 +3986,51 @@ pub(super) fn extract_shell_array_payload_idents(
     out
 }
 
+/// Record the shell-exec matches of one `Popen` argv argument: a literal
+/// `[<shell>, "-c", payload]` runs `payload` as code, and an argv whose
+/// program (element 0) is not a string literal runs whatever that value names.
+fn push_argv_matches(
+    node: Node,
+    position: usize,
+    is_popen: bool,
+    code: &[u8],
+    out: &mut Vec<ShellArrayMatch>,
+) {
+    if let Some(idents) = shell_array_payload_idents_of(node, code) {
+        out.push(ShellArrayMatch {
+            arg_position: position,
+            payload_idents: idents,
+        });
+        return;
+    }
+    if !is_popen {
+        return;
+    }
+    let node = unwrap_parens(node);
+    if !matches!(node.kind(), "list" | "tuple") {
+        return;
+    }
+    let mut cursor = node.walk();
+    let Some(program) = node.named_children(&mut cursor).next() else {
+        return;
+    };
+    if const_string_value(program, code).is_some() {
+        return;
+    }
+    let mut idents = Vec::new();
+    let mut paths = Vec::new();
+    collect_idents_with_paths(program, code, &mut idents, &mut paths);
+    paths.extend(idents);
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|s| seen.insert(s.clone()));
+    if !paths.is_empty() {
+        out.push(ShellArrayMatch {
+            arg_position: position,
+            payload_idents: paths,
+        });
+    }
+}
+
 /// If `node` is an array literal of shape `[<shell>, "-c", *]` (POSIX shells)
 /// or `[<cmd-shell>, "/c", *]` (Windows cmd.exe), return the identifiers
 /// referenced in the payload elements (positions 2+).  Otherwise return
@@ -3730,7 +4038,7 @@ pub(super) fn extract_shell_array_payload_idents(
 /// — caller should still skip emitting a sink (no taint can reach a literal).
 fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>> {
     let node = unwrap_parens(node);
-    if node.kind() != "array" {
+    if !matches!(node.kind(), "array" | "list" | "tuple") {
         return None;
     }
     // Walk named children to skip commas and other trivia.
@@ -3739,15 +4047,41 @@ fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>>
     if elems.len() < 3 {
         return None;
     }
-    let shell = const_string_value(elems[0], code)?;
-    if !is_known_shell(&shell) {
+    // The program: a literal shell or interpreter, reached through any
+    // wrapper (`env bash -c x`, `sudo -u root sh -c x`, `timeout 5 sh -c x`).
+    let mut prog_idx = 0;
+    let mut program = const_string_value(elems[0], code)?;
+    if crate::labels::is_wrapper_command(&program) {
+        let mut found = None;
+        for (j, e) in elems.iter().enumerate().skip(1) {
+            let word = const_string_value(*e, code)?;
+            if crate::labels::is_command_runner_program(&word)
+                && !crate::labels::is_wrapper_command(&word)
+            {
+                found = Some((j, word));
+                break;
+            }
+        }
+        (prog_idx, program) = found?;
+    } else if !crate::labels::is_command_runner_program(&program) {
         return None;
     }
-    let flag = const_string_value(elems[1], code)?;
-    if !is_shell_command_flag(&shell, &flag) {
-        return None;
+    // The switch that runs the next word as code, possibly after other
+    // literal options (`bash -x -c`, `cmd /s /c`).
+    let mut flag_idx = None;
+    for (j, e) in elems.iter().enumerate().skip(prog_idx + 1) {
+        let word = const_string_value(*e, code)?;
+        if crate::labels::is_code_flag(&program, &word) {
+            flag_idx = Some(j);
+            break;
+        }
+        let is_option = word.starts_with("--")
+            || ((word.starts_with('-') || word.starts_with('/')) && word.len() <= 3);
+        if !is_option {
+            return None;
+        }
     }
-    shell_payload_idents(&elems[2..], code)
+    shell_payload_idents(&elems[flag_idx? + 1..], code)
 }
 
 /// Number of positional arguments a JS/TS call passes, counted the way
@@ -4391,7 +4725,7 @@ fn js_object_enables_shell(obj: Node, code: &[u8]) -> bool {
 /// Returns the identifiers in the elements after the flag.
 fn shell_argv_payload_idents_of(shell: &str, node: Node, code: &[u8]) -> Option<Vec<String>> {
     let node = unwrap_parens(node);
-    if node.kind() != "array" {
+    if !matches!(node.kind(), "array" | "list") {
         return None;
     }
     let mut cursor = node.walk();
@@ -4438,8 +4772,19 @@ fn const_string_value(node: Node, code: &[u8]) -> Option<String> {
     match node.kind() {
         "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" => {
             let raw = text_of(node, code)?;
-            if raw.len() >= 2 {
-                Some(raw[1..raw.len() - 1].to_string())
+            // A Python string may carry a prefix (`r"x"`, `b'x'`) and an
+            // f-string holds `{...}` fields; only a fixed literal has a
+            // constant value.
+            let mut c = node.walk();
+            if node
+                .named_children(&mut c)
+                .any(|ch| ch.kind() == "interpolation")
+            {
+                return None;
+            }
+            let body = raw.trim_start_matches(|ch: char| ch.is_ascii_alphabetic());
+            if body.len() >= 2 {
+                Some(body[1..body.len() - 1].to_string())
             } else {
                 None
             }
@@ -4507,8 +4852,8 @@ fn is_shell_command_flag(shell: &str, flag: &str) -> bool {
             "-c" | "-Command" | "-command" | "-EncodedCommand" | "-encodedcommand"
         );
     }
-    // POSIX shells.
-    flag == "-c"
+    // POSIX shells, including clustered short options such as `-lc` and `-ic`.
+    crate::labels::is_code_flag(shell, flag)
 }
 
 #[cfg(test)]

@@ -1,0 +1,26 @@
+{
+  "description": "Fixed non-shell program, args= keyword, a literal spread without shell and an explicit falsy shell never start a shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "python",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "argv form"
+    }
+  ]
+}

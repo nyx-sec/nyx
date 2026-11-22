@@ -1,0 +1,26 @@
+{
+  "description": "Keyword argument bound to its parameter by name even when keywords are reordered relative to the signature",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby",
+    "kwargs"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        3,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "params[:dir] reaches the shell through the dir: keyword"
+    }
+  ]
+}

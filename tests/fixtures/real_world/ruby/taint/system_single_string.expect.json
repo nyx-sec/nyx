@@ -1,0 +1,37 @@
+{
+  "description": "A single command string goes through /bin/sh",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "single interpolated command string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        4,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "params[:ref] reaches the shell"
+    }
+  ]
+}

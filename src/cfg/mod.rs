@@ -37,6 +37,7 @@ mod dto;
 mod helpers;
 mod hierarchy;
 mod imports;
+mod keyword_args;
 mod literals;
 mod module_consts;
 mod nested_calls;
@@ -779,6 +780,13 @@ pub struct CallMeta {
     /// Empty for languages without named arguments and for calls that use
     /// only positional arguments.
     pub kwargs: Vec<(String, Vec<String>)>,
+    /// Ruby keyword arguments as `(name, position in arg_uses)`.  Ruby passes
+    /// them as `pair` entries in the argument list, so each sits in a
+    /// positional slot; [`keyword_args::reorder_keyword_args`] moves the ones
+    /// aimed at a same-file method to that method's parameter slot.  Empty for
+    /// other languages and for calls without keywords.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kw_arg_positions: Vec<(String, usize)>,
     /// String-literal value at each positional argument of this call, parallel
     /// to `arg_uses`, `Some(s)` when the argument is a syntactic string
     /// literal, `None` otherwise.  Empty for non-call nodes or when positional
@@ -3986,14 +3994,25 @@ pub(super) fn push_node<'a>(
             match find_classifiable_inner_call(ast, lang, code, extra) {
                 Some((_, DataLabel::Sanitizer(_), _))
                     if !text.is_empty()
-                        && !crate::labels::classify_gated_sink(
+                        && (!crate::labels::classify_gated_sink(
                             lang,
                             &text,
                             |_| None,
                             |_| None,
                             |_| false,
                         )
-                        .is_empty() =>
+                        .is_empty()
+                            || find_call_node(ast, lang).is_some_and(|cn| {
+                                // The call's own arguments select the gate
+                                // (`shell=True`), or it is an inline shell
+                                // array (`Popen(["sh", "-c", x])`).
+                                literals::chain_level_is_gated(lang, &text, cn, code)
+                                    || (matches!(
+                                        lang,
+                                        "javascript" | "js" | "typescript" | "ts" | "python" | "py"
+                                    ) && !extract_shell_array_payload_idents(cn, code)
+                                        .is_empty())
+                            })) =>
                 {
                     find_inner_source_or_sink_call(ast, lang, code, extra)
                 }
@@ -4378,7 +4397,7 @@ pub(super) fn push_node<'a>(
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
             .or_else(|| find_chained_inner_call(outer, lang, code))
-        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+        && literals::chain_level_is_gated(lang, &inner_callee_text, inner, code)
     {
         call_ast = Some(inner);
         if !only_hoisted_source {
@@ -4846,7 +4865,32 @@ pub(super) fn push_node<'a>(
     // doesn't match (string + object args, no shell-array literal).  When
     // the payload elements are constant strings the helper returns no
     // match, so a literal `["bash", "-c", "ls -la"]` doesn't fire either.
-    if matches!(lang, "javascript" | "js" | "typescript" | "ts") {
+    //
+    // Python reaches the same shape through `from subprocess import Popen` /
+    // `Popen(["bash", "-c", f"... {x}"])` (a `list` literal, f-string payload).
+    // When the call is the receiver of a method chain whose outer call is not
+    // itself classified (`Popen([...]).wait()`), the chain's inner call is
+    // the one that holds the array, so it takes over like in the gated-sink
+    // chain rebinding above.
+    if matches!(lang, "python" | "py")
+        && labels.is_empty()
+        && let Some(outer) = call_ast
+        && let Some(inner) = literals::chain_receiver_calls(outer, lang)
+            .into_iter()
+            .find(|c| !extract_shell_array_payload_idents(*c, code).is_empty())
+        && let Some(callee_text) = inner
+            .child_by_field_name("function")
+            .and_then(|f| call_fn_callee_text(f, lang, code))
+    {
+        call_ast = Some(inner);
+        outer_callee = Some(text.clone());
+        text = callee_text.chars().filter(|c| !c.is_whitespace()).collect();
+        inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
+    }
+    if matches!(
+        lang,
+        "javascript" | "js" | "typescript" | "ts" | "python" | "py"
+    ) {
         if let Some(cn) = call_ast.or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 4))) {
             let shell_matches = extract_shell_array_payload_idents(cn, code);
             if !shell_matches.is_empty() {
@@ -5039,6 +5083,26 @@ pub(super) fn push_node<'a>(
         if scope.is_some_and(|s| ruby_statement_ar_queries_safe(s, code, extra)) {
             labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
         }
+    }
+
+    // Ruby `system(prog, arg, ...)` / `exec(prog, arg, ...)` with two or more
+    // command words and a fixed non-shell program is the argv form: Ruby
+    // execs the program directly and never starts a shell, so metacharacters
+    // in any word are inert.  The single-string form goes through `/bin/sh`,
+    // and a dynamic or shell/interpreter program still runs tainted text as
+    // code (see `kernel_exec_is_argv_form`).  The same-node
+    // `Sanitizer` follows the AR-query precedent above.
+    if (lang == "ruby" || lang == "rb")
+        && matches!(text.as_str(), "system" | "exec")
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE)))
+        && !labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SHELL_ESCAPE)))
+        && call_ast.is_some_and(|cn| crate::labels::ruby::kernel_exec_is_argv_form(cn, code))
+    {
+        labels.push(DataLabel::Sanitizer(Cap::SHELL_ESCAPE));
     }
 
     // Shape-based sanitizer synthesis for Java JPA / JDBC parameterised
@@ -5433,6 +5497,14 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
 
+    let kw_arg_positions = if lang == "ruby" && kind == StmtKind::Call {
+        call_ast
+            .map(|cn| literals::extract_ruby_kw_arg_positions(cn, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     // Check whether all arguments are syntactic literals (for taint sink suppression).
     let all_args_literal = if kind == StmtKind::Call && !rust_call_rebound {
         call_ast
@@ -5728,6 +5800,7 @@ pub(super) fn push_node<'a>(
             sink_payload_args,
             sink_reaching_uses,
             kwargs,
+            kw_arg_positions,
             arg_string_literals,
             arg_string_prefixes,
             arg_bare_names,
@@ -8856,9 +8929,7 @@ fn js_rebound_chain_sink_call<'a>(
         return None;
     }
     let (inner, inner_text) = find_chained_gated_sink_call(outer, lang, code)?;
-    if inner.id() == outer.id()
-        || classify_gated_sink(lang, &inner_text, |_| None, |_| None, |_| false).is_empty()
-    {
+    if inner.id() == outer.id() || !literals::chain_level_is_gated(lang, &inner_text, inner, code) {
         return None;
     }
     let outer_text = outer
@@ -12333,6 +12404,10 @@ pub(crate) fn build_cfg<'a>(
     } else {
         HashMap::new()
     };
+
+    if lang == "ruby" {
+        keyword_args::reorder_keyword_args(&mut bodies, &summaries);
+    }
 
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     if !promisify_aliases.is_empty() {

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1204
+    "corpus_size": 1238
   },
   "cases": [
     {
@@ -38516,6 +38516,1173 @@
       ],
       "disabled": false,
       "notes": "The checked string forwarded unchanged to fetch after the same-host check is clean."
+    },
+    {
+      "case_id": "ruby-path-kwargs-reordered-001",
+      "file": "ruby/path_traversal/path_kwargs_reordered.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "kwargs",
+        "reordered"
+      ],
+      "disabled": false,
+      "notes": "Keyword argument dir: bound by name although it is written after mode:, flowing into File.read"
+    },
+    {
+      "case_id": "ruby-safe-kwargs-reordered-001",
+      "file": "ruby/safe/safe_kwargs_reordered.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "kwargs",
+        "reordered",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Tainted keyword mode: lands on a parameter the sink never reads; dir: is constant"
+    },
+    {
+      "case_id": "ruby-path-optional-param-001",
+      "file": "ruby/path_traversal/path_optional_param.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "optional-param"
+      ],
+      "disabled": false,
+      "notes": "Tainted argument flows into an optional parameter with a default and then File.read"
+    },
+    {
+      "case_id": "ruby-path-block-arg-001",
+      "file": "ruby/path_traversal/path_block_arg_passthrough.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "block-argument"
+      ],
+      "disabled": false,
+      "notes": "Helper called with a trailing &blk still resolves to the one-parameter callee"
+    },
+    {
+      "case_id": "ruby-safe-block-arg-001",
+      "file": "ruby/safe/safe_block_arg_passthrough.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "block-argument",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Path is built from a constant; the tainted argument is never used"
+    },
+    {
+      "case_id": "ruby-safe-system-argv-001",
+      "file": "ruby/safe/safe_system_argv_form.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "system",
+        "argv",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "system with two or more command words execs directly without a shell"
+    },
+    {
+      "case_id": "ruby-safe-backtick-constant-001",
+      "file": "ruby/safe/safe_backtick_constant.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "backtick",
+        "constant",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Backtick command without interpolation is a fixed command"
+    },
+    {
+      "case_id": "py-cmdi-popen-shell-array-chain-001",
+      "file": "python/cmdi/cmdi_popen_shell_array_chain.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "chain",
+        "fstring"
+      ],
+      "disabled": false,
+      "notes": "bash -c with an f-string payload passed to a bare Popen whose result is chained into .wait()"
+    },
+    {
+      "case_id": "py-cmdi-popen-shell-true-chain-001",
+      "file": "python/cmdi/cmdi_popen_shell_true_chain.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-true",
+        "chain"
+      ],
+      "disabled": false,
+      "notes": "Bare Popen(shell=True) chained into .communicate()"
+    },
+    {
+      "case_id": "py-safe-popen-argv-chain-001",
+      "file": "python/safe/safe_popen_argv_chain.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "popen",
+        "argv",
+        "chain",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Popen in argv form without shell=True never starts a shell"
+    },
+    {
+      "case_id": "cve-py-2025-15379-vulnerable",
+      "file": "cve_corpus/python/CVE-2025-15379/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          26,
+          26
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "mlflow",
+        "bash-c",
+        "popen"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-15379: MLflow model python_env.yaml dependencies joined into a bash -c command run through a bare Popen chained into .wait(). Apache-2.0"
+    },
+    {
+      "case_id": "cve-py-2025-15379-patched",
+      "file": "cve_corpus/python/CVE-2025-15379/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "mlflow",
+        "bash-c",
+        "popen",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-15379 patched counterpart: regression guard that Nyx does not refire on the fix. Apache-2.0"
+    },
+    {
+      "case_id": "cve-py-2025-66645-vulnerable",
+      "file": "cve_corpus/python/CVE-2025-66645/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          33,
+          33
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          29,
+          29
+        ]
+      ],
+      "tags": [
+        "cve",
+        "nicegui",
+        "file-read"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-66645: NiceGUI media route serves a file chosen by the filename path parameter without confining it to the media directory. MIT"
+    },
+    {
+      "case_id": "cve-py-2025-66645-patched",
+      "file": "cve_corpus/python/CVE-2025-66645/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "nicegui",
+        "file-read",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-66645 patched counterpart: regression guard that Nyx does not refire on the fix. MIT"
+    },
+    {
+      "case_id": "cve-py-2026-28415-vulnerable",
+      "file": "cve_corpus/python/CVE-2026-28415/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "cve",
+        "gradio",
+        "oauth",
+        "redirect"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-28415: Gradio OAuth callback redirects to the _target_url query parameter without restricting it to a local path. Apache-2.0"
+    },
+    {
+      "case_id": "cve-py-2026-28415-patched",
+      "file": "cve_corpus/python/CVE-2026-28415/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "gradio",
+        "oauth",
+        "redirect",
+        "patched",
+        "negative",
+        "disabled"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-28415 patched counterpart: regression guard that Nyx does not refire on the fix. Apache-2.0",
+      "disabled_reason": "Precision deferred: the fix rebuilds the target from urlparse(target).path/.query/.fragment, which drops scheme and host, but Nyx has no model for these projections of a urlparse result, so taint-open-redirect still fires at the RedirectResponse call. A sound fix needs the projection to be separated from the bare parse result in def-use naming (parsed.path and parsed.netloc currently share the base value), plus a per-function check that the base was bound to urlparse/urlsplit."
+    },
+    {
+      "case_id": "cve-ruby-2025-54314-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2025-54314/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "thor",
+        "system"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-54314: Thor merge tool and destination path interpolated into a single system string, run through the shell (the upstream advisory has since been withdrawn). MIT"
+    },
+    {
+      "case_id": "cve-ruby-2025-54314-patched",
+      "file": "cve_corpus/ruby/CVE-2025-54314/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.cmdi.system_interp",
+        "rb.cmdi.backtick",
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "thor",
+        "system",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-54314 patched counterpart: regression guard that Nyx does not refire on the fix. MIT"
+    },
+    {
+      "case_id": "cve-ruby-2025-53623-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2025-53623/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.cmdi.backtick"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          42,
+          42
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "job-iteration",
+        "backtick"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-53623: job-iteration CsvEnumerator counts lines with a %x(wc -l < path) command built from the CSV path. MIT"
+    },
+    {
+      "case_id": "cve-ruby-2025-53623-patched",
+      "file": "cve_corpus/ruby/CVE-2025-53623/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.cmdi.backtick",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "job-iteration",
+        "backtick",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-53623 patched counterpart: regression guard that Nyx does not refire on the fix. MIT"
+    },
+    {
+      "case_id": "cve-ruby-2026-85396-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2026-85396/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          44,
+          44
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          51,
+          51
+        ]
+      ],
+      "tags": [
+        "cve",
+        "rubyzip",
+        "zip-slip",
+        "kwargs"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-85396: rubyzip Entry#extract checks start_with?(destination_directory) without a path separator, so a sibling directory with the same prefix passes (GHSA-47m2-wp7j-p9vc). Scaffolding replaces upstream's __send__ dispatch with a direct call and reads the destination from ENV. BSD-2-Clause"
+    },
+    {
+      "case_id": "cve-ruby-2026-85396-patched",
+      "file": "cve_corpus/ruby/CVE-2026-85396/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "rubyzip",
+        "zip-slip",
+        "kwargs",
+        "patched",
+        "negative",
+        "disabled"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-85396 patched counterpart: regression guard that Nyx does not refire on the fix. BSD-2-Clause",
+      "disabled_reason": "Precision deferred: the fix requires start_with?(dest_dir + File::SEPARATOR) while the vulnerable form checks start_with?(dest_dir), and Nyx has no path-containment predicate for Ruby start_with? that separates the two. Doing so needs the prefix lock to record whether the prefix ends in a separator, which would also change how the rswag CVE-2023-38337 patched form (an opaque method-call root) is judged. Until then the taint flow fires on both twins."
+    },
+    {
+      "case_id": "ruby-cmdi-system-sh-c-001",
+      "file": "ruby/cmdi/cmdi_system_sh_c.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "system",
+        "argv",
+        "shell-c"
+      ],
+      "disabled": false,
+      "notes": "argv-form system with an explicit shell still runs the tainted string as code"
+    },
+    {
+      "case_id": "ruby-cmdi-exec-env-bash-001",
+      "file": "ruby/cmdi/cmdi_exec_env_bash.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "exec",
+        "argv",
+        "wrapper"
+      ],
+      "disabled": false,
+      "notes": "env bash -c in argv form runs the tainted script in a shell"
+    },
+    {
+      "case_id": "ruby-cmdi-system-dynamic-program-001",
+      "file": "ruby/cmdi/cmdi_system_dynamic_program.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "system",
+        "argv",
+        "dynamic-program"
+      ],
+      "disabled": false,
+      "notes": "A tainted program name is arbitrary command execution even in argv form"
+    },
+    {
+      "case_id": "ruby-safe-system-literal-program-env-001",
+      "file": "ruby/safe/safe_system_literal_program_env.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "system",
+        "exec",
+        "argv",
+        "env-hash",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Fixed non-shell program with an environment hash and option pairs never starts a shell"
+    },
+    {
+      "case_id": "py-cmdi-popen-bash-lc-001",
+      "file": "python/cmdi/cmdi_popen_bash_lc.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "clustered-flag"
+      ],
+      "disabled": false,
+      "notes": "bash -lc payload in a bare Popen argv list"
+    },
+    {
+      "case_id": "py-cmdi-popen-env-wrapper-001",
+      "file": "python/cmdi/cmdi_popen_env_wrapper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "tuple",
+        "wrapper"
+      ],
+      "disabled": false,
+      "notes": "env bash -c tuple argv runs the tainted script in a shell"
+    },
+    {
+      "case_id": "py-cmdi-popen-args-keyword-001",
+      "file": "python/cmdi/cmdi_popen_args_keyword.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "args-keyword"
+      ],
+      "disabled": false,
+      "notes": "bash -c payload passed as the args= keyword"
+    },
+    {
+      "case_id": "py-cmdi-popen-dynamic-program-001",
+      "file": "python/cmdi/cmdi_popen_dynamic_program.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "dynamic-program"
+      ],
+      "disabled": false,
+      "notes": "A tainted program in argv element 0 is arbitrary command execution"
+    },
+    {
+      "case_id": "py-cmdi-popen-kwargs-shell-001",
+      "file": "python/cmdi/cmdi_popen_kwargs_shell.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "kwargs-splat",
+        "shell-true"
+      ],
+      "disabled": false,
+      "notes": "shell=True supplied through a ** spread"
+    },
+    {
+      "case_id": "py-cmdi-popen-positional-shell-001",
+      "file": "python/cmdi/cmdi_popen_positional_shell.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "positional-shell"
+      ],
+      "disabled": false,
+      "notes": "shell=True passed as the ninth positional argument"
+    },
+    {
+      "case_id": "py-cmdi-popen-shell-truthy-int-001",
+      "file": "python/cmdi/cmdi_popen_shell_truthy_int.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-truthy"
+      ],
+      "disabled": false,
+      "notes": "shell=1 is truthy and starts a shell"
+    },
+    {
+      "case_id": "py-safe-popen-literal-program-opts-001",
+      "file": "python/safe/safe_popen_literal_program_opts.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "popen",
+        "argv",
+        "literal-program",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Fixed non-shell program, args= keyword, literal-dict spread without shell and an explicit positional shell=False never start a shell"
     }
   ]
 }
