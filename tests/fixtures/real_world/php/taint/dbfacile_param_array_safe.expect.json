@@ -1,0 +1,24 @@
+{
+  "description": "User input passed in the dbFacile parameter array (argument 1) and numeric casts or arithmetic in LIMIT must stay silent.",
+  "tags": [
+    "taint",
+    "sqli",
+    "dbfacile",
+    "parameterized",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        18
+      ],
+      "notes": "No flow is expected anywhere in this file."
+    }
+  ]
+}

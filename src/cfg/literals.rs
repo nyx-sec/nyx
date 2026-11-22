@@ -20,6 +20,18 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// PHP expressions that wrap a call without hiding it: `!unlink($p)`,
+/// `@unlink($p)` and `(unlink($p))`. They are searched through like `await`,
+/// so `$ok = !unlink($p)` still exposes its call. Casts are left opaque: a
+/// numeric cast of a call is handled as a number (see `yields_number`).
+fn is_php_value_wrapper(lang: &str, n: Node) -> bool {
+    lang == "php"
+        && matches!(
+            n.kind(),
+            "unary_op_expression" | "parenthesized_expression" | "error_suppression_expression"
+        )
+}
+
 /// Find the inner CallFn/CallMethod/CallMacro node within an AST node.
 /// For direct call nodes, returns the node itself. For wrappers, searches
 /// up to two levels of children, transparently descending through
@@ -52,6 +64,11 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
                             return Some(found);
                         }
                     }
+                    _ if is_php_value_wrapper(lang, c) => {
+                        if let Some(found) = find_call_node(c, lang) {
+                            return Some(found);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -63,6 +80,22 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
                     match lookup(lang, gc.kind()) {
                         Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return Some(gc),
                         Kind::AwaitForward => {
+                            if let Some(found) = find_call_node(gc, lang) {
+                                return Some(found);
+                            }
+                        }
+                        _ if is_php_value_wrapper(lang, gc) => {
+                            if let Some(found) = find_call_node(gc, lang) {
+                                return Some(found);
+                            }
+                        }
+                        // `$ok = unlink($f) or die('x')` parses as
+                        // `(assignment) or (call)`: the assignment's call is
+                        // the one the callee name came from.
+                        _ if lang == "php"
+                            && gc.kind() == "assignment_expression"
+                            && c.kind() == "binary_expression" =>
+                        {
                             if let Some(found) = find_call_node(gc, lang) {
                                 return Some(found);
                             }

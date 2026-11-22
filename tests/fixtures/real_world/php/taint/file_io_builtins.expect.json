@@ -1,0 +1,113 @@
+{
+  "description": "unlink, rename, mkdir, rmdir, touch, chmod, readfile, file and scandir with a request-controlled path argument, including the $ok = !unlink(...) idiom.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "file-io",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 5"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 10"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 14"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 18"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 22"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        26,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 26"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 30"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 34"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        38,
+        38
+      ],
+      "evidence_contains": [],
+      "notes": "Request-controlled path reaches the filesystem builtin on line 38"
+    }
+  ]
+}

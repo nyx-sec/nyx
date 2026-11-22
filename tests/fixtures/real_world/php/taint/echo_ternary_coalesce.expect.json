@@ -1,0 +1,59 @@
+{
+  "description": "A superglobal read through ?? or a ternary branch of an echo operand reaches the output unescaped.",
+  "tags": [
+    "taint",
+    "xss",
+    "echo",
+    "ternary",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 4"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 8"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 12"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 16"
+    }
+  ]
+}
