@@ -1,0 +1,34 @@
+{
+  "description": "A package-level lookup by the request id and a removal through the scope entity still fire; only reads through the scope entity are exempt.",
+  "tags": [
+    "auth",
+    "go",
+    "positive",
+    "request-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

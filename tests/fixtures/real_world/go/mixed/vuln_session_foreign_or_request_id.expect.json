@@ -1,0 +1,44 @@
+{
+  "description": "A URL id, a session key that is not the caller identity, and a request form read still fire.",
+  "tags": [
+    "auth",
+    "go",
+    "positive",
+    "session"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        26,
+        26
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

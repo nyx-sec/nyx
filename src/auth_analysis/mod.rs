@@ -1213,6 +1213,8 @@ mod tests {
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 
@@ -1333,6 +1335,8 @@ mod tests {
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 

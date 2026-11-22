@@ -12,7 +12,10 @@ use crate::auth_analysis::model::{
     Framework, HttpMethod, OperationKind, RouteRegistration, SensitiveOperation, SinkClass,
     UnitRuntime, ValueRef, ValueSourceKind,
 };
-use crate::auth_analysis::naming::is_id_like_name;
+use crate::auth_analysis::naming::{
+    is_actor_ref_text, is_id_like_name, is_request_payload_segment, is_request_scope_path,
+    is_session_identity_key, is_session_identity_ref, is_session_store_receiver,
+};
 use crate::labels::bare_method_name;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -615,6 +618,8 @@ pub struct FileMeta {
     /// Go: imported package names and file-level consts.  Empty for other
     /// languages, whose top-level nodes never match.
     pub package_names: HashSet<String>,
+    /// Go: package-level variables holding an in-memory container.
+    pub in_memory_vars: HashSet<String>,
     /// JS/TS: imports and directives that say where the file runs.
     pub js: JsFileFacts,
 }
@@ -626,6 +631,7 @@ impl FileMeta {
         Self {
             trpc_alias_names,
             package_names: go_scope::package_level_names(root, bytes),
+            in_memory_vars: go_scope::package_in_memory_vars(root, bytes),
             js: js_scope::scan_file(root, bytes),
         }
     }
@@ -927,6 +933,18 @@ pub fn build_function_unit_with_meta(
     }
     let is_go = rules.is_go_lang();
     if is_go {
+        if let Some(meta) = file_meta
+            && !meta.in_memory_vars.is_empty()
+        {
+            // A local of the same name shadows the package-level variable.
+            let own = go_scope::declared_names(definition, bytes);
+            state.non_sink_vars.extend(
+                meta.in_memory_vars
+                    .iter()
+                    .filter(|name| !own.contains(*name))
+                    .cloned(),
+            );
+        }
         state.request_roots = Some(go_scope::request_root_params(definition, bytes));
         if let Some(meta) = file_meta
             && !meta.package_names.is_empty()
@@ -1011,6 +1029,12 @@ pub fn build_function_unit_with_meta(
         is_nextauth_options_factory,
         package_names,
         request_roots,
+        request_scope_roots: state.request_scope_roots,
+        authorization_scoped_vars: state
+            .scope_bound_vars
+            .difference(&state.unscoped_bound_vars)
+            .cloned()
+            .collect(),
         runtime,
     }
 }
@@ -1301,6 +1325,13 @@ struct UnitState<'a> {
     /// grown as `:=` copies are met in source order.  `None` for other
     /// languages, where accessor calls are classified by name alone.
     request_roots: Option<HashSet<String>>,
+    /// Go: locals bound to a scope entity read off the request context.
+    request_scope_roots: HashSet<String>,
+    /// Locals bound to a relation confined by an authorization scope, and
+    /// locals bound to anything else.  A name is scoped only when every
+    /// binding of it is.
+    scope_bound_vars: HashSet<String>,
+    unscoped_bound_vars: HashSet<String>,
     /// The unit builds JSX somewhere in its body.
     saw_jsx: bool,
 }
@@ -1387,6 +1418,8 @@ fn collect_unit_state(
         | "assignment_statement"
         | "expression_statement" => {
             collect_const_string_binding(node, bytes, state);
+            collect_session_identity_alias(node, bytes, state);
+            collect_authorization_scoped_alias(node, bytes, rules, state);
             // Go `x := ...`, `x = ...` and `var x = ...`.  The helpers read
             // `left`/`right` expression lists and `name`/`value` on a
             // `var_spec`.
@@ -1493,11 +1526,35 @@ fn track_go_request_roots(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
             let Some(right) = node.child_by_field_name("right") else {
                 return;
             };
-            let rooted = go_scope::expression_items(right).into_iter().any(|expr| {
-                go_scope::expr_root(expr, bytes).is_some_and(|root| roots.contains(&root))
+            let items = go_scope::expression_items(right);
+            let names = go_scope::bound_names(node, bytes);
+            let rooted = items.iter().any(|expr| {
+                go_scope::expr_root(*expr, bytes).is_some_and(|root| roots.contains(&root))
             });
+            // `gitRepo := ctx.Repo.GitRepo` keeps the scope tag, so a lookup
+            // through the alias is read the same way as one through the
+            // chain.  A rebinding to anything else drops it.
+            let scoped = rooted
+                && match items.as_slice() {
+                    [only] => go_scope::selector_chain(*only, bytes).is_some_and(|(root, rest)| {
+                        let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+                        if state.request_scope_roots.contains(&root) {
+                            !rest.iter().any(|seg| is_request_payload_segment(seg))
+                        } else {
+                            roots.contains(&root) && is_request_scope_path(&rest)
+                        }
+                    }),
+                    _ => false,
+                };
+            for name in &names {
+                if scoped {
+                    state.request_scope_roots.insert(name.clone());
+                } else {
+                    state.request_scope_roots.remove(name);
+                }
+            }
             if rooted {
-                roots.extend(go_scope::bound_names(node, bytes));
+                roots.extend(names);
             }
         }
         _ => {}
@@ -2982,6 +3039,11 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             if chain.len() < 2 {
                 return false;
             }
+            // `req.session.userId`, `session.user_id`: the identity key of a
+            // session container.
+            if is_session_identity_ref(&chain.join(".")) {
+                return true;
+            }
             let field = chain.last().expect("len >= 2");
             if !is_self_actor_id_field_name(field) {
                 return false;
@@ -2990,6 +3052,13 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             let base = base_chain.join(".");
             classify_member_chain(base_chain) == ValueSourceKind::Session
                 && is_self_scoped_session_base_text(&base)
+        }
+        // `session['user_id']`, `session[:uid]`, `req.session["userId"]`.
+        "subscript_expression" | "subscript" | "element_reference" => {
+            subscript_value_ref(node, bytes).is_some_and(|value| {
+                value.source_kind == ValueSourceKind::Session
+                    && is_session_identity_ref(&value.name)
+            })
         }
         "type_cast_expression"
         | "as_expression"
@@ -3019,6 +3088,9 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
         }
         // `(req.user.id as number).toString()` / `session.user.id.toString()`
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            if is_session_identity_store_read(node, bytes) {
+                return true;
+            }
             let receiver = node
                 .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("object"));
@@ -3037,6 +3109,220 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+/// `session.get('user_id')`, `ctx.Session.Get("uid")`, `session.fetch(:user_id)`:
+/// a read of an identity key from a session store, whatever the language's
+/// accessor spelling.  The key must be a string or symbol literal naming the
+/// caller's own id, so `sess.Get(name)` and `ctx.Req.Form.Get("uid")` (the
+/// request, not the store) do not qualify.
+fn is_session_identity_store_read(call: Node<'_>, bytes: &[u8]) -> bool {
+    let callee = call_name(call, bytes);
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(method, "get" | "Get" | "fetch" | "Fetch") || !is_session_store_receiver(receiver)
+    {
+        return false;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let Some(first) = args.named_child(0) else {
+        return false;
+    };
+    if !matches!(
+        first.kind(),
+        "string"
+            | "string_literal"
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "simple_symbol"
+            | "string_content"
+    ) {
+        return false;
+    }
+    is_session_identity_key(&strip_quotes(&text(first, bytes)))
+}
+
+/// Left and right side of a one-name binding: Python/Ruby `uid = ...`, Go
+/// `uid := ...` and `var uid = ...`.  The right side is the only expression
+/// of a Go expression list; `None` for anything else.
+fn single_binding_sides<'a>(node: Node<'a>, bytes: &[u8]) -> Option<(String, Node<'a>)> {
+    let left = node
+        .child_by_field_name("left")
+        .or_else(|| node.child_by_field_name("name"))?;
+    let right = node
+        .child_by_field_name("right")
+        .or_else(|| node.child_by_field_name("value"))?;
+    let first_of = |n: Node<'a>| -> Option<Node<'a>> {
+        if n.kind() == "expression_list" || n.kind() == "identifier_list" {
+            n.named_child(0)
+        } else {
+            Some(n)
+        }
+    };
+    let left = first_of(left)?;
+    if !matches!(left.kind(), "identifier" | "instance_variable") {
+        return None;
+    }
+    let right = if right.kind() == "expression_list" {
+        if right.named_child_count() != 1 {
+            return None;
+        }
+        right.named_child(0)?
+    } else {
+        right
+    };
+    Some((text(left, bytes), right))
+}
+
+/// `uid = session['user_id']`, `uid := sess.Get("uid")`, `id := uid.(int64)`:
+/// the local holds the caller's own id from the session store, so it joins
+/// `self_actor_id_vars`.  The walk is flow-insensitive, so a later rebinding of
+/// the same name to anything else takes the name out again.
+fn collect_session_identity_alias(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some((name, mut rhs)) = single_binding_sides(node, bytes) else {
+        return;
+    };
+    // A Go type assertion keeps the value: `idSess.(int64)`.
+    while matches!(
+        rhs.kind(),
+        "type_assertion_expression" | "parenthesized_expression"
+    ) {
+        let Some(inner) = rhs
+            .child_by_field_name("operand")
+            .or_else(|| rhs.named_child(0))
+        else {
+            break;
+        };
+        rhs = inner;
+    }
+    let identity = if rhs.kind() == "identifier" {
+        state.self_actor_id_vars.contains(&text(rhs, bytes))
+    } else {
+        value_is_self_scoped_session_id_chain(rhs, bytes)
+    };
+    if identity {
+        state.self_actor_id_vars.insert(name);
+    } else {
+        state.self_actor_id_vars.remove(&name);
+    }
+}
+
+/// Calls of a method chain, innermost receiver last: the method name and its
+/// argument list.  Handles Python `call(attribute(..))` and Ruby
+/// `call(receiver, method, arguments)`.
+fn chain_calls<'a>(mut node: Node<'a>, bytes: &[u8]) -> Vec<(String, Option<Node<'a>>)> {
+    let mut out = Vec::new();
+    loop {
+        match node.kind() {
+            "call" => {
+                if let Some(function) = node.child_by_field_name("function") {
+                    let args = node.child_by_field_name("arguments");
+                    if function.kind() == "attribute"
+                        && let (Some(object), Some(attr)) = (
+                            function.child_by_field_name("object"),
+                            function.child_by_field_name("attribute"),
+                        )
+                    {
+                        out.push((text(attr, bytes), args));
+                        node = object;
+                        continue;
+                    }
+                    out.push((text(function, bytes), args));
+                    return out;
+                }
+                let Some(method) = node.child_by_field_name("method") else {
+                    return out;
+                };
+                out.push((text(method, bytes), node.child_by_field_name("arguments")));
+                match node.child_by_field_name("receiver") {
+                    Some(receiver) => node = receiver,
+                    None => return out,
+                }
+            }
+            "attribute" => match node.child_by_field_name("object") {
+                Some(object) => node = object,
+                None => return out,
+            },
+            _ => return out,
+        }
+    }
+}
+
+/// True when some argument of the call is the caller: `visible_to_user(requestor)`,
+/// `visible_to_user(user=request.user)`.
+fn args_name_actor(args: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(args).into_iter().any(|arg| {
+        let value = match arg.kind() {
+            "keyword_argument" | "pair" => arg.child_by_field_name("value").unwrap_or(arg),
+            _ => arg,
+        };
+        is_actor_ref_text(&text(value, bytes))
+    })
+}
+
+/// True when a top-level keyword argument pins the rows to the caller:
+/// `filter(owner=request.user)`, `where(user_id: current_user.id)`.  An
+/// argument nested in `Q(a) | Q(b)` or a block does not count, since it may be
+/// one branch of an `or`.
+fn args_pin_actor(args: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(args).into_iter().any(|arg| {
+        // Ruby wraps `where(user_id: x)` pairs in a `hash` only with braces.
+        let pairs = if arg.kind() == "hash" {
+            named_children(arg)
+        } else {
+            vec![arg]
+        };
+        pairs.into_iter().any(|pair| {
+            matches!(pair.kind(), "keyword_argument" | "pair")
+                && pair
+                    .child_by_field_name("value")
+                    .is_some_and(|value| is_actor_ref_text(&text(value, bytes)))
+        })
+    })
+}
+
+/// `scope = Project.visible`, `qs = Product.objects.visible_to_user(requestor)`,
+/// `qs = Note.objects.filter(owner=request.user)`: the local holds a relation
+/// the caller's authorization already confined, so a later
+/// `scope.find(params[:id])` can only return rows the caller may see.
+fn collect_authorization_scoped_alias(
+    node: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    state: &mut UnitState,
+) {
+    if rules.authorization_scope_segments.is_empty() && rules.actor_scope_segments.is_empty() {
+        return;
+    }
+    let Some((name, rhs)) = single_binding_sides(node, bytes) else {
+        return;
+    };
+    let calls = chain_calls(rhs, bytes);
+    let in_list = |list: &[String], method: &str| list.iter().any(|m| m == method);
+    let mut scoped = calls.iter().any(|(method, args)| {
+        in_list(&rules.authorization_scope_segments, method)
+            || (in_list(&rules.actor_scope_segments, method)
+                && args.is_some_and(|a| args_name_actor(a, bytes)))
+            || (matches!(
+                method.as_str(),
+                "filter" | "where" | "filter_by" | "find_by" | "get"
+            ) && args.is_some_and(|a| args_pin_actor(a, bytes)))
+    });
+    if !scoped {
+        // `qs = qs.filter(..)` keeps the scope of the relation it extends.
+        let chain = member_chain(rhs, bytes);
+        scoped = chain.len() > 1
+            && state.scope_bound_vars.contains(&chain[0])
+            && !state.unscoped_bound_vars.contains(&chain[0]);
+    }
+    if scoped {
+        state.scope_bound_vars.insert(name);
+    } else {
+        state.unscoped_bound_vars.insert(name);
     }
 }
 
@@ -5388,7 +5674,15 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
         base_chain.join(".")
     };
     let index_text = text(index, bytes);
-    let field = Some(strip_quotes(&index_text));
+    // A Ruby symbol key (`session[:user_id]`) names the field without its
+    // colon.  Only symbol nodes: `items[:n]` in Python is a slice.
+    let key = strip_quotes(&index_text);
+    let key = if matches!(index.kind(), "simple_symbol" | "bare_symbol") {
+        key.trim_start_matches(':').to_string()
+    } else {
+        key
+    };
+    let field = Some(key.clone());
     let source_kind = if base_chain.is_empty() {
         ValueSourceKind::ArrayIndex
     } else {
@@ -5403,7 +5697,7 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
         name: if source_kind == ValueSourceKind::ArrayIndex {
             format!("{base}[{index_text}]")
         } else {
-            format!("{base}.{}", strip_quotes(&index_text))
+            format!("{base}.{key}")
         },
         base: Some(base),
         field,
