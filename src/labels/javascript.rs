@@ -1070,6 +1070,36 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &["url"],
         },
     },
+    // Nuxt / Nitro `$fetch` and `ofetch` take the same `(url, init)` shape as
+    // `fetch`; `$fetch` is not `.`-bounded so the plain `fetch` gate misses it.
+    SinkGate {
+        callee_matcher: "$fetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "ofetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
     // `axios(config)` / `axios.request(config)`, config object exposes
     // `url` and `baseURL`. Body-ish fields (`data`, `params`, `headers`)
     // are excluded.
@@ -2197,6 +2227,30 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
 pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     let mut rules = Vec::new();
 
+    // Astro endpoints read request data from the `APIContext` (`ctx` /
+    // `context`) or the `Astro` global.  `url.origin` and `url.host` are left
+    // out: the site's own origin is not attacker input.
+    if ctx.has(DetectedFramework::Astro) {
+        rules.push(RuntimeLabelRule {
+            matchers: [
+                "url.searchParams",
+                "url.search",
+                "url.pathname",
+                "request",
+                "params",
+            ]
+            .iter()
+            .flat_map(|leaf| {
+                ["ctx", "context", "Astro"]
+                    .iter()
+                    .map(move |root| format!("{root}.{leaf}"))
+            })
+            .collect(),
+            label: DataLabel::Source(Cap::all()),
+            case_sensitive: false,
+        });
+    }
+
     if ctx.has(DetectedFramework::Koa) {
         rules.push(RuntimeLabelRule {
             matchers: vec![
@@ -2231,7 +2285,12 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         // A redirect sends the browser elsewhere: open redirect, not SSRF.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.redirect".into(), "ctx.response.redirect".into()],
+            matchers: vec![
+                "ctx.redirect".into(),
+                "ctx.response.redirect".into(),
+                // Koa's own response prototype redirects through `this`.
+                "this.redirect".into(),
+            ],
             label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });

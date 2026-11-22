@@ -1,0 +1,28 @@
+{
+  "description": "Koa response prototype (no koa import): this.ctx.get('Referrer') flows into this.redirect.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "koa"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "Referrer header reaches this.redirect"
+    }
+  ]
+}

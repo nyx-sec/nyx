@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 989
   },
   "cases": [
     {
@@ -30961,6 +30961,566 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-ssrf-004",
+      "file": "javascript/ssrf/ssrf_event_node_req_url.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "member-chain",
+        "h3"
+      ],
+      "disabled": false,
+      "notes": "Request URL read through a four-segment receiver chain (event.node.req.url, ctx.node.req.url) reaches fetch; the `req.url` source must match on its suffix."
+    },
+    {
+      "case_id": "js-safe-024",
+      "file": "javascript/safe/safe_member_chain_lookalike.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "member-chain",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Long member chains that only resemble a request path (req.urlBuilder, a.b.cfg.endpoint) are not sources."
+    },
+    {
+      "case_id": "js-open_redirect-002",
+      "file": "javascript/open_redirect/redirect_koa_prototype_referrer.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "koa"
+      ],
+      "disabled": false,
+      "notes": "Koa's own response prototype (no koa import): the Referrer header read via this.ctx.get reaches this.redirect."
+    },
+    {
+      "case_id": "js-safe-025",
+      "file": "javascript/safe/safe_koa_prototype_same_host.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "koa",
+        "host-compare",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The parsed Referrer must resolve to this.ctx.host before this.redirect runs: same-host guard, silent on taint and structural layers."
+    },
+    {
+      "case_id": "js-open_redirect-003",
+      "file": "javascript/open_redirect/redirect_host_compare_attacker_operand.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          21,
+          21
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "host-compare",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "A host comparison against another request value, or on a plain object field that is not a parsed URL, is not a same-host guard; both redirects stay open."
+    },
+    {
+      "case_id": "js-safe-026",
+      "file": "javascript/safe/safe_redirect_url_host_compare.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "host-compare",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "new URL(target, base).host compared with a constant trusted host, in == and != forms: the redirect on the passing edge is same-host."
+    },
+    {
+      "case_id": "ts-ssrf-004",
+      "file": "typescript/ssrf/ssrf_nuxt_event_url_fetch.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "nuxt",
+        "member-chain"
+      ],
+      "disabled": false,
+      "notes": "Nitro handler: event.node.req.url (four-segment chain) reaches $fetch through new URL with no host check."
+    },
+    {
+      "case_id": "ts-safe-027",
+      "file": "typescript/safe/safe_nuxt_host_guard.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "nuxt",
+        "host-compare",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Parsed URL must keep the trusted API host before $fetch."
+    },
+    {
+      "case_id": "ts-ssrf-005",
+      "file": "typescript/ssrf/ssrf_astro_search_params.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "astro"
+      ],
+      "disabled": false,
+      "notes": "Astro endpoint: ctx.url.searchParams.get(href) reaches fetch(new URL(href, origin))."
+    },
+    {
+      "case_id": "ts-safe-028",
+      "file": "typescript/safe/safe_astro_same_origin.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "astro",
+        "host-compare",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Parsed URL must keep the site origin before fetch."
+    },
+    {
+      "case_id": "cve-ts-2024-42352-vulnerable",
+      "file": "cve_corpus/typescript/CVE-2024-42352/vulnerable.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          58,
+          58
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          21,
+          21
+        ]
+      ],
+      "tags": [
+        "cve",
+        "nuxt-icon",
+        "ssrf",
+        "member-chain"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-42352: @nuxt/icon server API passed basename(ctx.node.req.url) to new URL(.., apiEndPoint) and fetched it with $fetch, so a crafted path redirected the request to an attacker host. Source is the four-segment ctx.node.req.url. MIT"
+    },
+    {
+      "case_id": "cve-ts-2024-42352-patched",
+      "file": "cve_corpus/typescript/CVE-2024-42352/patched.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "nuxt-icon",
+        "ssrf",
+        "member-chain",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-42352 patched: relative resolution plus apiUrl.host must equal the configured endpoint host before $fetch; regression guard for the host-compare narrowing. MIT"
+    },
+    {
+      "case_id": "cve-ts-2025-58179-vulnerable",
+      "file": "cve_corpus/typescript/CVE-2025-58179/vulnerable.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          22,
+          22
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "cve",
+        "astro",
+        "ssrf"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-58179: Astro Cloudflare image endpoint fetched new URL(href, origin) for an absolute href taken from ctx.url.searchParams. MIT. The patched twin is not part of the corpus: the fix guards the local branch with a cross-file helper (isRemotePath) whose body is not visible, so the remaining fetch cannot be proven safe."
+    },
+    {
+      "case_id": "cve-js-2025-62595-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2025-62595/vulnerable.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          57,
+          57
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          52,
+          52
+        ]
+      ],
+      "tags": [
+        "cve",
+        "koa",
+        "open_redirect"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-62595: Koa response.back() accepted a Referrer starting with '/', so '//evil.com' redirected off site. Koa's own prototype object, found by its this.ctx.get read. MIT"
+    },
+    {
+      "case_id": "cve-js-2025-62595-patched",
+      "file": "cve_corpus/javascript/CVE-2025-62595/patched.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "koa",
+        "open_redirect",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-62595 patched: the startsWith branch is removed and only a same-host Referrer is redirected to; regression guard for the host-compare narrowing. MIT"
+    },
+    {
+      "case_id": "cve-js-2025-8129-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2025-8129/vulnerable.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          54,
+          54
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          52,
+          52
+        ]
+      ],
+      "tags": [
+        "cve",
+        "koa",
+        "open_redirect"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-8129: Koa response.back() redirected to the unchecked Referrer header. MIT. The upstream fix commit (422c551) kept a startsWith('/') bypass fixed later by CVE-2025-62595, so its patched twin is not part of the corpus; CVE-2025-62595 carries the clean fixed form."
     }
   ]
 }
