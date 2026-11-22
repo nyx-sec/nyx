@@ -1,5 +1,6 @@
 use super::anon_fn_name;
 use super::conditions::unwrap_parens;
+use crate::cfg::fast_kind::{FastKind, lookup_node};
 use crate::labels::{DataLabel, Kind, classify, lookup};
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -150,7 +151,7 @@ fn is_preserved_chain_segment(lang: &str, segment: &str) -> bool {
 /// `"Runtime"`, the outermost non-call object.  This lets labels like
 /// `"Runtime.exec"` match correctly.
 pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<String> {
-    match lookup(lang, n.kind()) {
+    match lookup_node(lang, n) {
         // The receiver is itself a call, drill into ITS receiver.
         // e.g. for `Runtime.getRuntime()`, the object is `Runtime`.
         Kind::CallFn | Kind::CallMethod => {
@@ -170,7 +171,7 @@ pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<Str
             // `ActiveRecord::Base.execute`, which the `connection.execute`
             // SQL sink could never match.
             if matches!(lang, "java" | "ruby")
-                && lookup(lang, n.kind()) == Kind::CallMethod
+                && lookup_node(lang, n) == Kind::CallMethod
                 && let Some(root) = root.as_deref()
                 && let Some(method) = n
                     .child_by_field_name("method")
@@ -189,7 +190,7 @@ pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<Str
         // Without this strip, gate matchers like `Smarty.fetch` /
         // `Environment.createTemplate` never fire on idiomatic
         // `$smarty->fetch(...)` / `$twig->createTemplate(...)` shapes.
-        _ if lang == "php" && n.kind() == "variable_name" => {
+        _ if lang == "php" && n.fkind() == "variable_name" => {
             text_of(n, code).map(|s| s.trim_start_matches('$').to_string())
         }
         _ => text_of(n, code),
@@ -213,7 +214,7 @@ pub(crate) fn root_member_receiver(n: Node, code: &[u8]) -> Option<String> {
     // Bounded walk, tree-sitter can nest deeply but we only need a handful
     // of hops for real code.
     for _ in 0..16 {
-        match cur.kind() {
+        match cur.fkind() {
             "identifier" | "variable_name" | "this" | "self" => {
                 return text_of(cur, code);
             }
@@ -278,7 +279,7 @@ pub(crate) fn scope_sets_html_content_type(node: Node, code: &[u8]) -> bool {
     while let Some(parent) = cur.parent() {
         cur = parent;
         if matches!(
-            cur.kind(),
+            cur.fkind(),
             "function_declaration"
                 | "function_expression"
                 | "function"
@@ -340,16 +341,16 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// `None` when no shape applies.
 pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     let func = unwrap_parens(func);
-    if func.kind() != "member_expression" {
+    if func.fkind() != "member_expression" {
         return None;
     }
     let property = func.child_by_field_name("property")?;
-    if property.kind() != "property_identifier" {
+    if property.fkind() != "property_identifier" {
         return None;
     }
     let method = text_of(property, code)?;
     let object = unwrap_parens(func.child_by_field_name("object")?);
-    if object.kind() != "call_expression" {
+    if object.fkind() != "call_expression" {
         return None;
     }
     if let Some(module) = js_required_module_name(object, code) {
@@ -364,7 +365,7 @@ pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
     // Bounded walk down the chain's receivers.
     for _ in 0..16 {
         let link_func = unwrap_parens(link.child_by_field_name("function")?);
-        if link_func.kind() != "member_expression" {
+        if link_func.fkind() != "member_expression" {
             return None;
         }
         let link_method = link_func
@@ -374,7 +375,7 @@ pub(crate) fn js_canonical_callee(func: Node, code: &[u8]) -> Option<String> {
             return None;
         }
         let receiver = unwrap_parens(link_func.child_by_field_name("object")?);
-        match receiver.kind() {
+        match receiver.fkind() {
             "call_expression" => link = receiver,
             "identifier" | "this" | "member_expression" if is_plain_member_path(receiver) => {
                 let root: String = text_of(receiver, code)?
@@ -400,7 +401,7 @@ fn js_is_query_builder_chain(link: Node, code: &[u8]) -> bool {
         let Some(func) = link.child_by_field_name("function").map(unwrap_parens) else {
             return false;
         };
-        if func.kind() != "member_expression" {
+        if func.fkind() != "member_expression" {
             return false;
         }
         let Some(method) = func
@@ -416,7 +417,7 @@ fn js_is_query_builder_chain(link: Node, code: &[u8]) -> bool {
             return false;
         }
         match func.child_by_field_name("object").map(unwrap_parens) {
-            Some(receiver) if receiver.kind() == "call_expression" => link = receiver,
+            Some(receiver) if receiver.fkind() == "call_expression" => link = receiver,
             _ => return false,
         }
     }
@@ -428,14 +429,14 @@ fn js_is_query_builder_chain(link: Node, code: &[u8]) -> bool {
 /// a bare identifier-shaped module (`child_process`, `fs`, `vm`).
 fn js_required_module_name(call: Node, code: &[u8]) -> Option<String> {
     let callee = call.child_by_field_name("function")?;
-    if callee.kind() != "identifier" || text_of(callee, code).as_deref() != Some("require") {
+    if callee.fkind() != "identifier" || text_of(callee, code).as_deref() != Some("require") {
         return None;
     }
     let args = call.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
     let mut named = args.named_children(&mut cursor);
     let arg = named.next()?;
-    if named.next().is_some() || arg.kind() != "string" {
+    if named.next().is_some() || arg.fkind() != "string" {
         return None;
     }
     let raw = text_of(arg, code)?;
@@ -458,7 +459,7 @@ fn js_required_module_name(call: Node, code: &[u8]) -> Option<String> {
 fn is_plain_member_path(n: Node) -> bool {
     let mut cur = n;
     for _ in 0..16 {
-        match cur.kind() {
+        match cur.fkind() {
             "identifier" | "this" => return true,
             "member_expression" => match cur.child_by_field_name("object") {
                 Some(obj) => cur = obj,
@@ -522,7 +523,7 @@ pub(crate) fn is_raii_factory(lang: &str, callee: &str) -> bool {
 pub(crate) fn find_constructor_type_child(n: Node) -> Option<Node> {
     let mut cursor = n.walk();
     n.children(&mut cursor)
-        .find(|c| matches!(c.kind(), "name" | "type_identifier" | "qualified_name"))
+        .find(|c| matches!(c.fkind(), "name" | "type_identifier" | "qualified_name"))
 }
 
 /// Return the callee identifier and byte span for the first call / method /
@@ -539,7 +540,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
 ) -> Option<(String, (usize, usize))> {
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
-        match lookup(lang, c.kind()) {
+        match lookup_node(lang, c) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
                 return call_node_ident_with_span(c, lang, code);
             }
@@ -568,7 +569,7 @@ pub(crate) fn call_ident_at_or_under<'a>(
     lang: &str,
     code: &'a [u8],
 ) -> Option<(String, (usize, usize))> {
-    match lookup(lang, n.kind()) {
+    match lookup_node(lang, n) {
         Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
             call_node_ident_with_span(n, lang, code)
         }
@@ -584,18 +585,18 @@ pub(super) fn call_node_ident_with_span<'a>(
 ) -> Option<(String, (usize, usize))> {
     let span = (c.start_byte(), c.end_byte());
     // C++ new/delete: normalize callee before returning.
-    if lang == "cpp" && c.kind() == "new_expression" {
+    if lang == "cpp" && c.fkind() == "new_expression" {
         return Some(("new".to_string(), span));
     }
-    if lang == "cpp" && c.kind() == "delete_expression" {
+    if lang == "cpp" && c.fkind() == "delete_expression" {
         return Some(("delete".to_string(), span));
     }
     // Ruby backtick subshell: no `function` field, normalise to
     // the synthetic callee so assignment-wrapped subshells classify.
-    if lang == "ruby" && c.kind() == "subshell" {
+    if lang == "ruby" && c.fkind() == "subshell" {
         return Some(("subshell".to_string(), span));
     }
-    let ident = match lookup(lang, c.kind()) {
+    let ident = match lookup_node(lang, c) {
         Kind::CallFn => c
             .child_by_field_name("function")
             .or_else(|| c.child_by_field_name("method"))
@@ -607,7 +608,7 @@ pub(super) fn call_node_ident_with_span<'a>(
             .or_else(|| find_constructor_type_child(c))
             .and_then(|f| {
                 let unwrapped = unwrap_parens(f);
-                if lookup(lang, unwrapped.kind()) == Kind::Function {
+                if lookup_node(lang, unwrapped) == Kind::Function {
                     Some(anon_fn_name(unwrapped.start_byte()))
                 } else {
                     call_fn_callee_text(f, lang, code)
@@ -714,17 +715,17 @@ fn find_inner_call_impl<'a>(
         // Do not descend into Kind::Function nodes, they will be extracted
         // as separate BodyCfg entries and should not contribute inner callees
         // to the parent expression.
-        if lookup(lang, c.kind()) == Kind::Function {
+        if lookup_node(lang, c) == Kind::Function {
             continue;
         }
-        match lookup(lang, c.kind()) {
+        match lookup_node(lang, c) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
                 // For CallMethod we also remember the bare receiver
                 // identifier so we can try a type-qualified rewrite
                 // when the literal classify misses.
                 let mut method_receiver: Option<String> = None;
                 let mut method_name: Option<String> = None;
-                let ident = match lookup(lang, c.kind()) {
+                let ident = match lookup_node(lang, c) {
                     Kind::CallFn => c
                         .child_by_field_name("function")
                         .or_else(|| c.child_by_field_name("method"))
@@ -778,7 +779,7 @@ fn find_inner_call_impl<'a>(
                 // with multi-label semantics that single-label
                 // `classify` here would erase.
                 let parent_is_call = matches!(
-                    lookup(lang, n.kind()),
+                    lookup_node(lang, n),
                     Kind::CallFn | Kind::CallMethod | Kind::CallMacro
                 );
                 if parent_is_call
@@ -849,16 +850,16 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
         .collect();
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
-        if matches!(lookup(lang, c.kind()), Kind::Function | Kind::Block)
+        if matches!(lookup_node(lang, c), Kind::Function | Kind::Block)
             || body_ids.contains(&c.id())
         {
             continue;
         }
         if matches!(
-            lookup(lang, c.kind()),
+            lookup_node(lang, c),
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro
         ) {
-            let ident = match lookup(lang, c.kind()) {
+            let ident = match lookup_node(lang, c) {
                 Kind::CallMethod => {
                     let func = c
                         .child_by_field_name("method")
@@ -949,7 +950,7 @@ pub(crate) fn member_expr_text_full(n: Node, code: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
-    match n.kind() {
+    match n.fkind() {
         // Java `field_access` (`object` / `field`) and PHP
         // `member_access_expression` (`object` / `name`).  PHP's `$this` is
         // spelled without the sigil, like every other PHP variable name.
@@ -963,10 +964,10 @@ pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
                 .or_else(|| n.child_by_field_name("name"))
                 .and_then(|p| text_of(p, code))
                 .map(|p| p.trim_start_matches('$').to_string());
-            if obj.is_some_and(|o| o.kind() == "this") {
+            if obj.is_some_and(|o| o.fkind() == "this") {
                 return prop;
             }
-            let obj_text = obj.and_then(|o| match o.kind() {
+            let obj_text = obj.and_then(|o| match o.fkind() {
                 "variable_name" => text_of(o, code).map(|t| t.trim_start_matches('$').to_string()),
                 _ => member_expr_text_inner(o, code),
             });
@@ -1018,7 +1019,7 @@ pub(crate) fn first_member_label(
     code: &[u8],
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> Option<DataLabel> {
-    match n.kind() {
+    match n.fkind() {
         "member_expression" | "attribute" | "selector_expression" => {
             if let Some(full) = member_expr_text_full(n, code) {
                 // Try the full text first, then progressively strip the last segment
@@ -1101,7 +1102,7 @@ pub(crate) fn first_member_label(
     // The target of an assignment is written, not read.  A Source label on
     // it (`req.path = '/x'`, `req.headers[k] = v`) must not become the
     // node's label; a Sink label (`el.innerHTML = x`) is still meaningful.
-    let assign_target = if matches!(lookup(lang, n.kind()), Kind::Assignment) {
+    let assign_target = if matches!(lookup_node(lang, n), Kind::Assignment) {
         n.child_by_field_name("left").map(|l| l.id())
     } else {
         None
@@ -1185,7 +1186,7 @@ pub(crate) fn first_callback_sink_call<'a>(
         {
             return Some(n);
         }
-        let now_inside = inside_fn || lookup(lang, n.kind()) == Kind::Function;
+        let now_inside = inside_fn || lookup_node(lang, n) == Kind::Function;
         // Never descend a call's callee/receiver side.  On a chained call
         // (`http.get(target, cb).on('error', cb2)`) the receiver — including
         // its own callback argument — hangs off the `function` field, so
@@ -1232,13 +1233,13 @@ pub(crate) fn nested_member_sink_calls<'a>(
     let mut stack = vec![n];
     while let Some(cur) = stack.pop() {
         if matches!(
-            cur.kind(),
+            cur.fkind(),
             "member_expression" | "attribute" | "selector_expression"
         ) && let Some(full) = member_expr_text(cur, code)
             && matches!(classify(lang, &full, extra), Some(DataLabel::Sink(_)))
         {
             let call = cur.parent().filter(|p| {
-                matches!(lookup(lang, p.kind()), Kind::CallFn | Kind::CallMethod)
+                matches!(lookup_node(lang, p), Kind::CallFn | Kind::CallMethod)
                     && p.child_by_field_name("function").map(|f| f.id()) == Some(cur.id())
             })?;
             calls.push(call);
@@ -1246,19 +1247,19 @@ pub(crate) fn nested_member_sink_calls<'a>(
         // A call through a bare identifier may be an alias of a sink
         // (`const lit = Sequelize.literal; lit(q)`).  It is only provably
         // harmless when every argument is a literal.
-        if matches!(lookup(lang, cur.kind()), Kind::CallFn)
+        if matches!(lookup_node(lang, cur), Kind::CallFn)
             && cur
                 .child_by_field_name("function")
-                .is_some_and(|f| f.kind() == "identifier")
+                .is_some_and(|f| f.fkind() == "identifier")
             && let Some(args) = cur.child_by_field_name("arguments")
         {
             let mut ac = args.walk();
-            let all_literal = args.named_children(&mut ac).all(|a| match a.kind() {
+            let all_literal = args.named_children(&mut ac).all(|a| match a.fkind() {
                 "string" | "number" | "true" | "false" | "null" => true,
                 "template_string" => {
                     let mut tc = a.walk();
                     !a.named_children(&mut tc)
-                        .any(|c| c.kind() == "template_substitution")
+                        .any(|c| c.fkind() == "template_substitution")
                 }
                 _ => false,
             });
@@ -1282,7 +1283,7 @@ pub(crate) fn nested_member_sink_calls<'a>(
 /// `full` keeps the untruncated path; pass it only for a node whose label is a
 /// Source (see [`member_expr_text_full`]).
 pub(crate) fn first_member_text(n: Node, code: &[u8], full: bool) -> Option<String> {
-    match n.kind() {
+    match n.fkind() {
         "member_expression" | "attribute" | "selector_expression" => {
             if full {
                 member_expr_text_full(n, code)
@@ -1310,9 +1311,8 @@ pub(crate) fn first_member_text(n: Node, code: &[u8], full: bool) -> Option<Stri
 /// Check whether any descendant of `n` is a function or closure literal.
 pub(crate) fn has_function_descendant(n: Node, lang: &str) -> bool {
     let mut cursor = n.walk();
-    n.children(&mut cursor).any(|c| {
-        matches!(lookup(lang, c.kind()), Kind::Function) || has_function_descendant(c, lang)
-    })
+    n.children(&mut cursor)
+        .any(|c| matches!(lookup_node(lang, c), Kind::Function) || has_function_descendant(c, lang))
 }
 
 /// Check whether any descendant of `n` is a call expression.
@@ -1335,7 +1335,7 @@ pub(crate) fn collect_nested_functions_rec<'a>(
     out: &mut Vec<Node<'a>>,
     inside_function: bool,
 ) {
-    let kind = lookup(lang, n.kind());
+    let kind = lookup_node(lang, n);
     // Only treat as a function if it's a real function node (has children),
     // not a keyword token like `function` in JS which shares the same kind name.
     if kind == Kind::Function && n.child_count() > 0 {
@@ -1373,14 +1373,14 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
 ) -> Option<String> {
     // Walk up past parenthesized wrappers so `var h = (fn)` works.
     let mut cur = func_node.parent()?;
-    while cur.kind() == "parenthesized_expression" {
+    while cur.fkind() == "parenthesized_expression" {
         cur = cur.parent()?;
     }
     let parent = cur;
 
     let lhs_ident_text = |lhs: Node<'a>| -> Option<String> {
         let lhs = unwrap_parens(lhs);
-        match lhs.kind() {
+        match lhs.fkind() {
             "identifier" | "variable_name" | "simple_identifier" => text_of(lhs, code),
             // `obj.prop = <fn>` → "prop" (JS/TS/Python/PHP/Ruby/Go)
             "member_expression"
@@ -1396,13 +1396,13 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
         }
     };
 
-    match parent.kind() {
+    match parent.fkind() {
         // JS/TS: `var h = fn`, Java/Rust: `let h = fn`, C++: `auto h = fn`,
         // PHP: `$h = fn` also lands here when the parent is `variable_declarator`.
         "variable_declarator" | "init_declarator" | "let_declaration" => parent
             .child_by_field_name("name")
             .or_else(|| parent.child_by_field_name("pattern"))
-            .and_then(|n| match n.kind() {
+            .and_then(|n| match n.fkind() {
                 "identifier" | "variable_name" | "simple_identifier" => text_of(n, code),
                 _ => None, // destructuring / tuple patterns are ambiguous
             }),
@@ -1419,7 +1419,7 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
             let left = parent.child_by_field_name("left")?;
             let mut cur = left.walk();
             left.children(&mut cur).find_map(|c| {
-                (c.kind() == "identifier")
+                (c.fkind() == "identifier")
                     .then(|| text_of(c, code))
                     .flatten()
             })
@@ -1430,7 +1430,7 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
             let names = parent.child_by_field_name("name")?;
             let mut cur = names.walk();
             names.children(&mut cur).find_map(|c| {
-                (c.kind() == "identifier")
+                (c.fkind() == "identifier")
                     .then(|| text_of(c, code))
                     .flatten()
             })
@@ -1444,10 +1444,10 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
             // Do one more hop to catch these without blowing past meaningful
             // scopes (e.g. enclosing function body / block).
             let grand = parent.parent()?;
-            match grand.kind() {
+            match grand.fkind() {
                 "variable_declarator" | "init_declarator" => grand
                     .child_by_field_name("name")
-                    .and_then(|n| match n.kind() {
+                    .and_then(|n| match n.fkind() {
                         "identifier" | "variable_name" | "simple_identifier" => text_of(n, code),
                         _ => None,
                     }),
@@ -1460,7 +1460,7 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
                     let left = grand.child_by_field_name("left")?;
                     let mut cur = left.walk();
                     left.children(&mut cur).find_map(|c| {
-                        (c.kind() == "identifier")
+                        (c.fkind() == "identifier")
                             .then(|| text_of(c, code))
                             .flatten()
                     })
@@ -1471,7 +1471,7 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
                     let names = grand.child_by_field_name("name")?;
                     let mut cur = names.walk();
                     names.children(&mut cur).find_map(|c| {
-                        (c.kind() == "identifier")
+                        (c.fkind() == "identifier")
                             .then(|| text_of(c, code))
                             .flatten()
                     })
@@ -1498,7 +1498,7 @@ pub(crate) fn derive_anon_fn_name_from_context<'a>(
 pub(crate) fn has_call_descendant(n: Node, lang: &str) -> bool {
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
-        match lookup(lang, c.kind()) {
+        match lookup_node(lang, c) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return true,
             _ => {
                 if has_call_descendant(c, lang) {
@@ -1539,18 +1539,18 @@ impl RmwAssign<'_> {
 /// `x = y` (no operator field, or operator `=`) and Go's `x := y`
 /// (`short_var_declaration`) never match.
 pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
-    match n.kind() {
+    match n.fkind() {
         "update_expression" | "inc_statement" | "dec_statement" => {
             let target = n
                 .child_by_field_name("argument")
                 .or_else(|| n.named_child(0))?;
-            let op = match n.kind() {
+            let op = match n.fkind() {
                 "inc_statement" => "++",
                 "dec_statement" => "--",
                 _ => {
                     let mut cursor = n.walk();
                     n.children(&mut cursor)
-                        .map(|c| c.kind())
+                        .map(|c| c.fkind())
                         .find(|k| matches!(*k, "++" | "--"))?
                 }
             };
@@ -1566,7 +1566,7 @@ pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
         | "operator_assignment"
         | "assignment_expression"
         | "assignment_statement" => {
-            let op = n.child_by_field_name("operator")?.kind();
+            let op = n.child_by_field_name("operator")?.fkind();
             if matches!(op, "=" | ":=") {
                 return None;
             }
@@ -1587,12 +1587,12 @@ pub(crate) fn rmw_assignment(n: Node<'_>) -> Option<RmwAssign<'_>> {
 /// Only nodes the language's KINDS table maps to `Kind::Assignment` count,
 /// matching what `def_use` treats as a definition.
 pub(crate) fn rmw_statement<'a>(n: Node<'a>, lang: &str) -> Option<RmwAssign<'a>> {
-    let node = match lookup(lang, n.kind()) {
+    let node = match lookup_node(lang, n) {
         Kind::Assignment => n,
         Kind::CallWrapper if n.named_child_count() == 1 => n.named_child(0)?,
         _ => return None,
     };
-    if lookup(lang, node.kind()) != Kind::Assignment {
+    if lookup_node(lang, node) != Kind::Assignment {
         return None;
     }
     rmw_assignment(node)
@@ -1626,7 +1626,7 @@ pub(crate) fn rmw_target_define(target: Node, code: &[u8]) -> Option<String> {
 /// True when `n` is itself a call or contains one.
 pub(crate) fn subtree_has_call(n: Node, lang: &str) -> bool {
     matches!(
-        lookup(lang, n.kind()),
+        lookup_node(lang, n),
         Kind::CallFn | Kind::CallMethod | Kind::CallMacro
     ) || has_call_descendant(n, lang)
 }
@@ -1638,7 +1638,7 @@ pub(crate) fn find_condition_subtree<'a>(ast: Node<'a>, lang: &str) -> Option<No
     ast.child_by_field_name("condition").or_else(|| {
         let mut cursor = ast.walk();
         ast.children(&mut cursor).find(|c| {
-            let k = c.kind();
+            let k = c.fkind();
             !matches!(lookup(lang, k), Kind::Block | Kind::Trivia)
                 && !matches!(k, "if" | "else" | "let" | "{" | "}" | "(" | ")")
         })
@@ -1660,7 +1660,7 @@ pub(crate) fn for_each_parts<'a>(
         let mut cursor = ast.walk();
         if let Some(rc) = ast
             .children(&mut cursor)
-            .find(|c| c.kind() == "range_clause")
+            .find(|c| c.fkind() == "range_clause")
         {
             left = rc.child_by_field_name("left");
             right = rc.child_by_field_name("right");
@@ -1678,14 +1678,14 @@ pub(crate) fn for_each_parts<'a>(
     }
     // PHP `foreach ($coll as $v)` / `foreach ($coll as $k => $v)`: the
     // iterable and binding are unnamed children either side of `as`.
-    if left.is_none() && right.is_none() && ast.kind() == "foreach_statement" {
+    if left.is_none() && right.is_none() && ast.fkind() == "foreach_statement" {
         let mut cursor = ast.walk();
         let kids: Vec<Node> = ast.children(&mut cursor).collect();
-        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as") {
+        if let Some(as_pos) = kids.iter().position(|c| c.fkind() == "as") {
             right = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied();
             left = kids[as_pos + 1..]
                 .iter()
-                .find(|c| c.is_named() && lookup(lang, c.kind()) != Kind::Block)
+                .find(|c| c.is_named() && lookup_node(lang, c) != Kind::Block)
                 .copied();
         }
     }
@@ -1723,7 +1723,7 @@ impl<'a> HeaderExpr<'a> {
 /// such a statement.
 pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<HeaderExpr<'a>> {
     let cond = |n: Option<Node<'a>>| Some(n.map_or(HeaderExpr::Empty, HeaderExpr::Condition));
-    if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
+    if matches!(ast.fkind(), "elif_clause" | "else_if_clause") {
         return cond(ast.child_by_field_name("condition"));
     }
     // A C / C++ short-circuit operand that assigns, `(x = getenv("V")) == NULL`
@@ -1731,14 +1731,14 @@ pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Heade
     // its own and evaluates like a condition header.
     if matches!(lang, "c" | "cpp")
         && matches!(
-            ast.kind(),
+            ast.fkind(),
             "binary_expression" | "parenthesized_expression" | "unary_expression"
         )
         && super::literals::condition_assignment(ast).is_some()
     {
         return Some(HeaderExpr::Condition(ast));
     }
-    match lookup(lang, ast.kind()) {
+    match lookup_node(lang, ast) {
         Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
         Kind::For => {
             if let (_, Some(iter)) = for_each_parts(ast, lang) {
@@ -1755,7 +1755,7 @@ pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Heade
             let mut cursor = ast.walk();
             let go_cond = ast
                 .named_children(&mut cursor)
-                .find_map(|c| match c.kind() {
+                .find_map(|c| match c.fkind() {
                     "for_clause" => c.child_by_field_name("condition"),
                     "block" | "comment" => None,
                     _ => Some(c),
@@ -1781,7 +1781,7 @@ pub(crate) fn collect_idents_with_paths(
     idents: &mut Vec<String>,
     paths: &mut Vec<String>,
 ) {
-    match n.kind() {
+    match n.fkind() {
         "member_expression" | "attribute" | "selector_expression" | "field_expression" => {
             if let Some(path) = member_expr_text(n, code) {
                 paths.push(path);
@@ -1819,7 +1819,7 @@ pub(crate) fn collect_idents_with_paths(
 /// not `this`.  For a subscript only the container is a target
 /// (`arr[i] = v` does not assign `i`).
 pub(crate) fn collect_assign_targets(n: Node, code: &[u8], out: &mut Vec<String>) {
-    match n.kind() {
+    match n.fkind() {
         "field_access" | "member_access_expression" | "nullsafe_member_access_expression" => {
             if let Some(path) = member_expr_text(n, code) {
                 out.push(path);
@@ -1886,7 +1886,7 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
     code: &[u8],
 ) -> SmallVec<[(String, usize); 4]> {
     let mut out: SmallVec<[(String, usize); 4]> = SmallVec::new();
-    let kind = pat.kind();
+    let kind = pat.fkind();
     if !matches!(
         kind,
         "array_pattern" | "tuple_pattern" | "pattern_list" | "left_assignment_list"
@@ -1896,7 +1896,7 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
     let mut cursor = pat.walk();
     let mut pos: usize = 0;
     for child in pat.children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "[" | "]" | "(" | ")" => {}
             "," => {
                 pos += 1;
@@ -1968,7 +1968,7 @@ pub(crate) fn collect_rhs_array_literal_elements(
     };
 
     let mut out: SmallVec<[RhsArraySlot; 4]> = SmallVec::new();
-    let kind = rhs.kind();
+    let kind = rhs.fkind();
     if !matches!(
         kind,
         "array" | "array_literal" | "list" | "tuple" | "tuple_expression" | "expression_list"
@@ -1977,7 +1977,7 @@ pub(crate) fn collect_rhs_array_literal_elements(
     }
     let mut cursor = rhs.walk();
     for child in rhs.named_children(&mut cursor) {
-        let ck = child.kind();
+        let ck = child.fkind();
         match ck {
             "identifier"
             | "shorthand_property_identifier"
@@ -2094,11 +2094,11 @@ pub(crate) fn collect_rhs_object_literal(
         return None;
     }
     let (name, value) = single_binding_name_value(ast)?;
-    if name.kind() != "identifier" || text_of(name, code).as_deref() != Some(defines) {
+    if name.fkind() != "identifier" || text_of(name, code).as_deref() != Some(defines) {
         return None;
     }
     let value = unwrap_ts_expression_wrappers(value);
-    if value.kind() != "object" {
+    if value.fkind() != "object" {
         return None;
     }
     Some(Box::new(object_literal_shape(value, code, 0)))
@@ -2107,12 +2107,12 @@ pub(crate) fn collect_rhs_object_literal(
 /// `(binding name, value)` of a single-binding JS/TS declaration or
 /// assignment node.
 fn single_binding_name_value(ast: Node) -> Option<(Node, Node)> {
-    match ast.kind() {
+    match ast.fkind() {
         "lexical_declaration" | "variable_declaration" => {
             let mut cursor = ast.walk();
             let mut declarators = ast
                 .named_children(&mut cursor)
-                .filter(|c| c.kind() == "variable_declarator");
+                .filter(|c| c.fkind() == "variable_declarator");
             let only = declarators.next()?;
             if declarators.next().is_some() {
                 return None;
@@ -2132,7 +2132,7 @@ fn single_binding_name_value(ast: Node) -> Option<(Node, Node)> {
             let mut cursor = ast.walk();
             let mut inner = ast
                 .named_children(&mut cursor)
-                .filter(|c| c.kind() != "comment");
+                .filter(|c| c.fkind() != "comment");
             let only = inner.next()?;
             if inner.next().is_some() {
                 return None;
@@ -2147,7 +2147,7 @@ fn single_binding_name_value(ast: Node) -> Option<(Node, Node)> {
 /// `x!`, `<T>x`) that do not change the runtime value.
 fn unwrap_ts_expression_wrappers(mut n: Node) -> Node {
     loop {
-        let inner = match n.kind() {
+        let inner = match n.fkind() {
             "parenthesized_expression"
             | "as_expression"
             | "satisfies_expression"
@@ -2174,13 +2174,13 @@ fn object_literal_shape(obj: Node, code: &[u8], depth: usize) -> crate::cfg::Rhs
     };
     let mut cursor = obj.walk();
     for child in obj.named_children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "pair" => {
                 let Some(key) = child.child_by_field_name("key") else {
                     out.open = true;
                     continue;
                 };
-                let key_text = match key.kind() {
+                let key_text = match key.fkind() {
                     "property_identifier" | "number" => text_of(key, code),
                     "string" => text_of(key, code).map(|t| {
                         t.trim_matches(|c| c == '"' || c == '\'' || c == '`')
@@ -2216,7 +2216,7 @@ fn object_literal_shape(obj: Node, code: &[u8], depth: usize) -> crate::cfg::Rhs
 fn object_slot(value: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectSlot {
     use crate::cfg::RhsObjectSlot;
     let value = unwrap_ts_expression_wrappers(value);
-    match value.kind() {
+    match value.fkind() {
         "string" | "number" | "true" | "false" | "null" | "undefined" | "regex" => {
             RhsObjectSlot::Literal
         }
@@ -2224,7 +2224,7 @@ fn object_slot(value: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectS
             let mut cursor = value.walk();
             let interpolated = value
                 .named_children(&mut cursor)
-                .any(|c| c.kind() == "template_substitution");
+                .any(|c| c.fkind() == "template_substitution");
             if interpolated {
                 RhsObjectSlot::Complex
             } else {
@@ -2250,7 +2250,7 @@ fn object_slot(value: Node, code: &[u8], depth: usize) -> crate::cfg::RhsObjectS
 /// `shorthand_property_identifier` / `shorthand_property_identifier_pattern`
 /// (JS/TS object-literal shorthand uses and destructuring binding patterns).
 pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
-    match n.kind() {
+    match n.fkind() {
         "identifier"
         | "field_identifier"
         | "property_identifier"
@@ -2304,16 +2304,16 @@ pub(crate) fn is_subscript_kind(kind: &str) -> bool {
 /// one), return that node.  Returns `None` for multi-target Go
 /// `expression_list`s, identifier LHSs, member-expression LHSs, etc.
 pub(crate) fn subscript_lhs_node<'a>(lhs: Node<'a>, lang: &str) -> Option<Node<'a>> {
-    if is_subscript_kind(lhs.kind()) {
+    if is_subscript_kind(lhs.fkind()) {
         return Some(lhs);
     }
     // Go: `assignment_statement.left` is an `expression_list`; for
     // single-target subscript writes (`m[k] = v`) it has exactly one
     // named child which is `index_expression`.
-    if lang == "go" && lhs.kind() == "expression_list" {
+    if lang == "go" && lhs.fkind() == "expression_list" {
         let mut cursor = lhs.walk();
         let named: Vec<Node> = lhs.named_children(&mut cursor).collect();
-        if named.len() == 1 && is_subscript_kind(named[0].kind()) {
+        if named.len() == 1 && is_subscript_kind(named[0].fkind()) {
             return Some(named[0]);
         }
     }
@@ -2329,7 +2329,7 @@ pub(crate) fn subscript_lhs_node<'a>(lhs: Node<'a>, lang: &str) -> Option<Node<'
 /// container hooks need a stable receiver var_name to drive
 /// `pt(receiver)`.
 pub(crate) fn subscript_components<'a>(n: Node<'a>, code: &'a [u8]) -> Option<(String, String)> {
-    if !is_subscript_kind(n.kind()) {
+    if !is_subscript_kind(n.fkind()) {
         return None;
     }
     let arr = n
@@ -2345,7 +2345,7 @@ pub(crate) fn subscript_components<'a>(n: Node<'a>, code: &'a [u8]) -> Option<(S
             let mut cur = n.walk();
             n.named_children(&mut cur).nth(1)
         })?;
-    let arr_kind = arr.kind();
+    let arr_kind = arr.fkind();
     // Only proceed when the array is a plain identifier, otherwise
     // we can't bind a stable receiver name for the synth Call.
     if !matches!(
@@ -2410,7 +2410,7 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
             return_escape_walk(child, lang, code, out, depth + 1);
         }
     };
-    match n.kind() {
+    match n.fkind() {
         "identifier" | "shorthand_property_identifier" => {
             if let Some(t) = text_of(n, code) {
                 out.idents.push(t);
@@ -2476,9 +2476,9 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
         "pointer_expression" | "unary_expression"
             if lang == "cpp"
                 && n.child_by_field_name("operator")
-                    .is_some_and(|op| op.kind() == "*")
+                    .is_some_and(|op| op.fkind() == "*")
                 && n.child_by_field_name("argument")
-                    .is_some_and(|a| a.kind() == "this") =>
+                    .is_some_and(|a| a.fkind() == "this") =>
         {
             out.idents.push("this".to_string());
         }
@@ -2486,8 +2486,8 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
         "unary_expression" | "pointer_expression" | "reference_expression" => {
             let is_addr = n
                 .child_by_field_name("operator")
-                .is_some_and(|op| op.kind() == "&");
-            if is_addr || n.kind() == "reference_expression" {
+                .is_some_and(|op| op.fkind() == "&");
+            if is_addr || n.fkind() == "reference_expression" {
                 if let Some(arg) = n
                     .child_by_field_name("argument")
                     .or_else(|| n.child_by_field_name("operand"))
@@ -2531,13 +2531,13 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
             if let Some(args) = n.child_by_field_name("arguments").or_else(|| {
                 let mut cursor = n.walk();
                 n.named_children(&mut cursor)
-                    .find(|c| c.kind() == "argument_list" || c.kind() == "arguments")
+                    .find(|c| c.fkind() == "argument_list" || c.fkind() == "arguments")
             }) {
                 recurse_named(args, out);
             }
         }
         _ => {
-            if matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod) {
+            if matches!(lookup_node(lang, n), Kind::CallFn | Kind::CallMethod) {
                 let callee = super::literals::call_ident_of(n, lang, code);
                 // C++ `std::move(x)` hands `x` itself to the caller.
                 let is_move = lang == "cpp"
@@ -2800,13 +2800,13 @@ pub(crate) fn php_output_construct<'a>(
     ast: Node<'a>,
     code: &[u8],
 ) -> Option<PhpOutputConstruct<'a>> {
-    match ast.kind() {
+    match ast.fkind() {
         "echo_statement" => {
             let mut cursor = ast.walk();
             let kw = ast.children(&mut cursor).next()?;
             let operand = ast
                 .named_children(&mut ast.walk())
-                .find(|c| c.kind() != "comment")?;
+                .find(|c| c.fkind() != "comment")?;
             (kw.child_count() == 0 && kw.id() != operand.id()).then_some(PhpOutputConstruct {
                 keyword: "echo",
                 keyword_span: (kw.start_byte(), kw.end_byte()),
@@ -2815,7 +2815,7 @@ pub(crate) fn php_output_construct<'a>(
         }
         "expression_statement" => {
             let inner = ast.named_child(0)?;
-            if inner.kind() == "print_intrinsic" {
+            if inner.fkind() == "print_intrinsic" {
                 let kw = inner.child(0)?;
                 let operand = inner.named_child(0).filter(|o| o.id() != kw.id())?;
                 return Some(PhpOutputConstruct {
@@ -2827,12 +2827,12 @@ pub(crate) fn php_output_construct<'a>(
             // `<?=` is the trailing `php_tag` of the `text_interpolation`
             // extra that precedes the expression.
             let prev = ast.prev_sibling()?;
-            let tag = match prev.kind() {
+            let tag = match prev.fkind() {
                 "php_tag" => prev,
                 "text_interpolation" => prev.child((prev.child_count().checked_sub(1)?) as u32)?,
                 _ => return None,
             };
-            (tag.kind() == "php_tag" && code.get(tag.start_byte()..tag.end_byte()) == Some(b"<?="))
+            (tag.fkind() == "php_tag" && code.get(tag.start_byte()..tag.end_byte()) == Some(b"<?="))
                 .then_some(PhpOutputConstruct {
                     keyword: "echo",
                     keyword_span: (tag.start_byte(), tag.end_byte()),
@@ -2853,7 +2853,7 @@ pub(crate) fn php_direct_operand_sources<'a>(
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
     out: &mut Vec<(DataLabel, Option<String>, (usize, usize))>,
 ) {
-    match operand.kind() {
+    match operand.fkind() {
         "sequence_expression"
         | "parenthesized_expression"
         | "error_suppression_expression"
@@ -2880,7 +2880,7 @@ pub(crate) fn php_direct_operand_sources<'a>(
         "binary_expression" => {
             let is_value_join = operand
                 .child_by_field_name("operator")
-                .is_some_and(|op| matches!(op.kind(), "." | "??"));
+                .is_some_and(|op| matches!(op.fkind(), "." | "??"));
             if is_value_join {
                 let mut cursor = operand.walk();
                 for c in operand.named_children(&mut cursor) {
@@ -2906,7 +2906,7 @@ pub(crate) fn php_direct_operand_sources<'a>(
 /// Variable names an output operand prints, leaving out `isset(..)` / `empty(..)`
 /// tests that only choose a branch (`echo isset($a) ? $b : ''`).
 pub(crate) fn php_output_value_uses(operand: Node, code: &[u8], out: &mut Vec<String>) {
-    match operand.kind() {
+    match operand.fkind() {
         "conditional_expression"
         | "binary_expression"
         | "parenthesized_expression"
@@ -2945,17 +2945,17 @@ thread_local! {
 /// named `name` declared in the enclosing function (a function pointer),
 /// rather than naming a function.
 pub(super) fn c_callee_is_local_pointer(call: Node<'_>, name: &str, code: &[u8]) -> bool {
-    if call.kind() != "call_expression" {
+    if call.fkind() != "call_expression" {
         return false;
     }
     let Some(f) = call.child_by_field_name("function") else {
         return false;
     };
-    if f.kind() != "identifier" {
+    if f.fkind() != "identifier" {
         return false;
     }
     let mut func = call;
-    while func.kind() != "function_definition" {
+    while func.fkind() != "function_definition" {
         match func.parent() {
             Some(p) => func = p,
             None => return false,
@@ -2984,10 +2984,10 @@ pub(super) fn c_callee_is_local_pointer(call: Node<'_>, name: &str, code: &[u8])
             let mut names = std::collections::HashSet::new();
             let mut stack = vec![func];
             while let Some(n) = stack.pop() {
-                if n.kind() == "identifier"
+                if n.fkind() == "identifier"
                     && let Some(p) = n.parent()
-                    && p.kind().ends_with("declarator")
-                    && p.kind() != "function_declarator"
+                    && p.fkind().ends_with("declarator")
+                    && p.fkind() != "function_declarator"
                     && let Ok(t) = n.utf8_text(code)
                 {
                     names.insert(t.to_string());

@@ -13,6 +13,7 @@
 //! `Map.ofEntries`, builders) produce no entry and the engine keeps
 //! its prior behaviour.
 
+use crate::cfg::fast_kind::FastKind;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -119,7 +120,7 @@ pub fn collect_class_constant_scalars(
 
 fn collect_java_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
     walk(root, &mut |node| {
-        if node.kind() != "field_declaration" {
+        if node.fkind() != "field_declaration" {
             return;
         }
         if !has_static_modifier(node) || !has_final_modifier(node) {
@@ -153,24 +154,24 @@ fn collect_java_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<
 /// class bodies, or other blocks are out of scope (a per-function SSA pass
 /// already sees those).
 fn collect_python_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
-    if root.kind() != "module" {
+    if root.fkind() != "module" {
         return;
     }
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
-        if child.kind() != "expression_statement" {
+        if child.fkind() != "expression_statement" {
             continue;
         }
         let Some(assign) = child.named_child(0) else {
             continue;
         };
-        if assign.kind() != "assignment" {
+        if assign.fkind() != "assignment" {
             continue;
         }
         let Some(target) = assign.child_by_field_name("left") else {
             continue;
         };
-        if target.kind() != "identifier" {
+        if target.fkind() != "identifier" {
             continue;
         }
         let Some(name) = text_of(target, code) else {
@@ -191,17 +192,17 @@ fn collect_python_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMa
 /// `const_declaration` children of the source file, then per-`const_spec`
 /// reads the `name` list and `value` expression list, binding by position.
 fn collect_go_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
-    if root.kind() != "source_file" {
+    if root.fkind() != "source_file" {
         return;
     }
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
-        if child.kind() != "const_declaration" {
+        if child.fkind() != "const_declaration" {
             continue;
         }
         let mut spec_cursor = child.walk();
         for spec in child.named_children(&mut spec_cursor) {
-            if spec.kind() != "const_spec" {
+            if spec.fkind() != "const_spec" {
                 continue;
             }
             collect_go_const_spec(spec, code, out);
@@ -232,7 +233,7 @@ fn collect_go_const_spec(spec: Node<'_>, code: &[u8], out: &mut HashMap<String, 
         return;
     }
     for (name_node, value_node) in names.iter().zip(values.iter()) {
-        if name_node.kind() != "identifier" {
+        if name_node.fkind() != "identifier" {
             continue;
         }
         let Some(name) = text_of(*name_node, code) else {
@@ -249,12 +250,12 @@ fn collect_go_const_spec(spec: Node<'_>, code: &[u8], out: &mut HashMap<String, 
 /// LITERAL;`.  Only direct children of `source_file` participate so a `const`
 /// defined inside a function body does not bleed across scopes.
 fn collect_rust_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
-    if root.kind() != "source_file" {
+    if root.fkind() != "source_file" {
         return;
     }
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
-        if !matches!(child.kind(), "const_item" | "static_item") {
+        if !matches!(child.fkind(), "const_item" | "static_item") {
             continue;
         }
         let Some(name_node) = child.child_by_field_name("name") else {
@@ -277,12 +278,12 @@ fn collect_rust_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<
 fn has_static_modifier(field_decl: Node<'_>) -> bool {
     let mut cursor = field_decl.walk();
     for child in field_decl.children(&mut cursor) {
-        if child.kind() != "modifiers" {
+        if child.fkind() != "modifiers" {
             continue;
         }
         let mut sub = child.walk();
         for mod_child in child.children(&mut sub) {
-            if mod_child.kind() == "static" {
+            if mod_child.fkind() == "static" {
                 return true;
             }
         }
@@ -295,7 +296,7 @@ fn has_static_modifier(field_decl: Node<'_>) -> bool {
 /// expressions, identifier references, method invocations, and other
 /// non-literal initializers.
 fn scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
-    match value.kind() {
+    match value.fkind() {
         "string_literal"
         | "decimal_integer_literal"
         | "hex_integer_literal"
@@ -321,7 +322,7 @@ fn scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
 /// (`f"x{var}"` parses as `string` with an `interpolation` child); returns
 /// the source text otherwise.
 fn python_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
-    match value.kind() {
+    match value.fkind() {
         "string" => {
             if python_string_has_interpolation(value) {
                 None
@@ -341,7 +342,7 @@ fn python_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
 fn python_string_has_interpolation(node: Node<'_>) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "interpolation" {
+        if child.fkind() == "interpolation" {
             return true;
         }
     }
@@ -351,7 +352,7 @@ fn python_string_has_interpolation(node: Node<'_>) -> bool {
 /// Go scalar literal classifier.  `interpreted_string_literal` and
 /// `raw_string_literal` cover both `"x"` and `` `x` `` forms.
 fn go_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
-    match value.kind() {
+    match value.fkind() {
         "interpreted_string_literal"
         | "raw_string_literal"
         | "int_literal"
@@ -372,7 +373,7 @@ fn go_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
 /// Rust scalar literal classifier.  Accepts `string_literal`, `raw_string_literal`
 /// (both unwrappable to a single text run), integer / float / boolean / char.
 fn rust_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
-    match value.kind() {
+    match value.fkind() {
         "string_literal" | "raw_string_literal" | "integer_literal" | "float_literal"
         | "char_literal" | "boolean_literal" => text_of(value, code),
         // `true` / `false` are leaf identifier-ish nodes in some grammars but
@@ -391,7 +392,7 @@ fn rust_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
 
 fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, Vec<String>>) {
     walk(root, &mut |node| {
-        if node.kind() != "field_declaration" {
+        if node.fkind() != "field_declaration" {
             return;
         }
         if !has_final_modifier(node) {
@@ -421,12 +422,12 @@ fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, Vec<Strin
 fn has_final_modifier(field_decl: Node<'_>) -> bool {
     let mut cursor = field_decl.walk();
     for child in field_decl.children(&mut cursor) {
-        if child.kind() != "modifiers" {
+        if child.fkind() != "modifiers" {
             continue;
         }
         let mut sub = child.walk();
         for mod_child in child.children(&mut sub) {
-            if mod_child.kind() == "final" {
+            if mod_child.fkind() == "final" {
                 return true;
             }
         }
@@ -438,7 +439,7 @@ fn has_final_modifier(field_decl: Node<'_>) -> bool {
 /// key/value pair and every argument a `string_literal`, return the
 /// value-position literals (positions 1, 3, 5, ...).
 fn extract_map_of_literal_values(value_node: Node<'_>, code: &[u8]) -> Option<Vec<String>> {
-    if value_node.kind() != "method_invocation" {
+    if value_node.fkind() != "method_invocation" {
         return None;
     }
     let object_node = value_node.child_by_field_name("object")?;
@@ -458,7 +459,7 @@ fn extract_map_of_literal_values(value_node: Node<'_>, code: &[u8]) -> Option<Ve
     }
     let mut values = Vec::with_capacity(args.len() / 2);
     for (i, arg) in args.iter().enumerate() {
-        if arg.kind() != "string_literal" {
+        if arg.fkind() != "string_literal" {
             return None;
         }
         if i % 2 == 1 {
@@ -473,7 +474,7 @@ fn extract_map_of_literal_values(value_node: Node<'_>, code: &[u8]) -> Option<Ve
 /// identifier `Map` or a `field_access` whose tail segment is `Map`
 /// (covers `java.util.Map.of(...)`).
 fn receiver_is_map_class(node: Node<'_>, code: &[u8]) -> bool {
-    match node.kind() {
+    match node.fkind() {
         "identifier" => text_of(node, code).as_deref() == Some("Map"),
         "field_access" => {
             // tail segment lives on the `field` field
@@ -497,7 +498,7 @@ fn string_literal_value(node: Node<'_>, code: &[u8]) -> Option<String> {
     let mut out = String::new();
     let mut saw_fragment = false;
     for child in node.named_children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "string_fragment" => {
                 saw_fragment = true;
                 out.push_str(&text_of(child, code)?);

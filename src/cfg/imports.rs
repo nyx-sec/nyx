@@ -1,6 +1,7 @@
 use super::{
     ImportBinding, ImportBindings, PromisifyAlias, PromisifyAliases, member_expr_text, text_of,
 };
+use crate::cfg::fast_kind::FastKind;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Tree};
 
@@ -51,11 +52,11 @@ pub(super) fn extract_python_import_paths(tree: &Tree, code: &[u8]) -> HashMap<S
     let mut out: HashMap<String, String> = HashMap::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
-        match node.kind() {
+        match node.fkind() {
             "import_statement" => {
                 let mut cursor = node.walk();
                 for item in node.children_by_field_name("name", &mut cursor) {
-                    if item.kind() != "aliased_import" {
+                    if item.fkind() != "aliased_import" {
                         continue;
                     }
                     if let (Some(path), Some(alias)) = (
@@ -71,14 +72,14 @@ pub(super) fn extract_python_import_paths(tree: &Tree, code: &[u8]) -> HashMap<S
             "import_from_statement" => {
                 let Some(module) = node
                     .child_by_field_name("module_name")
-                    .filter(|m| m.kind() == "dotted_name")
+                    .filter(|m| m.fkind() == "dotted_name")
                     .and_then(|m| text_of(m, code))
                 else {
                     continue;
                 };
                 let mut cursor = node.walk();
                 for item in node.children_by_field_name("name", &mut cursor) {
-                    let (name, bound) = match item.kind() {
+                    let (name, bound) = match item.fkind() {
                         "dotted_name" => {
                             let Some(n) = text_of(item, code) else {
                                 continue;
@@ -140,12 +141,15 @@ fn extend_with_promises_alias(tree: &Tree, code: &[u8], out: &mut HashMap<String
     let root = tree.root_node();
     let mut top_cursor = root.walk();
     for child in root.children(&mut top_cursor) {
-        if !matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
+        if !matches!(
+            child.fkind(),
+            "lexical_declaration" | "variable_declaration"
+        ) {
             continue;
         }
         let mut decl_cursor = child.walk();
         for decl in child.children(&mut decl_cursor) {
-            if decl.kind() != "variable_declarator" {
+            if decl.fkind() != "variable_declarator" {
                 continue;
             }
             let (Some(name_node), Some(value_node)) = (
@@ -154,13 +158,13 @@ fn extend_with_promises_alias(tree: &Tree, code: &[u8], out: &mut HashMap<String
             ) else {
                 continue;
             };
-            if name_node.kind() != "identifier" {
+            if name_node.fkind() != "identifier" {
                 continue;
             }
             let Some(local_name) = text_of(name_node, code) else {
                 continue;
             };
-            if value_node.kind() != "member_expression" {
+            if value_node.fkind() != "member_expression" {
                 continue;
             }
             let property = value_node
@@ -194,7 +198,7 @@ fn promises_alias_source(
     code: &[u8],
     imports_so_far: &HashMap<String, String>,
 ) -> Option<String> {
-    match obj.kind() {
+    match obj.fkind() {
         "identifier" => {
             let id = text_of(obj, code)?;
             let module = imports_so_far.get(&id)?;
@@ -208,7 +212,7 @@ fn promises_alias_source(
             let args = obj.child_by_field_name("arguments")?;
             let mut cursor = args.walk();
             for arg in args.children(&mut cursor) {
-                if !matches!(arg.kind(), "string" | "template_string") {
+                if !matches!(arg.fkind(), "string" | "template_string") {
                     continue;
                 }
                 let raw = text_of(arg, code)?;
@@ -246,7 +250,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
     let mut cursor = root.walk();
 
     for child in root.children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             // ES6: import { A as B } from 'mod'
             "import_statement" => {
                 let source_str = child
@@ -256,17 +260,17 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
 
                 let mut c1 = child.walk();
                 for clause_child in child.children(&mut c1) {
-                    if clause_child.kind() != "import_clause" {
+                    if clause_child.fkind() != "import_clause" {
                         continue;
                     }
                     let mut c2 = clause_child.walk();
                     for part in clause_child.children(&mut c2) {
-                        if part.kind() != "named_imports" {
+                        if part.fkind() != "named_imports" {
                             continue;
                         }
                         let mut c3 = part.walk();
                         for spec in part.children(&mut c3) {
-                            if spec.kind() != "import_specifier" {
+                            if spec.fkind() != "import_specifier" {
                                 continue;
                             }
                             let original = spec
@@ -294,7 +298,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
             "lexical_declaration" | "variable_declaration" => {
                 let mut c1 = child.walk();
                 for decl in child.children(&mut c1) {
-                    if decl.kind() != "variable_declarator" {
+                    if decl.fkind() != "variable_declarator" {
                         continue;
                     }
                     let (pattern, value) = match (
@@ -304,7 +308,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
                         (Some(p), Some(v)) => (p, v),
                         _ => continue,
                     };
-                    if pattern.kind() != "object_pattern" {
+                    if pattern.fkind() != "object_pattern" {
                         continue;
                     }
                     let module_path = extract_require_module(value, code);
@@ -313,7 +317,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
                     }
                     let mut c2 = pattern.walk();
                     for pair in pattern.children(&mut c2) {
-                        if pair.kind() != "pair_pattern" {
+                        if pair.fkind() != "pair_pattern" {
                             continue;
                         }
                         let key = pair
@@ -345,7 +349,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
 
                 let mut c1 = child.walk();
                 for part in child.children(&mut c1) {
-                    if part.kind() != "aliased_import" {
+                    if part.fkind() != "aliased_import" {
                         continue;
                     }
                     let original = part
@@ -371,7 +375,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
             "namespace_use_declaration" => {
                 let mut c1 = child.walk();
                 for clause in child.children(&mut c1) {
-                    if clause.kind() != "namespace_use_clause" {
+                    if clause.fkind() != "namespace_use_clause" {
                         continue;
                     }
                     // The alias is accessed via the "alias" field (a `name` node).
@@ -380,7 +384,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
                     let mut c2 = clause.walk();
                     let qname_node = clause
                         .children(&mut c2)
-                        .find(|n| n.kind() == "qualified_name" || n.kind() == "name");
+                        .find(|n| n.fkind() == "qualified_name" || n.fkind() == "name");
                     if let (Some(qn), Some(alias_n)) = (qname_node, alias_node) {
                         let full_path = text_of(qn, code);
                         let alias = text_of(alias_n, code);
@@ -410,7 +414,7 @@ pub(super) fn extract_import_bindings(tree: &Tree, code: &[u8]) -> ImportBinding
                 // (may be nested inside use_list / scoped_use_list).
                 let mut stack = vec![child];
                 while let Some(node) = stack.pop() {
-                    if node.kind() == "use_as_clause" {
+                    if node.fkind() == "use_as_clause" {
                         let path_node = node.child_by_field_name("path");
                         let alias_node = node.child_by_field_name("alias");
                         if let (Some(p), Some(a)) = (path_node, alias_node) {
@@ -465,11 +469,11 @@ pub(super) fn extract_promisify_aliases(tree: &Tree, code: &[u8]) -> PromisifyAl
     let mut aliases = PromisifyAliases::new();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
-        match node.kind() {
+        match node.fkind() {
             "lexical_declaration" | "variable_declaration" => {
                 let mut c = node.walk();
                 for decl in node.children(&mut c) {
-                    if decl.kind() != "variable_declarator" {
+                    if decl.fkind() != "variable_declarator" {
                         continue;
                     }
                     let (name_node, value_node) = match (
@@ -479,7 +483,7 @@ pub(super) fn extract_promisify_aliases(tree: &Tree, code: &[u8]) -> PromisifyAl
                         (Some(n), Some(v)) => (n, v),
                         _ => continue,
                     };
-                    if name_node.kind() != "identifier" {
+                    if name_node.fkind() != "identifier" {
                         continue;
                     }
                     let alias_name = match text_of(name_node, code) {
@@ -498,7 +502,7 @@ pub(super) fn extract_promisify_aliases(tree: &Tree, code: &[u8]) -> PromisifyAl
                 ) else {
                     continue;
                 };
-                if lhs.kind() != "identifier" {
+                if lhs.fkind() != "identifier" {
                     continue;
                 }
                 let alias_name = match text_of(lhs, code) {
@@ -523,11 +527,11 @@ pub(super) fn extract_promisify_aliases(tree: &Tree, code: &[u8]) -> PromisifyAl
 /// `promisify(X)`, return the textual representation of `X` (`child_process.exec`,
 /// `fs.readFile`, `foo`).  Otherwise `None`.
 fn extract_promisify_wrapped(value: Node, code: &[u8]) -> Option<String> {
-    if value.kind() != "call_expression" {
+    if value.fkind() != "call_expression" {
         return None;
     }
     let func = value.child_by_field_name("function")?;
-    let func_text = match func.kind() {
+    let func_text = match func.fkind() {
         "identifier" => text_of(func, code)?,
         "member_expression" => member_expr_text(func, code)?,
         _ => return None,
@@ -544,13 +548,13 @@ fn extract_promisify_wrapped(value: Node, code: &[u8]) -> Option<String> {
         if arg.is_extra() {
             continue;
         }
-        match arg.kind() {
+        match arg.fkind() {
             "," | "(" | ")" => continue,
             _ => {}
         }
         arg_count += 1;
         if arg_count == 1 {
-            wrapped = match arg.kind() {
+            wrapped = match arg.fkind() {
                 "identifier" => text_of(arg, code),
                 "member_expression" => member_expr_text(arg, code),
                 _ => None,
@@ -565,7 +569,7 @@ fn extract_promisify_wrapped(value: Node, code: &[u8]) -> Option<String> {
 
 /// Extract the module path from a `require('...')` call expression.
 fn extract_require_module(node: Node, code: &[u8]) -> Option<String> {
-    if node.kind() != "call_expression" {
+    if node.fkind() != "call_expression" {
         return None;
     }
     let func = node.child_by_field_name("function")?;
@@ -576,7 +580,7 @@ fn extract_require_module(node: Node, code: &[u8]) -> Option<String> {
     let args = node.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
     for arg in args.children(&mut cursor) {
-        if arg.kind() == "string" || arg.kind() == "template_string" {
+        if arg.fkind() == "string" || arg.fkind() == "template_string" {
             return text_of(arg, code).map(|s| {
                 s.trim_matches(|c| c == '\'' || c == '"' || c == '`')
                     .to_string()
@@ -609,7 +613,7 @@ pub(super) fn rust_bare_join_crate_prefix(
     let mut tokio_seen = false;
     let mut futures_seen = false;
     for child in root.children(&mut cursor) {
-        if child.kind() != "use_declaration" {
+        if child.fkind() != "use_declaration" {
             continue;
         }
         if rust_use_decl_imports_leaf(child, code, "tokio", leaf) {
@@ -640,7 +644,7 @@ pub(super) fn rust_bare_join_crate_prefix(
 fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, leaf: &str) -> bool {
     let mut stack = vec![use_decl];
     while let Some(node) = stack.pop() {
-        match node.kind() {
+        match node.fkind() {
             // `use tokio::join;` — argument is a `scoped_identifier`.
             "scoped_identifier" => {
                 if scoped_identifier_matches(node, code, crate_prefix, leaf) {
@@ -658,7 +662,7 @@ fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, l
                 if path_ok && let Some(list) = node.child_by_field_name("list") {
                     let mut lc = list.walk();
                     for entry in list.named_children(&mut lc) {
-                        match entry.kind() {
+                        match entry.fkind() {
                             "identifier" if text_of(entry, code).as_deref() == Some(leaf) => {
                                 return true;
                             }
@@ -680,7 +684,7 @@ fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, l
             // under the use_declaration; check the path side.
             "use_as_clause" => {
                 if let Some(p) = node.child_by_field_name("path")
-                    && p.kind() == "scoped_identifier"
+                    && p.fkind() == "scoped_identifier"
                     && scoped_identifier_matches(p, code, crate_prefix, leaf)
                 {
                     return true;
@@ -734,16 +738,16 @@ pub(super) fn collect_python_noreturn_imports(root: Node, code: &[u8]) -> HashSe
     }
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "import_from_statement" {
+        if node.fkind() == "import_from_statement" {
             let from_abort_module = node
                 .child_by_field_name("module_name")
-                .filter(|m| m.kind() == "dotted_name")
+                .filter(|m| m.fkind() == "dotted_name")
                 .and_then(|m| text_of(m, code))
                 .is_some_and(|m| PYTHON_ABORT_MODULES.contains(&m.as_str()));
             if from_abort_module {
                 let mut c = node.walk();
                 for name in node.children_by_field_name("name", &mut c) {
-                    match name.kind() {
+                    match name.fkind() {
                         "dotted_name" if text_of(name, code).as_deref() == Some("abort") => {
                             out.insert("abort".to_string());
                         }
@@ -767,7 +771,7 @@ pub(super) fn collect_python_noreturn_imports(root: Node, code: &[u8]) -> HashSe
             continue;
         }
         // Imports are statements; expressions never contain one.
-        if node.kind().ends_with("expression") || node.kind() == "call" {
+        if node.fkind().ends_with("expression") || node.fkind() == "call" {
             continue;
         }
         let mut c = node.walk();

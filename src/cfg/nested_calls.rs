@@ -17,6 +17,7 @@
 
 use super::literals::{call_ident_of, ruby_implicit_call_arg};
 use super::{member_expr_text, text_of};
+use crate::cfg::fast_kind::FastKind;
 use crate::labels::{Cap, DataLabel, Kind, RuntimeLabelRule, lookup};
 use tree_sitter::Node;
 
@@ -182,7 +183,7 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
         if *calls >= 2 {
             return;
         }
-        let kind = n.kind();
+        let kind = n.fkind();
         match lookup(lang, kind) {
             Kind::Function => return,
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
@@ -222,7 +223,7 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
 
 /// The method name when `n` is a bare Ruby call argument that is not a local.
 fn ruby_arg_is_implicit_call(n: Node, lang: &str, code: &[u8]) -> Option<String> {
-    if lang != "ruby" || n.kind() != "identifier" || n.parent()?.kind() != "argument_list" {
+    if lang != "ruby" || n.fkind() != "identifier" || n.parent()?.fkind() != "argument_list" {
         return None;
     }
     ruby_implicit_call_arg(n, lang, code)
@@ -287,7 +288,7 @@ struct Builder<'c> {
 /// change which call the argument is.
 fn argument_expression(mut n: Node) -> Node {
     while matches!(
-        n.kind(),
+        n.fkind(),
         "argument"
             | "parenthesized_expression"
             | "await_expression"
@@ -322,7 +323,7 @@ impl Builder<'_> {
             self.push_implicit_call(n, callee, cur, slot);
             return;
         }
-        match lookup(self.lang, n.kind()) {
+        match lookup(self.lang, n.fkind()) {
             Kind::Function => return,
             Kind::CallMacro => {
                 // A macro's arguments are a flat token tree, so which
@@ -336,7 +337,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        match n.kind() {
+        match n.fkind() {
             "variable_name" => {
                 if let Some(t) = text_of(n, self.code) {
                     self.push_use(t.trim_start_matches('$').to_string(), cur, slot);
@@ -363,7 +364,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        let skip = assignment_target(n, n.kind(), self.code);
+        let skip = assignment_target(n, n.fkind(), self.code);
         let mut c = n.walk();
         for ch in n.children(&mut c) {
             if Some(ch) == skip {
@@ -462,7 +463,7 @@ impl Builder<'_> {
             .or_else(|| call.child_by_field_name("receiver"))
             .or_else(|| call.child_by_field_name("scope"));
         let func = call.child_by_field_name("function");
-        let func_recv = func.and_then(|f| match f.kind() {
+        let func_recv = func.and_then(|f| match f.fkind() {
             "member_expression" | "attribute" => f.child_by_field_name("object"),
             "field_expression" => f.child_by_field_name("value"),
             "selector_expression" => f.child_by_field_name("operand"),
@@ -478,10 +479,10 @@ impl Builder<'_> {
                 let mut c = args.walk();
                 args.named_children(&mut c).collect()
             };
-            let positional = !children.iter().any(|ch| is_splat(ch.kind()));
+            let positional = !children.iter().any(|ch| is_splat(ch.fkind()));
             let mut pos: u16 = 0;
             for ch in children {
-                if matches!(ch.kind(), "keyword_argument" | "named_argument") {
+                if matches!(ch.fkind(), "keyword_argument" | "named_argument") {
                     self.walk(ch, Some(idx), CallSlot::Other);
                     continue;
                 }
@@ -492,7 +493,7 @@ impl Builder<'_> {
                 };
                 let expr = argument_expression(ch);
                 if matches!(
-                    lookup(self.lang, expr.kind()),
+                    lookup(self.lang, expr.fkind()),
                     Kind::CallFn | Kind::CallMethod
                 ) {
                     self.exact_args.push((expr.start_byte(), expr.end_byte()));
@@ -503,13 +504,13 @@ impl Builder<'_> {
             if positional {
                 self.tree.calls[idx as usize].arity = Some(pos);
             }
-        } else if call.kind() == "subshell" {
+        } else if call.fkind() == "subshell" {
             // Ruby backticks: each interpolation is a positional argument of
             // the synthetic `subshell` callee (see `extract_arg_uses`).
             let mut pos: u16 = 0;
             let mut c = call.walk();
             for ch in call.named_children(&mut c) {
-                if ch.kind() == "interpolation" {
+                if ch.fkind() == "interpolation" {
                     self.walk(ch, Some(idx), CallSlot::Arg(pos));
                     pos = pos.saturating_add(1);
                 }

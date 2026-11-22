@@ -10,6 +10,7 @@
 //! the empty vector and the resolver falls back to today's
 //! single-container behaviour.
 
+use crate::cfg::fast_kind::FastKind;
 use std::collections::HashSet;
 
 use tree_sitter::Node;
@@ -58,7 +59,7 @@ pub(crate) fn collect_hierarchy_edges(
 
 fn collect_java<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        let kind = node.kind();
+        let kind = node.fkind();
         if kind != "class_declaration" && kind != "interface_declaration" {
             return;
         }
@@ -87,7 +88,7 @@ fn collect_java<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
         // interface.  Walk children directly since it's not a field.
         let mut cursor = node.walk();
         for c in node.named_children(&mut cursor) {
-            if c.kind() == "extends_interfaces" {
+            if c.fkind() == "extends_interfaces" {
                 collect_java_type_list(c, code, &sub, push);
             }
         }
@@ -102,7 +103,7 @@ fn collect_java_type_list<F: FnMut(String, String)>(
 ) {
     let mut cursor = n.walk();
     for child in n.named_children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "type_list" | "interface_type_list" => {
                 collect_java_type_list(child, code, sub, push);
             }
@@ -118,14 +119,14 @@ fn collect_java_type_list<F: FnMut(String, String)>(
 /// Strip generic / nested `type_arguments` from a type-reference node
 /// down to the bare identifier.
 fn type_identifier_text(n: Node<'_>, code: &[u8]) -> Option<String> {
-    match n.kind() {
+    match n.fkind() {
         "type_identifier" | "identifier" => text_of(n, code),
         "generic_type" => {
             // `Foo<T>`, the leading child is the bare type identifier.
             let mut cursor = n.walk();
             for c in n.named_children(&mut cursor) {
                 if matches!(
-                    c.kind(),
+                    c.fkind(),
                     "type_identifier" | "identifier" | "scoped_type_identifier"
                 ) {
                     return text_of(c, code);
@@ -151,7 +152,7 @@ fn type_identifier_text(n: Node<'_>, code: &[u8]) -> Option<String> {
 /// no edge, there is no super-trait relationship to record.
 fn collect_rust<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        if node.kind() != "impl_item" {
+        if node.fkind() != "impl_item" {
             return;
         }
         // tree-sitter-rust uses `trait` and `type` field names.
@@ -172,7 +173,7 @@ fn collect_rust<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
 }
 
 fn rust_path_leaf(n: Node<'_>, code: &[u8]) -> Option<String> {
-    match n.kind() {
+    match n.fkind() {
         "type_identifier" | "identifier" => text_of(n, code),
         "scoped_type_identifier" | "scoped_identifier" => {
             // `crate::foo::Bar`, last segment.
@@ -183,7 +184,7 @@ fn rust_path_leaf(n: Node<'_>, code: &[u8]) -> Option<String> {
             let mut cursor = n.walk();
             for c in n.named_children(&mut cursor) {
                 if matches!(
-                    c.kind(),
+                    c.fkind(),
                     "type_identifier" | "scoped_type_identifier" | "identifier"
                 ) {
                     return rust_path_leaf(c, code);
@@ -199,7 +200,7 @@ fn rust_path_leaf(n: Node<'_>, code: &[u8]) -> Option<String> {
 
 fn collect_ts<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        let kind = node.kind();
+        let kind = node.fkind();
         if kind != "class_declaration" && kind != "interface_declaration" {
             return;
         }
@@ -212,11 +213,11 @@ fn collect_ts<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut 
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            match child.kind() {
+            match child.fkind() {
                 "class_heritage" => {
                     let mut h = child.walk();
                     for c in child.named_children(&mut h) {
-                        match c.kind() {
+                        match c.fkind() {
                             "extends_clause" => collect_ts_heritage(c, code, &sub, push),
                             "implements_clause" => collect_ts_heritage(c, code, &sub, push),
                             _ => {}
@@ -240,7 +241,7 @@ fn collect_ts_heritage<F: FnMut(String, String)>(
 ) {
     let mut cursor = clause.walk();
     for c in clause.named_children(&mut cursor) {
-        match c.kind() {
+        match c.fkind() {
             "identifier" | "type_identifier" => {
                 if let Some(t) = text_of(c, code) {
                     push(sub.to_string(), t);
@@ -249,7 +250,7 @@ fn collect_ts_heritage<F: FnMut(String, String)>(
             "generic_type" | "type_arguments" | "type_query" => {
                 let mut cursor2 = c.walk();
                 for inner in c.named_children(&mut cursor2) {
-                    if matches!(inner.kind(), "identifier" | "type_identifier")
+                    if matches!(inner.fkind(), "identifier" | "type_identifier")
                         && let Some(t) = text_of(inner, code)
                     {
                         push(sub.to_string(), t);
@@ -266,7 +267,7 @@ fn collect_ts_heritage<F: FnMut(String, String)>(
 
 fn collect_python<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        if node.kind() != "class_definition" {
+        if node.fkind() != "class_definition" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -293,7 +294,7 @@ fn collect_python<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &
 }
 
 fn python_base_text(n: Node<'_>, code: &[u8]) -> Option<String> {
-    match n.kind() {
+    match n.fkind() {
         "identifier" => text_of(n, code),
         "attribute" => {
             // `pkg.Base`, last segment.
@@ -310,7 +311,7 @@ fn python_base_text(n: Node<'_>, code: &[u8]) -> Option<String> {
 
 fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        if node.kind() != "class" {
+        if node.fkind() != "class" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -323,7 +324,7 @@ fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
             // `superclass` wraps the parent identifier.
             let mut cursor = superclass.walk();
             for c in superclass.named_children(&mut cursor) {
-                if matches!(c.kind(), "constant" | "scope_resolution")
+                if matches!(c.fkind(), "constant" | "scope_resolution")
                     && let Some(t) = text_of(c, code)
                 {
                     let leaf = t.rsplit("::").next().unwrap_or(&t).to_string();
@@ -339,7 +340,7 @@ fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
 
 fn collect_php<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        let kind = node.kind();
+        let kind = node.fkind();
         if kind != "class_declaration" && kind != "interface_declaration" {
             return;
         }
@@ -352,11 +353,11 @@ fn collect_php<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut
         // PHP class_declaration may have base_clause and class_interface_clause.
         let mut cursor = node.walk();
         for c in node.named_children(&mut cursor) {
-            match c.kind() {
+            match c.fkind() {
                 "base_clause" | "class_interface_clause" => {
                     let mut cc = c.walk();
                     for inner in c.named_children(&mut cc) {
-                        if matches!(inner.kind(), "name" | "qualified_name")
+                        if matches!(inner.fkind(), "name" | "qualified_name")
                             && let Some(t) = text_of(inner, code)
                         {
                             let leaf = t.rsplit('\\').next().unwrap_or(&t).to_string();
@@ -374,7 +375,7 @@ fn collect_php<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut
 
 fn collect_cpp<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut F) {
     walk(root, &mut |node| {
-        let kind = node.kind();
+        let kind = node.fkind();
         if kind != "class_specifier" && kind != "struct_specifier" {
             return;
         }
@@ -387,11 +388,11 @@ fn collect_cpp<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mut
         // tree-sitter-cpp uses `base_class_clause` for the `: public Y` part.
         let mut cursor = node.walk();
         for c in node.named_children(&mut cursor) {
-            if c.kind() == "base_class_clause" {
+            if c.fkind() == "base_class_clause" {
                 let mut cc = c.walk();
                 for inner in c.named_children(&mut cc) {
                     if matches!(
-                        inner.kind(),
+                        inner.fkind(),
                         "type_identifier" | "qualified_identifier" | "template_type"
                     ) {
                         if let Some(t) = text_of(inner, code) {

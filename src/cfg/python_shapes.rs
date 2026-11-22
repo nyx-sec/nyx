@@ -15,6 +15,7 @@
 //! unsafe spellings keep their label.
 
 use super::{extract_const_keyword_arg, text_of};
+use crate::cfg::fast_kind::FastKind;
 use crate::labels::{Cap, DataLabel, RuntimeLabelRule, classify_all};
 use tree_sitter::Node;
 
@@ -26,7 +27,7 @@ fn positional_args(call: Node) -> Option<Vec<Node>> {
     let mut cursor = args.walk();
     let mut out = Vec::new();
     for child in args.named_children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "comment" | "keyword_argument" => {}
             "list_splat" | "dictionary_splat" => return None,
             _ => out.push(child),
@@ -40,7 +41,7 @@ fn keyword_arg_value<'a>(call: Node<'a>, name: &str, code: &[u8]) -> Option<Node
     let args = call.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
     for child in args.named_children(&mut cursor) {
-        if child.kind() != "keyword_argument" {
+        if child.fkind() != "keyword_argument" {
             continue;
         }
         let key = child
@@ -64,7 +65,7 @@ pub(crate) fn yaml_loader_is_safe(call: Node, code: &[u8]) -> bool {
     let Some(loader) = loader else {
         return false;
     };
-    if !matches!(loader.kind(), "identifier" | "attribute") {
+    if !matches!(loader.fkind(), "identifier" | "attribute") {
         return false;
     }
     let Some(text) = text_of(loader, code) else {
@@ -113,12 +114,12 @@ fn response_body_is_safe(
 ) -> bool {
     if let Some(body) = positional_args(call).and_then(|a| a.first().copied()) {
         let mut body = body;
-        while body.kind() == "parenthesized_expression"
+        while body.fkind() == "parenthesized_expression"
             && let Some(inner) = body.named_child(0)
         {
             body = inner;
         }
-        if body.kind() == "call"
+        if body.fkind() == "call"
             && let Some(callee) = body
                 .child_by_field_name("function")
                 .and_then(|f| text_of(f, code))
@@ -144,7 +145,7 @@ fn response_body_is_safe(
                 return None;
             }
             let second = positional_args(call)?.get(1).copied()?;
-            (second.kind() == "string")
+            (second.fkind() == "string")
                 .then(|| text_of(second, code))
                 .flatten()
         });
@@ -240,7 +241,7 @@ const EXECUTE_METHODS: &[&str] = &["execute", "scalar", "scalars", "exec", "stre
 /// `stmt.where(..)`.
 fn call_leaf<'a>(call: Node, code: &'a [u8]) -> Option<&'a str> {
     let func = call.child_by_field_name("function")?;
-    let leaf = match func.kind() {
+    let leaf = match func.fkind() {
         "identifier" => func,
         "attribute" => func.child_by_field_name("attribute")?,
         _ => return None,
@@ -250,7 +251,7 @@ fn call_leaf<'a>(call: Node, code: &'a [u8]) -> Option<&'a str> {
 
 /// True when no call under `node` splices text into SQL (`text(f"..")`).
 fn has_no_raw_sql_call(node: Node, code: &[u8]) -> bool {
-    if node.kind() == "call" && call_leaf(node, code).is_some_and(|l| RAW_SQL_CALLS.contains(&l)) {
+    if node.fkind() == "call" && call_leaf(node, code).is_some_and(|l| RAW_SQL_CALLS.contains(&l)) {
         return false;
     }
     let mut cursor = node.walk();
@@ -268,7 +269,7 @@ fn is_column_reference(node: Node, code: &[u8]) -> bool {
     let mut has_class = false;
     let mut cur = node;
     loop {
-        match cur.kind() {
+        match cur.fkind() {
             "attribute" => {
                 let (Some(obj), Some(attr)) = (
                     cur.child_by_field_name("object"),
@@ -327,15 +328,15 @@ fn core_table_bindings(scope: Node, name: &[u8], code: &[u8]) -> Option<bool> {
         for c in n.named_children(&mut cursor) {
             stack.push(c);
         }
-        match n.kind() {
+        match n.fkind() {
             "assignment" => {
                 let Some(left) = n.child_by_field_name("left") else {
                     continue;
                 };
-                if left.kind() == "identifier" && &code[left.byte_range()] == name {
-                    let is_table = n
-                        .child_by_field_name("right")
-                        .is_some_and(|r| r.kind() == "call" && call_leaf(r, code) == Some("Table"));
+                if left.fkind() == "identifier" && &code[left.byte_range()] == name {
+                    let is_table = n.child_by_field_name("right").is_some_and(|r| {
+                        r.fkind() == "call" && call_leaf(r, code) == Some("Table")
+                    });
                     if !is_table {
                         return Some(false);
                     }
@@ -376,7 +377,7 @@ fn core_table_bindings(scope: Node, name: &[u8], code: &[u8]) -> Option<bool> {
 /// variable that may hold one, is raw SQL text (`order_by(sort)`,
 /// `where(cond)`), so it is not one.
 fn is_column_expression(node: Node, code: &[u8]) -> bool {
-    match node.kind() {
+    match node.fkind() {
         "attribute" | "identifier" => is_column_reference(node, code),
         "integer" | "float" | "true" | "false" | "none" => true,
         "comparison_operator" => has_no_raw_sql_call(node, code),
@@ -403,8 +404,8 @@ fn is_column_expression(node: Node, code: &[u8]) -> bool {
             !is_mod
                 && operands.iter().any(|c| is_column_expression(*c, code))
                 && operands.iter().all(|c| {
-                    c.kind() != "string"
-                        && c.kind() != "concatenated_string"
+                    c.fkind() != "string"
+                        && c.fkind() != "concatenated_string"
                         && has_no_raw_sql_call(*c, code)
                 })
         }
@@ -417,7 +418,7 @@ fn is_column_expression(node: Node, code: &[u8]) -> bool {
             }
             let on_column = node
                 .child_by_field_name("function")
-                .is_some_and(|f| f.kind() == "attribute");
+                .is_some_and(|f| f.fkind() == "attribute");
             if on_column && VALUE_METHODS.contains(&leaf) {
                 return has_no_raw_sql_call(node, code);
             }
@@ -427,7 +428,7 @@ fn is_column_expression(node: Node, code: &[u8]) -> bool {
             let func = node.child_by_field_name("function");
             let is_expression_call = COLUMN_EXPRESSION_CALLS.contains(&leaf)
                 || func.is_some_and(|f| {
-                    f.kind() == "attribute"
+                    f.fkind() == "attribute"
                         && f.child_by_field_name("object")
                             .is_some_and(|o| &code[o.byte_range()] == b"func")
                 });
@@ -442,7 +443,7 @@ fn call_args_are_column_expressions(call: Node, code: &[u8]) -> bool {
         return false;
     };
     let mut cursor = args.walk();
-    args.named_children(&mut cursor).all(|a| match a.kind() {
+    args.named_children(&mut cursor).all(|a| match a.fkind() {
         "comment" => true,
         // `filter_by(name=name)`, `values(x=value)`: the value is bound.
         "keyword_argument" => has_no_raw_sql_call(a, code),
@@ -456,7 +457,7 @@ fn call_args_are_column_expressions(call: Node, code: &[u8]) -> bool {
 /// such a statement, or, with `variable_receiver`, a plain variable and one of
 /// [`VARIABLE_STATEMENT_METHODS`].
 fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
-    if call.kind() != "call" {
+    if call.fkind() != "call" {
         return false;
     }
     let Some(leaf) = call_leaf(call, code) else {
@@ -465,7 +466,7 @@ fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
     let Some(func) = call.child_by_field_name("function") else {
         return false;
     };
-    let rooted = match func.kind() {
+    let rooted = match func.fkind() {
         // `from sqlalchemy import select`; a bare `delete(..)` or `update(..)`
         // from anywhere else is an ordinary function.
         "identifier" => {
@@ -484,7 +485,7 @@ fn is_statement_call(call: Node, code: &[u8], variable_receiver: bool) -> bool {
                     Ok("sa" | "sqlalchemy" | "sql")
                 )
             } else if STATEMENT_METHODS.contains(&leaf) {
-                match object.kind() {
+                match object.fkind() {
                     "call" => is_statement_call(object, code, variable_receiver),
                     "identifier" => {
                         variable_receiver
@@ -518,7 +519,7 @@ fn clause_args_are_bound(call: Node, code: &[u8]) -> bool {
 fn enclosing_scope(node: Node) -> Node {
     let mut cur = node;
     while let Some(parent) = cur.parent() {
-        if parent.kind() == "function_definition" {
+        if parent.fkind() == "function_definition" {
             return parent;
         }
         cur = parent;
@@ -546,12 +547,12 @@ fn variable_holds_bound_statement(ident: Node, code: &[u8]) -> bool {
         for c in n.named_children(&mut cursor) {
             stack.push(c);
         }
-        match n.kind() {
+        match n.fkind() {
             "assignment" => {
                 let Some(left) = n.child_by_field_name("left") else {
                     continue;
                 };
-                if left.kind() == "identifier" && &code[left.byte_range()] == name {
+                if left.fkind() == "identifier" && &code[left.byte_range()] == name {
                     let Some(right) = n.child_by_field_name("right") else {
                         return false;
                     };
@@ -601,7 +602,7 @@ fn variable_holds_bound_statement(ident: Node, code: &[u8]) -> bool {
 fn chain_continues_variable(call: Node, name: &[u8], code: &[u8]) -> bool {
     let mut cur = call;
     loop {
-        if cur.kind() != "call"
+        if cur.fkind() != "call"
             || !call_leaf(cur, code).is_some_and(|l| VARIABLE_STATEMENT_METHODS.contains(&l))
             || !clause_args_are_bound(cur, code)
         {
@@ -613,7 +614,7 @@ fn chain_continues_variable(call: Node, name: &[u8], code: &[u8]) -> bool {
         else {
             return false;
         };
-        match object.kind() {
+        match object.fkind() {
             "identifier" => return &code[object.byte_range()] == name,
             "call" => cur = object,
             _ => return false,
@@ -623,7 +624,7 @@ fn chain_continues_variable(call: Node, name: &[u8], code: &[u8]) -> bool {
 
 /// True when an identifier equal to `name` occurs anywhere under `node`.
 fn binds_name(node: Node, name: &[u8], code: &[u8]) -> bool {
-    if node.kind() == "identifier" && &code[node.byte_range()] == name {
+    if node.fkind() == "identifier" && &code[node.byte_range()] == name {
         return true;
     }
     let mut cursor = node.walk();
@@ -722,7 +723,7 @@ pub(super) fn safe_shape_sanitizer(
 /// literal default, the same as the result of `int(..)`.
 fn source_value_is_coerced(call: Node, code: &[u8]) -> bool {
     keyword_arg_value(call, "type", code)
-        .filter(|v| v.kind() == "identifier")
+        .filter(|v| v.fkind() == "identifier")
         .and_then(|v| text_of(v, code))
         .is_some_and(|t| matches!(t.as_str(), "int" | "float" | "bool"))
 }
@@ -744,7 +745,7 @@ mod tests {
     fn first_call(tree: &Tree) -> Node<'_> {
         let mut stack = vec![tree.root_node()];
         while let Some(n) = stack.pop() {
-            if n.kind() == "call" {
+            if n.fkind() == "call" {
                 return n;
             }
             let mut c = n.walk();

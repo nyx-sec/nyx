@@ -2,6 +2,7 @@ use super::{
     AstMeta, Cfg, DTO_CLASSES, EdgeKind, NodeInfo, PYTHON_NORETURN_IMPORTS, StmtKind, TaintMeta,
     collect_idents, connect_all, is_anon_fn_name, node_str, text_of,
 };
+use crate::cfg::fast_kind::FastKind;
 use crate::labels::{DataLabel, LangAnalysisRules, classify, param_config};
 use crate::ssa::type_facts::TypeKind;
 use petgraph::graph::NodeIndex;
@@ -25,13 +26,13 @@ fn lookup_dto_class(class_name: &str) -> Option<TypeKind> {
 pub(super) fn c_function_declarator(func_node: Node<'_>) -> Option<Node<'_>> {
     let mut d = func_node.child_by_field_name("declarator")?;
     for _ in 0..16 {
-        match d.kind() {
+        match d.fkind() {
             // The declarator that names the function holds its parameters.  A
             // function returning a function pointer
             // (`void *(*pick(int sel))(void)`) nests another one inside a
             // parenthesized declarator; the inner one is the definition's own.
             "function_declarator" => match d.child_by_field_name("declarator") {
-                Some(inner) if inner.kind() == "parenthesized_declarator" => d = inner,
+                Some(inner) if inner.fkind() == "parenthesized_declarator" => d = inner,
                 _ => return Some(d),
             },
             "pointer_declarator"
@@ -42,7 +43,7 @@ pub(super) fn c_function_declarator(func_node: Node<'_>) -> Option<Node<'_>> {
                 d = d.child_by_field_name("declarator").or_else(|| {
                     let mut c = d.walk();
                     d.named_children(&mut c)
-                        .find(|n| n.kind().ends_with("declarator"))
+                        .find(|n| n.fkind().ends_with("declarator"))
                 })?;
             }
             _ => return None,
@@ -78,7 +79,7 @@ pub(super) fn extract_param_meta<'a>(
     // A FastAPI route binds its plain annotated formals from the request, so
     // the Python classifier needs to know whether it is looking at one.
     let in_fastapi_route = matches!(lang, "python" | "py")
-        && func_node.kind() == "function_definition"
+        && func_node.fkind() == "function_definition"
         && crate::entry_points::python_is_fastapi_route(func_node, code);
     let classify = |param: Node<'a>| {
         if matches!(lang, "python" | "py") {
@@ -101,9 +102,9 @@ pub(super) fn extract_param_meta<'a>(
         // fallback the function appears parameterless to the SSA pipeline,
         // breaking cross-function param_to_sink resolution for any
         // single-arg arrow helper. Motivated by CVE-2025-64430.
-        if func_node.kind() == "arrow_function" {
+        if func_node.fkind() == "arrow_function" {
             if let Some(p) = func_node.child_by_field_name("parameter") {
-                if p.kind() == "identifier" {
+                if p.fkind() == "identifier" {
                     if let Some(name) = text_of(p, code) {
                         out.push((name, None, Vec::new()));
                     }
@@ -122,16 +123,16 @@ pub(super) fn extract_param_meta<'a>(
     // variable, defeating the JS/TS / Java auto-seed distinction between
     // real handler-param formals and bubbled-up captures.  Mirrors the JS/TS
     // arrow shorthand handled above.
-    if func_node.kind() == "lambda_expression" {
-        if params.kind() == "identifier" {
+    if func_node.fkind() == "lambda_expression" {
+        if params.fkind() == "identifier" {
             if let Some(name) = text_of(params, code) {
                 out.push((name, None, Vec::new()));
                 return out;
             }
-        } else if params.kind() == "inferred_parameters" {
+        } else if params.fkind() == "inferred_parameters" {
             let mut cursor = params.walk();
             for child in params.named_children(&mut cursor) {
-                if child.kind() == "identifier" {
+                if child.fkind() == "identifier" {
                     if let Some(name) = text_of(child, code) {
                         out.push((name, None, Vec::new()));
                     }
@@ -145,13 +146,13 @@ pub(super) fn extract_param_meta<'a>(
     let mut cursor = params.walk();
     for child in params.children(&mut cursor) {
         // Self/this parameter (e.g. Rust's `self_parameter`)
-        if cfg.self_param_kinds.contains(&child.kind()) {
+        if cfg.self_param_kinds.contains(&child.fkind()) {
             out.push(("self".into(), None, Vec::new()));
             continue;
         }
 
         // Regular parameter
-        if cfg.param_node_kinds.contains(&child.kind()) {
+        if cfg.param_node_kinds.contains(&child.fkind()) {
             // Try each ident field in order
             let mut found = false;
             for &field in cfg.ident_fields {
@@ -185,14 +186,14 @@ pub(super) fn extract_param_meta<'a>(
             }
             // Fallback: if the param node itself is an identifier (e.g. JS/Python)
             if !found
-                && child.kind() == "identifier"
+                && child.fkind() == "identifier"
                 && let Some(txt) = text_of(child, code)
             {
                 out.push((txt, None, Vec::new()));
                 found = true;
             }
             // Fallback for C/C++: look for nested declarator → identifier
-            if !found && child.kind() == "parameter_declaration" {
+            if !found && child.fkind() == "parameter_declaration" {
                 let mut tmp = Vec::new();
                 collect_idents(child, code, &mut tmp);
                 if let Some(last) = tmp.pop() {
@@ -231,7 +232,7 @@ pub(super) fn extract_param_meta<'a>(
 
         // Bare identifier children, e.g. Rust untyped closure params `|cmd|`
         // where the child is an `identifier` node, not a `parameter` wrapper.
-        if child.kind() == "identifier" {
+        if child.fkind() == "identifier" {
             if let Some(txt) = text_of(child, code) {
                 out.push((txt, None, Vec::new()));
             }
@@ -256,7 +257,7 @@ fn sibling_names_for_destructure(
     if remaining.is_empty() {
         return Vec::new();
     }
-    if !is_destructure_container_kind(pattern.kind(), lang) {
+    if !is_destructure_container_kind(pattern.fkind(), lang) {
         return Vec::new();
     }
     remaining.to_vec()
@@ -313,7 +314,7 @@ pub(super) fn compute_container_and_kind(
     let mut cursor = func_node.parent();
 
     while let Some(parent) = cursor {
-        let pk = parent.kind();
+        let pk = parent.fkind();
 
         // Class / struct / impl / interface / namespace / module containers.
         let container_name_field: Option<&str> = match pk {
@@ -496,7 +497,7 @@ pub(super) fn rust_framework_param_sources<'a>(
     let mut sources = Vec::new();
     let mut cursor = params.walk();
     for child in params.children(&mut cursor) {
-        if cfg.self_param_kinds.contains(&child.kind()) || child.kind() != "parameter" {
+        if cfg.self_param_kinds.contains(&child.fkind()) || child.fkind() != "parameter" {
             continue;
         }
 
@@ -637,7 +638,8 @@ pub(super) fn classify_param_type<'a>(
 /// (`func GenerateMarkdown(model, writer io.Writer)` → `fmt.Fprintf(writer,
 /// ...)`) and the gitea `*bytes.Buffer` / `*os.File` write helpers.
 fn classify_param_type_go<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKind> {
-    if param.kind() != "parameter_declaration" && param.kind() != "variadic_parameter_declaration" {
+    if param.fkind() != "parameter_declaration" && param.fkind() != "variadic_parameter_declaration"
+    {
         return None;
     }
     let type_node = param.child_by_field_name("type")?;
@@ -666,12 +668,12 @@ pub(super) fn go_receiver_alias_frame(
     for list in receiver.into_iter().chain(params) {
         let mut cursor = list.walk();
         for param in list.named_children(&mut cursor) {
-            if param.kind() != "parameter_declaration"
-                && param.kind() != "variadic_parameter_declaration"
+            if param.fkind() != "parameter_declaration"
+                && param.fkind() != "variadic_parameter_declaration"
             {
                 continue;
             }
-            let type_text = if param.kind() == "parameter_declaration" {
+            let type_text = if param.fkind() == "parameter_declaration" {
                 param
                     .child_by_field_name("type")
                     .and_then(|t| text_of(t, code))
@@ -754,12 +756,12 @@ fn go_index_struct_typed_fields(
     let mut index = std::collections::HashMap::new();
     let mut top = root.walk();
     for decl in root.named_children(&mut top) {
-        if decl.kind() != "type_declaration" {
+        if decl.fkind() != "type_declaration" {
             continue;
         }
         let mut specs = decl.walk();
         for spec in decl.named_children(&mut specs) {
-            if spec.kind() != "type_spec" {
+            if spec.fkind() != "type_spec" {
                 continue;
             }
             let (Some(name), Some(ty)) = (
@@ -769,18 +771,18 @@ fn go_index_struct_typed_fields(
             ) else {
                 continue;
             };
-            if ty.kind() != "struct_type" {
+            if ty.fkind() != "struct_type" {
                 continue;
             }
             let mut fields = Vec::new();
             let mut walk = ty.walk();
             for list in ty.named_children(&mut walk) {
-                if list.kind() != "field_declaration_list" {
+                if list.fkind() != "field_declaration_list" {
                     continue;
                 }
                 let mut lw = list.walk();
                 for field in list.named_children(&mut lw) {
-                    if field.kind() != "field_declaration" {
+                    if field.fkind() != "field_declaration" {
                         continue;
                     }
                     let Some(prefix) = field
@@ -864,7 +866,7 @@ fn go_writer_type_to_kind(t: &str) -> Option<TypeKind> {
 /// `@CookieValue`, `@MatrixVariable`.  When an annotation matches, the
 /// parameter's static type is consulted via [`java_type_to_kind`].
 fn classify_param_type_java<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKind> {
-    if param.kind() != "formal_parameter" && param.kind() != "spread_parameter" {
+    if param.fkind() != "formal_parameter" && param.fkind() != "spread_parameter" {
         return None;
     }
     if !has_java_framework_annotation(param, code) {
@@ -907,7 +909,7 @@ fn has_java_framework_annotation(param: Node<'_>, code: &[u8]) -> bool {
 /// formal's `modifiers` child; direct annotation children are read too.
 fn java_annotation_leaves<'a>(param: Node<'_>, code: &'a [u8]) -> SmallVec<[&'a str; 4]> {
     fn push_leaf<'a>(ann: Node<'_>, code: &'a [u8], out: &mut SmallVec<[&'a str; 4]>) {
-        if matches!(ann.kind(), "marker_annotation" | "annotation")
+        if matches!(ann.fkind(), "marker_annotation" | "annotation")
             && let Some(name) = ann
                 .child_by_field_name("name")
                 .and_then(|n| node_str(n, code))
@@ -918,7 +920,7 @@ fn java_annotation_leaves<'a>(param: Node<'_>, code: &'a [u8]) -> SmallVec<[&'a 
     let mut out = SmallVec::new();
     let mut cursor = param.walk();
     for child in param.children(&mut cursor) {
-        if child.kind() == "modifiers" {
+        if child.fkind() == "modifiers" {
             let mut inner = child.walk();
             for ann in child.children(&mut inner) {
                 push_leaf(ann, code, &mut out);
@@ -1055,7 +1057,7 @@ pub(super) fn java_request_bound_flags(
     if let Some(params) = func_node.child_by_field_name(cfg.params_field) {
         let mut cursor = params.walk();
         for child in params.children(&mut cursor) {
-            if cfg.param_node_kinds.contains(&child.kind()) {
+            if cfg.param_node_kinds.contains(&child.fkind()) {
                 flags.push(java_formal_is_request_bound(child, code));
             }
         }
@@ -1210,7 +1212,7 @@ fn inner_ts_type_text<'a>(type_anno: Node<'a>, code: &'a [u8]) -> Option<String>
 fn has_ts_decorator_argument(param: Node<'_>, code: &[u8], wanted: &[&str]) -> bool {
     let mut cur = param.prev_sibling();
     while let Some(node) = cur {
-        if node.kind() == "decorator" {
+        if node.fkind() == "decorator" {
             if let Some(text) = text_of(node, code) {
                 for w in wanted {
                     if text.contains(w) {
@@ -1224,7 +1226,7 @@ fn has_ts_decorator_argument(param: Node<'_>, code: &[u8], wanted: &[&str]) -> b
     }
     let mut cursor = param.walk();
     for child in param.children(&mut cursor) {
-        if child.kind() == "decorator" {
+        if child.fkind() == "decorator" {
             if let Some(text) = text_of(child, code) {
                 for w in wanted {
                     if text.contains(w) {
@@ -1243,7 +1245,7 @@ fn has_ts_decorator_argument(param: Node<'_>, code: &[u8], wanted: &[&str]) -> b
 /// extractor wrapper) are **not** treated as typed extractors, only
 /// framework-wrapped types qualify.
 fn classify_param_type_rust<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeKind> {
-    if param.kind() != "parameter" {
+    if param.fkind() != "parameter" {
         return None;
     }
     let type_node = param.child_by_field_name("type")?;
@@ -1317,13 +1319,13 @@ pub(super) fn rust_receiver_alias_frame(
     let mut frame = Vec::new();
     let mut cursor = params.walk();
     for param in params.named_children(&mut cursor) {
-        if param.kind() != "parameter" {
+        if param.fkind() != "parameter" {
             continue;
         }
         let Some(pattern) = param.child_by_field_name("pattern") else {
             continue;
         };
-        if pattern.kind() != "identifier" {
+        if pattern.fkind() != "identifier" {
             continue;
         }
         let Some(name) = text_of(pattern, code) else {
@@ -1600,7 +1602,7 @@ fn classify_param_type_python<'a>(
 /// Last dotted segment of the callee when `default` is a call
 /// (`Query(None)` and `fastapi.Query(None)` both give `Query`).
 fn python_default_marker(default: Node<'_>, code: &[u8]) -> Option<String> {
-    if default.kind() != "call" {
+    if default.fkind() != "call" {
         return None;
     }
     let callee = text_of(default.child_by_field_name("function")?, code)?;
