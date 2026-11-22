@@ -1,0 +1,23 @@
+{
+  "description": "A this.field written in one method is an instance property, not an implicit global exported through the top-level seed, so the bearer token sent to a fixed host is not reported as data exfiltration.",
+  "tags": [
+    "taint",
+    "two-level",
+    "this-field",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "line_range": [
+        1,
+        17
+      ],
+      "must_not_match": true,
+      "notes": "token goes to a fixed host in an Authorization header"
+    }
+  ]
+}

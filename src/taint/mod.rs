@@ -1716,6 +1716,13 @@ fn analyse_multi_body(
                         continue;
                     };
                     let root = d.as_str().split('.').next().unwrap_or(d.as_str());
+                    // `this.field = ..` writes an instance property of the
+                    // receiver, never a sloppy-mode global; sharing it
+                    // through the top-level seed would hand one class's
+                    // fields to every other body in the file.
+                    if root == "this" {
+                        continue;
+                    }
                     let mut cur = Some(body);
                     let mut declared = false;
                     while let Some(b) = cur {
