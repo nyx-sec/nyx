@@ -31,8 +31,11 @@ pub fn detect_express_routes(
 ) -> Vec<SurfaceNode> {
     let file_rel = rel_file(path, scan_root);
     let mut out = Vec::new();
+    // File-level witness, computed once: validating and scanning the whole
+    // file per member call is quadratic on large bundles.
+    let has_express_witness = std::str::from_utf8(bytes).is_ok_and(|t| t.contains("express"));
     walk_calls(tree.root_node(), &mut |call| {
-        if let Some(node) = match_express_call(call, bytes, &file_rel) {
+        if let Some(node) = match_express_call(call, bytes, &file_rel, has_express_witness) {
             out.push(node);
         }
     });
@@ -49,14 +52,17 @@ fn walk_calls<'tree, F: FnMut(Node<'tree>)>(node: Node<'tree>, visit: &mut F) {
     }
 }
 
-fn match_express_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<SurfaceNode> {
+fn match_express_call(
+    call: Node,
+    bytes: &[u8],
+    file_rel: &str,
+    has_express_witness: bool,
+) -> Option<SurfaceNode> {
     let func = call.child_by_field_name("function")?;
     if func.kind() != "member_expression" {
         return None;
     }
     let object = func.child_by_field_name("object")?;
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    let has_express_witness = file_text.contains("express");
     if !receiver_is_express(object, bytes, has_express_witness) {
         return None;
     }
