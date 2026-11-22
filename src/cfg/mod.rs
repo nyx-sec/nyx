@@ -49,7 +49,8 @@ use helpers::{
     collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
     find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
     first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
+    is_subscript_kind, root_member_receiver, scope_sets_html_content_type, subscript_components,
+    subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -7620,9 +7621,12 @@ fn is_koa_json_body_assignment(
     if !matches!(rhs.kind(), "object" | "array") {
         return false;
     }
+    // With an HTML content type set in the same function, the body is
+    // rendered as markup (an object with a custom `toString` included), so
+    // the sink stays.
     member_expr_text(lhs, code).is_some_and(|t| {
         t.eq_ignore_ascii_case("ctx.body") || t.eq_ignore_ascii_case("ctx.response.body")
-    })
+    }) && !scope_sets_html_content_type(assign, code)
 }
 
 /// Label of an assignment target (`el.innerHTML`, `location.href`,

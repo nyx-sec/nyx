@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 979
+    "corpus_size": 981
   },
   "cases": [
     {
@@ -31129,6 +31129,85 @@
       ],
       "disabled": false,
       "notes": "Express res.json sends application/json, not modelled as an XSS sink"
+    },
+    {
+      "case_id": "js-xss-json-response-html-type-001",
+      "file": "javascript/xss/xss_json_response_html_type.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "tags": [
+        "koa",
+        "express",
+        "json",
+        "content-type"
+      ],
+      "disabled": false,
+      "notes": "res.json and an object ctx.body are rendered as markup when the function sets an HTML content type"
+    },
+    {
+      "case_id": "js-safe-json-response-json-type-001",
+      "file": "javascript/safe/safe_json_response_json_type.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "koa",
+        "express",
+        "json"
+      ],
+      "disabled": false,
+      "notes": "Explicit JSON content type keeps res.json and object ctx.body non-renderable"
     }
   ]
 }
