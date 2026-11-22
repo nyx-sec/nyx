@@ -14,6 +14,7 @@
 
 #![allow(clippy::let_and_return, clippy::unnecessary_map_or)]
 
+use fast_kind::{FastKind, lookup_node};
 use petgraph::algo::dominators::{Dominators, simple_fast};
 use petgraph::prelude::*;
 use tracing::{debug, warn};
@@ -34,6 +35,7 @@ mod blocks;
 mod conditions;
 mod decorators;
 mod dto;
+mod fast_kind;
 mod helpers;
 mod hierarchy;
 mod imports;
@@ -228,7 +230,7 @@ fn walk_functions_for_locals(
     code: &[u8],
     out: &mut HashMap<(usize, String), crate::ssa::type_facts::TypeKind>,
 ) {
-    if lookup(lang, root.kind()) == Kind::Function {
+    if lookup_node(lang, root) == Kind::Function {
         let fn_start = root.start_byte();
         collect_locals_in_fn(root, fn_start, true, lang, lang_enum, code, out);
     }
@@ -251,18 +253,18 @@ fn collect_locals_in_fn(
     // Don't descend into nested function bodies — they own their own
     // scope and get their own (fn_start, var_name) bindings via the
     // outer walk.
-    if !is_root && lookup(lang, node.kind()) == Kind::Function {
+    if !is_root && lookup_node(lang, node) == Kind::Function {
         return;
     }
-    if node.kind() == "local_variable_declaration"
-        || node.kind() == "variable_declarator"
-        || node.kind() == "let_declaration"
-        || node.kind() == "short_var_declaration"
-        || node.kind() == "var_spec"
+    if node.fkind() == "local_variable_declaration"
+        || node.fkind() == "variable_declarator"
+        || node.fkind() == "let_declaration"
+        || node.fkind() == "short_var_declaration"
+        || node.fkind() == "var_spec"
     {
         let mut cursor = node.walk();
         for declarator in node.children(&mut cursor) {
-            if declarator.kind() != "variable_declarator" {
+            if declarator.fkind() != "variable_declarator" {
                 continue;
             }
             let Some(name_node) = declarator.child_by_field_name("name") else {
@@ -296,7 +298,7 @@ fn collect_locals_in_fn(
 }
 
 fn callee_text_for_constructor(node: Node<'_>, lang: &str, code: &[u8]) -> Option<String> {
-    match lookup(lang, node.kind()) {
+    match lookup_node(lang, node) {
         Kind::CallFn => node
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
@@ -325,7 +327,7 @@ fn callee_text_for_constructor(node: Node<'_>, lang: &str, code: &[u8]) -> Optio
 fn enclosing_fn_start(n: Node<'_>, lang: &str) -> Option<usize> {
     let mut cur = n.parent()?;
     loop {
-        if lookup(lang, cur.kind()) == Kind::Function {
+        if lookup_node(lang, cur) == Kind::Function {
             return Some(cur.start_byte());
         }
         cur = cur.parent()?;
@@ -1855,7 +1857,7 @@ fn extract_condition_raw<'a>(
     //    `unless` swaps the True/False edges in the CFG builder (lines
     //    ~5029), so the branch polarity would be inverted — skip it to stay
     //    sound (`unless` with a constant arithmetic guard is negligible).
-    let cond_arith = if ast.kind() == "unless" {
+    let cond_arith = if ast.fkind() == "unless" {
         None
     } else {
         build_cond_arith(cond, lang, code, 0)
@@ -1864,7 +1866,7 @@ fn extract_condition_raw<'a>(
     // 6. Single-variable null / failure test (`if (!f)`, `f == NULL`,
     //    `err != nil`).  Skipped for Ruby `unless` for the same reason as
     //    `cond_arith` above.
-    let null_check = if ast.kind() == "unless" {
+    let null_check = if ast.fkind() == "unless" {
         None
     } else {
         extract_null_check(cond, lang, code)
@@ -1891,12 +1893,12 @@ pub(super) fn detect_negation<'a>(
 ) -> (Node<'a>, bool) {
     // Unwrap parenthesized_expression, JS/Java/PHP wrap if-conditions in parens.
     // This lets us detect negation inside: `if (!expr)` → cond is `(!expr)`.
-    let cond = if cond.kind() == "parenthesized_expression" {
+    let cond = if cond.fkind() == "parenthesized_expression" {
         cond.child_by_field_name("expression")
             .or_else(|| {
                 let mut cursor = cond.walk();
                 cond.children(&mut cursor)
-                    .find(|c| c.kind() != "(" && c.kind() != ")")
+                    .find(|c| c.fkind() != "(" && c.fkind() != ")")
             })
             .unwrap_or(cond)
     } else {
@@ -1910,7 +1912,7 @@ pub(super) fn detect_negation<'a>(
     // True branch is treated as the validated path even though it is the
     // rejection path, leaving downstream sinks unsuppressed.
     let is_negation_wrapper = matches!(
-        cond.kind(),
+        cond.fkind(),
         "unary_expression"
             | "not_operator"
             | "prefix_unary_expression"
@@ -1922,7 +1924,7 @@ pub(super) fn detect_negation<'a>(
         // Check if the first child is a `!` or `not` operator.
         let has_not = cond
             .child(0)
-            .is_some_and(|c| c.kind() == "!" || c.kind() == "not");
+            .is_some_and(|c| c.fkind() == "!" || c.fkind() == "not");
 
         if has_not {
             // Return the operand (inner expression after the `!` / `not`).
@@ -1933,7 +1935,7 @@ pub(super) fn detect_negation<'a>(
                     // Last non-operator child.
                     let mut cursor = cond.walk();
                     cond.children(&mut cursor)
-                        .filter(|c| c.kind() != "!" && c.kind() != "not")
+                        .filter(|c| c.fkind() != "!" && c.fkind() != "not")
                         .last()
                 })
                 .unwrap_or(cond);
@@ -1982,7 +1984,7 @@ fn extract_bin_op(ast: Node, lang: &str) -> Option<BinOp> {
         if child.is_named() {
             continue; // Skip named children (operands)
         }
-        let kind = child.kind();
+        let kind = child.fkind();
         return match kind {
             "+" => Some(BinOp::Add),
             "-" => Some(BinOp::Sub),
@@ -2045,7 +2047,7 @@ fn rmw_bin_op_const(rmw: &RmwAssign, code: &[u8]) -> Option<i64> {
         Some(rhs) => rhs,
     };
     // Go wraps both sides of `x += 1` in a one-element `expression_list`.
-    let rhs = if rhs.kind() == "expression_list" && rhs.named_child_count() == 1 {
+    let rhs = if rhs.fkind() == "expression_list" && rhs.named_child_count() == 1 {
         rhs.named_child(0)?
     } else {
         rhs
@@ -2057,7 +2059,7 @@ fn rmw_bin_op_const(rmw: &RmwAssign, code: &[u8]) -> Option<i64> {
 /// binary radix prefixes and Java/Rust digit separators (`1_000`).  Returns
 /// `None` for floats, non-literals, or values that overflow `i64`.
 fn parse_int_literal(node: Node, code: &[u8]) -> Option<i64> {
-    let kind = node.kind();
+    let kind = node.fkind();
     let is_int = matches!(
         kind,
         "integer"
@@ -2115,7 +2117,7 @@ fn binary_op_token(node: Node) -> Option<BinOp> {
         if child.is_named() {
             continue;
         }
-        return match child.kind() {
+        return match child.fkind() {
             "+" => Some(BinOp::Add),
             "-" => Some(BinOp::Sub),
             "*" => Some(BinOp::Mul),
@@ -2155,7 +2157,7 @@ pub(super) fn build_cond_arith(
     if depth > 64 {
         return None;
     }
-    let kind = node.kind();
+    let kind = node.fkind();
 
     // Unwrap parentheses (transparent to value).
     if matches!(
@@ -2195,7 +2197,7 @@ pub(super) fn build_cond_arith(
         let mut cursor = node.walk();
         let is_neg = node
             .children(&mut cursor)
-            .any(|c| !c.is_named() && c.kind() == "-");
+            .any(|c| !c.is_named() && c.fkind() == "-");
         if is_neg {
             return Some(CondArith::Neg(Box::new(build_cond_arith(
                 operand,
@@ -2229,7 +2231,7 @@ pub(super) fn build_cond_arith(
 /// [`NodeInfo::index_read_key`]).  The kind check comes first so ordinary
 /// nodes pay one string match.
 fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
-    let assign = match ast.kind() {
+    let assign = match ast.fkind() {
         "variable_declarator"
         | "assignment_expression"
         | "assignment"
@@ -2237,12 +2239,12 @@ fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
         | "variable_declaration" => ast,
         "expression_statement" => ast
             .named_child(0)
-            .filter(|c| matches!(c.kind(), "assignment_expression" | "assignment"))?,
+            .filter(|c| matches!(c.fkind(), "assignment_expression" | "assignment"))?,
         _ => return None,
     };
     let mut rhs = assignment_rhs(assign)?;
     while matches!(
-        rhs.kind(),
+        rhs.fkind(),
         "parenthesized_expression" | "non_null_expression" | "as_expression"
     ) {
         rhs = rhs.named_child(0)?;
@@ -2256,12 +2258,12 @@ fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
 fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
     let mut out = Vec::new();
     let mut push_index = |n: Node| {
-        if n.kind() == "index_expression"
+        if n.fkind() == "index_expression"
             && let (Some(op), Some(ix)) = (
                 n.child_by_field_name("operand"),
                 n.child_by_field_name("index"),
             )
-            && op.kind() == "identifier"
+            && op.fkind() == "identifier"
             && let Some(base) = text_of(op, code)
         {
             let mut key_idents = Vec::new();
@@ -2269,10 +2271,10 @@ fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
             out.push(MapStore { base, key_idents });
         }
     };
-    match ast.kind() {
+    match ast.fkind() {
         "assignment_statement" => {
             if let Some(left) = ast.child_by_field_name("left") {
-                if left.kind() == "expression_list" {
+                if left.fkind() == "expression_list" {
                     let mut c = left.walk();
                     for l in left.named_children(&mut c) {
                         push_index(l);
@@ -2290,7 +2292,7 @@ fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
         _ => {}
     }
     // `m := map[K]V{k: v}` / `m = map[K]V{k: v}` / `var m = map[K]V{k: v}`.
-    let (names, values) = match ast.kind() {
+    let (names, values) = match ast.fkind() {
         "short_var_declaration" | "assignment_statement" => (
             ast.child_by_field_name("left"),
             ast.child_by_field_name("right"),
@@ -2303,28 +2305,28 @@ fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
     };
     if let (Some(names), Some(values)) = (names, values)
         && let Some(base) = {
-            let first = if names.kind() == "expression_list" {
+            let first = if names.fkind() == "expression_list" {
                 names.named_child(0)
             } else {
                 Some(names)
             };
             first
-                .filter(|n| n.kind() == "identifier")
+                .filter(|n| n.fkind() == "identifier")
                 .and_then(|n| text_of(n, code))
         }
     {
-        let lit = if values.kind() == "expression_list" {
+        let lit = if values.fkind() == "expression_list" {
             values.named_child(0)
         } else {
             Some(values)
         };
-        if let Some(lit) = lit.filter(|l| l.kind() == "composite_literal") {
+        if let Some(lit) = lit.filter(|l| l.fkind() == "composite_literal") {
             let mut stack = vec![lit];
             while let Some(n) = stack.pop() {
-                if n.kind() == "func_literal" {
+                if n.fkind() == "func_literal" {
                     continue;
                 }
-                if n.kind() == "keyed_element"
+                if n.fkind() == "keyed_element"
                     && let Some(key) = n.named_child(0)
                 {
                     let mut key_idents = Vec::new();
@@ -2383,37 +2385,37 @@ fn go_base_use_is_benign(id: Node, code: &[u8]) -> bool {
             .child_by_field_name("left")
             .is_some_and(|l| l.id() == child.id())
     };
-    match p.kind() {
+    match p.fkind() {
         "index_expression" => {
             if p.child_by_field_name("operand").map(|o| o.id()) != Some(id.id()) {
                 return false;
             }
             // A target list `a[0], b = ...` wraps the element in an expression_list.
             let mut anc = p;
-            if let Some(list) = p.parent().filter(|l| l.kind() == "expression_list") {
+            if let Some(list) = p.parent().filter(|l| l.fkind() == "expression_list") {
                 anc = list;
             }
             match anc.parent() {
-                Some(g) if g.kind() == "assignment_statement" => !is_left(g, anc),
-                Some(g) if g.kind() == "inc_dec_statement" => false,
+                Some(g) if g.fkind() == "assignment_statement" => !is_left(g, anc),
+                Some(g) if g.fkind() == "inc_dec_statement" => false,
                 // `&parts[0]` hands out a pointer to the element.
-                Some(g) if g.kind() == "unary_expression" => {
-                    g.child(0).is_some_and(|op| op.kind() != "&")
+                Some(g) if g.fkind() == "unary_expression" => {
+                    g.child(0).is_some_and(|op| op.fkind() != "&")
                 }
                 _ => true,
             }
         }
         "argument_list" => p
             .parent()
-            .filter(|c| c.kind() == "call_expression")
+            .filter(|c| c.fkind() == "call_expression")
             .and_then(|c| c.child_by_field_name("function"))
-            .filter(|f| f.kind() == "identifier")
+            .filter(|f| f.fkind() == "identifier")
             .and_then(|f| text_of(f, code))
             .is_some_and(|f| matches!(f.as_str(), "len" | "cap")),
         "short_var_declaration" | "assignment_statement" => is_left(p, id),
         "expression_list" => p.parent().is_some_and(|g| {
             matches!(
-                g.kind(),
+                g.fkind(),
                 "short_var_declaration" | "assignment_statement" | "range_clause"
             ) && is_left(g, p)
         }),
@@ -2454,7 +2456,7 @@ fn mark_unstable_elem_bases(bodies: &mut [BodyCfg], root: Node, code: &[u8]) {
             let mut outer = None;
             loop {
                 if matches!(
-                    n.kind(),
+                    n.fkind(),
                     "function_declaration" | "method_declaration" | "func_literal"
                 ) {
                     outer = Some(n);
@@ -2474,7 +2476,7 @@ fn mark_unstable_elem_bases(bodies: &mut [BodyCfg], root: Node, code: &[u8]) {
                 .or_insert_with(|| {
                     let mut stack = vec![func];
                     while let Some(n) = stack.pop() {
-                        if n.kind() == "identifier"
+                        if n.fkind() == "identifier"
                             && text_of(n, code).as_deref() == Some(base.as_str())
                             && !go_base_use_is_benign(n, code)
                         {
@@ -2519,7 +2521,7 @@ fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
         return Vec::new();
     }
     let start = if matches!(
-        root.kind(),
+        root.fkind(),
         "assignment_statement" | "short_var_declaration"
     ) {
         match root.child_by_field_name("right") {
@@ -2533,7 +2535,7 @@ fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
     let mut bare: Vec<String> = Vec::new();
     let mut stack = vec![start];
     while let Some(n) = stack.pop() {
-        match n.kind() {
+        match n.fkind() {
             "func_literal" => continue,
             "identifier" => {
                 if let Some(t) = text_of(n, code) {
@@ -2545,8 +2547,8 @@ fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
                 if let (Some(op), Some(ix)) = (
                     n.child_by_field_name("operand"),
                     n.child_by_field_name("index"),
-                ) && op.kind() == "identifier"
-                    && ix.kind() == "int_literal"
+                ) && op.fkind() == "identifier"
+                    && ix.fkind() == "int_literal"
                     && let (Some(b), Some(i)) = (text_of(op, code), text_of(ix, code))
                     && let Some(name) = const_index_name(&b, &i)
                 {
@@ -2579,7 +2581,7 @@ fn go_elem_read_scope<'a>(ast: Node<'a>, is_if: bool) -> Option<Node<'a>> {
         return helpers::find_condition_subtree(ast, "go");
     }
     matches!(
-        ast.kind(),
+        ast.fkind(),
         "short_var_declaration"
             | "assignment_statement"
             | "var_declaration"
@@ -2596,7 +2598,7 @@ fn go_elem_read_scope<'a>(ast: Node<'a>, is_if: bool) -> Option<Node<'a>> {
 }
 
 fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
-    match ast.kind() {
+    match ast.fkind() {
         // Go `x = ...` is an `assignment_statement` whose value sits on the
         // `right` expression list.
         "variable_declarator" | "assignment_expression" | "assignment" | "assignment_statement" => {
@@ -2620,7 +2622,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
             // Walk direct children for the first variable_declarator with a value.
             let mut w = ast.walk();
             ast.named_children(&mut w)
-                .find(|c| c.kind() == "variable_declarator")
+                .find(|c| c.fkind() == "variable_declarator")
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("right"))
@@ -2630,7 +2632,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
                     // the `var_spec` / `const_spec` child.
                     let mut w = ast.walk();
                     ast.named_children(&mut w)
-                        .find(|c| matches!(c.kind(), "var_spec" | "const_spec"))
+                        .find(|c| matches!(c.fkind(), "var_spec" | "const_spec"))
                         .and_then(|spec| spec.child_by_field_name("value"))
                 })
                 .or_else(|| {
@@ -2648,7 +2650,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         "expression_statement" => {
             // expression_statement wraps an assignment_expression
             let mut w = ast.walk();
-            ast.named_children(&mut w).find_map(|c| match c.kind() {
+            ast.named_children(&mut w).find_map(|c| match c.fkind() {
                 "assignment_expression" | "assignment" => c
                     .child_by_field_name("right")
                     .or_else(|| c.child_by_field_name("value")),
@@ -2665,7 +2667,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
 fn go_literal_plus_operand<'a>(scope: Node<'a>, code: &[u8]) -> Option<(String, Node<'a>)> {
     fn unwrap<'t>(mut n: Node<'t>) -> Node<'t> {
         for _ in 0..4 {
-            match n.kind() {
+            match n.fkind() {
                 "parenthesized_expression" => match n.named_child(0) {
                     Some(c) => n = c,
                     None => return n,
@@ -2680,29 +2682,30 @@ fn go_literal_plus_operand<'a>(scope: Node<'a>, code: &[u8]) -> Option<(String, 
         n
     }
     if !matches!(
-        scope.kind(),
+        scope.fkind(),
         "assignment_statement" | "short_var_declaration"
     ) {
         return None;
     }
     let rhs = unwrap(assignment_rhs(scope)?);
-    if rhs.kind() != "binary_expression" || rhs.child_by_field_name("operator")?.kind() != "+" {
+    if rhs.fkind() != "binary_expression" || rhs.child_by_field_name("operator")?.fkind() != "+" {
         return None;
     }
     let left = unwrap(rhs.child_by_field_name("left")?);
     if !matches!(
-        left.kind(),
+        left.fkind(),
         "interpreted_string_literal" | "raw_string_literal"
     ) {
         return None;
     }
     let text = text_of(left, code)?;
     let inner = text.get(1..text.len().checked_sub(1)?)?;
-    if inner.is_empty() || inner.contains('\\') && left.kind() == "interpreted_string_literal" {
+    if inner.is_empty() || inner.contains('\\') && left.fkind() == "interpreted_string_literal" {
         return None;
     }
     let operand = unwrap(rhs.child_by_field_name("right")?);
-    matches!(operand.kind(), "identifier" | "call_expression").then(|| (inner.to_string(), operand))
+    matches!(operand.fkind(), "identifier" | "call_expression")
+        .then(|| (inner.to_string(), operand))
 }
 
 /// Extract a constant leading string prefix from an assignment-like node's
@@ -2755,7 +2758,7 @@ fn url_operand_nodes<'t>(
     // Covers `axios.get(\`https://host/…${x}\`)` shape where the template
     // literal is inline at the sink.
     if matches!(
-        ast.kind(),
+        ast.fkind(),
         "call_expression"
             | "call"
             | "new_expression"
@@ -2777,7 +2780,7 @@ fn url_operand_nodes<'t>(
                 && args_node.named_child_count() == 2
                 && args_node
                     .named_child(0)
-                    .is_some_and(|status| is_numeric_literal_kind(status.kind()));
+                    .is_some_and(|status| is_numeric_literal_kind(status.fkind()));
             let url_node = args_node.named_child(if status_first { 1 } else { url_arg as u32 });
             out.extend(url_node.map(|n| (n, true)));
         }
@@ -2834,7 +2837,7 @@ fn lead_ident_of_operand(
     }
     let mut cur = node;
     for _ in 0..8 {
-        match cur.kind() {
+        match cur.fkind() {
             "parenthesized_expression" | "argument" => cur = cur.named_child(0)?,
             "expression_list" if cur.named_child_count() == 1 => cur = cur.named_child(0)?,
             "as_expression" | "type_assertion" | "satisfies_expression" | "non_null_expression" => {
@@ -2853,12 +2856,12 @@ fn lead_ident_of_operand(
             _ => break,
         }
     }
-    let kind = cur.kind();
+    let kind = cur.fkind();
     if matches!(kind, "binary_expression" | "binary_operator" | "binary") {
         let left = cur.named_child(0)?;
         let mut w = cur.walk();
         let op = cur.children(&mut w).find(|c| !c.is_named())?;
-        return match op.kind() {
+        return match op.fkind() {
             "+" | "." => lead_ident_of_operand(left, lang, code, true, false, depth + 1),
             _ => None,
         };
@@ -2878,21 +2881,21 @@ fn string_leading_ident(node: Node, lang: &str, code: &[u8]) -> Option<(String, 
     let mut w = node.walk();
     let mut children = node
         .named_children(&mut w)
-        .filter(|c| c.kind() != "string_start");
+        .filter(|c| c.fkind() != "string_start");
     let first = children.next()?;
-    if !matches!(first.kind(), "template_substitution" | "interpolation") {
+    if !matches!(first.fkind(), "template_substitution" | "interpolation") {
         return None;
     }
     if first.named_child_count() != 1 {
         return None;
     }
     let inner = first.named_child(0)?;
-    if !is_identifier_kind(inner.kind(), lang) {
+    if !is_identifier_kind(inner.fkind(), lang) {
         return None;
     }
     let tail = children
         .next()
-        .filter(|c| is_string_content_kind(c.kind()) && c.kind() != "escape_sequence")
+        .filter(|c| is_string_content_kind(c.fkind()) && c.fkind() != "escape_sequence")
         .and_then(|c| text_of(c, code))
         .unwrap_or_default();
     Some((text_of(inner, code)?, tail))
@@ -2949,7 +2952,7 @@ fn prefix_of_operand(
     // await/yield, PHP `argument`, a single-element Go expression list).
     let mut cur = node;
     for _ in 0..8 {
-        match cur.kind() {
+        match cur.fkind() {
             "parenthesized_expression" | "argument" => {
                 cur = cur.named_child(0)?;
             }
@@ -2987,7 +2990,7 @@ fn prefix_of_operand(
         }
     }
 
-    let kind = cur.kind();
+    let kind = cur.fkind();
 
     // `"scheme://host/" + x + "/y"` / PHP `"scheme://host/" . $x` /
     // `"scheme://host/%s" % x`.  The prefix is whatever the left-most operand
@@ -2996,7 +2999,7 @@ fn prefix_of_operand(
         let left = cur.named_child(0)?;
         let mut w = cur.walk();
         let op = cur.children(&mut w).find(|c| !c.is_named())?;
-        return match op.kind() {
+        return match op.fkind() {
             "+" | "." => prefix_of_operand(left, lang, code, true, false, depth + 1),
             "%" if matches!(lang, "python" | "ruby") => {
                 literal_format_prefix(left, code, '%', depth + 1)
@@ -3008,7 +3011,7 @@ fn prefix_of_operand(
     // Case 3: Rust `format!("scheme://host/{}", x)` macro invocation.
     // The first positional arg is the format string literal whose
     // leading literal text (up to the first `{`) is the locked prefix.
-    if cur.kind() == "macro_invocation" {
+    if cur.fkind() == "macro_invocation" {
         let macro_name = cur
             .child_by_field_name("macro")
             .and_then(|n| text_of(n, code))
@@ -3024,14 +3027,14 @@ fn prefix_of_operand(
             let mut iw = cur.walk();
             let mut first_string: Option<Node> = None;
             for child in cur.named_children(&mut iw) {
-                if matches!(child.kind(), "string_literal" | "raw_string_literal") {
+                if matches!(child.fkind(), "string_literal" | "raw_string_literal") {
                     first_string = Some(child);
                     break;
                 }
-                if child.kind() == "token_tree" {
+                if child.fkind() == "token_tree" {
                     let mut ttw = child.walk();
                     for inner in child.named_children(&mut ttw) {
-                        if matches!(inner.kind(), "string_literal" | "raw_string_literal") {
+                        if matches!(inner.fkind(), "string_literal" | "raw_string_literal") {
                             first_string = Some(inner);
                             break;
                         }
@@ -3045,7 +3048,7 @@ fn prefix_of_operand(
                 let mut iw = first.walk();
                 let frag_text = first
                     .named_children(&mut iw)
-                    .find(|c| c.kind() == "string_content" || c.kind() == "string_fragment")
+                    .find(|c| c.fkind() == "string_content" || c.fkind() == "string_fragment")
                     .and_then(|n| text_of(n, code));
                 let raw = match frag_text {
                     Some(t) => t,
@@ -3109,7 +3112,7 @@ fn is_string_content_kind(kind: &str) -> bool {
 fn string_is_interpolated(node: Node) -> bool {
     let mut w = node.walk();
     node.named_children(&mut w).any(|c| {
-        let k = c.kind();
+        let k = c.fkind();
         !is_string_content_kind(k) && k != "string_start" && k != "string_end"
     })
 }
@@ -3122,7 +3125,7 @@ fn string_leading_content(node: Node, code: &[u8]) -> Option<String> {
     let mut out = String::new();
     let mut w = node.walk();
     for child in node.named_children(&mut w) {
-        let k = child.kind();
+        let k = child.fkind();
         if k == "string_start" {
             continue;
         }
@@ -3140,13 +3143,13 @@ fn string_leading_content(node: Node, code: &[u8]) -> Option<String> {
 fn literal_format_prefix(node: Node, code: &[u8], directive: char, depth: usize) -> Option<String> {
     let mut cur = node;
     for _ in 0..4 {
-        if matches!(cur.kind(), "parenthesized_expression" | "argument") {
+        if matches!(cur.fkind(), "parenthesized_expression" | "argument") {
             cur = cur.named_child(0)?;
         }
     }
     if depth > PREFIX_WALK_DEPTH
-        || !is_string_like_kind(cur.kind())
-        || cur.kind() == "template_string"
+        || !is_string_like_kind(cur.fkind())
+        || cur.fkind() == "template_string"
     {
         return None;
     }
@@ -3187,7 +3190,7 @@ fn format_call_prefix(call: Node, lang: &str, code: &[u8]) -> Option<String> {
     // the format string is the call's receiver.
     let receiver = call.child_by_field_name("object").or_else(|| {
         call.child_by_field_name("function")
-            .filter(|f| f.kind() == "attribute")
+            .filter(|f| f.fkind() == "attribute")
             .and_then(|f| f.child_by_field_name("object"))
     })?;
     match (lang, head.rsplit('.').next()) {
@@ -3214,13 +3217,13 @@ fn rust_macro_const_first_arg_prefix(macro_node: Node, code: &[u8]) -> Option<St
         let mut w = macro_node.walk();
         macro_node
             .named_children(&mut w)
-            .find(|c| c.kind() == "token_tree")?
+            .find(|c| c.fkind() == "token_tree")?
     };
     let first_ident_name = {
         let mut w = token_tree.walk();
         let mut found: Option<String> = None;
         for child in token_tree.named_children(&mut w) {
-            match child.kind() {
+            match child.fkind() {
                 "string_literal" | "raw_string_literal" => return None,
                 "identifier" => {
                     found = text_of(child, code);
@@ -3237,7 +3240,7 @@ fn rust_macro_const_first_arg_prefix(macro_node: Node, code: &[u8]) -> Option<St
     }
     let mut rw = root.walk();
     for child in root.named_children(&mut rw) {
-        if !matches!(child.kind(), "const_item" | "static_item") {
+        if !matches!(child.fkind(), "const_item" | "static_item") {
             continue;
         }
         let name = child
@@ -3247,7 +3250,7 @@ fn rust_macro_const_first_arg_prefix(macro_node: Node, code: &[u8]) -> Option<St
             continue;
         }
         let value = child.child_by_field_name("value")?;
-        let lit = if matches!(value.kind(), "string_literal" | "raw_string_literal") {
+        let lit = if matches!(value.fkind(), "string_literal" | "raw_string_literal") {
             value
         } else {
             continue;
@@ -3255,7 +3258,7 @@ fn rust_macro_const_first_arg_prefix(macro_node: Node, code: &[u8]) -> Option<St
         let mut iw = lit.walk();
         let frag_text = lit
             .named_children(&mut iw)
-            .find(|c| c.kind() == "string_content" || c.kind() == "string_fragment")
+            .find(|c| c.fkind() == "string_content" || c.fkind() == "string_fragment")
             .and_then(|n| text_of(n, code));
         let raw = match frag_text {
             Some(t) => t,
@@ -3299,7 +3302,7 @@ fn extract_bin_op_const(ast: Node, lang: &str, code: &[u8]) -> Option<i64> {
     let right = bin_expr.named_child(1)?;
 
     fn try_parse_number(n: Node, code: &[u8]) -> Option<i64> {
-        let kind = n.kind();
+        let kind = n.fkind();
         if kind == "number"
             || kind == "integer"
             || kind == "integer_literal"
@@ -3361,7 +3364,7 @@ pub(super) fn detect_eq_with_const(ast: Node, lang: &str) -> bool {
 /// boolean operators? Parentheses, `!`/`not`, and `&&`/`||`/`and`/`or` are
 /// transparent; every leaf must be a direct equality-with-constant.
 fn is_boolean_eq_const_tree(node: Node, lang: &str) -> bool {
-    match node.kind() {
+    match node.fkind() {
         "parenthesized_expression" => node
             .named_child(0)
             .is_some_and(|c| is_boolean_eq_const_tree(c, lang)),
@@ -3371,7 +3374,7 @@ fn is_boolean_eq_const_tree(node: Node, lang: &str) -> bool {
             let mut w = node.walk();
             let mut op_is_not = false;
             for child in node.children(&mut w) {
-                if !child.is_named() && matches!(child.kind(), "!" | "not") {
+                if !child.is_named() && matches!(child.fkind(), "!" | "not") {
                     op_is_not = true;
                     break;
                 }
@@ -3390,7 +3393,7 @@ fn is_boolean_eq_const_tree(node: Node, lang: &str) -> bool {
                 && r.is_some_and(|n| is_boolean_eq_const_tree(n, lang))
         }
         _ => {
-            if !is_binary_expr_kind(node.kind(), lang) {
+            if !is_binary_expr_kind(node.fkind(), lang) {
                 return false;
             }
             let op = binary_operator_token(node);
@@ -3409,8 +3412,8 @@ fn is_boolean_eq_const_tree(node: Node, lang: &str) -> bool {
                     let Some(right) = node.named_child(1) else {
                         return false;
                     };
-                    let left_lit = is_equality_literal_kind(left.kind());
-                    let right_lit = is_equality_literal_kind(right.kind());
+                    let left_lit = is_equality_literal_kind(left.fkind());
+                    let right_lit = is_equality_literal_kind(right.fkind());
                     // Exactly one side literal. Both-literal is constant-fold
                     // territory; neither-literal is a generic identity check
                     // whose operands may both be tainted.
@@ -3427,7 +3430,7 @@ fn binary_operator_token(node: Node) -> Option<String> {
     let mut w = node.walk();
     for child in node.children(&mut w) {
         if !child.is_named() {
-            return Some(child.kind().to_string());
+            return Some(child.fkind().to_string());
         }
     }
     None
@@ -3484,7 +3487,7 @@ fn assignment_rhs_or_self(ast: Node) -> Node {
         .or_else(|| {
             let mut cursor = ast.walk();
             ast.named_children(&mut cursor)
-                .find(|c| matches!(c.kind(), "variable_declarator" | "init_declarator"))
+                .find(|c| matches!(c.fkind(), "variable_declarator" | "init_declarator"))
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("initializer"))
@@ -3499,7 +3502,7 @@ fn assignment_rhs_or_self(ast: Node) -> Node {
             // Django ORM type-fact tagging.
             let mut cursor = ast.walk();
             ast.named_children(&mut cursor)
-                .find(|c| matches!(c.kind(), "assignment"))
+                .find(|c| matches!(c.fkind(), "assignment"))
                 .and_then(|a| a.child_by_field_name("right"))
         })
         .unwrap_or(ast)
@@ -3513,7 +3516,7 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
         let mut cursor = ast.walk();
         let Some(inner) = ast
             .named_children(&mut cursor)
-            .find(|c| c.kind() == "assignment_expression")
+            .find(|c| c.fkind() == "assignment_expression")
             .and_then(|a| a.child_by_field_name("right"))
         else {
             return RhsShape::Whole;
@@ -3521,17 +3524,17 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
         rhs = inner;
     }
     let v = strip_parens_and_casts(rhs);
-    if v.kind() == "identifier" && unwrap_parens(rhs).kind() == "cast_expression" {
+    if v.fkind() == "identifier" && unwrap_parens(rhs).fkind() == "cast_expression" {
         return RhsShape::CastView;
     }
-    match v.kind() {
+    match v.fkind() {
         "initializer_list" | "compound_literal_expression" => RhsShape::Aggregate,
         "binary_expression" | "unary_expression" | "sizeof_expression" | "update_expression" => {
             RhsShape::SubObject
         }
         "pointer_expression" => {
             if v.child_by_field_name("operator")
-                .is_some_and(|op| op.kind() == "&")
+                .is_some_and(|op| op.fkind() == "&")
             {
                 RhsShape::SubObject
             } else {
@@ -3544,7 +3547,7 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
             let copies = ["consequence", "alternative"].iter().any(|f| {
                 v.child_by_field_name(f).is_some_and(|n| {
                     matches!(
-                        strip_parens_and_casts(n).kind(),
+                        strip_parens_and_casts(n).fkind(),
                         "identifier" | "this" | "conditional_expression"
                     )
                 })
@@ -3563,7 +3566,7 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
 /// still copy the handle.
 fn strip_parens_and_casts(mut v: Node) -> Node {
     v = unwrap_parens(v);
-    while v.kind() == "cast_expression" {
+    while v.fkind() == "cast_expression" {
         let Some(inner) = v.child_by_field_name("value") else {
             break;
         };
@@ -3573,7 +3576,7 @@ fn strip_parens_and_casts(mut v: Node) -> Node {
 }
 
 fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
-    match node.kind() {
+    match node.fkind() {
         // JS / TS / Java / C / C++ / Go (selector) / Rust (field).
         "member_expression"
         | "member_access_expression"
@@ -3602,10 +3605,10 @@ fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
 /// PHP `$x = (int) $y;`, `$x = ($a - 1) * $b;`: the assigned value is a
 /// number. `+` is left out (array union), as is `.` (concatenation).
 fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
-    let assign = match ast.kind() {
+    let assign = match ast.fkind() {
         "assignment_expression" => ast,
         "expression_statement" => match ast.named_child(0) {
-            Some(c) if c.kind() == "assignment_expression" => c,
+            Some(c) if c.fkind() == "assignment_expression" => c,
             _ => return false,
         },
         _ => return false,
@@ -3614,20 +3617,20 @@ fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
     // update of its base, so it must keep the taint flowing as before.
     if assign
         .child_by_field_name("left")
-        .is_none_or(|l| l.kind() != "variable_name")
+        .is_none_or(|l| l.fkind() != "variable_name")
     {
         return false;
     }
     let Some(mut rhs) = assign.child_by_field_name("right") else {
         return false;
     };
-    while rhs.kind() == "parenthesized_expression" {
+    while rhs.fkind() == "parenthesized_expression" {
         match rhs.named_child(0) {
             Some(inner) => rhs = inner,
             None => return false,
         }
     }
-    match rhs.kind() {
+    match rhs.fkind() {
         "cast_expression" => rhs
             .child_by_field_name("type")
             .and_then(|t| text_of(t, code))
@@ -3639,7 +3642,7 @@ fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
             }),
         "binary_expression" => rhs
             .child_by_field_name("operator")
-            .is_some_and(|op| matches!(op.kind(), "-" | "*" | "/" | "%" | "**")),
+            .is_some_and(|op| matches!(op.fkind(), "-" | "*" | "/" | "%" | "**")),
         _ => false,
     }
 }
@@ -3654,7 +3657,7 @@ fn detect_numeric_length_access(ast: Node, _lang: &str, code: &[u8]) -> bool {
         .or_else(|| {
             let mut cursor = ast.walk();
             ast.named_children(&mut cursor)
-                .find(|c| matches!(c.kind(), "variable_declarator" | "init_declarator"))
+                .find(|c| matches!(c.fkind(), "variable_declarator" | "init_declarator"))
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("initializer"))
@@ -3665,7 +3668,7 @@ fn detect_numeric_length_access(ast: Node, _lang: &str, code: &[u8]) -> bool {
 }
 
 fn is_numeric_length_access_expr(node: Node, code: &[u8]) -> bool {
-    match node.kind() {
+    match node.fkind() {
         "member_expression"
         | "attribute"
         | "selector_expression"
@@ -3748,7 +3751,7 @@ fn is_equality_literal_kind(kind: &str) -> bool {
 /// Returns `None` if there are zero or multiple binary expressions
 /// (ambiguous). Only descends one level into assignment/expression wrappers.
 fn find_single_binary_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
-    let ast_kind = ast.kind();
+    let ast_kind = ast.fkind();
 
     // Check if ast itself is a binary expression
     if is_binary_expr_kind(ast_kind, lang) {
@@ -3759,8 +3762,8 @@ fn find_single_binary_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
             // mean the operator is for a compound expression like `a + b * c`)
             let left = ast.named_child(0);
             let right = ast.named_child(1);
-            let left_is_bin = left.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
-            let right_is_bin = right.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
+            let left_is_bin = left.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
+            let right_is_bin = right.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
             if !left_is_bin && !right_is_bin {
                 return Some(ast);
             }
@@ -3782,7 +3785,7 @@ fn find_single_binary_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
         let mut found: Option<Node<'a>> = None;
         let mut cursor = ast.walk();
         for child in ast.named_children(&mut cursor) {
-            if is_binary_expr_kind(child.kind(), lang) {
+            if is_binary_expr_kind(child.fkind(), lang) {
                 if found.is_some() {
                     return None; // Multiple binary expressions → ambiguous
                 }
@@ -3790,26 +3793,26 @@ fn find_single_binary_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
                 if child.named_child_count() == 2 {
                     let l = child.named_child(0);
                     let r = child.named_child(1);
-                    let l_bin = l.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
-                    let r_bin = r.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
+                    let l_bin = l.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
+                    let r_bin = r.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
                     if !l_bin && !r_bin {
                         found = Some(child);
                     }
                 }
-            } else if wrapper_kinds.contains(&child.kind()) {
+            } else if wrapper_kinds.contains(&child.fkind()) {
                 // Recurse one more level into nested wrappers (e.g.,
                 // variable_declaration → variable_declarator → binary_expression)
                 let mut inner_cursor = child.walk();
                 for grandchild in child.named_children(&mut inner_cursor) {
-                    if is_binary_expr_kind(grandchild.kind(), lang) {
+                    if is_binary_expr_kind(grandchild.fkind(), lang) {
                         if found.is_some() {
                             return None;
                         }
                         if grandchild.named_child_count() == 2 {
                             let l = grandchild.named_child(0);
                             let r = grandchild.named_child(1);
-                            let l_bin = l.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
-                            let r_bin = r.is_some_and(|n| is_binary_expr_kind(n.kind(), lang));
+                            let l_bin = l.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
+                            let r_bin = r.is_some_and(|n| is_binary_expr_kind(n.fkind(), lang));
                             if !l_bin && !r_bin {
                                 found = Some(grandchild);
                             }
@@ -3848,7 +3851,7 @@ fn is_binary_expr_kind(kind: &str, lang: &str) -> bool {
 /// use their full text.
 fn iterable_label_text(iter: Node, code: &[u8]) -> Option<String> {
     if matches!(
-        iter.kind(),
+        iter.fkind(),
         "subscript_expression"
             | "subscript"
             | "index_expression"
@@ -3970,7 +3973,7 @@ pub(super) fn push_node<'a>(
     };
 
     // Primary guess (varies by AST kind)
-    let mut text = match lookup(lang, ast.kind()) {
+    let mut text = match lookup_node(lang, ast) {
         // plain `foo(bar)` style call
         Kind::CallFn => ast
             .child_by_field_name("function")
@@ -3990,7 +3993,7 @@ pub(super) fn push_node<'a>(
                 // return the function's full source slice, which matches no
                 // summary key.
                 let unwrapped = unwrap_parens(n);
-                if lookup(lang, unwrapped.kind()) == Kind::Function {
+                if lookup_node(lang, unwrapped) == Kind::Function {
                     Some(anon_fn_name(unwrapped.start_byte()))
                 } else {
                     call_fn_callee_text(n, lang, code)
@@ -4049,9 +4052,9 @@ pub(super) fn push_node<'a>(
     // "int") and delete_expression extracts the full expression text.
     // Guarded to C++ only so JS/TS `new_expression` is unaffected.
     if lang == "cpp" {
-        if ast.kind() == "new_expression" {
+        if ast.fkind() == "new_expression" {
             text = "new".to_string();
-        } else if ast.kind() == "delete_expression" {
+        } else if ast.fkind() == "delete_expression" {
             text = "delete".to_string();
         }
     }
@@ -4060,7 +4063,7 @@ pub(super) fn push_node<'a>(
     // `function`/`method` field so the CallFn text extraction above yields
     // "".  Stamp a synthetic callee name so the Sink(SHELL_ESCAPE) rule in
     // labels/ruby.rs fires.
-    if lang == "ruby" && ast.kind() == "subshell" {
+    if lang == "ruby" && ast.fkind() == "subshell" {
         text = "subshell".to_string();
     }
 
@@ -4081,7 +4084,7 @@ pub(super) fn push_node<'a>(
     // are uniform across all three forms, and narrowing would create
     // an arbitrary distinction the source rules would have to mirror.
     if matches!(lang, "javascript" | "typescript" | "tsx")
-        && ast.kind() == "for_in_statement"
+        && ast.fkind() == "for_in_statement"
         && let Some(right) = ast.child_by_field_name("right")
         && let Some(iter_text) = text_of(right, code)
     {
@@ -4095,7 +4098,7 @@ pub(super) fn push_node<'a>(
     // text so a `Source` matcher on `request.json` lights up when the
     // loop iterates an awaitable request body.
     if lang == "python"
-        && ast.kind() == "for_statement"
+        && ast.fkind() == "for_statement"
         && let Some(right) = ast.child_by_field_name("right")
         && let Some(iter_text) = text_of(right, code)
     {
@@ -4112,7 +4115,7 @@ pub(super) fn push_node<'a>(
     // arm (via the `name`/`value` mapping), so the Source-labeled loop node
     // taints the binding directly.
     if lang == "java"
-        && ast.kind() == "enhanced_for_statement"
+        && ast.fkind() == "enhanced_for_statement"
         && let Some(value) = ast.child_by_field_name("value")
         && let Some(iter_text) = iterable_label_text(value, code)
     {
@@ -4124,10 +4127,10 @@ pub(super) fn push_node<'a>(
     // (only `body` is a named field).  Classify against the iterable text so
     // a superglobal/source iterable (`$_GET[..]`, `$_POST[..]`) taints the
     // loop binding, matching the JS/Python/Java rewrites.
-    if lang == "php" && ast.kind() == "foreach_statement" {
+    if lang == "php" && ast.fkind() == "foreach_statement" {
         let mut cursor = ast.walk();
         let kids: Vec<Node> = ast.children(&mut cursor).collect();
-        if let Some(as_pos) = kids.iter().position(|c| c.kind() == "as")
+        if let Some(as_pos) = kids.iter().position(|c| c.fkind() == "as")
             && let Some(iter_node) = kids[..as_pos].iter().rev().find(|c| c.is_named()).copied()
             && let Some(iter_text) = iterable_label_text(iter_node, code)
         {
@@ -4140,7 +4143,7 @@ pub(super) fn push_node<'a>(
     // form is a method call with a block and is handled by the call/block
     // machinery, not here.)
     if lang == "ruby"
-        && ast.kind() == "for"
+        && ast.fkind() == "for"
         && let Some(value) = ast.child_by_field_name("value")
         && let Some(iter_text) = iterable_label_text(value, code)
     {
@@ -4157,7 +4160,7 @@ pub(super) fn push_node<'a>(
     let mut inner_text_span: Option<(usize, usize)> = None;
     let mut php_test_in_output = false;
     if matches!(
-        lookup(lang, ast.kind()),
+        lookup_node(lang, ast),
         Kind::CallWrapper | Kind::Assignment | Kind::Return
     ) {
         // `echo isset($a) ? $a : ''`: `isset` / `empty` only test a value,
@@ -4180,7 +4183,7 @@ pub(super) fn push_node<'a>(
             // child, so name the construct explicitly.
             text = construct.keyword.to_string();
             inner_text_span = Some(construct.keyword_span);
-        } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
+        } else if matches!(lookup_node(lang, ast), Kind::CallWrapper) {
             // Fallback for language-construct "calls" (e.g. PHP `echo_statement`,
             // `print` expression):  the first child is a keyword leaf (e.g. "echo")
             // that acts as a callee but is not a function_call_expression.
@@ -4222,7 +4225,7 @@ pub(super) fn push_node<'a>(
     if lang == "java" && labels.iter().any(|l| matches!(l, DataLabel::Source(_))) {
         let source_call = match inner_text_span {
             Some((start, end)) => ast.descendant_for_byte_range(start, end).filter(|c| {
-                c.start_byte() == start && c.end_byte() == end && c.kind() == "method_invocation"
+                c.start_byte() == start && c.end_byte() == end && c.fkind() == "method_invocation"
             }),
             None => find_call_node(ast, lang),
         };
@@ -4238,11 +4241,11 @@ pub(super) fn push_node<'a>(
     // would be.
     if labels.is_empty()
         && ((matches!(lang, "javascript" | "typescript" | "tsx")
-            && ast.kind() == "for_in_statement")
-            || (lang == "python" && ast.kind() == "for_statement"))
+            && ast.fkind() == "for_in_statement")
+            || (lang == "python" && ast.fkind() == "for_statement"))
         && let Some(right) = ast.child_by_field_name("right")
         && matches!(
-            right.kind(),
+            right.fkind(),
             "member_expression" | "subscript_expression" | "attribute" | "subscript"
         )
         && let Some(src @ DataLabel::Source(_)) = first_member_label(right, lang, code, extra)
@@ -4349,7 +4352,7 @@ pub(super) fn push_node<'a>(
     //
     // Statement-level calls in languages without a separate
     // `expression_statement` wrapper (Ruby, where `body_statement` directly
-    // contains the call AST node) reach `push_node` with `ast.kind() ==
+    // contains the call AST node) reach `push_node` with `ast.fkind() ==
     // "call"` (`Kind::CallMethod`) rather than `Kind::CallWrapper`.  Without
     // including the call kinds in the gate, an unclassified outer wrapper
     // around a sink (e.g. `YAML.safe_load(File.read(filename))` or
@@ -4386,7 +4389,7 @@ pub(super) fn push_node<'a>(
                     .or_else(|| cn.child_by_field_name("method"))
             })
             .and_then(|fc| {
-                if matches!(fc.kind(), "member_expression" | "attribute") {
+                if matches!(fc.fkind(), "member_expression" | "attribute") {
                     fc.child_by_field_name("property")
                         .or_else(|| fc.child_by_field_name("name"))
                         .and_then(|p| text_of(p, code))
@@ -4420,7 +4423,7 @@ pub(super) fn push_node<'a>(
     // first.  Only the iterable is searched, never the loop body.
     if lang == "go"
         && labels.is_empty()
-        && matches!(lookup(lang, ast.kind()), Kind::For)
+        && matches!(lookup_node(lang, ast), Kind::For)
         && let Some(HeaderExpr::Iterable(iter)) = header
         && let Some((inner_text, label @ DataLabel::Source(_), inner_node)) =
             find_classifiable_inner_call(iter, lang, code, extra)
@@ -4432,7 +4435,7 @@ pub(super) fn push_node<'a>(
     let outer_has_sink_label = labels.iter().any(|l| matches!(l, DataLabel::Sink(_)));
     if !outer_has_sink_label
         && matches!(
-            lookup(lang, ast.kind()),
+            lookup_node(lang, ast),
             Kind::CallWrapper
                 | Kind::Assignment
                 | Kind::Return
@@ -4522,7 +4525,7 @@ pub(super) fn push_node<'a>(
                 if inner_is_sink
                     && matches!(lang, "javascript" | "typescript" | "tsx")
                     && matches!(
-                        lookup(lang, inner_node.kind()),
+                        lookup_node(lang, inner_node),
                         Kind::CallFn | Kind::CallMethod
                     )
                 {
@@ -4591,13 +4594,13 @@ pub(super) fn push_node<'a>(
         && labels.iter().all(|l| matches!(l, DataLabel::Source(_)));
     let unlabelled_before_target_check = labels.is_empty() || rhs_source_only;
     if labels.is_empty() || rhs_source_only {
-        let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        let assign_node = if matches!(lookup_node(lang, ast), Kind::Assignment) {
             Some(ast)
-        } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
+        } else if matches!(lookup_node(lang, ast), Kind::CallWrapper) {
             // Walk children to find a nested assignment_expression
             let mut cursor = ast.walk();
             ast.children(&mut cursor)
-                .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+                .find(|c| matches!(lookup_node(lang, c), Kind::Assignment))
         } else {
             None
         };
@@ -4644,15 +4647,13 @@ pub(super) fn push_node<'a>(
     // never a sink assignment.  A return with a call is already split into a
     // Call node plus a Return node (whose argument sources are pre-emitted),
     // and a returned closure returns the closure, not what its body reads.
-    let is_bare_return = lookup(lang, ast.kind()) == Kind::Return
+    let is_bare_return = lookup_node(lang, ast) == Kind::Return
         && !has_call_descendant(ast, lang)
         && !has_function_descendant(ast, lang);
     if labels.is_empty()
         && (is_bare_return
-            || (matches!(
-                lookup(lang, ast.kind()),
-                Kind::CallWrapper | Kind::Assignment
-            ) && !rhs_is_function_literal(ast, lang)))
+            || (matches!(lookup_node(lang, ast), Kind::CallWrapper | Kind::Assignment)
+                && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
         && (!is_bare_return || matches!(found, DataLabel::Source(_)))
         && !is_koa_json_body_node(ast, lang, code, &found)
@@ -4710,10 +4711,7 @@ pub(super) fn push_node<'a>(
     // check then proves the node constant only when all of them are.
     if hoisted_sink.is_none()
         && matches!(lang, "javascript" | "typescript" | "tsx")
-        && matches!(
-            lookup(lang, ast.kind()),
-            Kind::Assignment | Kind::CallWrapper
-        )
+        && matches!(lookup_node(lang, ast), Kind::Assignment | Kind::CallWrapper)
         && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
         && scope.and_then(|s| find_call_node(s, lang)).is_none()
         && let Some(calls) = nested_member_sink_calls(ast, lang, code, extra)
@@ -4755,9 +4753,9 @@ pub(super) fn push_node<'a>(
     // in the let-condition as a source/sink.  E.g. `if let Ok(cmd) = env::var("CMD")`
     // should recognise `env::var` as a taint source and label this node accordingly.
     if labels.is_empty()
-        && matches!(lookup(lang, ast.kind()), Kind::If | Kind::While)
+        && matches!(lookup_node(lang, ast), Kind::If | Kind::While)
         && let Some(cond) = ast.child_by_field_name("condition")
-        && cond.kind() == "let_condition"
+        && cond.fkind() == "let_condition"
         && let Some(val) = cond.child_by_field_name("value")
     {
         if let Some((ident, ident_span)) = first_call_ident_with_span(val, lang, code)
@@ -4800,7 +4798,7 @@ pub(super) fn push_node<'a>(
         None
     };
     if let Some((_, operand)) = go_concat_operand
-        && operand.kind() == "call_expression"
+        && operand.fkind() == "call_expression"
     {
         call_ast = Some(operand);
     }
@@ -4965,7 +4963,7 @@ pub(super) fn push_node<'a>(
             // so the `name` field alone is the bare method name, which would
             // match an exact-name gate (`=unlink`) meant for the builtin.
             let function_field_text = if lang == "php"
-                && lookup(lang, cn.kind()) == Kind::CallMethod
+                && lookup_node(lang, cn) == Kind::CallMethod
                 && let Some((qualified, _)) = call_node_ident_with_span(cn, lang, code)
             {
                 Some(
@@ -5427,7 +5425,7 @@ pub(super) fn push_node<'a>(
     // classifies this node, existing label rules win.
     if lang == "rust" && !labels.iter().any(|l| matches!(l, DataLabel::Sanitizer(_))) {
         if let Some(cn) = call_ast {
-            if cn.kind() == "call_expression" || cn.kind() == "method_call_expression" {
+            if cn.fkind() == "call_expression" || cn.fkind() == "method_call_expression" {
                 if let Some(caps) = detect_rust_replace_chain_sanitizer(cn, code) {
                     labels.push(DataLabel::Sanitizer(caps));
                 }
@@ -5448,7 +5446,7 @@ pub(super) fn push_node<'a>(
     // `exec.Command(slice[i])`.
     if lang == "go" && !labels.iter().any(|l| matches!(l, DataLabel::Sanitizer(_))) {
         if let Some(cn) = call_ast {
-            if cn.kind() == "call_expression" {
+            if cn.fkind() == "call_expression" {
                 if let Some(caps) = detect_go_replace_call_sanitizer(cn, code) {
                     labels.push(DataLabel::Sanitizer(caps));
                 }
@@ -5525,7 +5523,7 @@ pub(super) fn push_node<'a>(
     // is left untouched to avoid duplicate entries.
     if matches!(lang, "javascript" | "typescript" | "tsx")
         && matches!(
-            lookup(lang, ast.kind()),
+            lookup_node(lang, ast),
             Kind::CallWrapper | Kind::Assignment | Kind::Return
         )
         && !labels
@@ -5860,7 +5858,7 @@ pub(super) fn push_node<'a>(
     // label taken from the assignment target leaves no anchor).
     let nested_calls = if callee.is_some()
         && matches!(
-            lookup(lang, ast.kind()),
+            lookup_node(lang, ast),
             Kind::CallWrapper
                 | Kind::Assignment
                 | Kind::Return
@@ -5869,7 +5867,7 @@ pub(super) fn push_node<'a>(
                 | Kind::CallMethod
         ) {
         let anchor_span = inner_callee_span.or(inner_text_span).or_else(|| {
-            if matches!(lookup(lang, ast.kind()), Kind::CallFn | Kind::CallMethod) {
+            if matches!(lookup_node(lang, ast), Kind::CallFn | Kind::CallMethod) {
                 Some((ast.start_byte(), ast.end_byte()))
             } else {
                 call_ast.map(|c| (c.start_byte(), c.end_byte()))
@@ -5893,8 +5891,8 @@ pub(super) fn push_node<'a>(
     // only ever reach `push_node` from that handler, so widening the guard
     // here cannot affect ordinary block lowering.
     let (condition_text, condition_vars, condition_negated, cond_arith, null_check) =
-        if matches!(lookup(lang, ast.kind()), Kind::If)
-            || matches!(ast.kind(), "elif_clause" | "else_if_clause")
+        if matches!(lookup_node(lang, ast), Kind::If)
+            || matches!(ast.fkind(), "elif_clause" | "else_if_clause")
         {
             extract_condition_raw(ast, lang, code)
         } else {
@@ -6060,12 +6058,12 @@ pub(super) fn push_node<'a>(
     // kind=Call (for the contained getElementById call) yet the actual
     // sink is the assignment to innerHTML.
     if !labels.is_empty() {
-        let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        let assign_node = if matches!(lookup_node(lang, ast), Kind::Assignment) {
             Some(ast)
-        } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
+        } else if matches!(lookup_node(lang, ast), Kind::CallWrapper) {
             let mut cursor = ast.walk();
             ast.children(&mut cursor)
-                .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+                .find(|c| matches!(lookup_node(lang, c), Kind::Assignment))
         } else {
             None
         };
@@ -6093,7 +6091,7 @@ pub(super) fn push_node<'a>(
     //    branch the structured `receiver` stays `None` and type-qualified
     //    resolution loses its anchor.
     let receiver = if let Some(cn) = call_ast {
-        match lookup(lang, cn.kind()) {
+        match lookup_node(lang, cn) {
             Kind::CallMethod => {
                 let recv_node = cn
                     .child_by_field_name("object")
@@ -6102,7 +6100,7 @@ pub(super) fn push_node<'a>(
                     // Rust `method_call_expression` names the receiver "value".
                     .or_else(|| cn.child_by_field_name("value"));
                 if let Some(rn) = recv_node
-                    && matches!(rn.kind(), "identifier" | "variable_name")
+                    && matches!(rn.fkind(), "identifier" | "variable_name")
                     && let Some(recv_text) = text_of(rn, code)
                 {
                     Some(recv_text)
@@ -6134,17 +6132,17 @@ pub(super) fn push_node<'a>(
                 // Pull the receiver from the object/attribute-owner field.
                 let func_child = cn.child_by_field_name("function");
                 let recv_node = match func_child {
-                    Some(fc) if fc.kind() == "member_expression" || fc.kind() == "attribute" => {
+                    Some(fc) if fc.fkind() == "member_expression" || fc.fkind() == "attribute" => {
                         fc.child_by_field_name("object")
                     }
-                    Some(fc) if fc.kind() == "field_expression" => fc.child_by_field_name("value"),
-                    Some(fc) if fc.kind() == "selector_expression" => {
+                    Some(fc) if fc.fkind() == "field_expression" => fc.child_by_field_name("value"),
+                    Some(fc) if fc.fkind() == "selector_expression" => {
                         fc.child_by_field_name("operand")
                     }
                     _ => None,
                 };
                 if let Some(rn) = recv_node {
-                    if matches!(rn.kind(), "identifier" | "variable_name" | "this" | "self") {
+                    if matches!(rn.fkind(), "identifier" | "variable_name" | "this" | "self") {
                         text_of(rn, code)
                     } else {
                         // Complex receiver (nested attribute, chained call, subscript).
@@ -6165,26 +6163,26 @@ pub(super) fn push_node<'a>(
     };
 
     // Extract cast/type-assertion target type from AST node.
-    let cast_target_type = match ast.kind() {
+    let cast_target_type = match ast.fkind() {
         // Java: (Type) expr
         "cast_expression" => ast
             .child_by_field_name("type")
-            .filter(|n| matches!(n.kind(), "type_identifier" | "scoped_type_identifier"))
+            .filter(|n| matches!(n.fkind(), "type_identifier" | "scoped_type_identifier"))
             .and_then(|n| text_of(n, code)),
         // TypeScript: expr as Type
         "as_expression" => ast
             .child_by_field_name("type")
-            .filter(|n| matches!(n.kind(), "type_identifier" | "predefined_type"))
+            .filter(|n| matches!(n.fkind(), "type_identifier" | "predefined_type"))
             .and_then(|n| text_of(n, code)),
         // TypeScript: <Type>expr (angle-bracket syntax)
         "type_assertion" => ast
             .child(0)
-            .filter(|n| matches!(n.kind(), "type_identifier" | "predefined_type"))
+            .filter(|n| matches!(n.fkind(), "type_identifier" | "predefined_type"))
             .and_then(|n| text_of(n, code)),
         // Go: expr.(Type)
         "type_assertion_expression" => ast
             .child_by_field_name("type")
-            .filter(|n| matches!(n.kind(), "type_identifier" | "qualified_type"))
+            .filter(|n| matches!(n.fkind(), "type_identifier" | "qualified_type"))
             .and_then(|n| text_of(n, code)),
         _ => None,
     };
@@ -6203,7 +6201,7 @@ pub(super) fn push_node<'a>(
         && call_ast.is_some_and(|cn| {
             let mut c = cn.walk();
             cn.children(&mut c)
-                .any(|ch| ch.kind() == "do_block" || ch.kind() == "block")
+                .any(|ch| ch.fkind() == "do_block" || ch.fkind() == "block")
         });
 
     // The URL-bearing argument is the sink's lowest payload position
@@ -6275,10 +6273,11 @@ pub(super) fn push_node<'a>(
     //   * JS/TS `new_expression`
     //   * Java/C++ `object_creation_expression`
     //   * PHP `object_creation_expression`
-    let is_constructor = ast.kind() == "new_expression"
-        || ast.kind() == "object_creation_expression"
-        || call_ast
-            .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
+    let is_constructor = ast.fkind() == "new_expression"
+        || ast.fkind() == "object_creation_expression"
+        || call_ast.is_some_and(|cn| {
+            matches!(cn.fkind(), "new_expression" | "object_creation_expression")
+        });
 
     let ctor_owned_args = collect_ctor_owned_args(ast, call_ast, lang, code, is_constructor);
     let new_into_smart_pointer =
@@ -6325,7 +6324,7 @@ pub(super) fn push_node<'a>(
     };
 
     let elem_reads = if lang == "go" {
-        go_elem_read_scope(ast, matches!(lookup(lang, ast.kind()), Kind::If))
+        go_elem_read_scope(ast, matches!(lookup_node(lang, ast), Kind::If))
             .map(|n| go_const_index_reads(n, code))
             .unwrap_or_default()
     } else {
@@ -6337,7 +6336,7 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
     let mut condition_vars = condition_vars;
-    if matches!(lookup(lang, ast.kind()), Kind::If) {
+    if matches!(lookup_node(lang, ast), Kind::If) {
         condition_vars.extend(elem_reads.iter().map(|e| e.to_string()));
     }
     let idx = g.add_node(NodeInfo {
@@ -6431,7 +6430,7 @@ pub(super) fn push_node<'a>(
             None
         },
         rhs_is_function_literal: rhs_is_function_literal(ast, lang),
-        is_await_forward: lookup(lang, ast.kind()) == Kind::AwaitForward,
+        is_await_forward: lookup_node(lang, ast) == Kind::AwaitForward,
         decl_type: extract_decl_type(ast, lang, code),
         numeric_confined_uses,
         format_macro_method_idents,
@@ -6549,7 +6548,7 @@ fn java_getconnection_receiver_is_borrowed(ast: Node, code: &[u8]) -> bool {
 /// (`field_access`) → the accessed field name.  Any more complex receiver
 /// (chained call, array access, …) → `None`.
 fn java_receiver_var_name(obj: Node, code: &[u8]) -> Option<String> {
-    match obj.kind() {
+    match obj.fkind() {
         "identifier" => text_of(obj, code),
         "field_access" => obj
             .child_by_field_name("field")
@@ -6621,16 +6620,16 @@ fn java_type_stream_root(type_text: &str) -> JavaStreamRoot {
 fn java_local_initializer<'a>(from: Node<'a>, var: &str, code: &[u8]) -> Option<Node<'a>> {
     let mut cur = from;
     while let Some(parent) = cur.parent() {
-        match parent.kind() {
+        match parent.fkind() {
             "block" | "constructor_body" => {
                 let mut cursor = parent.walk();
                 for decl in parent.named_children(&mut cursor) {
-                    if decl.kind() != "local_variable_declaration" {
+                    if decl.fkind() != "local_variable_declaration" {
                         continue;
                     }
                     let mut c2 = decl.walk();
                     for d in decl.children(&mut c2) {
-                        if d.kind() == "variable_declarator"
+                        if d.fkind() == "variable_declarator"
                             && d.child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(code).ok())
                                 == Some(var)
@@ -6644,7 +6643,7 @@ fn java_local_initializer<'a>(from: Node<'a>, var: &str, code: &[u8]) -> Option<
                 if let Some(specs) = parent.child_by_field_name("resources") {
                     let mut cursor = specs.walk();
                     for res in specs.named_children(&mut cursor) {
-                        if res.kind() == "resource"
+                        if res.fkind() == "resource"
                             && res
                                 .child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(code).ok())
@@ -6671,7 +6670,7 @@ fn java_stream_root(expr: Node, code: &[u8], depth: u8) -> JavaStreamRoot {
     if depth == 0 {
         return JavaStreamRoot::Other;
     }
-    match expr.kind() {
+    match expr.fkind() {
         "parenthesized_expression" => expr.named_child(0).map_or(JavaStreamRoot::Other, |e| {
             java_stream_root(e, code, depth - 1)
         }),
@@ -6735,7 +6734,7 @@ fn java_stream_root(expr: Node, code: &[u8], depth: u8) -> JavaStreamRoot {
 /// without entering lambdas, nested classes or method declarations.
 fn find_java_invocation_named<'a>(ast: Node<'a>, name: &str, code: &[u8]) -> Vec<Node<'a>> {
     fn walk<'a>(n: Node<'a>, name: &str, code: &[u8], out: &mut Vec<Node<'a>>) {
-        if n.kind() == "method_invocation"
+        if n.fkind() == "method_invocation"
             && n.child_by_field_name("name")
                 .and_then(|m| m.utf8_text(code).ok())
                 == Some(name)
@@ -6745,7 +6744,7 @@ fn find_java_invocation_named<'a>(ast: Node<'a>, name: &str, code: &[u8]) -> Vec
         let mut cursor = n.walk();
         for child in n.children(&mut cursor) {
             if matches!(
-                child.kind(),
+                child.fkind(),
                 "lambda_expression" | "class_body" | "method_declaration"
             ) {
                 continue;
@@ -6775,7 +6774,7 @@ fn java_may_be_class_method_lookup(call: Node, code: &[u8]) -> bool {
     let Some(object) = call.child_by_field_name("object") else {
         return false;
     };
-    match object.kind() {
+    match object.fkind() {
         "this" | "super" => false,
         "identifier" | "field_access" => match java_receiver_declared_type(call, code) {
             Some(ty) => {
@@ -6785,7 +6784,7 @@ fn java_may_be_class_method_lookup(call: Node, code: &[u8]) -> bool {
                     || (leaf.len() <= 2 && leaf.chars().all(|c| c.is_ascii_uppercase()))
             }
             None => {
-                !(object.kind() == "identifier"
+                !(object.fkind() == "identifier"
                     && object.utf8_text(code).is_ok_and(|t| {
                         t.starts_with(|c: char| c.is_ascii_uppercase())
                             && t.chars().any(|c| c.is_ascii_lowercase())
@@ -6836,7 +6835,7 @@ fn java_veto_non_reflective_lookup(
 /// instead of to a generic file read.  A receiver the file does not settle
 /// keeps the label.
 pub(super) fn java_stream_source_is_local(call: Node, code: &[u8]) -> bool {
-    if call.kind() != "method_invocation" {
+    if call.fkind() != "method_invocation" {
         return false;
     }
     let Some(name) = call
@@ -6973,7 +6972,7 @@ fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
     let Some(obj) = call.child_by_field_name("object") else {
         return false;
     };
-    if obj.kind() != "identifier" {
+    if obj.fkind() != "identifier" {
         return false;
     }
     let Some(var) = text_of(obj, code) else {
@@ -6981,12 +6980,12 @@ fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
     };
     let mut cur = call;
     while let Some(parent) = cur.parent() {
-        match parent.kind() {
+        match parent.fkind() {
             "try_with_resources_statement" => {
                 if let Some(specs) = parent.child_by_field_name("resources") {
                     let mut cursor = specs.walk();
                     for res in specs.named_children(&mut cursor) {
-                        if res.kind() == "resource"
+                        if res.fkind() == "resource"
                             && res
                                 .child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(code).ok())
@@ -7002,14 +7001,14 @@ fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
             "block" | "constructor_body" => {
                 let mut cursor = parent.walk();
                 let decl = parent.named_children(&mut cursor).find(|c| {
-                    c.kind() == "local_variable_declaration"
+                    c.fkind() == "local_variable_declaration"
                         && java_decl_defines_var(*c, &var, code)
                 });
                 if let Some(decl) = decl {
                     let mut c2 = decl.walk();
                     let value = decl
                         .named_children(&mut c2)
-                        .filter(|d| d.kind() == "variable_declarator")
+                        .filter(|d| d.fkind() == "variable_declarator")
                         .find(|d| {
                             d.child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(code).ok())
@@ -7037,7 +7036,7 @@ fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
 fn java_ctor_chain_ends_in_file_stream(expr: Node, code: &[u8]) -> bool {
     let mut cur = expr;
     for _ in 0..8 {
-        if cur.kind() != "object_creation_expression" {
+        if cur.fkind() != "object_creation_expression" {
             return false;
         }
         let Some(ty) = cur
@@ -7071,9 +7070,9 @@ fn java_ctor_chain_ends_in_file_stream(expr: Node, code: &[u8]) -> bool {
 fn java_subtree_assigns(scope: Node, var: &str, code: &[u8]) -> bool {
     let mut stack = vec![scope];
     while let Some(n) = stack.pop() {
-        if n.kind() == "assignment_expression"
+        if n.fkind() == "assignment_expression"
             && n.child_by_field_name("left")
-                .is_some_and(|l| l.kind() == "identifier" && l.utf8_text(code).ok() == Some(var))
+                .is_some_and(|l| l.fkind() == "identifier" && l.utf8_text(code).ok() == Some(var))
         {
             return true;
         }
@@ -7090,16 +7089,16 @@ fn java_subtree_assigns(scope: Node, var: &str, code: &[u8]) -> bool {
 /// no variable), a chained or otherwise computed receiver, `var` locals
 /// excepted: those return the literal text `var`.
 pub(crate) fn java_receiver_declared_type(call: Node, code: &[u8]) -> Option<String> {
-    if call.kind() != "method_invocation" {
+    if call.fkind() != "method_invocation" {
         return None;
     }
     let obj = call.child_by_field_name("object")?;
-    match obj.kind() {
+    match obj.fkind() {
         "identifier" => resolve_java_var_declared_type(call, &text_of(obj, code)?, code),
         "field_access"
             if obj
                 .child_by_field_name("object")
-                .is_some_and(|o| o.kind() == "this") =>
+                .is_some_and(|o| o.fkind() == "this") =>
         {
             let field = text_of(obj.child_by_field_name("field")?, code)?;
             resolve_java_field_declared_type(call, &field, code)
@@ -7113,8 +7112,10 @@ pub(crate) fn java_receiver_declared_type(call: Node, code: &[u8]) -> Option<Str
 fn resolve_java_field_declared_type(from: Node, var: &str, code: &[u8]) -> Option<String> {
     let mut cur = from;
     while let Some(parent) = cur.parent() {
-        if matches!(parent.kind(), "class_body" | "interface_body" | "enum_body")
-            && let Some(t) = java_field_declared_type(parent, var, code)
+        if matches!(
+            parent.fkind(),
+            "class_body" | "interface_body" | "enum_body"
+        ) && let Some(t) = java_field_declared_type(parent, var, code)
         {
             return Some(t);
         }
@@ -7127,7 +7128,7 @@ fn resolve_java_field_declared_type(from: Node, var: &str, code: &[u8]) -> Optio
 /// (or equal to) `ast`.  Does not descend into nested method / lambda bodies
 /// (those own their own scope and acquire nodes).  Returns the first match.
 fn find_java_getconnection_invocation<'a>(ast: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
-    if ast.kind() == "method_invocation"
+    if ast.fkind() == "method_invocation"
         && ast
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(code).ok())
@@ -7137,7 +7138,7 @@ fn find_java_getconnection_invocation<'a>(ast: Node<'a>, code: &[u8]) -> Option<
     }
     let mut cursor = ast.walk();
     for child in ast.children(&mut cursor) {
-        if matches!(child.kind(), "method_declaration" | "lambda_expression") {
+        if matches!(child.fkind(), "method_declaration" | "lambda_expression") {
             continue;
         }
         if let Some(found) = find_java_getconnection_invocation(child, code) {
@@ -7154,14 +7155,14 @@ fn find_java_getconnection_invocation<'a>(ast: Node<'a>, code: &[u8]) -> Option<
 fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<String> {
     let mut cur = from;
     while let Some(parent) = cur.parent() {
-        match parent.kind() {
+        match parent.fkind() {
             "method_declaration" | "constructor_declaration" | "lambda_expression" => {
                 if let Some(t) = java_param_declared_type(parent, var, code) {
                     return Some(t);
                 }
                 // An untyped lambda formal (`jdbc -> jdbc.update(..)`) may
                 // shadow a field of the same name; its type is unknown.
-                if parent.kind() == "lambda_expression"
+                if parent.fkind() == "lambda_expression"
                     && java_lambda_binds_untyped(parent, var, code)
                 {
                     return None;
@@ -7183,7 +7184,7 @@ fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<
                 let mut cursor = parent.walk();
                 if let Some(fp) = parent
                     .named_children(&mut cursor)
-                    .find(|c| c.kind() == "catch_formal_parameter")
+                    .find(|c| c.fkind() == "catch_formal_parameter")
                     && fp
                         .child_by_field_name("name")
                         .and_then(|n| n.utf8_text(code).ok())
@@ -7192,7 +7193,7 @@ fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<
                     let mut c2 = fp.walk();
                     return fp
                         .named_children(&mut c2)
-                        .find(|c| c.kind() == "catch_type")
+                        .find(|c| c.fkind() == "catch_type")
                         .and_then(|t| text_of(t, code));
                 }
             }
@@ -7201,7 +7202,7 @@ fn resolve_java_var_declared_type(from: Node, var: &str, code: &[u8]) -> Option<
                 if let Some(specs) = parent.child_by_field_name("resources") {
                     let mut cursor = specs.walk();
                     for res in specs.named_children(&mut cursor) {
-                        if res.kind() == "resource"
+                        if res.fkind() == "resource"
                             && res
                                 .child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(code).ok())
@@ -7237,7 +7238,7 @@ fn java_param_declared_type(method: Node, var: &str, code: &[u8]) -> Option<Stri
     let params = method.child_by_field_name("parameters")?;
     let mut cursor = params.walk();
     for fp in params.named_children(&mut cursor) {
-        if !matches!(fp.kind(), "formal_parameter" | "spread_parameter") {
+        if !matches!(fp.fkind(), "formal_parameter" | "spread_parameter") {
             continue;
         }
         if fp
@@ -7259,13 +7260,13 @@ fn java_lambda_binds_untyped(lambda: Node, var: &str, code: &[u8]) -> bool {
     let Some(params) = lambda.child_by_field_name("parameters") else {
         return false;
     };
-    if params.kind() == "identifier" {
+    if params.fkind() == "identifier" {
         return params.utf8_text(code).ok() == Some(var);
     }
     let mut cursor = params.walk();
     params
         .named_children(&mut cursor)
-        .any(|p| p.kind() == "identifier" && p.utf8_text(code).ok() == Some(var))
+        .any(|p| p.fkind() == "identifier" && p.utf8_text(code).ok() == Some(var))
 }
 
 /// Declared type of `var` among the direct `local_variable_declaration`
@@ -7273,7 +7274,8 @@ fn java_lambda_binds_untyped(lambda: Node, var: &str, code: &[u8]) -> bool {
 fn java_block_local_declared_type(block: Node, var: &str, code: &[u8]) -> Option<String> {
     let mut cursor = block.walk();
     for child in block.named_children(&mut cursor) {
-        if child.kind() == "local_variable_declaration" && java_decl_defines_var(child, var, code) {
+        if child.fkind() == "local_variable_declaration" && java_decl_defines_var(child, var, code)
+        {
             return child
                 .child_by_field_name("type")
                 .and_then(|t| text_of(t, code));
@@ -7287,7 +7289,7 @@ fn java_block_local_declared_type(block: Node, var: &str, code: &[u8]) -> Option
 fn java_field_declared_type(body: Node, var: &str, code: &[u8]) -> Option<String> {
     let mut cursor = body.walk();
     for child in body.named_children(&mut cursor) {
-        if child.kind() == "field_declaration" && java_decl_defines_var(child, var, code) {
+        if child.fkind() == "field_declaration" && java_decl_defines_var(child, var, code) {
             return child
                 .child_by_field_name("type")
                 .and_then(|t| text_of(t, code));
@@ -7301,7 +7303,7 @@ fn java_field_declared_type(body: Node, var: &str, code: &[u8]) -> Option<String
 fn java_decl_defines_var(decl: Node, var: &str, code: &[u8]) -> bool {
     let mut cursor = decl.walk();
     decl.children(&mut cursor).any(|ch| {
-        ch.kind() == "variable_declarator"
+        ch.fkind() == "variable_declarator"
             && ch
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(code).ok())
@@ -7323,13 +7325,13 @@ pub(super) fn connect_all(g: &mut Cfg, froms: &[NodeIndex], to: NodeIndex, kind:
 /// the decode target (`let v: Box<dyn P> = toml::from_str(s)?`, not a tuple or
 /// a wrapper call that merely contains it).
 fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
-    let decl = if ast.kind() == "let_declaration" {
+    let decl = if ast.fkind() == "let_declaration" {
         ast
     } else {
         let mut cursor = ast.walk();
         match ast
             .children(&mut cursor)
-            .find(|c| c.kind() == "let_declaration")
+            .find(|c| c.fkind() == "let_declaration")
         {
             Some(d) => d,
             None => return false,
@@ -7403,12 +7405,12 @@ fn extract_decl_type(
     if lang != "rust" {
         return None;
     }
-    let decl = if ast.kind() == "let_declaration" {
+    let decl = if ast.fkind() == "let_declaration" {
         ast
     } else {
         let mut cursor = ast.walk();
         ast.children(&mut cursor)
-            .find(|c| c.kind() == "let_declaration")?
+            .find(|c| c.fkind() == "let_declaration")?
     };
     let type_node = decl.child_by_field_name("type")?;
     let type_text = text_of(type_node, code)?;
@@ -7431,7 +7433,7 @@ fn extract_decl_type(
 /// A declared type with an initialiser (`var out io.Writer = w`) is not
 /// used: the interface type says nothing about the value it holds.
 fn extract_decl_type_go(ast: Node, code: &[u8]) -> Option<crate::ssa::type_facts::TypeKind> {
-    let ty_text = match ast.kind() {
+    let ty_text = match ast.fkind() {
         // `x := <rhs>` / `x = <rhs>`
         "short_var_declaration" | "assignment_statement" => {
             let right = ast.child_by_field_name("right")?;
@@ -7443,7 +7445,7 @@ fn extract_decl_type_go(ast: Node, code: &[u8]) -> Option<crate::ssa::type_facts
             let mut cursor = ast.walk();
             let specs: Vec<Node> = ast
                 .named_children(&mut cursor)
-                .filter(|c| c.kind() == "var_spec")
+                .filter(|c| c.fkind() == "var_spec")
                 .collect();
             if specs.len() != 1 {
                 return None;
@@ -7480,7 +7482,7 @@ fn go_writer_arg_is_non_response(call: Node, code: &[u8]) -> bool {
     let Some(mut writer) = args.named_children(&mut cursor).next() else {
         return false;
     };
-    if writer.kind() == "unary_expression" {
+    if writer.fkind() == "unary_expression" {
         match writer.child_by_field_name("operand") {
             Some(operand) => writer = operand,
             None => return false,
@@ -7493,7 +7495,7 @@ fn go_writer_arg_is_non_response(call: Node, code: &[u8]) -> bool {
         return true;
     }
     let file_handle = crate::ssa::type_facts::TypeKind::FileHandle.label_prefix();
-    writer.kind() == "identifier"
+    writer.fkind() == "identifier"
         && crate::labels::receiver_alias_prefix(&writer_text) == file_handle
 }
 
@@ -7501,25 +7503,28 @@ fn go_writer_arg_is_non_response(call: Node, code: &[u8]) -> bool {
 /// bare identifiers.  Type assertions (`x.(T)`), channel receives, multi-value
 /// right-hand sides and literal keys return `None`.
 fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLookup> {
-    if !matches!(ast.kind(), "short_var_declaration" | "assignment_statement") {
+    if !matches!(
+        ast.fkind(),
+        "short_var_declaration" | "assignment_statement"
+    ) {
         return None;
     }
     let index = first_go_expr(ast.child_by_field_name("right")?)?;
-    if index.kind() != "index_expression" {
+    if index.fkind() != "index_expression" {
         return None;
     }
     let base = index.child_by_field_name("operand")?;
     let key = index.child_by_field_name("index")?;
-    if base.kind() != "identifier" {
+    if base.fkind() != "identifier" {
         return None;
     }
     // The key is a bare identifier or a constant-index element read
     // (`fields[parts[0]]`), which lowering gives a value named `parts[0]`.
-    let key_text = if key.kind() == "identifier" {
+    let key_text = if key.fkind() == "identifier" {
         text_of(key, code)?
     } else {
         let reads = go_const_index_reads(key, code);
-        match (key.kind(), reads.as_slice()) {
+        match (key.fkind(), reads.as_slice()) {
             ("index_expression", [one]) => one.to_string(),
             _ => return None,
         }
@@ -7527,7 +7532,7 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
     let left = ast.child_by_field_name("left")?;
     let mut cursor = left.walk();
     let targets: Vec<Node> = left.named_children(&mut cursor).collect();
-    if targets.iter().any(|t| t.kind() != "identifier") {
+    if targets.iter().any(|t| t.fkind() != "identifier") {
         return None;
     }
     let named = |n: Node| text_of(n, code).filter(|t| t != "_");
@@ -7550,7 +7555,7 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
 /// multi-value RHS lists (`a, b := f()`), where the binding target's type is
 /// ambiguous.
 fn first_go_expr(n: Node) -> Option<Node> {
-    if n.kind() == "expression_list" {
+    if n.fkind() == "expression_list" {
         let mut cursor = n.walk();
         let exprs: Vec<Node> = n.children(&mut cursor).filter(|c| c.is_named()).collect();
         if exprs.len() == 1 {
@@ -7567,7 +7572,7 @@ fn first_go_expr(n: Node) -> Option<Node> {
 /// `new(T)` → `T`, `&T{}` / `T{}` (composite literals, possibly under a
 /// `&` unary) → `T`.  Returns `None` for any other expression shape.
 fn go_constructor_type_text(expr: Node, code: &[u8]) -> Option<String> {
-    match expr.kind() {
+    match expr.fkind() {
         "call_expression" => {
             let func = expr.child_by_field_name("function")?;
             if text_of(func, code)?.trim() != "new" {
@@ -7598,7 +7603,7 @@ fn go_constructor_type_text(expr: Node, code: &[u8]) -> Option<String> {
 fn nearest_enclosing_call<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
     let mut cur = n.parent()?;
     loop {
-        if matches!(lookup(lang, cur.kind()), Kind::CallFn | Kind::CallMethod) {
+        if matches!(lookup_node(lang, cur), Kind::CallFn | Kind::CallMethod) {
             return Some(cur);
         }
         cur = cur.parent()?;
@@ -7664,7 +7669,7 @@ type ConfinedCounts = std::collections::HashMap<String, (u32, u32)>;
 fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut ConfinedCounts) {
     use crate::ssa::type_facts::{is_int_producing_callee, is_safe_string_producing_callee};
     let lang_enum = crate::symbol::Lang::from_slug(lang);
-    let is_call = |n: Node| matches!(lookup(lang, n.kind()), Kind::CallFn | Kind::CallMethod);
+    let is_call = |n: Node| matches!(lookup_node(lang, n), Kind::CallFn | Kind::CallMethod);
     // Verdict per enclosing call, keyed by `Node::id`.  Ids are unique within
     // one tree; the Rust format-macro path re-parses into a separate tree and
     // recurses with its own map.
@@ -7680,7 +7685,7 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         // method-name tokens (`parse`, `unwrap`) are not miscounted as raw
         // value-uses.
         if lang == "rust"
-            && n.kind() == "macro_invocation"
+            && n.fkind() == "macro_invocation"
             && count_rust_format_macro_confined(n, lang, code, counts)
         {
             continue;
@@ -7692,7 +7697,7 @@ fn count_confined_idents_into(root: Node, lang: &str, code: &[u8], counts: &mut 
         }
         // Variable references across the supported grammars: `identifier`
         // (Rust/Go/Python/JS/TS/Java/Ruby/C/C++) plus PHP `variable_name`.
-        if !matches!(n.kind(), "identifier" | "variable_name") {
+        if !matches!(n.fkind(), "identifier" | "variable_name") {
             continue;
         }
         // Skip bare callee-name identifiers (`parseInt` in `parseInt(x)`):
@@ -7777,7 +7782,7 @@ fn count_rust_format_macro_confined(
             let mut cursor = macro_node.walk();
             match macro_node
                 .children(&mut cursor)
-                .find(|c| c.kind() == "token_tree")
+                .find(|c| c.fkind() == "token_tree")
             {
                 Some(t) => t,
                 None => return false,
@@ -7801,7 +7806,7 @@ fn count_rust_format_macro_confined(
         // Drop the format-template literal segment (`"/data/{}"`): it carries
         // no interpolated value-use and named captures (`{n}`) live in its
         // bytes, not as tokens, so they are deliberately left un-confined.
-        if seg.len() == 1 && matches!(seg[0].kind(), "string_literal" | "raw_string_literal") {
+        if seg.len() == 1 && matches!(seg[0].fkind(), "string_literal" | "raw_string_literal") {
             continue;
         }
         let (Some(first), Some(last)) = (seg.first(), seg.last()) else {
@@ -7842,7 +7847,7 @@ fn split_format_macro_segments(tt: Node) -> Vec<Vec<Node>> {
     let mut cursor = tt.walk();
     for child in tt.children(&mut cursor) {
         if !child.is_named() {
-            match child.kind() {
+            match child.fkind() {
                 "(" | ")" => continue,
                 "<" => angle_depth += 1,
                 ">" => angle_depth = (angle_depth - 1).max(0),
@@ -7866,7 +7871,7 @@ fn split_format_macro_segments(tt: Node) -> Vec<Vec<Node>> {
 fn format_arg_value_node(root: Node) -> Option<Node> {
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
-        if n.kind() == "let_declaration"
+        if n.fkind() == "let_declaration"
             && let Some(v) = n.child_by_field_name("value")
         {
             return Some(v);
@@ -7893,7 +7898,7 @@ fn collect_format_macro_method_idents(ast: Node, code: &[u8]) -> Vec<String> {
         for child in n.children(&mut cursor) {
             stack.push(child);
         }
-        if n.kind() != "macro_invocation" {
+        if n.fkind() != "macro_invocation" {
             continue;
         }
         let Some(name_node) = n.child_by_field_name("macro") else {
@@ -7921,9 +7926,9 @@ fn collect_format_macro_method_idents(ast: Node, code: &[u8]) -> Vec<String> {
             let children: Vec<Node> = m.children(&mut c).collect();
             for (i, ch) in children.iter().enumerate() {
                 inner.push(*ch);
-                if ch.kind() == "identifier"
+                if ch.fkind() == "identifier"
                     && i > 0
-                    && children[i - 1].kind() == "."
+                    && children[i - 1].fkind() == "."
                     && let Some(t) = text_of(*ch, code)
                 {
                     out.push(t);
@@ -7956,7 +7961,7 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
         let mut cursor = ast.walk();
         for c in ast.children(&mut cursor) {
             if matches!(
-                c.kind(),
+                c.fkind(),
                 "variable_declarator" | "init_declarator" | "let_declaration"
             ) {
                 candidate = c
@@ -7965,7 +7970,7 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
                 if candidate.is_some() {
                     break;
                 }
-            } else if matches!(lookup(lang, c.kind()), Kind::Assignment) {
+            } else if matches!(lookup_node(lang, c), Kind::Assignment) {
                 candidate = c.child_by_field_name("right");
                 if candidate.is_some() {
                     break;
@@ -7985,15 +7990,15 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
 
     let Some(rhs) = candidate else { return false };
     let rhs = unwrap_parens(rhs);
-    if matches!(lookup(lang, rhs.kind()), Kind::Function) && rhs.child_count() > 0 {
+    if matches!(lookup_node(lang, rhs), Kind::Function) && rhs.child_count() > 0 {
         return true;
     }
     // Go's `expression_list` wrapping for short_var_declaration's RHS.
-    if rhs.kind() == "expression_list" {
+    if rhs.fkind() == "expression_list" {
         let mut cursor = rhs.walk();
         for c in rhs.named_children(&mut cursor) {
             let c = unwrap_parens(c);
-            if matches!(lookup(lang, c.kind()), Kind::Function) && c.child_count() > 0 {
+            if matches!(lookup_node(lang, c), Kind::Function) && c.child_count() > 0 {
                 return true;
             }
         }
@@ -8087,12 +8092,12 @@ fn try_lower_subscript_write(
     // Locate the assignment node, `ast` may be the assignment itself
     // (Go `assignment_statement`) or a wrapper (`expression_statement`
     // containing JS `assignment_expression` / Python `assignment`).
-    let assign_ast = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+    let assign_ast = if matches!(lookup_node(lang, ast), Kind::Assignment) {
         ast
     } else {
         let mut cursor = ast.walk();
         ast.children(&mut cursor)
-            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))?
+            .find(|c| matches!(lookup_node(lang, c), Kind::Assignment))?
     };
     let lhs = assign_ast.child_by_field_name("left")?;
     if has_call_descendant(assign_ast, lang) {
@@ -8201,10 +8206,10 @@ fn try_lower_spring_redirect_return(
     let expr = ast.named_child(0)?;
     // Strip parentheses.
     let mut cur = expr;
-    while cur.kind() == "parenthesized_expression" {
+    while cur.fkind() == "parenthesized_expression" {
         cur = cur.named_child(0)?;
     }
-    if cur.kind() != "binary_expression" {
+    if cur.fkind() != "binary_expression" {
         return None;
     }
     let op = cur.child_by_field_name("operator")?;
@@ -8219,10 +8224,10 @@ fn try_lower_spring_redirect_return(
     loop {
         let left = leftmost.child_by_field_name("left")?;
         let mut left_inner = left;
-        while left_inner.kind() == "parenthesized_expression" {
+        while left_inner.fkind() == "parenthesized_expression" {
             left_inner = left_inner.named_child(0)?;
         }
-        if left_inner.kind() == "binary_expression" {
+        if left_inner.fkind() == "binary_expression" {
             let op_l = left_inner.child_by_field_name("operator")?;
             if text_of(op_l, code).as_deref() == Some("+") {
                 leftmost = left_inner;
@@ -8231,7 +8236,7 @@ fn try_lower_spring_redirect_return(
         }
         // `left_inner` is the leftmost atom — must be a string literal
         // whose constant value starts with `redirect:`.
-        if !matches!(left_inner.kind(), "string_literal" | "string") {
+        if !matches!(left_inner.fkind(), "string_literal" | "string") {
             return None;
         }
         let lit = text_of(left_inner, code)?;
@@ -8292,12 +8297,12 @@ fn java_declaration_annotations<'a>(decl: Node<'a>, code: &'a [u8]) -> Vec<(&'a 
     let mut out = Vec::new();
     let mut cursor = decl.walk();
     for child in decl.children(&mut cursor) {
-        if child.kind() != "modifiers" {
+        if child.fkind() != "modifiers" {
             continue;
         }
         let mut inner = child.walk();
         for ann in child.children(&mut inner) {
-            if !matches!(ann.kind(), "marker_annotation" | "annotation") {
+            if !matches!(ann.fkind(), "marker_annotation" | "annotation") {
                 continue;
             }
             let Some(name) = ann
@@ -8339,7 +8344,7 @@ fn spring_html_body_handler(ret: Node, code: &[u8]) -> bool {
     let mut cur = ret.parent();
     let method = loop {
         let Some(n) = cur else { return false };
-        match n.kind() {
+        match n.fkind() {
             "method_declaration" => break n,
             // A return inside a lambda or a nested class returns from that
             // body, not from the handler.
@@ -8363,7 +8368,7 @@ fn spring_html_body_handler(ret: Node, code: &[u8]) -> bool {
     let class = method
         .parent()
         .and_then(|b| b.parent())
-        .filter(|c| c.kind() == "class_declaration");
+        .filter(|c| c.fkind() == "class_declaration");
     let class_anns = class
         .map(|c| java_declaration_annotations(c, code))
         .unwrap_or_default();
@@ -8410,7 +8415,7 @@ fn collect_html_return_idents<'a>(
         "repeat",
         "intern",
     ];
-    match n.kind() {
+    match n.fkind() {
         "identifier" => {
             if let Ok(t) = n.utf8_text(code) {
                 out.push(t.to_string());
@@ -8647,7 +8652,8 @@ pub(super) fn try_lower_jsx_dangerous_html(
 fn collect_jsx_dangerous_html_attrs<'a>(root: Node<'a>, code: &[u8], out: &mut Vec<Node<'a>>) {
     let mut stack: Vec<Node<'a>> = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "jsx_attribute" && jsx_attr_name_is(node, "dangerouslySetInnerHTML", code)
+        if node.fkind() == "jsx_attribute"
+            && jsx_attr_name_is(node, "dangerouslySetInnerHTML", code)
         {
             out.push(node);
             // Don't recurse into the attribute's own subtree; nested JSX
@@ -8681,12 +8687,12 @@ fn jsx_text_content_interp_present(root: Node, lang: &str) -> bool {
     while let Some(node) = stack.pop() {
         // Closure boundary: nested function bodies do not flow their JSX
         // result out through this assignment's value.
-        if matches!(lookup(lang, node.kind()), Kind::Function) && node.id() != root.id() {
+        if matches!(lookup_node(lang, node), Kind::Function) && node.id() != root.id() {
             continue;
         }
-        if node.kind() == "jsx_expression"
+        if node.fkind() == "jsx_expression"
             && let Some(parent) = node.parent()
-            && matches!(parent.kind(), "jsx_element" | "jsx_fragment")
+            && matches!(parent.fkind(), "jsx_element" | "jsx_fragment")
         {
             return true;
         }
@@ -8724,15 +8730,15 @@ fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
     // Strip the `{...}` wrapper.  tree-sitter exposes this as
     // `jsx_expression`; defensive against grammar variants by also
     // accepting the inner expression directly.
-    let inner = if value.kind() == "jsx_expression" {
+    let inner = if value.fkind() == "jsx_expression" {
         let mut cur = value.walk();
         value
             .named_children(&mut cur)
-            .find(|c| c.kind() != "comment")?
+            .find(|c| c.fkind() != "comment")?
     } else {
         value
     };
-    let object_kind = inner.kind();
+    let object_kind = inner.fkind();
     if !matches!(
         object_kind,
         "object" | "object_expression" | "object_literal"
@@ -8742,7 +8748,7 @@ fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
     let mut cur = inner.walk();
     for pair in inner.named_children(&mut cur) {
         if !matches!(
-            pair.kind(),
+            pair.fkind(),
             "pair" | "property" | "shorthand_property_identifier"
         ) {
             continue;
@@ -8791,13 +8797,13 @@ fn jsx_value_is_sanitized(
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> bool {
     let mut cur = value_ast;
-    while cur.kind() == "parenthesized_expression" {
+    while cur.fkind() == "parenthesized_expression" {
         let Some(inner) = cur.named_child(0) else {
             return false;
         };
         cur = inner;
     }
-    if !matches!(cur.kind(), "call_expression" | "call") {
+    if !matches!(cur.fkind(), "call_expression" | "call") {
         return false;
     }
     let callee = match cur
@@ -8833,7 +8839,7 @@ fn jsx_value_is_sanitized(
         if let Some(args) = cur.child_by_field_name("arguments") {
             let mut walker = args.walk();
             for arg in args.named_children(&mut walker) {
-                if matches!(arg.kind(), "comment") {
+                if matches!(arg.fkind(), "comment") {
                     continue;
                 }
                 let Some(arg_text) = text_of(arg, code) else {
@@ -8911,7 +8917,7 @@ fn pp_is_dangerous_proto_key(s: &str) -> bool {
 /// for non-literal nodes, template literals containing interpolation,
 /// or anything that doesn't resemble a single-segment string.
 fn pp_string_literal_value(n: Node, code: &[u8]) -> Option<String> {
-    let kind = n.kind();
+    let kind = n.fkind();
     if !matches!(kind, "string" | "string_literal" | "template_string") {
         return None;
     }
@@ -8954,7 +8960,7 @@ fn pp_string_literal_value(n: Node, code: &[u8]) -> Option<String> {
 fn pp_is_guarded_by_proto_check(from: Node, idx_text: &str, code: &[u8]) -> bool {
     let mut cur = from;
     while let Some(parent) = cur.parent() {
-        match parent.kind() {
+        match parent.fkind() {
             "function_declaration"
             | "function"
             | "function_expression"
@@ -8984,7 +8990,7 @@ fn pp_is_guarded_by_proto_check(from: Node, idx_text: &str, code: &[u8]) -> bool
             if sibling.start_byte() >= cur.start_byte() {
                 break;
             }
-            if sibling.kind() != "if_statement" {
+            if sibling.fkind() != "if_statement" {
                 continue;
             }
             if pp_is_reject_pattern(sibling, idx_text, code) {
@@ -9109,7 +9115,7 @@ fn pp_block_terminates(block: Node) -> bool {
     if pp_is_terminator(block) {
         return true;
     }
-    if !matches!(block.kind(), "statement_block" | "block") {
+    if !matches!(block.fkind(), "statement_block" | "block") {
         return false;
     }
     let mut cursor = block.walk();
@@ -9124,7 +9130,7 @@ fn pp_block_terminates(block: Node) -> bool {
 /// break / continue.
 fn pp_is_terminator(n: Node) -> bool {
     matches!(
-        n.kind(),
+        n.fkind(),
         "return_statement" | "throw_statement" | "break_statement" | "continue_statement"
     )
 }
@@ -9141,10 +9147,10 @@ fn pp_split_or_clauses<'a>(expr: Node<'a>) -> Vec<Node<'a>> {
 
 fn pp_collect_or_clauses<'a>(expr: Node<'a>, out: &mut Vec<Node<'a>>) {
     let stripped = pp_unwrap_paren(expr);
-    if matches!(stripped.kind(), "binary_expression") {
+    if matches!(stripped.fkind(), "binary_expression") {
         let op = stripped
             .child_by_field_name("operator")
-            .map(|o| o.kind())
+            .map(|o| o.fkind())
             .unwrap_or("");
         if op == "||" {
             if let Some(l) = stripped.child_by_field_name("left") {
@@ -9161,7 +9167,7 @@ fn pp_collect_or_clauses<'a>(expr: Node<'a>, out: &mut Vec<Node<'a>>) {
 
 fn pp_unwrap_paren(n: Node) -> Node {
     let mut cur = n;
-    while matches!(cur.kind(), "parenthesized_expression") {
+    while matches!(cur.fkind(), "parenthesized_expression") {
         match cur.named_child(0) {
             Some(inner) => cur = inner,
             None => break,
@@ -9175,12 +9181,12 @@ fn pp_unwrap_paren(n: Node) -> Node {
 /// Returns `None` for any other shape.
 fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     let stripped = pp_unwrap_paren(expr);
-    if !matches!(stripped.kind(), "binary_expression") {
+    if !matches!(stripped.fkind(), "binary_expression") {
         return None;
     }
     let op = stripped
         .child_by_field_name("operator")
-        .map(|o| o.kind())
+        .map(|o| o.fkind())
         .unwrap_or("");
     if !matches!(op, "===" | "==") {
         return None;
@@ -9190,12 +9196,15 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     let left = pp_unwrap_paren(left);
     let right = pp_unwrap_paren(right);
     if let (Some(lv), Some(rs)) = (text_of(left, code), pp_string_literal_value(right, code)) {
-        if matches!(left.kind(), "identifier" | "shorthand_property_identifier") {
+        if matches!(left.fkind(), "identifier" | "shorthand_property_identifier") {
             return Some((lv, rs));
         }
     }
     if let (Some(rv), Some(ls)) = (text_of(right, code), pp_string_literal_value(left, code)) {
-        if matches!(right.kind(), "identifier" | "shorthand_property_identifier") {
+        if matches!(
+            right.fkind(),
+            "identifier" | "shorthand_property_identifier"
+        ) {
             return Some((rv, ls));
         }
     }
@@ -9211,12 +9220,12 @@ fn is_koa_json_body_node(ast: Node, lang: &str, code: &[u8], label: &DataLabel) 
     {
         return false;
     }
-    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+    let assign = if matches!(lookup_node(lang, ast), Kind::Assignment) {
         Some(ast)
     } else {
         let mut cursor = ast.walk();
         ast.children(&mut cursor)
-            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+            .find(|c| matches!(lookup_node(lang, c), Kind::Assignment))
     };
     assign
         .and_then(|a| a.child_by_field_name("left").map(|l| (a, l)))
@@ -9236,14 +9245,14 @@ fn is_koa_json_body_assignment(
 ) -> bool {
     if !matches!(lang, "javascript" | "typescript" | "tsx")
         || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
-        || lhs.kind() != "member_expression"
+        || lhs.fkind() != "member_expression"
     {
         return false;
     }
     let Some(rhs) = assign.child_by_field_name("right") else {
         return false;
     };
-    if !matches!(rhs.kind(), "object" | "array") {
+    if !matches!(rhs.fkind(), "object" | "array") {
         return false;
     }
     // With an HTML content type set in the same function, the body is
@@ -9280,7 +9289,7 @@ fn classify_assignment_lhs(
         return Some(l);
     }
     if matches!(
-        lhs.kind(),
+        lhs.fkind(),
         "subscript_expression" | "subscript" | "element_reference"
     ) {
         let obj = lhs
@@ -9325,12 +9334,12 @@ fn pre_emit_sink_assignment_sources(
     if !matches!(lang, "javascript" | "typescript" | "tsx") {
         return (effective_preds, names);
     }
-    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+    let assign = if matches!(lookup_node(lang, ast), Kind::Assignment) {
         Some(ast)
     } else {
         let mut cursor = ast.walk();
         ast.children(&mut cursor)
-            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+            .find(|c| matches!(lookup_node(lang, c), Kind::Assignment))
     };
     let Some(assign) = assign else {
         return (effective_preds, names);
@@ -9393,7 +9402,7 @@ const LOCATION_ORIGIN_PARTS: &[&str] = &["origin", "host", "hostname", "port", "
 fn is_location_origin_plus_pathname(n: Node, code: &[u8]) -> bool {
     let is_location_part = |node: Node, part: &str| {
         let node = unwrap_parens(node);
-        node.kind() == "member_expression"
+        node.fkind() == "member_expression"
             && node
                 .child_by_field_name("property")
                 .and_then(|p| text_of(p, code))
@@ -9429,7 +9438,7 @@ fn collect_rhs_member_sources<'a>(
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
     out: &mut Vec<(Node<'a>, Cap, String)>,
 ) {
-    match n.kind() {
+    match n.fkind() {
         "member_expression" => {
             // `location.origin + location.pathname`: the site's own origin
             // components are not attacker input, and treating the whole
@@ -9627,7 +9636,7 @@ fn pre_emit_arg_source_nodes(
     // bailing: `check_output("ls " + request.args["d"], shell=True)` still
     // binds its positional source.
     for child in &children {
-        let k = child.kind();
+        let k = child.fkind();
         if k == "spread_element"
             || k == "dictionary_splat"
             || k == "list_splat"
@@ -9639,7 +9648,7 @@ fn pre_emit_arg_source_nodes(
     }
     let children: Vec<_> = children
         .into_iter()
-        .filter(|c| !matches!(c.kind(), "keyword_argument" | "named_argument"))
+        .filter(|c| !matches!(c.fkind(), "keyword_argument" | "named_argument"))
         .collect();
 
     let pointer_on = crate::pointer::is_enabled();
@@ -9693,7 +9702,7 @@ fn pre_emit_arg_source_nodes(
         // the array operand resolves to a plain identifier, see
         // `subscript_components` for the bail conditions.
         if pointer_on
-            && is_subscript_kind(child.kind())
+            && is_subscript_kind(child.fkind())
             && let Some((arr_text, idx_text)) = subscript_components(*child, code)
         {
             let synth_name = format!("__nyx_idxget_{}_{}", g.node_count(), pos);
@@ -9772,7 +9781,7 @@ fn pre_emit_arg_source_nodes(
         let mut inner_args: Vec<Node> = Vec::new();
         walk_chain_inner_call_args(call_ast, lang, &mut inner_args);
         for arg in inner_args {
-            let k = arg.kind();
+            let k = arg.fkind();
             // Mirror the splat/keyword bail from the outer-args pass.
             if k == "spread_element"
                 || k == "dictionary_splat"
@@ -9943,7 +9952,7 @@ pub(super) fn build_alternative_chain<'a>(
     let mut exits: Vec<NodeIndex> = Vec::new();
 
     for &alt in alternatives {
-        let is_elif = matches!(alt.kind(), "elif_clause" | "else_if_clause");
+        let is_elif = matches!(alt.fkind(), "elif_clause" | "else_if_clause");
 
         if is_elif {
             // Guard node for the elif condition.  `push_node` with `StmtKind::If`
@@ -10212,7 +10221,7 @@ pub(super) fn emit_call_node<'a>(
 /// (`std::unique_ptr<T> p(...)`, `shared_ptr`, `boost::scoped_ptr`,
 /// `QScopedPointer`, ...).
 fn cpp_decl_is_smart_pointer(ast: Node, code: &[u8]) -> bool {
-    if ast.kind() != "declaration" {
+    if ast.fkind() != "declaration" {
         return false;
     }
     let Some(ty) = ast
@@ -10259,12 +10268,12 @@ fn collect_ctor_owned_args(
         let mut cursor = args.walk();
         for arg in args.named_children(&mut cursor) {
             let mut arg = unwrap_parens(arg);
-            if arg.kind() == "cast_expression"
+            if arg.fkind() == "cast_expression"
                 && let Some(v) = arg.child_by_field_name("value")
             {
                 arg = unwrap_parens(v);
             }
-            match arg.kind() {
+            match arg.fkind() {
                 "identifier" => {
                     if let Some(t) = text_of(arg, code) {
                         out.push(t);
@@ -10282,7 +10291,7 @@ fn collect_ctor_owned_args(
             let ctor = [Some(ast), call_ast]
                 .into_iter()
                 .flatten()
-                .find(|n| n.kind() == "object_creation_expression");
+                .find(|n| n.fkind() == "object_creation_expression");
             if let Some(ctor) = ctor {
                 java_ctor_args(ctor, code, &mut out, 0);
             }
@@ -10290,16 +10299,16 @@ fn collect_ctor_owned_args(
         "cpp" if cpp_decl_is_smart_pointer(ast, code) => {
             let mut cursor = ast.walk();
             for d in ast.children_by_field_name("declarator", &mut cursor) {
-                match d.kind() {
+                match d.fkind() {
                     // `std::unique_ptr<T> p(raw)` / `p{raw}`
                     "init_declarator" => {
                         if let Some(v) = d.child_by_field_name("value")
-                            && matches!(v.kind(), "argument_list" | "initializer_list")
+                            && matches!(v.fkind(), "argument_list" | "initializer_list")
                         {
                             let mut c = v.walk();
                             for a in v.named_children(&mut c) {
                                 let a = unwrap_parens(a);
-                                if a.kind() == "identifier"
+                                if a.fkind() == "identifier"
                                     && let Some(t) = text_of(a, code)
                                 {
                                     out.push(t);
@@ -10314,10 +10323,10 @@ fn collect_ctor_owned_args(
                             let mut c = params.walk();
                             let ps: Vec<Node> = params.named_children(&mut c).collect();
                             if let [p] = ps.as_slice()
-                                && p.kind() == "parameter_declaration"
+                                && p.fkind() == "parameter_declaration"
                                 && p.child_by_field_name("declarator").is_none()
                                 && let Some(ty) = p.child_by_field_name("type")
-                                && ty.kind() == "type_identifier"
+                                && ty.fkind() == "type_identifier"
                                 && let Some(t) = text_of(ty, code)
                             {
                                 out.push(t);
@@ -10338,12 +10347,12 @@ fn collect_ctor_owned_args(
 /// `$a[] = v`, `m[k] = v`.  The defined name is then the pointer or the
 /// container, not a fresh local holding the value.
 fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
-    let assign = if lookup(lang, ast.kind()) == Kind::Assignment {
+    let assign = if lookup_node(lang, ast) == Kind::Assignment {
         Some(ast)
-    } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
+    } else if matches!(lookup_node(lang, ast), Kind::CallWrapper) {
         let mut cursor = ast.walk();
         ast.named_children(&mut cursor)
-            .find(|c| lookup(lang, c.kind()) == Kind::Assignment)
+            .find(|c| lookup_node(lang, c) == Kind::Assignment)
     } else {
         None
     };
@@ -10355,11 +10364,11 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
             && let Some(inner) = a
                 .child_by_field_name("right")
                 .map(unwrap_parens)
-                .filter(|r| lookup(lang, r.kind()) == Kind::Assignment)
+                .filter(|r| lookup_node(lang, r) == Kind::Assignment)
         {
             if let Some(l) = inner.child_by_field_name("left").map(unwrap_parens)
                 && matches!(
-                    l.kind(),
+                    l.fkind(),
                     "field_expression" | "pointer_expression" | "subscript_expression"
                 )
             {
@@ -10373,7 +10382,7 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
     };
     let mut lhs = unwrap_parens(lhs);
     // Go: `left` is an expression_list; only a single target qualifies.
-    if lhs.kind() == "expression_list" {
+    if lhs.fkind() == "expression_list" {
         let mut cursor = lhs.walk();
         let named: Vec<Node> = lhs.named_children(&mut cursor).collect();
         if named.len() != 1 {
@@ -10381,10 +10390,10 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
         }
         lhs = named[0];
     }
-    match lhs.kind() {
+    match lhs.fkind() {
         "pointer_expression" | "unary_expression" => lhs
             .child_by_field_name("operator")
-            .is_some_and(|op| op.kind() == "*"),
+            .is_some_and(|op| op.fkind() == "*"),
         "subscript_expression"
         | "subscript"
         | "index_expression"
@@ -10416,7 +10425,7 @@ fn member_base_is_call(member: Node, lang: &str) -> bool {
         };
         let base = unwrap_parens(base);
         if matches!(
-            lookup(lang, base.kind()),
+            lookup_node(lang, base),
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro
         ) {
             return true;
@@ -10440,20 +10449,20 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut PendingS
         }
     }
     fn push_identifiers(n: Node, code: &[u8], out: &mut PendingStores) {
-        if n.kind() == "identifier" {
+        if n.fkind() == "identifier" {
             push_text(n, code, out);
             return;
         }
         let mut cursor = n.walk();
         for c in n.named_children(&mut cursor) {
-            if c.kind() == "identifier" {
+            if c.fkind() == "identifier" {
                 push_text(c, code, out);
             }
         }
     }
     fn c_declarator_names(mut d: Node, code: &[u8], out: &mut PendingStores) {
         for _ in 0..16 {
-            match d.kind() {
+            match d.fkind() {
                 "identifier" | "field_identifier" => {
                     push_text(d, code, out);
                     return;
@@ -10483,7 +10492,7 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut PendingS
         }
     }
 
-    match (lang, n.kind()) {
+    match (lang, n.fkind()) {
         (
             "c" | "cpp",
             "declaration"
@@ -10495,7 +10504,7 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut PendingS
             // A function-scope `static` outlives every call, like a global.
             let mut cursor = n.walk();
             let is_static = n.children(&mut cursor).any(|c| {
-                c.kind() == "storage_class_specifier"
+                c.fkind() == "storage_class_specifier"
                     && node_str(c, code).is_some_and(|t| t == "static")
             });
             if !is_static {
@@ -10539,7 +10548,7 @@ fn collect_local_decl_names(n: Node, lang: &str, code: &[u8], out: &mut PendingS
         ("java", "inferred_parameters") => push_identifiers(n, code, out),
         ("java", "lambda_expression") => {
             if let Some(p) = n.child_by_field_name("parameters")
-                && p.kind() == "identifier"
+                && p.fkind() == "identifier"
             {
                 push_text(p, code, out);
             }
@@ -10577,7 +10586,7 @@ fn is_js_ts_lang(lang: &str) -> bool {
 /// the program root; nested function and class bodies are not entered.
 fn collect_js_declared_names(root: Node, code: &[u8], is_fn: bool, out: &mut Vec<String>) {
     fn pattern_names(n: Node, code: &[u8], out: &mut Vec<String>) {
-        match n.kind() {
+        match n.fkind() {
             "identifier" | "shorthand_property_identifier_pattern" => {
                 if let Some(t) = node_str(n, code) {
                     out.push(t.to_string());
@@ -10603,7 +10612,7 @@ fn collect_js_declared_names(root: Node, code: &[u8], is_fn: bool, out: &mut Vec
         }
     }
     fn walk(n: Node, code: &[u8], out: &mut Vec<String>) {
-        match n.kind() {
+        match n.fkind() {
             "variable_declarator" => {
                 if let Some(name) = n.child_by_field_name("name") {
                     pattern_names(name, code, out);
@@ -10726,7 +10735,7 @@ fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
 /// Root identifier of a Go operand: `p`, `p.f`, `p[i]`, `(p)`.
 fn go_root_ident<'a>(mut n: Node<'a>, code: &[u8]) -> Option<String> {
     loop {
-        match n.kind() {
+        match n.fkind() {
             "identifier" => return text_of(n, code),
             "selector_expression" | "index_expression" | "parenthesized_expression" => {
                 n = n
@@ -10745,7 +10754,7 @@ fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
     let Some(args) = func.parent() else {
         return false;
     };
-    if !matches!(args.kind(), "arguments" | "argument_list") {
+    if !matches!(args.fkind(), "arguments" | "argument_list") {
         return false;
     }
     let Some(call) = args.parent() else {
@@ -10765,7 +10774,7 @@ fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
         "forEach" | "for_each" => true,
         "map" if text == "map" => call
             .parent()
-            .is_some_and(|p| p.kind() == "expression_statement"),
+            .is_some_and(|p| p.fkind() == "expression_statement"),
         _ => false,
     }
 }
@@ -10802,7 +10811,7 @@ fn collect_go_aliased_names_with(
         in_closure = true;
     } else if kind == kinds.unary_expression {
         if n.child_by_field_name("operator")
-            .is_some_and(|o| o.kind() == "&")
+            .is_some_and(|o| o.fkind() == "&")
             && let Some(operand) = n.child_by_field_name("operand")
             && let Some(name) = go_root_ident(operand, code)
         {
@@ -10915,10 +10924,10 @@ fn mark_aliased_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8]) {
 /// evaluates the whole statement is marked.
 fn mark_implicit_return(g: &mut Cfg, stmt: Node, exits: &[NodeIndex], lang: &str, code: &[u8]) {
     if !matches!(
-        lookup(lang, stmt.kind()),
+        lookup_node(lang, stmt),
         Kind::CallFn | Kind::CallMethod | Kind::CallWrapper | Kind::Other
     ) || matches!(
-        stmt.kind(),
+        stmt.fkind(),
         "assignment" | "operator_assignment" | "return" | "comment"
     ) {
         return;
@@ -10965,7 +10974,7 @@ pub(super) fn build_sub<'a>(
     // one opaque node.
     if matches!(lang, "c" | "cpp")
         && matches!(
-            ast.kind(),
+            ast.fkind(),
             "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
         )
     {
@@ -10988,7 +10997,7 @@ pub(super) fn build_sub<'a>(
             current_body_id,
         );
     }
-    match lookup(lang, ast.kind()) {
+    match lookup_node(lang, ast) {
         //  IF‑/ELSE: two branches that re‑merge afterwards
         Kind::If => {
             // Some grammars (Go `if init; cond {}`, sibling C-style forms)
@@ -11040,7 +11049,7 @@ pub(super) fn build_sub<'a>(
                 && cond_subtree.map_or(false, |c| {
                     let unwrapped = unwrap_parens(c);
                     !matches!(
-                        unwrapped.kind(),
+                        unwrapped.fkind(),
                         "unary_expression"
                             | "not_operator"
                             | "prefix_unary_expression"
@@ -11049,7 +11058,7 @@ pub(super) fn build_sub<'a>(
                     )
                 });
 
-            let is_unless = ast.kind() == "unless";
+            let is_unless = ast.fkind() == "unless";
 
             // Determine true/false exit sets for wiring branches.
             let (true_exits, false_exits) = if has_short_circuit {
@@ -11121,7 +11130,7 @@ pub(super) fn build_sub<'a>(
                     let mut cursor = ast.walk();
                     let blocks: Vec<_> = ast
                         .children(&mut cursor)
-                        .filter(|n| lookup(lang, n.kind()) == Kind::Block)
+                        .filter(|n| lookup_node(lang, n) == Kind::Block)
                         .collect();
                     (blocks.first().copied(), blocks.get(1).copied(), Vec::new())
                 }
@@ -11137,7 +11146,7 @@ pub(super) fn build_sub<'a>(
             let is_flat_elif_chain = alternatives.len() > 1
                 || alternatives
                     .first()
-                    .is_some_and(|a| matches!(a.kind(), "elif_clause" | "else_if_clause"));
+                    .is_some_and(|a| matches!(a.fkind(), "elif_clause" | "else_if_clause"));
 
             // THEN branch
             let then_first_node = NodeIndex::new(g.node_count());
@@ -11264,7 +11273,7 @@ pub(super) fn build_sub<'a>(
                 None => {
                     warn!(
                         "loop without body (error recovery?): kind={} byte={}",
-                        ast.kind(),
+                        ast.fkind(),
                         ast.start_byte()
                     );
                     return vec![header];
@@ -11324,7 +11333,7 @@ pub(super) fn build_sub<'a>(
                 .is_none()
                 .then(|| {
                     let mut c = ast.walk();
-                    ast.children(&mut c).find(|n| n.kind() == "for_clause")
+                    ast.children(&mut c).find(|n| n.fkind() == "for_clause")
                 })
                 .flatten();
             let init_subtree = ast
@@ -11383,7 +11392,7 @@ pub(super) fn build_sub<'a>(
                     let unwrapped = unwrap_parens(c);
                     is_boolean_operator(unwrapped).is_some()
                         && !matches!(
-                            unwrapped.kind(),
+                            unwrapped.fkind(),
                             "unary_expression"
                                 | "not_operator"
                                 | "prefix_unary_expression"
@@ -11406,13 +11415,13 @@ pub(super) fn build_sub<'a>(
             let body = match ast.child_by_field_name("body").or_else(|| {
                 let mut c = ast.walk();
                 ast.children(&mut c)
-                    .find(|n| lookup(lang, n.kind()) == Kind::Block)
+                    .find(|n| lookup_node(lang, n) == Kind::Block)
             }) {
                 Some(b) => b,
                 None => {
                     warn!(
                         "loop without body (error recovery?): kind={} byte={}",
-                        ast.kind(),
+                        ast.fkind(),
                         ast.start_byte()
                     );
                     return vec![header];
@@ -11861,11 +11870,11 @@ pub(super) fn build_sub<'a>(
         //  BLOCK: statements execute sequentially
         Kind::SourceFile | Kind::Block => {
             // Ruby body_statement with rescue/ensure = implicit begin/rescue
-            if lang == "ruby" && ast.kind() == "body_statement" {
+            if lang == "ruby" && ast.fkind() == "body_statement" {
                 let mut check = ast.walk();
                 if ast
                     .children(&mut check)
-                    .any(|c| c.kind() == "rescue" || c.kind() == "ensure")
+                    .any(|c| c.fkind() == "rescue" || c.fkind() == "ensure")
                 {
                     return build_begin_rescue(
                         ast,
@@ -11892,14 +11901,14 @@ pub(super) fn build_sub<'a>(
             // so the resource passes can see `def open_log(p) File.open(p) end`
             // and `f = File.open(p); f` hand the handle to the caller.
             let ruby_tail_stmt = if lang == "ruby"
-                && ast.kind() == "body_statement"
+                && ast.fkind() == "body_statement"
                 && ast
                     .parent()
-                    .is_some_and(|p| matches!(p.kind(), "method" | "singleton_method"))
+                    .is_some_and(|p| matches!(p.fkind(), "method" | "singleton_method"))
             {
                 let mut c = ast.walk();
                 ast.named_children(&mut c)
-                    .filter(|n| n.kind() != "comment")
+                    .filter(|n| n.fkind() != "comment")
                     .last()
                     .map(|n| n.id())
             } else {
@@ -11923,7 +11932,7 @@ pub(super) fn build_sub<'a>(
 
                 // Go `defer`: record node count before recursing so we can
                 // mark the deferred Call node(s) afterward.
-                let is_defer = lang == "go" && child.kind() == "defer_statement";
+                let is_defer = lang == "go" && child.fkind() == "defer_statement";
                 let defer_first_idx = if is_defer { g.node_count() } else { 0 };
 
                 let child_exits = build_sub(
@@ -11959,7 +11968,7 @@ pub(super) fn build_sub<'a>(
                     mark_implicit_return(g, child, &child_exits, lang, code);
                 }
 
-                let is_preproc = child.kind().starts_with("preproc_");
+                let is_preproc = child.fkind().starts_with("preproc_");
                 if !child_exits.is_empty() {
                     last_live_frontier = child_exits.clone();
                 }
@@ -11987,7 +11996,7 @@ pub(super) fn build_sub<'a>(
             // Lambda expressions don't have meaningful names; force the
             // synthetic anon name to avoid C++ lambdas picking up parameter
             // names via "declarator".
-            let fn_name = if ast.kind() == "lambda_expression" {
+            let fn_name = if ast.fkind() == "lambda_expression" {
                 anon_fn_name(ast.start_byte())
             } else {
                 ast.child_by_field_name("name")
@@ -12031,7 +12040,7 @@ pub(super) fn build_sub<'a>(
 
             // ── 1b) Compute identity discriminators ───────────────────────────
             let (fn_container, fn_kind) =
-                compute_container_and_kind(ast, ast.kind(), &fn_name, code);
+                compute_container_and_kind(ast, ast.fkind(), &fn_name, code);
             // Disambiguator: depth-first preorder index of this function node
             // within the file.  Always populated so two same-name, same-
             // container definitions never collide (e.g. duplicate defs in a
@@ -12049,13 +12058,13 @@ pub(super) fn build_sub<'a>(
             let body_ast = match ast.child_by_field_name("body").or_else(|| {
                 let mut c = ast.walk();
                 ast.children(&mut c)
-                    .find(|n| matches!(lookup(lang, n.kind()), Kind::Block | Kind::SourceFile))
+                    .find(|n| matches!(lookup_node(lang, n), Kind::Block | Kind::SourceFile))
             }) {
                 Some(b) => b,
                 None => {
                     warn!(
                         "fn without body (forward decl / abstract / error recovery): kind={} name=’{}’",
-                        ast.kind(),
+                        ast.fkind(),
                         fn_name
                     );
                     // Insert placeholder in parent graph and skip body processing
@@ -12128,7 +12137,7 @@ pub(super) fn build_sub<'a>(
             if matches!(
                 lang,
                 "javascript" | "typescript" | "tsx" | "python" | "rust"
-            ) && lookup(lang, body_ast.kind()) != Kind::Block
+            ) && lookup_node(lang, body_ast) != Kind::Block
                 && !callback_result_is_discarded(ast, code)
             {
                 mark_implicit_return(&mut fn_graph, body_ast, &body_exits, lang, code);
@@ -12394,10 +12403,10 @@ pub(super) fn build_sub<'a>(
             // in place.  Known limit, shared with `if` bodies: SSA is keyed
             // by name, so a `let x` inside the block that shadows an outer
             // `x` also replaces it for the code after the block.
-            let rust_stmt_block = lang == "rust" && ast.kind() == "expression_statement";
+            let rust_stmt_block = lang == "rust" && ast.fkind() == "expression_statement";
             if let Some(inner) = ast.children(&mut cursor).find(|c| {
                 matches!(
-                    lookup(lang, c.kind()),
+                    lookup_node(lang, c),
                     Kind::InfiniteLoop
                         | Kind::While
                         | Kind::For
@@ -12407,7 +12416,7 @@ pub(super) fn build_sub<'a>(
                         | Kind::Break
                         | Kind::Continue
                 ) || (rust_stmt_block
-                    && matches!(c.kind(), "match_expression" | "block" | "unsafe_block"))
+                    && matches!(c.fkind(), "match_expression" | "block" | "unsafe_block"))
             }) {
                 return build_sub(
                     inner,
@@ -12526,7 +12535,7 @@ pub(super) fn build_sub<'a>(
 
             // Python `with_item`: acquisition inside a context manager.
             // Only mark if this is actually an acquisition (Call + defines).
-            if ast.kind() == "with_item"
+            if ast.fkind() == "with_item"
                 && g[node].kind == StmtKind::Call
                 && g[node].taint.defines.is_some()
             {
@@ -12915,7 +12924,7 @@ fn build_preproc_group<'a>(
         )),
         // `#else` is itself the last alternative; every other group can be
         // skipped entirely.
-        None if ast.kind() != "preproc_else" => exits.extend_from_slice(preds),
+        None if ast.fkind() != "preproc_else" => exits.extend_from_slice(preds),
         None => {}
     }
     let mut seen = std::collections::HashSet::new();
@@ -12947,6 +12956,9 @@ pub(crate) fn build_cfg<'a>(
     analysis_rules: Option<&LangAnalysisRules>,
 ) -> FileCfg {
     debug!(target: "cfg", "Building CFG for {:?}", tree.root_node());
+    // Node kinds and their classes for this file's grammar, read by
+    // `fkind()` / `lookup_node()` until the scope drops at the end.
+    let _kind_table = fast_kind::install(&tree.language(), lang);
 
     // Populate the per-file structural DFS-index map before any build_sub
     // call reads from it.  Cleared unconditionally at the end of this
@@ -13320,7 +13332,7 @@ fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str
         for child in n.children(&mut cursor) {
             stack.push(child);
         }
-        if n.child_count() != 0 || !(n.kind().ends_with("identifier") || n.kind() == "constant") {
+        if n.child_count() != 0 || !(n.fkind().ends_with("identifier") || n.fkind() == "constant") {
             continue;
         }
         let Some(text) = text_of(n, code) else {
@@ -13331,7 +13343,7 @@ fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str
         }
         let allowed = n.parent().is_some_and(|p| {
             let field_is = |f: &str| p.child_by_field_name(f).map(|c| c.id()) == Some(n.id());
-            match p.kind() {
+            match p.fkind() {
                 // `const NAMES = [..]`.  An exported declaration is
                 // importable, and another module may mutate it.
                 "variable_declarator" => {
@@ -13339,7 +13351,7 @@ fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str
                         && !p
                             .parent()
                             .and_then(|d| d.parent())
-                            .is_some_and(|e| e.kind() == "export_statement")
+                            .is_some_and(|e| e.fkind() == "export_statement")
                 }
                 // `NAMES = [..]` (Python).  A public module-level list can be
                 // mutated by any importer; only private names and immutable
@@ -13348,7 +13360,7 @@ fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str
                     field_is("left")
                         && (text.starts_with('_')
                             || p.child_by_field_name("right")
-                                .is_some_and(|r| r.kind() == "tuple"))
+                                .is_some_and(|r| r.fkind() == "tuple"))
                 }
                 // `for (const x of NAMES)` / `for x in NAMES:`
                 "for_in_statement" | "for_statement" => field_is("right"),
@@ -13590,7 +13602,7 @@ fn apply_js_sql_template_params(call: Node, code: &[u8], slots: &mut SinkSlots<'
     let Some(args) = call.child_by_field_name("arguments") else {
         return;
     };
-    if args.kind() != "arguments" {
+    if args.fkind() != "arguments" {
         return;
     }
     let arg_nodes: Vec<Node> = {
@@ -13902,10 +13914,10 @@ fn chain_head_call(call_node: Node) -> Node {
     let mut cur = call_node;
     while let Some(next) = cur
         .child_by_field_name("function")
-        .filter(|f| f.kind() == "member_expression")
+        .filter(|f| f.fkind() == "member_expression")
         .and_then(|f| f.child_by_field_name("object"))
         .map(unwrap_parens)
-        .filter(|o| o.kind() == "call_expression")
+        .filter(|o| o.fkind() == "call_expression")
     {
         cur = next;
     }
@@ -13938,7 +13950,7 @@ fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
         if args_field.is_some() && cursor.field_id() == args_field {
             args_depth = Some(depth);
         }
-        if is_aggregate_literal_kind(child.kind()) {
+        if is_aggregate_literal_kind(child.fkind()) {
             aggregate_depth = Some(depth);
         }
     }
@@ -13970,7 +13982,7 @@ pub(super) fn call_arg_nesting_reference(root: Node, span: (usize, usize)) -> Ca
                 CalleeNesting::InArg
             };
         }
-        if is_aggregate_literal_kind(cur.kind()) {
+        if is_aggregate_literal_kind(cur.fkind()) {
             via_aggregate = true;
         }
         cur = parent;
@@ -13995,7 +14007,7 @@ fn runs_unconditionally(root: Node, call: Node) -> bool {
         let mut cursor = parent.walk();
         let short_circuit = parent
             .children(&mut cursor)
-            .any(|c| !c.is_named() && matches!(c.kind(), "&&" | "||" | "and" | "or" | "??" | "?"));
+            .any(|c| !c.is_named() && matches!(c.fkind(), "&&" | "||" | "and" | "or" | "??" | "?"));
         let left_first = parent
             .named_child(0)
             .is_some_and(|first| first.id() == cur.id());
@@ -14242,11 +14254,11 @@ fn peel_rust_result_unwrap<'a>(call: Node<'a>, code: &[u8]) -> Option<Node<'a>> 
     let mut cur = call;
     let mut peeled = false;
     loop {
-        if cur.kind() != "call_expression" {
+        if cur.fkind() != "call_expression" {
             break;
         }
         let function = cur.child_by_field_name("function")?;
-        if function.kind() != "field_expression" {
+        if function.fkind() != "field_expression" {
             break;
         }
         let method = function.child_by_field_name("field")?;
@@ -14255,7 +14267,7 @@ fn peel_rust_result_unwrap<'a>(call: Node<'a>, code: &[u8]) -> Option<Node<'a>> 
             break;
         }
         let recv = function.child_by_field_name("value")?;
-        if recv.kind() != "call_expression" {
+        if recv.fkind() != "call_expression" {
             break;
         }
         cur = recv;

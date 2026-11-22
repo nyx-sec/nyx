@@ -4,7 +4,8 @@ use super::{
     TaintMeta, build_sub, collect_idents, collect_idents_with_paths, connect_all, emit_call_node,
     first_member_label, has_call_descendant, push_node, text_of, unwrap_parens,
 };
-use crate::labels::{DataLabel, Kind, LangAnalysisRules, lookup};
+use crate::cfg::fast_kind::{FastKind, lookup_node};
+use crate::labels::{DataLabel, Kind, LangAnalysisRules};
 use petgraph::graph::NodeIndex;
 use tree_sitter::Node;
 
@@ -36,7 +37,7 @@ fn switch_is_exclusive(lang: &str, cases: &[(Node<'_>, bool)]) -> bool {
     }
     if lang == "java" {
         // Arrow-switch when every case is the arrow `switch_rule` shape.
-        return cases.iter().all(|(c, _)| c.kind() == "switch_rule");
+        return cases.iter().all(|(c, _)| c.fkind() == "switch_rule");
     }
     false
 }
@@ -53,7 +54,7 @@ fn switch_owns_break(lang: &str) -> bool {
 /// `match` is exhaustive, and Go `select` blocks until one case is ready.
 fn switch_is_exhaustive(ast: Node<'_>, lang: &str) -> bool {
     matches!(
-        (lang, ast.kind()),
+        (lang, ast.fkind()),
         ("rust", "match_expression") | ("go", "select_statement")
     )
 }
@@ -76,7 +77,7 @@ fn extract_scrutinee_node<'a>(ast: Node<'a>, lang: &str) -> Option<Node<'a>> {
 /// patterns (wildcards, bindings, OR-patterns, range patterns, type patterns,
 /// guards) and for fall-through-shaped Java cases.
 fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> Option<String> {
-    let kind = case.kind();
+    let kind = case.fkind();
     match (lang, kind) {
         ("rust", "match_arm") => {
             // Reject guarded arms, `match x { y if cond => ... }`; the guard
@@ -95,7 +96,7 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
             // A bare identifier is a binding (or a unit const we cannot tell
             // apart from one), never a literal.
             if !matches!(
-                inner.kind(),
+                inner.fkind(),
                 "string_literal"
                     | "raw_string_literal"
                     | "char_literal"
@@ -129,14 +130,14 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
             // child whose contents are a single case value.
             let mut cursor = case.walk();
             for child in case.children(&mut cursor) {
-                if child.kind() != "switch_label" {
+                if child.fkind() != "switch_label" {
                     continue;
                 }
                 let mut named_values: Vec<Node> = Vec::new();
                 let mut sl_cursor = child.walk();
                 let mut saw_default = false;
                 for sl_child in child.children(&mut sl_cursor) {
-                    let k = sl_child.kind();
+                    let k = sl_child.fkind();
                     if k == "default" || k == "default_label" {
                         saw_default = true;
                         break;
@@ -153,7 +154,7 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
                 }
                 // `case String s ->` is a type pattern, not a value.
                 let value = named_values[0];
-                if value.kind() == "pattern" || value.kind().ends_with("_pattern") {
+                if value.fkind() == "pattern" || value.fkind().ends_with("_pattern") {
                     return None;
                 }
                 return text_of(value, code);
@@ -169,14 +170,14 @@ fn extract_case_literal_text<'a>(case: Node<'a>, lang: &str, code: &'a [u8]) -> 
 /// from the pattern; every other case kind is walked whole (its label nodes
 /// are harmless leaves).
 fn case_body<'a>(case: Node<'a>, lang: &str) -> Node<'a> {
-    let body = match (lang, case.kind()) {
+    let body = match (lang, case.fkind()) {
         ("rust", "match_arm") => case.child_by_field_name("value"),
         ("python", "case_clause") => case.child_by_field_name("consequence"),
         ("java", "switch_rule") => {
             let mut cursor = case.walk();
             case.named_children(&mut cursor)
                 .last()
-                .filter(|n| n.kind() != "switch_label")
+                .filter(|n| n.fkind() != "switch_label")
         }
         _ => None,
     };
@@ -186,7 +187,7 @@ fn case_body<'a>(case: Node<'a>, lang: &str) -> Node<'a> {
 /// The guard expression of a case (`Some(x) if x > 0 =>`, `case x if x:`,
 /// `case String s when s.isEmpty() ->`), if any.
 fn case_guard<'a>(case: Node<'a>, lang: &str) -> Option<Node<'a>> {
-    match (lang, case.kind()) {
+    match (lang, case.fkind()) {
         ("rust", "match_arm") => case
             .child_by_field_name("pattern")?
             .child_by_field_name("condition"),
@@ -195,11 +196,11 @@ fn case_guard<'a>(case: Node<'a>, lang: &str) -> Option<Node<'a>> {
             let mut cursor = case.walk();
             let label = case
                 .children(&mut cursor)
-                .find(|c| c.kind() == "switch_label")?;
+                .find(|c| c.fkind() == "switch_label")?;
             let mut label_cursor = label.walk();
             let guard = label
                 .children(&mut label_cursor)
-                .find(|c| c.kind() == "guard")?;
+                .find(|c| c.fkind() == "guard")?;
             guard.named_child(0)
         }
         _ => None,
@@ -210,7 +211,7 @@ fn case_guard<'a>(case: Node<'a>, lang: &str) -> Option<Node<'a>> {
 /// `case String s ->`), in source order without duplicates.
 fn case_bindings(case: Node<'_>, lang: &str, code: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    match (lang, case.kind()) {
+    match (lang, case.fkind()) {
         ("rust", "match_arm") => {
             if let Some(pattern) = case.child_by_field_name("pattern") {
                 collect_rust_pattern_bindings(pattern, code, &mut out);
@@ -219,7 +220,7 @@ fn case_bindings(case: Node<'_>, lang: &str, code: &[u8]) -> Vec<String> {
         ("python", "case_clause") => {
             let mut cursor = case.walk();
             for child in case.children(&mut cursor) {
-                if child.kind() == "case_pattern" {
+                if child.fkind() == "case_pattern" {
                     collect_python_pattern_bindings(child, code, &mut out);
                 }
             }
@@ -228,11 +229,11 @@ fn case_bindings(case: Node<'_>, lang: &str, code: &[u8]) -> Vec<String> {
             let mut cursor = case.walk();
             if let Some(label) = case
                 .children(&mut cursor)
-                .find(|c| c.kind() == "switch_label")
+                .find(|c| c.fkind() == "switch_label")
             {
                 let mut label_cursor = label.walk();
                 for child in label.children(&mut label_cursor) {
-                    if child.kind() == "pattern" {
+                    if child.fkind() == "pattern" {
                         collect_java_pattern_bindings(child, code, &mut out);
                     }
                 }
@@ -255,7 +256,7 @@ fn is_rust_binding_name(name: &str) -> bool {
 /// Binding identifiers of a Rust pattern.  Paths, struct/variant names,
 /// field names, range bounds and the arm guard never bind.
 fn collect_rust_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
-    match n.kind() {
+    match n.fkind() {
         "identifier" => {
             if let Some(name) = text_of(n, code)
                 && is_rust_binding_name(&name)
@@ -295,7 +296,7 @@ fn collect_rust_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>
 /// name (`Color.RED`), a class name, a keyword name and a mapping key are
 /// matched against, never bound.
 fn collect_python_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
-    match n.kind() {
+    match n.fkind() {
         "dotted_name" => {
             if n.named_child_count() == 1
                 && let Some(id) = n.named_child(0)
@@ -316,7 +317,7 @@ fn collect_python_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<Strin
             // `Point(x=0, y=yy)`: the class name is a direct `dotted_name`.
             let mut cursor = n.walk();
             for child in n.children(&mut cursor) {
-                if child.kind() != "dotted_name" {
+                if child.fkind() != "dotted_name" {
                     collect_python_pattern_bindings(child, code, out);
                 }
             }
@@ -325,7 +326,7 @@ fn collect_python_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<Strin
             // `y=yy`: the keyword is a direct `identifier`.
             let mut cursor = n.walk();
             for child in n.children(&mut cursor) {
-                if child.kind() != "identifier" {
+                if child.fkind() != "identifier" {
                     collect_python_pattern_bindings(child, code, out);
                 }
             }
@@ -351,12 +352,12 @@ fn collect_python_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<Strin
 /// Variables a Java type or record pattern declares (`String s`,
 /// `Point(int x, var y)`).
 fn collect_java_pattern_bindings(n: Node<'_>, code: &[u8], out: &mut Vec<String>) {
-    if matches!(n.kind(), "type_pattern" | "record_pattern_component") {
+    if matches!(n.fkind(), "type_pattern" | "record_pattern_component") {
         let mut cursor = n.walk();
         if let Some(name) = n
             .named_children(&mut cursor)
             .last()
-            .filter(|c| c.kind() == "identifier")
+            .filter(|c| c.fkind() == "identifier")
             .and_then(|c| text_of(c, code))
         {
             out.push(name);
@@ -396,7 +397,7 @@ pub(super) fn extract_catch_param_name<'a>(
             // Java: catch_clause → catch_formal_parameter → field "name"
             let mut cursor = catch_node.walk();
             for child in catch_node.children(&mut cursor) {
-                if child.kind() == "catch_formal_parameter" {
+                if child.fkind() == "catch_formal_parameter" {
                     if let Some(name_node) = child.child_by_field_name("name") {
                         return text_of(name_node, code);
                     }
@@ -426,7 +427,7 @@ pub(super) fn extract_catch_param_name<'a>(
             let var_node = catch_node.child_by_field_name("variable")?;
             let mut cursor = var_node.walk();
             for child in var_node.children(&mut cursor) {
-                if child.kind() == "identifier" {
+                if child.fkind() == "identifier" {
                     return text_of(child, code);
                 }
             }
@@ -656,11 +657,11 @@ pub(super) fn build_begin_rescue<'a>(
 
     let mut cursor = ast.walk();
     for child in ast.children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "rescue" => rescue_clauses.push(child),
             "else" => else_clause = Some(child),
             "ensure" => ensure_clause = Some(child),
-            _ if lookup(lang, child.kind()) == Kind::Trivia => {}
+            _ if lookup_node(lang, child) == Kind::Trivia => {}
             // Keywords like "begin", "end" appear as anonymous children
             "begin" | "end" => {}
             _ => body_children.push(child),
@@ -771,9 +772,9 @@ pub(super) fn build_begin_rescue<'a>(
             let mut rescue_cursor = rescue_node.walk();
             let mut rf = catch_preds.clone();
             for child in rescue_node.children(&mut rescue_cursor) {
-                match child.kind() {
+                match child.fkind() {
                     "exceptions" | "exception_variable" => {}
-                    _ if lookup(lang, child.kind()) == Kind::Trivia => {}
+                    _ if lookup_node(lang, child) == Kind::Trivia => {}
                     "=>" | "rescue" => {}
                     _ => {
                         rf = build_sub(
@@ -917,15 +918,15 @@ pub(super) fn is_default_case_kind(kind: &str) -> bool {
 pub(super) fn case_has_default_label(case: Node<'_>, code: &[u8]) -> bool {
     let mut cursor = case.walk();
     for child in case.children(&mut cursor) {
-        let k = child.kind();
+        let k = child.fkind();
         if k == "default" || k == "default_label" {
             return true;
         }
         if k == "switch_label" {
             let mut label_cursor = child.walk();
             let labelled_default = child.children(&mut label_cursor).any(|part| {
-                part.kind() == "default"
-                    || (part.kind() == "identifier"
+                part.fkind() == "default"
+                    || (part.fkind() == "identifier"
                         && part.utf8_text(code).is_ok_and(|t| t == "default"))
             });
             if labelled_default {
@@ -940,7 +941,7 @@ pub(super) fn case_has_default_label(case: Node<'_>, code: &[u8]) -> bool {
 /// `default`, Ruby `else`, or an unguarded catch-all pattern (Rust `_` /
 /// `name =>`, Python `case _:` / `case name:`).
 fn is_default_case(lang: &str, case: Node<'_>, code: &[u8]) -> bool {
-    match (lang, case.kind()) {
+    match (lang, case.fkind()) {
         ("ruby", "else") => true,
         ("rust", "match_arm") => {
             case_guard(case, lang).is_none()
@@ -951,7 +952,7 @@ fn is_default_case(lang: &str, case: Node<'_>, code: &[u8]) -> bool {
                         // `_` is an anonymous token.
                         [] => true,
                         [only] => {
-                            only.kind() == "identifier"
+                            only.fkind() == "identifier"
                                 && text_of(*only, code).is_some_and(|t| is_rust_binding_name(&t))
                         }
                         _ => false,
@@ -965,7 +966,7 @@ fn is_default_case(lang: &str, case: Node<'_>, code: &[u8]) -> bool {
             let mut cursor = case.walk();
             let patterns: Vec<Node> = case
                 .children(&mut cursor)
-                .filter(|c| c.kind() == "case_pattern")
+                .filter(|c| c.fkind() == "case_pattern")
                 .collect();
             let [pattern] = patterns.as_slice() else {
                 return false;
@@ -974,11 +975,11 @@ fn is_default_case(lang: &str, case: Node<'_>, code: &[u8]) -> bool {
             let named: Vec<Node> = pattern.named_children(&mut pattern_cursor).collect();
             match named.as_slice() {
                 [] => true,
-                [only] => only.kind() == "dotted_name" && only.named_child_count() == 1,
+                [only] => only.fkind() == "dotted_name" && only.named_child_count() == 1,
                 _ => false,
             }
         }
-        _ => is_default_case_kind(case.kind()) || case_has_default_label(case, code),
+        _ => is_default_case_kind(case.fkind()) || case_has_default_label(case, code),
     }
 }
 
@@ -988,7 +989,7 @@ fn case_ends_with_fallthrough(case: Node<'_>, lang: &str) -> bool {
     fn last_stmt(n: Node<'_>) -> Option<Node<'_>> {
         let mut cursor = n.walk();
         n.named_children(&mut cursor)
-            .filter(|c| c.kind() != "comment")
+            .filter(|c| c.fkind() != "comment")
             .last()
     }
     if lang != "go" {
@@ -997,15 +998,15 @@ fn case_ends_with_fallthrough(case: Node<'_>, lang: &str) -> bool {
     let list = {
         let mut cursor = case.walk();
         case.children(&mut cursor)
-            .find(|c| c.kind() == "statement_list")
+            .find(|c| c.fkind() == "statement_list")
     };
     let mut last = list.and_then(last_stmt);
     while let Some(n) = last
-        && n.kind() == "labeled_statement"
+        && n.fkind() == "labeled_statement"
     {
         last = last_stmt(n);
     }
-    last.is_some_and(|n| n.kind() == "fallthrough_statement")
+    last.is_some_and(|n| n.fkind() == "fallthrough_statement")
 }
 
 /// Node that binds a case pattern's names from the scrutinee value, emitted
@@ -1102,7 +1103,7 @@ pub(super) fn build_switch<'a>(
     // Go's flat "cases-as-direct-children" shape uses `ast` itself.  Ruby's
     // `else` arm is a Block too, so `case` skips the fallback entirely.
     let body = if matches!(
-        (lang, ast.kind()),
+        (lang, ast.fkind()),
         ("ruby", "case") | ("go", "select_statement")
     ) {
         None
@@ -1110,8 +1111,7 @@ pub(super) fn build_switch<'a>(
         ast.child_by_field_name("body").or_else(|| {
             let mut c = ast.walk();
             ast.children(&mut c).find(|n| {
-                matches!(lookup(lang, n.kind()), Kind::Block)
-                    && !is_switch_case_kind(lang, n.kind())
+                matches!(lookup_node(lang, n), Kind::Block) && !is_switch_case_kind(lang, n.fkind())
             })
         })
     };
@@ -1124,7 +1124,7 @@ pub(super) fn build_switch<'a>(
     {
         let mut cursor = container.walk();
         for case in container.children(&mut cursor) {
-            if !is_switch_case_kind(lang, case.kind()) {
+            if !is_switch_case_kind(lang, case.fkind()) {
                 continue;
             }
             cases.push((case, is_default_case(lang, case, code)));
@@ -1169,7 +1169,7 @@ pub(super) fn build_switch<'a>(
     }
     let scrutinee = extract_scrutinee_node(ast, lang);
     // Go `switch t := v.(type)` binds `t` in every clause.
-    let go_alias: Vec<String> = if lang == "go" && ast.kind() == "type_switch_statement" {
+    let go_alias: Vec<String> = if lang == "go" && ast.fkind() == "type_switch_statement" {
         let mut names = Vec::new();
         if let Some(alias) = ast.child_by_field_name("alias") {
             collect_idents(alias, code, &mut names);
@@ -1195,7 +1195,7 @@ pub(super) fn build_switch<'a>(
         )
         .filter(|l| matches!(l, DataLabel::Source(_)));
         let scrut_is_call = matches!(
-            lookup(lang, scrut.kind()),
+            lookup_node(lang, scrut),
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro
         );
         if scrut_is_call || has_call_descendant(scrut, lang) {
@@ -1497,7 +1497,7 @@ pub(super) fn build_switch<'a>(
             let pattern = case.child_by_field_name("pattern").or_else(|| {
                 let mut cursor = case.walk();
                 case.children(&mut cursor)
-                    .find(|c| matches!(c.kind(), "case_pattern" | "switch_label"))
+                    .find(|c| matches!(c.fkind(), "case_pattern" | "switch_label"))
             });
             let span = pattern
                 .map(|p| (p.start_byte(), p.end_byte()))
@@ -1655,7 +1655,7 @@ pub(super) fn build_try<'a>(
         let mut cursor = ast.walk();
         let has_rescue_or_ensure = ast
             .children(&mut cursor)
-            .any(|c| c.kind() == "rescue" || c.kind() == "ensure");
+            .any(|c| c.fkind() == "rescue" || c.fkind() == "ensure");
         if has_rescue_or_ensure {
             return build_begin_rescue(
                 ast,
@@ -1690,7 +1690,7 @@ pub(super) fn build_try<'a>(
         // Also collect positional catch_clause children (Java, PHP, C++)
         let mut cursor = ast.walk();
         for child in ast.children(&mut cursor) {
-            if (child.kind() == "catch_clause" || child.kind() == "except_clause")
+            if (child.fkind() == "catch_clause" || child.fkind() == "except_clause")
                 && !clauses.iter().any(|c| c.id() == child.id())
             {
                 clauses.push(child);
@@ -1703,7 +1703,7 @@ pub(super) fn build_try<'a>(
     let finally_clause = ast.child_by_field_name("finalizer").or_else(|| {
         let mut cursor = ast.walk();
         ast.children(&mut cursor)
-            .find(|child| child.kind() == "finally_clause")
+            .find(|child| child.fkind() == "finally_clause")
     });
 
     // For Java try-with-resources: build resources as sequential predecessors

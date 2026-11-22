@@ -18,6 +18,7 @@
 
 use super::params::rust_peel_wrappers;
 use super::text_of;
+use crate::cfg::fast_kind::FastKind;
 use crate::ssa::type_facts::TypeKind;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -62,7 +63,7 @@ pub(super) fn clear() {
 fn collect_structs(scope: Node, code: &[u8], info: &mut FileInfo) {
     let mut cursor = scope.walk();
     for item in scope.named_children(&mut cursor) {
-        match item.kind() {
+        match item.fkind() {
             "struct_item" => {
                 let (Some(name), Some(body)) = (
                     item.child_by_field_name("name")
@@ -74,7 +75,7 @@ fn collect_structs(scope: Node, code: &[u8], info: &mut FileInfo) {
                 let mut fields = HashSet::new();
                 let mut c = body.walk();
                 for field in body.named_children(&mut c) {
-                    if field.kind() != "field_declaration" {
+                    if field.fkind() != "field_declaration" {
                         continue;
                     }
                     if let (Some(fname), Some(fty)) = (
@@ -170,11 +171,11 @@ pub(super) fn call_receiver_decl_type(call: Node, code: &[u8]) -> Option<TypeKin
         let mut cur = call;
         for _ in 0..8 {
             cur = peel_wrappers(cur);
-            if cur.kind() != "call_expression" {
+            if cur.fkind() != "call_expression" {
                 return None;
             }
             let func = cur.child_by_field_name("function")?;
-            if func.kind() != "field_expression" {
+            if func.fkind() != "field_expression" {
                 return None;
             }
             let recv = func.child_by_field_name("value")?;
@@ -194,7 +195,7 @@ pub(super) fn call_receiver_decl_type(call: Node, code: &[u8]) -> Option<TypeKin
 /// `expr?`, `expr.await` and `(expr)` evaluate to the inner expression.
 fn peel_wrappers(mut n: Node) -> Node {
     while matches!(
-        n.kind(),
+        n.fkind(),
         "try_expression" | "await_expression" | "parenthesized_expression"
     ) {
         match n.named_child(0) {
@@ -210,7 +211,7 @@ fn is_db_connection(expr: Node, code: &[u8], info: &FileInfo, depth: u32) -> boo
     if depth > 6 {
         return false;
     }
-    match expr.kind() {
+    match expr.fkind() {
         "parenthesized_expression" | "try_expression" | "await_expression" => expr
             .named_child(0)
             .is_some_and(|c| is_db_connection(c, code, info, depth)),
@@ -226,7 +227,7 @@ fn is_db_connection(expr: Node, code: &[u8], info: &FileInfo, depth: u32) -> boo
             let Some(func) = expr.child_by_field_name("function") else {
                 return false;
             };
-            if func.kind() != "field_expression" {
+            if func.fkind() != "field_expression" {
                 return false;
             }
             let adapter = func
@@ -257,7 +258,7 @@ fn self_field_is_connection(expr: Node, code: &[u8], info: &FileInfo) -> bool {
     ) else {
         return false;
     };
-    if value.kind() != "self" {
+    if value.fkind() != "self" {
         return false;
     }
     // The nearest function must take `self`; the impl is the next one out.
@@ -265,13 +266,13 @@ fn self_field_is_connection(expr: Node, code: &[u8], info: &FileInfo) -> bool {
     let mut has_self = false;
     let mut seen_fn = false;
     while let Some(p) = cur {
-        match p.kind() {
+        match p.fkind() {
             "function_item" if !seen_fn => {
                 seen_fn = true;
                 has_self = p.child_by_field_name("parameters").is_some_and(|ps| {
                     let mut c = ps.walk();
                     ps.named_children(&mut c)
-                        .any(|x| x.kind() == "self_parameter")
+                        .any(|x| x.fkind() == "self_parameter")
                 });
             }
             "impl_item" => {
@@ -297,7 +298,7 @@ fn self_field_is_connection(expr: Node, code: &[u8], info: &FileInfo) -> bool {
 
 /// Whether the pattern binds `name`.
 fn pattern_binds(pattern: Node, name: &str, code: &[u8]) -> bool {
-    if pattern.kind() == "identifier" && text_of(pattern, code).as_deref() == Some(name) {
+    if pattern.fkind() == "identifier" && text_of(pattern, code).as_deref() == Some(name) {
         return true;
     }
     let mut c = pattern.walk();
@@ -313,7 +314,7 @@ fn ident_is_connection(from: Node, name: &str, code: &[u8], info: &FileInfo, dep
     let mut child = from;
     let mut cur = from.parent();
     while let Some(p) = cur {
-        match p.kind() {
+        match p.fkind() {
             "block" => {
                 let mut c = p.walk();
                 let earlier: Vec<Node> = p
@@ -321,7 +322,7 @@ fn ident_is_connection(from: Node, name: &str, code: &[u8], info: &FileInfo, dep
                     .take_while(|s| s.start_byte() < child.start_byte())
                     .collect();
                 for stmt in earlier.into_iter().rev() {
-                    let decl = if stmt.kind() == "let_declaration" {
+                    let decl = if stmt.fkind() == "let_declaration" {
                         stmt
                     } else {
                         continue;
@@ -332,7 +333,7 @@ fn ident_is_connection(from: Node, name: &str, code: &[u8], info: &FileInfo, dep
                     if !pattern_binds(pattern, name, code) {
                         continue;
                     }
-                    if pattern.kind() != "identifier" {
+                    if pattern.fkind() != "identifier" {
                         return false;
                     }
                     if let Some(ty) = decl
@@ -366,14 +367,14 @@ fn ident_is_connection(from: Node, name: &str, code: &[u8], info: &FileInfo, dep
                 };
                 let mut c = params.walk();
                 for param in params.named_children(&mut c) {
-                    if param.kind() != "parameter" {
+                    if param.fkind() != "parameter" {
                         continue;
                     }
                     let Some(pattern) = param.child_by_field_name("pattern") else {
                         continue;
                     };
                     if pattern_binds(pattern, name, code) {
-                        return pattern.kind() == "identifier"
+                        return pattern.fkind() == "identifier"
                             && param
                                 .child_by_field_name("type")
                                 .and_then(|t| text_of(t, code))

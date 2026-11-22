@@ -5,6 +5,7 @@ use super::{
     has_call_descendant, member_expr_text, push_node, rmw_assignment, text_of,
     try_lower_jsx_dangerous_html,
 };
+use crate::cfg::fast_kind::FastKind;
 use crate::labels::{DataLabel, LangAnalysisRules, classify};
 use crate::utils::snippet::truncate_at_char_boundary;
 use petgraph::graph::NodeIndex;
@@ -21,11 +22,11 @@ pub(super) enum BoolOp {
 
 /// Check if an AST node is a boolean operator (`&&`/`||`/`and`/`or`).
 pub(super) fn is_boolean_operator(node: Node) -> Option<BoolOp> {
-    match node.kind() {
+    match node.fkind() {
         "binary_expression" | "boolean_operator" | "binary" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                match child.kind() {
+                match child.fkind() {
                     "&&" | "and" => return Some(BoolOp::And),
                     "||" | "or" => return Some(BoolOp::Or),
                     _ => {}
@@ -39,7 +40,7 @@ pub(super) fn is_boolean_operator(node: Node) -> Option<BoolOp> {
 
 /// Strip parenthesized_expression wrappers.
 pub(super) fn unwrap_parens(node: Node) -> Node {
-    if node.kind() == "parenthesized_expression" {
+    if node.fkind() == "parenthesized_expression" {
         if let Some(inner) = node.named_child(0) {
             return unwrap_parens(inner);
         }
@@ -68,7 +69,7 @@ pub(super) fn get_boolean_operands<'a>(node: Node<'a>) -> Option<(Node<'a>, Node
 /// Peel one logical-not wrapper (`!x`, `not x`), returning its operand.
 fn peel_logical_not(node: Node) -> Option<Node> {
     if !matches!(
-        node.kind(),
+        node.fkind(),
         "unary_expression"
             | "not_operator"
             | "prefix_unary_expression"
@@ -81,7 +82,7 @@ fn peel_logical_not(node: Node) -> Option<Node> {
     let mut cursor = node.walk();
     let is_not = node
         .children(&mut cursor)
-        .any(|c| !c.is_named() && matches!(c.kind(), "!" | "not"));
+        .any(|c| !c.is_named() && matches!(c.fkind(), "!" | "not"));
     if !is_not {
         return None;
     }
@@ -96,7 +97,7 @@ fn peel_logical_not(node: Node) -> Option<Node> {
 /// Name of a bare variable operand, spelled the way `collect_idents` spells
 /// it so it matches `taint.defines` (PHP `$fh` becomes `fh`).
 fn null_check_operand_name(node: Node, code: &[u8]) -> Option<String> {
-    match node.kind() {
+    match node.fkind() {
         "identifier" => text_of(node, code),
         "variable_name" => text_of(node, code).map(|t| t.trim_start_matches('$').to_string()),
         _ => None,
@@ -107,7 +108,7 @@ fn null_check_operand_name(node: Node, code: &[u8]) -> Option<String> {
 /// `nil` / `None` / `undefined`, plus PHP `false` (what `fopen` and friends
 /// return on failure).
 fn is_null_like_literal(node: Node, lang: &str, code: &[u8]) -> bool {
-    match node.kind() {
+    match node.fkind() {
         "null" | "nullptr" | "null_literal" | "nil" | "none" | "undefined" => true,
         // Older C/C++ grammar shapes and macro spellings surface as a plain
         // identifier.
@@ -123,12 +124,12 @@ fn is_null_like_literal(node: Node, lang: &str, code: &[u8]) -> bool {
 
 /// Integer value of a C/C++ literal operand (`0`, `-1`, `- 1`).
 fn c_int_literal(node: Node, code: &[u8]) -> Option<i64> {
-    match node.kind() {
+    match node.fkind() {
         "number_literal" => text_of(node, code)?.trim().parse().ok(),
         "unary_expression" => {
             let op = node.child_by_field_name("operator")?;
             let arg = node.child_by_field_name("argument")?;
-            if op.kind() != "-" || arg.kind() != "number_literal" {
+            if op.fkind() != "-" || arg.fkind() != "number_literal" {
                 return None;
             }
             text_of(arg, code)?.trim().parse::<i64>().ok().map(|v| -v)
@@ -142,7 +143,7 @@ fn c_int_literal(node: Node, code: &[u8]) -> Option<i64> {
 /// `binary`, and a single Python `comparison_operator` (`f is None`;
 /// chained `a < b < c` is rejected).
 fn comparison_parts<'a>(node: Node<'a>, code: &[u8]) -> Option<(Node<'a>, String, Node<'a>)> {
-    match node.kind() {
+    match node.fkind() {
         "binary_expression" | "binary" => {
             let left = node.child_by_field_name("left")?;
             let right = node.child_by_field_name("right")?;
@@ -188,12 +189,12 @@ pub(super) fn extract_null_check(cond: Node, lang: &str, code: &[u8]) -> Option<
     let mut flip = false;
     // Bounded: real conditions nest a handful of parens / nots at most.
     for _ in 0..16 {
-        if node.kind() == "parenthesized_expression" {
+        if node.fkind() == "parenthesized_expression" {
             node = node.named_child(0)?;
             continue;
         }
         // C++ wraps the condition as `condition_clause` (`if (init; value)`).
-        if node.kind() == "condition_clause" {
+        if node.fkind() == "condition_clause" {
             node = node.child_by_field_name("value")?;
             continue;
         }
@@ -387,11 +388,11 @@ pub(super) fn detect_rust_let_match_guard<'a>(
     ast: Node<'a>,
     code: &[u8],
 ) -> Option<(Node<'a>, String, bool)> {
-    if ast.kind() != "let_declaration" {
+    if ast.fkind() != "let_declaration" {
         return None;
     }
     let value = ast.child_by_field_name("value")?;
-    if value.kind() != "match_expression" {
+    if value.fkind() != "match_expression" {
         return None;
     }
     let body = value.child_by_field_name("body")?;
@@ -399,7 +400,7 @@ pub(super) fn detect_rust_let_match_guard<'a>(
     let mut cursor = body.walk();
     let arms: Vec<Node<'a>> = body
         .children(&mut cursor)
-        .filter(|arm| matches!(arm.kind(), "match_arm" | "last_match_arm"))
+        .filter(|arm| matches!(arm.fkind(), "match_arm" | "last_match_arm"))
         .collect();
 
     // The guarded arm the synthetic If node stands for: the same "first arm
@@ -464,7 +465,7 @@ fn rust_expr_diverges(node: Node, code: &[u8]) -> bool {
         )
     }
 
-    match node.kind() {
+    match node.fkind() {
         "return_expression" => true,
         "macro_invocation" => node
             .child_by_field_name("macro")
@@ -481,12 +482,12 @@ fn rust_expr_diverges(node: Node, code: &[u8]) -> bool {
             let mut cursor = node.walk();
             let mut last: Option<Node> = None;
             for child in node.named_children(&mut cursor) {
-                if !matches!(child.kind(), "line_comment" | "block_comment") {
+                if !matches!(child.fkind(), "line_comment" | "block_comment") {
                     last = Some(child);
                 }
             }
             last.is_some_and(|stmt| {
-                let inner = if stmt.kind() == "expression_statement" {
+                let inner = if stmt.fkind() == "expression_statement" {
                     stmt.named_child(0).unwrap_or(stmt)
                 } else {
                     stmt
@@ -766,7 +767,7 @@ pub(super) fn lower_ternary_branch<'a>(
 /// the PHP `a ?: b` short form.
 fn is_ternary_node(node: Node) -> bool {
     matches!(
-        node.kind(),
+        node.fkind(),
         "ternary_expression" | "conditional_expression" | "conditional"
     )
 }
@@ -790,13 +791,13 @@ pub(super) fn ternary_parts(node: Node) -> Option<(Node, Node, Node)> {
         let alt = node.child_by_field_name("alternative")?;
         return Some((cond, cons, alt));
     }
-    if node.kind() != "conditional_expression" {
+    if node.fkind() != "conditional_expression" {
         return None;
     }
     let mut cursor = node.walk();
     let parts: Vec<Node> = node
         .named_children(&mut cursor)
-        .filter(|c| c.kind() != "comment")
+        .filter(|c| c.fkind() != "comment")
         .collect();
     match parts.as_slice() {
         [body, cond, alt] => Some((*cond, *body, *alt)),
@@ -815,7 +816,7 @@ pub(super) fn find_ternary_rhs_wrapper<'a>(outer_ast: Node<'a>) -> Option<(Node<
     let mut found: Option<(Node<'a>, Node<'a>)> = None;
 
     for child in outer_ast.children(&mut cursor) {
-        match child.kind() {
+        match child.fkind() {
             "variable_declarator" => {
                 declarator_count += 1;
                 if declarator_count > 1 {
@@ -871,7 +872,7 @@ pub(super) fn classify_ternary_lhs(
     let lhs_text = member_expr_text(lhs_ast, code)
         .or_else(|| text_of(lhs_ast, code))
         .unwrap_or_default();
-    let lhs_text = if lhs_ast.kind() == "variable_name" {
+    let lhs_text = if lhs_ast.fkind() == "variable_name" {
         lhs_text.trim_start_matches('$').to_string()
     } else {
         lhs_text
@@ -883,7 +884,7 @@ pub(super) fn classify_ternary_lhs(
     // navigates.
     if matches!(lang, "python" | "ruby" | "php")
         && matches!(
-            lhs_ast.kind(),
+            lhs_ast.fkind(),
             "identifier"
                 | "variable_name"
                 | "instance_variable"

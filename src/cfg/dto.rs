@@ -9,6 +9,7 @@
 //! whether to use that as a "Dto with no inferred fields" or fall back
 //! to the generic Object/Unknown classification.
 
+use crate::cfg::fast_kind::FastKind;
 use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
@@ -69,7 +70,7 @@ pub(super) fn collect_type_alias_local_collections(
 
 fn collect_ts_type_alias_local_collections(root: Node<'_>, code: &[u8], out: &mut HashSet<String>) {
     walk(root, &mut |node| {
-        if node.kind() != "type_alias_declaration" {
+        if node.fkind() != "type_alias_declaration" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -97,7 +98,7 @@ fn collect_ts_type_alias_local_collections(root: Node<'_>, code: &[u8], out: &mu
 /// fields are collected; method-local declarations are ignored.
 fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>) {
     walk(root, &mut |node| {
-        if node.kind() != "class_declaration" {
+        if node.fkind() != "class_declaration" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -112,7 +113,7 @@ fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
         let mut fields = DtoFields::new(class_name.clone());
         let mut cursor = body.walk();
         for child in body.named_children(&mut cursor) {
-            if child.kind() != "field_declaration" {
+            if child.fkind() != "field_declaration" {
                 continue;
             }
             let Some(type_node) = child.child_by_field_name("type") else {
@@ -148,7 +149,7 @@ fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
 /// Interfaces with `property_signature` children and classes with
 /// `public_field_definition` children produce DTO entries.
 fn collect_ts(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>) {
-    walk(root, &mut |node| match node.kind() {
+    walk(root, &mut |node| match node.fkind() {
         "interface_declaration" => {
             let Some(name_node) = node.child_by_field_name("name") else {
                 return;
@@ -162,7 +163,7 @@ fn collect_ts(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>)
             let mut fields = DtoFields::new(class_name.clone());
             let mut cursor = body.walk();
             for child in body.named_children(&mut cursor) {
-                if child.kind() != "property_signature" {
+                if child.fkind() != "property_signature" {
                     continue;
                 }
                 let Some((field_name, kind)) = extract_ts_property(child, code) else {
@@ -187,7 +188,8 @@ fn collect_ts(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>)
             let mut fields = DtoFields::new(class_name.clone());
             let mut cursor = body.walk();
             for child in body.named_children(&mut cursor) {
-                if child.kind() != "public_field_definition" && child.kind() != "field_definition" {
+                if child.fkind() != "public_field_definition" && child.fkind() != "field_definition"
+                {
                     continue;
                 }
                 let Some((field_name, kind)) = extract_ts_property(child, code) else {
@@ -225,7 +227,7 @@ fn extract_ts_property<'a>(node: Node<'a>, code: &'a [u8]) -> Option<(String, Ty
 /// Walk for `struct_item` nodes whose body lists named fields.
 fn collect_rust(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>) {
     walk(root, &mut |node| {
-        if node.kind() != "struct_item" {
+        if node.fkind() != "struct_item" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -237,14 +239,14 @@ fn collect_rust(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
         let Some(body) = node.child_by_field_name("body") else {
             return;
         };
-        if body.kind() != "field_declaration_list" {
+        if body.fkind() != "field_declaration_list" {
             // Tuple struct or unit struct, no named fields.
             return;
         }
         let mut fields = DtoFields::new(class_name.clone());
         let mut cursor = body.walk();
         for child in body.named_children(&mut cursor) {
-            if child.kind() != "field_declaration" {
+            if child.fkind() != "field_declaration" {
                 continue;
             }
             let Some(name_inner) = child.child_by_field_name("name") else {
@@ -278,7 +280,7 @@ fn collect_rust(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields
 /// field entry.
 fn collect_python(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFields>) {
     walk(root, &mut |node| {
-        if node.kind() != "class_definition" {
+        if node.fkind() != "class_definition" {
             return;
         }
         let Some(name_node) = node.child_by_field_name("name") else {
@@ -299,13 +301,13 @@ fn collect_python(root: Node<'_>, code: &[u8], out: &mut HashMap<String, DtoFiel
             // Field declarations show up as `expression_statement` wrapping
             // either an `assignment` (`name: type = default`) or a bare
             // typed assignment.
-            if stmt.kind() != "expression_statement" {
+            if stmt.fkind() != "expression_statement" {
                 continue;
             }
             let Some(inner) = stmt.named_child(0) else {
                 continue;
             };
-            if inner.kind() != "assignment" {
+            if inner.fkind() != "assignment" {
                 continue;
             }
             let Some(left) = inner.child_by_field_name("left") else {

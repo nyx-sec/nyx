@@ -1,4 +1,5 @@
 use super::text_of;
+use crate::cfg::fast_kind::FastKind;
 use tree_sitter::Node;
 
 /// Extract the leading identifier from a tree-sitter expression/call node.
@@ -9,7 +10,7 @@ use tree_sitter::Node;
 fn leading_ident_text(node: Node<'_>, code: &[u8]) -> Option<String> {
     let mut cur = node;
     loop {
-        match cur.kind() {
+        match cur.fkind() {
             "identifier"
             | "type_identifier"
             | "property_identifier"
@@ -43,7 +44,7 @@ fn leading_ident_text(node: Node<'_>, code: &[u8]) -> Option<String> {
         let mut walker = cur.walk();
         let next = cur
             .children(&mut walker)
-            .find(|c| !matches!(c.kind(), "@" | "(" | ")" | "," | " " | "\n"));
+            .find(|c| !matches!(c.fkind(), "@" | "(" | ")" | "," | " " | "\n"));
         match next {
             Some(n) if n.id() != cur.id() => cur = n,
             _ => return text_of(cur, code),
@@ -79,14 +80,14 @@ fn decorator_arg_names(decorator_ast: Node<'_>, code: &[u8]) -> Vec<String> {
         let mut w = decorator_ast.walk();
         decorator_ast
             .children(&mut w)
-            .find(|c| matches!(c.kind(), "argument_list" | "arguments"))
+            .find(|c| matches!(c.fkind(), "argument_list" | "arguments"))
     });
     let Some(args) = args else {
         return out;
     };
     let mut walker = args.walk();
     for arg in args.children(&mut walker) {
-        match arg.kind() {
+        match arg.fkind() {
             "(" | ")" | "," => continue,
             "string" | "string_literal" | "interpreted_string_literal" => {
                 if let Some(s) = text_of(arg, code) {
@@ -145,15 +146,15 @@ pub(super) fn extract_auth_decorators<'a>(
     match lang {
         "python" => {
             if let Some(parent) = func_node.parent() {
-                if parent.kind() == "decorated_definition" {
+                if parent.fkind() == "decorated_definition" {
                     let mut w = parent.walk();
                     for ch in parent.children(&mut w) {
-                        if ch.kind() != "decorator" {
+                        if ch.fkind() != "decorator" {
                             continue;
                         }
                         // `decorator` → '@' + expression child.
                         let mut dw = ch.walk();
-                        let expr = ch.children(&mut dw).find(|c| c.kind() != "@");
+                        let expr = ch.children(&mut dw).find(|c| c.fkind() != "@");
                         let Some(expr) = expr else { continue };
                         if let Some(name) = leading_ident_text(expr, code) {
                             push(&name);
@@ -172,20 +173,20 @@ pub(super) fn extract_auth_decorators<'a>(
             let mut seen = Vec::new();
             let mut w = func_node.walk();
             for ch in func_node.children(&mut w) {
-                if ch.kind() == "decorator" {
+                if ch.fkind() == "decorator" {
                     seen.push(ch);
                 }
             }
             if let Some(parent) = func_node.parent() {
-                if parent.kind() == "class_body" {
+                if parent.fkind() == "class_body" {
                     let mut pw = parent.walk();
                     for sib in parent.children(&mut pw) {
                         if sib.id() == func_node.id() {
                             break;
                         }
-                        if sib.kind() == "decorator" {
+                        if sib.fkind() == "decorator" {
                             seen.push(sib);
-                        } else if sib.kind() != "decorator" && !seen.is_empty() {
+                        } else if sib.fkind() != "decorator" && !seen.is_empty() {
                             // Only the contiguous run of decorators immediately
                             // before this method is relevant; reset if a non-
                             // decorator node intervenes.
@@ -198,7 +199,7 @@ pub(super) fn extract_auth_decorators<'a>(
             }
             for dec in seen {
                 let mut dw = dec.walk();
-                let expr = dec.children(&mut dw).find(|c| c.kind() != "@");
+                let expr = dec.children(&mut dw).find(|c| c.fkind() != "@");
                 let Some(expr) = expr else { continue };
                 if let Some(name) = leading_ident_text(expr, code) {
                     push(&name);
@@ -212,12 +213,14 @@ pub(super) fn extract_auth_decorators<'a>(
             // method_declaration has a `modifiers` field listing annotations.
             let modifiers = func_node.child_by_field_name("modifiers").or_else(|| {
                 let mut w = func_node.walk();
-                func_node.children(&mut w).find(|c| c.kind() == "modifiers")
+                func_node
+                    .children(&mut w)
+                    .find(|c| c.fkind() == "modifiers")
             });
             if let Some(modifiers) = modifiers {
                 let mut w = modifiers.walk();
                 for ch in modifiers.children(&mut w) {
-                    match ch.kind() {
+                    match ch.fkind() {
                         "marker_annotation" | "annotation" => {
                             if let Some(name_node) = ch.child_by_field_name("name") {
                                 if let Some(t) = text_of(name_node, code) {
@@ -240,10 +243,10 @@ pub(super) fn extract_auth_decorators<'a>(
             // as children of `function_item` OR as preceding siblings inside
             // the parent container (grammar has varied by version).
             let mut harvest = |node: Node<'_>| {
-                if node.kind() == "attribute_item" || node.kind() == "inner_attribute_item" {
+                if node.fkind() == "attribute_item" || node.fkind() == "inner_attribute_item" {
                     let mut aw = node.walk();
                     for inner in node.children(&mut aw) {
-                        if inner.kind() == "attribute" {
+                        if inner.fkind() == "attribute" {
                             if let Some(name) = leading_ident_text(inner, code) {
                                 push(&name);
                             }
@@ -265,7 +268,7 @@ pub(super) fn extract_auth_decorators<'a>(
                         }
                         break;
                     }
-                    if sib.kind() == "attribute_item" || sib.kind() == "inner_attribute_item" {
+                    if sib.fkind() == "attribute_item" || sib.fkind() == "inner_attribute_item" {
                         pending.push(sib);
                     } else {
                         pending.clear();
@@ -277,12 +280,12 @@ pub(super) fn extract_auth_decorators<'a>(
             // `attribute_list` child of `method_declaration`.
             let mut w = func_node.walk();
             for ch in func_node.children(&mut w) {
-                if ch.kind() == "attribute_list" {
+                if ch.fkind() == "attribute_list" {
                     let mut aw = ch.walk();
                     for attr_group in ch.children(&mut aw) {
                         let mut gw = attr_group.walk();
                         for attr in attr_group.children(&mut gw) {
-                            if attr.kind() == "attribute" {
+                            if attr.fkind() == "attribute" {
                                 if let Some(name) = leading_ident_text(attr, code) {
                                     push(&name);
                                 }
@@ -301,7 +304,7 @@ pub(super) fn extract_auth_decorators<'a>(
             let mut harvest = |node: Node<'_>| {
                 let mut w = node.walk();
                 for ch in node.children(&mut w) {
-                    if ch.kind() == "attribute" {
+                    if ch.fkind() == "attribute" {
                         if let Some(name) = leading_ident_text(ch, code) {
                             push(&name);
                         }
@@ -310,7 +313,7 @@ pub(super) fn extract_auth_decorators<'a>(
             };
             let mut w = func_node.walk();
             for ch in func_node.children(&mut w) {
-                if ch.kind() == "attribute_declaration" || ch.kind() == "attribute_specifier" {
+                if ch.fkind() == "attribute_declaration" || ch.fkind() == "attribute_specifier" {
                     harvest(ch);
                 }
             }
@@ -324,7 +327,7 @@ pub(super) fn extract_auth_decorators<'a>(
                         }
                         break;
                     }
-                    if sib.kind() == "attribute_declaration" {
+                    if sib.fkind() == "attribute_declaration" {
                         pending.push(sib);
                     } else {
                         pending.clear();
@@ -343,12 +346,12 @@ pub(super) fn extract_auth_decorators<'a>(
                 .unwrap_or_default();
             let mut cursor = func_node.parent();
             while let Some(node) = cursor {
-                match node.kind() {
+                match node.fkind() {
                     "class" | "module" => {
                         // Body is the direct sibling/child sequence.
                         let mut w = node.walk();
                         for ch in node.children(&mut w) {
-                            match ch.kind() {
+                            match ch.fkind() {
                                 "body_statement" | "block_body" => {
                                     let mut bw = ch.walk();
                                     for stmt in ch.children(&mut bw) {
@@ -394,14 +397,14 @@ fn collect_ruby_before_action(
     // The call may be wrapped in expression nodes; drill to a call-shaped node.
     let mut cur = node;
     loop {
-        match cur.kind() {
+        match cur.fkind() {
             "call" | "method_call" | "command" => break,
             _ => {}
         }
         let mut w = cur.walk();
         let next = cur
             .children(&mut w)
-            .find(|c| matches!(c.kind(), "call" | "method_call" | "command" | "identifier"));
+            .find(|c| matches!(c.fkind(), "call" | "method_call" | "command" | "identifier"));
         match next {
             Some(n) if n.id() != cur.id() => cur = n,
             _ => return,
@@ -421,7 +424,7 @@ fn collect_ruby_before_action(
         let mut w = cur.walk();
         cur.children(&mut w).find(|c| {
             matches!(
-                c.kind(),
+                c.fkind(),
                 "argument_list" | "arguments" | "command_argument_list"
             )
         })
@@ -436,7 +439,7 @@ fn collect_ruby_before_action(
 
     let mut w = args.walk();
     for arg in args.children(&mut w) {
-        match arg.kind() {
+        match arg.fkind() {
             "simple_symbol" | "symbol" | "hash_key_symbol" | "identifier" => {
                 if let Some(t) = text_of(arg, code) {
                     let norm = normalize_decorator_name(&t);
@@ -458,7 +461,7 @@ fn collect_ruby_before_action(
             "hash" => {
                 let mut hw = arg.walk();
                 for pair_node in arg.children(&mut hw) {
-                    if pair_node.kind() == "pair" {
+                    if pair_node.fkind() == "pair" {
                         collect_ruby_filter_pair(
                             pair_node,
                             code,
@@ -536,7 +539,7 @@ fn collect_ruby_filter_pair(
 /// Recursively collect symbol / identifier names from a `:x` or `[:x, :y]`
 /// value into `out`, using the tree-sitter AST (no text parsing).
 fn collect_ruby_symbol_list(node: Node<'_>, code: &[u8], out: &mut Vec<String>) {
-    match node.kind() {
+    match node.fkind() {
         "simple_symbol" | "symbol" | "hash_key_symbol" | "identifier" | "string" => {
             if let Some(t) = text_of(node, code) {
                 let norm = normalize_decorator_name(&t);
@@ -622,11 +625,11 @@ fn extract_ts_request_params<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut 
     };
     let mut w = params.walk();
     for param in params.named_children(&mut w) {
-        if !matches!(param.kind(), "required_parameter" | "optional_parameter") {
+        if !matches!(param.fkind(), "required_parameter" | "optional_parameter") {
             continue;
         }
         let is_request_decorator = |ch: Node<'_>| {
-            ch.kind() == "decorator"
+            ch.fkind() == "decorator"
                 && ts_decorator_callee(ch, code)
                     .is_some_and(|name| TS_REQUEST_PARAM_DECORATORS.contains(&name.as_str()))
         };
@@ -635,7 +638,7 @@ fn extract_ts_request_params<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut 
         // as preceding siblings.
         let mut prev = param.prev_named_sibling();
         let mut bound = param.children(&mut pw).any(is_request_decorator);
-        while !bound && let Some(p) = prev.filter(|p| p.kind() == "decorator") {
+        while !bound && let Some(p) = prev.filter(|p| p.fkind() == "decorator") {
             bound = is_request_decorator(p);
             prev = p.prev_named_sibling();
         }
@@ -645,7 +648,7 @@ fn extract_ts_request_params<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut 
         let Some(pattern) = param.child_by_field_name("pattern") else {
             continue;
         };
-        if pattern.kind() != "identifier" {
+        if pattern.fkind() != "identifier" {
             continue;
         }
         if let Some(name) = text_of(pattern, code) {
@@ -660,12 +663,12 @@ fn extract_ts_request_params<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut 
 fn ts_decorator_callee(decorator: Node<'_>, code: &[u8]) -> Option<String> {
     let mut w = decorator.walk();
     let expr = decorator.named_children(&mut w).next()?;
-    let callee = match expr.kind() {
+    let callee = match expr.fkind() {
         "call_expression" => expr.child_by_field_name("function")?,
         "identifier" => expr,
         _ => return None,
     };
-    if callee.kind() != "identifier" {
+    if callee.fkind() != "identifier" {
         return None;
     }
     text_of(callee, code)
@@ -675,25 +678,25 @@ fn extract_python_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &
     let Some(parent) = func_node.parent() else {
         return;
     };
-    if parent.kind() != "decorated_definition" {
+    if parent.fkind() != "decorated_definition" {
         return;
     }
     let mut w = parent.walk();
     for ch in parent.children(&mut w) {
-        if ch.kind() != "decorator" {
+        if ch.fkind() != "decorator" {
             continue;
         }
         let mut dw = ch.walk();
-        let Some(expr) = ch.children(&mut dw).find(|c| c.kind() != "@") else {
+        let Some(expr) = ch.children(&mut dw).find(|c| c.fkind() != "@") else {
             continue;
         };
-        if expr.kind() != "call" {
+        if expr.fkind() != "call" {
             continue;
         }
         let Some(target) = expr.child_by_field_name("function") else {
             continue;
         };
-        if target.kind() != "attribute" {
+        if target.fkind() != "attribute" {
             continue;
         }
         let Some(attr) = target.child_by_field_name("attribute") else {
@@ -729,7 +732,7 @@ fn extract_ruby_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &mu
     let Some(parent) = func_node.parent() else {
         return;
     };
-    if parent.kind() != "call" {
+    if parent.fkind() != "call" {
         return;
     }
     let Some(method_node) = parent.child_by_field_name("method") else {
@@ -760,7 +763,7 @@ fn extract_ruby_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &mu
 fn first_positional_string_arg(args: Node<'_>, code: &[u8]) -> Option<String> {
     let mut cursor = args.walk();
     for arg in args.children(&mut cursor) {
-        match arg.kind() {
+        match arg.fkind() {
             "(" | ")" | "," => continue,
             "keyword_argument" => continue,
             "string" => {
@@ -778,7 +781,7 @@ fn first_positional_string_arg(args: Node<'_>, code: &[u8]) -> Option<String> {
 fn python_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for ch in node.children(&mut cursor) {
-        if ch.kind() == "interpolation" {
+        if ch.fkind() == "interpolation" {
             return None;
         }
     }
@@ -808,7 +811,7 @@ fn python_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
 fn first_positional_string_arg_ruby(args: Node<'_>, code: &[u8]) -> Option<String> {
     let mut cursor = args.walk();
     for arg in args.children(&mut cursor) {
-        match arg.kind() {
+        match arg.fkind() {
             "(" | ")" | "," => continue,
             "pair" | "hash" | "block_argument" | "hash_splat_argument" => return None,
             "string" => return ruby_string_text(arg, code),
@@ -827,7 +830,7 @@ fn ruby_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
     let mut content = String::new();
     let mut had_content = false;
     for ch in node.children(&mut cursor) {
-        match ch.kind() {
+        match ch.fkind() {
             "interpolation" => return None,
             "string_content" => {
                 if let Some(t) = text_of(ch, code) {
