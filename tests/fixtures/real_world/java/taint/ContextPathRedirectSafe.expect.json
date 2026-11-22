@@ -1,0 +1,14 @@
+{
+  "description": "getContextPath is the deployment mount prefix, not request text, so a redirect built from it is not an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "servlet",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

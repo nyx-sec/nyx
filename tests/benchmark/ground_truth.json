@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 977
+    "corpus_size": 979
   },
   "cases": [
     {
@@ -31085,6 +31085,70 @@
       ],
       "disabled": false,
       "notes": "A caught exception is not a property key, redirect target or URL"
+    },
+    {
+      "case_id": "java-ts-ParamRedirect",
+      "file": "java/open_redirect/ParamRedirect.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "servlet"
+      ],
+      "disabled": false,
+      "notes": "A request parameter used as a redirect target is an open redirect"
+    },
+    {
+      "case_id": "java-ts-ContextPathRedirectSafe",
+      "file": "java/safe/ContextPathRedirectSafe.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "servlet",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "getContextPath is the deployment mount prefix, not request text, so a redirect built from it is not an open redirect"
     }
   ]
 }
