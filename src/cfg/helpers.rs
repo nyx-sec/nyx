@@ -2929,10 +2929,15 @@ pub(crate) fn php_output_value_uses(operand: Node, code: &[u8], out: &mut Vec<St
     }
 }
 
+/// Identity of a C / C++ function body: source buffer address and length,
+/// byte range, and a hash of the body's first and last bytes, so a later
+/// file whose buffer reuses the same address cannot hit a stale entry.
+type CFunctionKey = (usize, usize, usize, usize, u64);
+
 thread_local! {
     /// Declared (non-function) names of the C / C++ function last asked
-    /// about, keyed by its source buffer and byte range.
-    static C_DECLARED_NAMES: std::cell::RefCell<Option<((usize, usize, usize), std::collections::HashSet<String>)>> =
+    /// about, keyed by [`CFunctionKey`].
+    static C_DECLARED_NAMES: std::cell::RefCell<Option<(CFunctionKey, std::collections::HashSet<String>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -2956,7 +2961,23 @@ pub(super) fn c_callee_is_local_pointer(call: Node<'_>, name: &str, code: &[u8])
             None => return false,
         }
     }
-    let key = (code.as_ptr() as usize, func.start_byte(), func.end_byte());
+    let body = code
+        .get(func.start_byte()..func.end_byte())
+        .unwrap_or_default();
+    let edge_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        body[..body.len().min(64)].hash(&mut h);
+        body[body.len().saturating_sub(64)..].hash(&mut h);
+        h.finish()
+    };
+    let key: CFunctionKey = (
+        code.as_ptr() as usize,
+        code.len(),
+        func.start_byte(),
+        func.end_byte(),
+        edge_hash,
+    );
     C_DECLARED_NAMES.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.as_ref().is_none_or(|(k, _)| *k != key) {
