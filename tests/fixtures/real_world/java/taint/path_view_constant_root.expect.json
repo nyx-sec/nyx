@@ -1,0 +1,23 @@
+{
+  "description": "A normalized view guard against a constant directory confines the file.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "path-view",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "notes": "constant root"
+    }
+  ]
+}

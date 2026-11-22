@@ -7027,7 +7027,12 @@ fn spring_html_body_handler(ret: Node, code: &[u8]) -> bool {
 /// plain names, `+` concatenation, ternary arms, and value-preserving string
 /// methods.  A call to anything else is skipped, since it may be a sanitizer
 /// (`escapeHtml4(x)`, `HtmlUtils.htmlEscape(x)`) whose result is clean.
-fn collect_html_return_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
+fn collect_html_return_idents<'a>(
+    n: Node<'a>,
+    code: &[u8],
+    out: &mut Vec<String>,
+    sources: &mut Vec<Node<'a>>,
+) {
     const PASS_THROUGH: &[&str] = &[
         "toString",
         "valueOf",
@@ -7036,8 +7041,17 @@ fn collect_html_return_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
         "concat",
         "trim",
         "strip",
+        "stripLeading",
+        "stripTrailing",
         "toLowerCase",
         "toUpperCase",
+        "replace",
+        "replaceAll",
+        "replaceFirst",
+        "substring",
+        "subSequence",
+        "repeat",
+        "intern",
     ];
     match n.kind() {
         "identifier" => {
@@ -7048,19 +7062,19 @@ fn collect_html_return_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
         "binary_expression" => {
             for side in ["left", "right"] {
                 if let Some(c) = n.child_by_field_name(side) {
-                    collect_html_return_idents(c, code, out);
+                    collect_html_return_idents(c, code, out, sources);
                 }
             }
         }
         "parenthesized_expression" => {
             if let Some(c) = n.named_child(0) {
-                collect_html_return_idents(c, code, out);
+                collect_html_return_idents(c, code, out, sources);
             }
         }
         "ternary_expression" => {
             for arm in ["consequence", "alternative"] {
                 if let Some(c) = n.child_by_field_name(arm) {
-                    collect_html_return_idents(c, code, out);
+                    collect_html_return_idents(c, code, out, sources);
                 }
             }
         }
@@ -7068,14 +7082,18 @@ fn collect_html_return_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
             let name = n
                 .child_by_field_name("name")
                 .and_then(|c| c.utf8_text(code).ok());
-            if name.is_some_and(|m| PASS_THROUGH.contains(&m)) {
+            if name.is_some_and(|m| !PASS_THROUGH.contains(&m)) {
+                // Not a value-preserving method: it may be a sanitizer, so
+                // only a call that is itself a source contributes.
+                sources.push(n);
+            } else if name.is_some() {
                 if let Some(obj) = n.child_by_field_name("object") {
-                    collect_html_return_idents(obj, code, out);
+                    collect_html_return_idents(obj, code, out, sources);
                 }
                 if let Some(args) = n.child_by_field_name("arguments") {
                     let mut cursor = args.walk();
                     for a in args.named_children(&mut cursor) {
-                        collect_html_return_idents(a, code, out);
+                        collect_html_return_idents(a, code, out, sources);
                     }
                 }
             }
@@ -7106,9 +7124,53 @@ fn try_lower_spring_html_return(
         return preds.to_vec();
     };
     let mut uses: Vec<String> = Vec::new();
-    collect_html_return_idents(expr, code, &mut uses);
+    let mut candidates: Vec<Node> = Vec::new();
+    collect_html_return_idents(expr, code, &mut uses, &mut candidates);
+    // A source call in the returned expression (`r.getParameter("q")`) has
+    // no variable of its own, so it gets a pre-emitted source node that
+    // defines one, which the sink then reads.
+    let mut preds: Vec<NodeIndex> = preds.to_vec();
+    for (i, call) in candidates.into_iter().enumerate() {
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Ok(callee) = std::str::from_utf8(&code[call.start_byte()..args.start_byte()]) else {
+            continue;
+        };
+        let callee: String = callee.chars().filter(|c| !c.is_whitespace()).collect();
+        let caps = crate::labels::classify_all("java", &callee, None)
+            .iter()
+            .fold(Cap::empty(), |acc, l| match l {
+                DataLabel::Source(bits) => acc | *bits,
+                _ => acc,
+            });
+        if caps.is_empty() {
+            continue;
+        }
+        let synth_name = format!("__nyx_src_{}_ret{}", g.node_count(), i);
+        let src_idx = g.add_node(NodeInfo {
+            kind: StmtKind::Seq,
+            call: CallMeta {
+                callee: Some(callee),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels: smallvec::smallvec![DataLabel::Source(caps)],
+                defines: Some(synth_name.clone()),
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span: (call.start_byte(), call.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &preds, src_idx, EdgeKind::Seq);
+        preds = vec![src_idx];
+        uses.push(synth_name);
+    }
     if uses.is_empty() {
-        return preds.to_vec();
+        return preds;
     }
     let ord = *call_ordinal;
     *call_ordinal += 1;
@@ -7134,7 +7196,7 @@ fn try_lower_spring_html_return(
         },
         ..Default::default()
     });
-    connect_all(g, preds, n, EdgeKind::Seq);
+    connect_all(g, &preds, n, EdgeKind::Seq);
     vec![n]
 }
 

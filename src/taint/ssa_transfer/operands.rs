@@ -265,6 +265,33 @@ impl<'a, 't> NestedOperands<'a, 't> {
         seen.then_some(out)
     }
 
+    /// [`Self::value_caps`] for a value appended to a string builder: an
+    /// occurrence that only feeds a predicate (`x.isEmpty() ? a : b`,
+    /// `"k".equals(x)`) contributes nothing, since the call yields a boolean
+    /// or a length and the text of `x` does not reach the builder through it.
+    pub(super) fn builder_value_caps(
+        &self,
+        v: SsaValue,
+        caps: Cap,
+        ssa: &SsaBody,
+        state: &SsaTaintState,
+    ) -> Option<Cap> {
+        let mut seen = false;
+        let mut out = Cap::empty();
+        for u in self.occurrences(v, ssa) {
+            seen = true;
+            let feeds_predicate = u.call.is_some_and(|c| {
+                is_value_predicate(crate::labels::bare_method_name(
+                    &self.tree.calls[c as usize].callee,
+                ))
+            });
+            if !feeds_predicate {
+                out |= self.occurrence_caps(u, caps, state);
+            }
+        }
+        seen.then_some(out)
+    }
+
     /// Source calls nested inside the anchor call's arguments
     /// (`exec(getCmd(r))`, `system(getenv("CMD"))`).  Each comes back with
     /// the caps that survive the calls between it and the anchor, the anchor
@@ -391,6 +418,29 @@ impl NestedOperands<'_, '_> {
         }
         (caps_out, origins)
     }
+}
+
+/// Methods whose result is a boolean or a number derived from the receiver
+/// and arguments, never their text.
+fn is_value_predicate(method: &str) -> bool {
+    matches!(
+        method,
+        "isEmpty"
+            | "isBlank"
+            | "length"
+            | "size"
+            | "equals"
+            | "equalsIgnoreCase"
+            | "contains"
+            | "startsWith"
+            | "endsWith"
+            | "matches"
+            | "hashCode"
+            | "indexOf"
+            | "lastIndexOf"
+            | "compareTo"
+            | "isPresent"
+    )
 }
 
 /// A source call nested inside a sink call's arguments.  See

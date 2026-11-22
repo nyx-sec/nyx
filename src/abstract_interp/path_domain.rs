@@ -1580,6 +1580,11 @@ pub struct StartsWithView {
     /// characters, so `/base-evil` passes `startsWith("/base")` and the
     /// guard must not be read as clearing `..`.
     pub path_valued: bool,
+    /// Callee texts of every call in the argument the receiver is compared
+    /// against (`req.getParameter` in `startsWith(req.getParameter("r"))`).
+    /// The caller checks them for sources: a root the request supplies
+    /// confines nothing.
+    pub root_arg_callees: Vec<String>,
 }
 
 /// Recognise a [`StartsWithView`] in a single (non-compound) guard condition.
@@ -1660,11 +1665,38 @@ pub fn classify_starts_with_receiver_view(text: &str) -> Option<StartsWithView> 
         outermost,
         Some("toPath" | "normalize" | "toAbsolutePath" | "toRealPath")
     );
+    let args = &t[idx..];
+    let args = &args[args.find('(')? + 1..];
+    let arg_text = &args[..closing_paren_of_open_call(args)?];
     Some(StartsWithView {
         root: ident.to_string(),
         normalizes,
         path_valued,
+        root_arg_callees: call_callee_texts(arg_text),
     })
+}
+
+/// Callee text (dotted name) of every call in `text`.
+fn call_callee_texts(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'(' {
+            continue;
+        }
+        let mut start = i;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || bytes[start - 1] == b'_'
+                || bytes[start - 1] == b'.')
+        {
+            start -= 1;
+        }
+        if start < i {
+            out.push(text[start..i].to_string());
+        }
+    }
+    out
 }
 
 /// Method spellings of "this path starts with that root".
@@ -3034,6 +3066,18 @@ mod tests {
             classify_starts_with_receiver_view("ok && f.toPath().normalize().startsWith(r)")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn starts_with_view_lists_root_argument_calls() {
+        let v = classify_starts_with_receiver_view(
+            "!f.toPath().normalize().startsWith(req.getParameter(\"r\"))",
+        )
+        .unwrap();
+        assert_eq!(v.root_arg_callees, vec!["req.getParameter".to_string()]);
+        let v =
+            classify_starts_with_receiver_view("f.toPath().normalize().startsWith(root)").unwrap();
+        assert!(v.root_arg_callees.is_empty());
     }
 
     #[test]

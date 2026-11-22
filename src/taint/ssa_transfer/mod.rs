@@ -1314,6 +1314,10 @@ struct PathBranchClass {
     /// Path-view chain on the receiver of the `startsWith` guard, when the
     /// confinement binds to the chain's root variable.
     view: Option<crate::abstract_interp::path_domain::StartsWithView>,
+    /// The argument the view is compared against is attacker controlled.
+    /// Text-derived here (a source call in the argument); the caller adds
+    /// the state-dependent case where the root variable derives from a source.
+    view_root_untrusted: bool,
 }
 
 /// Classify a branch condition's text against the PathFact rejection /
@@ -1323,8 +1327,17 @@ fn classify_path_branch(cond_text: &str) -> PathBranchClass {
         classify_path_assertion, classify_path_rejection_axes, classify_starts_with_receiver_view,
         cond_has_pre_negated_islocal_clause,
     };
+    let view = classify_starts_with_receiver_view(cond_text);
+    let view_root_untrusted = view.as_ref().is_some_and(|v| {
+        v.root_arg_callees.iter().any(|c| {
+            crate::labels::classify_all("java", c, None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(_)))
+        })
+    });
     PathBranchClass {
-        view: classify_starts_with_receiver_view(cond_text),
+        view,
+        view_root_untrusted,
         rejection_axes: classify_path_rejection_axes(cond_text),
         assertion: classify_path_assertion(cond_text),
         rejection_pre_negated: cond_has_pre_negated_islocal_clause(cond_text),
@@ -1651,10 +1664,24 @@ fn compute_succ_states(
                 // Rust positive-assertion `prefix_lock` recognition still
                 // fires regardless of language; for non-Rust languages the
                 // assertion classifier returns `None` for unfamiliar shapes.
+                let mut path_class = std::borrow::Cow::Borrowed(&class.path);
+                if path_class.view.is_some()
+                    && !path_class.view_root_untrusted
+                    && path_view_root_from_source(
+                        &class.path,
+                        &effective_vars,
+                        ssa,
+                        block.id,
+                        cfg,
+                        &exit_state,
+                    )
+                {
+                    path_class.to_mut().view_root_untrusted = true;
+                }
                 apply_path_fact_branch_narrowing_with_aliases(
                     &mut true_state,
                     &mut false_state,
-                    &class.path,
+                    &path_class,
                     &effective_vars,
                     ssa,
                     block.id,
@@ -3326,6 +3353,89 @@ fn reaching_def_at_block_end(var_name: &str, ssa: &SsaBody, block: BlockId) -> O
     None
 }
 
+/// True when the root a path-view guard compares against derives from a
+/// source: one of the condition's other variables reaches a source, a tainted
+/// parameter or a field of one through copies, phis, constructors and path
+/// methods.  A call that is none of those (`servlet.getModule(name).getPath()`)
+/// is a lookup whose result the caller does not choose, so it ends the walk.
+fn path_view_root_from_source(
+    class: &PathBranchClass,
+    effective_vars: &[String],
+    ssa: &SsaBody,
+    block: BlockId,
+    cfg: &Cfg,
+    state: &SsaTaintState,
+) -> bool {
+    let Some(view) = class.view.as_ref() else {
+        return false;
+    };
+    let mut seen: Vec<SsaValue> = Vec::new();
+    effective_vars
+        .iter()
+        .filter(|name| **name != view.root)
+        .filter_map(|name| reaching_def_at_block_end(name, ssa, block))
+        .any(|v| value_derives_from_source(v, ssa, cfg, state, &mut seen))
+}
+
+fn value_derives_from_source(
+    v: SsaValue,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    state: &SsaTaintState,
+    seen: &mut Vec<SsaValue>,
+) -> bool {
+    if seen.contains(&v) || seen.len() > 64 {
+        return false;
+    }
+    seen.push(v);
+    if state.get(v).is_none_or(|t| t.caps.is_empty()) {
+        return false;
+    }
+    let Some(inst) = find_inst_for_value(v, ssa) else {
+        return false;
+    };
+    match &inst.op {
+        SsaOp::Source | SsaOp::Param { .. } => true,
+        SsaOp::Phi(_) | SsaOp::Assign(_) | SsaOp::FieldProj { .. } => inst
+            .uses_iter()
+            .into_iter()
+            .any(|u| value_derives_from_source(u, ssa, cfg, state, seen)),
+        SsaOp::Call { callee, .. } => {
+            let info = &cfg[inst.cfg_node];
+            if has_source_label_on_node(info) {
+                return true;
+            }
+            let passes_path = info.call.is_constructor
+                || matches!(
+                    crate::labels::bare_method_name(callee),
+                    "get"
+                        | "of"
+                        | "toPath"
+                        | "toFile"
+                        | "normalize"
+                        | "toAbsolutePath"
+                        | "toRealPath"
+                        | "getAbsoluteFile"
+                        | "getAbsolutePath"
+                        | "getCanonicalFile"
+                        | "getCanonicalPath"
+                        | "resolve"
+                        | "getParent"
+                        | "toString"
+                        | "valueOf"
+                        | "trim"
+                        | "concat"
+                );
+            passes_path
+                && inst
+                    .uses_iter()
+                    .into_iter()
+                    .any(|u| value_derives_from_source(u, ssa, cfg, state, seen))
+        }
+        _ => false,
+    }
+}
+
 /// Apply Rust path-rejection / path-assertion branch narrowing to the
 /// true/false branch states produced by `compute_succ_states`.
 ///
@@ -3494,15 +3604,23 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     // The confinement of a path-view receiver binds to the chain's root
     // variable alone; the other variables of the condition (the root being
     // compared against) are not narrowed.
-    let view_clears_dotdot = class
+    //
+    // Confinement under a root proves nothing when the root itself is
+    // attacker controlled: `f.toPath().normalize().startsWith(r)` passes for
+    // any `f` when the attacker also picks `r`.  The caller sets
+    // `view_root_untrusted` when the root derives from a source.
+    let view_root_def = class
         .view
         .as_ref()
-        .is_some_and(|v| v.normalizes && v.path_valued);
+        .and_then(|view| reaching_def_at_block_end(&view.root, ssa, block));
+    let view_clears_dotdot = !class.view_root_untrusted
+        && class
+            .view
+            .as_ref()
+            .is_some_and(|v| v.normalizes && v.path_valued);
     let assertion_targets: smallvec::SmallVec<[SsaValue; 2]> = match class.view.as_ref() {
         Some(view) if effective_vars.iter().any(|v| *v == view.root) => {
-            reaching_def_at_block_end(&view.root, ssa, block)
-                .into_iter()
-                .collect()
+            view_root_def.into_iter().collect()
         }
         _ => targets.clone(),
     };
@@ -6589,6 +6707,27 @@ pub(super) fn transfer_inst(
                     }
                 }
                 return_bits &= !sanitizer_bits;
+
+                // A builder chain that holds an escaper
+                // (`sb.append(n).append(escapeHtml4(x))`) is one node whose
+                // callee label is the sanitizer.  The escaper clears the
+                // node's return value, not the other operands appended to
+                // the builder, so the append is still stored, each operand
+                // narrowed by the calls that wrap it.
+                if transfer.lang == Lang::Java {
+                    for c in [Some(callee.as_str()), info.call.outer_callee.as_deref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if java_builder_store_op(info, args, receiver, transfer, c, state).is_some()
+                        {
+                            try_container_propagation(
+                                inst, info, args, receiver, state, transfer, c, ssa,
+                            );
+                            break;
+                        }
+                    }
+                }
 
                 // UNAUTHORIZED_ID models a caller-supplied id that must
                 // clear an ownership/membership guard. Sanitizers for
@@ -11042,16 +11181,27 @@ fn java_builder_store_op(
 
 /// Taint a value brings into a builder append, after the calls wrapping its
 /// occurrences in the node (`sb.append(escapeHtml4(x))` keeps nothing of
-/// `x`).  A value with no recorded occurrence keeps its full taint.
+/// `x`).  A value with no recorded occurrence keeps its full taint, and a
+/// value an earlier check validated (an allowlist guard) brings none.
 fn builder_operand_caps(
     nested: Option<&operands::NestedOperands>,
     v: SsaValue,
     caps: Cap,
     ssa: &SsaBody,
+    transfer: &SsaTaintTransfer,
     state: &SsaTaintState,
 ) -> Cap {
+    let validated = ssa
+        .value_defs
+        .get(v.0 as usize)
+        .and_then(|d| d.var_name.as_deref())
+        .and_then(|n| transfer.interner.get(n))
+        .is_some_and(|sym| state.validated_must.contains(sym));
+    if validated {
+        return Cap::empty();
+    }
     nested
-        .and_then(|ops| ops.value_caps(v, caps, ssa, state))
+        .and_then(|ops| ops.builder_value_caps(v, caps, ssa, state))
         .unwrap_or(caps)
 }
 
@@ -11176,6 +11326,7 @@ fn try_container_propagation(
                                     v,
                                     taint.caps,
                                     ssa,
+                                    transfer,
                                     state,
                                 )
                             } else {

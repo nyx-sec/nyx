@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 985
+    "corpus_size": 991
   },
   "cases": [
     {
@@ -31343,6 +31343,239 @@
       ],
       "disabled": false,
       "notes": "The HTML body escapes the value, and a handler without an HTML content type returns plain text."
+    },
+    {
+      "case_id": "java-path_traversal-path-view-tainted-root-002",
+      "file": "java/path_traversal/PathViewTaintedRoot.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          18,
+          18
+        ],
+        [
+          29,
+          29
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          26,
+          26
+        ]
+      ],
+      "tags": [
+        "path-traversal",
+        "path-view"
+      ],
+      "disabled": false,
+      "notes": "A startsWith guard on a path view proves confinement only against a trusted root."
+    },
+    {
+      "case_id": "java-safe-path-view-constant-root-002",
+      "file": "java/safe/PathViewConstantRoot.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-traversal",
+        "path-view",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "A normalized view guard against a constant directory confines the file."
+    },
+    {
+      "case_id": "java-xss-xss-builder-chain-escaped-sibling-002",
+      "file": "java/xss/XssBuilderChainEscapedSibling.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ],
+        [
+          19,
+          19
+        ],
+        [
+          26,
+          26
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          16,
+          16
+        ],
+        [
+          23,
+          23
+        ]
+      ],
+      "tags": [
+        "xss",
+        "stringbuilder",
+        "container"
+      ],
+      "disabled": false,
+      "notes": "An escaper in the same chain does not clean a raw appended value."
+    },
+    {
+      "case_id": "java-safe-xss-builder-chain-all-escaped-002",
+      "file": "java/safe/XssBuilderChainAllEscaped.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "xss",
+        "stringbuilder",
+        "container",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Every operand of the chain is escaped or constant."
+    },
+    {
+      "case_id": "java-xss-spring-html-return-methods-002",
+      "file": "java/xss/SpringHtmlReturnMethods.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          14,
+          14
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "tags": [
+        "xss",
+        "spring"
+      ],
+      "disabled": false,
+      "notes": "The returned HTML reflects taint through replace, substring, and a direct source call."
+    },
+    {
+      "case_id": "java-safe-spring-html-return-methods-safe-002",
+      "file": "java/safe/SpringHtmlReturnMethodsSafe.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "xss",
+        "spring",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Escaped, constant, and non-HTML returns are clean."
     }
   ]
 }

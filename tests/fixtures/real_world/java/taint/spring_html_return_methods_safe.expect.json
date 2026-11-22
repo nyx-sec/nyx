@@ -1,0 +1,50 @@
+{
+  "description": "Escaped, constant, and non-HTML returns are clean.",
+  "tags": [
+    "taint",
+    "xss",
+    "spring",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "escaped"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "escaped source"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        27,
+        27
+      ],
+      "notes": "no html content type"
+    }
+  ]
+}

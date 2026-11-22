@@ -1,0 +1,31 @@
+{
+  "description": "A startsWith guard on a path view proves confinement only against a trusted root.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "path-view"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "tainted root var"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        29,
+        29
+      ],
+      "notes": "tainted root inline source"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "description": "The returned HTML reflects taint through replace, substring, and a direct source call.",
+  "tags": [
+    "taint",
+    "xss",
+    "spring"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "notes": "replace keeps taint"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "substring keeps taint"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "source call in the return"
+    }
+  ]
+}
