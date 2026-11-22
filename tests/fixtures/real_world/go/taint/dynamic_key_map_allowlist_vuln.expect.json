@@ -1,0 +1,25 @@
+{
+  "description": "A comma-ok lookup in a map filled from request keys is not an allowlist",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "map keys come from the request"
+    }
+  ]
+}

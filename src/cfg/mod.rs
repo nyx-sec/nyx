@@ -1453,6 +1453,30 @@ pub struct NodeInfo {
     /// Empty for every other node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hostless_proj_roots: Vec<Box<str>>,
+    /// Go only: constant-index element reads `base[3]` this node performs on a
+    /// plain identifier, spelled `base[3]`, where `base` is read nowhere else
+    /// in the node.  SSA lowering gives each one a value of its own (one per
+    /// version of `base`), so a check on `parts[0]` and a later read of
+    /// `parts[0]` talk about the same value, as they would for `k := parts[0]`.
+    /// Empty for every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elem_reads: Vec<Box<str>>,
+    /// Go only: the map keys this statement adds to a named map, by
+    /// `m[k] = v`, `m[k]++`, or a composite literal with variable keys
+    /// (`m := map[string]bool{k: true}`).  The taint engine reads it to tell
+    /// whether a map used as an allowlist can hold request-controlled keys.
+    /// Empty for every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub map_stores: Vec<MapStore>,
+}
+
+/// One named map receiving keys; see [`NodeInfo::map_stores`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MapStore {
+    /// The map; a bare identifier.
+    pub base: String,
+    /// Identifiers read by the key expression (empty for a literal key).
+    pub key_idents: Vec<String>,
 }
 
 /// A `map[key]` read whose presence result lands in `result_var`.  See
@@ -1463,7 +1487,8 @@ pub struct MembershipLookup {
     pub result_var: String,
     /// The map being indexed; a bare identifier.
     pub base: String,
-    /// The key under test; a bare identifier.
+    /// The key under test: a bare identifier, or a constant-index element
+    /// read spelled `parts[0]`.
     pub key: String,
     /// The value binding of the two-target form (`v` in `v, ok := m[k]`).
     pub value_var: Option<String>,
@@ -2214,6 +2239,199 @@ fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
     }
     let (arr, key) = subscript_components(rhs, code)?;
     (arr != key).then(|| key.into_boxed_str())
+}
+
+/// Keys stored into named maps by a Go statement (see
+/// [`NodeInfo::map_stores`]).
+fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
+    let mut out = Vec::new();
+    let mut push_index = |n: Node| {
+        if n.kind() == "index_expression"
+            && let (Some(op), Some(ix)) = (
+                n.child_by_field_name("operand"),
+                n.child_by_field_name("index"),
+            )
+            && op.kind() == "identifier"
+            && let Some(base) = text_of(op, code)
+        {
+            let mut key_idents = Vec::new();
+            collect_idents(ix, code, &mut key_idents);
+            out.push(MapStore { base, key_idents });
+        }
+    };
+    match ast.kind() {
+        "assignment_statement" => {
+            if let Some(left) = ast.child_by_field_name("left") {
+                if left.kind() == "expression_list" {
+                    let mut c = left.walk();
+                    for l in left.named_children(&mut c) {
+                        push_index(l);
+                    }
+                } else {
+                    push_index(left);
+                }
+            }
+        }
+        "inc_dec_statement" => {
+            if let Some(op) = ast.named_child(0) {
+                push_index(op);
+            }
+        }
+        _ => {}
+    }
+    // `m := map[K]V{k: v}` / `m = map[K]V{k: v}` / `var m = map[K]V{k: v}`.
+    let (names, values) = match ast.kind() {
+        "short_var_declaration" | "assignment_statement" => (
+            ast.child_by_field_name("left"),
+            ast.child_by_field_name("right"),
+        ),
+        "var_spec" => (
+            ast.child_by_field_name("name"),
+            ast.child_by_field_name("value"),
+        ),
+        _ => (None, None),
+    };
+    if let (Some(names), Some(values)) = (names, values)
+        && let Some(base) = {
+            let first = if names.kind() == "expression_list" {
+                names.named_child(0)
+            } else {
+                Some(names)
+            };
+            first
+                .filter(|n| n.kind() == "identifier")
+                .and_then(|n| text_of(n, code))
+        }
+    {
+        let lit = if values.kind() == "expression_list" {
+            values.named_child(0)
+        } else {
+            Some(values)
+        };
+        if let Some(lit) = lit.filter(|l| l.kind() == "composite_literal") {
+            let mut stack = vec![lit];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "func_literal" {
+                    continue;
+                }
+                if n.kind() == "keyed_element"
+                    && let Some(key) = n.named_child(0)
+                {
+                    let mut key_idents = Vec::new();
+                    collect_idents(key, code, &mut key_idents);
+                    if !key_idents.is_empty() {
+                        out.push(MapStore {
+                            base: base.clone(),
+                            key_idents,
+                        });
+                    }
+                }
+                let mut c = n.walk();
+                stack.extend(n.children(&mut c));
+            }
+        }
+    }
+    out
+}
+
+/// `base[idx]` spelling of a constant-index element read, when `idx` is a
+/// plain decimal literal and `base` a bare identifier.
+fn const_index_name(base: &str, idx: &str) -> Option<String> {
+    let plain_base =
+        !base.is_empty() && base.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+    let plain_idx = idx.len() <= 4
+        && idx.bytes().all(|c| c.is_ascii_digit())
+        && (idx == "0" || !idx.starts_with('0'));
+    (plain_base && plain_idx).then(|| format!("{base}[{idx}]"))
+}
+
+/// Constant-index element reads in a Go expression or statement (see
+/// [`NodeInfo::elem_reads`]).  Only `ident[<decimal literal>]` counts, and only
+/// when the identifier is not read any other way in the same subtree, because
+/// lowering swaps the base operand for the element value.  Assignment targets
+/// are writes and are left out; function literals are separate bodies.
+fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
+    if !code
+        .get(root.start_byte()..root.end_byte())
+        .is_some_and(|b| b.contains(&b'['))
+    {
+        return Vec::new();
+    }
+    let start = if matches!(
+        root.kind(),
+        "assignment_statement" | "short_var_declaration"
+    ) {
+        match root.child_by_field_name("right") {
+            Some(r) => r,
+            None => return Vec::new(),
+        }
+    } else {
+        root
+    };
+    let mut elems: Vec<String> = Vec::new();
+    let mut bare: Vec<String> = Vec::new();
+    let mut stack = vec![start];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "func_literal" => continue,
+            "identifier" => {
+                if let Some(t) = text_of(n, code) {
+                    bare.push(t);
+                }
+                continue;
+            }
+            "index_expression" => {
+                if let (Some(op), Some(ix)) = (
+                    n.child_by_field_name("operand"),
+                    n.child_by_field_name("index"),
+                ) && op.kind() == "identifier"
+                    && ix.kind() == "int_literal"
+                    && let (Some(b), Some(i)) = (text_of(op, code), text_of(ix, code))
+                    && let Some(name) = const_index_name(&b, &i)
+                {
+                    elems.push(name);
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        let mut c = n.walk();
+        stack.extend(n.children(&mut c));
+    }
+    elems.sort();
+    elems.dedup();
+    elems
+        .into_iter()
+        .filter(|e| {
+            let base = e.split_once('[').map_or(e.as_str(), |(b, _)| b);
+            !bare.iter().any(|b| b == base)
+        })
+        .map(String::into_boxed_str)
+        .collect()
+}
+
+/// The subtree [`go_const_index_reads`] should scan for a CFG node, or `None`
+/// for node kinds that never carry such reads.  An `if` node reads only its
+/// condition; its body is built from separate nodes.
+fn go_elem_read_scope<'a>(ast: Node<'a>, is_if: bool) -> Option<Node<'a>> {
+    if is_if {
+        return helpers::find_condition_subtree(ast, "go");
+    }
+    matches!(
+        ast.kind(),
+        "short_var_declaration"
+            | "assignment_statement"
+            | "var_declaration"
+            | "expression_statement"
+            | "return_statement"
+            | "go_statement"
+            | "defer_statement"
+            | "call_expression"
+            | "binary_expression"
+            | "unary_expression"
+            | "parenthesized_expression"
+    )
+    .then_some(ast)
 }
 
 /// Identifiers a Python statement reads only as `<id>.path`, `<id>.query`,
@@ -5963,6 +6181,22 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
 
+    let elem_reads = if lang == "go" {
+        go_elem_read_scope(ast, matches!(lookup(lang, ast.kind()), Kind::If))
+            .map(|n| go_const_index_reads(n, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let map_stores = if lang == "go" {
+        go_map_stores(ast, code)
+    } else {
+        Vec::new()
+    };
+    let mut condition_vars = condition_vars;
+    if matches!(lookup(lang, ast.kind()), Kind::If) {
+        condition_vars.extend(elem_reads.iter().map(|e| e.to_string()));
+    }
     let hostless_proj_roots = if lang == "python" {
         python_hostless_projection_roots(ast, &uses, &arg_uses, code)
     } else {
@@ -6076,6 +6310,8 @@ pub(super) fn push_node<'a>(
             None
         },
         hostless_proj_roots,
+        elem_reads,
+        map_stores,
     });
 
     debug!(
@@ -7137,9 +7373,20 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
     }
     let base = index.child_by_field_name("operand")?;
     let key = index.child_by_field_name("index")?;
-    if base.kind() != "identifier" || key.kind() != "identifier" {
+    if base.kind() != "identifier" {
         return None;
     }
+    // The key is a bare identifier or a constant-index element read
+    // (`fields[parts[0]]`), which lowering gives a value named `parts[0]`.
+    let key_text = if key.kind() == "identifier" {
+        text_of(key, code)?
+    } else {
+        let reads = go_const_index_reads(key, code);
+        match (key.kind(), reads.as_slice()) {
+            ("index_expression", [one]) => one.to_string(),
+            _ => return None,
+        }
+    };
     let left = ast.child_by_field_name("left")?;
     let mut cursor = left.walk();
     let targets: Vec<Node> = left.named_children(&mut cursor).collect();
@@ -7155,7 +7402,7 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
     Some(MembershipLookup {
         result_var,
         base: text_of(base, code)?,
-        key: text_of(key, code)?,
+        key: key_text,
         value_var,
     })
 }
@@ -7756,7 +8003,13 @@ fn try_lower_subscript_write(
         pp_payload_args = Some(vec![0]);
     }
 
+    let map_stores = if lang == "go" {
+        go_map_stores(assign_ast, code)
+    } else {
+        Vec::new()
+    };
     let n = g.add_node(NodeInfo {
+        map_stores,
         kind: StmtKind::Call,
         call: CallMeta {
             callee: Some("__index_set__".to_string()),
@@ -9308,7 +9561,18 @@ fn pre_emit_arg_source_nodes(
             let synth_name = format!("__nyx_idxget_{}_{}", g.node_count(), pos);
             let span = (child.start_byte(), child.end_byte());
 
+            // A constant-index Go read is also the element value lowering
+            // names `arr[idx]`; the synthetic read takes it as its receiver
+            // so a check on the element carries to the read's result.
+            let elem_reads: Vec<Box<str>> = if lang == "go" {
+                const_index_name(&arr_text, &idx_text)
+                    .map(|n| vec![n.into_boxed_str()])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let idx_node = g.add_node(NodeInfo {
+                elem_reads,
                 kind: StmtKind::Call,
                 call: CallMeta {
                     callee: Some("__index_get__".to_string()),

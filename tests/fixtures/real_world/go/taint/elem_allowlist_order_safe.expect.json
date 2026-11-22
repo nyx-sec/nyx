@@ -1,0 +1,39 @@
+{
+  "description": "comma-ok membership in a literal map on parts[0] and asc/desc equality tests on parts[1] validate the elements used in ORDER BY",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "safe",
+    "allowlist"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        14,
+        30
+      ],
+      "evidence_contains": [],
+      "notes": "both elements are checked before use",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        14,
+        30
+      ],
+      "evidence_contains": [],
+      "notes": "both elements are checked before use",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

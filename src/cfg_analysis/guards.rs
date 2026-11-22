@@ -4236,9 +4236,10 @@ impl CfgAnalysis for UnguardedSink {
                     && dominates(&doms, *guard_idx, *sink)
             }) || pinning_guards.iter().any(|(guard_idx, vars)| {
                 ctx.cfg[*guard_idx].ast.enclosing_func.as_deref() == sink_func
-                    && vars
-                        .iter()
-                        .any(|v| sink_info.taint.uses.iter().any(|u| u == v))
+                    && vars.iter().any(|v| {
+                        sink_info.taint.uses.iter().any(|u| u == v)
+                            || sink_info.elem_reads.iter().any(|e| &**e == v.as_str())
+                    })
                     && dominates(&doms, *guard_idx, *sink)
             });
 

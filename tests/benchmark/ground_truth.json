@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1255
+    "corpus_size": 1259
   },
   "cases": [
     {
@@ -19602,9 +19602,8 @@
         "patched",
         "negative"
       ],
-      "disabled": true,
-      "disabled_reason": "Precision (patched) deferred: the fix validates the order column via a Go comma-ok map-membership allowlist `if _, ok := fields[checkOrderArr[0]]; !ok { return }` then assigns the validated key to `orderStr` (`orderStr = checkOrderArr[0]`) which flows to `db.Order(orderStr)`. Recognising this needs VALUE-LEVEL narrowing: (1) the comma-ok membership predicate is in the if-INITIALIZER (condition text is bare `!ok`), not the inline `allowed[k]` form the AllowlistCheck classifier already handles; (2) the validated key is a nested index `checkOrderArr[0]` (not a bare ident, so extract_allowlist_target returns None); (3) the validated value must propagate through the `orderStr = checkOrderArr[0]` copy to the sink. The existing branch narrowing is name-based and cannot carry validation through a derived element copy. A shallow fix (name-recognising the helper, or trimming the Split/rebuild) would diverge from the verbatim upstream patch. Tracked in CVE_DEFERRED.md. The vulnerable counterpart (recall) is active and detects.",
-      "notes": "CVE-2024-37896 patched counterpart. DISABLED (precision deferred): the fix validates the order column via a Go comma-ok map-membership allowlist `if _, ok := fields[checkOrderArr[0]]; !ok { return }` then copies the validated nested key to `orderStr` which flows to `db.Order(orderStr)`. Recognising this needs value-level narrowing (membership in the if-initializer + nested-index key + carry through a derived copy). See disabled_reason and CVE_DEFERRED.md. Vulnerable counterpart is active and detects."
+      "disabled": false,
+      "notes": "CVE-2024-37896 patched counterpart: the fix validates the order column with a Go comma-ok map-membership allowlist on checkOrderArr[0] and restricts the direction token to asc/desc before db.Order. Regression guard that Nyx does not refire on the fix."
     },
     {
       "case_id": "go-sqli-005",
@@ -40280,6 +40279,152 @@
       ],
       "disabled": false,
       "notes": "urlparse(x).path/.query/.fragment carry no scheme or host, so a target rebuilt from them cannot leave the site."
+    },
+    {
+      "case_id": "go-sqli-elem-stale-001",
+      "file": "go/sqli/sqli_elem_check_stale_base.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          22,
+          22
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          21,
+          21
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "allowlist",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A check on parts[0] must not cover a read after parts is reassigned. Recall twin of the constant-index element validator."
+    },
+    {
+      "case_id": "go-sqli-dynmap-001",
+      "file": "go/sqli/sqli_dynamic_key_map_allowlist.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          22,
+          22
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "allowlist",
+        "dynamic-map",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A comma-ok lookup in a map filled from request keys proves nothing. Recall twin of the comma-ok validator."
+    },
+    {
+      "case_id": "go-sqli-elem-other-001",
+      "file": "go/sqli/sqli_elem_check_other_element.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "Checking parts[1] does not validate parts[0]. Recall twin of the constant-index element validator."
+    },
+    {
+      "case_id": "go-safe-elem-allowlist-001",
+      "file": "go/safe/safe_elem_allowlist_order.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "allowlist",
+        "element-check"
+      ],
+      "disabled": false,
+      "notes": "comma-ok membership on parts[0] and asc/desc equality on parts[1] validate the elements used in ORDER BY."
     }
   ]
 }
