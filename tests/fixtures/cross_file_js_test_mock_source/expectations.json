@@ -1,0 +1,19 @@
+{
+  "required_findings": [
+    {
+      "id_prefix": "taint-open-redirect",
+      "min_count": 1
+    }
+  ],
+  "forbidden_findings": [],
+  "noise_budget": {
+    "max_total_findings": 5,
+    "max_high_findings": 3
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1000,
+    "max_ms_index_cold": 1500,
+    "max_ms_index_warm": 500,
+    "ci_mode": "lenient"
+  }
+}

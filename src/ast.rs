@@ -2265,6 +2265,22 @@ impl<'a> ParsedFile<'a> {
                 continue;
             }
 
+            // A flow analysed in a test file whose sink sits in another,
+            // non-test file: the test supplies mock inputs (`req.query = {..}`),
+            // which no attacker controls, and the production flow into that
+            // sink is reported from the production file's own sources.
+            if !cfg.scanner.include_nonprod
+                && let Some(loc) = finding.primary_location.as_ref()
+                && (is_test_file(self.source.rel_path)
+                    || is_test_support_path(self.source.rel_path))
+                && !is_test_file(Path::new(&loc.file_rel))
+                && !is_test_support_path(Path::new(&loc.file_rel))
+                && resolve_file_rel(&loc.file_rel, scan_root, self.source.path)
+                    != self.source.path.to_string_lossy()
+            {
+                continue;
+            }
+
             if let Some(diag) = build_taint_diag(
                 finding,
                 body_cfg,
