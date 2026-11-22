@@ -967,10 +967,22 @@ pub(crate) fn first_member_label(
         }
         _ => {}
     }
+    // The target of an assignment is written, not read.  A Source label on
+    // it (`req.path = '/x'`, `req.headers[k] = v`) must not become the
+    // node's label; a Sink label (`el.innerHTML = x`) is still meaningful.
+    let assign_target = if matches!(lookup(lang, n.kind()), Kind::Assignment) {
+        n.child_by_field_name("left").map(|l| l.id())
+    } else {
+        None
+    };
     let mut cursor = n.walk();
     for child in n.children(&mut cursor) {
-        if let Some(lbl) = first_member_label(child, lang, code, extra_labels) {
-            return Some(lbl);
+        let lbl = first_member_label(child, lang, code, extra_labels);
+        if assign_target == Some(child.id()) && !matches!(lbl, Some(DataLabel::Sink(_))) {
+            continue;
+        }
+        if lbl.is_some() {
+            return lbl;
         }
     }
     None

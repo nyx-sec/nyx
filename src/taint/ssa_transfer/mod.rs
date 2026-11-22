@@ -5508,7 +5508,7 @@ pub(super) fn transfer_inst(
             state.set(
                 inst.value,
                 VarTaint {
-                    caps: Cap::all(),
+                    caps: Cap::CAUGHT_EXCEPTION,
                     origins: SmallVec::from_elem(origin, 1),
                     uses_summary: false,
                 },

@@ -1127,6 +1127,26 @@ pub enum Sensitivity {
     Secret,
 }
 
+impl Cap {
+    /// Capabilities a caught exception value can carry.
+    ///
+    /// An exception's message and stack text can embed attacker input, so
+    /// output, log, header, template and command-style reflection stay live.
+    /// Sinks that need an attacker-chosen key, URL, path, query or code
+    /// (prototype pollution, open redirect, SSRF, file paths, SQL, code
+    /// execution, deserialisation, XXE) have no attacker model for an
+    /// exception object, and are masked out.
+    pub const CAUGHT_EXCEPTION: Cap = Cap::all()
+        .difference(Cap::PROTOTYPE_POLLUTION)
+        .difference(Cap::OPEN_REDIRECT)
+        .difference(Cap::SSRF)
+        .difference(Cap::FILE_IO)
+        .difference(Cap::SQL_QUERY)
+        .difference(Cap::CODE_EXEC)
+        .difference(Cap::DESERIALIZE)
+        .difference(Cap::XXE);
+}
+
 impl SourceKind {
     /// Return the sensitivity tier this source kind belongs to.  Drives the
     /// `Cap::DATA_EXFIL` cap-suppression decision in `ast.rs`.

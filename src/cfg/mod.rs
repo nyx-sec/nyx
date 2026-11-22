@@ -3772,7 +3772,11 @@ pub(super) fn push_node<'a>(
         if let Some(assign) = assign_node
             && let Some(lhs) = assign.child_by_field_name("left")
             && let Some(l) = classify_assignment_lhs(lhs, lang, code, extra)
-            && (!rhs_source_only || matches!(l, DataLabel::Sink(_)))
+            // An assignment target is written, not read: only a Sink label
+            // (`el.innerHTML = x`) is meaningful.  A Source or Sanitizer
+            // label on the target (`req.path = '/x'`, `req.headers[k] = v`)
+            // would turn a write into a read of attacker data.
+            && matches!(l, DataLabel::Sink(_))
         {
             if rhs_source_only {
                 labels.clear();

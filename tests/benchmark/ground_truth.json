@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 977
   },
   "cases": [
     {
@@ -30961,6 +30961,130 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-ts-assign-target-req-path-read",
+      "file": "javascript/xss/assign_target_req_path_read.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "xss",
+        "express",
+        "assignment-target"
+      ],
+      "disabled": false,
+      "notes": "XSS: req.path is read and reflected into the response"
+    },
+    {
+      "case_id": "js-ts-assign-target-req-write-safe",
+      "file": "javascript/safe/assign_target_req_write_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "express",
+        "assignment-target",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "Writes to req.path, req.query and req.headers[k] are not reads of attacker input"
+    },
+    {
+      "case_id": "js-ts-catch-exception-reflected-in-response",
+      "file": "javascript/xss/catch_exception_reflected_in_response.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "xss",
+        "express",
+        "catch"
+      ],
+      "disabled": false,
+      "notes": "A caught exception message reflected into the response is still an XSS flow"
+    },
+    {
+      "case_id": "js-ts-catch-exception-as-key-and-redirect-safe",
+      "file": "javascript/safe/catch_exception_as_key_and_redirect_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "express",
+        "catch",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "A caught exception is not a property key, redirect target or URL"
     }
   ]
 }
