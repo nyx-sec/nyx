@@ -61,6 +61,8 @@ pub mod caller_scope;
 pub mod checks;
 pub mod config;
 pub mod extract;
+#[cfg(test)]
+mod framework_tests;
 pub mod model;
 pub mod naming;
 pub mod persist;
@@ -1176,6 +1178,7 @@ mod tests {
             sink_class: initial,
             callee: callee.to_string(),
             subjects: Vec::new(),
+            receiver_subjects: 0,
             span: (0, 0),
             line: 1,
             text: callee.to_string(),
@@ -1205,6 +1208,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            injected_params: HashSet::new(),
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
@@ -1324,6 +1328,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            injected_params: HashSet::new(),
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,

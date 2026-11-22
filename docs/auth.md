@@ -55,6 +55,46 @@ Internal helpers whose id parameters have a named id type (`portainer.EndpointID
 - **Handlers that are not top-level functions** are analysed: `exports.remove = (req, res) => ..`, `module.exports.show = ..`, `module.exports = { update(req, res) {} }` and methods of an undecorated class. Decorated classes (NestJS) are left out because their guards live in decorators the pass does not read yet. Routers can have any name when they are bound from `express()`, `express.Router()` or `new Router()`.
 - Sequelize `destroy`, `bulkDestroy` and `upsert` are writes. Schema registry lookups (`strapi.getModel`, `getContentType`) are not reads.
 
+## The caller is not a foreign id
+
+A query or write keyed by the signed-in user is not an ownership gap. These forms are the caller:
+
+- The user object itself: `owner=current_user`, `owner: req.user`, `owner=request.user`, `g.user`.
+- The user's own identifiers: `current_user.id`, `request.user.pk`, `req.user._id`, `g.user.id`. Other fields of `current_user` (`organization_id`, `workspace_id`) are not the caller, since a user can belong to several.
+- A query that starts at the caller or at a scope that only holds what the caller may reach: `current_user.notes.find(params[:id])`, `request.user.documents.filter(id=doc_id)`, Pundit's `policy_scope(Note).find(..)`, CanCanCan's `Note.accessible_by(ability).find(..)`.
+
+A field named like an owner pin (`ownerId`, `authorId`, `createdBy`) counts only when the caller did not supply it. `req.query.ownerId`, `req.body.ownerId`, a local copied from such a chain and a route handler's own `owner_id` parameter are chosen by whoever sends the request. Pinning a lookup to them scopes nothing, and writing one reassigns the row. A local that was read from a request through a call or a destructure (`const { ownerId } = req.query`) is not traced back yet, so it still counts as the caller.
+
+## Token lookups
+
+The token-override rule looks for a handler that finds a row by an invitation token and then writes through it. A dotted default such as `Invitation.objects.get` (Python) or `Invitation.find_by` (Ruby) keeps its receiver: the callee must end in the same receiver segments, and its last segment must start with the pattern's. So `Document.objects.get(id=doc_id)`, `request.json.get("title")`, `db.session.get(User, user_id)` and `Document.find_by(id: params[:id])` are ordinary reads and go through the ownership rule. A pattern without a dot still matches on the last segment alone (`find_by_token`, `findByToken`). Add your own with `token_lookup_names`.
+
+In Python, `.get(..)` and `.get_*(..)` are reads of rows only on an ORM receiver: a manager (`Model.objects.get`, `Model.objects.get_from_cache`), a query property (`Model.query.get`), a session (`db.session.get`) or a queryset chain (`Model.objects.select_related(..).get`). `options.get(key)`, `cache.get(k)`, `client.get(url)`, `request.GET.get(..)` and object methods such as `group.get_absolute_url(..)` are not operations the ownership rule looks at. Django's `get_object_or_404` is not classified as a read yet: the views that call it usually authorize the row after the fetch with helpers the pass does not recognise (`page.permissions_for_user(user).can_delete()`), so reporting it would add noise on large admin-style Django projects.
+
+## Rails filters
+
+`before_action`, `prepend_before_action` and `skip_before_action` honour `only:` and `except:` written as `[:a, :b]`, `%i[a b]`, `%w[a b]` or a single symbol. An option that is present but is not a literal list (`only: ACTIONS`) cannot be read, so the guard is credited only where it provably applies: a filter with such an option covers no action, and a `skip_before_action` with one is taken to remove the guard from every action.
+
+CanCanCan's `load_and_authorize_resource` and `authorize_resource` are class-level authorization for the actions they cover, with the same `only:` and `except:` options. `skip_authorize_resource` removes them again.
+
+## Django decorators and class views
+
+A view function's auth decorators (`@permission_required(..)`, `@user_passes_test(..)`, `@login_required`) apply to the function wherever its route is registered, so a `views.py` without a `path()` call is read the same way as one with it. `@login_required` alone proves identity, not ownership.
+
+A class that derives from a Django `View` or a DRF `APIView` / `ViewSet` (a base ending in `View` or `ViewSet`) is analysed even when `urls.py` registers it, as long as every base is imported from `django`, `rest_framework` or `flask`. A project-defined base (`class DocView(BaseObjectView)`) can carry permission classes, a restricted queryset or an authorization mixin that the file does not show, so such a class is left alone. Its `get`, `post`, `put`, `patch`, `delete` and the viewset actions `list`, `retrieve`, `create`, `update`, `partial_update`, `destroy` are route handlers, and `@action` methods too. Class decorators, base classes such as `LoginRequiredMixin` and `permission_classes = [..]` are route-level checks: `IsAuthenticated` is a login guard, `IsAdminUser` an admin guard, and `DjangoObjectPermissions` or a custom `IsOwner` an authorization check. Both sides of `A & B` count; `A | B` counts only as much as its weaker side, and `~A` not at all. In a route handler a bare `pk` is an id like `doc_id`.
+
+## axum and actix-web layers
+
+`Router::layer` and `route_layer` wrap the routes added before the call, so the layers that cover a route are the ones applied further out in the same method chain. A layer written before the route (`Router::new().layer(L).route(..)`) wraps nothing. `delete(handler).route_layer(L)` covers its own handler. In actix-web, `.wrap(..)` and `.guard(..)` on a scope or resource cover every route it serves, whether they come before or after the route.
+
+Layers and wraps that carry authorization are copied onto the handler as route-level checks, so `route_layer(from_fn(require_doc_owner))` covers the handler, and an admin layer satisfies the admin-route rule. A login-only layer does neither.
+
+## Role guards
+
+Spring annotations are read from the method's modifiers, so a `@PreAuthorize(` that wraps over several lines, a comment between annotations and a SpEL string split with `+` all work. Each operand of `and` / `&&` is its own check. A request passes `a or b` when either side holds, so a disjunction counts only as much as its weakest side: `hasRole('ADMIN') or hasRole('USER')` is a login guard, and `hasRole('ADMIN') or @sec.isOwner(#id, authentication)` authorizes the row without being an admin guard. A negated operand grants nothing. `hasAnyRole(..)` and `hasAnyAuthority(..)` admit a holder of any listed role, so they are admin guards only when every listed role is an admin, manager or superuser role, and login guards otherwise.
+
+In JavaScript, role middleware (`authorize`, `checkRole`, `requireRoles`, `restrictTo`) is read the same way: `authorize('admin')` and `checkRole(['admin'])` are admin guards, `checkRole(['admin', 'viewer'])` is not.
+
 ## Framework detection per language
 
 The project manifests list frameworks for several languages at once, and React is a browser library. An extractor for framework X runs on a file unless the manifests name some other server framework for the file's language. A Next.js repo (`next` and `react`, no Express) still gets the Express, Koa and Fastify route extractors, and a FastAPI backend with a UI `package.json` that lists only React still gets the Flask and FastAPI extractor.

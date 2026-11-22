@@ -403,6 +403,11 @@ pub enum PathRejection {
     /// `x.is_absolute()` / `Path::new(x).is_absolute()`, false branch proves
     /// `absolute = No` on the argument/receiver.
     IsAbsolute,
+    /// `x.starts_with("..")`, false branch proves a normalized path has no
+    /// leading `..` component.  Lexical normalisation leaves `..` only at the
+    /// start of a relative path, so this clears `dotdot` for a `normalized`
+    /// value and says nothing about any other.
+    LeadingDotDot,
     /// Not a path-rejection idiom.
     None,
 }
@@ -415,6 +420,9 @@ pub enum PathAssertion {
     /// `x.starts_with("<literal_root>")`, true branch attaches
     /// `prefix_lock = Some("<literal_root>")` to the receiver.
     PrefixLock(String),
+    /// The same lock, holding on the *false* branch: `strpos($p, $root) !== 0`
+    /// rejects on true, so the surviving branch is rooted under `root`.
+    PrefixLockUnless(String),
     /// Not a path-assertion idiom.
     None,
 }
@@ -638,6 +646,60 @@ fn has_top_level_and(text: &str) -> bool {
     false
 }
 
+/// Split `text` on top-level conjunctions (`&&`, or the keyword `and`),
+/// the same operators [`has_top_level_and`] detects.
+fn split_top_level_and(text: &str) -> smallvec::SmallVec<[&str; 4]> {
+    let mut out: smallvec::SmallVec<[&str; 4]> = smallvec::SmallVec::new();
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote: Option<u8> = None;
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' | b'`' => in_quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'&' if depth == 0 && bytes.get(i + 1) == Some(&b'&') => {
+                out.push(&text[last..i]);
+                last = i + 2;
+                i += 2;
+                continue;
+            }
+            b'a' | b'A'
+                if depth == 0
+                    && i > 0
+                    && bytes[i - 1].is_ascii_whitespace()
+                    && bytes
+                        .get(i..i + 3)
+                        .is_some_and(|w| w.eq_ignore_ascii_case(b"and"))
+                    && bytes.get(i + 3).is_some_and(|c| c.is_ascii_whitespace()) =>
+            {
+                out.push(&text[last..i]);
+                last = i + 3;
+                i += 3;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out.push(&text[last..]);
+    out
+}
+
 /// True iff any top-level OR clause of `text` is the pre-negated
 /// `!filepath.IsLocal(<expr>)` Go idiom — i.e. a clause whose `!` is
 /// already consumed by [`classify_path_rejection_axes`] when reporting
@@ -697,16 +759,24 @@ fn classify_path_rejection_atom(clause: &str) -> PathRejection {
     // `.starts_with('/')` (Rust) / `.startsWith("/")` (JS/TS/Java) /
     // `.startswith("/")` (Python) / `.start_with?("/")` (Ruby) /
     // `strings.HasPrefix(s, "/")` (Go).
-    if let Some(needle) = extract_starts_with_arg(clause)
-        && (needle == "/" || needle == "\\")
-    {
-        return PathRejection::AbsoluteSlash;
+    if let Some(needle) = extract_starts_with_arg(clause) {
+        if needle == "/" || needle == "\\" {
+            return PathRejection::AbsoluteSlash;
+        }
+        // Only the bare `..` prefix test rejects every leading-dotdot
+        // form: a normalised path can be exactly `..`, or use `\` as the
+        // separator, and neither starts with `../`.
+        if needle == ".." {
+            return PathRejection::LeadingDotDot;
+        }
     }
     // `.is_absolute()` (Rust) / `.isAbsolute()` (Java
-    // `Paths.get(s).isAbsolute()`) / `os.path.isabs(s)` (Python) /
+    // `Paths.get(s).isAbsolute()`) / `path.isAbsolute(s)` (Node) /
+    // `Pathname#absolute?` (Ruby) / `os.path.isabs(s)` (Python) /
     // `filepath.IsAbs(s)` (Go).
     if clause.contains(".is_absolute()")
-        || clause.contains(".isAbsolute()")
+        || clause.contains(".isAbsolute(")
+        || clause.contains(".absolute?")
         || clause.contains("os.path.isabs(")
         || clause.contains("filepath.IsAbs(")
     {
@@ -873,7 +943,67 @@ fn split_top_level_or(text: &str) -> smallvec::SmallVec<[&str; 4]> {
 ///   motivating example.
 /// * `None` otherwise.
 pub fn classify_path_assertion(text: &str) -> PathAssertion {
-    let trimmed = text.trim();
+    let trimmed = strip_outer_parens(text.trim());
+    // A whole-condition `!( ... )` is the AST-level negation the caller
+    // already folds into the edge choice, so the text inside decides.
+    if let Some(rest) = strip_leading_not(trimmed) {
+        let rest = rest.trim_start();
+        let inner = strip_outer_parens(rest);
+        if rest.starts_with('(') && inner.len() < rest.len() {
+            return classify_path_assertion(inner);
+        }
+    }
+    // `||` binds looser than `&&`, so it is split first: in `A && B || C` the
+    // true edge is also reached when `C` alone holds and no clause of `A && B`
+    // may lock it.  A disjunction (`p === false || !str_starts_with(p, root)`) is false only
+    // when every clause is false, so a clause that tests the root *negatively*
+    // locks the false edge.  A positive root test inside a disjunction says
+    // nothing about either edge.
+    let clauses = split_top_level_or(trimmed);
+    if clauses.len() > 1 {
+        for clause in clauses {
+            let clause = strip_outer_parens(clause);
+            // `!a && b` is false when `b` is false, so a conjunction clause
+            // says nothing about the false edge.
+            if has_top_level_and(clause) {
+                continue;
+            }
+            let locked_when_false = match strip_leading_not(clause) {
+                Some(rest) => match classify_path_assertion(rest) {
+                    PathAssertion::PrefixLock(root) => Some(root),
+                    _ => None,
+                },
+                None => match classify_path_assertion(clause) {
+                    PathAssertion::PrefixLockUnless(root) => Some(root),
+                    _ => None,
+                },
+            };
+            if let Some(root) = locked_when_false {
+                return PathAssertion::PrefixLockUnless(root);
+            }
+        }
+        return PathAssertion::None;
+    }
+    // A conjunction is true only when every clause is true, so a clause that
+    // tests the root positively locks the true edge.  Its false edge says
+    // nothing, so a negated root test or a `PrefixLockUnless` clause inside
+    // it proves nothing either.
+    let conjuncts = split_top_level_and(trimmed);
+    if conjuncts.len() > 1 {
+        for clause in conjuncts {
+            let clause = strip_outer_parens(clause);
+            if strip_leading_not(clause).is_some() {
+                continue;
+            }
+            if let PathAssertion::PrefixLock(root) = classify_path_assertion(clause) {
+                return PathAssertion::PrefixLock(root);
+            }
+        }
+        return PathAssertion::None;
+    }
+    if let Some(a) = classify_strpos_prefix_check(trimmed) {
+        return a;
+    }
     match extract_starts_with_arg(trimmed) {
         Some(needle) if needle.len() >= 2 => PathAssertion::PrefixLock(needle),
         // Single-char literal (`"/"`, `"\\"`) is an absolute-axis
@@ -889,6 +1019,82 @@ pub fn classify_path_assertion(text: &str) -> PathAssertion {
         }
         None => PathAssertion::None,
     }
+}
+
+/// Byte index of the `)` that closes a call whose `(` precedes `text`,
+/// skipping nested parens and string literals.
+fn closing_paren_of_open_call(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 1;
+    let mut in_quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+        } else {
+            match b {
+                b'"' | b'\'' => in_quote = Some(b),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// PHP prefix test spelled with `strpos`: `strpos($p, $root) === 0` holds
+/// when `$p` starts with `$root`, `strpos($p, $root) !== 0` when it does not.
+/// The loose `==` / `!=` forms are not prefix tests (see below).
+/// Returns the lock for the branch the comparison selects, or `None` when the
+/// text is not that shape or the needle is empty or a single character (a
+/// lone `/` is an absolute-path test, not a root).
+fn classify_strpos_prefix_check(text: &str) -> Option<PathAssertion> {
+    let idx = text.find("strpos(")?;
+    let inner = &text[idx + "strpos(".len()..];
+    let comma = top_level_comma(inner)?;
+    let after_comma = &inner[comma + 1..];
+    let close = closing_paren_of_open_call(after_comma)?;
+    let needle_expr = after_comma[..close].trim();
+    let rest = after_comma[close + 1..].trim_start();
+    // Only the strict comparisons: `strpos` returns `false` when the needle
+    // is absent, and `false == 0` holds in PHP, so a loose `== 0` is also
+    // true for a path outside the root.
+    let (is_equal, rest) = if let Some(r) = rest.strip_prefix("===") {
+        (true, r)
+    } else {
+        (false, rest.strip_prefix("!==")?)
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('0')
+        || rest[1..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.')
+    {
+        return None;
+    }
+    let root = match extract_first_string_literal(needle_expr) {
+        Some(lit) if lit.len() >= 2 => lit,
+        Some(_) => return None,
+        None if !needle_expr.is_empty() => OPAQUE_PREFIX_LOCK.to_string(),
+        None => return None,
+    };
+    Some(if is_equal {
+        PathAssertion::PrefixLock(root)
+    } else {
+        PathAssertion::PrefixLockUnless(root)
+    })
 }
 
 /// Recognise a *structural* one-argument enum-variant constructor.
@@ -1028,33 +1234,77 @@ pub fn is_zero_arg_allocator_for_lang(lang: crate::symbol::Lang, _callee: &str) 
     false
 }
 
+/// PathFact after a *lexical* normalisation (`normpath`, `normalize`,
+/// `filepath.Clean`, `cleanpath`).  Lexical cleaning folds `a/../b` and drops
+/// `.` segments, but a `..` with no parent to cancel survives at the start of
+/// a relative path (`normpath("../../etc")` is `../../etc`).  Only a rooted
+/// input loses every `..`, since `/..` is `/`.
+fn lexically_normalized(input: &PathFact) -> PathFact {
+    let mut f = input.clone();
+    f.normalized = Tri::Yes;
+    if input.absolute == Tri::Yes {
+        f.dotdot = Tri::No;
+    }
+    f
+}
+
+/// PathFact after resolving to an absolute path with `..` folded
+/// (`realpath`, `abspath`, `expand_path`, `Abs`).
+fn resolved_absolute(input: &PathFact) -> PathFact {
+    let mut f = input.clone();
+    f.normalized = Tri::Yes;
+    f.dotdot = Tri::No;
+    f.absolute = Tri::Yes;
+    f
+}
+
+/// PathFact of a path-join result (`path.join`, `filepath.Join`).  The join
+/// cleans what it builds, but says nothing about where the first segment
+/// points, so only the `normalized` axis is known.
+fn joined_normalized() -> PathFact {
+    let mut f = PathFact::top();
+    f.normalized = Tri::Yes;
+    f
+}
+
+/// PathFact after taking the final path component (`basename`, `filepath.Base`):
+/// no directory part survives, so the result is relative and carries no
+/// root.  The leaf can still be `..` itself (`basename("a/..")`), and a later
+/// segment joined after it climbs out (`join(root, "..", "x")`), so the `..`
+/// axis is only as known as the input's.  The `basename` label rules clear
+/// the FILE_IO taint for the single-leaf use; this fact does not claim more.
+fn leaf_component(input: &PathFact) -> PathFact {
+    let mut f = input.clone();
+    f.absolute = Tri::No;
+    f.prefix_lock = None;
+    f
+}
+
 /// Rust path-primitive classifier, `fs::canonicalize`, `Path::new`,
 /// `PathBuf::from`, identity-string conversions.
 pub fn classify_path_primitive_rust(callee: &str, input_fact: &PathFact) -> Option<PathFact> {
     // Accept both path-qualified (`std::fs::canonicalize`, `fs::canonicalize`)
     // and bare-leaf (`canonicalize`, produced from `p.canonicalize()` method
-    // calls after normalisation) forms.
-    let leaf = rightmost_segment(callee);
+    // calls after normalisation) forms.  A chained call keeps the whole chain
+    // as its callee text (`base.join(f).canonicalize().unwrap()`), so the
+    // adapters that hand back the `Ok` value unchanged are peeled first.
+    let peeled = crate::ssa::type_facts::peel_suffix_with(callee, is_ok_value_adapter);
+    let leaf = rightmost_segment(&peeled);
     match leaf {
         // `fs::canonicalize(p)` / `p.canonicalize()`:
         //   normalized = Yes, dotdot = No, absolute = Yes.  The result is
         //   an absolute, fully-resolved path; combined with a prefix-lock
         //   via `.starts_with(root)`, this is the standard Rust
         //   path-containment idiom.
-        "canonicalize" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "canonicalize" => Some(resolved_absolute(input_fact)),
         // `Path::new(s)` / `PathBuf::from(s)`:
         //   pass-through of the input's PathFact so downstream `starts_with`
         //   checks against a Path/PathBuf value still see the underlying
         //   string's narrowed axes.  No axis is forced, wrapping does not
         //   sanitize on its own.
         "new" | "from" => {
-            if callee_contains_segment(callee, "Path") || callee_contains_segment(callee, "PathBuf")
+            if callee_contains_segment(&peeled, "Path")
+                || callee_contains_segment(&peeled, "PathBuf")
             {
                 Some(input_fact.clone())
             } else {
@@ -1085,32 +1335,19 @@ pub fn classify_path_primitive_python(callee: &str, input_fact: &PathFact) -> Op
     let leaf = rightmost_segment(callee);
     match leaf {
         // `os.path.normpath(s)` / `posixpath.normpath(s)` / `ntpath.normpath`:
-        //   Resolves `..` segments syntactically.  dotdot = No.
-        //   Does not make absolute.
-        "normpath" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.normalized = Tri::Yes;
-            Some(f)
-        }
+        //   Resolves `..` segments syntactically, but a leading `..` of a
+        //   relative path survives (see `lexically_normalized`).  Does not
+        //   make the path absolute.
+        "normpath" => Some(lexically_normalized(input_fact)),
         // `os.path.realpath(s)` / `pathlib.Path.resolve()`:
         //   Resolves symlinks AND `..` AND yields an absolute path.
         //   normalized = Yes, dotdot = No, absolute = Yes.
-        "realpath" | "resolve" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "realpath" | "resolve" => Some(resolved_absolute(input_fact)),
         // `os.path.abspath(s)`:
-        //   Returns an absolute version of the input.  absolute = Yes.
-        //   Does NOT clear `..` (abspath joins with cwd; trailing `..` survives).
-        "abspath" => {
-            let mut f = input_fact.clone();
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        //   `normpath(join(getcwd(), s))`: absolute, with `..` folded.
+        "abspath" => Some(resolved_absolute(input_fact)),
+        // `os.path.basename(s)`: the final component only.
+        "basename" => Some(leaf_component(input_fact)),
         // Identity conversions: `str(p)` / `Path(s)` / `os.fspath(s)` re-bind
         // the same logical path.
         "fspath" | "PurePath" | "PurePosixPath" | "PureWindowsPath" => Some(input_fact.clone()),
@@ -1124,22 +1361,21 @@ pub fn classify_path_primitive_js(callee: &str, input_fact: &PathFact) -> Option
     let leaf = rightmost_segment(callee);
     match leaf {
         // `path.normalize(p)`:
-        //   Resolves `..` syntactically.  dotdot = No.
-        "normalize" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.normalized = Tri::Yes;
-            Some(f)
-        }
+        //   Resolves `..` syntactically; a leading `..` of a relative path
+        //   survives (see `lexically_normalized`).
+        "normalize" => Some(lexically_normalized(input_fact)),
         // `path.resolve(p)`:
         //   Resolves to an absolute path, collapsing `..`.
         //   normalized = Yes, dotdot = No, absolute = Yes.
-        "resolve" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
+        "resolve" => Some(resolved_absolute(input_fact)),
+        // `path.basename(p)`: the final component only.
+        "basename" => Some(leaf_component(input_fact)),
+        // `path.join(a, b)` normalizes its result (`..` folded, `.` dropped),
+        // so a prefix check on the joined value rules out a leading `..`.
+        // Matched on the qualified name: `[].join` / `Array.prototype.join`
+        // build strings, not paths.
+        "join" if matches!(callee, "path.join" | "path.posix.join" | "path.win32.join") => {
+            Some(joined_normalized())
         }
         _ => None,
     }
@@ -1151,23 +1387,18 @@ pub fn classify_path_primitive_go(callee: &str, input_fact: &PathFact) -> Option
     let leaf = rightmost_segment(callee);
     match leaf {
         // `filepath.Clean(p)`:
-        //   Lexical normalisation that resolves `..`.  dotdot = No.
-        "Clean" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.normalized = Tri::Yes;
-            Some(f)
-        }
+        //   Lexical normalisation: a leading `..` of a relative path
+        //   survives (see `lexically_normalized`).
+        "Clean" => Some(lexically_normalized(input_fact)),
         // `filepath.Abs(p)`:
         //   Returns an absolute path (also calls Clean).
         //   normalized = Yes, dotdot = No, absolute = Yes.
-        "Abs" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "Abs" => Some(resolved_absolute(input_fact)),
+        // `filepath.Base(p)`: the final element only.
+        "Base" => Some(leaf_component(input_fact)),
+        // `filepath.Join(a, b, ...)` cleans its result.  Matched on the
+        // qualified name: `strings.Join` builds strings, not paths.
+        "Join" if matches!(callee, "filepath.Join" | "path.Join") => Some(joined_normalized()),
         _ => None,
     }
 }
@@ -1178,13 +1409,9 @@ pub fn classify_path_primitive_java(callee: &str, input_fact: &PathFact) -> Opti
     let leaf = rightmost_segment(callee);
     match leaf {
         // `Path.normalize()`:
-        //   Lexical normalisation that resolves `..`.
-        "normalize" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.normalized = Tri::Yes;
-            Some(f)
-        }
+        //   Lexical normalisation: a leading `..` of a relative path
+        //   survives (see `lexically_normalized`).
+        "normalize" => Some(lexically_normalized(input_fact)),
         // `Path.toAbsolutePath()`:
         //   Returns an absolute path.
         "toAbsolutePath" => {
@@ -1194,13 +1421,11 @@ pub fn classify_path_primitive_java(callee: &str, input_fact: &PathFact) -> Opti
         }
         // `Path.toRealPath()`:
         //   Resolves symlinks and `..`, returns absolute path.
-        "toRealPath" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "toRealPath" => Some(resolved_absolute(input_fact)),
+        // `Path.toFile()` / `File.toPath()` / `Path.toString()` /
+        // `File.getPath()` re-wrap the same path, so a containment check on
+        // the `Path` still holds for the `File` handed to the sink.
+        "toFile" | "toPath" | "toString" | "getPath" => Some(input_fact.clone()),
         _ => None,
     }
 }
@@ -1211,21 +1436,13 @@ pub fn classify_path_primitive_ruby(callee: &str, input_fact: &PathFact) -> Opti
     match leaf {
         // `File.expand_path(s)`:
         //   Returns an absolute path with `..` collapsed.
-        "expand_path" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "expand_path" => Some(resolved_absolute(input_fact)),
         // `Pathname#cleanpath`:
-        //   Lexical normalisation that resolves `..`.
-        "cleanpath" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.normalized = Tri::Yes;
-            Some(f)
-        }
+        //   Lexical normalisation: a leading `..` of a relative path
+        //   survives (see `lexically_normalized`).
+        "cleanpath" => Some(lexically_normalized(input_fact)),
+        // `File.basename(s)`: the final component only.
+        "basename" => Some(leaf_component(input_fact)),
         _ => None,
     }
 }
@@ -1238,23 +1455,9 @@ pub fn classify_path_primitive_php(callee: &str, input_fact: &PathFact) -> Optio
         //   Resolves symlinks and `..`, returns absolute path.  Returns
         //   `false` if the file doesn't exist, but on the success path
         //   (which is what reaches a sink), it produces a clean absolute path.
-        "realpath" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
-        // `basename($s)`:
-        //   Strips directory components, guaranteed to contain no `..`
-        //   (basename of `..` is `..`, but basename of any traversal-
-        //   prefixed path is just the leaf).  Conservative: clear dotdot.
-        "basename" => {
-            let mut f = input_fact.clone();
-            f.dotdot = Tri::No;
-            f.absolute = Tri::No;
-            Some(f)
-        }
+        "realpath" => Some(resolved_absolute(input_fact)),
+        // `basename($s)`: the final component only.
+        "basename" => Some(leaf_component(input_fact)),
         _ => None,
     }
 }
@@ -1266,18 +1469,21 @@ pub fn classify_path_primitive_c_cpp(callee: &str, input_fact: &PathFact) -> Opt
     match leaf {
         // POSIX `realpath(in, out)` / C++ `std::filesystem::canonical(p)`:
         //   Resolves to absolute canonical path.
-        "realpath" | "canonical" => {
-            let mut f = input_fact.clone();
-            f.normalized = Tri::Yes;
-            f.dotdot = Tri::No;
-            f.absolute = Tri::Yes;
-            Some(f)
-        }
+        "realpath" | "canonical" => Some(resolved_absolute(input_fact)),
         _ => None,
     }
 }
 
 // ── Text helpers (kept in sync with path_state.rs's parsing style) ─────
+
+/// Rust adapters that pass the `Ok` / `Some` value through unchanged:
+/// the identity conversions plus the error-side adapters `map_err`,
+/// `context` and `with_context`.  `unwrap_or(x)` and `unwrap_or_else(f)` are
+/// not here: their fallback value is another path.
+fn is_ok_value_adapter(segment: &str) -> bool {
+    crate::ssa::type_facts::is_identity_method(segment)
+        || matches!(segment, "map_err" | "context" | "with_context")
+}
 
 fn rightmost_segment(s: &str) -> &str {
     let after_colons = s.rsplit("::").next().unwrap_or(s);
@@ -1307,12 +1513,7 @@ fn extract_contains_arg(text: &str) -> Option<String> {
     // Tier 2: free-function form with the receiver as first arg.  We can't
     // recover the receiver from the text (the lowering already records it
     // in `condition_vars`); we just need the literal needle to classify.
-    for prefix in [
-        "strings.Contains(",
-        "strings.HasPrefix(",
-        "strings.Index(",
-        "strstr(",
-    ] {
+    for prefix in ["strings.Contains(", "strings.Index(", "strstr("] {
         if let Some(idx) = text.find(prefix) {
             // Skip past the first argument (receiver), the literal needle
             // is the second arg, separated by a comma.  Find the comma at
@@ -1336,30 +1537,41 @@ fn extract_contains_arg(text: &str) -> Option<String> {
 ///   * Python: `r.startswith("/")`
 ///   * Go: `strings.HasPrefix(r, "/")`
 fn extract_starts_with_arg(text: &str) -> Option<String> {
-    for method in [
-        ".starts_with(",
-        ".start_with?(",
-        ".startsWith(",
-        ".startswith(",
-    ] {
+    for method in STARTS_WITH_METHODS {
         if let Some(idx) = text.find(method)
             && let Some(s) = extract_first_string_literal(&text[idx + method.len()..])
         {
             return Some(s);
         }
     }
-    // Go free-function form `strings.HasPrefix(r, "/")`, second arg.
-    if let Some(idx) = text.find("strings.HasPrefix(") {
-        let inner = &text[idx + "strings.HasPrefix(".len()..];
-        if let Some(comma_idx) = top_level_comma(inner) {
-            let after_comma = &inner[comma_idx + 1..];
-            if let Some(s) = extract_first_string_literal(after_comma) {
-                return Some(s);
+    // Free-function forms with the receiver first and the prefix second:
+    // Go `strings.HasPrefix(r, "/")`, PHP `str_starts_with($r, "/")`.
+    for func in STARTS_WITH_FUNCTIONS {
+        if let Some(idx) = text.find(func) {
+            let inner = &text[idx + func.len()..];
+            if let Some(comma_idx) = top_level_comma(inner) {
+                let after_comma = &inner[comma_idx + 1..];
+                if let Some(s) = extract_first_string_literal(after_comma) {
+                    return Some(s);
+                }
             }
         }
     }
     None
 }
+
+/// Method spellings of "this path starts with that root".
+/// `is_relative_to` is Python's `pathlib` containment test.
+const STARTS_WITH_METHODS: [&str; 5] = [
+    ".starts_with(",
+    ".start_with?(",
+    ".startsWith(",
+    ".startswith(",
+    ".is_relative_to(",
+];
+
+/// Free-function spellings, receiver first and prefix second.
+const STARTS_WITH_FUNCTIONS: [&str; 2] = ["strings.HasPrefix(", "str_starts_with("];
 
 /// Detect a `starts_with`-style call with a non-empty argument, where the
 /// argument is *not* recovered as a string literal by
@@ -1374,12 +1586,7 @@ fn has_starts_with_call_with_nonempty_arg(text: &str) -> bool {
     // Method-call forms with parens.  The argument-presence check is
     // simple: after the opening `(`, the first non-whitespace byte must
     // not be `)` (empty arg list).
-    for method in [
-        ".starts_with(",
-        ".start_with?(",
-        ".startsWith(",
-        ".startswith(",
-    ] {
+    for method in STARTS_WITH_METHODS {
         if let Some(idx) = text.find(method) {
             let after = &text[idx + method.len()..];
             if first_non_ws_byte(after).is_some_and(|b| b != b')') {
@@ -1404,14 +1611,17 @@ fn has_starts_with_call_with_nonempty_arg(text: &str) -> bool {
             }
         }
     }
-    // Go free-function form `strings.HasPrefix(<recv>, <prefix>)`.  The
-    // second argument must exist and be non-empty.
-    if let Some(idx) = text.find("strings.HasPrefix(") {
-        let inner = &text[idx + "strings.HasPrefix(".len()..];
-        if let Some(comma_idx) = top_level_comma(inner) {
-            let after_comma = inner[comma_idx + 1..].trim_start();
-            if !after_comma.is_empty() && !after_comma.starts_with(')') {
-                return true;
+    // Free-function forms `strings.HasPrefix(<recv>, <prefix>)` (Go) and
+    // `str_starts_with(<recv>, <prefix>)` (PHP).  The second argument must
+    // exist and be non-empty.
+    for func in STARTS_WITH_FUNCTIONS {
+        if let Some(idx) = text.find(func) {
+            let inner = &text[idx + func.len()..];
+            if let Some(comma_idx) = top_level_comma(inner) {
+                let after_comma = inner[comma_idx + 1..].trim_start();
+                if !after_comma.is_empty() && !after_comma.starts_with(')') {
+                    return true;
+                }
             }
         }
     }
@@ -2365,5 +2575,321 @@ mod tests {
             classify_path_rejection_axes("!filepath.IsLocal(p) || strings.HasPrefix(p, \"/\")");
         assert!(axes.contains(&PathRejection::DotDot));
         assert!(axes.contains(&PathRejection::IsAbsolute));
+    }
+
+    // ── Lexical normalisers keep a leading `..` ──────────────────────────
+
+    fn unknown() -> PathFact {
+        PathFact::top()
+    }
+
+    fn rooted() -> PathFact {
+        let mut f = PathFact::top();
+        f.absolute = Tri::Yes;
+        f
+    }
+
+    type PrimitiveClassifier = fn(&str, &PathFact) -> Option<PathFact>;
+
+    #[test]
+    fn lexical_normalisers_keep_dotdot_on_relative_input() {
+        let cases: [(&str, PrimitiveClassifier, &str); 5] = [
+            (
+                "python",
+                |c, f| classify_path_primitive_python(c, f),
+                "os.path.normpath",
+            ),
+            (
+                "js",
+                |c, f| classify_path_primitive_js(c, f),
+                "path.normalize",
+            ),
+            (
+                "go",
+                |c, f| classify_path_primitive_go(c, f),
+                "filepath.Clean",
+            ),
+            (
+                "java",
+                |c, f| classify_path_primitive_java(c, f),
+                "p.resolve.normalize",
+            ),
+            (
+                "ruby",
+                |c, f| classify_path_primitive_ruby(c, f),
+                "Pathname.cleanpath",
+            ),
+        ];
+        for (lang, classify, callee) in cases {
+            let out = classify(callee, &unknown()).expect(lang);
+            assert_eq!(out.normalized, Tri::Yes, "{lang}: normalized");
+            assert_eq!(out.dotdot, Tri::Maybe, "{lang}: a leading .. survives");
+            assert!(!out.is_path_traversal_safe(), "{lang}: relative input");
+            // A rooted input loses every `..`.
+            let out = classify(callee, &rooted()).expect(lang);
+            assert_eq!(out.dotdot, Tri::No, "{lang}: rooted input");
+            // An input already proven free of `..` stays so.
+            let clean = PathFact::top().with_dotdot_cleared();
+            assert_eq!(
+                classify(callee, &clean).expect(lang).dotdot,
+                Tri::No,
+                "{lang}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolving_primitives_clear_dotdot_and_root_the_path() {
+        for (callee, out) in [
+            (
+                "os.path.realpath",
+                classify_path_primitive_python("os.path.realpath", &unknown()),
+            ),
+            (
+                "os.path.abspath",
+                classify_path_primitive_python("os.path.abspath", &unknown()),
+            ),
+            (
+                "Path.resolve",
+                classify_path_primitive_python("Path.resolve", &unknown()),
+            ),
+            (
+                "path.resolve",
+                classify_path_primitive_js("path.resolve", &unknown()),
+            ),
+            (
+                "filepath.Abs",
+                classify_path_primitive_go("filepath.Abs", &unknown()),
+            ),
+            (
+                "File.expand_path",
+                classify_path_primitive_ruby("File.expand_path", &unknown()),
+            ),
+            (
+                "realpath",
+                classify_path_primitive_php("realpath", &unknown()),
+            ),
+            (
+                "fs::canonicalize",
+                classify_path_primitive_rust("fs::canonicalize", &unknown()),
+            ),
+        ] {
+            let out = out.unwrap_or_else(|| panic!("{callee}"));
+            assert_eq!(out.dotdot, Tri::No, "{callee}");
+            assert_eq!(out.absolute, Tri::Yes, "{callee}");
+            assert_eq!(out.normalized, Tri::Yes, "{callee}");
+            // Rooted but not contained: the sink still needs a prefix lock.
+            assert!(!out.is_path_traversal_safe(), "{callee}");
+        }
+    }
+
+    #[test]
+    fn basename_is_a_leaf_in_every_language() {
+        for (callee, out) in [
+            (
+                "path.basename",
+                classify_path_primitive_js("path.basename", &unknown()),
+            ),
+            (
+                "os.path.basename",
+                classify_path_primitive_python("os.path.basename", &unknown()),
+            ),
+            (
+                "File.basename",
+                classify_path_primitive_ruby("File.basename", &unknown()),
+            ),
+            (
+                "filepath.Base",
+                classify_path_primitive_go("filepath.Base", &unknown()),
+            ),
+            (
+                "basename",
+                classify_path_primitive_php("basename", &unknown()),
+            ),
+        ] {
+            let out = out.unwrap_or_else(|| panic!("{callee}"));
+            assert_eq!(out.absolute, Tri::No, "{callee}");
+            assert_eq!(out.prefix_lock, None, "{callee}");
+            // `basename("a/..")` is `..`: the leaf proves nothing about it.
+            assert_eq!(out.dotdot, Tri::Maybe, "{callee}");
+        }
+        // An input already free of `..` stays free of it.
+        let clean = PathFact::top().with_dotdot_cleared();
+        let out = classify_path_primitive_go("filepath.Base", &clean).unwrap();
+        assert!(out.is_path_traversal_safe());
+    }
+
+    #[test]
+    fn java_path_conversions_keep_the_fact() {
+        let mut f = PathFact::top();
+        f.dotdot = Tri::No;
+        f.normalized = Tri::Yes;
+        for callee in ["np.toFile", "f.toPath", "p.toString", "f.getPath"] {
+            let out = classify_path_primitive_java(callee, &f).expect(callee);
+            assert_eq!(out.dotdot, Tri::No, "{callee}");
+            assert_eq!(out.normalized, Tri::Yes, "{callee}");
+        }
+    }
+
+    #[test]
+    fn rust_canonicalize_is_found_through_result_adapters() {
+        for callee in [
+            "base.join.canonicalize.unwrap",
+            "base.join.canonicalize.expect",
+            "base.join.canonicalize.map_err",
+            "base.join.canonicalize.map_err.unwrap",
+            "base.join.canonicalize.context",
+        ] {
+            let out = classify_path_primitive_rust(callee, &unknown()).expect(callee);
+            assert_eq!(out.dotdot, Tri::No, "{callee}");
+            assert_eq!(out.absolute, Tri::Yes, "{callee}");
+        }
+        // The fallback of `unwrap_or*` is another path: not seen through.
+        assert!(
+            classify_path_primitive_rust("base.join.canonicalize.unwrap_or", &unknown()).is_none()
+        );
+    }
+
+    // ── Prefix assertions and rejections for the normalised idioms ───────
+
+    #[test]
+    fn leading_dotdot_is_its_own_rejection_axis() {
+        for cond in [
+            "p.startswith('..')",
+            "p.startsWith(\"..\")",
+            "strings.HasPrefix(p, \"..\")",
+            "p.start_with?('..')",
+        ] {
+            assert_eq!(
+                classify_path_rejection_axes(cond).as_slice(),
+                [PathRejection::LeadingDotDot].as_slice(),
+                "{cond}"
+            );
+        }
+        // A one-separator test misses a normalised `..` and `..\\x`, so it is
+        // not a leading-dotdot rejection.
+        for cond in ["p.startsWith('../')", "strings.HasPrefix(p, \"..\\\\\")"] {
+            assert!(classify_path_rejection_axes(cond).is_empty(), "{cond}");
+        }
+        // Mixed with the absolute test, each clause keeps its axis.
+        let axes = classify_path_rejection_axes("p.startswith('..') or p.startswith('/')");
+        assert!(axes.contains(&PathRejection::LeadingDotDot));
+        assert!(axes.contains(&PathRejection::AbsoluteSlash));
+        assert!(!axes.contains(&PathRejection::DotDot));
+    }
+
+    #[test]
+    fn disjunction_binds_looser_than_conjunction() {
+        // `A && B || C` also takes the true edge when only `C` holds.
+        for cond in [
+            "p.startsWith('/srv/files/') && ok || isAdmin",
+            "strpos($p, '/srv/files/') === 0 && $ok or $admin",
+            "isAdmin || p.startsWith('/srv/files/') && ok",
+        ] {
+            assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
+        }
+        // A conjunction clause inside a disjunction does not lock the false edge.
+        assert_eq!(
+            classify_path_assertion("!p.startsWith('/srv/files/') && ok || bad"),
+            PathAssertion::None
+        );
+        // Plain conjunction still locks the true edge.
+        assert_eq!(
+            classify_path_assertion("p.startsWith('/srv/files/') && ok"),
+            PathAssertion::PrefixLock("/srv/files/".to_string())
+        );
+    }
+
+    #[test]
+    fn containment_spellings_attach_a_prefix_lock() {
+        let lit = |s: &str| PathAssertion::PrefixLock(s.to_string());
+        assert_eq!(
+            classify_path_assertion("p.is_relative_to('/srv/files')"),
+            lit("/srv/files")
+        );
+        assert_eq!(
+            classify_path_assertion("p.is_relative_to(base)"),
+            lit(OPAQUE_PREFIX_LOCK)
+        );
+        assert_eq!(
+            classify_path_assertion("str_starts_with($real, '/srv/files/')"),
+            lit("/srv/files/")
+        );
+        assert_eq!(
+            classify_path_assertion("str_starts_with($real, $base)"),
+            lit(OPAQUE_PREFIX_LOCK)
+        );
+    }
+
+    #[test]
+    fn strpos_zero_is_a_prefix_test_with_polarity() {
+        let lit = |s: &str| s.to_string();
+        assert_eq!(
+            classify_path_assertion("strpos($real, '/srv/files/') === 0"),
+            PathAssertion::PrefixLock(lit("/srv/files/"))
+        );
+        assert_eq!(
+            classify_path_assertion("strpos($real, $base) !== 0"),
+            PathAssertion::PrefixLockUnless(lit(OPAQUE_PREFIX_LOCK))
+        );
+        // Not a prefix test: another offset, a lone "/", no comparison, or a
+        // loose comparison (`false == 0` holds, so it also passes when the
+        // root is absent).
+        for cond in [
+            "strpos($real, $base) === 1",
+            "strpos($real, '/') === 0",
+            "strpos($real, $base)",
+            "strpos($real, $base) === false",
+            "strpos($real, $base) == 0",
+            "strpos($real, $base) != 0",
+            "strpos($real, $base) === 0.5",
+        ] {
+            assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
+        }
+    }
+
+    #[test]
+    fn disjunction_locks_the_false_edge_through_a_negated_root_test() {
+        let unless = |root: &str| PathAssertion::PrefixLockUnless(root.to_string());
+        assert_eq!(
+            classify_path_assertion("$p === false || !str_starts_with($p, '/srv/files/')"),
+            unless("/srv/files/")
+        );
+        assert_eq!(
+            classify_path_assertion("not p.startswith(BASE) or not os.path.exists(p)"),
+            unless(OPAQUE_PREFIX_LOCK)
+        );
+        assert_eq!(
+            classify_path_assertion("$p === false || strpos($p, $base) !== 0"),
+            unless(OPAQUE_PREFIX_LOCK)
+        );
+        // A positive root test inside a disjunction proves nothing.
+        assert_eq!(
+            classify_path_assertion("p.startswith(BASE) or other"),
+            PathAssertion::None
+        );
+        // Under a whole-condition negation the inner disjunction decides;
+        // the caller flips the edge for the negation.
+        assert_eq!(
+            classify_path_assertion("!($p === false || !str_starts_with($p, '/srv/files/'))"),
+            unless("/srv/files/")
+        );
+    }
+
+    #[test]
+    fn conjunction_locks_only_the_true_edge_of_a_positive_root_test() {
+        assert_eq!(
+            classify_path_assertion("p.startswith('/srv/files/') and os.path.isfile(p)"),
+            PathAssertion::PrefixLock("/srv/files/".to_string())
+        );
+        // The false edge of `A && B` proves neither clause false, so a
+        // negated root test or a strpos `!== 0` inside it locks nothing.
+        for cond in [
+            "!p.startsWith('/srv/files/') && strict",
+            "strpos($p, $base) !== 0 && $strict",
+            "not p.startswith(BASE) and strict",
+        ] {
+            assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
+        }
     }
 }

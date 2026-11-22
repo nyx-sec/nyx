@@ -1,0 +1,41 @@
+{
+  "description": "Path guards: `&&` binds tighter than `||`, so an `||` alternative reaches the sink unchecked; a `../` prefix test misses a normalised `..`; a bare `..` plus absolute rejection is complete.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "guard-precedence",
+    "normalize"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "admin alternative skips the root check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "notes": "startsWith('../') does not reject a normalised '..'"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        32,
+        32
+      ],
+      "notes": "bare '..' prefix and absolute rejection cover every normalised escape"
+    }
+  ]
+}

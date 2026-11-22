@@ -840,6 +840,8 @@ fn orm_builders() {
         "sqli_typeorm_safe_parameterized.ts",
         "sqli_no_orm_import_safe.ts",
         "sqli_knex_type_only_safe.ts",
+        // The drizzle `sql` tag binds plain substitutions as parameters.
+        "sqli_drizzle_tagged_template_param_safe.ts",
     ];
     for file in negatives {
         let leak = findings.iter().any(|f| {
@@ -877,10 +879,16 @@ fn orm_builders() {
 ///   - `fetch(target)` where `target: URL` carries SSA-level
 ///     TypeKind::Url and the constructor-propagated taint.
 ///
+/// Positive:
+///   - `new URL(req.body.path, "https://api.cal.com")`: the path is
+///     resolved as a reference, so an absolute or protocol-relative value
+///     replaces the base's host and the literal base locks nothing.
+///
 /// Negative:
-///   - `new URL(req.body.path, "https://api.cal.com")` — the literal
-///     base anchors an origin-locked StringFact prefix that
-///     `is_string_safe_for_ssrf` honours, so the SSRF stays silent.
+///   - ``new URL(`/v2/${req.body.path}`, "https://api.cal.com")``: the
+///     fixed `/v2/` head keeps the base host, so the literal base anchors an
+///     origin-locked StringFact prefix that `is_string_safe_for_ssrf`
+///     honours and the SSRF stays silent.
 #[test]
 fn ssrf_url_builders() {
     let findings = scan_fixture("ssrf_url_builders");
@@ -893,6 +901,9 @@ fn ssrf_url_builders() {
         ("ssrf_fetch_url_typed_arg.ts", 13usize),
         ("ssrf_fetch_object_shorthand.ts", 13usize),
         ("ssrf_fetch_object_shorthand.ts", 19usize),
+        // A literal base does not pin the host of an attacker-controlled
+        // reference: the path can be `https://evil/` or `//evil/`.
+        ("ssrf_new_url_with_base.ts", 11usize),
     ];
     for (file, sink_line) in positives {
         assert_finding_with_cap(
@@ -907,8 +918,9 @@ fn ssrf_url_builders() {
         );
     }
 
-    // Negative: origin-locked `new URL(path, "https://api.cal.com")` must
-    // not fire SSRF — the abstract-string prefix-lock suppresses it.
+    // Negative: origin-locked `new URL("/v2/" + path, "https://api.cal.com")`
+    // must not fire SSRF: the fixed head makes the path a reference that
+    // keeps the base host, and the abstract-string prefix-lock suppresses it.
     let negative = "ssrf_url_origin_locked.ts";
     let leak = findings.iter().any(|f| {
         f.path.ends_with(negative)
@@ -952,6 +964,10 @@ fn ssrf_cross_language() {
     let positives = [
         // Python — tainted full URL flowing into requests.get / request.
         "ssrf_py_positive.py",
+        // `urljoin(base, path)` / `URI.join(base, path)` resolve the path
+        // as a reference, so an attacker path can replace the base's host.
+        "ssrf_py_urljoin_attacker_path.py",
+        "ssrf_rb_uri_join_attacker_path.rb",
         "ssrf_py_search_params.py",
         // Java — HttpClient.send + OkHttpClient.newCall (Phase 14 sink).
         "SsrfJavaPositive.java",

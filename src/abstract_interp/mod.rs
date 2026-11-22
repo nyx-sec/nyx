@@ -30,6 +30,7 @@ use crate::ssa::ir::SsaValue;
 use crate::state::lattice::{AbstractDomain, Lattice};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use std::sync::Arc;
 
 /// Feature gate: check if abstract interpretation is enabled.
 ///
@@ -378,39 +379,121 @@ impl AbstractTransfer {
 
 // ── AbstractState ───────────────────────────────────────────────────────
 
-/// Maximum abstract values tracked per block (performance bound).
+/// Maximum flow-derived abstract values tracked per block (performance
+/// bound).  Body constants live in the shared [`ConstFacts`] table and do not
+/// count against it.
 const MAX_ABSTRACT_VALUES: usize = 64;
 
-/// Per-block abstract state: sorted map from SsaValue → AbstractValue.
+/// Abstract facts for the constants of one SSA body, sorted by [`SsaValue`].
 ///
-/// Values not in the map are implicitly Top (no knowledge). Sorted by
+/// Constant propagation fixes these once per body, and an SSA value has a
+/// single definition, so the table is the same at every program point.  It is
+/// shared (`Arc`) by every [`AbstractState`] of the body instead of being
+/// copied into each one, which keeps the per-block states small to clone,
+/// join and compare, and keeps the `MAX_ABSTRACT_VALUES` budget for facts
+/// that flow derives.
+#[derive(Debug, Default)]
+pub struct ConstFacts {
+    facts: Vec<(SsaValue, AbstractValue)>,
+}
+
+impl ConstFacts {
+    /// Build a table from `(value, fact)` pairs.  Top facts carry no
+    /// information and are dropped; the rest are sorted by value.
+    pub fn from_facts(mut facts: Vec<(SsaValue, AbstractValue)>) -> Self {
+        facts.retain(|(_, f)| !f.is_top());
+        facts.sort_by_key(|(v, _)| *v);
+        facts.dedup_by_key(|(v, _)| *v);
+        Self { facts }
+    }
+
+    fn get(&self, v: SsaValue) -> Option<&AbstractValue> {
+        self.facts
+            .binary_search_by_key(&v, |(id, _)| *id)
+            .ok()
+            .map(|idx| &self.facts[idx].1)
+    }
+
+    pub fn len(&self) -> usize {
+        self.facts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+}
+
+/// Per-block abstract state: sorted map from SsaValue → AbstractValue, plus
+/// the body's shared constant facts.
+///
+/// Values in neither are implicitly Top (no knowledge). Sorted by
 /// SsaValue for O(n) merge-join, matching the pattern used by
 /// `SsaTaintState.values`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct AbstractState {
     values: SmallVec<[(SsaValue, AbstractValue); 8]>,
+    /// Constants of the body this state belongs to.  A lookup that misses
+    /// `values` falls back to it.  Every state of a body carries the same
+    /// table, so equality and ordering compare `values` only.
+    constants: Option<Arc<ConstFacts>>,
 }
+
+impl PartialEq for AbstractState {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+
+impl Eq for AbstractState {}
 
 impl AbstractState {
     pub fn empty() -> Self {
         Self {
             values: SmallVec::new(),
+            constants: None,
         }
+    }
+
+    /// Attach the body's constant facts.  Called once on the entry state;
+    /// every state derived from it by `clone`, [`join`](Self::join) or
+    /// [`widen`](Self::widen) keeps the table.
+    pub fn with_constants(mut self, constants: Arc<ConstFacts>) -> Self {
+        if !constants.is_empty() {
+            self.constants = Some(constants);
+        }
+        self
     }
 
     /// Get abstract value for an SSA value. Returns Top if absent.
     pub fn get(&self, v: SsaValue) -> AbstractValue {
-        self.values
-            .binary_search_by_key(&v, |(id, _)| *id)
-            .ok()
-            .map(|idx| self.values[idx].1.clone())
+        if let Ok(idx) = self.values.binary_search_by_key(&v, |(id, _)| *id) {
+            return self.values[idx].1.clone();
+        }
+        self.constants
+            .as_ref()
+            .and_then(|c| c.get(v))
+            .cloned()
             .unwrap_or_else(AbstractValue::top)
     }
 
     /// Set abstract value for an SSA value. Drops Top values to save space.
+    ///
+    /// A fact equal to the one the constant table already holds for `v` is
+    /// not stored: the lookup returns it anyway.
     pub fn set(&mut self, v: SsaValue, val: AbstractValue) {
         if val.is_top() {
             // Don't store Top, it's the default
+            if let Ok(idx) = self.values.binary_search_by_key(&v, |(id, _)| *id) {
+                self.values.remove(idx);
+            }
+            return;
+        }
+        if self
+            .constants
+            .as_ref()
+            .and_then(|c| c.get(v))
+            .is_some_and(|known| *known == val)
+        {
             if let Ok(idx) = self.values.binary_search_by_key(&v, |(id, _)| *id) {
                 self.values.remove(idx);
             }
@@ -427,9 +510,14 @@ impl AbstractState {
         }
     }
 
+    fn shared_constants(&self, other: &Self) -> Option<Arc<ConstFacts>> {
+        self.constants.clone().or_else(|| other.constants.clone())
+    }
+
     /// Merge-join two abstract states. Values present in both are joined;
     /// values present in only one side are dropped (absent = Top, join with
-    /// Top = Top).
+    /// Top = Top).  Constants are the same on both sides and stay in the
+    /// shared table.
     pub fn join(&self, other: &Self) -> Self {
         let mut result = SmallVec::with_capacity(self.values.len().min(other.values.len()));
         let (mut i, mut j) = (0, 0);
@@ -455,7 +543,10 @@ impl AbstractState {
             }
         }
 
-        Self { values: result }
+        Self {
+            values: result,
+            constants: self.shared_constants(other),
+        }
     }
 
     /// Merge-widen: for values present in both states, apply widening.
@@ -483,29 +574,33 @@ impl AbstractState {
             }
         }
 
-        Self { values: result }
+        Self {
+            values: result,
+            constants: self.shared_constants(other),
+        }
     }
 
     /// Partial order: self ⊑ other.
     pub fn leq(&self, other: &Self) -> bool {
         // self ⊑ other iff for every SSA value v: self[v] ⊑ other[v], using the
-        // convention that an absent entry is Top.
+        // convention that an absent entry is Top (or the body constant).
         //
         // Three cases by where v is stored:
         //   - in both:      check self[v] ⊑ other[v]  (loop over self below).
-        //   - in self only: other[v] = Top, and self[v] ⊑ Top always holds — ok.
-        //   - in other only: self[v] = Top; since stored entries are non-Top,
-        //     Top ⋢ other[v], so self ⋢ other. This case was previously missed.
+        //   - in self only: other[v] = Top (or the constant), and
+        //     self[v] ⊑ other[v] is checked by `get` below.
+        //   - in other only: self[v] = Top (or the constant); stored entries
+        //     are non-Top, so unless self[v] is a constant that fits, self ⋢ other.
         for (v, val) in &self.values {
             let other_val = other.get(*v);
             if !val.leq(&other_val) {
                 return false;
             }
         }
-        // Any value present only in `other` means self[v] = Top ⋢ other[v]
-        // (other's stored entries are non-Top), so self ⋢ other.
-        for (v, _) in &other.values {
-            if self.values.binary_search_by_key(v, |(id, _)| *id).is_err() {
+        for (v, other_val) in &other.values {
+            if self.values.binary_search_by_key(v, |(id, _)| *id).is_err()
+                && !self.get(*v).leq(other_val)
+            {
                 return false;
             }
         }
@@ -750,5 +845,85 @@ mod tests {
         assert_eq!(phi3.lo, Some(0));
         assert_eq!(phi3.hi, None);
         assert_eq!(phi3, widened); // converged
+    }
+
+    // ── Shared constant table ────────────────────────────────────────────
+
+    fn int_fact(n: i64) -> AbstractValue {
+        AbstractValue {
+            interval: IntervalFact::exact(n),
+            string: StringFact::top(),
+            bits: BitFact::from_const(n),
+            path: PathFact::top(),
+        }
+    }
+
+    fn table(n: u32) -> Arc<ConstFacts> {
+        Arc::new(ConstFacts::from_facts(
+            (0..n).map(|i| (SsaValue(i), int_fact(i as i64))).collect(),
+        ))
+    }
+
+    #[test]
+    fn constant_table_is_read_through_get() {
+        let st = AbstractState::empty().with_constants(table(10));
+        assert_eq!(st.get(SsaValue(7)), int_fact(7));
+        assert!(st.get(SsaValue(10)).is_top());
+    }
+
+    #[test]
+    fn constants_do_not_use_the_flow_budget() {
+        // A body with far more constants than the budget: every flow-derived
+        // fact still fits, up to the budget itself.
+        let mut st = AbstractState::empty().with_constants(table(300));
+        for i in 0..MAX_ABSTRACT_VALUES as u32 {
+            st.set(SsaValue(1000 + i), int_fact(-(i as i64) - 1));
+        }
+        for i in 0..MAX_ABSTRACT_VALUES as u32 {
+            assert_eq!(st.get(SsaValue(1000 + i)), int_fact(-(i as i64) - 1));
+        }
+        // Over budget: the next new fact is dropped, the table is untouched.
+        st.set(SsaValue(5000), int_fact(-999));
+        assert!(st.get(SsaValue(5000)).is_top());
+        assert_eq!(st.get(SsaValue(299)), int_fact(299));
+    }
+
+    #[test]
+    fn setting_the_tabled_fact_stores_nothing() {
+        let mut st = AbstractState::empty().with_constants(table(4));
+        st.set(SsaValue(2), int_fact(2));
+        assert_eq!(st, AbstractState::empty().with_constants(table(4)));
+        assert_eq!(st.get(SsaValue(2)), int_fact(2));
+    }
+
+    #[test]
+    fn a_different_fact_overrides_the_table() {
+        let mut st = AbstractState::empty().with_constants(table(4));
+        st.set(SsaValue(2), int_fact(99));
+        assert_eq!(st.get(SsaValue(2)), int_fact(99));
+    }
+
+    #[test]
+    fn join_and_widen_keep_the_table() {
+        let mut a = AbstractState::empty().with_constants(table(4));
+        let mut b = a.clone();
+        a.set(SsaValue(50), int_fact(1));
+        b.set(SsaValue(50), int_fact(2));
+        b.set(SsaValue(51), int_fact(3));
+        for merged in [a.join(&b), a.widen(&b)] {
+            assert_eq!(merged.get(SsaValue(3)), int_fact(3), "constant survives");
+            // Present on one side only: Top.
+            assert!(merged.get(SsaValue(51)).is_top());
+            assert!(!merged.get(SsaValue(50)).is_top());
+        }
+    }
+
+    #[test]
+    fn leq_reads_constants_on_both_sides() {
+        let with = AbstractState::empty().with_constants(table(4));
+        let mut flow = with.clone();
+        flow.set(SsaValue(70), int_fact(5));
+        assert!(flow.leq(&with));
+        assert!(!with.leq(&flow));
     }
 }

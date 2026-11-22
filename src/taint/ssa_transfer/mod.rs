@@ -648,40 +648,27 @@ fn run_ssa_taint_internal(
     if let Some(ref mut entry_state) = block_states[ssa.entry.0 as usize] {
         if let Some(ref mut abs) = entry_state.abstract_state {
             if let Some(cv) = transfer.const_values {
-                // COW fork: only deep-copy the shared AbstractState when there
-                // are const values to seed (an entry block with no const-prop
-                // facts keeps sharing its `initial()` Arc).
-                let abs = Arc::make_mut(abs);
-                use crate::abstract_interp::{
-                    AbstractValue, BitFact, IntervalFact, PathFact, StringFact,
-                };
+                use crate::abstract_interp::{AbstractValue, ConstFacts};
                 use crate::ssa::const_prop::ConstLattice;
+                // The body's constants go into one table shared by every
+                // block's state, not into each state's own entries: they are
+                // fixed per body, so copying them would only crowd out the
+                // facts the flow derives.
+                let mut facts: Vec<(SsaValue, AbstractValue)> = Vec::new();
                 for (v, cl) in cv.iter() {
                     match cl {
-                        ConstLattice::Int(n) => {
-                            abs.set(
-                                v,
-                                AbstractValue {
-                                    interval: IntervalFact::exact(*n),
-                                    string: StringFact::top(),
-                                    bits: BitFact::from_const(*n),
-                                    path: PathFact::top(),
-                                },
-                            );
-                        }
-                        ConstLattice::Str(s) => {
-                            abs.set(
-                                v,
-                                AbstractValue {
-                                    interval: IntervalFact::top(),
-                                    string: StringFact::exact(s),
-                                    bits: BitFact::top(),
-                                    path: PathFact::top(),
-                                },
-                            );
-                        }
+                        ConstLattice::Int(n) => facts.push((v, int_const_value(*n))),
+                        ConstLattice::Str(s) => facts.push((v, string_const_value(s))),
                         _ => {}
                     }
+                }
+                if !facts.is_empty() {
+                    // COW fork: an entry block with no const-prop facts keeps
+                    // sharing its `initial()` Arc.
+                    let abs = Arc::make_mut(abs);
+                    let seeded = std::mem::replace(abs, AbstractState::empty())
+                        .with_constants(Arc::new(ConstFacts::from_facts(facts)));
+                    *abs = seeded;
                 }
             }
             // Static-map seeding is intentionally NOT fused into the
@@ -3422,10 +3409,26 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     // decided by the PathFact narrowing below.  Restricted to a single
     // condition variable: with `a.includes("..") || b.startsWith("/")`
     // neither variable is proven safe on both axes.
-    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot);
+    //
+    // `startswith("..")` rejects the `..` axis only for a lexically
+    // normalized value, whose `..` components are all leading; the reaching
+    // definition's PathFact says whether that holds.
     let rejects_absolute = rejection_axes
         .iter()
         .any(|a| matches!(a, PathRejection::AbsoluteSlash | PathRejection::IsAbsolute));
+    let rejects_dotdot = rejection_axes.contains(&PathRejection::DotDot)
+        || (rejection_axes.contains(&PathRejection::LeadingDotDot)
+            && effective_vars.len() == 1
+            && reaching_def_at_block_end(&effective_vars[0], ssa, block).is_some_and(|v| {
+                let safe_state: &SsaTaintState = if rejection_safe_is_true {
+                    true_state
+                } else {
+                    false_state
+                };
+                safe_state.abstract_state.as_ref().is_some_and(|abs| {
+                    abs.get(v).path.normalized == crate::abstract_interp::Tri::Yes
+                })
+            }));
     if rejects_dotdot && rejects_absolute && effective_vars.len() == 1 {
         let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
             &mut *true_state
@@ -3469,15 +3472,31 @@ fn apply_path_fact_branch_narrowing_with_aliases(
                 PathRejection::AbsoluteSlash | PathRejection::IsAbsolute => {
                     fact.absolute = crate::abstract_interp::Tri::No;
                 }
+                // Lexical normalisation leaves `..` only at the start of a
+                // relative path, so a normalized value that does not start
+                // with `..` has none.  Any other value may still hold one
+                // in the middle.
+                PathRejection::LeadingDotDot => {
+                    if fact.normalized == crate::abstract_interp::Tri::Yes {
+                        fact.dotdot = crate::abstract_interp::Tri::No;
+                    }
+                }
                 PathRejection::None => {}
             }
         }
     };
 
-    // Apply assertion (positive): true branch narrows prefix_lock.
-    let narrow_true = |fact: &mut PathFact| {
-        if let PathAssertion::PrefixLock(root) = assertion {
-            let updated = fact.clone().with_prefix_lock(root);
+    // Apply assertion (positive): the branch where it holds narrows
+    // prefix_lock.
+    let narrow_assertion = |fact: &mut PathFact| {
+        if let PathAssertion::PrefixLock(root) | PathAssertion::PrefixLockUnless(root) = assertion {
+            let mut updated = fact.clone().with_prefix_lock(root);
+            // A lexically normalized path holds `..` only as leading
+            // components, and a path that starts with a root that is not
+            // itself `..` has none.
+            if updated.normalized == crate::abstract_interp::Tri::Yes && !root.starts_with("..") {
+                updated.dotdot = crate::abstract_interp::Tri::No;
+            }
             *fact = updated;
         }
     };
@@ -3516,15 +3535,18 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     // actually holds on the *false* CFG edge, where the sink is reached.
     // Flip the destination state in that case so the lock attaches to
     // the surviving block.
-    let assertion_state = if negated {
-        &mut *false_state
-    } else {
+    // `PrefixLockUnless` (`strpos($p, $root) !== 0`) holds on the opposite
+    // edge.
+    let holds_on_true = !negated ^ matches!(assertion, PathAssertion::PrefixLockUnless(_));
+    let assertion_state = if holds_on_true {
         &mut *true_state
+    } else {
+        &mut *false_state
     };
     for v in &targets {
         if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
-            narrow_true(&mut av.path);
+            narrow_assertion(&mut av.path);
             if !av.is_top() {
                 Arc::make_mut(abs).set(*v, av);
             }
@@ -5945,9 +5967,12 @@ pub(super) fn transfer_inst(
                 && state.abstract_state.as_ref().is_some_and(|abs| {
                     args.first().is_some_and(|first_arg| {
                         !first_arg.is_empty()
-                            && first_arg
-                                .iter()
-                                .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+                            && first_arg.iter().all(|v| {
+                                is_string_safe_for_ssrf(
+                                    &abs.get(*v).string,
+                                    info.call.callee.as_deref(),
+                                )
+                            })
                     })
                 });
             let url_is_hardcoded_safe =
@@ -6654,8 +6679,16 @@ pub(super) fn transfer_inst(
                     // result, only the receiver and the query text do.
                     let (use_caps, use_origins) = match sql_query_payload_positions(info) {
                         Some(payload) => {
-                            let (mut caps, mut origins) =
-                                collect_args_taint(args, &None, state, &payload);
+                            let (mut caps, mut origins) = match sql_query_text_field_names(info) {
+                                // Config-object form
+                                // (`pool.query({ text, values })`): only the
+                                // SQL text fields of the object are the
+                                // query, `values` is bound.
+                                Some(names) => {
+                                    collect_named_args_taint(args, state, ssa, &payload, &names)
+                                }
+                                None => collect_args_taint(args, &None, state, &payload),
+                            };
                             if let Some(taint) = receiver.as_ref().and_then(|rv| state.get(*rv)) {
                                 caps |= taint.caps;
                                 for orig in &taint.origins {
@@ -7690,9 +7723,22 @@ pub(super) fn transfer_inst(
                                         .unwrap_or(false)
                             })
                         };
+                    // Request-bound formal (`@Query('q') q`, `@Body() dto`) or
+                    // a field path rooted at one (`dto.cmd`): the framework
+                    // fills it from the request whatever its name.
+                    let root = var_name.split('.').next().unwrap_or(var_name);
+                    // Only TypeScript decorators set the flag for this seed;
+                    // other languages fill it for their own routing and the
+                    // seeding passes for those read it elsewhere.
+                    let is_request_bound = matches!(transfer.lang, Lang::TypeScript)
+                        && transfer
+                            .param_route_capture
+                            .is_some_and(|flags| flags.iter().any(|f| *f))
+                        && request_bound_formal(ssa, transfer, root);
                     if crate::labels::is_js_ts_handler_param_name(var_name)
                         || root_is_handler
                         || is_destructured_request_field
+                        || is_request_bound
                     {
                         let origin = TaintOrigin {
                             node: inst.cfg_node,
@@ -8003,12 +8049,87 @@ fn url_builder_concrete_base(
     {
         return Some(s.to_string());
     }
-    let bv = args.get(base_idx).and_then(|g| g.first().copied())?;
+    // A base built by a call can be anything the callee returns, and a group
+    // with several values is an expression over several names: neither is
+    // the single constant the domain below describes.
+    if info.arg_callees.get(base_idx).is_some_and(Option::is_some) {
+        return None;
+    }
+    let bv = match args.get(base_idx) {
+        Some(group) if group.len() == 1 => group[0],
+        _ => return None,
+    };
     let dom = abs.get(bv).string.domain?;
     if dom.len() == 1 {
         Some(dom.into_iter().next().expect("len==1 guards index"))
     } else {
         None
+    }
+}
+
+/// String knowledge for the path (reference) argument of a URL builder call:
+/// the inline literal, the literal head of an inline `"/v1/" + p` /
+/// template / f-string argument, or, for a plain variable argument, the
+/// variable's abstract fact.  An argument that is itself a call result has no
+/// usable fact, since the callee may rewrite the text.
+fn url_builder_path_fact(
+    info: &NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+    path_idx: usize,
+) -> crate::abstract_interp::StringFact {
+    use crate::abstract_interp::StringFact;
+    if let Some(Some(lit)) = info.call.arg_string_literals.get(path_idx) {
+        return StringFact::exact(lit);
+    }
+    if let Some(Some(prefix)) = info.call.arg_string_prefixes.get(path_idx) {
+        return StringFact::from_prefix(prefix);
+    }
+    // Only an argument that is exactly a name has the name's fact: a slice
+    // or a call over it can drop the head that keeps the host.
+    bare_name_arg(info, callee, args, path_idx)
+        .map(|v| abs.get(v).string)
+        .unwrap_or_else(StringFact::top)
+}
+
+/// Abstract value of an integer constant.
+fn int_const_value(n: i64) -> crate::abstract_interp::AbstractValue {
+    use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
+    AbstractValue {
+        interval: IntervalFact::exact(n),
+        string: StringFact::top(),
+        bits: BitFact::from_const(n),
+        path: PathFact::top(),
+    }
+}
+
+/// Abstract value of a string constant.
+///
+/// The PathFact axes come from the *literal* content.  An empty string has no
+/// `..` segment and no absolute root, both axes proven safe, so a Const `""`
+/// (Python / JS / TS / Java rejection-arm sentinel) carries a path-safe fact
+/// even without a per-language allocator recogniser like Rust's
+/// `String::new()`.  Non-empty literals also surface their own
+/// dotdot/absolute axes when the literal text proves them.
+///
+/// The `Const` transfer and the body's constant table both build their facts
+/// here, so the table entry equals what the transfer would store and the
+/// state does not keep a copy of it.
+fn string_const_value(s: &str) -> crate::abstract_interp::AbstractValue {
+    use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
+    let mut pf = PathFact::top();
+    if !s.contains("..") {
+        pf = pf.with_dotdot_cleared();
+    }
+    if !(s.starts_with('/') || s.starts_with('\\')) {
+        pf = pf.with_absolute_cleared();
+    }
+    AbstractValue {
+        interval: IntervalFact::top(),
+        string: StringFact::exact(s),
+        bits: BitFact::top(),
+        path: pf,
     }
 }
 
@@ -8039,45 +8160,61 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
     match &inst.op {
         SsaOp::Const(Some(text)) => {
             let trimmed = text.trim();
-            // Try integer
             if let Ok(n) = trimmed.parse::<i64>() {
+                abs.set(inst.value, int_const_value(n));
+            } else if is_string_const(trimmed) {
                 abs.set(
                     inst.value,
-                    AbstractValue {
-                        interval: IntervalFact::exact(n),
-                        string: StringFact::top(),
-                        bits: BitFact::from_const(n),
-                        path: PathFact::top(),
-                    },
+                    string_const_value(&strip_string_quotes(trimmed)),
                 );
-            } else if is_string_const(trimmed) {
-                let s = strip_string_quotes(trimmed);
-                // String literal: derive PathFact axes from the *literal*
-                // content.  An empty string has no `..` segment and no
-                // absolute root, both axes proven safe, so a Const `""`
-                // (Python / JS / TS / Java rejection-arm sentinel) carries a
-                // path-safe fact even without a per-language allocator
-                // recogniser like Rust's `String::new()`.  Non-empty
-                // literals also surface their own dotdot/absolute axes
-                // when the literal text proves them.
-                let mut pf = PathFact::top();
-                if !s.contains("..") {
-                    pf = pf.with_dotdot_cleared();
-                }
-                if !(s.starts_with('/') || s.starts_with('\\')) {
-                    pf = pf.with_absolute_cleared();
-                }
+            }
+            // Bool/Null/other: leave as Top
+        }
+
+        // Phase 08 / Phase 14: `(base, path)` URL builder origin-lock.
+        // When the base arg is a literal (read off
+        // `info.call.arg_string_literals[base_idx]`) or a const-bound
+        // identifier whose abstract `StringFact.domain` is a singleton
+        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
+        // seed the result's [`StringFact`] so `is_string_safe_for_ssrf` can
+        // suppress the SSRF sink at the downstream HTTP call.  The arg
+        // position table lives in [`crate::ssa::type_facts::url_builder_arg_indices`]:
+        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`, Go
+        // `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`, Ruby
+        // `URI.join(base, path)`.
+        //
+        // Reference resolution is not concatenation: an absolute or
+        // protocol-relative path replaces the base's host, so the origin
+        // stays pinned only when the path is provably a relative reference
+        // (`StringFact::from_url_with_base`).  Go `JoinPath` appends path
+        // segments and pins the origin whatever they hold.
+        //
+        // This arm owns every two-argument builder call.  The generic
+        // string-prefix arms below read the *first* argument, which for
+        // `urljoin(base, path)` is the base and for `new URL(path, base)`
+        // the attacker's path, and would lock the origin of a builder whose
+        // base is unknown.  A builder without a concrete base leaves its
+        // result Top.
+        SsaOp::Call { callee, args, .. } if args.len() >= 2 && facts.url_builder.is_some() => {
+            let lang_u = lang.expect("a URL builder fact implies a language");
+            let (path_idx, base_idx) = facts.url_builder.expect("guard ensures Some");
+            if let Some(base) = url_builder_concrete_base(info, args, abs, base_idx) {
+                let path_fact = url_builder_path_fact(info, callee, args, abs, path_idx);
+                let string = if crate::ssa::type_facts::url_builder_appends_path(lang_u) {
+                    StringFact::from_url_joined_path(&base, &path_fact)
+                } else {
+                    StringFact::from_url_with_base(&base, &path_fact)
+                };
                 abs.set(
                     inst.value,
                     AbstractValue {
                         interval: IntervalFact::top(),
-                        string: StringFact::exact(&s),
+                        string,
                         bits: BitFact::top(),
-                        path: pf,
+                        path: PathFact::top(),
                     },
                 );
             }
-            // Bool/Null/other: leave as Top
         }
 
         // Template-literal / string-prefix override: when the RHS is
@@ -8088,28 +8225,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // fixed-host URLs. Placed before the arithmetic/copy arms so it wins
         // over the default Top StringFact.
         SsaOp::Assign(_) if info.string_prefix.is_some() => {
-            let prefix = info.string_prefix.as_deref().unwrap();
-            abs.set(
-                inst.value,
-                AbstractValue {
-                    interval: IntervalFact::top(),
-                    string: StringFact::from_prefix(prefix),
-                    bits: BitFact::top(),
-                    path: PathFact::top(),
-                },
-            );
-        }
-
-        // Same prefix-from-CFG override for Call instructions whose result is
-        // the variable binding (e.g. `url = wrapper('lit' + userPath)`).  The
-        // CFG node carries `string_prefix` extracted from the call's first
-        // positional argument; without this arm the Call result's StringFact
-        // is Top and downstream SSRF suppression (`is_call_abstract_safe`
-        // looking at `axios.get(url)`'s own first arg) cannot read the lock.
-        // Mirrors the same passthrough-heuristic that the
-        // `is_call_abstract_safe` node-attached check at the sink site
-        // already relies on.
-        SsaOp::Call { .. } if info.string_prefix.is_some() => {
             let prefix = info.string_prefix.as_deref().unwrap();
             abs.set(
                 inst.value,
@@ -8253,45 +8368,6 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
             }
         }
 
-        // Phase 08 / Phase 14 — `(base, path)` URL builder origin-lock.
-        // When the base arg is a literal (read off
-        // `info.call.arg_string_literals[base_idx]`) or a const-bound
-        // identifier whose abstract `StringFact.domain` is a singleton
-        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
-        // seed the result's [`StringFact`] with
-        // `from_url_with_base(base, path_string)` so the locked-host
-        // prefix survives even when the path component carries arbitrary
-        // taint. `is_string_safe_for_ssrf` honours the prefix and
-        // suppresses the SSRF sink at the downstream HTTP call. The
-        // arg-position table lives in
-        // [`crate::ssa::type_facts::url_builder_arg_indices`] — covers
-        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
-        // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
-        // Ruby `URI.join(base, path)`.
-        SsaOp::Call { args, .. }
-            if facts.url_builder.is_some_and(|(_p, base_idx)| {
-                url_builder_concrete_base(info, args, abs, base_idx).is_some()
-            }) =>
-        {
-            let (path_idx, base_idx) = facts.url_builder.expect("guard ensures Some");
-            let base =
-                url_builder_concrete_base(info, args, abs, base_idx).expect("guard ensures Some");
-            let path_string = args
-                .get(path_idx)
-                .and_then(|g| g.first().copied())
-                .map(|pv| abs.get(pv).string)
-                .unwrap_or_else(StringFact::top);
-            abs.set(
-                inst.value,
-                AbstractValue {
-                    interval: IntervalFact::top(),
-                    string: StringFact::from_url_with_base(&base, &path_string),
-                    bits: BitFact::top(),
-                    path: PathFact::top(),
-                },
-            );
-        }
-
         // Phase 14 — single-arg URL/URI constructor StringFact passthrough.
         // `new URL(spec)` (Java/JS), plus the static factory list in
         // [`crate::ssa::type_facts::is_url_single_arg_factory`] — when the
@@ -8302,21 +8378,22 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // through `is_abstract_safe_for_sink`.  Strictly additive: the
         // 2-arg `(base, path)` shape is handled by the
         // `url_builder_arg_indices` arm above; this single-arg arm only
-        // fires when that arm doesn't.
-        SsaOp::Call { args, .. }
-            if facts.url_single_arg
-                && facts.url_builder.is_none_or(|(_p, base_idx)| {
-                    // Skip when the 2-arg arm above would already
-                    // have fired (it consumed a literal or
-                    // const-bound singleton base).
-                    url_builder_concrete_base(info, args, abs, base_idx).is_none()
-                }) =>
-        {
-            let arg_string = args
-                .first()
-                .and_then(|g| g.first().copied())
-                .map(|pv| abs.get(pv).string)
-                .unwrap_or_else(StringFact::top);
+        // fires when that arm doesn't.  A two-argument `(path, base)` call is
+        // the builder arm's; only the single-argument form passes its
+        // argument through.
+        SsaOp::Call { callee, args, .. } if facts.url_single_arg && args.len() < 2 => {
+            // A literal argument has no SSA use, so it is read off the node:
+            // `URL base = new URL("https://api.example.com/")` is what a later
+            // `new URL(base, spec)` resolves against.
+            let literal_arg = node_describes_call(info, callee)
+                .then(|| info.call.arg_string_literals.first())
+                .flatten()
+                .and_then(|l| l.as_deref());
+            let arg_string = match (args.first().and_then(|g| g.first().copied()), literal_arg) {
+                (Some(pv), _) => abs.get(pv).string,
+                (None, Some(lit)) => StringFact::exact(lit),
+                (None, None) => StringFact::top(),
+            };
             if !arg_string.is_top() {
                 abs.set(
                     inst.value,
@@ -8375,17 +8452,47 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                 .as_ref()
                 .copied()
                 .or_else(|| args.first().and_then(|g| g.first().copied()));
-            let input_fact = input_val
+            let mut input_fact = input_val
                 .map(|v| abs.get(v).path)
                 .unwrap_or_else(PathFact::top);
+            // A value that starts with `/` is rooted, whether the text is a
+            // tracked variable (`"/" + name`) or the call's own first argument
+            // (`filepath.Clean("/" + name)`).  The node describes the call
+            // only when the SSA call is the node's own call, not one nested in
+            // an argument of the statement's outer call.
+            if input_fact.absolute == crate::abstract_interp::Tri::Maybe {
+                let rooted = |p: &str| p.starts_with('/') || p.starts_with('\\');
+                // The value read is the call's own first argument, and only
+                // when that argument is exactly a name: `p[1:]` or a call on
+                // `p` drops the leading `/` that `p`'s prefix shows.
+                let by_value = receiver.is_none()
+                    && bare_name_arg(info, callee, args, 0)
+                        .is_some_and(|v| abs.get(v).string.prefix.as_deref().is_some_and(rooted));
+                let by_arg = node_describes_call(info, callee)
+                    && info
+                        .call
+                        .arg_string_prefixes
+                        .first()
+                        .and_then(|p| p.as_deref())
+                        .is_some_and(rooted);
+                if by_value || by_arg {
+                    input_fact.absolute = crate::abstract_interp::Tri::Yes;
+                }
+            }
 
             // Primary path-producing primitives, per-language dispatch.
             let lang_unwrapped = lang.expect("guard ensures lang.is_some()");
-            if let Some(pf) = crate::abstract_interp::path_domain::classify_path_primitive_for_lang(
-                lang_unwrapped,
-                callee,
-                &input_fact,
-            ) {
+            if let Some(pf) =
+                segment_join_under_rooted_base(lang_unwrapped, callee, info, args, abs)
+            {
+                abs.set(inst.value, AbstractValue::with_path_fact(pf));
+            } else if let Some(pf) =
+                crate::abstract_interp::path_domain::classify_path_primitive_for_lang(
+                    lang_unwrapped,
+                    callee,
+                    &input_fact,
+                )
+            {
                 abs.set(inst.value, AbstractValue::with_path_fact(pf));
             } else if matches!(lang, Some(Lang::Rust)) {
                 // Rust-specific: `.replace(...)` sanitiser, variant-wrapper
@@ -8505,6 +8612,121 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
 
         _ => {}
     }
+
+    // Prefix-from-CFG for Call instructions whose result is the variable
+    // binding (e.g. `url = wrapper('lit' + userPath)`).  The CFG node carries
+    // `string_prefix` extracted from the call's URL argument; without it the
+    // Call result's StringFact is Top and downstream SSRF suppression
+    // (`is_call_abstract_safe` looking at `axios.get(url)`'s own first arg)
+    // cannot read the lock.  It only fills in the string component, after the
+    // arms above, so a path primitive (`Clean("/data/" + f)`) keeps its
+    // PathFact.  A `(base, path)` URL builder never takes it: the prefix
+    // belongs to an argument, not to the URL the builder resolves.
+    if let (SsaOp::Call { args, .. }, Some(prefix)) = (&inst.op, info.string_prefix.as_deref()) {
+        let is_url_builder = args.len() >= 2 && facts.url_builder.is_some();
+        if !is_url_builder {
+            let mut value = abs.get(inst.value);
+            if value.string.is_top() {
+                value.string = StringFact::from_prefix(prefix);
+                abs.set(inst.value, value);
+            }
+        }
+    }
+}
+
+/// The SSA value of positional argument `i` of the call `callee` when the
+/// argument is exactly a name (see `CallMeta::arg_bare_names`), so the
+/// value's abstract facts are the argument's.  `None` for any other argument
+/// shape, for a call the node does not describe, and when the use group does
+/// not hold exactly one value.
+fn bare_name_arg(
+    info: &NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    i: usize,
+) -> Option<SsaValue> {
+    if i >= 64 || info.call.arg_bare_names & (1u64 << i) == 0 {
+        return None;
+    }
+    if !node_describes_call(info, callee) {
+        return None;
+    }
+    match args.get(i) {
+        Some(group) if group.len() == 1 => Some(group[0]),
+        _ => None,
+    }
+}
+
+/// True when `info` is the CFG node of the call `callee`, not of an outer
+/// call whose argument list the SSA call sits in (`os.ReadFile(filepath.Clean(x))`
+/// shares one node between both calls).  Per-argument literals and prefixes on
+/// the node belong to the node's own call only.
+fn node_describes_call(info: &NodeInfo, callee: &str) -> bool {
+    let leaf = |c: &str| c.rsplit(['.', ':']).next().unwrap_or(c).to_string();
+    info.call
+        .callee
+        .as_deref()
+        .is_some_and(|node_callee| leaf(node_callee) == leaf(callee))
+}
+
+/// PathFact of `filepath.Join(base, elems...)` / `path.join(base, elems...)`
+/// when `base` is a rooted literal and no later element can carry a `..`.
+///
+/// These joins treat every later argument as a path segment and clean the
+/// result, so the result stays under `base`: an absolute element does not
+/// replace it (unlike Python's `os.path.join`), and `..` is the only way out.
+/// `filepath.Join("/var/data", filepath.Clean("/" + name))` and
+/// `filepath.Join("/var/data", filepath.Base(name))` qualify; a bare request
+/// value does not, and keeps the classifier's `normalized`-only fact.
+fn segment_join_under_rooted_base(
+    lang: Lang,
+    callee: &str,
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+) -> Option<crate::abstract_interp::PathFact> {
+    use crate::abstract_interp::{PathFact, Tri};
+    let is_segment_join = match lang {
+        Lang::Go => matches!(callee, "filepath.Join" | "path.Join"),
+        Lang::JavaScript | Lang::TypeScript => {
+            matches!(callee, "path.join" | "path.posix.join")
+        }
+        _ => false,
+    };
+    if !is_segment_join || !node_describes_call(info, callee) {
+        return None;
+    }
+    let base = info.call.arg_string_literals.first()?.as_deref()?;
+    if !base.starts_with('/') || base.split('/').any(|seg| seg == "." || seg == "..") {
+        return None;
+    }
+    let positional = info.call.arg_uses.len();
+    if positional < 2 {
+        return None;
+    }
+    // Each element is its own path segment run, so a `..` can only come from
+    // inside one element.  A non-literal element must be exactly a name whose
+    // fact rules `..` out: `clean + "/.."` has the same single SSA use as
+    // `clean` but not its fact.
+    for i in 1..positional {
+        let literal = info
+            .call
+            .arg_string_literals
+            .get(i)
+            .and_then(|l| l.as_deref());
+        let ok = match literal {
+            Some(l) => !l.contains(".."),
+            None => bare_name_arg(info, callee, args, i)
+                .is_some_and(|v| abs.get(v).path.dotdot == Tri::No),
+        };
+        if !ok {
+            return None;
+        }
+    }
+    let mut fact = PathFact::top().with_dotdot_cleared().with_prefix_lock(base);
+    fact.normalized = Tri::Yes;
+    fact.absolute = Tri::Yes;
+    Some(fact)
 }
 
 /// Structural check: does `callee` look like a Rust scoped identifier
@@ -10304,6 +10526,58 @@ fn sql_query_payload_positions(info: &NodeInfo) -> Option<Vec<usize>> {
     (!positions.is_empty()).then_some(positions)
 }
 
+/// Identifiers read by the SQL text fields of an object-literal query
+/// argument (`pool.query({ text: sql, values })` gives `["sql"]`), when every
+/// SQL gate of the call narrows its destination to such fields.  `None` for a
+/// call whose SQL argument is not an object-literal config.
+fn sql_query_text_field_names(info: &NodeInfo) -> Option<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    let mut any = false;
+    for gate in info
+        .call
+        .gate_filters
+        .iter()
+        .filter(|g| g.label_caps.intersects(Cap::SQL_QUERY))
+    {
+        names.extend(gate.destination_uses.as_ref()?.iter().cloned());
+        any = true;
+    }
+    any.then_some(names)
+}
+
+/// Taint of the arguments at `positions` restricted to values whose variable
+/// name is in `names`, the same narrowing the sink check applies for a
+/// destination-filtered gate.
+fn collect_named_args_taint(
+    args: &[SmallVec<[SsaValue; 2]>],
+    state: &SsaTaintState,
+    ssa: &SsaBody,
+    positions: &[usize],
+    names: &[String],
+) -> (Cap, SmallVec<[TaintOrigin; 2]>) {
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    for &pos in positions {
+        for &v in args.get(pos).into_iter().flatten() {
+            let named = ssa
+                .def_of(v)
+                .var_name
+                .as_deref()
+                .is_some_and(|vn| names.iter().any(|n| n == vn));
+            if !named {
+                continue;
+            }
+            if let Some(taint) = state.get(v) {
+                caps |= taint.caps;
+                for orig in &taint.origins {
+                    push_origin_bounded(&mut origins, *orig);
+                }
+            }
+        }
+    }
+    (caps, origins)
+}
+
 /// Collect taint from call arguments.
 ///
 /// `args` contains **positional arguments only**, the receiver is a separate
@@ -11277,6 +11551,27 @@ fn is_body_model_field(ssa: &SsaBody, transfer: &SsaTaintTransfer, value: SsaVal
                             | crate::ssa::type_facts::TypeKind::Object
                     )
                 })
+    })
+}
+
+/// True when `name` is a real formal of the body (not a synthetic external)
+/// whose `param_route_capture` flag marks it as filled from the request.
+fn request_bound_formal(ssa: &SsaBody, transfer: &SsaTaintTransfer, name: &str) -> bool {
+    let Some(flags) = transfer.param_route_capture else {
+        return false;
+    };
+    let eb = &ssa.blocks[ssa.entry.0 as usize];
+    eb.phis.iter().chain(eb.body.iter()).any(|i| match i.op {
+        SsaOp::Param { index } => {
+            flags.get(index).copied().unwrap_or(false)
+                && !ssa.synthetic_externals.contains(&i.value)
+                && ssa
+                    .value_defs
+                    .get(i.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                    == Some(name)
+        }
+        _ => false,
     })
 }
 
@@ -12874,7 +13169,9 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
     // Walk from the end, peeling identity methods.
     let mut i = segments.len();
     while i > 0 {
-        let seg = segments[i - 1];
+        // A chain split over lines (`)\n    .unwrap()`) leaves whitespace around
+        // the segment.
+        let seg = segments[i - 1].trim();
         if !seg.is_empty() {
             out.push(seg.to_string());
         }
@@ -13062,15 +13359,16 @@ fn is_abstract_safe_for_sink(
         // (covers sinks whose URL is a template literal argument without an
         // intermediate Assign to seed the abstract domain).
         let node_info = &cfg[inst.cfg_node];
+        let callee = node_info.call.callee.as_deref();
         if let Some(prefix) = node_info.string_prefix.as_deref() {
             let synthetic = crate::abstract_interp::StringFact::from_prefix(prefix);
-            if is_string_safe_for_ssrf(&synthetic) {
+            if is_string_safe_for_ssrf(&synthetic, callee) {
                 return true;
             }
         }
         if used
             .iter()
-            .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+            .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string, callee))
         {
             return true;
         }
@@ -13202,9 +13500,10 @@ fn is_call_abstract_safe(
         // (e.g. `axios.get(\`https://host/…${x}\`)` has no intermediate Assign
         // to seed a StringFact, check the node-attached prefix directly).
         let node_info = &cfg[inst.cfg_node];
+        let callee = node_info.call.callee.as_deref();
         if let Some(prefix) = node_info.string_prefix.as_deref() {
             let synthetic = crate::abstract_interp::StringFact::from_prefix(prefix);
-            if is_string_safe_for_ssrf(&synthetic) {
+            if is_string_safe_for_ssrf(&synthetic, callee) {
                 return true;
             }
         }
@@ -13212,7 +13511,7 @@ fn is_call_abstract_safe(
             if !first_arg.is_empty()
                 && first_arg
                     .iter()
-                    .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string))
+                    .all(|v| is_string_safe_for_ssrf(&abs.get(*v).string, callee))
             {
                 return true;
             }
@@ -13689,8 +13988,12 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
     if !is_network_fetch_source(info) {
         return false;
     }
-    let safe_prefix =
-        |p: &str| is_string_safe_for_ssrf(&crate::abstract_interp::StringFact::from_prefix(p));
+    let safe_prefix = |p: &str| {
+        is_string_safe_for_ssrf(
+            &crate::abstract_interp::StringFact::from_prefix(p),
+            info.call.callee.as_deref(),
+        )
+    };
     info.string_prefix.as_deref().is_some_and(safe_prefix)
         || info
             .call
@@ -13703,11 +14006,13 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
 /// URL-sink safety (SSRF and open redirect): the known prefix pins the
 /// origin, either `scheme://host/` or a same-origin `/path` that cannot be
 /// widened into `//host` (see
-/// [`crate::abstract_interp::string_domain::prefix_locks_origin`]).
-fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
+/// [`crate::abstract_interp::string_domain::prefix_locks_origin_for`], which
+/// also takes the sink `callee`: a callee that reads local paths, such as PHP
+/// `file_get_contents`, is not pinned by a `/path` prefix).
+fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact, callee: Option<&str>) -> bool {
     sf.prefix
         .as_deref()
-        .is_some_and(crate::abstract_interp::string_domain::prefix_locks_origin)
+        .is_some_and(|p| crate::abstract_interp::string_domain::prefix_locks_origin_for(callee, p))
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by
@@ -13743,6 +14048,7 @@ fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact) -> bool {
 /// last-used one wins, matching the leaf-extraction rule in
 /// [`callee_leaf_name`].
 pub(crate) fn split_qualifier(raw: &str) -> (Option<&str>, Option<&str>) {
+    let raw = crate::callgraph::trim_trailing_turbofish(raw);
     if let Some(pos) = raw.rfind("::") {
         let prefix = &raw[..pos];
         let last = prefix.rsplit("::").next().unwrap_or(prefix);
@@ -15403,25 +15709,37 @@ mod engine_audit_fixes_tests {
         use crate::abstract_interp::StringFact;
 
         // A real same-origin path lock is safe.
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix("/api/")));
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "/projects"
-        )));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/api/"),
+            None
+        ));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/projects"),
+            None
+        ));
 
         // A bare "/" lock is NOT safe: a tainted "/evil.com" suffix yields
         // a protocol-relative "//evil.com" URL.
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("/")));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("/"),
+            None
+        ));
 
         // An already protocol-relative prefix is not safe either.
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix("//")));
-        assert!(!is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "//evil.com"
-        )));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("//"),
+            None
+        ));
+        assert!(!is_string_safe_for_ssrf(
+            &StringFact::from_prefix("//evil.com"),
+            None
+        ));
 
         // Scheme-locked absolute URL with a path separator stays safe.
-        assert!(is_string_safe_for_ssrf(&StringFact::from_prefix(
-            "https://api.internal/"
-        )));
+        assert!(is_string_safe_for_ssrf(
+            &StringFact::from_prefix("https://api.internal/"),
+            None
+        ));
     }
 }
 

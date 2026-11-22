@@ -51,6 +51,109 @@ pub fn prefix_locks_origin(prefix: &str) -> bool {
     false
 }
 
+/// True for callees that open their argument as a filesystem path unless it
+/// carries a URL scheme (PHP's stream functions, and Ruby's `open` /
+/// `URI.open`, which fall back to `Kernel#open`; all are also SSRF sinks).
+/// A leading `/` there names a local file, not a path on the current origin.
+pub fn opens_local_paths(callee: &str) -> bool {
+    let leaf = callee.rsplit(['\\', ':', '.']).next().unwrap_or(callee);
+    match leaf.to_ascii_lowercase().as_str() {
+        "file_get_contents" | "fopen" | "readfile" | "file" => true,
+        // Only Ruby's `open`, `Kernel.open`, `URI.open` and
+        // `OpenURI.open_uri`. Other receivers (`window.open`) navigate
+        // instead of reading a file.
+        "open" | "open_uri" => {
+            let receiver = callee[..callee.len() - leaf.len()].trim_end_matches(['.', ':']);
+            matches!(
+                receiver.to_ascii_lowercase().as_str(),
+                "" | "kernel" | "uri" | "openuri"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// [`prefix_locks_origin`] for a URL sink called as `callee`: a same-origin
+/// `/path` prefix pins nothing when the callee reads local paths, so only a
+/// `scheme://host/` prefix counts there.
+pub fn prefix_locks_origin_for(callee: Option<&str>, prefix: &str) -> bool {
+    if prefix.starts_with('/') && callee.is_some_and(opens_local_paths) {
+        return false;
+    }
+    prefix_locks_origin(prefix)
+}
+
+/// Characters a URL parser strips or folds before it decides whether a
+/// reference starts with `//` or `\\`: leading C0 controls and spaces, and
+/// the tab/newline/carriage-return characters that WHATWG parsing removes
+/// anywhere in the input.
+fn url_parser_skips(c: char) -> bool {
+    c.is_ascii_control() || c == ' '
+}
+
+/// True when a relative reference that is known to start with `prefix` (and
+/// continue with unknown text) resolves against a base without changing its
+/// scheme or host.
+///
+/// Reference resolution is not concatenation: `new URL(ref, base)`,
+/// `urljoin(base, ref)` and friends replace the whole base when `ref` is an
+/// absolute URL (`https://evil/`), and replace the host when it is
+/// protocol-relative (`//evil/`, and `/\evil/` for special schemes).  Only
+/// these prefixes keep the base origin whatever follows them:
+///
+/// * `/x...` with `x` neither `/` nor `\` nor a character the parser drops;
+/// * `?...` and `#...` (query-only and fragment-only references);
+/// * `seg/...`, `seg?...` or `seg#...` where `seg` is non-empty and holds no
+///   `:`.  Without a terminating `/`, `?` or `#` the unknown text that
+///   follows could complete a scheme (`"a"` + `"://evil"`), so a bare
+///   `users` prefix does not count.
+pub fn prefix_is_host_preserving_reference(prefix: &str) -> bool {
+    reference_is_host_preserving(prefix, false)
+}
+
+/// Like [`prefix_is_host_preserving_reference`] for a fully known reference
+/// string: nothing follows it, so a relative path needs no terminator.
+pub fn exact_is_host_preserving_reference(reference: &str) -> bool {
+    reference_is_host_preserving(reference, true)
+}
+
+fn reference_is_host_preserving(text: &str, complete: bool) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return complete;
+    };
+    if url_parser_skips(first) {
+        return false;
+    }
+    match first {
+        '/' => match chars.next() {
+            Some(second) => second != '/' && second != '\\' && !url_parser_skips(second),
+            None => complete,
+        },
+        '\\' => false,
+        '?' | '#' => true,
+        _ => {
+            let seg_end = text.find(['/', '?', '#']);
+            match seg_end {
+                Some(end) => !text[..end].contains(':') && !text[..end].contains('\\'),
+                None => complete && !text.contains(':') && !text.contains('\\'),
+            }
+        }
+    }
+}
+
+/// `scheme://authority` of an absolute base URL, without a trailing slash.
+/// `None` when `base` has no scheme or an empty host.
+fn url_origin(base: &str) -> Option<&str> {
+    let after_scheme = base.find("://")? + 3;
+    let rest = &base[after_scheme..];
+    let host_len = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if host_len == 0 {
+        return None;
+    }
+    Some(&base[..after_scheme + host_len])
+}
+
 /// String abstract domain: tracks known prefix, suffix, and finite domain.
 ///
 /// Lattice ordering:
@@ -373,23 +476,45 @@ impl StringFact {
         }
     }
 
-    /// SSRF helper: build a fact for `new URL(path, base)` where `base` is a
-    /// literal origin (`https://api.example.com`).  The result behaves as
-    /// `base ++ path`, the locked-host prefix survives even when the path
-    /// component carries arbitrary taint, and the fact's `prefix` is what
-    /// `is_string_safe_for_ssrf` consults to suppress the SSRF sink.
+    /// SSRF helper: the fact for a URL built by *resolving* `path` against a
+    /// literal absolute `base` (`new URL(path, base)`, `urljoin(base, path)`,
+    /// `URI.join(base, path)`, `new URL(context, spec)`).
     ///
-    /// `path` carries any string knowledge for the path component (typically
-    /// `StringFact::top()`).  When the base already ends in `/`, the helper
-    /// keeps it as-is; otherwise appends a `/` so the prefix unambiguously
-    /// includes the path separator (the SSRF check looks for
-    /// `scheme://host/`).
+    /// Resolution is not concatenation: an absolute or protocol-relative
+    /// `path` replaces the base's host, so the origin stays pinned only when
+    /// `path` is provably a host-preserving relative reference (see
+    /// [`prefix_is_host_preserving_reference`]).  Otherwise the result is
+    /// Top and the sink keeps its SSRF finding.  When the origin is pinned
+    /// the known prefix is `scheme://host/`; the base's own path is not
+    /// claimed because `..` segments in `path` can climb out of it.
     pub fn from_url_with_base(base: &str, path: &Self) -> Self {
+        let Some(origin) = url_origin(base) else {
+            return Self::top();
+        };
+        let preserved = match &path.domain {
+            Some(values) => values.iter().all(|v| exact_is_host_preserving_reference(v)),
+            None => path
+                .prefix
+                .as_deref()
+                .is_some_and(prefix_is_host_preserving_reference),
+        };
+        if !preserved || path.is_bottom {
+            return Self::top();
+        }
+        Self::from_prefix(&format!("{origin}/"))
+    }
+
+    /// SSRF helper: the fact for a URL built by *appending* path elements to a
+    /// literal `base` (Go `url.JoinPath(base, elem...)`).  Elements are joined
+    /// and cleaned as path segments, so no element can change the host and the
+    /// origin stays pinned whatever the elements hold.  `base` keeps the path
+    /// separator the SSRF check looks for (`scheme://host/`).
+    pub fn from_url_joined_path(base: &str, elements: &Self) -> Self {
         let mut anchor = base.to_string();
         if !anchor.ends_with('/') {
             anchor.push('/');
         }
-        StringFact::exact(&anchor).concat(path)
+        StringFact::exact(&anchor).concat(elements)
     }
 }
 
@@ -984,38 +1109,112 @@ mod tests {
         assert!(suffix.ends_with('好'));
     }
 
-    /// Phase 08: a URL prefix-lock obtained from `new URL(path, base)`
-    /// must survive concatenation with a tainted (Top-suffix) path
-    /// component. The `is_string_safe_for_ssrf` check only consults the
-    /// `prefix`, so the locked-host base must remain intact even when the
-    /// path-side fact carries no knowledge.
+    /// Resolving a reference against a base pins the origin only when the
+    /// reference is provably relative to it.  A path of unknown content can be
+    /// `https://evil/` or `//evil/`, either of which replaces the host.
     #[test]
-    fn from_url_with_base_locks_prefix_under_tainted_suffix() {
+    fn from_url_with_base_does_not_lock_unknown_path() {
         let base = "https://api.cal.com";
-        let tainted_path = StringFact::top();
-        let f = StringFact::from_url_with_base(base, &tainted_path);
-        assert_eq!(
-            f.prefix.as_deref(),
-            Some("https://api.cal.com/"),
-            "prefix lock must include the path separator"
-        );
-        // The path component contributes no suffix knowledge, the result
-        // must mirror that without losing the prefix lock.
-        assert!(
-            f.suffix.is_none(),
-            "suffix is unknown when path-side fact is Top"
-        );
+        assert!(StringFact::from_url_with_base(base, &StringFact::top()).is_top());
+        assert!(StringFact::from_url_with_base(base, &StringFact::from_suffix(".json")).is_top());
     }
 
-    /// A concrete path component contributes its suffix knowledge to the
-    /// concatenated URL fact while the base prefix stays locked.
     #[test]
-    fn from_url_with_base_keeps_prefix_with_concrete_path_suffix() {
+    fn from_url_with_base_locks_host_preserving_prefix() {
+        let base = "https://api.cal.com/v1/";
+        for prefix in ["/users/", "v2/", "?q=", "#frag", "a/b"] {
+            let f = StringFact::from_url_with_base(base, &StringFact::from_prefix(prefix));
+            assert_eq!(
+                f.prefix.as_deref(),
+                Some("https://api.cal.com/"),
+                "prefix {prefix:?} keeps the origin"
+            );
+        }
+        // Fully known references need no terminator.
+        let f = StringFact::from_url_with_base(base, &StringFact::exact("users"));
+        assert_eq!(f.prefix.as_deref(), Some("https://api.cal.com/"));
+        let f = StringFact::from_url_with_base(base, &StringFact::exact(""));
+        assert_eq!(f.prefix.as_deref(), Some("https://api.cal.com/"));
+    }
+
+    #[test]
+    fn from_url_with_base_rejects_origin_replacing_prefix() {
         let base = "https://api.cal.com/";
-        let path = StringFact::from_suffix(".json");
-        let f = StringFact::from_url_with_base(base, &path);
+        for prefix in [
+            "//evil.com/",
+            "/\\evil.com",
+            "/",
+            "\\evil.com",
+            "https://evil.com/",
+            "evil:",
+            // No terminator yet: unknown text can complete a scheme.
+            "users",
+            "a",
+            " //evil.com",
+            "/\tx",
+        ] {
+            let f = StringFact::from_url_with_base(base, &StringFact::from_prefix(prefix));
+            assert!(f.is_top(), "prefix {prefix:?} can leave the origin");
+        }
+        for exact in ["//evil.com", "https://evil.com", "mailto:x@y", "/"] {
+            let f = StringFact::from_url_with_base(base, &StringFact::exact(exact));
+            // A lone "/" is the only host-preserving one of these.
+            assert_eq!(!f.is_top(), exact == "/", "exact {exact:?}");
+        }
+    }
+
+    #[test]
+    fn from_url_with_base_needs_an_absolute_base() {
+        let path = StringFact::from_prefix("/users/");
+        assert!(StringFact::from_url_with_base("/internal", &path).is_top());
+        assert!(StringFact::from_url_with_base("api.example.com", &path).is_top());
+        assert!(StringFact::from_url_with_base("https://", &path).is_top());
+    }
+
+    /// Go `JoinPath` appends elements as path segments, so the base prefix
+    /// survives any element, including a tainted one.
+    #[test]
+    fn from_url_joined_path_locks_under_tainted_elements() {
+        let f = StringFact::from_url_joined_path("https://api.cal.com", &StringFact::top());
+        assert_eq!(f.prefix.as_deref(), Some("https://api.cal.com/"));
+        assert!(f.suffix.is_none());
+        let f = StringFact::from_url_joined_path(
+            "https://api.cal.com/",
+            &StringFact::from_suffix(".json"),
+        );
         assert_eq!(f.prefix.as_deref(), Some("https://api.cal.com/"));
         assert_eq!(f.suffix.as_deref(), Some(".json"));
+    }
+
+    /// A `/path` prefix names a path on the current origin for a URL client,
+    /// but a local file for a callee that opens paths (PHP stream functions).
+    #[test]
+    fn site_relative_prefix_does_not_lock_local_path_readers() {
+        for callee in [
+            "file_get_contents",
+            "fopen",
+            "\\file_get_contents",
+            "URI.open",
+            "URI::open",
+            "Kernel.open",
+            "open",
+            "OpenURI.open_uri",
+        ] {
+            assert!(
+                !prefix_locks_origin_for(Some(callee), "/var/data/"),
+                "{callee}"
+            );
+            assert!(
+                prefix_locks_origin_for(Some(callee), "https://api.example.com/"),
+                "{callee}"
+            );
+        }
+        assert!(prefix_locks_origin_for(Some("axios.get"), "/api/"));
+        // A browser navigation sink named `open` stays same-origin locked.
+        assert!(prefix_locks_origin_for(Some("window.open"), "/reports/"));
+        assert!(prefix_locks_origin_for(Some("File.open"), "/reports/"));
+        assert!(prefix_locks_origin_for(None, "/api/"));
+        assert!(!prefix_locks_origin_for(None, "//evil.com/"));
     }
 
     /// Concat with empty-string `exact("")` should preserve the other

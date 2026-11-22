@@ -1,0 +1,41 @@
+{
+  "description": "Ruby `URI.join(base, path)` resolves a reference against the base: an attacker path can replace the host. A fixed `v1/` head, or a string interpolation with a fixed `scheme://host/` head, keeps it.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "url-builder",
+    "origin-lock"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "notes": "attacker path can leave the host"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        23
+      ],
+      "notes": "relative head and fixed interpolation head keep the host"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        23
+      ],
+      "notes": "the structural rule agrees with the taint lock"
+    }
+  ]
+}

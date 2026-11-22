@@ -1,0 +1,97 @@
+{
+  "description": "SQLAlchemy statements built from column expressions bind their values; raw text() SQL built from a request value still fires",
+  "tags": [
+    "taint",
+    "sqli",
+    "sqlalchemy",
+    "fastapi",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        8,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "select().where(Col == value) bound as a parameter",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        8,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "no structural finding for the bound statement",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        13,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "statement built over two lines, executed through a variable chain",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        20,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "update().where().values() binds both values",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        26,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "text() over an f-string is raw SQL",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        31,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "text() inside a where clause is raw SQL",
+      "must_match": true
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        36,
+        38
+      ],
+      "evidence_contains": [],
+      "notes": "text() with a bound parameter",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

@@ -1245,6 +1245,8 @@ fn clone_preserves_all_sub_structs() {
             sink_reaching_uses: Some(vec!["a".into()]),
             kwargs: vec![("shell".into(), vec!["True".into()])],
             arg_string_literals: vec![Some("lit".into())],
+            arg_string_prefixes: vec![None],
+            arg_bare_names: 0b1,
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
@@ -5384,6 +5386,318 @@ app.get('/probe', (req, res) => {
     }
 }
 
+fn file_cfg_nodes(file_cfg: &FileCfg) -> Vec<&NodeInfo> {
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .collect()
+}
+
+#[test]
+fn js_sink_assignment_member_source_is_pre_emitted() {
+    let src = b"function f() {\n\
+                  const el = document.getElementById('a');\n\
+                  el.innerHTML = '<b>' + location.hash + '</b>';\n\
+                  el.textContent = location.hash;\n\
+                  el.innerHTML = DOMPurify.sanitize(location.search);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = file_cfg_nodes(&file_cfg);
+    let synth: Vec<&&NodeInfo> = nodes
+        .iter()
+        .filter(|n| {
+            n.taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.starts_with("__nyx_src_") && d.contains("_rhs"))
+        })
+        .collect();
+    // Only the concatenation written into `innerHTML` gets one: `textContent`
+    // is not a sink and the sanitizer call's argument is left to the call.
+    assert_eq!(synth.len(), 1, "{synth:?}");
+    assert!(
+        synth[0]
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+    );
+    let name = synth[0].taint.defines.clone().unwrap();
+    let sink = nodes
+        .iter()
+        .find(|n| n.taint.uses.contains(&name))
+        .expect("the assignment uses the synthetic source");
+    assert!(has_sink(sink, Cap::HTML_ESCAPE));
+}
+
+#[test]
+fn js_for_of_over_source_field_is_a_source() {
+    let src = b"function h(req, config) {\n\
+                  for (const f of req.body.items) { run(f); }\n\
+                  for (const g of config.items) { run(g); }\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let loop_sources: Vec<String> = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .filter(|n| {
+            n.taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(_)))
+        })
+        .filter_map(|n| n.call.callee.clone())
+        .collect();
+    assert!(
+        loop_sources.iter().any(|c| c == "req.body.items"),
+        "{loop_sources:?}"
+    );
+    assert!(!loop_sources.iter().any(|c| c.contains("config")));
+}
+
+#[test]
+fn ts_sql_tagged_templates_bind_substitutions() {
+    let src = b"import { sql } from 'drizzle-orm';\n\
+                import { Prisma } from '@prisma/client';\n\
+                async function h(prisma, db, name, col) {\n\
+                  await prisma.$queryRaw`SELECT * FROM t WHERE n = ${name}`;\n\
+                  await prisma.$queryRaw`SELECT ${Prisma.raw(col)} FROM t WHERE n = ${name}`;\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                  const q = sql`select * from t where n = ${name}`;\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let raws = js_call_nodes(&file_cfg, "prisma.$queryRaw");
+    assert_eq!(raws.len(), 2);
+    // Plain substitutions are parameters: no SQL sink.
+    assert!(!has_sink(raws[0], Cap::SQL_QUERY));
+    // The raw splice is the only payload: `${Prisma.raw(col)}` is the
+    // template's second named child.
+    assert!(has_sink(raws[1], Cap::SQL_QUERY));
+    assert_eq!(
+        raws[1].call.sink_payload_args.as_deref(),
+        Some(&[1usize][..])
+    );
+    // A SQL executor fed a parameterized tag is not a sink either.
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert_eq!(execs.len(), 1);
+    assert!(!has_sink(execs[0], Cap::SQL_QUERY));
+    // The builder's result is SQL-safe.
+    let builder = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .find(|n| n.taint.defines.as_deref() == Some("q"))
+        .unwrap();
+    assert!(
+        builder
+            .taint
+            .labels
+            .contains(&DataLabel::Sanitizer(Cap::SQL_QUERY))
+    );
+}
+
+#[test]
+fn ts_query_builder_chain_condition_is_a_sql_sink() {
+    let src = b"async function h(repo, name) {\n\
+                  await repo.createQueryBuilder('u').leftJoin('u.p', 'p').where(`u.name = '${name}'`).getMany();\n\
+                  await repo.createQueryBuilder('u').where({ name }).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert_eq!(wheres.len(), 2, "both chains rebind to their where link");
+    assert!(has_sink(wheres[0], Cap::SQL_QUERY));
+    assert_eq!(
+        wheres[0].call.sink_payload_args.as_deref(),
+        Some(&[0usize][..])
+    );
+    // An object condition is bound by the ORM.
+    assert!(!has_sink(wheres[1], Cap::SQL_QUERY));
+}
+
+#[test]
+fn ts_query_builder_object_argument_is_bound_only_for_conditions() {
+    let src = b"async function h(repo, col, name, dir) {\n\
+                  await repo.createQueryBuilder('u').orderBy({ [col]: 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.name': 'ASC' }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ ...col }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.name': dir }).getMany();\n\
+                  await repo.createQueryBuilder('u').orderBy({ 'u.id': { order: 'DESC', nulls: 'NULLS LAST' } }).getMany();\n\
+                  await repo.createQueryBuilder('u').groupBy(new String(col)).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new Brackets(q => q.where('a = 1'))).getMany();\n\
+                  await repo.createQueryBuilder('u').where(new String(name)).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let order = js_call_nodes(&file_cfg, "QueryBuilder.orderBy");
+    assert_eq!(order.len(), 5);
+    // A computed key or a spread puts an attacker-chosen column into SQL.
+    assert!(has_sink(order[0], Cap::SQL_QUERY));
+    assert!(!has_sink(order[1], Cap::SQL_QUERY));
+    assert!(has_sink(order[2], Cap::SQL_QUERY));
+    // The direction is written into SQL too, so it has to be static.
+    assert!(has_sink(order[3], Cap::SQL_QUERY));
+    assert!(!has_sink(order[4], Cap::SQL_QUERY));
+    let group = js_call_nodes(&file_cfg, "QueryBuilder.groupBy");
+    assert!(has_sink(group[0], Cap::SQL_QUERY));
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert!(
+        wheres
+            .iter()
+            .any(|w| w.call.arg_uses[0].iter().any(|u| u == "name") && has_sink(w, Cap::SQL_QUERY)),
+        "where(new String(name)) is not a Brackets group"
+    );
+    assert!(wheres.iter().any(|w| !has_sink(w, Cap::SQL_QUERY)));
+}
+
+#[test]
+fn ts_reexported_sql_tag_and_client_values_are_parameterized() {
+    // A tag re-exported by a project module, or a client built by a call, is
+    // a library tag; only a function the file defines itself is not.
+    for src in [
+        &b"import { sql } from '@/db';\n\
+           async function h(db, name) {\n\
+             await db.execute(sql`select * from t where n = ${name}`);\n\
+           }"[..],
+        &b"import postgres from 'postgres';\n\
+           export const sql = postgres(process.env.DB_URL);\n\
+           async function h(db, name) {\n\
+             await db.execute(sql`select * from t where n = ${name}`);\n\
+           }"[..],
+    ] {
+        let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+        let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+        let execs = js_call_nodes(&file_cfg, "db.execute");
+        assert_eq!(execs.len(), 1);
+        assert!(
+            !has_sink(execs[0], Cap::SQL_QUERY),
+            "{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+    // An arrow function the file defines is its own tag.
+    let src = b"const sql = (s, ...v) => s.join('');\n\
+                async function h(db, name) {\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert!(has_sink(execs[0], Cap::SQL_QUERY));
+}
+
+#[test]
+fn ts_user_defined_sql_tag_is_not_parameterized() {
+    // Same shapes as the drizzle test, with no SQL library import: the tag
+    // and the `raw` helper are the file's own functions.
+    let src = b"function sql(s, ...v) { return s.join(''); }\n\
+                async function h(db, name) {\n\
+                  await db.execute(sql`select * from t where n = ${name}`);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let execs = js_call_nodes(&file_cfg, "db.execute");
+    assert_eq!(execs.len(), 1);
+    assert!(has_sink(execs[0], Cap::SQL_QUERY));
+    let builder = file_cfg_nodes(&file_cfg)
+        .into_iter()
+        .find(|n| n.call.callee.as_deref() == Some("sql"));
+    assert!(builder.is_none_or(|b| {
+        !b.taint
+            .labels
+            .contains(&DataLabel::Sanitizer(Cap::SQL_QUERY))
+    }));
+}
+
+#[test]
+fn ts_query_builder_chain_binds_an_inline_member_source() {
+    let src = b"async function h(repo, req) {\n\
+                  await repo.createQueryBuilder('u').where(`u.name = '${req.query.name}'`).getMany();\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_to_file_cfg(src, "typescript", ts_lang);
+    let wheres = js_call_nodes(&file_cfg, "QueryBuilder.where");
+    assert_eq!(wheres.len(), 1, "the chain rebinds to its where link");
+    assert!(has_sink(wheres[0], Cap::SQL_QUERY));
+    // The inline `req.query.name` is bound to the where condition's argument.
+    assert!(
+        wheres[0].call.arg_uses[0]
+            .iter()
+            .any(|u| u.starts_with("__nyx_src_")),
+        "{:?}",
+        wheres[0].call.arg_uses
+    );
+}
+
+#[test]
+fn js_sink_assignment_from_source_receiver_call_keeps_the_sink() {
+    let src = b"function f() {\n\
+                  location.href = location.hash.substring(1);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let nodes = file_cfg_nodes(&file_cfg);
+    let synth = nodes
+        .iter()
+        .find(|n| {
+            n.taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.contains("_rhs"))
+        })
+        .expect("location.hash is pre-emitted");
+    let name = synth.taint.defines.clone().unwrap();
+    let sink = nodes
+        .iter()
+        .find(|n| n.taint.uses.contains(&name))
+        .unwrap_or_else(|| panic!("no node uses {name}: {nodes:#?}"));
+    assert!(
+        sink.taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(_))),
+        "{sink:#?}"
+    );
+}
+
+/// The page's own origin parts are not attacker input: same-origin
+/// navigation built from them gets no pre-emitted Source, while the path or
+/// query of the location still does.
+#[test]
+fn js_sink_assignment_from_own_origin_has_no_source() {
+    let count = |body: &str| {
+        let src = format!("function f(name) {{\n  {body}\n}}");
+        let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+        let file_cfg = parse_to_file_cfg(src.as_bytes(), "javascript", ts_lang);
+        file_cfg_nodes(&file_cfg)
+            .iter()
+            .filter(|n| {
+                n.taint
+                    .defines
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("__nyx_src_") && d.contains("_rhs"))
+            })
+            .count()
+    };
+    assert_eq!(
+        count("window.location.href = window.location.origin + window.location.pathname;"),
+        0
+    );
+    assert_eq!(
+        count("window.location.href = `/auth/${name}?host=${window.location.host}`;"),
+        0
+    );
+    assert_eq!(
+        count("window.location.href = window.location.origin + window.location.search;"),
+        1
+    );
+    assert_eq!(
+        count("window.location.href = window.location.hash.slice(1);"),
+        1
+    );
+}
+
 // ── Read-modify-write assignments (`x += y`, `x ||= y`) ─────────────────
 
 fn rmw_all_nodes(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<NodeInfo> {
@@ -6209,6 +6523,31 @@ fn has_any_sink(info: &NodeInfo) -> bool {
         .any(|l| matches!(l, DataLabel::Sink(_)))
 }
 
+/// A loop over a member read whose prefix is a Source is itself a read of
+/// that Source, so its header carries the Source label.  Nothing of the loop
+/// body (here a gated sink call) reaches the header.
+#[test]
+fn for_of_header_over_a_source_field_takes_only_that_source() {
+    let src = b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }";
+    let (cfg, _) = lang_cfg("javascript", src);
+    let headers = header_nodes(&cfg);
+    assert!(!headers.is_empty());
+    for h in headers {
+        let info = &cfg[h];
+        assert!(
+            !info.taint.labels.is_empty()
+                && info
+                    .taint
+                    .labels
+                    .iter()
+                    .all(|l| matches!(l, DataLabel::Source(_))),
+            "{:?}",
+            info.taint.labels
+        );
+        assert!(info.call.sink_payload_args.is_none());
+    }
+}
+
 /// A sink call in a branch or loop body labels its own node, never the
 /// header: neither the gated-sink walk nor the statement text may reach
 /// into the body.
@@ -6237,7 +6576,7 @@ fn header_nodes_do_not_take_labels_from_the_body() {
         ),
         (
             "javascript",
-            b"function h(req) { for (const id of req.body.ids) { fetch(\"https://x\"); } }",
+            b"function h(ids) { for (const id of ids) { fetch(\"https://x\"); } }",
             "fetch",
         ),
         (
@@ -7725,4 +8064,482 @@ fn java_php_member_lhs_defines_whole_path() {
         vec![(Some("arr".to_string()), vec![])],
         "the index is read, not assigned"
     );
+}
+
+// ── URL string prefixes ─────────────────────────────────────────────────────
+
+/// `string_prefix` of the first node (any body) whose callee ends with
+/// `callee_suffix`, or of the node that defines `defines`.
+fn url_prefix_of(
+    src: &str,
+    lang_str: &str,
+    ts_lang: Language,
+    callee_suffix: Option<&str>,
+    defines: Option<&str>,
+) -> Option<String> {
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), lang_str, ts_lang);
+    for body in &file_cfg.bodies {
+        for idx in body.graph.node_indices() {
+            let info = &body.graph[idx];
+            let by_callee = callee_suffix
+                .is_some_and(|s| info.call.callee.as_deref().is_some_and(|c| c.ends_with(s)));
+            let by_def = defines.is_some_and(|d| info.taint.defines.as_deref() == Some(d));
+            if (by_callee || by_def) && info.string_prefix.is_some() {
+                return info.string_prefix.clone();
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn url_prefix_reads_the_left_spine_of_a_concat_chain() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "function h(id) { axios.get('https://h.example/items/' + id + '/details'); }",
+            "javascript",
+            js,
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { url := \"https://h.example/items/\" + id + \"/d\"; http.Get(url) }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_go_var_and_const_declarations() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { var url = \"https://h.example/items/\" + id; http.Get(url) }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_the_url_argument_not_the_first() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { req, _ := http.NewRequest(\"GET\", \"https://h.example/items/\"+id, nil); _ = req }",
+            "go",
+            go,
+            Some("NewRequest"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_format_calls() {
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { url := fmt.Sprintf(\"https://h.example/items/%s\", id); _ = url }",
+            "go",
+            go,
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = 'https://h.example/items/{}'.format(i)\n",
+            "python",
+            py.clone(),
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = 'https://h.example/items/%s' % i\n",
+            "python",
+            py.clone(),
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "def h(i):\n    u = f'https://h.example/items/{i}'\n",
+            "python",
+            py,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+    let java = Language::from(tree_sitter_java::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "class A { void h(String id) { String u = String.format(\"https://h.example/items/%s\", id); } }",
+            "java",
+            java,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_reads_php_call_arguments_and_interpolation() {
+    let php = Language::from(tree_sitter_php::LANGUAGE_PHP);
+    assert_eq!(
+        url_prefix_of(
+            "<?php function h($c) { file_get_contents('https://h.example/w?city=' . $c); }",
+            "php",
+            php.clone(),
+            Some("file_get_contents"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/w?city=")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "<?php function h($id) { $u = \"https://h.example/items/{$id}\"; }",
+            "php",
+            php,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://h.example/items/")
+    );
+}
+
+#[test]
+fn url_prefix_does_not_read_interpolated_hosts() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    // The host is interpolated: the literal head is only the scheme.
+    let p = url_prefix_of(
+        "def h(host):\n    u = f'https://{host}/x/'\n",
+        "python",
+        py,
+        None,
+        Some("u"),
+    );
+    assert_eq!(p.as_deref(), Some("https://"));
+}
+
+#[test]
+fn url_prefix_resolves_module_level_string_constants() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    let src = |body: &str| {
+        format!("const API = 'https://api.example.com/';\nfunction h(p) {{ {body} }}\n")
+    };
+    assert_eq!(
+        url_prefix_of(
+            &src("axios.get(API + p);"),
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            &src("axios.get(`${API}users/${p}`);"),
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/users/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            &src("const url = API + p;"),
+            "javascript",
+            js.clone(),
+            None,
+            Some("url")
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+    // A URL sink takes the bare constant itself.
+    assert_eq!(
+        url_prefix_of(&src("axios.get(API);"), "javascript", js, Some("get"), None).as_deref(),
+        Some("https://api.example.com/")
+    );
+}
+
+#[test]
+fn url_prefix_ignores_constants_that_are_not_unique_definitions() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // Reassigned at module level.
+    assert_eq!(
+        url_prefix_of(
+            "let API = 'https://api.example.com/';\nAPI = process.argv[2];\nfunction h(p) { axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Shadowed by a local of the same name.
+    assert_eq!(
+        url_prefix_of(
+            "const API = 'https://api.example.com/';\nfunction h(p) { const API = p; axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Shadowed by a parameter.
+    assert_eq!(
+        url_prefix_of(
+            "const API = 'https://api.example.com/';\nfunction h(API, p) { axios.get(API + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // Not a string literal.
+    assert_eq!(
+        url_prefix_of(
+            "const API = process.env.API;\nfunction h(p) { axios.get(API + p); }",
+            "javascript",
+            js,
+            Some("get"),
+            None
+        ),
+        None
+    );
+}
+
+#[test]
+fn url_prefix_resolves_python_and_go_module_constants() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "API = 'https://api.example.com/v1/'\ndef h(c):\n    requests.get(API + c)\n",
+            "python",
+            py.clone(),
+            Some("get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/v1/")
+    );
+    assert_eq!(
+        url_prefix_of(
+            "API = 'https://api.example.com/v1/'\ndef h(c):\n    u = f'{API}city/{c}'\n",
+            "python",
+            py,
+            None,
+            Some("u")
+        )
+        .as_deref(),
+        Some("https://api.example.com/v1/city/")
+    );
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nconst apiBase = \"https://api.example.com/\"\nfunc h(id string) { http.Get(apiBase + id) }",
+            "go",
+            go,
+            Some("Get"),
+            None
+        )
+        .as_deref(),
+        Some("https://api.example.com/")
+    );
+}
+
+#[test]
+fn url_prefix_does_not_read_through_a_call_inside_a_concatenation() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // `wrap` can return any string, so its argument's head is not the head of
+    // the concatenation.
+    assert_eq!(
+        url_prefix_of(
+            "function h(p) { axios.get(wrap('https://h.example/') + p); }",
+            "javascript",
+            js.clone(),
+            Some("get"),
+            None
+        ),
+        None
+    );
+    // A format call is read: its result starts with the format's head.
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    assert_eq!(
+        url_prefix_of(
+            "package p\nfunc h(id string) { http.Get(fmt.Sprintf(\"https://h.example/%s\", id) + \"/d\") }",
+            "go",
+            go,
+            Some("Get"),
+            None
+        )
+        .as_deref(),
+        Some("https://h.example/")
+    );
+}
+
+#[test]
+fn ruby_file_level_local_is_not_a_module_prefix() {
+    let rb = Language::from(tree_sitter_ruby::LANGUAGE);
+    // A file-level local is not visible inside `def`: there `api` is a
+    // method call, so it says nothing about the URL.
+    assert_eq!(
+        url_prefix_of(
+            "api = 'https://api.example.com/'\ndef h(id)\n  u = api + id\nend\n",
+            "ruby",
+            rb,
+            None,
+            Some("u")
+        ),
+        None
+    );
+}
+
+#[test]
+fn arg_bare_names_marks_name_arguments_only() {
+    let mask_of = |src: &str, lang_str: &str, ts_lang: Language, callee_suffix: &str| {
+        let file_cfg = parse_to_file_cfg(src.as_bytes(), lang_str, ts_lang);
+        file_cfg
+            .bodies
+            .iter()
+            .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+            .find(|n| {
+                n.call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.ends_with(callee_suffix))
+            })
+            .map(|n| n.call.arg_bare_names)
+            .expect("call node")
+    };
+    let go = Language::from(tree_sitter_go::LANGUAGE);
+    // "/var/data" (literal), c (name), cfg.Dir (member path), c + "/x"
+    // (expression), p[1:] (slice).
+    assert_eq!(
+        mask_of(
+            "package p\nfunc h(c string, p string) { filepath.Join(\"/var/data\", c, cfg.Dir, c + \"/x\", p[1:]) }",
+            "go",
+            go,
+            "Join"
+        ),
+        0b00110
+    );
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    // Keyword arguments do not take a position.
+    assert_eq!(
+        mask_of(
+            "def h(base, p):\n    urljoin(base, (p), timeout=t)\n",
+            "python",
+            py,
+            "urljoin"
+        ),
+        0b11
+    );
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    assert_eq!(
+        mask_of(
+            "function h(p) { new URL(p.slice(1), base); }",
+            "javascript",
+            js,
+            "URL"
+        ),
+        0b10
+    );
+}
+
+#[test]
+fn nested_sanitizer_does_not_replace_a_gated_sink_callee() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    let src = "import subprocess, html\ndef h(name):\n    subprocess.Popen(['sh', '-c', html.escape(name)])\n";
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "python", py);
+    let node = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_indices().map(move |i| &b.graph[i]))
+        .find(|n| {
+            n.call
+                .outer_callee
+                .as_deref()
+                .or(n.call.callee.as_deref())
+                .is_some_and(|c| c.ends_with("Popen"))
+        })
+        .expect("Popen call node");
+    // The gated sink keeps its callee, so its gate still classifies it.
+    assert_eq!(node.call.callee.as_deref(), Some("subprocess.Popen"));
+    assert!(
+        node.taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE))),
+        "{:?}",
+        node.taint.labels
+    );
+}
+
+/// Callee text and `all_args_literal` of every Rust call node.
+fn rust_call_literal_flags(src: &[u8]) -> Vec<(String, bool)> {
+    let (cfg, _) = rust_cfg(src);
+    cfg.node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            Some((info.call.callee.clone()?, info.all_args_literal))
+        })
+        .collect()
+}
+
+/// `.unwrap()` is rebound to the call underneath for gate payload positions,
+/// but the literal-argument check never sees the receiver of that call.  A
+/// literal argument list on a possibly tainted receiver must not read as
+/// "all arguments literal", or the sink would be suppressed.
+#[test]
+fn rust_unwrap_rebind_never_counts_as_all_literal() {
+    let flags = rust_call_literal_flags(
+        b"fn f(h: Handle) { h.run(\"literal\").unwrap(); h.run(\"literal\"); }",
+    );
+    let unwrapped = flags
+        .iter()
+        .find(|(c, _)| c.contains("unwrap"))
+        .expect("unwrap call node");
+    assert!(!unwrapped.1, "peeled call must stay not-all-literal");
 }

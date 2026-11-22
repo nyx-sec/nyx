@@ -555,8 +555,8 @@ fn collect_ruby_symbol_list(node: Node<'_>, code: &[u8], out: &mut Vec<String>) 
     }
 }
 
-/// Extract route-path capture variable names from framework routing decorators
-/// on a function AST node.
+/// Extract the (lowercased) names of the formals a web framework binds from
+/// the request, as declared on the function AST node.
 ///
 /// Supported languages:
 /// * Python: walks Flask-style `@app.route("/users/<name>")`,
@@ -567,6 +567,9 @@ fn collect_ruby_symbol_list(node: Node<'_>, code: &[u8], out: &mut Vec<String>) 
 ///   `func_node` is the `do_block`; its parent `call` carries the verb
 ///   in the `method` field and the path pattern in the first positional
 ///   string argument. Returns inner names from `:name` colon-segments.
+/// * TypeScript: formals carrying a request-binding parameter decorator
+///   (NestJS `@Query('q') q`, `@Param('id') id`, `@Body() dto`, ...); see
+///   [`TS_REQUEST_PARAM_DECORATORS`].
 ///
 /// Functions without a recognised routing pattern return an empty `Vec`.
 /// Strict additive: downstream consumers gate the result via
@@ -580,9 +583,92 @@ pub(super) fn extract_route_path_captures<'a>(
     match lang {
         "python" => extract_python_route_captures(func_node, code, &mut out),
         "ruby" => extract_ruby_route_captures(func_node, code, &mut out),
+        "typescript" | "ts" | "tsx" => extract_ts_request_params(func_node, code, &mut out),
         _ => {}
     }
     out
+}
+
+/// Parameter decorators that bind a formal from the incoming request:
+/// NestJS (`@Param`, `@Query`, `@Body`, `@Headers`, `@Ip`, `@HostParam`,
+/// `@UploadedFile(s)`), routing-controllers (`@QueryParam(s)`,
+/// `@HeaderParam(s)`, `@CookieParam(s)`, `@BodyParam`) and tsoa (`@Path`,
+/// `@Header`).  `@Req` / `@Res` are left out: the request object's fields
+/// are sources through the `req.*` label rules, and seeding the whole object
+/// would also taint `req.session` and `req.user`.
+const TS_REQUEST_PARAM_DECORATORS: &[&str] = &[
+    "Param",
+    "Query",
+    "Body",
+    "Headers",
+    "Ip",
+    "HostParam",
+    "UploadedFile",
+    "UploadedFiles",
+    "QueryParam",
+    "QueryParams",
+    "HeaderParam",
+    "HeaderParams",
+    "CookieParam",
+    "CookieParams",
+    "BodyParam",
+    "Path",
+    "Header",
+];
+
+fn extract_ts_request_params<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut Vec<String>) {
+    let Some(params) = func_node.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut w = params.walk();
+    for param in params.named_children(&mut w) {
+        if !matches!(param.kind(), "required_parameter" | "optional_parameter") {
+            continue;
+        }
+        let is_request_decorator = |ch: Node<'_>| {
+            ch.kind() == "decorator"
+                && ts_decorator_callee(ch, code)
+                    .is_some_and(|name| TS_REQUEST_PARAM_DECORATORS.contains(&name.as_str()))
+        };
+        let mut pw = param.walk();
+        // Decorators are children of the parameter; older grammars emit them
+        // as preceding siblings.
+        let mut prev = param.prev_named_sibling();
+        let mut bound = param.children(&mut pw).any(is_request_decorator);
+        while !bound && let Some(p) = prev.filter(|p| p.kind() == "decorator") {
+            bound = is_request_decorator(p);
+            prev = p.prev_named_sibling();
+        }
+        if !bound {
+            continue;
+        }
+        let Some(pattern) = param.child_by_field_name("pattern") else {
+            continue;
+        };
+        if pattern.kind() != "identifier" {
+            continue;
+        }
+        if let Some(name) = text_of(pattern, code) {
+            out.push(name.to_ascii_lowercase());
+        }
+    }
+}
+
+/// Name of the function a TypeScript decorator calls: `Query` for
+/// `@Query('q')`, `Body` for `@Body()`.  Bare-identifier decorators
+/// (`@Body`) also count.
+fn ts_decorator_callee(decorator: Node<'_>, code: &[u8]) -> Option<String> {
+    let mut w = decorator.walk();
+    let expr = decorator.named_children(&mut w).next()?;
+    let callee = match expr.kind() {
+        "call_expression" => expr.child_by_field_name("function")?,
+        "identifier" => expr,
+        _ => return None,
+    };
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    text_of(callee, code)
 }
 
 fn extract_python_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut Vec<String>) {

@@ -38,6 +38,7 @@ mod helpers;
 mod hierarchy;
 mod imports;
 mod literals;
+mod module_consts;
 mod nested_calls;
 mod params;
 pub(crate) mod python_shapes;
@@ -46,9 +47,9 @@ use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_c
 use helpers::{
     call_fn_callee_text, call_ident_at_or_under, collect_nested_function_nodes,
     collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, first_call_ident_with_span, first_callback_sink_call, first_member_label,
-    first_member_text, is_raii_factory, is_subscript_kind, root_member_receiver,
-    subscript_components, subscript_lhs_node,
+    find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
+    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
+    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -74,18 +75,20 @@ use imports::{
 use literals::has_sql_placeholders;
 use literals::{
     ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer, extract_arg_callees,
-    extract_arg_string_literals, extract_arg_uses, extract_const_keyword_arg,
-    extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
-    extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
-    extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
-    find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
+    destination_field_reading_source, detect_go_replace_call_sanitizer,
+    detect_rust_replace_chain_sanitizer, extract_arg_bare_name_mask, extract_arg_callees,
+    extract_arg_string_literals, extract_arg_string_prefixes, extract_arg_uses,
+    extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
+    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
+    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
+    find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
-    has_string_interpolation, is_object_create_null_call, is_rust_format_style_macro,
-    java_chain_arg0_kind_for_method, js_arg_is_prototype_object, js_arg_is_string_valued,
+    is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
+    js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
     js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    js_positional_arity, js_shell_option_argv_positions, parameterized_query_shape,
-    ruby_chain_arg0_for_method, walk_chain_inner_call_args,
+    js_positional_arity, js_shell_option_argv_positions, js_sql_template_raw_splices,
+    parameterized_query_shape, python_positional_arity, ruby_chain_arg0_for_method,
+    walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -754,6 +757,24 @@ pub struct CallMeta {
     /// analysis (and future literal-aware passes) so they don't need the
     /// source bytes.
     pub arg_string_literals: Vec<Option<String>>,
+    /// Constant leading text of each positional argument that is a string
+    /// built from a literal head (`"https://h/" + id`, a template literal, an
+    /// f-string, `fmt.Sprintf("https://h/%s", id)`), parallel to
+    /// `arg_string_literals`.  `None` for plain literals (see above) and for
+    /// arguments with no literal head.  Empty when no argument has one.
+    /// Lets sinks and URL builders that take the URL at a position other
+    /// than the first read the prefix of the argument they care about.
+    #[serde(default)]
+    pub arg_string_prefixes: Vec<Option<String>>,
+    /// Bit `i` is set when positional argument `i` is exactly a name: an
+    /// identifier, or a member path of identifiers (`clean`, `cfg.root`),
+    /// with parentheses and PHP's `argument` wrapper peeled.  The SSA use of
+    /// such an argument is its whole value, so a fact on that use describes
+    /// the argument.  An expression over one name (`x + "/.."`, `x[1:]`) has
+    /// the same single SSA use but leaves its bit clear.  Positions past 63
+    /// are never set.
+    #[serde(default)]
+    pub arg_bare_names: u64,
     /// Destination-aware sink filter for outbound-HTTP gates.
     ///
     /// When `Some(names)`, the SSA sink scan restricts taint checks to
@@ -1172,6 +1193,13 @@ pub struct NodeInfo {
     /// SSA value so SSRF prefix-suppression can fire for values constructed
     /// from template literals.
     pub string_prefix: Option<String>,
+    /// `(identifier, literal tail)` when the string this node builds starts
+    /// with a bare identifier instead of a literal (`API + p`,
+    /// `` `${API}/x/${id}` ``).  Resolved into [`Self::string_prefix`] at the
+    /// end of `build_cfg` when the identifier is a module-level string
+    /// constant; cleared there either way, so it is never serialized.
+    #[serde(skip)]
+    pub string_prefix_ident: Option<(String, String)>,
     /// True when this node is a binary equality/inequality expression whose
     /// operator is `==` / `!=` / `===` / `!==` and exactly one operand is a
     /// syntactic literal (string / number / null / boolean). The SSA taint
@@ -1405,17 +1433,20 @@ pub struct BodyMeta {
     /// machine consumes this to seed the entry `AuthLevel` for privileged-sink
     /// checks. Empty for top-level and for functions without auth markers.
     pub auth_decorators: Vec<String>,
-    /// Per-formal "bound from the request" flag. Same length as `params`.
+    /// Per-formal request-binding flag. Same length as `params`.
     /// For Python and Ruby, `true` at position `i` iff the formal name
     /// appears as a path capture in a framework routing decorator on this
     /// function (Flask `@app.route("/users/<name>")`, blueprint-prefixed
     /// `@bp.get("/u/<int:id>")`, FastAPI / Starlette verb decorators,
     /// Sinatra `:name` segments). For Java, `true` iff the formal carries a
     /// Spring / JAX-RS binding annotation or has a non-infrastructure type
-    /// (see `params::java_formal_is_request_bound`). The entry-kind seeding
-    /// pass consults this so only request-bound formals (not implicit
-    /// globals, DI handles or injected response / session objects) are
-    /// painted as adversary input. Empty for top-level bodies.
+    /// (see `params::java_formal_is_request_bound`). For TypeScript, `true`
+    /// iff the formal carries a request-binding parameter decorator (NestJS
+    /// `@Query('q') q`, `@Body() dto`). The entry-kind seeding pass consults
+    /// this so only request-bound formals (not implicit globals, DI handles
+    /// or injected response / session objects) are painted as adversary
+    /// input, and the JS/TS handler-param auto-seed paints the decorated
+    /// TypeScript formals. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
 }
 
@@ -2015,6 +2046,7 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         | "short_var_declaration"
         | "var_spec"
         | "var_declaration"
+        | "const_declaration"
         | "let_declaration" => {
             // Walk direct children for the first variable_declarator with a value.
             let mut w = ast.walk();
@@ -2023,6 +2055,14 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("right"))
+                })
+                .or_else(|| {
+                    // Go `var x = ...` / `const x = ...`: the value sits on
+                    // the `var_spec` / `const_spec` child.
+                    let mut w = ast.walk();
+                    ast.named_children(&mut w)
+                        .find(|c| matches!(c.kind(), "var_spec" | "const_spec"))
+                        .and_then(|spec| spec.child_by_field_name("value"))
                 })
                 .or_else(|| {
                     // Go: short_var_declaration's value is on a
@@ -2051,39 +2091,54 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
 }
 
 /// Extract a constant leading string prefix from an assignment-like node's
-/// RHS when the RHS is a JS/TS template literal beginning with a
-/// `string_fragment` or a binary `+` expression whose left operand is a string
-/// literal. Returns `None` if the grammar does not expose such a shape.
+/// RHS, or from the URL argument of a call, when it is a template literal,
+/// f-string or interpolated string with a literal head, a `"lit" + x + y`
+/// concatenation chain, or a format call (see [`prefix_of_expression`]).
+/// Returns `None` if the grammar does not expose such a shape.
 ///
 /// The recovered prefix is used by the abstract string domain to seed a
 /// `StringFact::from_prefix` on the result SSA value. For SSRF detection,
 /// when the prefix contains `scheme://host/`, the sink is suppressed because
 /// the attacker cannot reach a different host.
-fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String> {
+///
+/// `ops` are the node's [`url_operand_nodes`].
+fn template_prefix_of(ops: &[(Node, bool)], lang: &str, code: &[u8]) -> Option<String> {
+    ops.iter()
+        .find_map(|&(n, _)| prefix_of_expression(n, lang, code))
+}
+
+/// The string-building operand a node's prefix is read from: an assignment's
+/// RHS, then the URL argument of a call.  `url_arg` is the positional index of
+/// the URL-bearing argument (the sink's single payload position, else `0`).
+/// Empty for languages the prefix extractor does not cover.
+fn url_operand_nodes<'t>(
+    ast: Node<'t>,
+    lang: &str,
+    url_arg: usize,
+) -> smallvec::SmallVec<[(Node<'t>, bool); 2]> {
     // Phase 14 — extended beyond JS/TS so the SSRF prefix-lock fires
     // across every supported language whose origin-locked URL shape
     // is a literal+tainted string concatenation.  The grammar
     // dispatch lives in [`prefix_of_expression`]; this function only
-    // walks the assignment-RHS / first-call-arg slots that consume
+    // walks the assignment-RHS / URL call-arg slots that consume
     // the prefix.
     let supported = matches!(
         lang,
         "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
     );
+    let mut out = smallvec::SmallVec::new();
     if !supported {
-        return None;
+        return out;
     }
 
     // Assignment-like node: inspect the RHS directly.
     if let Some(rhs) = assignment_rhs(ast) {
-        if let Some(p) = prefix_of_expression(rhs, code) {
-            return Some(p);
-        }
+        out.push((rhs, false));
     }
 
-    // Call expression (including sink call nodes): inspect the first
-    // positional argument. Covers `axios.get(\`https://host/…${x}\`)` shape
-    // where the template literal is inline at the sink.
+    // Call expression (including sink call nodes): inspect the URL argument.
+    // Covers `axios.get(\`https://host/…${x}\`)` shape where the template
+    // literal is inline at the sink.
     if matches!(
         ast.kind(),
         "call_expression"
@@ -2093,43 +2148,197 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
             | "method_invocation"
             | "macro_invocation"
             | "function_call_expression"
+            | "member_call_expression"
+            | "scoped_call_expression"
+            | "nullsafe_member_call_expression"
     ) {
         let args = ast
             .child_by_field_name("arguments")
             .or_else(|| ast.child_by_field_name("argument_list"));
         if let Some(args_node) = args {
-            let mut w = args_node.walk();
-            let positional: Vec<Node> = args_node.named_children(&mut w).collect();
             // Express `res.redirect(301, url)`: skip a leading numeric
             // status so the URL argument's prefix is read.
-            let url_arg = match positional.as_slice() {
-                [status, url] if matches!(status.kind(), "number" | "integer") => Some(*url),
-                [first, ..] => Some(*first),
-                [] => None,
-            };
-            if let Some(p) = url_arg.and_then(|a| prefix_of_expression(a, code)) {
-                return Some(p);
-            }
+            let status_first = url_arg == 0
+                && args_node.named_child_count() == 2
+                && args_node
+                    .named_child(0)
+                    .is_some_and(|status| is_numeric_literal_kind(status.kind()));
+            let url_node = args_node.named_child(if status_first { 1 } else { url_arg as u32 });
+            out.extend(url_node.map(|n| (n, true)));
         }
     }
+    out
+}
 
+/// Like [`template_prefix_of`] for a string that starts with a bare
+/// identifier instead of a literal: `(name, literal tail)` for `API + p`,
+/// `` `${API}/users/${id}` `` or `f"{API}/users/{id}"`.  The identifier is a
+/// module-level constant candidate, resolved once every body of the file is
+/// built (see `module_consts`).  When `url_sink` is set the URL argument may
+/// also be the bare identifier itself (`requests.get(API, params=p)`).
+fn lead_ident_of(
+    ops: &[(Node, bool)],
+    lang: &str,
+    code: &[u8],
+    url_sink: bool,
+) -> Option<(String, String)> {
+    ops.iter().find_map(|&(n, is_call_arg)| {
+        lead_ident_of_operand(n, lang, code, is_call_arg && url_sink, !is_call_arg, 0)
+    })
+}
+
+/// True for the node kinds that name a module-level constant visible inside
+/// a function.  A lowercase Ruby name at file level is a local of the
+/// top-level scope, which a `def` body does not see (there it is a method
+/// call), so Ruby only resolves `constant` names.
+fn is_identifier_kind(kind: &str, lang: &str) -> bool {
+    match lang {
+        "ruby" => kind == "constant",
+        _ => kind == "identifier",
+    }
+}
+
+/// The leading identifier of a string being built, with the literal text that
+/// follows it directly.  Mirrors the shapes [`prefix_of_operand`] reads a
+/// literal head from.  `concat_operand` accepts a bare identifier as the
+/// whole operand (left-hand side of a concatenation, or a URL argument).
+/// `descend_calls` follows a call into its first argument, as
+/// [`prefix_of_operand`] does for a statement's own call; an operand of a
+/// concatenation is never followed into a call, whose result is not its
+/// argument.
+fn lead_ident_of_operand(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    concat_operand: bool,
+    descend_calls: bool,
+    depth: usize,
+) -> Option<(String, String)> {
+    if depth > PREFIX_WALK_DEPTH {
+        return None;
+    }
+    let mut cur = node;
+    for _ in 0..8 {
+        match cur.kind() {
+            "parenthesized_expression" | "argument" => cur = cur.named_child(0)?,
+            "expression_list" if cur.named_child_count() == 1 => cur = cur.named_child(0)?,
+            "as_expression" | "type_assertion" | "satisfies_expression" | "non_null_expression" => {
+                cur = cur
+                    .child_by_field_name("expression")
+                    .or_else(|| cur.named_child(0))?;
+            }
+            "await_expression" | "yield_expression" => cur = cur.named_child(0)?,
+            "call_expression" | "call" | "new_expression" if descend_calls => {
+                let args = cur
+                    .child_by_field_name("arguments")
+                    .or_else(|| cur.child_by_field_name("argument_list"))?;
+                let mut w = args.walk();
+                cur = args.named_children(&mut w).next()?;
+            }
+            _ => break,
+        }
+    }
+    let kind = cur.kind();
+    if matches!(kind, "binary_expression" | "binary_operator" | "binary") {
+        let left = cur.named_child(0)?;
+        let mut w = cur.walk();
+        let op = cur.children(&mut w).find(|c| !c.is_named())?;
+        return match op.kind() {
+            "+" | "." => lead_ident_of_operand(left, lang, code, true, false, depth + 1),
+            _ => None,
+        };
+    }
+    if concat_operand && is_identifier_kind(kind, lang) {
+        return Some((text_of(cur, code)?, String::new()));
+    }
+    if is_string_like_kind(kind) {
+        return string_leading_ident(cur, lang, code);
+    }
     None
 }
 
-/// Return the leading constant string of `node` if it is a template literal or
-/// a left-associated `"lit" + x` binary expression. Used by
-/// `extract_template_prefix` for both assignment RHS and call arguments.
+/// `(identifier, following literal text)` when a string node opens with an
+/// interpolation of a bare identifier (`${API}…`, `{API}…`, `#{API}…`).
+fn string_leading_ident(node: Node, lang: &str, code: &[u8]) -> Option<(String, String)> {
+    let mut w = node.walk();
+    let mut children = node
+        .named_children(&mut w)
+        .filter(|c| c.kind() != "string_start");
+    let first = children.next()?;
+    if !matches!(first.kind(), "template_substitution" | "interpolation") {
+        return None;
+    }
+    if first.named_child_count() != 1 {
+        return None;
+    }
+    let inner = first.named_child(0)?;
+    if !is_identifier_kind(inner.kind(), lang) {
+        return None;
+    }
+    let tail = children
+        .next()
+        .filter(|c| is_string_content_kind(c.kind()) && c.kind() != "escape_sequence")
+        .and_then(|c| text_of(c, code))
+        .unwrap_or_default();
+    Some((text_of(inner, code)?, tail))
+}
+
+fn is_numeric_literal_kind(kind: &str) -> bool {
+    matches!(kind, "number" | "integer")
+}
+
+/// Deepest AST nesting [`prefix_of_operand`] follows through wrappers and down
+/// the left spine of a concatenation chain.
+const PREFIX_WALK_DEPTH: usize = 32;
+
+/// Return the leading constant string of `node`: the literal head of a
+/// template literal, f-string or interpolated string, the left-most literal of
+/// a `"lit" + x + y` / PHP `"lit" . $x` chain, the literal text before the
+/// first directive of a format call (`fmt.Sprintf`, `String.format`,
+/// `sprintf`, `"..." % x`, `"...".format(x)`), or a Rust `format!` head.  Used
+/// by `template_prefix_of` for both assignment RHS and call arguments.
 ///
 /// Also descends through `await` / `yield` wrappers and into the first
 /// argument of a call expression, this covers the common sink shape
 /// `await axios.get(\`https://host/…${x}\`)` where the template literal lives
 /// inside a call inside an `await` wrapper.
-fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
-    // Unwrap trivial wrappers (parentheses, TS `as` / type assertions, await/yield).
+fn prefix_of_expression(node: Node, lang: &str, code: &[u8]) -> Option<String> {
+    prefix_of_operand(node, lang, code, false, true, 0)
+}
+
+/// [`prefix_of_expression`] for one argument of a call: the argument's own
+/// value, so a call in it is read only when it is a format call.  The result
+/// of any other call is not its first argument (`wrap("https://h/" + x)` can
+/// return anything).
+pub(super) fn arg_prefix_of_expression(node: Node, lang: &str, code: &[u8]) -> Option<String> {
+    prefix_of_operand(node, lang, code, false, false, 0)
+}
+
+/// `plain_literal_ok` is set for the operand of a concatenation: a bare
+/// literal is a prefix there (`"https://h/" + x`) but not on its own, where
+/// it is just a constant and not a string being built.  `descend_calls`
+/// follows a non-format call into its first argument, which only the
+/// statement-level reading wants (see [`prefix_of_expression`]).
+fn prefix_of_operand(
+    node: Node,
+    lang: &str,
+    code: &[u8],
+    plain_literal_ok: bool,
+    descend_calls: bool,
+    depth: usize,
+) -> Option<String> {
+    if depth > PREFIX_WALK_DEPTH {
+        return None;
+    }
+    // Unwrap trivial wrappers (parentheses, TS `as` / type assertions,
+    // await/yield, PHP `argument`, a single-element Go expression list).
     let mut cur = node;
-    for _ in 0..6 {
+    for _ in 0..8 {
         match cur.kind() {
-            "parenthesized_expression" => {
+            "parenthesized_expression" | "argument" => {
+                cur = cur.named_child(0)?;
+            }
+            "expression_list" if cur.named_child_count() == 1 => {
                 cur = cur.named_child(0)?;
             }
             "as_expression" | "type_assertion" | "satisfies_expression" | "non_null_expression" => {
@@ -2141,6 +2350,12 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
                 cur = cur.named_child(0)?;
             }
             "call_expression" | "call" | "new_expression" => {
+                if let Some(p) = format_call_prefix(cur, lang, code) {
+                    return Some(p);
+                }
+                if !descend_calls {
+                    return None;
+                }
                 // Descend into the first positional argument (e.g.
                 // `axios.get(\`https://…${x}\`)`, the URL we want to lock
                 // is the template-literal first argument of the call).
@@ -2150,68 +2365,29 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
                 let mut w = args.walk();
                 cur = args.named_children(&mut w).next()?;
             }
+            "function_call_expression" | "method_invocation" => {
+                return format_call_prefix(cur, lang, code);
+            }
             _ => break,
         }
     }
 
-    // Case 1: template literal, `\`scheme://host/…${x}…\``.
-    if cur.kind() == "template_string" {
-        let mut w = cur.walk();
-        let first_child = cur.named_children(&mut w).next()?;
-        // Leading fragment only counts when the very first piece is a literal
-        // text fragment (not an interpolation like `\`${x}…\``).
-        if first_child.kind() == "string_fragment" {
-            let frag = text_of(first_child, code)?;
-            if !frag.is_empty() {
-                return Some(frag);
-            }
-        }
-        return None;
-    }
+    let kind = cur.kind();
 
-    // Case 2: `"scheme://host/" + x` / PHP `"scheme://host/" . $x`,
-    // LHS is a string literal.  Phase 14: also accept `.` as the
-    // concat operator so PHP's `"prefix" . $tainted` shape locks the
-    // SSRF prefix the same way `+`-using languages do.
-    if matches!(
-        cur.kind(),
-        "binary_expression" | "binary_operator" | "binary"
-    ) {
-        let mut w2 = cur.walk();
-        let mut ops = cur.children(&mut w2).filter(|c| !c.is_named());
-        if !ops.any(|c| matches!(c.kind(), "+" | ".")) {
-            return None;
-        }
+    // `"scheme://host/" + x + "/y"` / PHP `"scheme://host/" . $x` /
+    // `"scheme://host/%s" % x`.  The prefix is whatever the left-most operand
+    // starts with, so a left-nested chain recurses down its left spine.
+    if matches!(kind, "binary_expression" | "binary_operator" | "binary") {
         let left = cur.named_child(0)?;
-        if matches!(
-            left.kind(),
-            "string"
-                | "string_fragment"
-                | "string_literal"
-                | "interpreted_string_literal"
-                | "raw_string_literal"
-                | "encapsed_string"
-        ) {
-            // For strings with embedded fragments (Java string_literal
-            // wraps a string_fragment child), recurse one level into
-            // the fragment to get the raw text without quote tokens.
-            let inner_text = if matches!(left.kind(), "string_literal" | "encapsed_string") {
-                let mut iw = left.walk();
-                left.named_children(&mut iw)
-                    .find(|c| c.kind() == "string_fragment")
-                    .and_then(|n| text_of(n, code))
-            } else {
-                None
-            };
-            let raw = match inner_text {
-                Some(t) => t,
-                None => text_of(left, code)?,
-            };
-            let trimmed = strip_string_quotes_loose(&raw);
-            if !trimmed.is_empty() {
-                return Some(trimmed);
+        let mut w = cur.walk();
+        let op = cur.children(&mut w).find(|c| !c.is_named())?;
+        return match op.kind() {
+            "+" | "." => prefix_of_operand(left, lang, code, true, false, depth + 1),
+            "%" if matches!(lang, "python" | "ruby") => {
+                literal_format_prefix(left, code, '%', depth + 1)
             }
-        }
+            _ => None,
+        };
     }
 
     // Case 3: Rust `format!("scheme://host/{}", x)` macro invocation.
@@ -2280,34 +2456,130 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         }
     }
 
-    // Case 4: interpolated-string leading literal fragment.
-    // Python f-strings parse as `formatted_string`; Ruby interpolated
-    // strings parse as `string` with an `interpolation` child.  The
-    // `string + has_interpolation child` gate keeps plain JS / TS /
-    // Java `string` nodes (whose children are only
-    // `string_content`/`string_fragment`) from accidentally seeding a
-    // phantom prefix on every literal-URL call site.  PHP double-
-    // quoted strings parse as `encapsed_string`, distinct kind, so
-    // they don't trip this branch either.
-    let is_fstring = cur.kind() == "formatted_string";
-    let is_interp_string = cur.kind() == "string" && has_string_interpolation(cur);
-    if is_fstring || is_interp_string {
-        let mut w = cur.walk();
-        // tree-sitter-python wraps the literal in `string_start` /
-        // `string_end` tokens; skip the opening one.
-        let first = cur
-            .named_children(&mut w)
-            .find(|c| c.kind() != "string_start")?;
-        if matches!(first.kind(), "string_content" | "string_fragment") {
-            let raw = text_of(first, code)?;
-            let trimmed = strip_string_quotes_loose(&raw);
-            if !trimmed.is_empty() {
-                return Some(trimmed);
-            }
+    // String-like nodes: the literal text before the first interpolation.
+    // JS/TS template literals, Python f-strings (`string` with an
+    // `interpolation` child), Ruby `"#{x}"`, PHP `encapsed_string` and, as
+    // the operand of a concatenation, plain literals.  A plain literal on
+    // its own is just a constant, so it is not read as a prefix.
+    if is_string_like_kind(kind) {
+        if kind == "template_string" || plain_literal_ok || string_is_interpolated(cur) {
+            return string_leading_content(cur, code);
         }
+        return None;
     }
 
     None
+}
+
+fn is_string_like_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "template_string"
+            | "string"
+            | "string_literal"
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "encapsed_string"
+    )
+}
+
+/// True for content-bearing children of a string node: literal text and
+/// escape sequences, as opposed to an interpolation or a delimiter.
+fn is_string_content_kind(kind: &str) -> bool {
+    kind.ends_with("_content") || kind.ends_with("_fragment") || kind == "escape_sequence"
+}
+
+/// True when a string node holds an interpolation (`#{x}`, `{x}`, `${x}`,
+/// PHP `$x` / `{$x}`) rather than only text.
+fn string_is_interpolated(node: Node) -> bool {
+    let mut w = node.walk();
+    node.named_children(&mut w).any(|c| {
+        let k = c.kind();
+        !is_string_content_kind(k) && k != "string_start" && k != "string_end"
+    })
+}
+
+/// The literal text a string node starts with, up to its first interpolation
+/// or escape sequence.  Delimiters (`"`, quote tokens, Python `string_start`)
+/// are skipped; `None` when the string starts with an interpolation or is
+/// empty.
+fn string_leading_content(node: Node, code: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    let mut w = node.walk();
+    for child in node.named_children(&mut w) {
+        let k = child.kind();
+        if k == "string_start" {
+            continue;
+        }
+        if k == "string_end" || k == "escape_sequence" || !is_string_content_kind(k) {
+            break;
+        }
+        out.push_str(&text_of(child, code)?);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Literal head of the format string `node` up to its first `directive`
+/// (`%` for printf-style formats, `{` for Python `str.format`).  A directive
+/// at the very start leaves no prefix.
+fn literal_format_prefix(node: Node, code: &[u8], directive: char, depth: usize) -> Option<String> {
+    let mut cur = node;
+    for _ in 0..4 {
+        if matches!(cur.kind(), "parenthesized_expression" | "argument") {
+            cur = cur.named_child(0)?;
+        }
+    }
+    if depth > PREFIX_WALK_DEPTH
+        || !is_string_like_kind(cur.kind())
+        || cur.kind() == "template_string"
+    {
+        return None;
+    }
+    let head = string_leading_content(cur, code)?;
+    let head = match head.find(directive) {
+        Some(i) => head[..i].to_string(),
+        None => head,
+    };
+    if head.is_empty() { None } else { Some(head) }
+}
+
+/// Prefix of a call that builds a string from a literal format:
+/// `fmt.Sprintf("https://h/%s", id)`, `String.format(...)`,
+/// `"https://h/%s".formatted(id)`, PHP `sprintf`, Ruby `format` / `sprintf`
+/// and Python `"https://h/{}".format(id)`.
+fn format_call_prefix(call: Node, lang: &str, code: &[u8]) -> Option<String> {
+    let args = call
+        .child_by_field_name("arguments")
+        .or_else(|| call.child_by_field_name("argument_list"))?;
+    let head = std::str::from_utf8(code.get(call.start_byte()..args.start_byte())?)
+        .ok()?
+        .trim();
+    let format_fn = match lang {
+        "go" => head == "fmt.Sprintf",
+        "java" => head == "String.format",
+        "php" => head == "sprintf",
+        "ruby" => matches!(
+            head,
+            "format" | "sprintf" | "Kernel.format" | "Kernel.sprintf"
+        ),
+        _ => false,
+    };
+    if format_fn {
+        let first = args.named_child(0)?;
+        return literal_format_prefix(first, code, '%', 0);
+    }
+    // `"literal".format(...)` (Python) / `"literal".formatted(...)` (Java):
+    // the format string is the call's receiver.
+    let receiver = call.child_by_field_name("object").or_else(|| {
+        call.child_by_field_name("function")
+            .filter(|f| f.kind() == "attribute")
+            .and_then(|f| f.child_by_field_name("object"))
+    })?;
+    match (lang, head.rsplit('.').next()) {
+        ("python", Some("format")) => literal_format_prefix(receiver, code, '{', 0),
+        ("java", Some("formatted")) => literal_format_prefix(receiver, code, '%', 0),
+        _ => None,
+    }
 }
 
 /// Resolve the leading prefix of a Rust `format!(IDENT, ...)`-style macro
@@ -3194,6 +3466,25 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // A loop over a member read whose prefix is the Source
+    // (`for (const id of req.body.ids)`, Python `for x in request.json['a']`):
+    // the iterator text ends in a field name that no suffix matcher knows,
+    // so classify it by its member path, as a declaration's right-hand side
+    // would be.
+    if labels.is_empty()
+        && ((matches!(lang, "javascript" | "typescript" | "tsx")
+            && ast.kind() == "for_in_statement")
+            || (lang == "python" && ast.kind() == "for_statement"))
+        && let Some(right) = ast.child_by_field_name("right")
+        && matches!(
+            right.kind(),
+            "member_expression" | "subscript_expression" | "attribute" | "subscript"
+        )
+        && let Some(src @ DataLabel::Source(_)) = first_member_label(right, lang, code, extra)
+    {
+        labels.push(src);
+    }
+
     // Rust chain-text classification.  The default `text` for a Rust
     // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
     // is the leftmost identifier after walking through every nested
@@ -3375,10 +3666,38 @@ pub(super) fn push_node<'a>(
         // path / query / command argument, so the inner sink must still fire.
         // e.g. `JSON.parse(await fsp.readFile(tainted))` (vite CVE-2026-39365
         // FILE_IO path traversal hidden under the JSON_PARSE sanitizer),
-        // `escapeHtml(db.query(tainted))`.  `require_sink` makes the search
-        // skip the non-sink outer match and keep walking into its arguments.
+        // `escapeHtml(db.query(tainted))`.  `find_inner_sink_call` skips the
+        // non-sink outer match and keeps walking into its arguments.
+        //
+        // A gated sink (`subprocess.Popen`, `requests.get`) carries no flat
+        // label, so it reaches here unclassified.  A sanitizer nested in its
+        // arguments cleans only its own result, so it must not take over the
+        // callee (the gate below would no longer match, and the sink with
+        // it); a nested source or sink still does.  The sink check applies
+        // the sanitizer to the operands it wraps through the nested-call
+        // tree.
+        //
+        // The gate lookup only matters when the first inner call found is a
+        // sanitizer: when it is a source or sink, the search that skips
+        // sanitizers finds the same call first, so the common case pays for
+        // one walk and no gate lookup.
         let inner = if labels.is_empty() {
-            find_classifiable_inner_call(ast, lang, code, extra)
+            match find_classifiable_inner_call(ast, lang, code, extra) {
+                Some((_, DataLabel::Sanitizer(_), _))
+                    if !text.is_empty()
+                        && !crate::labels::classify_gated_sink(
+                            lang,
+                            &text,
+                            |_| None,
+                            |_| None,
+                            |_| false,
+                        )
+                        .is_empty() =>
+                {
+                    find_inner_source_or_sink_call(ast, lang, code, extra)
+                }
+                found => found,
+            }
         } else {
             find_inner_sink_call(ast, lang, code, extra)
         };
@@ -3426,8 +3745,19 @@ pub(super) fn push_node<'a>(
     //
     // This covers both direct `Kind::Assignment` nodes and `Kind::CallWrapper`
     // nodes (expression_statement) that wrap an assignment.
-    let unlabelled_before_target_check = labels.is_empty();
-    if labels.is_empty() {
+    //
+    // JS/TS: a Source label the RHS call contributed
+    // (`location.href = location.hash.substring(1)`, where the string method
+    // on a source classifies as one) gives way to a sink target.  The node's
+    // sink check reads the pre-emitted RHS member source
+    // (`pre_emit_sink_assignment_sources`) instead; a node that kept the
+    // Source label would lower to a source definition with no sink check.
+    // A Sanitizer or Sink from the RHS still wins.
+    let rhs_source_only = matches!(lang, "javascript" | "typescript" | "tsx")
+        && !labels.is_empty()
+        && labels.iter().all(|l| matches!(l, DataLabel::Source(_)));
+    let unlabelled_before_target_check = labels.is_empty() || rhs_source_only;
+    if labels.is_empty() || rhs_source_only {
         let assign_node = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
             Some(ast)
         } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
@@ -3441,49 +3771,13 @@ pub(super) fn push_node<'a>(
 
         if let Some(assign) = assign_node
             && let Some(lhs) = assign.child_by_field_name("left")
+            && let Some(l) = classify_assignment_lhs(lhs, lang, code, extra)
+            && (!rhs_source_only || matches!(l, DataLabel::Sink(_)))
         {
-            // Try full member expression first (e.g. "location.href"), more
-            // specific and avoids false positives on `a.href`.
-            if let Some(full) = member_expr_text(lhs, code) {
-                if let Some(l) = classify(lang, &full, extra) {
-                    labels.push(l);
-                }
+            if rhs_source_only {
+                labels.clear();
             }
-            // Fall back to property-only (e.g. "innerHTML") for sinks that
-            // don't need object context.
-            if labels.is_empty()
-                && let Some(prop) = lhs.child_by_field_name("property")
-                && let Some(prop_text) = text_of(prop, code)
-            {
-                if let Some(l) = classify(lang, &prop_text, extra) {
-                    labels.push(l);
-                }
-            }
-            // Subscript-set form: `response.headers["X-Foo"] = bar`
-            // (Ruby `element_reference`, JS/TS `subscript_expression`,
-            // Python `subscript`).  The LHS has no `property` field, so
-            // walk into the subscript's `object` and try classifying its
-            // member-expression text (e.g. `response.headers`).  This
-            // lets header-injection sinks fire on the bare bracket form
-            // alongside the `set_header` / `headers_mut.insert` method
-            // shapes already covered above.
-            if labels.is_empty()
-                && matches!(
-                    lhs.kind(),
-                    "subscript_expression" | "subscript" | "element_reference"
-                )
-            {
-                let obj = lhs
-                    .child_by_field_name("object")
-                    .or_else(|| lhs.child_by_field_name("value"))
-                    .or_else(|| lhs.child(0));
-                if let Some(obj_node) = obj
-                    && let Some(obj_text) = member_expr_text(obj_node, code)
-                    && let Some(l) = classify(lang, &obj_text, extra)
-                {
-                    labels.push(l);
-                }
-            }
+            labels.push(l);
         }
     }
     // The label now belongs to the assignment target, not to the call `text`
@@ -3623,21 +3917,58 @@ pub(super) fn push_node<'a>(
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
 
+    // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
+    // only unwrap the result, so the arguments that matter for gate payload
+    // positions belong to the call underneath.  Without this the outermost
+    // call carries no arguments and a typed-receiver SQL sink scans every use,
+    // including the bound parameters.
+    //
+    // The receiver of the peeled call is not examined by the literal-argument
+    // check, so a rebind never counts as "all arguments literal".
+    let mut rust_call_rebound = false;
+    if lang == "rust"
+        && let Some(outer) = call_ast
+        && let Some(inner) = peel_rust_result_unwrap(outer, code)
+    {
+        call_ast = Some(inner);
+        rust_call_rebound = true;
+    }
+
+    // Rust `sqlx::query(sql).bind(v).fetch_all(pool)` takes the same route: the
+    // head classifies as the SQL sink and the outermost call is `.fetch_all`.
+    //
     // Python `conn.execute(sql, params).fetchall()` classifies on its head
     // (`conn.execute`, the text before the first `(`), so the node already has
     // its Sink label while the outermost call is the zero-arg `.fetchall()`.
     // The gate's payload positions and the literal-SQL check refer to the sink
     // call's arguments, so rebind to that call the way the block below does
     // for an unclassified outer call.
-    if lang == "python"
+    if matches!(lang, "python" | "rust")
         && text.contains('(')
         && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
         && inner.id() != outer.id()
-        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+        && {
+            let inner_gates =
+                classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false);
+            // Rust: the outer sink keeps its own arguments unless the inner
+            // gate is the same sink class (`sqlx::query(sql).bind(v)`).  A
+            // different-cap inner gate (`File::create(p).unwrap().write_all(..)`)
+            // must not displace the outer sink's argument scan.
+            !inner_gates.is_empty()
+                && (lang != "rust"
+                    || inner_gates.iter().any(|g| match g.label {
+                        DataLabel::Sink(c) => labels.iter().any(|l| match l {
+                            DataLabel::Sink(oc) => !(*oc & c).is_empty(),
+                            _ => false,
+                        }),
+                        _ => false,
+                    }))
+        }
     {
         call_ast = Some(inner);
+        rust_call_rebound |= lang == "rust";
         outer_callee = Some(text.clone());
         text = inner_callee_text;
         inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
@@ -3657,14 +3988,24 @@ pub(super) fn push_node<'a>(
     //   * that inner callee actually matches a gate matcher for this lang
     //
     // Motivated by CVE-2025-64430 (Parse Server SSRF).
-    if labels.is_empty()
+    //
+    // A Source the node picked up only from a member read inside the call
+    // (`.where(req.query.name).getMany()`, hoisted by the block above) does
+    // not make the outer call a classified callee: the chain is rebound and
+    // the hoisted Source stays on the node.
+    let only_hoisted_source = text_from_member_label
+        && !labels.is_empty()
+        && labels.iter().all(|l| matches!(l, DataLabel::Source(_)));
+    if (labels.is_empty() || only_hoisted_source)
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
             .or_else(|| find_chained_inner_call(outer, lang, code))
         && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
     {
         call_ast = Some(inner);
-        outer_callee = Some(text.clone());
+        if !only_hoisted_source {
+            outer_callee = Some(text.clone());
+        }
         text = inner_callee_text;
         inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
     }
@@ -3828,6 +4169,21 @@ pub(super) fn push_node<'a>(
                     {
                         continue;
                     }
+                    // A query-builder condition given as an object, a
+                    // `Brackets` group or a callback is built from bound
+                    // parameters, not spliced in as SQL text.
+                    if matches!(lang, "javascript" | "typescript" | "tsx")
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY))
+                        && gate_callee_text
+                            .strip_prefix("QueryBuilder.")
+                            .is_some_and(|m| {
+                                crate::labels::javascript::QUERY_BUILDER_SQL_TEXT_METHODS
+                                    .contains(&m)
+                                    && js_arg_is_structured_condition(cn, 0, m, code)
+                            })
+                    {
+                        continue;
+                    }
                     // A shallow `Object.assign(target, src)` pollutes a shared
                     // prototype only when `target` is one.
                     if matches!(lang, "javascript" | "typescript" | "tsx")
@@ -3835,6 +4191,25 @@ pub(super) fn push_node<'a>(
                         && crate::labels::javascript::SHALLOW_ASSIGN_MERGES
                             .contains(&gate_callee_text.as_str())
                         && !js_arg_is_prototype_object(cn, 0, code)
+                    {
+                        continue;
+                    }
+                    // Python lowers keyword arguments into the use group that
+                    // follows the positional ones, so a payload position the
+                    // call does not pass would read the keywords instead.  A
+                    // gate that names its keyword destinations (`url=`) has
+                    // its payload in those or in a passed position; with
+                    // neither, the call gives this gate no payload.
+                    let py_arity = if lang == "python" && !gm.object_destination_fields.is_empty() {
+                        python_positional_arity(cn)
+                    } else {
+                        None
+                    };
+                    if let Some(arity) = py_arity
+                        && gm.payload_args != crate::labels::ALL_ARGS_PAYLOAD
+                        && gm.payload_args.iter().all(|&p| p >= arity)
+                        && extract_destination_kwarg_pairs(cn, gm.object_destination_fields, code)
+                            .is_empty()
                     {
                         continue;
                     }
@@ -3882,6 +4257,20 @@ pub(super) fn push_node<'a>(
                                 code,
                             ) {
                                 all_pairs.extend(pairs);
+                                // An inline member Source in a destination
+                                // field is bound to the argument's synthetic
+                                // source; keep a placeholder that
+                                // `apply_arg_source_bindings` resolves.
+                                if let Some(field) = destination_field_reading_source(
+                                    cn,
+                                    pos,
+                                    gm.object_destination_fields,
+                                    lang,
+                                    code,
+                                    extra,
+                                ) {
+                                    all_pairs.push((field, arg_source_placeholder(pos)));
+                                }
                                 had_object_match = true;
                                 break;
                             }
@@ -3895,6 +4284,9 @@ pub(super) fn push_node<'a>(
                         // `payload_vec` to include that position; the
                         // `destination_filter` then narrows to the kwarg
                         // ident's `var_name`.
+                        if let Some(arity) = py_arity {
+                            payload_vec.retain(|&p| p < arity);
+                        }
                         let kwarg_pairs =
                             extract_destination_kwarg_pairs(cn, gm.object_destination_fields, code);
                         if !kwarg_pairs.is_empty() {
@@ -4006,6 +4398,24 @@ pub(super) fn push_node<'a>(
                 f.payload_args.retain(|&p| p < arity);
             }
         }
+    }
+
+    // Tagged SQL templates bind their substitutions as parameters; see
+    // `apply_js_sql_template_params`.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4))
+    {
+        apply_js_sql_template_params(
+            cn,
+            code,
+            &mut SinkSlots {
+                labels: &mut labels,
+                payload_args: &mut sink_payload_args,
+                gate_filters: &mut gate_filters,
+                destination_uses: &mut destination_uses,
+                reaching_uses: &mut sink_reaching_uses,
+            },
+        );
     }
 
     // ── Inline shell-array sink synthesis ────────────────────────────────
@@ -4511,6 +4921,21 @@ pub(super) fn push_node<'a>(
     let arg_string_literals = call_ast
         .map(|cn| extract_arg_string_literals(cn, code))
         .unwrap_or_default();
+    // Constant head of each argument built from a literal prefix, for sinks
+    // and URL builders whose URL is not the first argument.  Only SSRF /
+    // open-redirect reasoning reads it, and only the call-site languages the
+    // prefix extractor covers produce one.
+    let arg_string_prefixes = if matches!(
+        lang,
+        "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
+    ) {
+        call_ast
+            .map(|cn| extract_arg_string_prefixes(cn, lang, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
 
     // Extract keyword / named arguments for Call and gated-sink nodes.
     // Languages whose grammar doesn't produce `keyword_argument` / `named_argument`
@@ -4524,7 +4949,7 @@ pub(super) fn push_node<'a>(
     };
 
     // Check whether all arguments are syntactic literals (for taint sink suppression).
-    let all_args_literal = if kind == StmtKind::Call {
+    let all_args_literal = if kind == StmtKind::Call && !rust_call_rebound {
         call_ast
             .map(|cn| has_only_literal_args(cn, code))
             .unwrap_or(false)
@@ -4692,14 +5117,36 @@ pub(super) fn push_node<'a>(
                 .any(|ch| ch.kind() == "do_block" || ch.kind() == "block")
         });
 
+    // The URL-bearing argument is the sink's lowest payload position
+    // (`http.NewRequest(method, url, body)` pins arg 1), else the first.
+    let url_arg = sink_payload_args
+        .as_deref()
+        .and_then(|p| p.iter().copied().filter(|&i| i != usize::MAX).min())
+        .unwrap_or(0);
     // A read-modify-write keeps the target's own prefix (`url += "/x"`), so
     // only a call argument's prefix is recorded for it.
-    let string_prefix = if rmw.is_some() {
-        None
+    let own_scope = if rmw.is_some() { None } else { scope };
+    // The operands are found once per side and read for both the literal
+    // prefix and, failing that, the leading module-constant identifier.  The
+    // call side is only needed when the statement side has no prefix.
+    let scope_ops = own_scope
+        .map(|s| url_operand_nodes(s, lang, url_arg))
+        .unwrap_or_default();
+    let scope_prefix = template_prefix_of(&scope_ops, lang, code);
+    let call_ops = match (&scope_prefix, call_ast) {
+        (None, Some(cn)) => url_operand_nodes(cn, lang, url_arg),
+        _ => SmallVec::new(),
+    };
+    let string_prefix = scope_prefix.or_else(|| template_prefix_of(&call_ops, lang, code));
+    let url_sink = labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)));
+    let string_prefix_ident = if string_prefix.is_none() {
+        lead_ident_of(&scope_ops, lang, code, url_sink)
+            .or_else(|| lead_ident_of(&call_ops, lang, code, url_sink))
     } else {
-        scope.and_then(|s| extract_template_prefix(s, lang, code))
-    }
-    .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code)));
+        None
+    };
 
     let (bin_op, bin_op_const) = match &rmw {
         Some(r) => {
@@ -4785,6 +5232,8 @@ pub(super) fn push_node<'a>(
             sink_reaching_uses,
             kwargs,
             arg_string_literals,
+            arg_string_prefixes,
+            arg_bare_names,
             destination_uses,
             gate_filters,
             is_constructor,
@@ -4837,6 +5286,7 @@ pub(super) fn push_node<'a>(
         parameterized_query,
         parameterized_query_interpolated,
         string_prefix,
+        string_prefix_ident,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
         member_field: if rmw.is_none() {
@@ -7124,6 +7574,269 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// Label of an assignment target (`el.innerHTML`, `location.href`,
+/// `res.headers['X']`).  The full member path is tried first (`location.href`,
+/// more specific and avoids false positives on `a.href`), then the property
+/// alone (`innerHTML`) for sinks that need no object context, then, for the
+/// subscript-set form (`response.headers["X-Foo"] = bar`: Ruby
+/// `element_reference`, JS/TS `subscript_expression`, Python `subscript`),
+/// the subscript's object path (`response.headers`), so header-injection
+/// sinks fire on the bracket form alongside the `set_header` method shapes.
+fn classify_assignment_lhs(
+    lhs: Node,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<DataLabel> {
+    if let Some(full) = member_expr_text(lhs, code)
+        && let Some(l) = classify(lang, &full, extra)
+    {
+        return Some(l);
+    }
+    if let Some(prop) = lhs.child_by_field_name("property")
+        && let Some(prop_text) = text_of(prop, code)
+        && let Some(l) = classify(lang, &prop_text, extra)
+    {
+        return Some(l);
+    }
+    if matches!(
+        lhs.kind(),
+        "subscript_expression" | "subscript" | "element_reference"
+    ) {
+        let obj = lhs
+            .child_by_field_name("object")
+            .or_else(|| lhs.child_by_field_name("value"))
+            .or_else(|| lhs.child(0));
+        if let Some(obj_node) = obj
+            && let Some(obj_text) = member_expr_text(obj_node, code)
+            && let Some(l) = classify(lang, &obj_text, extra)
+        {
+            return Some(l);
+        }
+    }
+    None
+}
+
+/// JS/TS: pre-emit Source nodes for member-expression sources read on the
+/// right-hand side of an assignment whose target is a sink
+/// (`el.innerHTML = location.hash`, `location.href = '/' + req.query.next`,
+/// `window.location.href = location.hash.substring(1)`).  `push_node` labels
+/// such a node with the target's Sink, which leaves no room for a Source on
+/// the same node, so without these nodes the sink only saw the untainted
+/// `location` / `req` roots.  Returns the effective predecessors and the
+/// synthetic names to append to the assignment's uses.
+///
+/// Arguments of calls on the right-hand side are not searched: a call's own
+/// arguments are pre-emitted by [`pre_emit_arg_source_nodes`] when the call
+/// is the node's call, and a nested call may be a sanitizer
+/// (`DOMPurify.sanitize(location.hash)`).  A call's receiver chain is
+/// searched, so `location.hash.substring(1)` counts.
+fn pre_emit_sink_assignment_sources(
+    g: &mut Cfg,
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    analysis_rules: Option<&LangAnalysisRules>,
+    preds: &[NodeIndex],
+) -> (SmallVec<[NodeIndex; 4]>, Vec<String>) {
+    let mut effective_preds: SmallVec<[NodeIndex; 4]> = SmallVec::from_slice(preds);
+    let mut names: Vec<String> = Vec::new();
+    if !matches!(lang, "javascript" | "typescript" | "tsx") {
+        return (effective_preds, names);
+    }
+    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        Some(ast)
+    } else {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor)
+            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+    };
+    let Some(assign) = assign else {
+        return (effective_preds, names);
+    };
+    let (Some(lhs), Some(rhs)) = (
+        assign.child_by_field_name("left"),
+        assign.child_by_field_name("right"),
+    ) else {
+        return (effective_preds, names);
+    };
+    let extra = analysis_rules.and_then(|r| {
+        if r.extra_labels.is_empty() {
+            None
+        } else {
+            Some(r.extra_labels.as_slice())
+        }
+    });
+    if !matches!(
+        classify_assignment_lhs(lhs, lang, code, extra),
+        Some(DataLabel::Sink(_))
+    ) {
+        return (effective_preds, names);
+    }
+    let mut found: Vec<(Node, Cap, String)> = Vec::new();
+    collect_rhs_member_sources(rhs, lang, code, extra, &mut found);
+    for (i, (node, caps, source_text)) in found.into_iter().enumerate() {
+        let synth_name = format!("__nyx_src_{}_rhs{}", g.node_count(), i);
+        let src_idx = g.add_node(NodeInfo {
+            kind: StmtKind::Seq,
+            call: CallMeta {
+                callee: Some(source_text),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels: smallvec::smallvec![DataLabel::Source(caps)],
+                defines: Some(synth_name.clone()),
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span: (node.start_byte(), node.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &effective_preds, src_idx, EdgeKind::Seq);
+        effective_preds.clear();
+        effective_preds.push(src_idx);
+        names.push(synth_name);
+    }
+    (effective_preds, names)
+}
+
+/// `location` properties that name the page's own origin.
+const LOCATION_ORIGIN_PARTS: &[&str] = &["origin", "host", "hostname", "port", "protocol"];
+
+/// True for `location.origin + location.pathname`.  The origin carries the
+/// scheme and the full host, and a pathname always starts with `/`, so the
+/// host of the resulting URL is fixed and the value cannot navigate off site.
+fn is_location_origin_plus_pathname(n: Node, code: &[u8]) -> bool {
+    let is_location_part = |node: Node, part: &str| {
+        let node = unwrap_parens(node);
+        node.kind() == "member_expression"
+            && node
+                .child_by_field_name("property")
+                .and_then(|p| text_of(p, code))
+                .as_deref()
+                == Some(part)
+            && node.child_by_field_name("object").is_some_and(|o| {
+                matches!(
+                    member_expr_text(o, code).as_deref(),
+                    Some("location" | "window.location" | "document.location" | "self.location")
+                )
+            })
+    };
+    let op_is_plus = n
+        .child_by_field_name("operator")
+        .and_then(|o| text_of(o, code))
+        .as_deref()
+        == Some("+");
+    op_is_plus
+        && n.child_by_field_name("left")
+            .is_some_and(|l| is_location_part(l, "origin"))
+        && n.child_by_field_name("right")
+            .is_some_and(|r| is_location_part(r, "pathname"))
+}
+
+/// Member reads under `n` that classify as a taint Source by their own
+/// path (`location.hash`, `req.body.next` via its `req.body` prefix), with
+/// the matched source path.  Does not enter call arguments or function
+/// literals; see [`pre_emit_sink_assignment_sources`].
+fn collect_rhs_member_sources<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    out: &mut Vec<(Node<'a>, Cap, String)>,
+) {
+    match n.kind() {
+        "member_expression" => {
+            // `location.origin + location.pathname`: the site's own origin
+            // components are not attacker input, and treating the whole
+            // `location` object as the Source would flag same-origin
+            // navigation.
+            if let (Some(obj), Some(prop)) = (
+                n.child_by_field_name("object"),
+                n.child_by_field_name("property"),
+            ) && matches!(
+                member_expr_text(obj, code).as_deref(),
+                Some("location" | "window.location" | "document.location" | "self.location")
+            ) && text_of(prop, code).is_some_and(|p| LOCATION_ORIGIN_PARTS.contains(&p.as_str()))
+            {
+                return;
+            }
+            if let Some(full) = member_expr_text(n, code) {
+                let mut candidate = full.as_str();
+                loop {
+                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra) {
+                        out.push((n, caps, candidate.to_string()));
+                        return;
+                    }
+                    match candidate.rsplit_once('.') {
+                        Some((prefix, _)) => candidate = prefix,
+                        None => break,
+                    }
+                }
+            }
+            if let Some(obj) = n.child_by_field_name("object") {
+                collect_rhs_member_sources(obj, lang, code, extra, out);
+            }
+        }
+        "subscript_expression" => {
+            if let Some(DataLabel::Source(caps)) = first_member_label(n, lang, code, extra) {
+                let text = first_member_text(n, code).unwrap_or_default();
+                out.push((n, caps, text));
+            } else if let Some(obj) = n.child_by_field_name("object") {
+                collect_rhs_member_sources(obj, lang, code, extra, out);
+            }
+        }
+        "call_expression" | "new_expression" => {
+            if let Some(f) = n
+                .child_by_field_name("function")
+                .or_else(|| n.child_by_field_name("constructor"))
+            {
+                collect_rhs_member_sources(f, lang, code, extra, out);
+            }
+        }
+        "arrow_function" | "function_expression" | "function" | "class" => {}
+        "binary_expression" if is_location_origin_plus_pathname(n, code) => {}
+        _ => {
+            let mut cursor = n.walk();
+            for child in n.named_children(&mut cursor) {
+                collect_rhs_member_sources(child, lang, code, extra, out);
+            }
+        }
+    }
+}
+
+/// JS/TS: the gated sink `push_node` rebinds a call node to when its outermost
+/// call is unclassified and a call further up the receiver chain is a gated
+/// sink (`QueryBuilder.where` under `.getMany()`, `http.get` under `.on(..)`).
+/// `None` when the outermost call is not rebound, so [`pre_emit_arg_source_nodes`]
+/// and `push_node` agree on which call's arguments the node carries.
+fn js_rebound_chain_sink_call<'a>(
+    outer: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<Node<'a>> {
+    if !matches!(lang, "javascript" | "typescript" | "tsx") {
+        return None;
+    }
+    let (inner, inner_text) = find_chained_gated_sink_call(outer, lang, code)?;
+    if inner.id() == outer.id()
+        || classify_gated_sink(lang, &inner_text, |_| None, |_| None, |_| false).is_empty()
+    {
+        return None;
+    }
+    let outer_text = outer
+        .child_by_field_name("function")
+        .and_then(|f| call_fn_callee_text(f, lang, code))?;
+    let outer_text: String = outer_text.chars().filter(|c| !c.is_whitespace()).collect();
+    classify_all(lang, &outer_text, extra)
+        .is_empty()
+        .then_some(inner)
+}
+
 /// Step 1 (`pre_emit_arg_source_nodes`): scan the AST, create Source nodes,
 /// wire them to `preds`, and return (effective_preds, synth_bindings,
 /// uses_only_synth_names).
@@ -7161,9 +7874,14 @@ fn pre_emit_arg_source_nodes(
         }
     });
 
-    let Some(call_ast) = find_call_node(ast, lang) else {
+    let Some(outer_call) = find_call_node(ast, lang) else {
         return (effective_preds, bindings, uses_only);
     };
+    // A JS/TS method chain whose sink sits in the middle
+    // (`repo.createQueryBuilder('u').where(<cond>).getMany()`): `push_node`
+    // reads the argument positions from that inner call, so the sources are
+    // bound there too.
+    let call_ast = js_rebound_chain_sink_call(outer_call, lang, code, extra).unwrap_or(outer_call);
     let Some(args_node) = call_ast.child_by_field_name("arguments") else {
         return (effective_preds, bindings, uses_only);
     };
@@ -7369,12 +8087,60 @@ fn pre_emit_arg_source_nodes(
 /// the Call node's `arg_uses` and `uses`.  `uses_only` synth names are
 /// appended only to `taint.uses`, used for chain-inner-arg sources whose
 /// synth value is not a positional outer-call argument.
+/// Destination-filter placeholder for the synthetic source bound to
+/// positional argument `pos`; see [`apply_arg_source_bindings`].
+fn arg_source_placeholder(pos: usize) -> String {
+    format!("__nyx_argsrc_{pos}")
+}
+
 fn apply_arg_source_bindings(
     g: &mut Cfg,
     call_node: NodeIndex,
     bindings: &[(usize, String)],
     uses_only: &[String],
 ) {
+    // Destination filters name the synthetic source of an argument whose
+    // destination field reads a member Source through a placeholder: swap in
+    // the real binding, and drop placeholders no binding resolved.
+    let call = &mut g[call_node].call;
+    let resolve = |uses: &mut Option<Vec<String>>, fields: &mut Vec<String>| {
+        let Some(list) = uses.as_mut() else {
+            return;
+        };
+        let parallel = fields.len() == list.len();
+        let mut i = 0;
+        while i < list.len() {
+            if !list[i].starts_with("__nyx_argsrc_") {
+                i += 1;
+                continue;
+            }
+            match bindings
+                .iter()
+                .find(|(pos, _)| list[i] == arg_source_placeholder(*pos))
+            {
+                Some((_, synth)) => {
+                    list[i] = synth.clone();
+                    i += 1;
+                }
+                None => {
+                    list.remove(i);
+                    if parallel {
+                        fields.remove(i);
+                    }
+                }
+            }
+        }
+    };
+    resolve(&mut call.destination_uses, &mut Vec::new());
+    for f in call.gate_filters.iter_mut() {
+        resolve(&mut f.destination_uses, &mut f.destination_fields);
+    }
+    // A synthetic source feeds the node, so its payload is not all literal
+    // even when the node's own call only passes literals
+    // (`location.href = location.hash.substring(1)`).
+    if !bindings.is_empty() || !uses_only.is_empty() {
+        g[call_node].all_args_literal = false;
+    }
     for (pos, synth_name) in bindings {
         let arg_uses = &mut g[call_node].call.arg_uses;
         if *pos < arg_uses.len() {
@@ -9188,9 +9954,18 @@ pub(super) fn build_sub<'a>(
             // `w http.ResponseWriter`, `c *http.Client`) classify under their
             // canonical receiver prefix while this body (and any closure
             // nested in it) is built.
-            let receiver_aliases = (lang == "go").then(|| {
-                crate::labels::push_receiver_aliases(params::go_receiver_alias_frame(ast, code))
-            });
+            //
+            // Rust `conn: &Connection` formals take the `DatabaseConnection`
+            // prefix the same way.
+            let receiver_aliases = match lang {
+                "go" => Some(crate::labels::push_receiver_aliases(
+                    params::go_receiver_alias_frame(ast, code),
+                )),
+                "rust" => Some(crate::labels::push_receiver_aliases(
+                    params::rust_receiver_alias_frame(ast, code),
+                )),
+                _ => None,
+            };
 
             let mut fn_call_ordinal: u32 = 0;
             let mut fn_breaks = Vec::new();
@@ -9562,11 +10337,21 @@ pub(super) fn build_sub<'a>(
             // `res.redirect(req.body.returnTo)`).  Created BEFORE the Call
             // node so they get lower indices, see doc comment on
             // `pre_emit_arg_source_nodes` for why this ordering matters.
-            let (effective_preds, src_bindings, src_uses_only) = if kind == StmtKind::Call {
+            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call {
                 pre_emit_arg_source_nodes(g, ast, lang, code, enclosing_func, analysis_rules, preds)
             } else {
                 (SmallVec::from_slice(preds), Vec::new(), Vec::new())
             };
+            let (effective_preds, rhs_sources) = pre_emit_sink_assignment_sources(
+                g,
+                ast,
+                lang,
+                code,
+                enclosing_func,
+                analysis_rules,
+                &effective_preds,
+            );
+            src_uses_only.extend(rhs_sources);
 
             let node = push_node(
                 g,
@@ -9802,6 +10587,15 @@ pub(super) fn build_sub<'a>(
             } else {
                 0
             };
+            let (effective_preds, rhs_sources) = pre_emit_sink_assignment_sources(
+                g,
+                ast,
+                lang,
+                code,
+                enclosing_func,
+                analysis_rules,
+                preds,
+            );
             let n = push_node(
                 g,
                 kind,
@@ -9812,7 +10606,8 @@ pub(super) fn build_sub<'a>(
                 ord,
                 analysis_rules,
             );
-            connect_all(g, preds, n, EdgeKind::Seq);
+            apply_arg_source_bindings(g, n, &[], &rhs_sources);
+            connect_all(g, &effective_preds, n, EdgeKind::Seq);
             // `q += fmt(x)`: evaluate the call, then combine with the old `q`.
             let n = split_rmw_call(g, n, ast, lang, code);
             // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
@@ -9984,10 +10779,19 @@ pub(crate) fn build_cfg<'a>(
             BodyId(0),
         )
     };
-    let exits = if python_imports.is_empty() {
-        build_top_level()
+    // JS/TS call-shape rules (tagged SQL templates) read the import view
+    // while the CFG is built, the same way Python's do.
+    let js_imports = if matches!(lang, "javascript" | "typescript" | "tsx") {
+        extract_local_import_view(tree, code)
     } else {
+        HashMap::new()
+    };
+    let exits = if !python_imports.is_empty() {
         crate::ssa::type_facts::with_file_imports(Some(&python_imports), build_top_level)
+    } else if !js_imports.is_empty() {
+        crate::ssa::type_facts::with_file_imports(Some(&js_imports), build_top_level)
+    } else {
+        build_top_level()
     };
     debug!(target: "cfg", "exits: {:?}", exits);
     // Wire every real exit to our synthetic EXIT node.
@@ -10056,6 +10860,10 @@ pub(crate) fn build_cfg<'a>(
     // Nested functions are pushed before their parents during build_sub,
     // so the Vec may be out of order before this sort.
     bodies.sort_by_key(|b| b.meta.id);
+
+    // Leading identifiers of URL-building strings (`API + id`) resolve against
+    // the file's module-level string constants, now that every body exists.
+    module_consts::resolve_prefix_idents(&mut bodies);
 
     // Extract import alias bindings for JS/TS files.
     let import_bindings = if matches!(
@@ -10257,6 +11065,158 @@ fn apply_promisify_labels(
                 }
             }
         }
+    }
+}
+
+/// Mutable sink metadata of a node under construction in `push_node`.
+struct SinkSlots<'a> {
+    labels: &'a mut SmallVec<[DataLabel; 2]>,
+    payload_args: &'a mut Option<Vec<usize>>,
+    gate_filters: &'a mut Vec<GateFilter>,
+    destination_uses: &'a mut Option<Vec<String>>,
+    reaching_uses: &'a mut Option<Vec<String>>,
+}
+
+impl SinkSlots<'_> {
+    /// Remove `cap` from every sink label and gate filter, dropping the ones
+    /// left empty.
+    fn strip_sink_cap(&mut self, cap: Cap) {
+        let mut stripped: SmallVec<[DataLabel; 2]> = SmallVec::new();
+        for l in self.labels.drain(..) {
+            match l {
+                DataLabel::Sink(c) if c.intersects(cap) => {
+                    let rest = c & !cap;
+                    if !rest.is_empty() && !stripped.contains(&DataLabel::Sink(rest)) {
+                        stripped.push(DataLabel::Sink(rest));
+                    }
+                }
+                other => stripped.push(other),
+            }
+        }
+        *self.labels = stripped;
+        self.gate_filters.retain_mut(|f| {
+            f.label_caps &= !cap;
+            !f.label_caps.is_empty()
+        });
+        if !self.labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            *self.payload_args = None;
+            *self.destination_uses = None;
+            self.gate_filters.clear();
+        }
+    }
+
+    fn sink_caps(&self) -> Cap {
+        self.labels.iter().fold(Cap::empty(), |acc, l| match l {
+            DataLabel::Sink(c) => acc | *c,
+            _ => acc,
+        })
+    }
+}
+
+/// JS/TS tagged SQL templates.  A tag such as `prisma.$queryRaw` or the
+/// drizzle / `Prisma.sql` `sql` tag sends each `${}` substitution as a bind
+/// parameter, so neither the tagged call nor a SQL sink that receives it
+/// (`db.execute(sql`...`)`) is an injection vector unless a substitution
+/// splices raw text (`${Prisma.raw(col)}`, `${sql.raw(col)}`), see
+/// [`js_sql_template_raw_splices`].
+///
+/// * The node's own call is a tagged SQL template: its SQL sink is limited
+///   to the substitutions holding a raw splice, or dropped when there are
+///   none.  A raw splice in an `sql` builder tag (which no flat rule labels)
+///   makes it a sink; an `sql` builder without one returns a fragment that is
+///   safe to hand to any executor, so its result is marked SQL-sanitised.
+/// * A SQL sink whose payload arguments are all tagged SQL templates checks
+///   only the identifiers inside their raw splices.
+fn apply_js_sql_template_params(call: Node, code: &[u8], slots: &mut SinkSlots<'_>) {
+    if let Some((positions, _)) = js_sql_template_raw_splices(call, code) {
+        let has_sql_sink = slots.sink_caps().contains(Cap::SQL_QUERY);
+        let is_builder = call
+            .child_by_field_name("function")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|t| {
+                let leaf = t.rsplit('.').next().unwrap_or(&t).trim();
+                leaf.eq_ignore_ascii_case("sql")
+            });
+        if positions.is_empty() {
+            if has_sql_sink {
+                slots.strip_sink_cap(Cap::SQL_QUERY);
+            }
+            if is_builder {
+                slots.labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
+            }
+            return;
+        }
+        if !has_sql_sink {
+            slots.labels.push(DataLabel::Sink(Cap::SQL_QUERY));
+        }
+        if slots.sink_caps() == Cap::SQL_QUERY {
+            let narrowed: Vec<usize> = match slots.payload_args.as_ref() {
+                Some(existing) => positions
+                    .into_iter()
+                    .filter(|p| existing.contains(p))
+                    .collect(),
+                None => positions,
+            };
+            *slots.payload_args = Some(narrowed.clone());
+            slots.gate_filters.clear();
+            *slots.destination_uses = None;
+            if narrowed.is_empty() {
+                slots.strip_sink_cap(Cap::SQL_QUERY);
+            }
+        }
+        return;
+    }
+
+    // A SQL sink fed by tagged templates: `db.execute(sql`...`)`.
+    if !slots.sink_caps().contains(Cap::SQL_QUERY) {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    if args.kind() != "arguments" {
+        return;
+    }
+    let arg_nodes: Vec<Node> = {
+        let mut cursor = args.walk();
+        args.named_children(&mut cursor).collect()
+    };
+    let positions: Vec<usize> = match slots.payload_args.as_ref() {
+        Some(p) => p.clone(),
+        None => (0..arg_nodes.len()).collect(),
+    };
+    let mut raw_idents: Vec<String> = Vec::new();
+    let mut saw_template = false;
+    for pos in positions {
+        let Some(arg) = arg_nodes.get(pos) else {
+            continue;
+        };
+        if let Some((_, idents)) = js_sql_template_raw_splices(*arg, code) {
+            saw_template = true;
+            raw_idents.extend(idents);
+            continue;
+        }
+        // Any other payload argument that reads a variable may carry SQL
+        // text of its own; leave the sink alone.
+        let mut idents = Vec::new();
+        collect_idents(*arg, code, &mut idents);
+        if !idents.is_empty() {
+            return;
+        }
+    }
+    if !saw_template {
+        return;
+    }
+    if raw_idents.is_empty() {
+        slots.strip_sink_cap(Cap::SQL_QUERY);
+    } else if slots.sink_caps() == Cap::SQL_QUERY {
+        *slots.reaching_uses = Some(match slots.reaching_uses.take() {
+            Some(existing) => raw_idents
+                .into_iter()
+                .filter(|u| existing.contains(u))
+                .collect(),
+            None => raw_idents,
+        });
     }
 }
 
@@ -10730,3 +11690,34 @@ pub(crate) fn export_summaries(
 
 #[cfg(test)]
 mod cfg_tests;
+
+/// For a Rust `recv_call(..).unwrap()` / `.expect(..)`, the receiver call.
+///
+/// Peels repeated unwraps (`f(..).unwrap().expect(..)` is unusual but legal)
+/// and returns `None` when `call` is not an unwrap or its receiver is not
+/// itself a call.
+fn peel_rust_result_unwrap<'a>(call: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
+    let mut cur = call;
+    let mut peeled = false;
+    loop {
+        if cur.kind() != "call_expression" {
+            break;
+        }
+        let function = cur.child_by_field_name("function")?;
+        if function.kind() != "field_expression" {
+            break;
+        }
+        let method = function.child_by_field_name("field")?;
+        let name = method.utf8_text(code).ok()?;
+        if !matches!(name, "unwrap" | "expect") {
+            break;
+        }
+        let recv = function.child_by_field_name("value")?;
+        if recv.kind() != "call_expression" {
+            break;
+        }
+        cur = recv;
+        peeled = true;
+    }
+    peeled.then_some(cur)
+}

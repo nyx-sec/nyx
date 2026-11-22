@@ -1,0 +1,19 @@
+{
+  "description": "A user-defined sql tag is string concatenation, not a parameterized template: the sql tag only binds substitutions when it comes from a SQL library.",
+  "tags": ["taint", "sqli"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [16, 16],
+      "notes": "local sql tag concatenates the id"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [22, 22],
+      "notes": "local sql tag and local raw helper"
+    }
+  ]
+}

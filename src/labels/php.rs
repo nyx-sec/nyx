@@ -75,8 +75,11 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // `basename` keeps only the final component.  `realpath` does not
+    // confine: it is a path primitive in the PathFact domain, cleared by a
+    // `str_starts_with` / `strpos === 0` check against a root.
     LabelRule {
-        matchers: &["basename", "realpath"],
+        matchers: &["basename"],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
     },

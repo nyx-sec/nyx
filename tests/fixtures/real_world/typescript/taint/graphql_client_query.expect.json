@@ -1,0 +1,13 @@
+{
+  "description": "Apollo client.query({ query, variables }) is a GraphQL request, not SQL: the config object has no SQL text field.",
+  "tags": ["taint", "sqli", "graphql"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [8, 8],
+      "notes": "client.query({ query: GET_ITEM, variables: { id } })"
+    }
+  ]
+}

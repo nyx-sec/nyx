@@ -117,6 +117,12 @@ impl AuthAnalysisRules {
         self.finding_prefix == "go.auth"
     }
 
+    /// True for the Python auth family (finding prefix `py.auth`).
+    #[inline]
+    pub fn is_python_lang(&self) -> bool {
+        self.finding_prefix == "py.auth"
+    }
+
     /// Last path segment of a type name (e.g. `std::collections::HashMap` → `HashMap`).
     /// Accepts either `::` or `.` as the path separator.
     fn type_last_segment(ty: &str) -> &str {
@@ -293,6 +299,13 @@ impl AuthAnalysisRules {
         {
             return Some(SinkClass::InMemoryLocal);
         }
+        // Python `.get(..)` is mostly a dictionary lookup (`options.get(key)`,
+        // `cache.get(k)`, `request.GET.get("id")`) and `.get_*(..)` an ordinary
+        // method (`group.get_absolute_url`).  Both are reads of rows only on an
+        // ORM receiver (`Model.objects.get`, `db.session.get`).
+        if self.is_python_lang() && is_non_orm_get(callee) {
+            return None;
+        }
         // An id, or a collection of ids, is a value and never a data-layer
         // client: `uniqueIDs.Remove(0)`, `r.configVersionID.Load()`.
         if receiver_is_id_value(callee) {
@@ -415,33 +428,28 @@ impl AuthAnalysisRules {
     }
 
     pub fn is_admin_guard(&self, name: &str, args: &[String]) -> bool {
-        if matches_name(name, "PreAuthorize")
+        // Role lists and role-gating middleware admit a holder of ANY listed
+        // role, so the guard is only as strong as its weakest role:
+        // `hasAnyRole('ADMIN', 'USER')`, `@Secured({"ROLE_ADMIN",
+        // "ROLE_USER"})` and `requireRoles('viewer')` are not admin guards.
+        // This runs before `admin_guard_names` so a role gate whose name is
+        // also listed there (`requireRole`) is still decided by its arguments.
+        if matches_name(name, "hasAnyRole")
+            || matches_name(name, "hasAnyAuthority")
+            || matches_name(name, "PreAuthorize")
             || matches_name(name, "Secured")
             || matches_name(name, "RolesAllowed")
             || matches_name(name, "hasRole")
             || matches_name(name, "hasAuthority")
+            || is_role_gate_name(name)
         {
-            return args.iter().any(|arg| {
-                let lower = strip_quotes(arg).to_ascii_lowercase();
-                lower.contains("admin")
-                    || lower.contains("role_admin")
-                    || lower.contains("manage")
-                    || lower.contains("superuser")
-            });
+            return every_role_is_privileged(args);
         }
 
         if self
             .admin_guard_names
             .iter()
             .any(|pattern| matches_name(name, pattern))
-        {
-            return true;
-        }
-
-        if matches_name(name, "requireRole")
-            && args
-                .first()
-                .is_some_and(|arg| strip_quotes(arg).eq_ignore_ascii_case("admin"))
         {
             return true;
         }
@@ -469,7 +477,9 @@ impl AuthAnalysisRules {
         if matches_name(name, "isAuthenticated")
             || matches_name(name, "authenticated")
             || matches_name(name, "hasRole")
+            || matches_name(name, "hasAnyRole")
             || matches_name(name, "hasAuthority")
+            || matches_name(name, "hasAnyAuthority")
             || matches_name(name, "Secured")
             || matches_name(name, "RolesAllowed")
             || matches_name(name, "PreAuthorize")
@@ -517,7 +527,7 @@ impl AuthAnalysisRules {
     pub fn is_token_lookup(&self, name: &str) -> bool {
         self.token_lookup_names
             .iter()
-            .any(|pattern| matches_name(name, pattern))
+            .any(|pattern| matches_qualified_name(name, pattern))
     }
 
     pub fn is_token_lookup_call(&self, name: &str, call_text: &str) -> bool {
@@ -650,6 +660,10 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "has_perm".into(),
                 "has_permission".into(),
                 "has_object_permission".into(),
+                // DRF permission class that decides per object.
+                // `DjangoModelPermissions` is not listed: it grants by model,
+                // so a holder of `change_note` may change every row.
+                "DjangoObjectPermissions".into(),
                 "user_passes_test".into(),
                 "verify_access".into(),
                 "authorize".into(),
@@ -692,6 +706,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "get_invitation_by_token".into(),
                 "Invitation.objects.get".into(),
                 "invite_lookup".into(),
+                "invitation_lookup".into(),
             ],
             token_expiry_fields: vec![
                 "expires_at".into(),
@@ -779,6 +794,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             authorization_check_names: vec![
                 "authorize".into(),
                 "authorize!".into(),
+                // CanCanCan class macro: authorizes every action it covers.
+                "load_and_authorize_resource".into(),
                 "check_membership".into(),
                 "check_membership!".into(),
                 "has_membership".into(),
@@ -1312,12 +1329,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             enabled: true,
             finding_prefix: finding_prefix.into(),
             admin_path_patterns: vec!["/admin/".into()],
-            admin_guard_names: vec![
-                "requireAdmin".into(),
-                "isAdmin".into(),
-                "adminOnly".into(),
-                "requireRole".into(),
-            ],
+            admin_guard_names: vec!["requireAdmin".into(), "isAdmin".into(), "adminOnly".into()],
             login_guard_names: vec![
                 "requireLogin".into(),
                 "authenticate".into(),
@@ -1839,6 +1851,217 @@ pub fn matches_name(name: &str, pattern: &str) -> bool {
     canon_has_prefix(name_last, pattern_last)
 }
 
+/// `<receiver>.get(..)` and `<receiver>.get_*(..)` whose receiver shows no ORM:
+/// not a manager (`objects`), a query property (`Model.query`), a session
+/// (`db.session`) or a queryset chain (`Model.objects.select_related(..).get`).
+/// Off an ORM these are dictionary lookups (`options.get(k)`), HTTP clients
+/// (`client.get(url)`) and ordinary object methods (`group.get_absolute_url`).
+fn is_non_orm_get(callee: &str) -> bool {
+    const ORM_SEGMENTS: &[&str] = &[
+        "objects",
+        "query",
+        "session",
+        "_default_manager",
+        "_base_manager",
+        "select_related",
+        "prefetch_related",
+        "select_for_update",
+        "only",
+        "defer",
+        "filter",
+        "exclude",
+        "all",
+        "annotate",
+        "using",
+        "order_by",
+        "distinct",
+        // DRF views keep their rows on `self.queryset`.
+        "queryset",
+    ];
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    // `get_object_or_404(..)` reached through a module (`shortcuts.get_object_or_404`)
+    // and `get_or_create` / `get_or_none` read or write rows whatever the receiver.
+    if method.starts_with("get_object_or") || method.starts_with("get_or_") {
+        return false;
+    }
+    // A bare `.get` on a class is as often a registry or settings lookup
+    // (`Settings.get(key)`, `Cache.get(item_id)`) as a model read, so a
+    // PascalCase receiver counts only for the ORM-only `get_by_*` spellings
+    // (`Note.get_by_id(pk)`).
+    let model_lookup = method.starts_with("get_by");
+    matches_name(method, "get")
+        && !receiver.split('.').any(|segment| {
+            let segment = segment.trim_end_matches("()");
+            ORM_SEGMENTS.contains(&segment)
+                || is_queryset_variable(segment)
+                || (model_lookup && is_model_class_name(segment))
+        })
+}
+
+/// `qs`, `queryset`, `active_qs`, `user_queryset`: a variable that holds a
+/// queryset.
+fn is_queryset_variable(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    lower == "qs" || lower.ends_with("_qs") || lower.ends_with("queryset")
+}
+
+/// A model class, as in Peewee's `Note.get_by_id(..)`.  Model classes are
+/// PascalCase; an all-caps name (`GET`, `QUERY`) is a constant.
+fn is_model_class_name(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+        && segment.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// Names of role-gating middleware: the roles they accept are arguments, so
+/// the call is an admin guard only when those arguments name admin roles.
+fn is_role_gate_name(name: &str) -> bool {
+    [
+        "authorize",
+        "checkRole",
+        "requireRole",
+        "requireRoles",
+        "restrictTo",
+    ]
+    .iter()
+    .any(|gate| matches_name(name, gate))
+}
+
+/// A role or authority name that only privileged users hold: `ADMIN`,
+/// `ROLE_ADMIN`, `MANAGER`, `superuser`, `MANAGE_USERS`.
+///
+/// The name is read as words (split on punctuation and camel-case humps), so
+/// `ROLE_ADMIN` and `siteAdmin` are privileged while a word that merely
+/// contains one is not.  A qualifier that narrows the grant (`MANAGE_OWN_NOTES`,
+/// `ADMIN_READONLY`, `NON_ADMIN`) makes the name an ordinary role.
+fn names_privileged_role(role: &str) -> bool {
+    const PRIVILEGED: &[&str] = &[
+        "admin",
+        "administrator",
+        "superuser",
+        "superadmin",
+        "sysadmin",
+        "root",
+        "manage",
+        "manager",
+    ];
+    const NARROWING: &[&str] = &[
+        "non", "not", "no", "own", "self", "read", "readonly", "view", "viewer", "limited",
+        "guest", "demo",
+    ];
+    let words = role_words(role);
+    words.iter().any(|word| PRIVILEGED.contains(&word.as_str()))
+        && !words.iter().any(|word| NARROWING.contains(&word.as_str()))
+}
+
+/// Lowercase words of a role name: `ROLE_ADMIN` -> `role admin`,
+/// `siteAdmin` -> `site admin`, `users:manage` -> `users manage`.
+fn role_words(role: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for ch in role.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if ch.is_ascii_uppercase() && prev_lower && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        prev_lower = ch.is_ascii_lowercase();
+        current.push(ch.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// True when the arguments name at least one role and every role they name is
+/// privileged.  A role is a string literal, alone or inside an array literal
+/// (`'admin'`, `['admin', 'owner']`); an argument with no string literal
+/// (`Roles.ADMIN`) is one role spelled by its expression.
+fn every_role_is_privileged(args: &[String]) -> bool {
+    let mut roles = Vec::new();
+    for arg in args {
+        let literals = string_literals(arg);
+        if literals.is_empty() {
+            roles.push(arg.trim().to_string());
+        } else {
+            roles.extend(literals);
+        }
+    }
+    !roles.is_empty() && roles.iter().all(|role| names_privileged_role(role))
+}
+
+/// Contents of the `'..'`, `".."` and backtick literals in `text`.
+fn string_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if matches!(ch, '\'' | '"' | '`') {
+            let literal: String = chars.by_ref().take_while(|c| *c != ch).collect();
+            out.push(literal);
+        }
+    }
+    out
+}
+
+/// Separator between a callee's receiver segments: `Invitation.objects.get`
+/// (Python, JS, Ruby) and `Accounts::Invitation.find_by` (Ruby, Rust).
+fn is_path_separator(c: char) -> bool {
+    c == '.' || c == ':'
+}
+
+/// True when two segments read the same once punctuation and case are dropped.
+fn canon_eq(a: &str, b: &str) -> bool {
+    let mut a = a.bytes().filter(u8::is_ascii_alphanumeric);
+    let mut b = b.bytes().filter(u8::is_ascii_alphanumeric);
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(&y) => {}
+            _ => return false,
+        }
+    }
+}
+
+/// Like [`matches_name`], but a dotted `pattern` keeps its receiver.
+///
+/// `matches_name` compares only the last segment, so the pattern
+/// `Invitation.objects.get` collapses to `get` and matches every dictionary
+/// `.get()` and ORM `.get()` in the program.  Here the callee has to end in the
+/// same receiver segments (compared by canonical form, so `::Invitation` and
+/// `invitation` agree) and its last segment must start with the pattern's last
+/// segment, as in `matches_name`.  A pattern with no separator behaves exactly
+/// like `matches_name`.
+pub fn matches_qualified_name(name: &str, pattern: &str) -> bool {
+    if !pattern.contains(is_path_separator) {
+        return matches_name(name, pattern);
+    }
+    let mut name_segments = name.rsplit(is_path_separator).filter(|s| !s.is_empty());
+    let mut pattern_segments = pattern.rsplit(is_path_separator).filter(|s| !s.is_empty());
+    let (Some(name_last), Some(pattern_last)) = (name_segments.next(), pattern_segments.next())
+    else {
+        return false;
+    };
+    if !canon_has_prefix(name_last, pattern_last) {
+        return false;
+    }
+    pattern_segments.all(|pattern_segment| {
+        name_segments
+            .next()
+            .is_some_and(|name_segment| canon_eq(name_segment, pattern_segment))
+    })
+}
+
 pub fn strip_quotes(input: &str) -> String {
     input
         .trim()
@@ -1852,6 +2075,201 @@ pub fn strip_quotes(input: &str) -> String {
 mod tests {
     use super::build_auth_rules;
     use crate::utils::config::{AuthAnalysisConfig, Config, LanguageAnalysisConfig};
+
+    #[test]
+    fn qualified_pattern_keeps_its_receiver() {
+        use super::matches_qualified_name as m;
+        assert!(m("Invitation.objects.get", "Invitation.objects.get"));
+        assert!(m("app.Invitation.objects.get", "Invitation.objects.get"));
+        assert!(m(
+            "invitation.objects.get_or_create",
+            "Invitation.objects.get"
+        ));
+        // Other receivers share the last segment only.
+        assert!(!m("request.json.get", "Invitation.objects.get"));
+        assert!(!m("Document.objects.get", "Invitation.objects.get"));
+        assert!(!m("db.session.get", "Invitation.objects.get"));
+        // A bare `get` has no receiver to compare.
+        assert!(!m("get", "Invitation.objects.get"));
+        // Ruby scope resolution and bang methods.
+        assert!(m("Accounts::Invitation.find_by!", "Invitation.find_by"));
+        assert!(m("::Invitation.find_by", "Invitation.find_by"));
+        assert!(!m("Document.find_by", "Invitation.find_by"));
+        assert!(!m("find_by", "Invitation.find_by"));
+        // A pattern with no separator is the old last-segment prefix match.
+        assert!(m("Invitation.find_by_token", "find_by_token"));
+        assert!(m("store.findByToken", "findByToken"));
+        assert!(!m("store.find", "findByToken"));
+    }
+
+    #[test]
+    fn default_token_lookups_need_their_receiver() {
+        let cfg = Config::default();
+        let python = build_auth_rules(&cfg, "python");
+        assert!(python.is_token_lookup("Invitation.objects.get"));
+        assert!(python.is_token_lookup("invitation_lookup"));
+        assert!(python.is_token_lookup("store.find_by_token"));
+        assert!(!python.is_token_lookup("Document.objects.get"));
+        assert!(!python.is_token_lookup("request.json.get"));
+        assert!(!python.is_token_lookup("db.session.get"));
+
+        let ruby = build_auth_rules(&cfg, "ruby");
+        assert!(ruby.is_token_lookup("Invitation.find_by"));
+        assert!(ruby.is_token_lookup("Invite.find_by!"));
+        assert!(ruby.is_token_lookup("Invitation.find_by_token"));
+        assert!(!ruby.is_token_lookup("Document.find_by"));
+        assert!(!ruby.is_token_lookup("Document.find_by!"));
+    }
+
+    #[test]
+    fn python_get_is_a_row_read_only_on_an_orm_receiver() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let rules = build_auth_rules(&Config::default(), "python");
+        let none = HashSet::new();
+        let class = |callee: &str| rules.classify_sink_class(callee, &none);
+        for orm in [
+            "Document.objects.get",
+            "db.session.get",
+            "Note.query.get",
+            "Document.objects.select_related().get",
+            "self.model._default_manager.get",
+            "Project.objects.get_from_cache",
+        ] {
+            assert_eq!(class(orm), Some(SinkClass::DbCrossTenantRead), "{orm}");
+        }
+        for plain in [
+            "options.get",
+            "titles_by_id.get",
+            "cache.get",
+            "request.GET.get",
+            "self.object.project.statuses.get",
+            "group.get_absolute_url",
+            "integration_service.get_integration",
+            "dag.get_task",
+        ] {
+            assert_eq!(class(plain), None, "{plain}");
+        }
+        // Other verbs keep their old classification.
+        assert_eq!(
+            class("Document.objects.filter"),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+    }
+
+    #[test]
+    fn role_gates_are_admin_guards_only_for_an_admin_role() {
+        let rules = build_auth_rules(&Config::default(), "javascript");
+        let admin = |name: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            rules.is_admin_guard(name, &args)
+        };
+        assert!(admin("authorize", &["'admin'"]));
+        assert!(admin("checkRole", &["['admin']"]));
+        assert!(admin("checkRole", &["['admin', 'superadmin']"]));
+        assert!(admin("restrictTo", &["\"admin\""]));
+        assert!(admin("authorize", &["Roles.ADMIN"]));
+        assert!(!admin("authorize", &["'viewer'"]));
+        assert!(!admin("checkRole", &["['viewer']"]));
+        assert!(!admin("authorize", &[]));
+        // Any listed role is let in, so one ordinary role is enough to make
+        // the gate a non-admin one.
+        assert!(!admin("checkRole", &["['admin', 'viewer']"]));
+        assert!(!admin("restrictTo", &["'admin'", "'user'"]));
+        // An ownership call that happens to share the name is not a role gate.
+        assert!(!admin("authorize", &["req.user", "doc"]));
+    }
+
+    #[test]
+    fn python_get_on_querysets_and_model_classes_is_a_row_read() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let rules = build_auth_rules(&Config::default(), "python");
+        let none = HashSet::new();
+        for orm in [
+            "self.queryset.get",
+            "qs.get",
+            "active_qs.get",
+            "note_queryset.get",
+            "Note.get_by_id",
+            "shortcuts.get_object_or_404",
+            "Note.objects.get_or_create",
+        ] {
+            assert_eq!(
+                rules.classify_sink_class(orm, &none),
+                Some(SinkClass::DbCrossTenantRead),
+                "{orm}"
+            );
+        }
+        for plain in [
+            "options.get",
+            "request.GET.get",
+            "client.get",
+            "Settings.get",
+            "Cache.get",
+            "FeatureFlags.get",
+        ] {
+            assert_eq!(rules.classify_sink_class(plain, &none), None, "{plain}");
+        }
+    }
+
+    #[test]
+    fn secured_and_roles_allowed_need_every_role_to_be_privileged() {
+        let rules = build_auth_rules(&Config::default(), "java");
+        let args =
+            |values: &[&str]| -> Vec<String> { values.iter().map(|v| v.to_string()).collect() };
+        assert!(rules.is_admin_guard("Secured", &args(&["ROLE_ADMIN"])));
+        assert!(rules.is_admin_guard("RolesAllowed", &args(&["ADMIN", "SUPERUSER"])));
+        assert!(!rules.is_admin_guard("Secured", &args(&["ROLE_ADMIN", "ROLE_USER"])));
+        assert!(!rules.is_admin_guard("RolesAllowed", &args(&["ADMIN", "USER"])));
+        // Roles that contain an admin word without being privileged.
+        for role in [
+            "MANAGE_OWN_NOTES",
+            "ROLE_ADMIN_READONLY",
+            "NON_ADMIN",
+            "RADMINISTRATIVE",
+        ] {
+            assert!(!rules.is_admin_guard("hasRole", &args(&[role])), "{role}");
+        }
+        for role in [
+            "ADMIN",
+            "ROLE_ADMIN",
+            "siteAdmin",
+            "MANAGE_USERS",
+            "superuser",
+        ] {
+            assert!(rules.is_admin_guard("hasRole", &args(&[role])), "{role}");
+        }
+    }
+
+    #[test]
+    fn require_roles_is_decided_by_its_arguments() {
+        let rules = build_auth_rules(&Config::default(), "javascript");
+        let args =
+            |values: &[&str]| -> Vec<String> { values.iter().map(|v| v.to_string()).collect() };
+        assert!(!rules.is_admin_guard("requireRoles", &args(&["'viewer'"])));
+        assert!(!rules.is_admin_guard("requireRole", &args(&["'viewer'"])));
+        assert!(rules.is_admin_guard("requireRoles", &args(&["'admin'"])));
+        assert!(rules.is_admin_guard("requireRole", &args(&["'admin'"])));
+        assert!(!rules.is_admin_guard("requireRoles", &args(&["'admin'", "'viewer'"])));
+    }
+
+    #[test]
+    fn has_any_role_follows_has_role() {
+        let rules = build_auth_rules(&Config::default(), "java");
+        let args =
+            |values: &[&str]| -> Vec<String> { values.iter().map(|v| v.to_string()).collect() };
+        assert!(rules.is_admin_guard("hasAnyRole", &args(&["ADMIN", "MANAGER"])));
+        assert!(rules.is_admin_guard("hasAnyAuthority", &args(&["ROLE_ADMIN"])));
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&["USER", "EDITOR"])));
+        // `hasAnyRole('ADMIN', 'USER')` lets every user in.
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&["ADMIN", "USER"])));
+        assert!(!rules.is_admin_guard("hasAnyAuthority", &args(&["ROLE_ADMIN", "ROLE_USER"])));
+        assert!(!rules.is_admin_guard("hasAnyRole", &args(&[])));
+        // A role list is a login-level guard even when it names no admin role.
+        assert!(rules.is_login_guard("hasAnyRole"));
+        assert!(rules.is_login_guard("hasAnyAuthority"));
+    }
 
     #[test]
     fn typescript_uses_javascript_rule_prefix() {

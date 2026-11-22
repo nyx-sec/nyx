@@ -5155,6 +5155,81 @@ fn ssa_summary_source_adds_bits() {
     }
 }
 
+/// The joined `return_abstract` has to describe every return that can carry
+/// caller data.  A failure sentinel holds none, so it does not block the fact
+/// (`sanitize` returns a `..`-free, relative path or `None`); a pass-through
+/// of a parameter with no fact of its own does (`passthrough` may return its
+/// argument untouched, whatever the other branch returns).
+#[test]
+fn ssa_summary_return_abstract_needs_every_input_carrying_return() {
+    use crate::abstract_interp::Tri;
+    use crate::state::symbol::SymbolInterner;
+
+    fn return_abstract_of(src: &[u8]) -> Option<crate::abstract_interp::AbstractValue> {
+        let file_cfg = parse_lang(
+            src,
+            "python",
+            tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        );
+        let the_cfg = &file_cfg.first_body().graph;
+        let summaries = &file_cfg.summaries;
+        let interner = SymbolInterner::from_cfg(the_cfg);
+        let (func_name, func_entry) = super::find_function_entries(the_cfg)
+            .into_iter()
+            .next()
+            .expect("one function");
+        let ssa = crate::ssa::lower_to_ssa(the_cfg, func_entry, Some(&func_name), false)
+            .expect("function lowers to SSA");
+        let param_count = ssa
+            .blocks
+            .iter()
+            .flat_map(|b| b.phis.iter().chain(b.body.iter()))
+            .filter(|i| matches!(i.op, crate::ssa::ir::SsaOp::Param { .. }))
+            .count();
+        ssa_transfer::extract_ssa_func_summary(
+            &ssa,
+            the_cfg,
+            summaries,
+            None,
+            Lang::Python,
+            "test.py",
+            &interner,
+            param_count,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .return_abstract
+    }
+
+    let sanitize = return_abstract_of(
+        br#"
+def sanitize(s):
+    if ".." in s or s.startswith("/"):
+        return None
+    return s
+"#,
+    );
+    let fact = sanitize.expect("a sentinel return does not block the path fact");
+    assert_eq!(fact.path.dotdot, Tri::No);
+    assert_eq!(fact.path.absolute, Tri::No);
+
+    let passthrough = return_abstract_of(
+        br#"
+def passthrough(s, raw):
+    if raw:
+        return s
+    return "/data/fixed"
+"#,
+    );
+    assert!(
+        passthrough.is_none(),
+        "the pass-through return has no fact, so the fixed literal must not stand for the call: {passthrough:?}"
+    );
+}
+
 #[test]
 fn ssa_summary_param_to_sink() {
     // Function that passes param to a dangerous call → param_to_sink

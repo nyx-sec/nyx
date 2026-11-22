@@ -1007,6 +1007,7 @@ pub fn build_function_unit_with_meta(
         typed_bounded_vars: preseeded_bounded,
         typed_bounded_dto_fields: std::collections::HashMap::new(),
         self_scoped_session_bases: state.self_scoped_session_bases,
+        injected_params: framework_injected_params(definition, bytes),
         is_nextauth_options_factory,
         package_names,
         request_roots,
@@ -1667,15 +1668,16 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     // ordinary calls skip the receiver-chain walk and the per-ref clones
     // entirely.  Order is identical to the old eager form: receiver refs first,
     // then each argument's refs in argument order.
-    let subjects: Vec<ValueRef> = if is_auth || op_kind.is_some() {
+    let (subjects, receiver_subjects): (Vec<ValueRef>, usize) = if is_auth || op_kind.is_some() {
         let mut subjects = call_receiver_subjects(node, bytes, state.request_roots.as_ref());
+        let receiver_subjects = subjects.len();
         subjects.reserve(args_value_refs.iter().map(Vec::len).sum());
         for refs in &args_value_refs {
             subjects.extend(refs.iter().cloned());
         }
-        subjects
+        (subjects, receiver_subjects)
     } else {
-        Vec::new()
+        (Vec::new(), 0)
     };
 
     state.call_sites.push(CallSite {
@@ -1710,6 +1712,7 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             sink_class,
             callee,
             subjects,
+            receiver_subjects,
             span: span(node),
             line,
             text: node_text.to_string(),
@@ -4089,6 +4092,138 @@ fn python_int_bounded_typed_params(node: Node<'_>, bytes: &[u8]) -> HashSet<Stri
     out
 }
 
+/// Parameters of a handler that the framework supplies itself:
+///
+/// * Python `x = Depends(..)` / `Security(..)` (FastAPI dependency injection),
+///   with or without an annotation.
+/// * A TypeScript parameter carrying a custom decorator that names the
+///   caller (`@CurrentUserId()`, `@AuthUser()`, `@GetAccount()`): it reads from
+///   the validated principal.  Decorators that bind request data (`@Param`,
+///   `@Query`, `@Body`, GraphQL `@Args`, microservice `@Payload`, ..) and
+///   custom ones that name nothing about the caller do not count.
+/// * A Java parameter annotated `@AuthenticationPrincipal`.
+fn framework_injected_params(node: Node<'_>, bytes: &[u8]) -> HashSet<String> {
+    const REQUEST_BINDING_DECORATORS: &[&str] = &[
+        "Param",
+        "Params",
+        "Query",
+        "Body",
+        "Headers",
+        "Header",
+        "Req",
+        "Request",
+        "Res",
+        "Response",
+        "Ip",
+        "HostParam",
+        "UploadedFile",
+        "UploadedFiles",
+        "Session",
+        "Cookies",
+        "Cookie",
+        "RequestBody",
+        "PathVariable",
+        "RequestParam",
+        "RequestHeader",
+        "ModelAttribute",
+        // GraphQL resolvers and microservice handlers.
+        "Args",
+        "Arg",
+        "Payload",
+        "MessageBody",
+        "Ctx",
+        "Context",
+        "Parent",
+        "Root",
+        "Info",
+        "RawBody",
+        "ConnectedSocket",
+    ];
+    /// Words in a custom decorator that say it injects the caller.
+    const CALLER_WORDS: &[&str] = &[
+        "user",
+        "account",
+        "principal",
+        "actor",
+        "member",
+        "identity",
+        "auth",
+        "viewer",
+        "tenant",
+    ];
+    let mut out = HashSet::new();
+    let Some(params_node) = node.child_by_field_name("parameters") else {
+        return out;
+    };
+    for idx in 0..params_node.named_child_count() {
+        let Some(param) = params_node.named_child(idx as u32) else {
+            continue;
+        };
+        let name = match param.kind() {
+            "default_parameter" | "typed_default_parameter" => {
+                let injected = param.child_by_field_name("value").is_some_and(|value| {
+                    value.kind() == "call"
+                        && value.child_by_field_name("function").is_some_and(|f| {
+                            matches!(
+                                text(f, bytes).rsplit('.').next().unwrap_or(""),
+                                "Depends" | "Security"
+                            )
+                        })
+                });
+                if !injected {
+                    continue;
+                }
+                param
+                    .child_by_field_name("name")
+                    .or_else(|| param.named_child(0))
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| text(n, bytes))
+            }
+            "required_parameter" | "optional_parameter" => {
+                let mut cursor = param.walk();
+                let custom = param
+                    .children(&mut cursor)
+                    .filter(|child| child.kind() == "decorator")
+                    .any(|decorator| {
+                        let raw = text(decorator, bytes);
+                        let name = raw
+                            .trim_start_matches('@')
+                            .split('(')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        let lower = name.to_ascii_lowercase();
+                        !name.is_empty()
+                            && !REQUEST_BINDING_DECORATORS.contains(&name)
+                            && CALLER_WORDS.iter().any(|w| lower.contains(w))
+                    });
+                if !custom {
+                    continue;
+                }
+                param
+                    .child_by_field_name("pattern")
+                    .filter(|n| n.kind() == "identifier")
+                    .map(|n| text(n, bytes))
+            }
+            "formal_parameter" => {
+                let annotated = param.children(&mut param.walk()).any(|child| {
+                    child.kind() == "modifiers"
+                        && text(child, bytes).contains("@AuthenticationPrincipal")
+                });
+                if !annotated {
+                    continue;
+                }
+                param.child_by_field_name("name").map(|n| text(n, bytes))
+            }
+            _ => None,
+        };
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            out.insert(name);
+        }
+    }
+    out
+}
+
 /// Conservative recogniser for Python type annotations that bound a
 /// value to an integer or boolean scalar.  Accepts:
 ///   * Bare `int`, `bool`, `float`.
@@ -4901,6 +5036,29 @@ pub fn auth_check_from_call_site(
     })
 }
 
+/// How much a set of route-level checks proves, in the order the auth rules
+/// ask for it: 0 nothing, 1 login, 2 authorization of the row, 3 admin.  An
+/// admin guard also satisfies the ownership rule, so it ranks above an
+/// ownership check.
+///
+/// Used to keep only the weakest alternative of a disjunction (`A or B` in
+/// SpEL, `A | B` between DRF permission classes): the request gets through
+/// when either holds, so neither alone can be claimed.
+pub fn guarantee_level(calls: &[CallSite], rules: &AuthAnalysisRules) -> u8 {
+    calls
+        .iter()
+        .filter_map(|call| auth_check_from_call_site(call, 0, rules))
+        .map(|check| match check.kind {
+            AuthCheckKind::AdminGuard => 3,
+            AuthCheckKind::LoginGuard
+            | AuthCheckKind::TokenExpiry
+            | AuthCheckKind::TokenRecipient => 1,
+            _ => 2,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Value-refs of the subtree rooted at `node`.
 ///
 /// `roots` is the Go request-root set of the enclosing unit (`None` for every
@@ -5155,6 +5313,8 @@ fn matches_session_context(chain: &[String]) -> bool {
         || (lower.len() >= 2
             && matches!(lower[0].as_str(), "req" | "request")
             && matches!(lower[1].as_str(), "session" | "user" | "currentuser"))
+        // Flask's `g.user`, set by a `before_request` hook.
+        || (lower.len() >= 2 && lower[0] == "g" && lower[1] == "user")
         || (lower.len() >= 3
             && lower[0] == "self"
             && matches!(lower[1].as_str(), "request" | "session" | "current_user")
@@ -5445,6 +5605,17 @@ pub fn call_name(node: Node<'_>, bytes: &[u8]) -> String {
         (_, false) => method,
         _ => text(node, bytes),
     }
+}
+
+/// Receiver of a method call, given the call's `function` node.
+///
+/// The grammars disagree on the field name: tree-sitter-rust spells
+/// `a.b(..)` as `field_expression(value: a, field: b)`, JavaScript uses
+/// `object`, Go `operand`, and some grammars `argument`.
+pub fn method_call_receiver(function: Node<'_>) -> Option<Node<'_>> {
+    ["value", "object", "operand", "argument"]
+        .into_iter()
+        .find_map(|field| function.child_by_field_name(field))
 }
 
 pub fn member_target(node: Node<'_>, bytes: &[u8]) -> Option<(String, String)> {
@@ -6742,5 +6913,46 @@ export function makeUserRepo() {
             "generic CRUD repo must NOT be flagged as Adapter: {:?}",
             unit.name
         );
+    }
+
+    /// Only a custom decorator that names the caller injects the parameter.
+    /// GraphQL `@Args`, microservice `@Payload` and decorators that say
+    /// nothing about the caller leave it request-supplied.
+    #[test]
+    fn ts_injected_params_need_a_decorator_that_names_the_caller() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+class DocsResolver {
+  docs(
+    @Args('ownerId') ownerId: string,
+    @Payload('authorId') authorId: string,
+    @Tagged() tagged: string,
+    @CurrentUserId() currentUserId: string,
+    @AuthUser() me: string,
+    @Param('id') id: string,
+  ) {}
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let mut stack = vec![tree.root_node()];
+        let mut method = None;
+        while let Some(node) = stack.pop() {
+            if node.kind() == "method_definition" {
+                method = Some(node);
+                break;
+            }
+            for i in 0..node.named_child_count() {
+                stack.extend(node.named_child(i as u32));
+            }
+        }
+        let injected = super::framework_injected_params(method.expect("method"), src);
+        let mut got: Vec<&str> = injected.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["currentUserId", "me"]);
     }
 }

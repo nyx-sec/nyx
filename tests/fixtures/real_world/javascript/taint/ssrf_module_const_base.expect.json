@@ -1,0 +1,60 @@
+{
+  "description": "A module-level string constant fixes the host of a URL built from it (`API + p`, `${API}...`, through an assignment). A name rebound by a parameter is not that constant, and a helper whose pass-through return path is Top does not make its other return path's host lock apply to the call.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "prefix-lock",
+    "module-constant",
+    "return-abstract"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        29
+      ],
+      "notes": "host fixed by the module constant or a literal head"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        8,
+        29
+      ],
+      "notes": "the structural rule reads the same prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "whole URL from the request"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        39,
+        44
+      ],
+      "notes": "`API` is a parameter of build(), not the module constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        56,
+        56
+      ],
+      "notes": "helper() returns its argument unchanged when raw is set"
+    }
+  ]
+}

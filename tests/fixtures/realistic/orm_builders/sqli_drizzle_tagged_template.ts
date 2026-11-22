@@ -1,16 +1,16 @@
-// Phase 07 fixture — Drizzle tagged-template SQL builder. `sql` is the
-// canonical Drizzle ORM SQL builder; tagged-template substitutions are
-// raw concatenation unless wrapped in `sql.placeholder` / parameter
-// helpers, so a `${userId}` substitution is a SQL injection vector.
-// The `=sql` exact-match matcher fires only when the call's bare
-// callee text is `sql`, leaving `.sql()` methods on unrelated objects
-// silent. Same import gate as `sqli_drizzle_sql_raw.ts`.
+// Phase 07 fixture: Drizzle tagged-template SQL builder with a raw splice.
+// The `sql` tag binds plain `${}` substitutions as parameters, but
+// `sql.raw(x)` inside the template splices `x` into the query text, so an
+// attacker-controlled sort column is a SQL injection vector.  Same import
+// gate as `sqli_drizzle_sql_raw.ts`; the parameterized form is
+// `sqli_drizzle_tagged_template_param_safe.ts`, which must stay
+// silent.
 import { sql } from "drizzle-orm";
 
 import type { Request, Response } from "express";
 
 export async function handler(req: Request, res: Response): Promise<void> {
-    const userId = req.query.userId;
-    const fragment = sql`SELECT * FROM users WHERE id = ${userId}`;
+    const column = req.query.sort;
+    const fragment = sql`SELECT * FROM users ORDER BY ${sql.raw(column)}`;
     res.json(fragment);
 }

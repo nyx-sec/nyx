@@ -32,7 +32,7 @@
 //! | `html_escape` | | `html.escape`, `DOMPurify.sanitize` | `innerHTML`, `document.write` |
 //! | `shell_escape` | | `shlex.quote`, `shell_escape::escape` | `system`, `Command::new` |
 //! | `url_encode` | | `encodeURIComponent` | HTTP client URL arg |
-//! | `file_io` | | `realpath`, `filepath.Clean` | `open`, `fs::read_to_string` |
+//! | `file_io` | | `basename`, canonicalise + `starts_with`-rooted guard | `open`, `fs::read_to_string` |
 //! | `sql_query` | | parameterized query binders | `cursor.execute`, `db.query` |
 //! | `deserialize` | | | `pickle.loads`, `Marshal.load` |
 //! | `ssrf` | | URL-prefix locks | `fetch` URL arg, outbound HTTP |

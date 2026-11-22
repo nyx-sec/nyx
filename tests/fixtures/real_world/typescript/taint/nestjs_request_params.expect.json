@@ -1,0 +1,37 @@
+{
+  "description": "NestJS @Query / @Param / @Body / @Headers formals are request input whatever they are named; an undecorated service method parameter is not.",
+  "tags": ["taint", "nestjs", "cmdi", "path-traversal"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 13],
+      "notes": "@Query('q') q -> exec(q)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [18, 18],
+      "notes": "@Param('name') name -> res.sendFile"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [23, 23],
+      "notes": "@Body() dto -> exec(dto.script)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [28, 28],
+      "notes": "@Headers('x-trace') trace -> exec"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [34, 34],
+      "notes": "plain service method parameter"
+    }
+  ]
+}

@@ -186,6 +186,11 @@ pub struct SensitiveOperation {
     pub sink_class: Option<SinkClass>,
     pub callee: String,
     pub subjects: Vec<ValueRef>,
+    /// How many leading entries of `subjects` come from the call's receiver
+    /// chain (`Note.objects.filter(owner=request.user)` in
+    /// `Note.objects.filter(owner=request.user).update(..)`); the rest are the
+    /// call's own arguments.
+    pub receiver_subjects: usize,
     pub span: (usize, usize),
     pub line: usize,
     pub text: String,
@@ -300,6 +305,12 @@ pub struct AnalysisUnit {
     /// destructures route through a base chain, not a top-level
     /// binding.
     pub self_scoped_session_bases: HashSet<String>,
+    /// Parameters the framework fills in from its own machinery rather than
+    /// from the request: FastAPI `x: int = Depends(..)`, a NestJS parameter
+    /// with a custom decorator (`@CurrentUserId() id`), a Spring
+    /// `@AuthenticationPrincipal` argument.  Whoever sends the request does
+    /// not choose them.
+    pub injected_params: HashSet<String>,
     /// True when this JS/TS unit is the body of a NextAuth options
     /// factory: its function body contains an object literal with a
     /// `callbacks: { ... }` property whose nested entries name at

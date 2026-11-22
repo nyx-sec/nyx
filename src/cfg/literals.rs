@@ -95,6 +95,67 @@ pub(super) fn extract_destination_field_pairs(
     fields: &[&str],
     code: &[u8],
 ) -> Option<Vec<(String, String)>> {
+    let values = destination_field_values(call_node, arg_index, fields, code)?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (key, val_node) in values {
+        let mut idents: Vec<String> = Vec::new();
+        let mut paths: Vec<String> = Vec::new();
+        collect_idents_with_paths(val_node, code, &mut idents, &mut paths);
+        if idents.is_empty() && paths.is_empty() {
+            // Shorthand `{ url }`: the node is the binding itself.
+            if let Some(name) = text_of(val_node, code)
+                && matches!(
+                    val_node.kind(),
+                    "shorthand_property_identifier" | "shorthand_property_identifier_pattern"
+                )
+            {
+                idents.push(name);
+            }
+        }
+        for name in paths.into_iter().chain(idents) {
+            if !out.iter().any(|(_, v)| v == &name) {
+                out.push((key.clone(), name));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The first destination field of the object-literal argument at
+/// `arg_index` that reads a member Source (`{ text: 'SELECT ' +
+/// req.query.id }`).  Such a Source is lowered to the synthetic
+/// `__nyx_src_*` binding of the whole argument (see
+/// `cfg::pre_emit_arg_source_nodes`), which the destination filter must
+/// keep.
+pub(super) fn destination_field_reading_source(
+    call_node: Node,
+    arg_index: usize,
+    fields: &[&str],
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<String> {
+    destination_field_values(call_node, arg_index, fields, code)?
+        .into_iter()
+        .find(|(_, v)| {
+            matches!(
+                super::helpers::first_member_label(*v, lang, code, extra),
+                Some(crate::labels::DataLabel::Source(_))
+            )
+        })
+        .map(|(key, _)| key)
+}
+
+/// `(field_name, value node)` for every field of the object-literal argument
+/// at `arg_index` whose key is listed in `fields`.  A shorthand property
+/// (`{ url }`) yields the shorthand node itself.  `None` under the same
+/// conditions as [`extract_destination_field_pairs`].
+fn destination_field_values<'a>(
+    call_node: Node<'a>,
+    arg_index: usize,
+    fields: &[&str],
+    code: &[u8],
+) -> Option<Vec<(String, Node<'a>)>> {
     if fields.is_empty() {
         return None;
     }
@@ -109,7 +170,7 @@ pub(super) fn extract_destination_field_pairs(
         return None;
     }
 
-    let mut out: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<(String, Node<'a>)> = Vec::new();
     let mut c = arg.walk();
     for child in arg.named_children(&mut c) {
         match child.kind() {
@@ -126,8 +187,8 @@ pub(super) fn extract_destination_field_pairs(
                 let Some(name) = text_of(child, code) else {
                     continue;
                 };
-                if fields.iter().any(|&f| f == name) && !out.iter().any(|(_, v)| v == &name) {
-                    out.push((name.clone(), name));
+                if fields.iter().any(|&f| f == name) {
+                    out.push((name, child));
                 }
             }
             "pair" => {
@@ -192,14 +253,7 @@ pub(super) fn extract_destination_field_pairs(
                 let Some(val_node) = child.child_by_field_name("value") else {
                     continue;
                 };
-                let mut idents: Vec<String> = Vec::new();
-                let mut paths: Vec<String> = Vec::new();
-                collect_idents_with_paths(val_node, code, &mut idents, &mut paths);
-                for name in paths.into_iter().chain(idents) {
-                    if !out.iter().any(|(_, v)| v == &name) {
-                        out.push((key.clone(), name));
-                    }
-                }
+                out.push((key, val_node));
             }
             _ => {}
         }
@@ -1164,9 +1218,16 @@ pub(super) fn find_chained_gated_sink_call<'a>(
         if !matches!(lookup(lang, cur.kind()), Kind::CallFn | Kind::CallMethod) {
             return None;
         }
-        let function = cur
+        let mut function = cur
             .child_by_field_name("function")
             .or_else(|| cur.child_by_field_name("method"))?;
+        // Rust turbofish (`sqlx::query_as::<_, User>(..)`): the callee is a
+        // `generic_function` wrapping the real path.
+        if function.kind() == "generic_function"
+            && let Some(inner) = function.child_by_field_name("function")
+        {
+            function = inner;
+        }
         // Only treat THIS chain level as a candidate sink when its callee is a
         // real member/method access (has an own method-name segment). For an
         // immediately-invoked-call form `f(..)(..)` (e.g. lodash
@@ -1183,7 +1244,9 @@ pub(super) fn find_chained_gated_sink_call<'a>(
         // field text, whitespace-stripped (mirrors `find_chained_inner_call`
         // so the gate's suffix matchers hit on both single- and multi-line
         // chains).
-        if has_own_method && let Some(raw) = text_of(function, code) {
+        if has_own_method
+            && let Some(raw) = super::helpers::call_fn_callee_text(function, lang, code)
+        {
             let callee: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
             if !crate::labels::classify_gated_sink(lang, &callee, |_| None, |_| None, |_| false)
                 .is_empty()
@@ -1586,6 +1649,18 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
                     None
                 }
             });
+            // Go `const x = "lit"`: the value is a one-element expression
+            // list.  Only `const` is unwrapped; `x := "lit"` and `var x =
+            // "lit"` keep their existing, non-constant lowering.
+            let child_val = child_val.map(|v| {
+                if child.kind() == "const_spec" && v.kind() == "expression_list" {
+                    v.named_child(0)
+                        .filter(|_| v.named_child_count() == 1)
+                        .unwrap_or(v)
+                } else {
+                    v
+                }
+            });
             if let Some(val) = child_val {
                 if is_syntactic_literal(val, code) {
                     return text_of(val, code);
@@ -1602,8 +1677,16 @@ pub(super) fn extract_literal_rhs(ast: Node, lang: &str, code: &[u8]) -> Option<
     if matches!(lookup(lang, ast.kind()), Kind::Return) {
         let mut cursor = ast.walk();
         for child in ast.named_children(&mut cursor) {
-            if is_syntactic_literal(child, code) {
-                return text_of(child, code);
+            // Go wraps the returned values in an `expression_list`; a single
+            // literal in it (`return ""`) is the whole return value, a tuple
+            // (`return "", err`) is not.
+            let value = if child.kind() == "expression_list" && child.named_child_count() == 1 {
+                child.named_child(0).unwrap_or(child)
+            } else {
+                child
+            };
+            if is_syntactic_literal(value, code) {
+                return text_of(value, code);
             }
         }
     }
@@ -2486,6 +2569,116 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
     result
 }
 
+/// Constant leading text of each positional argument of `call_node`, parallel
+/// to [`extract_arg_string_literals`] and `arg_uses`.  `Some(prefix)` when the
+/// argument is a string being built from a literal head (`"https://h/" + id`,
+/// a template literal, an f-string, a format call) and `None` for plain
+/// literals (those are in `arg_string_literals`) and everything else.
+pub(super) fn extract_arg_string_prefixes(
+    call_node: Node,
+    lang: &str,
+    code: &[u8],
+) -> Vec<Option<String>> {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    // Every prefix starts at a string literal: a quote, a PHP heredoc (`<<<`),
+    // a Ruby `%q()` literal, or a Rust macro whose format string is a `const`.
+    // Most calls have none of these bytes in their arguments, so they skip the
+    // per-argument walk.
+    if !code[args_node.byte_range()]
+        .iter()
+        .any(|b| matches!(b, b'"' | b'\'' | b'`' | b'%' | b'<' | b'!'))
+    {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "spread_element"
+            || kind == "dictionary_splat"
+            || kind == "list_splat"
+            || kind == "splat_argument"
+            || kind == "hash_splat_argument"
+        {
+            return Vec::new();
+        }
+        if kind == "keyword_argument" || kind == "named_argument" {
+            continue;
+        }
+        result.push(super::arg_prefix_of_expression(child, lang, code));
+    }
+    if result.iter().all(Option::is_none) {
+        return Vec::new();
+    }
+    result
+}
+
+/// Positional arguments of `call_node` that are exactly a name, as the bit
+/// mask stored in `CallMeta::arg_bare_names`.  Indexed like
+/// [`extract_arg_uses`]: keyword arguments are skipped and a splat clears the
+/// whole mask, since positions after it are unknown.
+pub(super) fn extract_arg_bare_name_mask(call_node: Node) -> u64 {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return 0;
+    };
+    let mut mask = 0u64;
+    let mut pos = 0usize;
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if matches!(
+            kind,
+            "spread_element"
+                | "dictionary_splat"
+                | "list_splat"
+                | "splat_argument"
+                | "hash_splat_argument"
+        ) {
+            return 0;
+        }
+        if kind == "keyword_argument" || kind == "named_argument" {
+            continue;
+        }
+        if pos < 64 && is_bare_name(child) {
+            mask |= 1 << pos;
+        }
+        pos += 1;
+    }
+    mask
+}
+
+/// True when `node` is an identifier or a member path made only of
+/// identifiers, after peeling parentheses and PHP's `argument` wrapper.
+fn is_bare_name(node: Node) -> bool {
+    let mut cur = node;
+    while matches!(cur.kind(), "argument" | "parenthesized_expression") {
+        match cur.named_child(0) {
+            Some(inner) if cur.named_child_count() == 1 => cur = inner,
+            _ => return false,
+        }
+    }
+    match cur.kind() {
+        "identifier" | "variable_name" | "constant" => true,
+        "member_expression"
+        | "selector_expression"
+        | "attribute"
+        | "field_access"
+        | "field_expression"
+        | "member_access_expression" => {
+            let mut w = cur.walk();
+            cur.named_children(&mut w).all(|c| {
+                matches!(
+                    c.kind(),
+                    "property_identifier" | "field_identifier" | "identifier" | "name"
+                ) || is_bare_name(c)
+            })
+        }
+        _ => false,
+    }
+}
+
 /// Strip surrounding quotes from a syntactic string literal, resolving the
 /// `string_content` child for Rust-style two-level string nodes.  Returns the
 /// raw inner text (no escape-sequence processing), sufficient for whitelist
@@ -3155,6 +3348,28 @@ pub(super) fn js_positional_arity(call_node: Node) -> Option<usize> {
     Some(arity)
 }
 
+/// Positional argument count of a Python call, or `None` when a `*args` /
+/// `**kwargs` splat can supply arguments the call text does not show.
+/// Keyword arguments do not count.
+pub(super) fn python_positional_arity(call_node: Node) -> Option<usize> {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return Some(0);
+    };
+    if args.kind() != "argument_list" {
+        return None;
+    }
+    let mut cursor = args.walk();
+    let mut arity = 0;
+    for arg in args.named_children(&mut cursor) {
+        match arg.kind() {
+            "list_splat" | "dictionary_splat" => return None,
+            "keyword_argument" | "comment" => {}
+            _ => arity += 1,
+        }
+    }
+    Some(arity)
+}
+
 /// True when the positional argument at `index` of a JS/TS call is a
 /// string by construction, the shape a string-evaluating timer
 /// (`setTimeout(code, ms)`) compiles:
@@ -3186,6 +3401,314 @@ pub(super) fn js_arg_is_string_valued(
         return false;
     };
     js_expr_is_string_valued(arg, lang, code, extra, 3)
+}
+
+/// Tags whose `${}` substitutions are sent as bind parameters: Prisma's
+/// `$queryRaw` / `$executeRaw` and the `sql` tag of drizzle, `Prisma.sql`,
+/// `@vercel/postgres`, `postgres` and slonik.
+const PARAMETERIZED_SQL_TAGS: &[&str] = &["$queryRaw", "$executeRaw", "sql", "SQL"];
+
+/// Helpers that splice their argument into a parameterized SQL template as
+/// raw text (`Prisma.raw(x)`, `sql.raw(x)`, `raw(x)`, `sql.unsafe(x)`).
+const RAW_SQL_SPLICE_HELPERS: &[&str] = &["raw", "unsafe"];
+
+/// Module specifiers whose `sql` / `Prisma` / `raw` exports build parameterized
+/// SQL. A tag or helper counts only when its root name comes from one of
+/// these, directly or through a client built from one
+/// (`const sql = postgres(url)`): a user-defined `sql` tag that concatenates
+/// its substitutions is not parameterized.
+fn is_sql_template_library(spec: &str) -> bool {
+    const LIBS: &[&str] = &[
+        "drizzle-orm",
+        "@prisma/client",
+        "@vercel/postgres",
+        "@neondatabase/serverless",
+        "postgres",
+        "slonik",
+        "kysely",
+        "sql-template-strings",
+        "@databases/",
+    ];
+    LIBS.iter().any(|l| {
+        spec == *l
+            || (l.ends_with('/') && spec.starts_with(l))
+            || spec.strip_prefix(l).is_some_and(|r| r.starts_with('/'))
+    })
+}
+
+/// True when the name `name` used under `node` is bound by an import from a
+/// parameterized-SQL library, or by a top-level `const name = f(..)` where
+/// `f` is such an import.
+fn js_name_is_sql_library_binding(node: Node, name: &str, code: &[u8]) -> bool {
+    if crate::ssa::type_facts::file_import_path(name)
+        .as_deref()
+        .is_some_and(is_sql_template_library)
+    {
+        return true;
+    }
+    js_top_level_statements(node)
+        .into_iter()
+        .flat_map(|stmt| {
+            let mut c = stmt.walk();
+            stmt.named_children(&mut c).collect::<Vec<_>>()
+        })
+        .filter(|d| d.kind() == "variable_declarator")
+        .any(|d| {
+            d.child_by_field_name("name")
+                .and_then(|n| text_of(n, code))
+                .is_some_and(|n| n == name)
+                && d.child_by_field_name("value").is_some_and(|v| {
+                    let v = unwrap_parens(v);
+                    v.kind() == "call_expression"
+                        && v.child_by_field_name("function")
+                            .map(unwrap_parens)
+                            .and_then(|f| text_of(f, code))
+                            .is_some_and(|f| {
+                                let root_name = f.split('.').next().unwrap_or(&f);
+                                crate::ssa::type_facts::file_import_path(root_name)
+                                    .as_deref()
+                                    .is_some_and(is_sql_template_library)
+                            })
+                })
+        })
+}
+
+/// Top-level statements of the file that holds `node`, with an
+/// `export const ..` / `export function ..` read as its declaration.
+fn js_top_level_statements(node: Node) -> Vec<Node> {
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor)
+        .map(|stmt| {
+            if stmt.kind() == "export_statement" {
+                stmt.child_by_field_name("declaration").unwrap_or(stmt)
+            } else {
+                stmt
+            }
+        })
+        .collect()
+}
+
+/// True when `name` is a function the file defines itself at top level:
+/// `function sql(..) {..}` or `const sql = (..) => ..`.
+fn js_name_is_local_function(node: Node, name: &str, code: &[u8]) -> bool {
+    js_top_level_statements(node)
+        .into_iter()
+        .any(|stmt| match stmt.kind() {
+            "function_declaration" | "generator_function_declaration" => stmt
+                .child_by_field_name("name")
+                .and_then(|n| text_of(n, code))
+                .is_some_and(|n| n == name),
+            "lexical_declaration" | "variable_declaration" => {
+                let mut c = stmt.walk();
+                stmt.named_children(&mut c).any(|d| {
+                    d.kind() == "variable_declarator"
+                        && d.child_by_field_name("name")
+                            .and_then(|n| text_of(n, code))
+                            .is_some_and(|n| n == name)
+                        && d.child_by_field_name("value")
+                            .map(unwrap_parens)
+                            .is_some_and(|v| {
+                                matches!(
+                                    v.kind(),
+                                    "arrow_function" | "function_expression" | "function"
+                                )
+                            })
+                })
+            }
+            _ => false,
+        })
+}
+
+/// Roots of a parameterized SQL template API (`sql\`..\``, `sql.raw(..)`,
+/// `Prisma.sql`, `Prisma.raw(..)`).
+const SQL_TEMPLATE_ROOTS: &[&str] = &["sql", "SQL", "Prisma"];
+
+/// True when the `sql` / `SQL` / `Prisma` root of a SQL template is not the
+/// file's own function. An import (from a SQL library, or from a project
+/// module that re-exports one) and a client value (`const sql = postgres(url)`)
+/// are trusted to bind their substitutions; a tag the file defines as a
+/// function may concatenate them.
+fn js_sql_template_root_is_library(node: Node, name: &str, code: &[u8]) -> bool {
+    !js_name_is_local_function(node, name, code)
+}
+
+/// True when the callee text `callee` of a call under `node` is a raw-text
+/// splice of a SQL library: `Prisma.raw`, `sql.raw`, `sql.unsafe`, or a bare
+/// `raw` / `unsafe` imported from one.
+fn is_sql_raw_splice_callee(node: Node, callee: &str, code: &[u8]) -> bool {
+    let callee: String = callee.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut parts = callee.split('.');
+    let (Some(first), second, None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let leaf = second.unwrap_or(first);
+    if !RAW_SQL_SPLICE_HELPERS.contains(&leaf) {
+        return false;
+    }
+    if second.is_some() && SQL_TEMPLATE_ROOTS.contains(&first) {
+        return js_sql_template_root_is_library(node, first, code);
+    }
+    js_name_is_sql_library_binding(node, first, code)
+}
+
+/// Raw-text splices of a JS/TS tagged SQL template, or `None` when `call` is
+/// not a tagged template with a parameterizing tag
+/// ([`PARAMETERIZED_SQL_TAGS`]).  A call with parentheses
+/// (`prisma.$queryRaw(text)`) is not a tagged template and returns `None`.
+///
+/// The first vector lists the positional indices (as
+/// [`extract_arg_uses`] numbers the template's children) of substitutions
+/// that contain a raw splice; the second the identifiers inside those
+/// splices' arguments.  Both are empty when every substitution is bound as a
+/// parameter.
+pub(super) fn js_sql_template_raw_splices(
+    call: Node,
+    code: &[u8],
+) -> Option<(Vec<usize>, Vec<String>)> {
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let template = call.child_by_field_name("arguments")?;
+    if template.kind() != "template_string" {
+        return None;
+    }
+    let tag: String = text_of(call.child_by_field_name("function")?, code)?
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let leaf = tag.rsplit('.').next().unwrap_or(&tag);
+    if !PARAMETERIZED_SQL_TAGS.contains(&leaf) {
+        return None;
+    }
+    // Prisma's `$queryRaw` / `$executeRaw` are method names of its client.
+    // `sql` / `SQL` are ordinary identifiers, so a tag the file defines as
+    // its own function is not trusted: it may concatenate.
+    if !leaf.starts_with('$') {
+        let root_name = tag.split('.').next().unwrap_or(&tag);
+        if !js_sql_template_root_is_library(call, root_name, code) {
+            return None;
+        }
+    }
+    let mut positions = Vec::new();
+    let mut idents = Vec::new();
+    let mut cursor = template.walk();
+    for (pos, child) in template.named_children(&mut cursor).enumerate() {
+        if child.kind() != "template_substitution" {
+            continue;
+        }
+        let mut found = false;
+        collect_raw_sql_splice_idents(child, code, &mut idents, &mut found);
+        if found {
+            positions.push(pos);
+        }
+    }
+    Some((positions, idents))
+}
+
+fn collect_raw_sql_splice_idents(n: Node, code: &[u8], out: &mut Vec<String>, found: &mut bool) {
+    if n.kind() == "call_expression"
+        && let Some(func) = n.child_by_field_name("function")
+        && let Some(text) = text_of(func, code)
+        && is_sql_raw_splice_callee(n, &text, code)
+        && let Some(args) = n.child_by_field_name("arguments")
+    {
+        *found = true;
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        collect_idents_with_paths(args, code, &mut idents, &mut paths);
+        for name in paths.into_iter().chain(idents) {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        return;
+    }
+    let mut cursor = n.walk();
+    for child in n.named_children(&mut cursor) {
+        collect_raw_sql_splice_idents(child, code, out, found);
+    }
+}
+
+/// True when the positional argument at `index` of a query-builder call
+/// `method` is a value the builder turns into parameterized SQL itself.
+///
+/// Condition methods (`where`, `andWhere`, `orWhere`, `having` and their
+/// variants) take an object of bound values, a callback, or a
+/// `new Brackets(..)` / `new NotBrackets(..)` group. The other methods
+/// (`orderBy`, `groupBy`, `select`, ...) put object keys into the SQL text as
+/// column names, so an object counts only when every key is a static name;
+/// a computed key or a spread leaves the column attacker-controlled. A
+/// callback or any other `new` expression is not structured for them.
+pub(super) fn js_arg_is_structured_condition(
+    call_node: Node,
+    index: usize,
+    method: &str,
+    code: &[u8],
+) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args
+        .named_children(&mut cursor)
+        .nth(index)
+        .map(unwrap_parens)
+    else {
+        return false;
+    };
+    let is_condition_method = matches!(
+        method,
+        "where" | "andWhere" | "orWhere" | "having" | "andHaving" | "orHaving"
+    );
+    match arg.kind() {
+        "object" if is_condition_method => true,
+        // TypeORM writes the values too (`orderBy({ 'u.name': dir })` puts
+        // `dir` after the column), so they must be static as well.
+        "object" => js_object_is_static(arg),
+        "arrow_function" | "function_expression" | "function" => is_condition_method,
+        "new_expression" => {
+            is_condition_method
+                && arg
+                    .child_by_field_name("constructor")
+                    .and_then(|f| text_of(f, code))
+                    .is_some_and(|t| {
+                        matches!(t.rsplit('.').next(), Some("Brackets" | "NotBrackets"))
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// True when an object literal has only static keys and static values: string,
+/// number or substitution-free template literals, or nested objects of the
+/// same (`{ 'u.name': 'ASC' }`, `{ id: { order: 'DESC', nulls: 'NULLS LAST' } }`).
+fn js_object_is_static(obj: Node) -> bool {
+    let mut c = obj.walk();
+    obj.named_children(&mut c).all(|pair| match pair.kind() {
+        "pair" => {
+            pair.child_by_field_name("key")
+                .is_some_and(|k| matches!(k.kind(), "property_identifier" | "string" | "number"))
+                && pair
+                    .child_by_field_name("value")
+                    .map(unwrap_parens)
+                    .is_some_and(|v| match v.kind() {
+                        "string" | "number" => true,
+                        "template_string" => {
+                            let mut tc = v.walk();
+                            v.named_children(&mut tc)
+                                .all(|ch| ch.kind() != "template_substitution")
+                        }
+                        "object" => js_object_is_static(v),
+                        _ => false,
+                    })
+        }
+        "comment" => true,
+        _ => false,
+    })
 }
 
 /// True when the positional argument at `index` of a JS/TS call names an

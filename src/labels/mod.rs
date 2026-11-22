@@ -710,12 +710,66 @@ fn label_index_for(lang: &str) -> Option<&'static LabelIndex> {
     })
 }
 
-static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::new(|| {
+/// One language's gated sinks with a last-byte index over their callee
+/// matchers, the dispatch [`LabelIndex`] uses for flat rules: a gate matches a
+/// text only when the text ends with its matcher, so only gates whose matcher
+/// ends in the text's (lowercased) last byte can match it.
+struct GateSet {
+    gates: &'static [SinkGate],
+    /// `by_last[b]` = ascending indices into `gates` of the matchers whose
+    /// lowercased last byte is `b`.
+    by_last: Vec<Vec<u16>>,
+    /// Matchers with no last byte (a bare `=` sigil); none in practice.
+    always: Vec<u16>,
+}
+
+impl GateSet {
+    fn new(gates: &'static [SinkGate]) -> &'static GateSet {
+        let mut by_last: Vec<Vec<u16>> = vec![Vec::new(); 256];
+        let mut always = Vec::new();
+        for (i, gate) in gates.iter().enumerate() {
+            let (m, _) = unpack_matcher(gate.callee_matcher.as_bytes());
+            match m.last() {
+                Some(&b) => by_last[b.to_ascii_lowercase() as usize].push(i as u16),
+                None => always.push(i as u16),
+            }
+        }
+        Box::leak(Box::new(GateSet {
+            gates,
+            by_last,
+            always,
+        }))
+    }
+
+    /// Indices, ascending, of the gates that can match a text whose last byte
+    /// is `text_last` or whose normalised form's last byte is `norm_last`.
+    fn candidates(&self, text_last: Option<u8>, norm_last: Option<u8>) -> SmallVec<[u16; 8]> {
+        let text_last = text_last.map(|b| b.to_ascii_lowercase());
+        let norm_last = norm_last.map(|b| b.to_ascii_lowercase());
+        let mut out: SmallVec<[u16; 8]> = SmallVec::new();
+        if let Some(b) = text_last {
+            out.extend_from_slice(&self.by_last[b as usize]);
+        }
+        if let Some(b) = norm_last.filter(|&b| Some(b) != text_last) {
+            out.extend_from_slice(&self.by_last[b as usize]);
+        }
+        out.extend_from_slice(&self.always);
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static GateSet>> = Lazy::new(|| {
     let mut m = HashMap::new();
-    m.insert("javascript", javascript::GATED_SINKS);
-    m.insert("js", javascript::GATED_SINKS);
-    m.insert("typescript", typescript::GATED_SINKS);
-    m.insert("ts", typescript::GATED_SINKS);
+    let mut add = |names: &[&'static str], gates: &'static [SinkGate]| {
+        let set = GateSet::new(gates);
+        for name in names {
+            m.insert(*name, set);
+        }
+    };
+    add(&["javascript", "js"], javascript::GATED_SINKS);
+    add(&["typescript", "ts"], typescript::GATED_SINKS);
 
     // Python prototype-pollution gates are opt-in: `dict.update(target,
     // src)` overlaps too broadly with non-pollution use of `update`
@@ -730,19 +784,14 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     } else {
         python::GATED_SINKS
     };
-    m.insert("python", python_gates);
-    m.insert("py", python_gates);
-
-    m.insert("go", go::GATED_SINKS);
-    m.insert("php", php::GATED_SINKS);
-    m.insert("c", c::GATED_SINKS);
-    m.insert("cpp", cpp::GATED_SINKS);
-    m.insert("c++", cpp::GATED_SINKS);
-    m.insert("ruby", ruby::GATED_SINKS);
-    m.insert("rb", ruby::GATED_SINKS);
-    m.insert("java", java::GATED_SINKS);
-    m.insert("rust", rust::GATED_SINKS);
-    m.insert("rs", rust::GATED_SINKS);
+    add(&["python", "py"], python_gates);
+    add(&["go"], go::GATED_SINKS);
+    add(&["php"], php::GATED_SINKS);
+    add(&["c"], c::GATED_SINKS);
+    add(&["cpp", "c++"], cpp::GATED_SINKS);
+    add(&["ruby", "rb"], ruby::GATED_SINKS);
+    add(&["java"], java::GATED_SINKS);
+    add(&["rust", "rs"], rust::GATED_SINKS);
     m
 });
 
@@ -1630,7 +1679,17 @@ fn classify_aliased(
 }
 
 fn classify_text(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> Option<DataLabel> {
-    let head = text.split(['(', '<']).next().unwrap_or("");
+    let view = CalleeView::of(lang, text);
+    classify_view(lang, &view, extra).or(view.polymorphic_decode.then_some(POLYMORPHIC_DECODE))
+}
+
+fn classify_view(
+    lang: &str,
+    view: &CalleeView<'_>,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> Option<DataLabel> {
+    let text = &*view.text;
+    let head = view.head();
     let trimmed = head.trim().as_bytes();
 
     // Early out: exclude known-benign framework patterns.
@@ -1765,7 +1824,21 @@ fn classify_all_text(
     text: &str,
     extra: Option<&[RuntimeLabelRule]>,
 ) -> SmallVec<[DataLabel; 2]> {
-    let head = text.split(['(', '<']).next().unwrap_or("");
+    let view = CalleeView::of(lang, text);
+    let mut out = classify_all_view(lang, &view, extra);
+    if view.polymorphic_decode && !out.contains(&POLYMORPHIC_DECODE) {
+        out.push(POLYMORPHIC_DECODE);
+    }
+    out
+}
+
+fn classify_all_view(
+    lang: &str,
+    view: &CalleeView<'_>,
+    extra: Option<&[RuntimeLabelRule]>,
+) -> SmallVec<[DataLabel; 2]> {
+    let text = &*view.text;
+    let head = view.head();
     let trimmed = head.trim().as_bytes();
 
     // Early out: exclude known-benign framework patterns.
@@ -1916,7 +1989,9 @@ pub fn classify_gated_matches(
         return out;
     }
 
-    let head = text.split(['(', '<']).next().unwrap_or("");
+    let view = CalleeView::of(lang, text);
+    let text = &*view.text;
+    let head = view.head();
     let trimmed = head.trim().as_bytes();
     if is_excluded(lang, trimmed) {
         return out;
@@ -2242,11 +2317,11 @@ fn classify_gated_sink_text(
     arg_present: &impl Fn(usize) -> bool,
 ) -> SmallVec<[GateMatch; 2]> {
     let mut out: SmallVec<[GateMatch; 2]> = SmallVec::new();
-    let gates = match GATED_REGISTRY.get(lang).or_else(|| {
+    let gate_set = match GATED_REGISTRY.get(lang).or_else(|| {
         let key = lang.to_ascii_lowercase();
         GATED_REGISTRY.get(key.as_str())
     }) {
-        Some(g) => g,
+        Some(g) => *g,
         None => return out,
     };
 
@@ -2255,11 +2330,17 @@ fn classify_gated_sink_text(
     // `httpx.AsyncClient().post` matches a gate matcher of
     // `httpx.AsyncClient.post`.  Mirrors the normalisation applied by
     // `classify` for flat label rules.
+    let callee_view = CalleeView::of(lang, callee_text);
+    let callee_text = &*callee_view.text;
     let callee_bytes = callee_text.as_bytes();
     let normalized = normalize_chained_call(callee_text);
     let normalized_bytes = normalized.as_bytes();
 
-    for gate in *gates {
+    for gi in gate_set.candidates(
+        callee_bytes.last().copied(),
+        normalized_bytes.last().copied(),
+    ) {
+        let gate = &gate_set.gates[gi as usize];
         let matcher = gate.callee_matcher.as_bytes();
         if !match_suffix_cs(callee_bytes, matcher, gate.case_sensitive)
             && !match_suffix_cs(normalized_bytes, matcher, gate.case_sensitive)
@@ -2391,6 +2472,145 @@ fn classify_gated_sink_text(
         }
     }
     out
+}
+
+/// Drop Rust generic-argument groups (`::<..>`) from a callee text.
+///
+/// `sqlx::query_as::<_, User>(&q)` is the same call as `sqlx::query_as(&q)` for
+/// classification, but the head split at `<` leaves `sqlx::query_as::`, whose
+/// trailing `::` defeats every suffix matcher.  A following path segment stays,
+/// so `Foo::<T>::new` becomes `Foo::new`.  An unterminated group truncates the
+/// text, which matches what the `<` split did before.  Borrows when the text
+/// has no `::<`.
+fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
+    let Some(first) = text.find("::<") else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0usize;
+    let mut at = first;
+    loop {
+        out.push_str(&text[copied..at]);
+        // A turbofish on a method (`res.json::<T>()`, `row.get::<_, T>(0)`)
+        // selects a return type; the callee is still the plain method and its
+        // text must keep truncating at the `<`, as before.  `Response::json<T>`
+        // is a decoder, not the actix response builder `.json(value)` that a
+        // bare `json` sink rule models.  Only path calls such as
+        // `sqlx::query_as::<_, User>` are normalised.
+        if segment_is_method(&text[..at]) {
+            out.push_str(&text[at..]);
+            return std::borrow::Cow::Owned(out);
+        }
+        let mut depth = 1u32;
+        let mut j = at + 3;
+        while j < bytes.len() && depth > 0 {
+            match bytes[j] {
+                b'<' => depth += 1,
+                // `->` inside a `fn(..) -> T` argument is not a closer.
+                b'>' if bytes[j - 1] != b'-' => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        if depth > 0 {
+            return std::borrow::Cow::Owned(out);
+        }
+        copied = j;
+        match text[copied..].find("::<") {
+            Some(off) => at = copied + off,
+            None => {
+                out.push_str(&text[copied..]);
+                return std::borrow::Cow::Owned(out);
+            }
+        }
+    }
+}
+
+/// `toml::from_str::<Box<dyn Plugin>>` selects the concrete type from the
+/// document (typetag style), unlike the same call into a concrete struct, so
+/// it is a deserialisation sink while the typed-config form is not.
+/// `stripped` is `text` with its turbofish removed.
+fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
+    let head = stripped.split('(').next().unwrap_or("").trim();
+    if !matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) && !head.ends_with("::toml::from_str")
+        && !head.ends_with("::ron::from_str")
+    {
+        return false;
+    }
+    let Some(at) = text.find("::<") else {
+        return false;
+    };
+    let generic = &text[at..];
+    let generic = generic.split('(').next().unwrap_or(generic);
+    generic
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|w| w == "dyn")
+}
+
+/// The label of a polymorphic decode ([`is_polymorphic_decode`]).
+const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
+
+/// Whether the path segment ending `before` is reached through a `.`, i.e. is
+/// a method call rather than a `::` path segment.
+fn segment_is_method(before: &str) -> bool {
+    let seg_start = before
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |i| i + 1);
+    before[..seg_start].ends_with('.')
+}
+
+/// Byte offset of the first `(` or `<` in `text`, where the callee head ends.
+#[inline]
+fn head_end(text: &str) -> usize {
+    text.bytes()
+        .position(|b| b == b'(' || b == b'<')
+        .unwrap_or(text.len())
+}
+
+/// A callee text as the classifier reads it: the text with Rust generic
+/// groups removed ([`strip_turbofish`]), where its head ends, and whether it
+/// is a polymorphic decode.
+///
+/// Every classification builds one, and almost no callee has a generic group,
+/// so the head scan the classifier needs anyway decides it: the text is
+/// rewritten only when that head ends at a `<`.  A path turbofish can only
+/// follow the callee path (a `::<` after a `(` is inside an argument, which no
+/// suffix matcher reads, or on a method, which keeps its text).
+struct CalleeView<'a> {
+    text: std::borrow::Cow<'a, str>,
+    head_end: usize,
+    polymorphic_decode: bool,
+}
+
+impl<'a> CalleeView<'a> {
+    #[inline]
+    fn of(lang: &str, text: &'a str) -> Self {
+        let end = head_end(text);
+        if text.as_bytes().get(end) == Some(&b'<') && (lang == "rust" || lang == "rs") {
+            let stripped = strip_turbofish(text);
+            let polymorphic_decode = is_polymorphic_decode(text, &stripped);
+            let head_end = head_end(&stripped);
+            return CalleeView {
+                text: stripped,
+                head_end,
+                polymorphic_decode,
+            };
+        }
+        CalleeView {
+            text: std::borrow::Cow::Borrowed(text),
+            head_end: end,
+            polymorphic_decode: false,
+        }
+    }
+
+    #[inline]
+    fn head(&self) -> &str {
+        &self.text[..self.head_end]
+    }
 }
 
 /// Public wrapper for `normalize_chained_call` so callers outside the module
@@ -2954,8 +3174,8 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
         }
 
         // Include gated sink entries
-        if let Some(gates) = GATED_REGISTRY.get(lang) {
-            for gate in *gates {
+        if let Some(gate_set) = GATED_REGISTRY.get(lang) {
+            for gate in gate_set.gates {
                 let cap = match gate.label {
                     DataLabel::Source(c) | DataLabel::Sanitizer(c) | DataLabel::Sink(c) => c,
                 };
@@ -2999,7 +3219,9 @@ mod tests {
     /// every rule in registry order, exactly as the old inner loops did. Pins
     /// the `LabelIndex` dispatch against the naive scan.
     fn ref_classify(lang: &str, text: &str) -> Option<DataLabel> {
-        let head = text.split(['(', '<']).next().unwrap_or("");
+        let view = CalleeView::of(lang, text);
+        let text = &*view.text;
+        let head = view.head();
         let trimmed = head.trim().as_bytes();
         if is_excluded(lang, trimmed) {
             return None;
@@ -3039,7 +3261,9 @@ mod tests {
 
     /// Reference (pre-index) linear built-in `classify_all`.
     fn ref_classify_all(lang: &str, text: &str) -> SmallVec<[DataLabel; 2]> {
-        let head = text.split(['(', '<']).next().unwrap_or("");
+        let view = CalleeView::of(lang, text);
+        let text = &*view.text;
+        let head = view.head();
         let trimmed = head.trim().as_bytes();
         let mut out: SmallVec<[DataLabel; 2]> = SmallVec::new();
         if is_excluded(lang, trimmed) {
@@ -3119,6 +3343,8 @@ mod tests {
             "Some::Path::to::thing",
             "OPEN",
             "Execute",
+            "sqlx::query_as::<_, User>(&q).fetch_all",
+            "Foo::<T>::new",
         ];
         for lang in langs {
             let rules = match REGISTRY.get(lang) {
@@ -4982,5 +5208,115 @@ mod tests {
             Some(&[0usize][..])
         );
         assert_eq!(output_param_source_positions("go", "c.Query"), None);
+    }
+
+    #[test]
+    fn strip_turbofish_removes_generic_groups() {
+        use std::borrow::Cow;
+        let s = |t: &str| strip_turbofish(t).into_owned();
+        assert_eq!(s("a::b::<T>(x)"), "a::b(x)");
+        assert_eq!(s("Foo::<T>::new"), "Foo::new");
+        assert_eq!(s("f::<Vec<u8>>"), "f");
+        assert_eq!(s("f::<fn() -> u8>(x)"), "f(x)");
+        assert_eq!(
+            s("sqlx::query_as::<_, User>(&q).fetch_all"),
+            "sqlx::query_as(&q).fetch_all"
+        );
+        assert_eq!(s("a::<X>::b::<Y>(z)"), "a::b(z)");
+        // Unterminated group truncates, like the old `<` split.
+        assert_eq!(s("a::b::<Vec<u8"), "a::b");
+        assert!(matches!(strip_turbofish("a::b(x)"), Cow::Borrowed(_)));
+        assert!(matches!(
+            CalleeView::of("go", "a::<b>(x)").text,
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            CalleeView::of("rust", "a::b(x::<T>())").text,
+            Cow::Borrowed(_)
+        ));
+        let v = CalleeView::of("rust", "sqlx::query_as::<_, User>(&q)");
+        assert_eq!(v.head(), "sqlx::query_as");
+    }
+
+    #[test]
+    fn rust_turbofish_calls_classify_like_the_plain_call() {
+        let has_sink = |text: &str, cap: Cap| {
+            classify_all("rust", text, None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+        };
+        assert!(has_sink(
+            "sqlx::query_as::<_, User>(&q).fetch_all",
+            Cap::SQL_QUERY
+        ));
+        assert!(has_sink("sqlx::query_scalar::<_, i64>", Cap::SQL_QUERY));
+        assert!(has_sink("serde_yaml::from_str::<Value>", Cap::DESERIALIZE));
+        assert!(has_sink("bincode::deserialize::<Cfg>", Cap::DESERIALIZE));
+        assert!(has_sink("std::fs::read_to_string::<&str>", Cap::FILE_IO));
+        // Generic calls that are not labelled stay unlabelled.
+        assert!(classify_all("rust", "Vec::<u8>::new", None).is_empty());
+        assert!(classify_all("rust", "x.collect::<Vec<_>>", None).is_empty());
+        assert!(classify_all("rust", "s.parse::<u32>", None).is_empty());
+        // A method turbofish keeps truncating at the `<`: `res.json::<T>()`
+        // decodes a client response and is not a response-builder sink.
+        assert_eq!(strip_turbofish("res.json::<T>(x)"), "res.json::<T>(x)");
+        assert_eq!(strip_turbofish("a::b.c::<T>(x)"), "a::b.c::<T>(x)");
+        // The gated lookup sees the plain callee too.
+        let gates = classify_gated_sink(
+            "rust",
+            "std::fs::write::<&str>",
+            |_| None,
+            |_| None,
+            |_| false,
+        );
+        assert!(!gates.is_empty());
+    }
+
+    /// The gate index visits every gate a linear scan would match, for every
+    /// language: each matcher, its qualified and upper-cased spellings, and a
+    /// chained form that only the normalised text matches.
+    #[test]
+    fn gate_index_finds_every_matching_gate() {
+        for (lang, set) in GATED_REGISTRY.iter() {
+            let mut texts: Vec<String> = Vec::new();
+            for gate in set.gates {
+                let (m, _) = unpack_matcher(gate.callee_matcher.as_bytes());
+                let m = std::str::from_utf8(m).unwrap();
+                texts.push(m.to_string());
+                texts.push(format!("x.{m}"));
+                texts.push(m.to_ascii_uppercase());
+                texts.push(format!("a().{m}()"));
+            }
+            texts.push("some_random_function".into());
+            for text in &texts {
+                let norm = normalize_chained_call(text);
+                let linear: Vec<usize> = set
+                    .gates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| {
+                        let m = g.callee_matcher.as_bytes();
+                        match_suffix_cs(text.as_bytes(), m, g.case_sensitive)
+                            || match_suffix_cs(norm.as_bytes(), m, g.case_sensitive)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let indexed: Vec<usize> = set
+                    .candidates(
+                        text.as_bytes().last().copied(),
+                        norm.as_bytes().last().copied(),
+                    )
+                    .into_iter()
+                    .map(usize::from)
+                    .filter(|&i| {
+                        let g = &set.gates[i];
+                        let m = g.callee_matcher.as_bytes();
+                        match_suffix_cs(text.as_bytes(), m, g.case_sensitive)
+                            || match_suffix_cs(norm.as_bytes(), m, g.case_sensitive)
+                    })
+                    .collect();
+                assert_eq!(linear, indexed, "{lang} {text}");
+            }
+        }
     }
 }

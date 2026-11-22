@@ -1,0 +1,43 @@
+{
+  "description": "Prisma $queryRaw / $executeRaw tagged templates and the drizzle sql tag bind every substitution as a parameter; only raw splices (sql.raw, Prisma.raw) and $queryRawUnsafe inject.",
+  "tags": ["taint", "sqli", "prisma", "drizzle"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [11, 12],
+      "notes": "prisma.$queryRaw`...${email}` / $executeRaw`...${email}`"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [18, 20],
+      "notes": "db.execute(sql`...${name}`) inline and through a variable"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [26, 26],
+      "notes": "db.execute(sql.raw(`select ${col} ...`))"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [27, 27],
+      "notes": "sql.raw splice inside a sql template"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [33, 33],
+      "notes": "Prisma.raw splice inside $queryRaw"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [34, 34],
+      "notes": "$queryRawUnsafe with an interpolated string"
+    }
+  ]
+}

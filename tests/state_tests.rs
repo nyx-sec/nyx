@@ -706,6 +706,21 @@ fn auth_negated_condition_does_not_elevate() {
 }
 
 #[test]
+fn auth_passport_is_authenticated_guard_elevates() {
+    // Passport's `req.isAuthenticated()` in a negated early-return condition.
+    assert_absent("auth_passport_isauthenticated.js", "state-unauthed-access");
+}
+
+#[test]
+fn auth_passport_redirect_without_return_still_fires() {
+    // The rejecting branch falls through to the sink, so auth stays low.
+    assert_has(
+        "auth_passport_redirect_falls_through.js",
+        "state-unauthed-access",
+    );
+}
+
+#[test]
 fn auth_main_not_handler() {
     // main() is explicitly excluded from web entrypoint detection.
     assert_no_state_findings("auth_main_not_handler.js");

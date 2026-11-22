@@ -1169,12 +1169,7 @@ impl DefaultTransfer<'_> {
             };
 
             // Auth-related condition
-            let auth_rules = rules::auth_rules(self.lang);
-            let is_auth_cond = auth_rules.iter().any(|rule| {
-                rule.matchers
-                    .iter()
-                    .any(|m| condition_contains_auth_token(cond_inner, m))
-            });
+            let is_auth_cond = condition_is_auth_test(cond_inner, self.lang);
             if is_auth_cond {
                 let is_admin = ADMIN_PATTERNS
                     .iter()
@@ -1422,6 +1417,17 @@ fn is_go_map_boolean_guard(cond: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
 }
 
+/// Whether `cond` (already lowercased) names an authentication or
+/// authorization check of `lang`: one of the call matchers, or a predicate that
+/// is only meaningful as a condition.
+pub(crate) fn condition_is_auth_test(cond: &str, lang: Lang) -> bool {
+    rules::auth_rules(lang)
+        .iter()
+        .flat_map(|rule| rule.matchers.iter())
+        .chain(rules::auth_condition_matchers(lang))
+        .any(|m| condition_contains_auth_token(cond, m))
+}
+
 /// Check if condition text contains an auth/admin matcher at a word boundary.
 ///
 /// Dispatches based on matcher content:
@@ -1429,7 +1435,7 @@ fn is_go_map_boolean_guard(cond: &str) -> bool {
 ///   text on non-identifier characters and require an exact token match.
 /// - **Contains punctuation** (`middleware.auth`): find the matcher as a substring
 ///   and verify word boundaries (non-ident char or string edge) on both sides.
-fn condition_contains_auth_token(cond: &str, matcher: &str) -> bool {
+pub(crate) fn condition_contains_auth_token(cond: &str, matcher: &str) -> bool {
     let matcher_lower = matcher.to_ascii_lowercase();
     let is_ident_only = matcher_lower
         .bytes()
@@ -2568,6 +2574,20 @@ mod tests {
     }
 
     // ── condition_contains_auth_token ────────────────────────────────────
+
+    #[test]
+    fn camel_case_matcher_is_found_as_a_whole_token() {
+        // Conditions are lowercased before matching, so a camelCase matcher
+        // such as Passport's `isAuthenticated` is compared in lowercase.
+        assert!(condition_contains_auth_token(
+            "req.isauthenticated()",
+            "isAuthenticated"
+        ));
+        assert!(!condition_contains_auth_token(
+            "req.notisauthenticatedcache()",
+            "isAuthenticated"
+        ));
+    }
 
     #[test]
     fn auth_token_exact_match() {

@@ -1,0 +1,32 @@
+{
+  "description": "Java `Path.normalize()` is lexical: `base.resolve(name).normalize()` can leave the base. A `startsWith(base)` check on the normalized path is the containment test.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "normalize"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "normalize alone does not confine"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        27,
+        27
+      ],
+      "notes": "normalize then startsWith(base)"
+    }
+  ]
+}

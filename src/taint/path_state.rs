@@ -1352,7 +1352,13 @@ fn anchored_regex_literal_test_arg(text: &str) -> Option<String> {
         i += 1;
     };
     let body = &t[1..close];
-    let rest = t[close + 1..].trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let after = &t[close + 1..];
+    let rest = after.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    // The `m` flag lets `^` and `$` match at every line break, so a payload
+    // can ride on a second line of a value that passes the test.
+    if after[..after.len() - rest.len()].contains('m') {
+        return None;
+    }
     let args = rest.strip_prefix(".test(")?;
     let anchored = body.len() >= 2
         && body.starts_with('^')
@@ -1371,6 +1377,7 @@ fn regex_body_restricts_alphabet(body: &str) -> bool {
     let bytes = body.as_bytes();
     let mut i = 0usize;
     let mut in_class = false;
+    let mut group_depth = 0usize;
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => {
@@ -1388,6 +1395,10 @@ fn regex_body_restricts_alphabet(body: &str) -> bool {
             }
             b']' => in_class = false,
             b'.' if !in_class => return false,
+            b'(' if !in_class => group_depth += 1,
+            b')' if !in_class => group_depth = group_depth.saturating_sub(1),
+            // `^a|b$` anchors each branch on one side only.
+            b'|' if !in_class && group_depth == 0 => return false,
             _ => {}
         }
         i += 1;
@@ -3995,6 +4006,9 @@ mod ghsa_h8cj_hpmg_636v_tests {
             "/^.*$/.test(id)",
             "/^[^;]+$/.test(id)",
             "/^\\S+$/.test(id)",
+            // `m` anchors per line; a top-level `|` splits the anchors.
+            "/^[0-9]+$/m.test(id)",
+            "/^[0-9]+|[a-z]+$/.test(id)",
         ] {
             assert_ne!(
                 classify_condition(text),

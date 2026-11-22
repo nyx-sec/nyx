@@ -1,0 +1,41 @@
+{
+  "description": "Rust `canonicalize` followed by a `starts_with` containment check stays a proof through `.unwrap()` and `.map_err(..)?`, which only hand back the Ok value.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "canonicalize"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "canonicalize().unwrap() then starts_with(base)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "canonicalize().map_err(..)? then starts_with(base)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "canonicalize alone does not confine"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "description": "A same-origin '/path' prefix pins the host of window.open, which navigates rather than reading a local file.",
+  "tags": ["taint", "open-redirect", "dom", "prefix-lock"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [3, 3],
+      "notes": "window.open('/reports/' + id) stays on the current origin"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [5, 5],
+      "notes": "window.open(next) can leave the origin"
+    }
+  ]
+}

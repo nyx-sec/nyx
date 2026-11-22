@@ -266,6 +266,61 @@ fn positive_rust() {
 }
 
 #[test]
+fn rust_memory_patterns_match_every_path_spelling() {
+    let hits = |body: &str| {
+        run_patterns(
+            "rust",
+            format!("fn f() {{ unsafe {{ {body} }} }}").as_bytes(),
+        )
+    };
+    for (call, id) in [
+        ("mem::transmute(x);", "rs.memory.transmute"),
+        ("std::mem::transmute(x);", "rs.memory.transmute"),
+        ("core::mem::transmute(x);", "rs.memory.transmute"),
+        ("::std::mem::transmute(x);", "rs.memory.transmute"),
+        ("mem::transmute::<u32, f32>(x);", "rs.memory.transmute"),
+        (
+            "std::mem::transmute::<[u8; 4], u32>(x);",
+            "rs.memory.transmute",
+        ),
+        (
+            "std::ptr::copy_nonoverlapping(a, b, 4);",
+            "rs.memory.copy_nonoverlapping",
+        ),
+        (
+            "ptr::copy_nonoverlapping::<u8>(a, b, 4);",
+            "rs.memory.copy_nonoverlapping",
+        ),
+        ("std::mem::zeroed();", "rs.memory.mem_zeroed"),
+        ("mem::zeroed::<u64>();", "rs.memory.mem_zeroed"),
+        ("std::ptr::read(p);", "rs.memory.ptr_read"),
+        ("ptr::read_volatile::<u8>(p);", "rs.memory.ptr_read"),
+        ("core::mem::forget(v);", "rs.memory.mem_forget"),
+    ] {
+        assert!(hits(call).contains(id), "{call} should match {id}");
+    }
+    // Generic names that are not the unsafe primitive stay quiet.
+    for (call, id) in [
+        ("x.transmute(y);", "rs.memory.transmute"),
+        // Bare names cannot be told from user-defined helpers without import
+        // resolution, so they stay quiet.
+        ("transmute(x);", "rs.memory.transmute"),
+        (
+            "copy_nonoverlapping(a, b, 4);",
+            "rs.memory.copy_nonoverlapping",
+        ),
+        ("other::transmute(y);", "rs.memory.transmute"),
+        ("read(p);", "rs.memory.ptr_read"),
+        ("forget(v);", "rs.memory.mem_forget"),
+        ("zeroed();", "rs.memory.mem_zeroed"),
+        ("io::read(p);", "rs.memory.ptr_read"),
+        ("mymem::forget(v);", "rs.memory.mem_forget"),
+    ] {
+        assert!(!hits(call).contains(id), "{call} must not match {id}");
+    }
+}
+
+#[test]
 fn positive_java() {
     assert_positive_match(
         "java",

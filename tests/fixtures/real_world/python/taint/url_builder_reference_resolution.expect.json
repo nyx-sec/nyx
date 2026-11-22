@@ -1,0 +1,69 @@
+{
+  "description": "`urljoin(base, path)` resolves a reference: an absolute or protocol-relative path replaces the host. A fixed `seg/` head or a literal reference keeps it. Constant-host requests with a tainted `params=` or f-string tail are not SSRF.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "url-builder",
+    "origin-lock",
+    "fstring"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "attacker path with a literal base can leave the host"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        49
+      ],
+      "notes": "relative head, literal reference, constant host with params=, and f-string head all keep the host"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        49
+      ],
+      "notes": "the structural rule agrees with the taint lock"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        56,
+        56
+      ],
+      "notes": "fully attacker-controlled URL"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        64,
+        64
+      ],
+      "notes": "URL passed as the url= keyword"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        72,
+        72
+      ],
+      "notes": "constant url= endpoint with a tainted params= value"
+    }
+  ]
+}

@@ -21,7 +21,7 @@ These detectors use dominator analysis. A guard dominates a sink when the guard 
 
 `cfg-unguarded-sink`: a sink call (`system`, `eval`, `Command::new`, `db.execute`, etc.) reachable from function entry without passing any guard or sanitizer that matches the sink's capability.
 
-`cfg-auth-gap`: a function identified as a web handler (by parameter naming conventions like `req`, `res`, `ctx`, `request`, language-dependent) reaches a privileged sink (shell execution, file I/O) with no preceding authentication call.
+`cfg-auth-gap`: a function identified as a web handler (by parameter naming conventions like `req`, `res`, `ctx`, `request`, language-dependent) reaches a privileged sink (shell execution, file I/O) with no preceding authentication call. An authentication test written in a branch condition counts as a call: `if (!req.isAuthenticated()) return ..;` and `if not request.user.is_authenticated: return ..` guard what follows, but only when the failed branch cannot rejoin the flow before the sink. A rejection that redirects without returning guards nothing, and a condition that compares the result (`req.isAuthenticated() === false`) or negates a compound test is not read as a guard.
 
 `cfg-unreachable-*`: sinks, sanitizers, or sources in dead code. Usually a refactoring error that silently disabled security-relevant logic.
 

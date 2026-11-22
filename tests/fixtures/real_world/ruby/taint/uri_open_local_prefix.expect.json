@@ -1,0 +1,32 @@
+{
+  "description": "`URI.open` reads a local file for a scheme-less string, so a `/path` prefix is not an origin lock; a `scheme://host/` prefix is.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "ruby",
+    "origin-lock"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "notes": "/srv/uploads/ prefix names a local file"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "https://host/ prefix fixes the origin"
+    }
+  ]
+}

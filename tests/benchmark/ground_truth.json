@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 898
+    "corpus_size": 973
   },
   "cases": [
     {
@@ -2536,7 +2536,7 @@
         "interprocedural"
       ],
       "disabled": false,
-      "notes": "filepath.Clean sanitizer applied via helper function before os.ReadFile(); auth guard present"
+      "notes": "Rooted filepath.Clean joined under a fixed base, applied via helper function before os.Open(); auth guard present"
     },
     {
       "case_id": "go-safe-004",
@@ -2610,7 +2610,7 @@
         "filepath-clean"
       ],
       "disabled": false,
-      "notes": "filepath.Clean sanitizer applied inline before os.ReadFile(); auth guard present"
+      "notes": "Rooted filepath.Clean joined under a fixed base, applied inline before os.Open(); auth guard present"
     },
     {
       "case_id": "go-safe-007",
@@ -28709,6 +28709,2258 @@
       ],
       "disabled": false,
       "notes": "Words that end in the letters id (paid, android) are not scoped identifiers."
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-as-turbofish",
+      "file": "rust/sqli/sqli_sqlx_query_as_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to sqlx::query_as::<_, User>; the turbofish must not hide the sink"
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-scalar-turbofish",
+      "file": "rust/sqli/sqli_sqlx_query_scalar_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to sqlx::query_scalar::<_, i64>"
+    },
+    {
+      "case_id": "rs-sqli-sqlx-query-format-with-bind",
+      "file": "rust/sqli/sqli_sqlx_query_bind_literal_and_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "sqlx",
+        "bind",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "Table name spliced into the SQL text; a literal .bind() value does not make it safe"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-execute-format",
+      "file": "rust/sqli/sqli_rusqlite_execute_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "format-macro",
+        "unwrap-chain"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to Connection::execute with an empty parameter set"
+    },
+    {
+      "case_id": "rs-sqli-diesel-sql-query-format",
+      "file": "rust/sqli/sqli_diesel_sql_query_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "diesel",
+        "format-macro"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to diesel::sql_query"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-as-turbofish-bind",
+      "file": "rust/safe/safe_sqlx_query_as_turbofish_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value only reaches sqlx::query_as::<_, User> through .bind(); SQL text is a literal"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-scalar-turbofish-bind",
+      "file": "rust/safe/safe_sqlx_query_scalar_turbofish_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "turbofish",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value only reaches sqlx::query_scalar through .bind()"
+    },
+    {
+      "case_id": "rs-safe-sqlx-query-bind",
+      "file": "rust/safe/safe_sqlx_query_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqlx",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Bound parameter on sqlx::query with a literal SQL string"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-params-macro",
+      "file": "rust/safe/safe_rusqlite_params_macro.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "params-macro",
+        "unwrap-chain"
+      ],
+      "disabled": false,
+      "notes": "Tainted value passed through params![] with a literal SQL string, chain split over lines"
+    },
+    {
+      "case_id": "rs-safe-diesel-sql-query-bind",
+      "file": "rust/safe/safe_diesel_sql_query_bind.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "diesel",
+        "bind"
+      ],
+      "disabled": false,
+      "notes": "Tainted value bound with diesel's .bind::<Text, _>() on a literal SQL string"
+    },
+    {
+      "case_id": "rs-safe-actix-reqwest-json-turbofish",
+      "file": "rust/safe/safe_actix_reqwest_json_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "actix",
+        "reqwest",
+        "turbofish"
+      ],
+      "disabled": false,
+      "notes": "res.json::<T>() decodes an upstream reqwest response; it is not the actix response-builder json sink"
+    },
+    {
+      "case_id": "rs-safe-toml-config-turbofish",
+      "file": "rust/safe/safe_toml_config_turbofish.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "turbofish",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "Operator config file decoded into a concrete type with toml::from_str::<Config>; not a polymorphic deserialization sink"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-conn-param-format",
+      "file": "rust/sqli/sqli_rusqlite_conn_param_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "format-macro",
+        "param-receiver"
+      ],
+      "disabled": false,
+      "notes": "format!-built SQL passed to execute on a &Connection parameter (receiver typed from the signature)"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-conn-param-params",
+      "file": "rust/safe/safe_rusqlite_conn_param_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "params-macro",
+        "param-receiver"
+      ],
+      "disabled": false,
+      "notes": "Literal SQL with params![] on a &Connection parameter"
+    },
+    {
+      "case_id": "rs-deser-toml-dyn-plugin",
+      "file": "rust/deser/deser_toml_dyn_plugin.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "turbofish"
+      ],
+      "disabled": false,
+      "notes": "toml::from_str into Box<dyn Plugin> lets the document choose the type"
+    },
+    {
+      "case_id": "py-sqli-sqlalchemy-where-text-001",
+      "file": "python/sqli/sqli_sqlalchemy_where_text.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "sqlalchemy",
+        "text",
+        "fastapi",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "A raw text() clause inside a statement splices the request value into the SQL"
+    },
+    {
+      "case_id": "py-safe-sqlalchemy-select-where-001",
+      "file": "python/safe/safe_sqlalchemy_select_where.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqlalchemy",
+        "statement-builder",
+        "fastapi",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "select().where(Col == value) binds the value as a parameter"
+    },
+    {
+      "case_id": "ts-cmdi-nestjs-query-001",
+      "file": "typescript/cmdi/cmdi_nestjs_query_param.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "nestjs",
+        "decorator-source",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "NestJS @Query('host') formal is request input whatever it is named; reaches exec through a template literal"
+    },
+    {
+      "case_id": "ts-sqli-typeorm-001",
+      "file": "typescript/sqli/sqli_typeorm_querybuilder_where.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "typeorm",
+        "query-builder",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "TypeORM createQueryBuilder().where() takes SQL text; an interpolated request value is injection even with a getMany() tail"
+    },
+    {
+      "case_id": "js-xss-dom-assign-source-001",
+      "file": "javascript/xss/xss_innerhtml_location_hash.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "innerHTML",
+        "dom-xss",
+        "assignment-rhs-source",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "location.hash read directly on the right-hand side of an innerHTML assignment"
+    },
+    {
+      "case_id": "ts-safe-prisma-tagged-001",
+      "file": "typescript/safe/safe_prisma_tagged_template.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "prisma",
+        "tagged-template",
+        "parameterized",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "prisma.$queryRaw tagged template binds every substitution as a parameter"
+    },
+    {
+      "case_id": "js-safe-pg-config-object-001",
+      "file": "javascript/safe/safe_pg_config_object.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pg",
+        "config-object",
+        "parameterized",
+        "web-rules-2026"
+      ],
+      "disabled": false,
+      "notes": "pg {text, values} config form: the request value sits in values, not in the SQL text"
+    },
+    {
+      "case_id": "py-auth-r9-001",
+      "file": "python/auth/vuln_orm_get_ownership.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "token-lookup"
+      ],
+      "disabled": false,
+      "notes": "`Document.objects.get(id=doc_id)` is an ORM read. The qualified token-lookup pattern no longer matches every `.get()`, so the missing owner check is reported and no token flow is claimed."
+    },
+    {
+      "case_id": "py-auth-r9-002",
+      "file": "python/auth/safe_request_json_get.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "token-lookup"
+      ],
+      "disabled": false,
+      "notes": "`request.json.get(\"title\")` reads a dictionary and is not an invitation-token lookup."
+    },
+    {
+      "case_id": "py-auth-r9-003",
+      "file": "python/auth/safe_flask_login_scoped.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`owner=current_user`, `owner_id=current_user.id` and `current_user.docs.filter_by(..)` all scope the query to the signed-in user."
+    },
+    {
+      "case_id": "py-auth-r9-004",
+      "file": "python/auth/vuln_django_login_only_view.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "decorators"
+      ],
+      "disabled": false,
+      "notes": "`@login_required` proves identity, not ownership; the foreign id still reaches the query."
+    },
+    {
+      "case_id": "py-auth-r9-005",
+      "file": "python/auth/safe_django_permission_required_view.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "decorators"
+      ],
+      "disabled": false,
+      "notes": "View decorators authorize the function when the route is registered in another file."
+    },
+    {
+      "case_id": "py-auth-r9-006",
+      "file": "python/auth/vuln_drf_apiview_no_permissions.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "drf"
+      ],
+      "disabled": false,
+      "notes": "A DRF `APIView.delete` registered from `urls.py` is a handler; it deletes by a path id with no permission classes."
+    },
+    {
+      "case_id": "py-auth-r9-007",
+      "file": "python/auth/safe_django_is_authenticated_property.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-auth-gap",
+        "state-unauthed-access"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "`if not request.user.is_authenticated: return ..` guards the open() that follows."
+    },
+    {
+      "case_id": "rb-auth-r9-001",
+      "file": "ruby/auth/vuln_rails_only_percent_i.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "rails-filters"
+      ],
+      "disabled": false,
+      "notes": "`only: %i[update destroy]` limits the filter to those actions; `archive` is unguarded."
+    },
+    {
+      "case_id": "rb-auth-r9-002",
+      "file": "ruby/auth/safe_rails_current_user_scoped.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.auth.missing_ownership_check",
+        "rb.auth.stale_authorization"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`current_user.id` keys and `current_user.notes` association queries are scoped to the caller."
+    },
+    {
+      "case_id": "js-auth-r9-001",
+      "file": "javascript/auth/vuln_request_owner_id.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "actor",
+        "owner-pin"
+      ],
+      "disabled": false,
+      "notes": "`ownerId` read from `req.query` or `req.body` is chosen by the caller; it neither pins the lookup nor makes the write safe."
+    },
+    {
+      "case_id": "js-auth-r9-002",
+      "file": "javascript/auth/safe_req_user_object.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "actor"
+      ],
+      "disabled": false,
+      "notes": "`owner: req.user` and `ownerId: req.user.id` pin the lookup to the caller."
+    },
+    {
+      "case_id": "js-auth-r9-003",
+      "file": "javascript/auth/safe_passport_is_authenticated.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-auth-gap",
+        "state-unauthed-access"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "Passport's `req.isAuthenticated()` in a negated early return guards the delete."
+    },
+    {
+      "case_id": "js-auth-r9-004",
+      "file": "javascript/auth/vuln_auth_rejection_falls_through.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-auth-gap"
+      ],
+      "allowed_alternative_rule_ids": [
+        "state-unauthed-access"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "cfg-auth-gap"
+      ],
+      "disabled": false,
+      "notes": "The unauthenticated branch redirects without returning, so the delete runs for everyone."
+    },
+    {
+      "case_id": "rs-auth-r9-001",
+      "file": "rust/auth/safe_axum_route_layer.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check",
+        "rs.auth.admin_route_missing_admin_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "axum-layers"
+      ],
+      "disabled": false,
+      "notes": "`route_layer` wraps the routes added before it: the owner layer covers both routes and the admin layer the first."
+    },
+    {
+      "case_id": "rs-auth-r9-002",
+      "file": "rust/auth/vuln_axum_route_after_layer.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "axum-layers"
+      ],
+      "disabled": false,
+      "notes": "The notes route is added after `route_layer`, so the owner layer does not wrap it."
+    },
+    {
+      "case_id": "rs-auth-r9-003",
+      "file": "rust/auth/vuln_actix_to_route.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-precision-2026-10",
+        "actix-routes"
+      ],
+      "disabled": false,
+      "notes": "`cfg.route(path, web::delete().to(handler))` registers the handler, which deletes by a path id with no check."
+    },
+    {
+      "case_id": "java-auth-r9-001",
+      "file": "java/auth/SafeSpringMultilinePreAuthorize.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "java.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-precision-2026-10",
+        "spring-annotations"
+      ],
+      "disabled": false,
+      "notes": "A `@PreAuthorize` that wraps over several lines is still the method's authorization check."
+    },
+    {
+      "case_id": "js-ssrf-new-url-attacker-path-001",
+      "file": "javascript/ssrf/ssrf_new_url_attacker_path.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "url-builder"
+      ],
+      "disabled": false,
+      "notes": "`new URL(path, base)` resolves the path as a reference: an absolute or protocol-relative value replaces the base's host."
+    },
+    {
+      "case_id": "py-ssrf-urljoin-attacker-path-001",
+      "file": "python/ssrf/ssrf_urljoin_attacker_path.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "url-builder"
+      ],
+      "disabled": false,
+      "notes": "`urljoin(base, path)` resolves the path as a reference; `//evil/x` replaces the host."
+    },
+    {
+      "case_id": "js-safe-ssrf-url-builder-relative-head-001",
+      "file": "javascript/safe/safe_ssrf_url_builder_relative_head.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "url-builder",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A fixed `/v1/` head makes the path an absolute-path reference that keeps the base host."
+    },
+    {
+      "case_id": "js-safe-ssrf-module-const-base-001",
+      "file": "javascript/safe/safe_ssrf_module_const_base.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "module-constant",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A module-level constant host, a template literal that opens with it, and a left-nested concatenation all fix the host."
+    },
+    {
+      "case_id": "py-safe-ssrf-urljoin-relative-head-001",
+      "file": "python/safe/safe_ssrf_urljoin_relative_head.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "url-builder",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A fixed `v1/` head makes the path a relative reference under the base."
+    },
+    {
+      "case_id": "py-safe-ssrf-fstring-and-params-001",
+      "file": "python/safe/safe_ssrf_fstring_and_params.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "fstring",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "An f-string with a fixed `scheme://host/` head, a constant endpoint with a tainted `params=`, and a module-level constant base."
+    },
+    {
+      "case_id": "go-safe-ssrf-prefix-shapes-001",
+      "file": "go/safe/safe_ssrf_prefix_shapes.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`var` declaration with a left-nested concatenation, a Sprintf URL at argument 1 of NewRequest, and a module-level constant base."
+    },
+    {
+      "case_id": "php-safe-ssrf-concat-prefix-001",
+      "file": "php/safe/safe_ssrf_concat_prefix.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "prefix-lock",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Concatenation in the call argument and double-quoted interpolation with a fixed `scheme://host/` head."
+    },
+    {
+      "case_id": "py-path_traversal-realpath-unchecked-001",
+      "file": "python/path_traversal/path_traversal_realpath_unchecked.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "realpath"
+      ],
+      "disabled": false,
+      "notes": "realpath resolves the path but does not confine it; `/etc/passwd` joined under BASE is `/etc/passwd`."
+    },
+    {
+      "case_id": "py-path_traversal-normpath-join-001",
+      "file": "python/path_traversal/path_traversal_normpath_join.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normpath"
+      ],
+      "disabled": false,
+      "notes": "normpath is lexical and keeps a leading `..` or an absolute component."
+    },
+    {
+      "case_id": "py-path_traversal-normpath-isabs-only-001",
+      "file": "python/path_traversal/path_traversal_normpath_isabs_only.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normpath",
+        "dotdot"
+      ],
+      "disabled": false,
+      "notes": "normpath, reject absolute, join under the root: `../../etc/passwd` survives both steps."
+    },
+    {
+      "case_id": "py-path_traversal-abspath-unchecked-001",
+      "file": "python/path_traversal/path_traversal_abspath_unchecked.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "abspath"
+      ],
+      "disabled": false,
+      "notes": "abspath makes the path absolute but does not confine it."
+    },
+    {
+      "case_id": "py-path_traversal-resolve-unchecked-001",
+      "file": "python/path_traversal/path_traversal_resolve_unchecked.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "resolve"
+      ],
+      "disabled": false,
+      "notes": "Path.resolve does not confine the result."
+    },
+    {
+      "case_id": "js-path_traversal-normalize-reject-absolute-001",
+      "file": "javascript/path_traversal/path_traversal_normalize_reject_absolute.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normalize",
+        "dotdot"
+      ],
+      "disabled": false,
+      "notes": "normalize keeps a leading `..`; rejecting only an absolute path lets `../../etc/passwd` through."
+    },
+    {
+      "case_id": "go-path_traversal-clean-join-001",
+      "file": "go/path_traversal/path_traversal_clean_join.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-clean"
+      ],
+      "disabled": false,
+      "notes": "filepath.Clean keeps `../../x`; Join under a base does not stop it."
+    },
+    {
+      "case_id": "go-path_traversal-clean-only-001",
+      "file": "go/path_traversal/path_traversal_clean_only.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-clean"
+      ],
+      "disabled": false,
+      "notes": "filepath.Clean alone reads any absolute or relative path."
+    },
+    {
+      "case_id": "java-path_traversal-normalize-only-001",
+      "file": "java/path_traversal/PathTraversalNormalizeOnly.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normalize"
+      ],
+      "disabled": false,
+      "notes": "Path.normalize is lexical: `base.resolve(\"../../etc/passwd\").normalize()` leaves the base."
+    },
+    {
+      "case_id": "php-path_traversal-realpath-unchecked-001",
+      "file": "php/path_traversal/path_traversal_realpath_unchecked.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "realpath"
+      ],
+      "disabled": false,
+      "notes": "realpath does not confine the result."
+    },
+    {
+      "case_id": "rs-path-canonicalize-unchecked-001",
+      "file": "rust/path_traversal/path_traversal_canonicalize_unchecked.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "canonicalize"
+      ],
+      "disabled": false,
+      "notes": "canonicalize resolves `..` but the result can still leave the base."
+    },
+    {
+      "case_id": "py-safe-realpath-startswith-abort-001",
+      "file": "python/safe/safe_realpath_startswith_abort.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "realpath",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "realpath then startswith(root) with abort() is a containment check."
+    },
+    {
+      "case_id": "py-safe-normpath-reject-leading-dotdot-001",
+      "file": "python/safe/safe_normpath_reject_leading_dotdot.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normpath",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A normalized path rejected on a leading `..` and on `/` is relative and `..`-free."
+    },
+    {
+      "case_id": "py-safe-abspath-startswith-001",
+      "file": "python/safe/safe_abspath_startswith.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "abspath",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "abspath then startswith(root) with abort() is a containment check."
+    },
+    {
+      "case_id": "py-safe-resolve-is-relative-to-001",
+      "file": "python/safe/safe_resolve_is_relative_to.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "resolve",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Path.resolve then is_relative_to(root) is a containment check."
+    },
+    {
+      "case_id": "py-safe-basename-join-001",
+      "file": "python/safe/safe_basename_join.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "basename",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "basename keeps only the final component."
+    },
+    {
+      "case_id": "js-safe-normalize-reject-leading-dotdot-001",
+      "file": "javascript/safe/safe_normalize_reject_leading_dotdot.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normalize",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A normalized path rejected on a leading `..` and on an absolute path is relative and `..`-free."
+    },
+    {
+      "case_id": "js-safe-basename-sendfile-001",
+      "file": "javascript/safe/safe_basename_sendfile.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "basename",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "path.basename keeps only the final component."
+    },
+    {
+      "case_id": "go-safe-clean-hasprefix-001",
+      "file": "go/safe/safe_clean_hasprefix.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-clean",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Clean then HasPrefix(root) is a containment check."
+    },
+    {
+      "case_id": "go-safe-join-hasprefix-001",
+      "file": "go/safe/safe_join_hasprefix.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-join",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Join cleans its result, so HasPrefix(root) on it is a containment check."
+    },
+    {
+      "case_id": "go-safe-rooted-clean-join-001",
+      "file": "go/safe/safe_rooted_clean_join.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-clean",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Clean of a rooted path folds every `..` against `/`; joined under a literal base it cannot climb out."
+    },
+    {
+      "case_id": "go-safe-base-join-001",
+      "file": "go/safe/safe_base_join.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "filepath-base",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "filepath.Base keeps only the final element."
+    },
+    {
+      "case_id": "java-safe-normalize-startswith-001",
+      "file": "java/safe/SafeNormalizeStartsWith.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "normalize",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "normalize then startsWith(base) is a containment check."
+    },
+    {
+      "case_id": "php-safe-realpath-str-starts-with-001",
+      "file": "php/safe/safe_realpath_str_starts_with.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "realpath",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "realpath then str_starts_with(base) with die() is a containment check."
+    },
+    {
+      "case_id": "php-safe-realpath-strpos-zero-001",
+      "file": "php/safe/safe_realpath_strpos_zero.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "realpath",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "realpath then strpos(base) === 0 with die() is a containment check."
+    },
+    {
+      "case_id": "rs-safe-canonicalize-unwrap-starts-with-001",
+      "file": "rust/safe/safe_canonicalize_unwrap_starts_with.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "canonicalize",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "canonicalize().unwrap() then starts_with(base) keeps the proof through the Ok adapter."
+    },
+    {
+      "case_id": "rs-safe-canonicalize-map-err-starts-with-001",
+      "file": "rust/safe/safe_canonicalize_map_err_starts_with.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "canonicalize",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "canonicalize().map_err(..)? then starts_with(base) keeps the proof through the error adapter."
+    },
+    {
+      "case_id": "rb-safe-file-basename-001",
+      "file": "ruby/safe/safe_file_basename.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "basename",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "File.basename keeps only the final component."
     }
   ]
 }

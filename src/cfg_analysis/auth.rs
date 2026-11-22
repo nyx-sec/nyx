@@ -3,11 +3,12 @@ use super::{
     AnalysisContext, CfgAnalysis, CfgFinding, Confidence, is_auth_call, is_entry_point_func,
     is_sink,
 };
-use crate::cfg::StmtKind;
+use crate::cfg::{EdgeKind, StmtKind};
 use crate::labels::DataLabel;
 use crate::patterns::Severity;
 use crate::symbol::Lang;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 
 pub struct AuthGap;
 
@@ -152,6 +153,113 @@ fn find_auth_nodes(ctx: &AnalysisContext) -> Vec<NodeIndex> {
         .collect()
 }
 
+/// Entry nodes of the branches an authentication test lets through.
+///
+/// `if (!req.isAuthenticated()) return res.status(401).end();` and
+/// `if request.user.is_authenticated: ...` carry the check in the condition of
+/// an `If` node, not in a call statement of their own, so `find_auth_nodes`
+/// never sees them.  The state engine reads the same conditions with
+/// [`condition_contains_auth_token`]; this applies its polarity rule: the
+/// test passed on the False edge of a negated condition and on the True edge
+/// of a plain one.
+///
+/// The first node of the passing branch counts as a guard only when the If node
+/// is its sole predecessor.  When the rejecting branch does not end the
+/// handler (`if (!authed) { res.redirect('/login') } fs.unlink(..)`), the two
+/// branches meet again before the sink, the join has other predecessors, and
+/// the test guards nothing.
+///
+/// Only a bare truth test counts.  A comparison (`req.isAuthenticated() ===
+/// false`) or a negated compound (`!(authed || isPublic)`) moves the passing
+/// side to a branch the polarity rule does not predict.
+///
+/// [`condition_contains_auth_token`]: crate::state::transfer::condition_contains_auth_token
+fn find_auth_condition_guards(ctx: &AnalysisContext) -> Vec<NodeIndex> {
+    let mut guards = Vec::new();
+    for idx in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[idx];
+        if info.kind != StmtKind::If {
+            continue;
+        }
+        let Some(condition) = &info.condition_text else {
+            continue;
+        };
+        let lower = condition.to_ascii_lowercase();
+        // Remove the one negation the CFG recorded, and the parentheses the
+        // grammar keeps around an `if` condition.  Anything left over
+        // (`!!x`) fails the bare-truth-test check below.
+        let outer = strip_outer_parens(&lower);
+        let inner = if info.condition_negated {
+            strip_outer_parens(
+                outer
+                    .strip_prefix('!')
+                    .or_else(|| outer.strip_prefix("not "))
+                    .unwrap_or(outer),
+            )
+        } else {
+            outer
+        };
+        if !is_bare_truth_test(inner) {
+            continue;
+        }
+        let is_auth_test = crate::state::transfer::condition_is_auth_test(inner, ctx.lang);
+        if !is_auth_test {
+            continue;
+        }
+        let passing_edge = if info.condition_negated {
+            EdgeKind::False
+        } else {
+            EdgeKind::True
+        };
+        for edge in ctx.cfg.edges(idx) {
+            if *edge.weight() != passing_edge {
+                continue;
+            }
+            let target = edge.target();
+            let only_from_test = ctx
+                .cfg
+                .edges_directed(target, petgraph::Direction::Incoming)
+                .all(|incoming| incoming.source() == idx);
+            if only_from_test {
+                guards.push(target);
+            }
+        }
+    }
+    guards
+}
+
+/// `(x)` -> `x`, `((x))` -> `x`.  Parentheses that do not wrap the whole text
+/// (`(a) && (b)`, `f(x)`) are kept.
+fn strip_outer_parens(text: &str) -> &str {
+    let mut text = text.trim();
+    while text.starts_with('(') && text.ends_with(')') {
+        let mut depth = 0usize;
+        let wraps = text.bytes().enumerate().all(|(idx, byte)| {
+            match byte {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            depth > 0 || idx + 1 == text.len()
+        });
+        if !wraps {
+            break;
+        }
+        text = text[1..text.len() - 1].trim();
+    }
+    text
+}
+
+/// True when the lowercased condition, with its negation already removed, is
+/// a call or a member read with no comparison, boolean operator or negation
+/// left in it: `req.isauthenticated()`, `request.user.is_authenticated`.
+fn is_bare_truth_test(condition: &str) -> bool {
+    const OPERATORS: &[&str] = &[
+        "=", "<", ">", "!", "&&", "||", " and ", " or ", " is ", " in ", "not ",
+    ];
+    !OPERATORS.iter().any(|op| condition.contains(op))
+}
+
 impl CfgAnalysis for AuthGap {
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         // Decorator/annotation/attribute auth on the body declaration
@@ -168,7 +276,8 @@ impl CfgAnalysis for AuthGap {
 
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
         let entry_funcs = find_web_entry_point_functions(ctx);
-        let auth_nodes = find_auth_nodes(ctx);
+        let mut auth_nodes = find_auth_nodes(ctx);
+        auth_nodes.extend(find_auth_condition_guards(ctx));
 
         if entry_funcs.is_empty() {
             return Vec::new();

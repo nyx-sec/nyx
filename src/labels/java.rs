@@ -223,35 +223,10 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: true,
     },
-    // Phase 13 — `Path.normalize()` collapses `.` / `..` segments and
-    // is the canonical Java path-traversal sanitiser when paired with
-    // a `startsWith(base)` containment check (not modelled here; the
-    // sanitiser rule clears the FILE_IO cap on the call's return,
-    // which is sufficient for the cap-based gate to suppress the
-    // sink finding).  Case-sensitive: `Path.normalize` is unique to
-    // `java.nio.file.Path`; bare `normalize` would over-fire on
-    // `Locale.normalize`, `BigDecimal.normalize`, etc.
-    LabelRule {
-        matchers: &[
-            "Path.normalize",
-            // Canonical Java path-traversal sanitiser idiom:
-            // `base.resolve(name).normalize()`.  CFG paren-strip yields
-            // callee text `<receiver>.resolve.normalize`; the bare 2-call
-            // `resolve.normalize` suffix is unique to `java.nio.file.Path`
-            // (no overload across the supported corpus produces the same
-            // chain text).  Case-sensitive on the leaf chain to avoid
-            // colliding with non-path `.resolve()`-then-`.normalize()`
-            // shapes in unrelated grammars.
-            "resolve.normalize",
-            // Receiver-bound shape `Paths.get(p).normalize()` — the
-            // `Paths.get` constructor mapping in `ssa/type_facts.rs` types
-            // the receiver as `FileHandle`, so the type-qualified resolver
-            // rewrites `<v>.normalize` → `FileHandle.normalize` here.
-            "FileHandle.normalize",
-        ],
-        label: DataLabel::Sanitizer(Cap::FILE_IO),
-        case_sensitive: true,
-    },
+    // `Path.normalize()` is lexical: `base.resolve("../../x").normalize()` is
+    // `/x`, so it does not confine a path and is not a sanitiser.  It is a
+    // path primitive in the PathFact domain, cleared by a `startsWith(base)`
+    // containment check.
     // HTTP response reflected-XSS sinks.  `println` / `print` / `write` are
     // the servlet response-writer output verbs; `write` is the dominant form
     // in real servlets (`response.getWriter().write(html)`).  All three are
@@ -718,6 +693,137 @@ pub static RULES: &[LabelRule] = &[
 /// where the SSTI activation is restricted to the template-source arg
 /// rather than every positional argument.
 pub static GATED_SINKS: &[SinkGate] = &[
+    // `java.nio.file.Files` verbs take the path first; the arguments after it
+    // are a charset, the bytes or lines to write, or open options.  The flat
+    // FILE_IO rule above lists every argument, so these gates narrow the
+    // payload to the path: a request-chosen charset or request text written
+    // into a fixed file does not choose which file is opened.
+    SinkGate {
+        callee_matcher: "Files.readString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.readAllLines",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.lines",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.newBufferedReader",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.newBufferedWriter",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.newInputStream",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.newOutputStream",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.write",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Files.writeString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
     // Apache Velocity static API: `Velocity.evaluate(ctx, writer, logTag, src)`.
     // Arg 3 carries the inline template source; tainted text at that
     // position is SSTI.  Tainted data in the context (arg 0) is rendered

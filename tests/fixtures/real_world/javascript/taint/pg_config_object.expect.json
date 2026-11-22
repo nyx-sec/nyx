@@ -1,0 +1,25 @@
+{
+  "description": "pg / mysql config-object queries bind `values`; only the `text` / `sql` field carries SQL.",
+  "tags": ["taint", "sqli", "pg", "mysql"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [9, 10],
+      "notes": "tainted value only in the bound `values` array"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [15, 15],
+      "notes": "tainted concatenation in the `text` field"
+    },
+    {
+      "rule_id": "taint-",
+      "must_not_match": true,
+      "line_range": [19, 25],
+      "notes": "rows of a query whose bound `values` carry the request value are not that value"
+    }
+  ]
+}
