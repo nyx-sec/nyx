@@ -1,0 +1,22 @@
+{
+  "description": "A file that imports react and calls hooks is browser code: the SDK call goes to the backend, where the check belongs",
+  "tags": [
+    "auth",
+    "auth",
+    "negative",
+    "react"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "A file that imports react and calls hooks is browser code: the SDK call goes to the backend, where the check belongs"
+    }
+  ]
+}

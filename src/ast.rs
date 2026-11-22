@@ -1103,6 +1103,16 @@ fn is_spec_tree_path(path: &Path) -> bool {
         .any(|w| w[0] == "features" && matches!(w[1], "step_definitions" | "support"))
 }
 
+/// JS/TS test modules: `*.test.ts`, `*.spec.js`, spec trees and files under
+/// a `test`, `tests`, `__tests__` or `e2e` directory (factories, fixtures,
+/// page objects).  Unlike Python, where a `tests` package can sit next to
+/// production code, a JS/TS tree with such a directory is test-only.
+fn is_js_test_module_path(path: &Path) -> bool {
+    is_test_file(path)
+        || is_spec_tree_path(path)
+        || dir_components(path).any(|d| matches!(d, "test" | "tests" | "__tests__" | "e2e"))
+}
+
 /// Test-support code that is not itself a test module: helpers under
 /// test directories and PHPUnit base classes, traits and helpers
 /// (`FieldTestBase.php`, `TestFileCreationTrait.php`, `GLPITestCase.php`).
@@ -1776,8 +1786,19 @@ impl<'a> ParsedSource<'a> {
     /// can reach a function defined in one and the auth rules (a handler
     /// missing an authorization step) have nothing to report there.
     /// `--keep-nonprod-severity` keeps them.
+    ///
+    /// JS/TS test, e2e and factory modules are never part of a served
+    /// bundle either, so the same gate applies to them, including files
+    /// under a `test`, `tests`, `__tests__` or `e2e` directory.
     fn reports_auth_findings(&self, cfg: &Config) -> bool {
-        cfg.scanner.include_nonprod || !(self.lang_slug == "go" && is_test_file(self.rel_path))
+        if cfg.scanner.include_nonprod {
+            return true;
+        }
+        match self.lang_slug {
+            "go" => !is_test_file(self.rel_path),
+            "javascript" | "typescript" | "tsx" | "jsx" => !is_js_test_module_path(self.rel_path),
+            _ => true,
+        }
     }
 
     /// Sort, dedup, and optionally downgrade severity for non-production paths.
@@ -7660,6 +7681,29 @@ fn binary_file_guard_triggers() {
 
     let diags = run_rules_on_file(&bin, &Config::default(), None, None).unwrap();
     assert!(diags.is_empty(), "binary files are skipped");
+}
+
+#[test]
+fn js_test_module_paths_skip_auth_findings() {
+    for path in [
+        "e2e/tests/admin/members.test.ts",
+        "ghost/core/test/e2e-api/admin/recommendations.test.js",
+        "server/test/factories.ts",
+        "tests/api/settings.test.api.ts",
+        "src/__tests__/helpers.js",
+        "e2e/helpers/pages/admin.ts",
+        "spec/support/helpers.js",
+    ] {
+        assert!(is_js_test_module_path(Path::new(path)), "{path}");
+    }
+    for path in [
+        "server/routes/members.ts",
+        "src/testing_utils.js",
+        "apps/portal/src/components/Latest.js",
+        "server/contest/handler.js",
+    ] {
+        assert!(!is_js_test_module_path(Path::new(path)), "{path}");
+    }
 }
 
 #[test]

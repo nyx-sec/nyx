@@ -1,0 +1,22 @@
+{
+  "description": "ember-cli-mirage mock server handlers run in the browser against an in-memory database",
+  "tags": [
+    "auth",
+    "auth",
+    "negative",
+    "mirage"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "ember-cli-mirage mock server handlers run in the browser against an in-memory database"
+    }
+  ]
+}

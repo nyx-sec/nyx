@@ -15,6 +15,8 @@ use tree_sitter::Node;
 /// Modules only a browser bundle imports.  `react-dom/server` and the
 /// `next/*` family are left out: both run on the server too.
 const CLIENT_MODULES: &[&str] = &[
+    "miragejs",
+    "ember-cli-mirage",
     "swr",
     "vue",
     "vue-router",
@@ -31,6 +33,12 @@ const CLIENT_MODULES: &[&str] = &[
     "lucide-react",
     "mobx",
 ];
+
+/// Packages that run in a browser bundle or in a server component.  A bare
+/// `import React from 'react'` does not tell the two apart, so a file counts
+/// as browser code only when it also calls a hook (`useEffect`, `useState`),
+/// which server components cannot.
+const RUNTIME_MODULES: &[&str] = &["react", "preact", "preact/hooks"];
 
 /// Module prefixes that mark a browser bundle: React ecosystem packages
 /// (`react-dom`, `react-router`, `react-query`, `react-hook-form`, ...),
@@ -118,6 +126,7 @@ pub struct JsFileFacts {
 
 pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
     let mut facts = JsFileFacts::default();
+    let mut runtime_import = false;
     for stmt in named_children(root) {
         match stmt.kind() {
             "expression_statement" => {
@@ -136,6 +145,7 @@ pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
                     continue;
                 };
                 note_module(&source, &mut facts);
+                runtime_import |= RUNTIME_MODULES.contains(&source.as_str());
                 if is_client_module(&source) {
                     collect_import_bindings(stmt, bytes, &mut facts.client_bindings);
                 }
@@ -144,6 +154,7 @@ pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
                 for declarator in named_children(stmt) {
                     if let Some(module) = require_module(declarator, bytes) {
                         note_module(&module, &mut facts);
+                        runtime_import |= RUNTIME_MODULES.contains(&module.as_str());
                         if is_client_module(&module)
                             && let Some(name) = declarator.child_by_field_name("name")
                         {
@@ -155,7 +166,27 @@ pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
             _ => {}
         }
     }
+    if runtime_import && !facts.client_import && file_calls_a_hook(root, bytes) {
+        facts.client_import = true;
+    }
     facts
+}
+
+/// True when any call in the file is a React hook call.  Only runs for files
+/// that import the bare React runtime.
+fn file_calls_a_hook(root: Node<'_>, bytes: &[u8]) -> bool {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression"
+            && let Some(function) = node.child_by_field_name("function")
+            && is_hook_name(&text(function, bytes))
+        {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    false
 }
 
 fn note_module(module: &str, facts: &mut JsFileFacts) {
@@ -254,6 +285,69 @@ pub(super) fn is_hook_name(name: &str) -> bool {
         .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
+/// ember-cli-mirage route handler: `function (schema, request)` or
+/// `function ({ posts }, { params, queryParams, requestBody })`.  Mirage
+/// serves these inside the browser, so they cannot enforce authorization.
+/// The destructured second formal is what separates it from an Express
+/// handler, whose `(req, res)` pair is never destructured twice.
+pub(super) fn is_mirage_handler_signature(function: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(params) = function.child_by_field_name("parameters") else {
+        return false;
+    };
+    let formals = named_children(params);
+    let [first, second, ..] = formals.as_slice() else {
+        return false;
+    };
+    let (Some(first), Some(second)) = (formal_pattern(*first), formal_pattern(*second)) else {
+        return false;
+    };
+    let first_is_schema = first.kind() == "object_pattern"
+        || (first.kind() == "identifier" && text(first, bytes) == "schema");
+    if !first_is_schema {
+        return false;
+    }
+    match second.kind() {
+        "identifier" => first.kind() == "identifier" && text(second, bytes) == "request",
+        "object_pattern" => {
+            let mut found = false;
+            collect_binding_names_where(second, bytes, &mut |name| {
+                found |= matches!(
+                    name,
+                    "params" | "queryParams" | "requestBody" | "requestHeaders"
+                );
+            });
+            found
+        }
+        _ => false,
+    }
+}
+
+fn collect_binding_names_where(pattern: Node<'_>, bytes: &[u8], f: &mut dyn FnMut(&str)) {
+    for child in named_children(pattern) {
+        match child.kind() {
+            "shorthand_property_identifier_pattern" => f(&text(child, bytes)),
+            "pair_pattern" => {
+                if let Some(key) = child.child_by_field_name("key") {
+                    f(&text(key, bytes));
+                }
+            }
+            "object_assignment_pattern" => {
+                if let Some(left) = child.child_by_field_name("left") {
+                    f(&text(left, bytes));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn formal_pattern(n: Node<'_>) -> Option<Node<'_>> {
+    match n.kind() {
+        "required_parameter" | "optional_parameter" => n.child_by_field_name("pattern"),
+        _ => Some(n),
+    }
+}
+
 /// Classify one unit.  `name` is its declared name, `calls` its call sites,
 /// `has_jsx` whether its body builds JSX, `is_async` whether the function is
 /// declared `async`.
@@ -336,6 +430,13 @@ mod tests {
         // Plain `react` is imported by server components too.
         let plain = facts("import React from 'react';");
         assert!(!plain.client_import);
+        // A hook call is what only a client module can make.
+        let hooked = facts(
+            "import {useEffect} from 'react';\nexport const A = () => { useEffect(() => {}); };",
+        );
+        assert!(hooked.client_import);
+        let serverish = facts("import {cache} from 'react';\nexport const q = cache(() => 1);");
+        assert!(!serverish.client_import);
         assert_eq!(
             classify_unit(&plain, Some("helper"), &[], false, false),
             UnitRuntime::Unknown

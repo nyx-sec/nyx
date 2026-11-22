@@ -19,6 +19,7 @@ mod go_scope;
 pub mod graphene;
 mod js_scope;
 pub mod koa;
+mod py_models;
 pub mod rails;
 pub mod rocket;
 pub mod sinatra;
@@ -136,6 +137,11 @@ pub fn extract_authorization_model(
     // Three-valued: `Some(true)` keeps step 3 firing, `Some(false)`
     // suppresses it, `None` means no detection ran ─ behavior unchanged.
     model.lang_web_framework_signal = compute_web_framework_signal(lang, framework_ctx, bytes);
+    // Schema migrations run from a management command, never from a
+    // request, so they have no HTTP boundary whatever the project uses.
+    if is_migration_path(lang, path) {
+        model.lang_web_framework_signal = Some(false);
+    }
 
     inject_route_level_middleware(&mut model, rules);
 
@@ -154,8 +160,95 @@ pub fn extract_authorization_model(
     // and folding operation lists conservatively.  Route registrations
     // are remapped to the surviving unit index.
     deduplicate_units_by_span(&mut model);
+    if lang == "python" {
+        mark_internal_python_helpers(&mut model);
+    }
 
     model
+}
+
+/// Set `AnalysisUnit::internal_helper` on module-private Python functions that
+/// other functions of the file call, when no route handler reaches them
+/// through those calls (directly or through further callers).
+fn mark_internal_python_helpers(model: &mut AuthorizationModel) {
+    use crate::auth_analysis::model::AnalysisUnitKind;
+    use std::collections::HashSet;
+
+    let leaf = |name: &str| name.rsplit(['.', ':']).next().unwrap_or(name).to_string();
+    let mut callers_of: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, unit) in model.units.iter().enumerate() {
+        let mut seen: HashSet<String> = HashSet::new();
+        for call in &unit.call_sites {
+            let callee = leaf(&call.name);
+            if seen.insert(callee.clone()) {
+                callers_of.entry(callee).or_default().push(idx);
+            }
+        }
+    }
+    let mut marks = Vec::new();
+    for (idx, unit) in model.units.iter().enumerate() {
+        let Some(name) = unit.name.as_deref() else {
+            continue;
+        };
+        if !name.starts_with('_')
+            || name.starts_with("__")
+            || unit.kind == AnalysisUnitKind::RouteHandler
+        {
+            continue;
+        }
+        let Some(direct) = callers_of.get(name) else {
+            continue;
+        };
+        let mut visited: HashSet<usize> = HashSet::from([idx]);
+        let mut stack: Vec<usize> = direct.iter().copied().filter(|c| *c != idx).collect();
+        let mut has_caller = !stack.is_empty();
+        let mut route_reaches = false;
+        while let Some(caller) = stack.pop() {
+            if !visited.insert(caller) {
+                continue;
+            }
+            let caller_unit = &model.units[caller];
+            if caller_unit.kind == AnalysisUnitKind::RouteHandler {
+                route_reaches = true;
+                break;
+            }
+            if let Some(next) = caller_unit.name.as_deref().and_then(|n| callers_of.get(n)) {
+                stack.extend(next.iter().copied().filter(|c| !visited.contains(c)));
+            }
+            has_caller = true;
+        }
+        if has_caller && !route_reaches {
+            marks.push(idx);
+        }
+    }
+    for idx in marks {
+        model.units[idx].internal_helper = true;
+    }
+}
+
+/// Django/Alembic (`migrations/`, `alembic/versions/`) and Rails
+/// (`db/migrate/`) migration modules.  Only the file's own directory and its
+/// parent are inspected, so an unrelated ancestor of the scan root named
+/// `migrations` never matches.
+fn is_migration_path(lang: &str, path: &Path) -> bool {
+    if !matches!(lang, "python" | "ruby") {
+        return false;
+    }
+    let name_of = |p: Option<&Path>| {
+        p.and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let dir = path.parent();
+    let parent = name_of(dir);
+    let grand = name_of(dir.and_then(|d| d.parent()));
+    match parent.as_str() {
+        "migrations" | "alembic" => true,
+        "versions" => matches!(grand.as_str(), "migrations" | "alembic"),
+        "migrate" => grand == "db",
+        _ => false,
+    }
 }
 
 /// Copy the authorization-bearing middleware of Express, Koa, Fastify, Gin,

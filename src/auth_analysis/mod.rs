@@ -1001,6 +1001,7 @@ fn synthesise_checks_for_unit(
             args: call.args.clone(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
     out
@@ -1098,6 +1099,7 @@ fn synthesise_cross_file_checks_for_unit(
             args: call.args.clone(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
     out
@@ -1212,6 +1214,7 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
         }
     }
@@ -1332,6 +1335,7 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
         }
     }
@@ -1346,6 +1350,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         }
     }
 

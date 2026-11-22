@@ -1703,4 +1703,271 @@ module.exports = router;
             "{found:?}"
         );
     }
+
+    #[test]
+    fn rust_body_admin_gate_with_try_dominates_later_operations() {
+        let src = "\
+pub async fn purge(Json(data): Json<Purge>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  is_admin(&local_user_view)?;
+  Community::delete(&mut context.pool(), data.community_id).await?;
+  Ok(())
+}
+";
+        let found = rules("rust", "purge.rs", src);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn rust_admin_gate_that_does_not_dominate_keeps_the_finding() {
+        let src = "\
+pub async fn conditional(Json(data): Json<Purge>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  if data.reason.is_some() {
+    is_admin(&local_user_view)?;
+  }
+  Community::delete(&mut context.pool(), data.community_id).await?;
+  Ok(())
+}
+
+pub async fn ignored(Json(data): Json<Purge>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  let _ok = is_admin(&local_user_view).is_ok();
+  Community::delete(&mut context.pool(), data.community_id).await?;
+  Ok(())
+}
+
+pub async fn late(Json(data): Json<Purge>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  Community::delete(&mut context.pool(), data.community_id).await?;
+  is_admin(&local_user_view)?;
+  Ok(())
+}
+";
+        let found = rules("rust", "purge.rs", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![5, 11, 16],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn rust_nested_self_actor_id_alias_and_viewer_read_are_scoped() {
+        let src = "\
+pub async fn ban(Json(data): Json<Ban>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  check_local_user_valid(&local_user_view)?;
+  let my_person_id = local_user_view.person.id;
+  let pv = PersonView::read(&mut context.pool(), data.person_id, Some(my_person_id), true).await?;
+  let cv = CommentView::read(&mut context.pool(), data.comment_id, Some(&local_user_view.local_user), 1).await?;
+  Ok(())
+}
+
+pub async fn del(Json(data): Json<Del>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  check_local_user_valid(&local_user_view)?;
+  Comment::delete(&mut context.pool(), data.comment_id, Some(&local_user_view.local_user)).await?;
+  Ok(())
+}
+";
+        let found = rules("rust", "ban.rs", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![11],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn python_migrations_and_private_helpers_are_not_entry_points() {
+        let migration = "\
+def fix_statuses(Checkout, empty_ids):
+    return Checkout.objects.filter(pk__in=empty_ids)
+";
+        let found = rules("python", "app/migrations/0060_fix.py", migration);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+        let found = rules("python", "app/helpers.py", migration);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![2],
+            "{found:?}"
+        );
+        // A private helper that only a task calls is internal.
+        let private = "\
+def _raw_remove(deliveries_ids):
+    return Delivery.objects.filter(id__in=deliveries_ids)
+
+def cleanup_task(batch):
+    return _raw_remove(batch)
+";
+        let found = rules("python", "app/tasks.py", private);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+        // The same helper reached from a route handler keeps its finding, as
+        // does a private helper with no in-file caller (it may be imported).
+        let routed = "\
+from fastapi import APIRouter
+router = APIRouter()
+
+def _raw_remove(deliveries_ids):
+    return Delivery.objects.filter(id__in=deliveries_ids)
+
+def _orphan(deliveries_ids):
+    return Delivery.objects.filter(id__in=deliveries_ids)
+
+@router.delete('/deliveries')
+def remove(ids: list):
+    return _raw_remove(ids)
+";
+        let found = rules("python", "app/api.py", routed);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![5, 8],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn peewee_and_tortoise_model_get_is_a_row_read() {
+        let peewee = "\
+from flask import Flask
+from peewee import Model
+
+app = Flask(__name__)
+
+
+class Base(Model):
+    pass
+
+
+class Note(Base):
+    pass
+
+
+@app.route('/notes/<int:note_id>')
+def show(note_id):
+    return Note.get(Note.id == note_id).title
+";
+        let found = rules("python", "views.py", peewee);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![17],
+            "{found:?}"
+        );
+        let tortoise = "\
+from fastapi import FastAPI
+from tortoise.models import Model
+
+app = FastAPI()
+
+
+class Note(Model):
+    pass
+
+
+@app.get('/notes/{note_id}')
+async def show(note_id: str):
+    return await Note.get(id=note_id)
+";
+        let found = rules("python", "views.py", tortoise);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![13],
+            "{found:?}"
+        );
+        let other = "\
+from flask import Flask
+from pydantic import BaseModel
+
+app = Flask(__name__)
+
+
+class Cache(BaseModel):
+    pass
+
+
+@app.route('/c/<key>')
+def show(key):
+    return Cache.get(key)
+";
+        let found = rules("python", "views.py", other);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn fastify_shorthand_needs_provenance_for_generic_receivers() {
+        let mirage = "\
+export default function mockServer(server) {
+  server.get('/posts/:id', function ({posts}, {params}) {
+    return posts.find(params.id);
+  });
+}
+";
+        let found = rules("javascript", "mirage/config.js", mirage);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+        let real = "\
+const fastify = require('fastify');
+const server = fastify();
+server.get('/posts/:id', async (request) => {
+  return Post.findByPk(request.params.id);
+});
+";
+        let found = rules("javascript", "app.js", real);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![4],
+            "{found:?}"
+        );
+        let plugin = "\
+module.exports = async function (server, opts) {
+  server.get('/posts/:id', async (request) => {
+    return Post.findByPk(request.params.id);
+  });
+};
+";
+        let found = rules("javascript", "plugin.js", plugin);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![3],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn bare_react_import_with_a_hook_marks_a_file_as_browser_code() {
+        let src = "\
+import {useEffect} from 'react';
+export const Page = ({postId}) => { useEffect(() => { send({postId}); }); return null; };
+export async function send({postId}, api) {
+  await api.feedback.add({postId});
+}
+";
+        let found = rules("javascript", "page.js", src);
+        assert!(
+            lines(&found, "missing_ownership_check").is_empty(),
+            "{found:?}"
+        );
+        // No hook call: could be a server component, so the call stays flagged.
+        let server = "\
+import {cache} from 'react';
+export async function send({postId}, api) {
+  await api.feedback.add({postId});
+}
+";
+        let found = rules("javascript", "page.js", server);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![3],
+            "{found:?}"
+        );
+    }
 }

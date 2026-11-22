@@ -1,0 +1,25 @@
+{
+  "description": "The same SDK call on the server side of an express route still needs a check",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "react"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "The same SDK call on the server side of an express route still needs a check"
+    }
+  ]
+}
