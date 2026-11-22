@@ -9365,3 +9365,67 @@ fn go_map_stores_record_key_identifiers() {
     assert!(stores.contains(&("n", "k".to_string())), "{stores:?}");
     assert!(stores.contains(&("m", String::new())), "{stores:?}");
 }
+
+#[test]
+fn go_address_prefilter_sees_unary_address_of_names_only() {
+    use super::go_body_takes_address_of_name as f;
+    assert!(f(b"func f() { p := 1; g(&p) }"));
+    assert!(f(b"func f() *T { var t T; return &t }"));
+    assert!(f(b"func f() { x := &s.field }"));
+    assert!(f(b"func f() { y = &(z) }"));
+    assert!(!f(b"func f() { if a && b { g() } }"));
+    assert!(!f(b"func f() { x := a & b; y &= 3; z := a &^ b }"));
+    assert!(!f(b"func f() *T { return &T{A: 1} }"));
+    assert!(!f(b"func f() { m := &pkg.Config{} }"));
+}
+
+#[test]
+fn call_arg_nesting_descent_matches_the_bottom_up_walk() {
+    use super::{call_arg_nesting_for_test, call_arg_nesting_reference};
+    let cases: [(&[u8], Language); 4] = [
+        (
+            b"const r = rq(fs.createReadStream(p), { s: [open(q)], t: f(g(h())) });\nfoo(`a${b(c)}`);\nnew X(y(z), [w(v)]);",
+            Language::from(tree_sitter_javascript::LANGUAGE),
+        ),
+        (
+            b"x = json.load(open(p))\ny = f({'a': g(h)}, [k(m)], *args, n=o(p))\nz = sum(t(i) for i in r)\n",
+            Language::from(tree_sitter_python::LANGUAGE),
+        ),
+        (
+            b"package m\nfunc f() { a := g(h(i), []int{j(k)}, T{L: m(n)}); defer o(p(q)) }\n",
+            Language::from(tree_sitter_go::LANGUAGE),
+        ),
+        (
+            b"fn f() { let a = g(h(i), vec![j(k)], S { l: m(n) }); o(&[p(q)]); }",
+            Language::from(tree_sitter_rust::LANGUAGE),
+        ),
+    ];
+    for (src, lang) in cases {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        // Every node as the target, under every ancestor as the root.
+        let mut stack = vec![root];
+        let mut checked = 0;
+        while let Some(n) = stack.pop() {
+            let mut anc = Some(n);
+            while let Some(r) = anc {
+                let span = (n.start_byte(), n.end_byte());
+                assert_eq!(
+                    call_arg_nesting_for_test(r, span),
+                    call_arg_nesting_reference(r, span),
+                    "root {} target {} ({:?})",
+                    r.kind(),
+                    n.kind(),
+                    std::str::from_utf8(&src[span.0..span.1]).unwrap_or("")
+                );
+                checked += 1;
+                anc = r.parent();
+            }
+            let mut c = n.walk();
+            stack.extend(n.children(&mut c));
+        }
+        assert!(checked > 50);
+    }
+}

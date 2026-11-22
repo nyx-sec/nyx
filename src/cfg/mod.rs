@@ -2510,9 +2510,11 @@ fn const_index_name(base: &str, idx: &str) -> Option<String> {
 /// lowering swaps the base operand for the element value.  Assignment targets
 /// are writes and are left out; function literals are separate bodies.
 fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
+    // Only `ident[<decimal literal>]` counts, so a `[` directly followed by a
+    // digit is a sound witness; slices, maps and generics skip the walk.
     if !code
         .get(root.start_byte()..root.end_byte())
-        .is_some_and(|b| b.contains(&b'['))
+        .is_some_and(|b| b.windows(2).any(|w| w[0] == b'[' && w[1].is_ascii_digit()))
     {
         return Vec::new();
     }
@@ -3475,6 +3477,7 @@ fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
 /// The value expression of a declaration / assignment statement, or `ast`
 /// itself when it has none.  Pulled the same way by every detector that reads
 /// the RHS so they look at the same node grain.
+#[inline]
 fn assignment_rhs_or_self(ast: Node) -> Node {
     ast.child_by_field_name("value")
         .or_else(|| ast.child_by_field_name("right"))
@@ -10767,50 +10770,122 @@ fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
     }
 }
 
+/// Node kind ids the alias walk dispatches on, resolved once per walk:
+/// comparing `kind_id()` avoids the C-string conversion `kind()` does on
+/// every node.
+struct GoAliasKinds {
+    func_literal: u16,
+    unary_expression: u16,
+    assignment_statement: u16,
+}
+
 fn collect_go_aliased_names(n: Node, in_closure: bool, code: &[u8], out: &mut HashSet<String>) {
+    let lang = n.language();
+    let kinds = GoAliasKinds {
+        func_literal: lang.id_for_node_kind("func_literal", true),
+        unary_expression: lang.id_for_node_kind("unary_expression", true),
+        assignment_statement: lang.id_for_node_kind("assignment_statement", true),
+    };
+    collect_go_aliased_names_with(n, in_closure, code, &kinds, out);
+}
+
+fn collect_go_aliased_names_with(
+    n: Node,
+    in_closure: bool,
+    code: &[u8],
+    kinds: &GoAliasKinds,
+    out: &mut HashSet<String>,
+) {
     let mut in_closure = in_closure;
-    match n.kind() {
-        "func_literal" => in_closure = true,
-        "unary_expression" => {
-            if n.child_by_field_name("operator")
-                .is_some_and(|o| o.kind() == "&")
-                && let Some(operand) = n.child_by_field_name("operand")
-                && let Some(name) = go_root_ident(operand, code)
-            {
+    let kind = n.kind_id();
+    if kind == kinds.func_literal {
+        in_closure = true;
+    } else if kind == kinds.unary_expression {
+        if n.child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "&")
+            && let Some(operand) = n.child_by_field_name("operand")
+            && let Some(name) = go_root_ident(operand, code)
+        {
+            out.insert(name);
+        }
+    } else if kind == kinds.assignment_statement
+        && in_closure
+        && let Some(left) = n.child_by_field_name("left")
+    {
+        let mut cursor = left.walk();
+        for target in left.named_children(&mut cursor) {
+            if let Some(name) = go_root_ident(target, code) {
                 out.insert(name);
             }
         }
-        "assignment_statement" if in_closure => {
-            if let Some(left) = n.child_by_field_name("left") {
-                let mut cursor = left.walk();
-                for target in left.named_children(&mut cursor) {
-                    if let Some(name) = go_root_ident(target, code) {
-                        out.insert(name);
-                    }
-                }
-            }
-        }
-        _ => {}
     }
     let mut cursor = n.walk();
     for c in n.children(&mut cursor) {
-        collect_go_aliased_names(c, in_closure, code, out);
+        collect_go_aliased_names_with(c, in_closure, code, kinds, out);
     }
 }
 
 /// Flag Go nodes that define a variable whose address is taken or that a
 /// nested function literal assigns.  See [`NodeInfo::aliased_def`].
+/// Byte pre-filter for [`mark_aliased_defines`]: whether `body` may take the
+/// address of a variable (`&p`, `&p.f`, `&p[i]`).  A unary `&` follows an
+/// operator, an opening bracket, a separator or the start of the text, and
+/// is followed by a name.  `&&`, `&=`, `&^`, a binary `a & b` and the
+/// composite literal `&T{..}` (no variable) do not count.  A superset of what
+/// the walk collects is fine; missing one is not.
+pub(super) fn go_body_takes_address_of_name(body: &[u8]) -> bool {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0;
+    while let Some(off) = body[i..].iter().position(|&b| b == b'&') {
+        let at = i + off;
+        i = at + 1;
+        let next = body.get(at + 1).copied().unwrap_or(b' ');
+        if !(next.is_ascii_alphabetic() || next == b'_' || next == b'(') {
+            continue;
+        }
+        let before = body[..at].trim_ascii_end();
+        let prev = before.last().copied().unwrap_or(b'(');
+        if prev == b'&' || matches!(prev, b')' | b']' | b'}' | b'"' | b'\'' | b'`') {
+            continue;
+        }
+        if is_ident(prev) {
+            // `a &b` is a binary and, but after a keyword (`return &x`,
+            // `range &xs`) the `&` is unary.
+            let word_start = before
+                .iter()
+                .rposition(|&b| !is_ident(b))
+                .map_or(0, |p| p + 1);
+            if !matches!(
+                &before[word_start..],
+                b"return" | b"range" | b"case" | b"go" | b"defer" | b"else"
+            ) {
+                continue;
+            }
+        }
+        // Skip the operand path; a `{` right after it is a composite literal.
+        let mut j = at + 1;
+        while j < body.len() && (is_ident(body[j]) || body[j] == b'.') {
+            j += 1;
+        }
+        if body.get(j) == Some(&b'{') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 fn mark_aliased_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8]) {
     if lang != "go" {
         return;
     }
-    // Both shapes need one of these bytes, so most functions skip the walk.
+    // Both shapes leave a byte witness, so most functions skip the walk.
     let body = &code[func.start_byte()..func.end_byte().min(code.len())];
     let has_closure = body
         .windows(5)
         .skip(1)
         .any(|w| w == b"func(" || w == b"func ");
-    if !body.contains(&b'&') && !has_closure {
+    if !has_closure && !go_body_takes_address_of_name(body) {
         return;
     }
     let mut names = HashSet::new();
@@ -13840,7 +13915,43 @@ fn chain_head_call(call_node: Node) -> Node {
 /// Classify how the node spanning `span` sits under `root`: directly in the
 /// `arguments` of some call, through an aggregate literal inside such
 /// arguments, or not in call arguments at all.
+///
+/// One top-down cursor descent from `root` to the smallest node spanning
+/// `span` (the node `descendant_for_byte_range` returns).  The nearest
+/// `arguments` edge above that node decides: an aggregate literal strictly
+/// below it makes the nesting [`CalleeNesting::InAggregateArg`].  Walking up
+/// with `parent()` instead costs a root-to-node descent per step.
 fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
+    let args_field = root.language().field_id_for_name("arguments");
+    let mut cursor = root.walk();
+    // Depth (in edges below `root`) of the deepest `arguments` child entered,
+    // and of the deepest aggregate literal on the path.
+    let mut args_depth: Option<usize> = None;
+    let mut aggregate_depth: Option<usize> = None;
+    let mut depth = 0usize;
+    while cursor.goto_first_child_for_byte(span.0).is_some() {
+        let child = cursor.node();
+        if child.start_byte() > span.0 || child.end_byte() < span.1 {
+            break;
+        }
+        depth += 1;
+        if args_field.is_some() && cursor.field_id() == args_field {
+            args_depth = Some(depth);
+        }
+        if is_aggregate_literal_kind(child.kind()) {
+            aggregate_depth = Some(depth);
+        }
+    }
+    match args_depth {
+        None => CalleeNesting::Own,
+        Some(a) if aggregate_depth.is_some_and(|g| g > a) => CalleeNesting::InAggregateArg,
+        Some(_) => CalleeNesting::InArg,
+    }
+}
+
+/// The original bottom-up [`call_arg_nesting`], kept as the test oracle.
+#[cfg(test)]
+pub(super) fn call_arg_nesting_reference(root: Node, span: (usize, usize)) -> CalleeNesting {
     let Some(mut cur) = root.descendant_for_byte_range(span.0, span.1) else {
         return CalleeNesting::Own;
     };
@@ -13865,6 +13976,11 @@ fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
         cur = parent;
     }
     CalleeNesting::Own
+}
+
+#[cfg(test)]
+pub(super) fn call_arg_nesting_for_test(root: Node, span: (usize, usize)) -> CalleeNesting {
+    call_arg_nesting(root, span)
 }
 
 /// True when `call`, a descendant of the condition expression `root`, is

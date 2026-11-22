@@ -690,9 +690,9 @@ pub(super) fn go_receiver_alias_frame(
                 // A formal whose type is a struct declared in this file also
                 // brings the struct's request-typed fields (`ctx.Req`).
                 if let Some(t) = type_text.as_deref() {
-                    for (field, field_prefix) in go_struct_typed_fields(func_node, code, t) {
+                    go_struct_typed_fields(func_node, code, t, |field, field_prefix| {
                         frame.push((format!("{n}.{field}"), Some(field_prefix)));
-                    }
+                    });
                 }
                 frame.push((n, prefix));
             }
@@ -724,10 +724,11 @@ fn go_struct_typed_fields(
     func_node: Node<'_>,
     code: &[u8],
     type_text: &str,
-) -> Vec<(String, &'static str)> {
+    mut each: impl FnMut(&str, &'static str),
+) {
     let name = type_text.trim().trim_start_matches('*').trim();
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Vec::new();
+        return;
     }
     GO_STRUCT_TYPED_FIELDS.with(|cell| {
         let mut cell = cell.borrow_mut();
@@ -738,7 +739,11 @@ fn go_struct_typed_fields(
             }
             go_index_struct_typed_fields(root, code)
         });
-        index.get(name).cloned().unwrap_or_default()
+        if let Some(fields) = index.get(name) {
+            for (field, prefix) in fields {
+                each(field, prefix);
+            }
+        }
     })
 }
 

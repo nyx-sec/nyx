@@ -1509,23 +1509,31 @@ fn starts_with_cs(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool 
     }
 }
 
+/// `~_path` name-suffix matcher: fires on a bare callee (no receiver or
+/// namespace) whose name ends with `tail` (`things_path`), with no word
+/// boundary and a non-empty stem.  It keys on its last byte in the index like
+/// every other suffix matcher.  Only a bare call (`things_path(..)`) is a
+/// route helper: a callee with a receiver (`obj.relative_path`,
+/// `Mod::unescape_path`) is an ordinary method that can return attacker data.
+#[cold]
+fn match_name_suffix(text: &[u8], tail: &[u8], case_sensitive: bool) -> bool {
+    text.len() > tail.len()
+        && ends_with_cs(text, tail, case_sensitive)
+        && !text.contains(&b'.')
+        && !text.contains(&b':')
+}
+
 /// Word-boundary suffix match with configurable case sensitivity.
 #[inline]
 fn match_suffix_cs(text: &[u8], matcher: &[u8], case_sensitive: bool) -> bool {
-    // `~_path` is a name-suffix matcher: it fires on a bare callee (no
-    // receiver or namespace) whose name ends with the text after the sigil
-    // (`things_path`), with no word boundary and a non-empty stem.  It keys
-    // on its last byte in the index like every other suffix matcher.
-    if let Some(tail) = matcher.strip_prefix(b"~") {
-        // Only a bare call (`things_path(..)`) is a route helper.  A callee
-        // with a receiver (`obj.relative_path`, `Mod::unescape_path`) is an
-        // ordinary method that can return attacker data.
-        return text.len() > tail.len()
-            && ends_with_cs(text, tail, case_sensitive)
-            && !text.contains(&b'.')
-            && !text.contains(&b':');
-    }
-    let (m, exact_only) = unpack_matcher(matcher);
+    // One first-byte branch decodes both sigils: this is the innermost loop
+    // of every classification.  `=name` is exact-only; `~_path` is a
+    // name-suffix matcher (see [`match_name_suffix`]).
+    let (m, exact_only) = match matcher.first() {
+        Some(b'=') => (&matcher[1..], true),
+        Some(b'~') => return match_name_suffix(text, &matcher[1..], case_sensitive),
+        _ => (matcher, false),
+    };
     if ends_with_cs(text, m, case_sensitive) {
         let start = text.len() - m.len();
         if exact_only {
