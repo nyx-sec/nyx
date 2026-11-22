@@ -782,7 +782,7 @@ pub struct CallMeta {
     pub kwargs: Vec<(String, Vec<String>)>,
     /// Ruby keyword arguments as `(name, position in arg_uses)`.  Ruby passes
     /// them as `pair` entries in the argument list, so each sits in a
-    /// positional slot; [`keyword_args::reorder_keyword_args`] moves the ones
+    /// positional slot; `keyword_args::reorder_keyword_args` moves the ones
     /// aimed at a same-file method to that method's parameter slot.  Empty for
     /// other languages and for calls without keywords.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

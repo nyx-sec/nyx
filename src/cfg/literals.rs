@@ -3744,20 +3744,19 @@ pub(super) fn def_use(
             SmallVec::new(),
         ),
 
-        // A short-circuit operand of a C / C++ condition that assigns:
-        // `(x = getenv("V")) == NULL` inside `a && (x = f()) != NULL`.
-        _ if matches!(lang, "c" | "cpp")
-            && matches!(
-                ast.kind(),
-                "binary_expression" | "parenthesized_expression" | "unary_expression"
-            )
-            && let Some(assign) = condition_assignment(ast) =>
-        {
-            def_use(assign, lang, code, extra_labels)
-        }
-
         // everything else – no definition, but may read vars
         _ => {
+            // A short-circuit operand of a C / C++ condition that assigns:
+            // `(x = getenv("V")) == NULL` inside `a && (x = f()) != NULL`.
+            if matches!(lang, "c" | "cpp")
+                && matches!(
+                    ast.kind(),
+                    "binary_expression" | "parenthesized_expression" | "unary_expression"
+                )
+                && let Some(assign) = condition_assignment(ast)
+            {
+                return def_use(assign, lang, code, extra_labels);
+            }
             let mut idents = Vec::new();
             let mut paths = Vec::new();
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);

@@ -37,7 +37,7 @@ pub enum SentinelPolarity {
 /// `ALLOWED.includes(x)`, `in_array($x, $a)`), an `indexOf` result, a map
 /// lookup (`ALLOWED[x]`), or a bare identifier.
 ///
-/// [`classify_condition`] classifies such text by the inner atom, so without
+/// `path_state::classify_condition` classifies such text by the inner atom, so without
 /// this the TRUE edge of `ALLOWED.includes(cmd) === false` would be treated
 /// as the validated one.  A whole-condition `!( ... )` / `not ...` is
 /// peeled first because the CFG already reports it as `condition_negated`;

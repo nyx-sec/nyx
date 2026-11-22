@@ -178,7 +178,7 @@ fn classify_java(method: &str) -> Option<ContainerOp> {
 }
 
 /// Mutating `StringBuilder` / `StringBuffer` methods: the argument is written
-/// into the receiver.  Kept out of [`classify_java`] because the names are
+/// into the receiver.  Kept out of `classify_java` because the names are
 /// only container writes on a receiver known to be a builder; the taint
 /// transfer applies this after checking the receiver type, and widens the
 /// store to every argument group (chained calls, `insert(offset, value)`).
