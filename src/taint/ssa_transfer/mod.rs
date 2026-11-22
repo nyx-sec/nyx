@@ -2281,6 +2281,15 @@ fn apply_membership_result_narrowing(
     {
         return;
     }
+    // A map that took request-controlled keys holds whatever the request
+    // asked for, so being in it proves nothing.  The map value stays clean
+    // when keys are stored (the store reads no operand), so look at the
+    // stores themselves.
+    if lookup.filled_elsewhere
+        || map_has_tainted_key_store(lookup, def.cfg_node, exit_state, ssa, cfg)
+    {
+        return;
+    }
     let present = if cond_info.condition_negated {
         false_state
     } else {
@@ -2292,6 +2301,45 @@ fn apply_membership_result_narrowing(
             present.validated_may.insert(sym);
         }
     }
+}
+
+/// Whether some statement in the lookup's function stores a tainted key into
+/// the looked-up map.  Key identifiers with no definition in the function
+/// (constants, package-level names) are not request data.  Stores made by
+/// other functions are covered by [`crate::cfg::MembershipLookup::filled_elsewhere`].
+fn map_has_tainted_key_store(
+    lookup: &crate::cfg::MembershipLookup,
+    lookup_node: NodeIndex,
+    exit_state: &SsaTaintState,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+) -> bool {
+    let func = cfg
+        .node_weight(lookup_node)
+        .and_then(|n| n.ast.enclosing_func.as_deref());
+    cfg.node_indices().any(|idx| {
+        let n = &cfg[idx];
+        if n.map_stores.is_empty()
+            || n.ast.enclosing_func.as_deref() != func
+            || ssa.cfg_node_map.get(&idx).is_none()
+        {
+            return false;
+        }
+        // Any definition of the key name counts: the store statement can
+        // itself be lowered as a redefinition of its key (`m[k] = v` binds
+        // both names in Go), so the reaching definition is not the right
+        // probe.
+        n.map_stores
+            .iter()
+            .filter(|ms| ms.base == lookup.base)
+            .flat_map(|ms| ms.key_idents.iter())
+            .any(|key| {
+                ssa.value_defs.iter().enumerate().any(|(i, d)| {
+                    d.var_name.as_deref() == Some(key.as_str())
+                        && exit_state.get(SsaValue(i as u32)).is_some()
+                })
+            })
+    })
 }
 
 /// Mark `target` validated on the edge where `target == <literal>` holds.
@@ -6003,6 +6051,31 @@ fn kill_redefined_symbol_facts(
     }
 }
 
+/// Forget every validated constant-index element (`parts[0]`) when a
+/// statement stores into an indexed location.  The store may reach the
+/// element through another name for the same backing array (`q := parts;
+/// q[0] = x`), which the element's own base name does not show, so no
+/// element stays validated across any indexed store.
+fn kill_elem_facts_on_index_store(
+    info: &NodeInfo,
+    transfer: &SsaTaintTransfer,
+    state: &mut SsaTaintState,
+) {
+    if info.map_stores.is_empty()
+        || (state.validated_must.is_empty() && state.validated_may.is_empty())
+    {
+        return;
+    }
+    for i in 0..transfer.interner.len() {
+        let id = crate::state::symbol::SymbolId(i as u32);
+        let name = transfer.interner.resolve(id);
+        if name.ends_with(']') && name.contains('[') {
+            state.validated_must.remove(id);
+            state.validated_may.remove(id);
+        }
+    }
+}
+
 /// Transfer a single SSA instruction.
 pub(super) fn transfer_inst(
     inst: &SsaInst,
@@ -6014,6 +6087,7 @@ pub(super) fn transfer_inst(
     let info = &cfg[inst.cfg_node];
 
     kill_redefined_symbol_facts(inst, info, ssa, transfer, state);
+    kill_elem_facts_on_index_store(info, transfer, state);
 
     // Cross-file abstract return fact from callee resolution.
     // Set inside the Call arm, applied after transfer_abstract to override Top.
@@ -7233,6 +7307,7 @@ pub(super) fn transfer_inst(
                         // (e.g. `cmd := arr.shift()`) whose taint comes
                         // from the cell rather than an inline source.
                         apply_container_elem_read_w4(inst, ssa, transfer, state);
+                        apply_container_read_receiver_validation(inst, ssa, transfer, state);
                         if let Some(sib) = &sibling
                             && !sib.caps.is_empty()
                         {

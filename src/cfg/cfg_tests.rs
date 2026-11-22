@@ -9232,3 +9232,136 @@ mod popen_shell_shape_tests {
         }
     }
 }
+
+fn go_elem_reads_of(src: &[u8]) -> Vec<Vec<String>> {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| !n.elem_reads.is_empty())
+        // The synthetic element read of a call argument is not a statement.
+        .filter(|n| n.call.callee.as_deref() != Some("__index_get__"))
+        .map(|n| n.elem_reads.iter().map(|e| e.to_string()).collect())
+        .collect()
+}
+
+/// Whether the node reading `parts[0]` in `src` is marked unstable.
+fn go_elem_base_unstable_in(src: &str) -> bool {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "go", ts_lang);
+    let nodes: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| !n.elem_reads.is_empty())
+        .collect();
+    assert!(!nodes.is_empty(), "no element read in {src}");
+    nodes.iter().any(|n| n.elem_base_unstable)
+}
+
+#[test]
+fn go_elem_base_with_other_write_routes_is_unstable() {
+    let wrap = |mid: &str| {
+        format!(
+            "package p\nfunc f(s string) {{\n  parts := strings.Split(s, \" \")\n  {mid}\n  use(parts[0])\n}}"
+        )
+    };
+    for mid in [
+        "sort.Strings(parts)",
+        "copy(parts, other)",
+        "fill(parts)",
+        "p := &parts; (*p)[0] = s",
+        "q := parts; q[0] = s",
+        "parts[0] = s",
+        "set := func() { parts[0] = s }; set()",
+        "r := parts[1:]; r[0] = s",
+        "parts = append(parts, s)",
+    ] {
+        assert!(go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+    for mid in [
+        "n := len(parts)",
+        "i := 1; _ = parts[i]",
+        "for _, p := range parts { use(p) }",
+        "parts = strings.Split(s, \",\")",
+        "",
+    ] {
+        assert!(!go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+}
+
+#[test]
+fn go_constant_index_reads_are_recorded() {
+    let src = b"package p\n\
+        func f(s string) {\n\
+          parts := strings.Split(s, \" \")\n\
+          x := parts[0]\n\
+          y := parts[i]\n\
+          if parts[1] != \"asc\" { return }\n\
+          parts[2] = s\n\
+          z := parts[0] + parts[1]\n\
+          w := strings.Join(parts, parts[0])\n\
+        }";
+    let reads = go_elem_reads_of(src);
+    assert!(reads.contains(&vec!["parts[0]".to_string()]), "{reads:?}");
+    assert!(reads.contains(&vec!["parts[1]".to_string()]), "{reads:?}");
+    assert!(
+        reads.contains(&vec!["parts[0]".to_string(), "parts[1]".to_string()]),
+        "{reads:?}"
+    );
+    // Variable index, an element store, and a base that is also read whole
+    // record nothing.
+    assert!(
+        reads
+            .iter()
+            .flatten()
+            .all(|e| e != "parts[2]" && e != "parts[i]"),
+        "{reads:?}"
+    );
+    assert_eq!(reads.len(), 3, "{reads:?}");
+}
+
+#[test]
+fn go_membership_lookup_accepts_constant_index_key() {
+    let src = b"package p\n\
+        func f(parts []string, m map[string]bool) {\n\
+          _, ok := m[parts[0]]\n\
+          _, ok2 := m[parts[i]]\n\
+        }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let lookups: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter_map(|n| n.membership_lookup.as_ref())
+        .collect();
+    assert_eq!(lookups.len(), 1);
+    assert_eq!(lookups[0].key, "parts[0]");
+    assert_eq!(lookups[0].base, "m");
+}
+
+#[test]
+fn go_map_stores_record_key_identifiers() {
+    let src = b"package p\n\
+        func f(cols []string) {\n\
+          m := map[string]bool{}\n\
+          n := map[string]bool{k: true, \"lit\": true}\n\
+          for _, c := range cols { m[c] = true }\n\
+          m[\"fixed\"] = true\n\
+        }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let stores: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .flat_map(|n| n.map_stores.iter())
+        .map(|s| (s.base.as_str(), s.key_idents.join(",")))
+        .collect();
+    assert!(stores.contains(&("m", "c".to_string())), "{stores:?}");
+    assert!(stores.contains(&("n", "k".to_string())), "{stores:?}");
+    assert!(stores.contains(&("m", String::new())), "{stores:?}");
+}

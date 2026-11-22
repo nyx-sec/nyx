@@ -1,0 +1,25 @@
+{
+  "description": "A comma-ok check on parts[0] does not cover a read after a closure stores request data into the slice",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "a closure overwrites the checked element"
+    }
+  ]
+}

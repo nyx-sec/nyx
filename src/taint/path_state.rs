@@ -2115,13 +2115,30 @@ pub fn equality_literal_guard(text: &str) -> Option<(String, bool)> {
         Some(rest) => (rest, true),
         None => (ident, false),
     };
-    if !is_identifier(ident) || ident.contains('.') {
+    if !is_identifier(ident) && !is_const_index_read(ident) || ident.contains('.') {
         return None;
     }
     if php_var && !strict && literal == EqLiteral::Number {
         return None;
     }
     Some((ident.to_string(), op_is_eq))
+}
+
+/// `ident[<decimal literal>]`, the spelling Go lowering uses for a
+/// constant-index element read (see [`crate::cfg::NodeInfo::elem_reads`]).
+/// Only a condition that lists the same spelling among its variables can
+/// narrow on it, which the Go CFG does and no other language does.
+fn is_const_index_read(s: &str) -> bool {
+    let Some((base, rest)) = s.split_once('[') else {
+        return false;
+    };
+    let Some(digits) = rest.strip_suffix(']') else {
+        return false;
+    };
+    is_identifier(base)
+        && !base.contains('.')
+        && !digits.is_empty()
+        && digits.bytes().all(|c| c.is_ascii_digit())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4140,6 +4157,12 @@ mod ghsa_h8cj_hpmg_636v_tests {
             ("x === 'a' || y === 'b'", None),
             ("x >= 5", None),
             ("x is 'a'", None),
+            // Constant-index element reads keep their `base[idx]` spelling.
+            ("parts[1] != \"asc\"", some("parts[1]", false)),
+            ("\"asc\" == parts[10]", some("parts[10]", true)),
+            ("parts[i] == \"asc\"", None),
+            ("parts[] == \"asc\"", None),
+            ("a.b[0] == \"asc\"", None),
         ];
         for (text, want) in cases {
             assert_eq!(&equality_literal_guard(text), want, "{text}");

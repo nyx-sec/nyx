@@ -1,0 +1,25 @@
+{
+  "description": "Checking parts[1] says nothing about parts[0]",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "the column element is unchecked"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "A guard on parts[0] does not cover parts[0] of a shadowing loop variable holding request data",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "the loop variable shadows the checked slice"
+    }
+  ]
+}

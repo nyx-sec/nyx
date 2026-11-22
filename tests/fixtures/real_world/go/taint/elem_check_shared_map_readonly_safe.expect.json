@@ -1,0 +1,39 @@
+{
+  "description": "A package-level literal map that another handler only reads is a real allowlist",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "safe",
+    "allowlist"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        12,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "the map only ever holds literal keys",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        12,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "the map only ever holds literal keys",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

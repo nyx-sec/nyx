@@ -1,0 +1,16 @@
+{
+  "description": "urlparse(x).path is only redirected to after rejecting protocol-relative and backslash prefixes",
+  "tags": ["taint", "open-redirect", "urlparse", "safe"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [11, 15],
+      "evidence_contains": [],
+      "notes": "leading-slash guard",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}
