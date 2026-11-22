@@ -42,6 +42,7 @@ mod module_consts;
 mod nested_calls;
 mod params;
 pub(crate) mod python_shapes;
+mod rust_receivers;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
@@ -3660,6 +3661,17 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // `let v: Box<dyn Plugin> = toml::from_str(&s)?;` picks the concrete type
+    // from the document exactly like the turbofish form, but the dyn target
+    // sits on the declaration, not in the callee text.
+    if lang == "rust"
+        && crate::labels::is_polymorphic_decode_head(text.split('(').next().unwrap_or("").trim())
+        && !labels.contains(&crate::labels::POLYMORPHIC_DECODE)
+        && rust_let_decodes_into_dyn(ast, code)
+    {
+        labels.push(crate::labels::POLYMORPHIC_DECODE);
+    }
+
     // Java stream accessors are sources only when the stream can carry
     // attacker bytes.  The label belongs to the call `text` came from.
     if lang == "java" && labels.iter().any(|l| matches!(l, DataLabel::Source(_))) {
@@ -5505,15 +5517,18 @@ pub(super) fn push_node<'a>(
     // Java receivers typed only by a declaration (injected fields, formals,
     // locals bound to an untyped call).  Skipped when the node already has a
     // sink: type-qualified resolution only runs on calls with none.  The one
-    // exception is a node whose sinks are all response-write sinks
+    // Java exception is a node whose sinks are all response-write sinks
     // (`println` / `write`): the declared type lets the taint engine drop the
     // cap when the receiver is plainly not an HTTP response (a `PrintStream`).
-    let receiver_decl_type =
-        if lang == "java" && labels.iter().all(|l| html_escape_only_sink_or_non_sink(l)) {
+    let receiver_decl_type = match lang {
+        "java" if labels.iter().all(html_escape_only_sink_or_non_sink) => {
             call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
-        } else {
-            None
-        };
+        }
+        "rust" if !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) => {
+            call_ast.and_then(|cn| rust_receivers::call_receiver_decl_type(cn, code))
+        }
+        _ => None,
+    };
 
     let return_escapes = if kind == StmtKind::Return {
         helpers::collect_return_escapes(ast, lang, code)
@@ -6355,6 +6370,38 @@ pub(super) fn connect_all(g: &mut Cfg, froms: &[NodeIndex], to: NodeIndex, kind:
         debug!(target: "cfg", "edge {} → {} ({:?})", f.index(), to.index(), kind);
         g.add_edge(f, to, kind);
     }
+}
+
+/// Whether `ast` is (or holds) a `let` with a trait-object type annotation
+/// whose initialiser starts with the decode call itself, so the annotation is
+/// the decode target (`let v: Box<dyn P> = toml::from_str(s)?`, not a tuple or
+/// a wrapper call that merely contains it).
+fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
+    let decl = if ast.kind() == "let_declaration" {
+        ast
+    } else {
+        let mut cursor = ast.walk();
+        match ast
+            .children(&mut cursor)
+            .find(|c| c.kind() == "let_declaration")
+        {
+            Some(d) => d,
+            None => return false,
+        }
+    };
+    let (Some(ty), Some(value)) = (
+        decl.child_by_field_name("type"),
+        decl.child_by_field_name("value"),
+    ) else {
+        return false;
+    };
+    let (Some(ty_text), Some(value_text)) = (text_of(ty, code), text_of(value, code)) else {
+        return false;
+    };
+    crate::labels::rust_decode_target_is_dyn(&ty_text)
+        && crate::labels::is_polymorphic_decode_head(
+            value_text.split('(').next().unwrap_or("").trim(),
+        )
 }
 
 /// Pre-emit dedicated Source CFG nodes for call arguments that contain source
@@ -11274,6 +11321,10 @@ pub(crate) fn build_cfg<'a>(
             *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
         });
     }
+    literals::clear_ruby_scope_bindings();
+    if lang == "rust" {
+        rust_receivers::populate(tree, code);
+    }
     // Receiver-alias frames are scoped to function bodies by guards in
     // `build_sub`; start from an empty stack regardless.
     crate::labels::clear_receiver_aliases();
@@ -11466,6 +11517,8 @@ pub(crate) fn build_cfg<'a>(
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
     PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
+    literals::clear_ruby_scope_bindings();
+    rust_receivers::clear();
     crate::labels::clear_receiver_aliases();
 
     // collect every

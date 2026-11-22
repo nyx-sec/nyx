@@ -1,0 +1,15 @@
+{
+  "description": "env::var reaches execute on a guard locked from an Arc<Mutex<Connection>> field",
+  "tags": ["taint", "sqli", "rusqlite"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [10, 14],
+      "evidence_contains": [],
+      "notes": "Guard bound by lock().unwrap()"
+    }
+  ]
+}

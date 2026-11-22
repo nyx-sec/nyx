@@ -1,0 +1,15 @@
+{
+  "description": "env::var reaches self.conn.execute through a format! string; the connection type comes from the struct field",
+  "tags": ["taint", "sqli", "rusqlite"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [9, 13],
+      "evidence_contains": [],
+      "notes": "Connection declared in a struct field"
+    }
+  ]
+}

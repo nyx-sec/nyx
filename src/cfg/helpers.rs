@@ -134,6 +134,15 @@ pub(crate) fn node_str<'c>(n: Node<'_>, code: &'c [u8]) -> Option<&'c str> {
     slice_str(code, n.start_byte(), n.end_byte())
 }
 
+/// Receiver-call segments [`root_receiver_text`] keeps in a chain's root text.
+fn is_preserved_chain_segment(lang: &str, segment: &str) -> bool {
+    match lang {
+        "java" => segment == "getClass",
+        "ruby" => matches!(segment, "connection" | "lease_connection"),
+        _ => false,
+    }
+}
+
 /// Walk through chained calls / member accesses to find the root receiver.
 ///
 /// For `Runtime.getRuntime().exec(cmd)`, the receiver of `exec` is the call
@@ -149,10 +158,29 @@ pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<Str
                 .child_by_field_name("object")
                 .or_else(|| n.child_by_field_name("receiver"))
                 .or_else(|| n.child_by_field_name("function"));
-            match inner {
+            let root = match inner {
                 Some(child) => root_receiver_text(child, lang, code),
-                None => text_of(n, code),
+                None => return text_of(n, code),
+            };
+            // Keep the one accessor segment that names what the next method
+            // runs on, so `obj.getClass().<accessor>()` does not collapse to
+            // `obj.<accessor>` (a user method to
+            // `is_safe_string_producing_callee`) and
+            // `ActiveRecord::Base.connection.execute(q)` does not collapse to
+            // `ActiveRecord::Base.execute`, which the `connection.execute`
+            // SQL sink could never match.
+            if matches!(lang, "java" | "ruby")
+                && lookup(lang, n.kind()) == Kind::CallMethod
+                && let Some(root) = root.as_deref()
+                && let Some(method) = n
+                    .child_by_field_name("method")
+                    .or_else(|| n.child_by_field_name("name"))
+                    .and_then(|f| text_of(f, code))
+                && is_preserved_chain_segment(lang, &method)
+            {
+                return Some(format!("{root}.{method}"));
             }
+            root
         }
         // PHP `variable_name` text carries a leading `$` (`$smarty`, `$twig`).
         // Strip it so chain text built downstream (`{recv}.{method}`) presents

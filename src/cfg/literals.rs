@@ -16,6 +16,8 @@ use super::{
 };
 use crate::labels::{Cap, DataLabel, Kind, lookup};
 use smallvec::SmallVec;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Find the inner CallFn/CallMethod/CallMacro node within an AST node.
@@ -2543,26 +2545,6 @@ pub(super) fn call_ident_of<'a>(n: Node<'a>, lang: &str, code: &'a [u8]) -> Opti
                 .or_else(|| n.child_by_field_name("receiver"))
                 .or_else(|| n.child_by_field_name("scope"));
             let recv = recv_node.and_then(|f| root_receiver_text(f, lang, code));
-            // Preserve Java `.getClass()` segment in the chained callee text
-            // so downstream predicates (e.g.
-            // [`crate::ssa::type_facts::is_safe_string_producing_callee`])
-            // can recognise idiomatic `obj.getClass().<accessor>()` chains.
-            // Without this, `root_receiver_text` collapses the chain to
-            // `obj.<accessor>`, indistinguishable from a user-defined method.
-            let recv = if lang == "java"
-                && let Some(rn) = recv_node
-                && lookup(lang, rn.kind()) == Kind::CallMethod
-                && let Some(inner_method) = rn
-                    .child_by_field_name("method")
-                    .or_else(|| rn.child_by_field_name("name"))
-                    .and_then(|f| text_of(f, code))
-                && inner_method == "getClass"
-                && let Some(r) = recv
-            {
-                Some(format!("{r}.getClass"))
-            } else {
-                recv
-            };
             match (recv, func) {
                 (Some(r), Some(f)) => Some(format!("{r}.{f}")),
                 (_, Some(f)) => Some(f),
@@ -2835,9 +2817,114 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
         {
             return Vec::new();
         }
-        result.push(call_ident_of(child, lang, code));
+        result.push(
+            call_ident_of(child, lang, code).or_else(|| ruby_implicit_call_arg(child, lang, code)),
+        );
     }
     result
+}
+
+thread_local! {
+    /// Ruby scope start byte -> every name bound anywhere inside that scope
+    /// (see [`ruby_scope_bindings`]).  Per file: cleared by
+    /// [`clear_ruby_scope_bindings`] when a file's CFG build starts and ends.
+    static RUBY_SCOPE_BINDINGS: RefCell<HashMap<usize, HashSet<String>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Drop the per-file Ruby binding cache.
+pub(super) fn clear_ruby_scope_bindings() {
+    RUBY_SCOPE_BINDINGS.with(|c| c.borrow_mut().clear());
+}
+
+/// A bare `identifier` call argument in Ruby is a zero-argument method call
+/// (`redirect_to redirect_url`) unless the enclosing scope binds the name as
+/// a local, formal, block parameter, `for` / `rescue` variable or pattern
+/// capture.  Returns the method name so the argument resolves through the
+/// same callee summaries as the parenthesised `redirect_url()` form.
+///
+/// Names that carry a label of their own (`params`, `session`, `request`)
+/// are left to the existing label handling.  The binding check is by name
+/// over the whole scope, so a name bound anywhere in it stays a variable:
+/// this can only miss a call, never turn a local into one.
+pub(super) fn ruby_implicit_call_arg(arg: Node, lang: &str, code: &[u8]) -> Option<String> {
+    if lang != "ruby" || arg.kind() != "identifier" {
+        return None;
+    }
+    let name = text_of(arg, code)?;
+    let mut scope = arg.parent()?;
+    while !matches!(
+        scope.kind(),
+        "method" | "singleton_method" | "class" | "module" | "singleton_class" | "program"
+    ) {
+        scope = scope.parent()?;
+    }
+    if ruby_scope_bindings(scope, code, |b| b.contains(&name)) {
+        return None;
+    }
+    if !crate::labels::classify_all("ruby", &name, None).is_empty() {
+        return None;
+    }
+    Some(name)
+}
+
+/// Run `query` over the names bound inside the Ruby `scope` node, computing
+/// and caching them on first use.
+fn ruby_scope_bindings(
+    scope: Node,
+    code: &[u8],
+    query: impl FnOnce(&HashSet<String>) -> bool,
+) -> bool {
+    RUBY_SCOPE_BINDINGS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let set = cache.entry(scope.start_byte()).or_insert_with(|| {
+            let mut out = HashSet::new();
+            collect_ruby_bindings(scope, code, &mut out);
+            out
+        });
+        query(set)
+    })
+}
+
+fn collect_ruby_bindings(n: Node, code: &[u8], out: &mut HashSet<String>) {
+    fn add_idents(n: Node, code: &[u8], out: &mut HashSet<String>) {
+        if n.kind() == "identifier"
+            && let Some(t) = text_of(n, code)
+        {
+            out.insert(t);
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            add_idents(ch, code, out);
+        }
+    }
+    let kind = n.kind();
+    match kind {
+        "assignment" | "operator_assignment" => {
+            if let Some(left) = n.child_by_field_name("left") {
+                add_idents(left, code, out);
+            }
+        }
+        "left_assignment_list"
+        | "destructured_left_assignment"
+        | "rest_assignment"
+        | "method_parameters"
+        | "block_parameters"
+        | "lambda_parameters"
+        | "destructured_parameter"
+        | "exception_variable" => add_idents(n, code, out),
+        "for" => {
+            if let Some(pattern) = n.child_by_field_name("pattern") {
+                add_idents(pattern, code, out);
+            }
+        }
+        _ if kind.ends_with("_pattern") || kind == "in_clause" => add_idents(n, code, out),
+        _ => {}
+    }
+    let mut c = n.walk();
+    for ch in n.children(&mut c) {
+        collect_ruby_bindings(ch, code, out);
+    }
 }
 
 /// `(defines, uses)` of a read-modify-write assignment (`x += y`, `x ||= y`,

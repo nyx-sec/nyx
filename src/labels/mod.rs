@@ -2566,12 +2566,7 @@ fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
 /// `stripped` is `text` with its turbofish removed.
 fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     let head = stripped.split('(').next().unwrap_or("").trim();
-    if !matches!(
-        head,
-        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
-    ) && !head.ends_with("::toml::from_str")
-        && !head.ends_with("::ron::from_str")
-    {
+    if !is_polymorphic_decode_head(head) {
         return false;
     }
     let Some(at) = text.find("::<") else {
@@ -2579,13 +2574,77 @@ fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     };
     let generic = &text[at..];
     let generic = generic.split('(').next().unwrap_or(generic);
-    generic
+    rust_decode_target_is_dyn(generic)
+}
+
+/// Whether `head` (a callee path with no turbofish or arguments) is a
+/// `toml` / `ron` decode whose target type picks the concrete type.
+pub(crate) fn is_polymorphic_decode_head(head: &str) -> bool {
+    matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) || head.ends_with("::toml::from_str")
+        || head.ends_with("::ron::from_str")
+}
+
+/// Whether the value a decode produces is a trait object, given the type
+/// text of an annotation or turbofish (`Box<dyn P>`, `Result<Box<dyn P>, E>`,
+/// `::<Box<dyn P>>`).  `Result` and `Option` are unwrapped to their first
+/// generic argument, so a `dyn` in the error type (`Box<dyn Error>`) does not
+/// count.
+pub(crate) fn rust_decode_target_is_dyn(type_text: &str) -> bool {
+    let mut t = type_text.trim();
+    t = t.strip_prefix("::").unwrap_or(t).trim_start();
+    // A turbofish group: keep only the text up to its closing `>`.
+    let mut ty = t;
+    if let Some(inner) = t.strip_prefix('<') {
+        ty = inner;
+    }
+    loop {
+        let ty_trim = ty.trim_start();
+        let Some(lt) = ty_trim.find('<') else {
+            return rust_target_is_dyn(ty_trim);
+        };
+        let head = ty_trim[..lt].trim();
+        let name = head.rsplit("::").next().unwrap_or(head).trim();
+        if name != "Result" && name != "Option" {
+            return rust_target_is_dyn(ty_trim);
+        }
+        // First generic argument, up to a top-level comma or the closing `>`.
+        let rest = &ty_trim[lt + 1..];
+        let mut depth = 0i32;
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => {
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        ty = &rest[..end];
+    }
+}
+
+/// Whether a Rust type text names a trait object (`Box<dyn Plugin>`), as a
+/// whole `dyn` word.
+pub(crate) fn rust_target_is_dyn(type_text: &str) -> bool {
+    type_text
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .any(|w| w == "dyn")
 }
 
 /// The label of a polymorphic decode ([`is_polymorphic_decode`]).
-const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
+pub(crate) const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
 
 /// Whether the path segment ending `before` is reached through a `.`, i.e. is
 /// a method call rather than a `::` path segment.
@@ -2685,7 +2744,7 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
             b'(' => open.push(k),
             b')' => {
                 if let Some(i) = open.pop()
-                    && (k + 1 >= bytes.len() || bytes[k + 1] == b'.')
+                    && (k + 1 >= bytes.len() || chain_dot_at(bytes, k + 1).is_some())
                 {
                     first_collapse = first_collapse.min(i);
                 }
@@ -2712,6 +2771,17 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// Offset of the `.` that continues a call chain at `at`, allowing the
+/// whitespace a formatter leaves when it breaks a chain before `.method`.
+#[inline]
+fn chain_dot_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut k = at;
+    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+        k += 1;
+    }
+    (k < bytes.len() && bytes[k] == b'.').then_some(k)
 }
 
 /// Every `(` at or after `from` with the offset just past its matching `)`
@@ -2760,8 +2830,10 @@ fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
                 let j = paren_opens
                     .binary_search(&i)
                     .map_or(bytes.len(), |o| paren_ends[o]);
-                if j >= bytes.len() || bytes[j] == b'.' {
+                if j >= bytes.len() {
                     i = j;
+                } else if let Some(dot) = chain_dot_at(bytes, j) {
+                    i = dot;
                 } else {
                     result.push('(');
                     i += 1;
@@ -5241,6 +5313,20 @@ mod tests {
             Some(&[0usize][..])
         );
         assert_eq!(output_param_source_positions("go", "c.Query"), None);
+    }
+
+    #[test]
+    fn normalize_chained_call_collapses_groups_across_a_line_break() {
+        assert_eq!(
+            normalize_chained_call("db.query_row(&sql, [], |r| r.get(0))\n        .unwrap()"),
+            "db.query_row.unwrap"
+        );
+        assert_eq!(
+            normalize_chained_call("a.b(x)\n    .c(y)\n    .d"),
+            "a.b.c.d"
+        );
+        // A group not followed by a chain dot keeps its text.
+        assert_eq!(normalize_chained_call("f(x) + g"), "f(x) + g");
     }
 
     #[test]

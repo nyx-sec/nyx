@@ -1,0 +1,15 @@
+{
+  "description": "env::var flows to toml::from_str whose let annotation is a trait object, so the document picks the concrete type",
+  "tags": ["taint", "deserialization", "dyn"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [9, 9],
+      "evidence_contains": [],
+      "notes": "dyn target declared on the let, not in the callee turbofish"
+    }
+  ]
+}

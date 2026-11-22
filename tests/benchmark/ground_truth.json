@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1094
+    "corpus_size": 1122
   },
   "cases": [
     {
@@ -5218,8 +5218,8 @@
         "raw-sql",
         "sqli"
       ],
-      "disabled": true,
-      "notes": "SQL injection via ActiveRecord connection.execute — disabled: multi-line call expression not resolved by SSA lowering for Ruby class methods"
+      "disabled": false,
+      "notes": "SQL injection via ActiveRecord::Base.connection.execute with a multi-line interpolated string"
     },
     {
       "case_id": "py-cmdi-cross-001",
@@ -20033,12 +20033,10 @@
         "cve",
         "devise",
         "open-redirect",
-        "referrer",
-        "disabled"
+        "referrer"
       ],
-      "disabled": true,
-      "disabled_reason": "Recall (vulnerable) deferred: multi-layer bare-Ruby-method-call source miss. The upstream flow is `request.referrer` (attacker Referer header) returned from `FailureApp#redirect_url`, handed to the sink `redirect_to redirect_url`. `redirect_url` is a receiver-less bare method call. In the taint findings run, top-level / seedless Ruby bodies are lowered with `scope_all=true` (no `SsaOp::Param` ops), and in that mode a bare-identifier call argument that is an undefined free var is DROPPED entirely: `redirect_to redirect_url` lowers to `redirect_to()` with no argument, so the sink has no value to taint. (`redirect_url`'s own body lowers cleanly to `v = request.referrer()` and its summary carries source_caps, but there is no arg to attach it to at the call.) Two engine layers must change together: (1) scope_all SSA lowering must preserve a bare-identifier call argument as a resolvable value instead of dropping it; (2) the taint layer must resolve that bare Ruby identifier against its same-file zero-arity source-returning summary (Ruby auto-calls bare method names; unsound for JS/TS/Python/Go where a bare identifier is a function reference). A resolve_callee_hinted-based seed on synthetic-external Params was prototyped this session and correctly resolves redirect_url's source_caps, but never fires in the findings run because that run has no Param ops for these bodies (scope_all). Both layers are broad, cross-language SSA-lowering changes; deferred. Tracked in nyx-dev-tools/CVE_DEFERRED.md. MIT.",
-      "notes": "CVE-2026-40295 / GHSA-jp94-3292-c3xv: Devise Timeoutable open-redirect. FailureApp#redirect_url returns the attacker-controlled request.referrer (HTTP Referer) for a non-GET session-timeout request and #redirect passes it to redirect_to. DISABLED (recall deferred) - bare Ruby method-call source dropped by scope_all lowering; see disabled_reason and CVE_DEFERRED.md."
+      "disabled": false,
+      "notes": "CVE-2026-40295 / GHSA-jp94-3292-c3xv: Devise Timeoutable open-redirect. FailureApp#redirect_url returns the attacker-controlled request.referrer (HTTP Referer) for a non-GET session-timeout request and #redirect passes it to redirect_to as a bare receiver-less method call. MIT."
     },
     {
       "case_id": "cve-ruby-2026-40295-patched",
@@ -20069,8 +20067,8 @@
         "disabled"
       ],
       "disabled": true,
-      "disabled_reason": "Deferred as the precision counterpart of cve-ruby-2026-40295-vulnerable (see its disabled_reason): the vulnerable recall side does not yet detect (bare-Ruby-method-call source dropped by scope_all lowering), so the patched precision side is not yet exercisable. Once recall lands, this fixture additionally requires recognising extract_path_from_location(request.referrer) (a URL path-component extraction, URI.parse(x).path, that strips the host) as an OPEN_REDIRECT sanitizer so the fixture stays silent. Tracked in nyx-dev-tools/CVE_DEFERRED.md. MIT.",
-      "notes": "CVE-2026-40295 patched counterpart: redirect_url wraps request.referrer in extract_path_from_location (URI path-component extraction, host stripped). DISABLED (precision deferred, pending recall). See disabled_reason and CVE_DEFERRED.md. MIT."
+      "disabled_reason": "The vulnerable counterpart now detects (a bare receiver-less method call argument resolves through its callee summary), so this patched twin reports a taint-open-redirect finding. Silencing it needs a sound host-stripping sanitizer: `URI.parse(location).path` alone is not one (a path of `//evil.com` still redirects off-site), and the fix additionally collapses leading slashes with `sub(/\\A\\/+/, '/')`. Recognising that pair of steps across a helper has no general design yet, so the case stays disabled. MIT.",
+      "notes": "CVE-2026-40295 patched counterpart: redirect_url wraps request.referrer in extract_path_from_location (URI path-component extraction with leading-slash collapse, host stripped). DISABLED (precision deferred); see disabled_reason. MIT."
     },
     {
       "case_id": "cve-go-2026-21859-vulnerable",
@@ -34878,6 +34876,852 @@
       ],
       "disabled": false,
       "notes": "The root is a literal plus os.sep, a directory prefix; only the first literal must not be read as the whole root."
+    },
+    {
+      "case_id": "rs-deser-toml-dyn-let-annot",
+      "file": "rust/deser/deser_toml_dyn_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "toml::from_str into a let annotated Box<dyn Plugin> lets the document choose the type"
+    },
+    {
+      "case_id": "rs-deser-ron-dyn-let-annot-try",
+      "file": "rust/deser/deser_ron_dyn_let_annot_try.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "ron",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "ron::from_str with a map_err and ? chain into a let annotated Box<dyn Plugin>"
+    },
+    {
+      "case_id": "rs-safe-toml-config-let-annot",
+      "file": "rust/safe/safe_toml_config_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "let-annotation",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "Operator config decoded into a concrete annotated type; not a polymorphic sink"
+    },
+    {
+      "case_id": "rs-safe-ron-boxed-concrete-let-annot",
+      "file": "rust/safe/safe_ron_boxed_concrete_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "ron",
+        "let-annotation",
+        "box"
+      ],
+      "disabled": false,
+      "notes": "Box of a concrete struct is not a trait object target"
+    },
+    {
+      "case_id": "rb-sqli-model-connection-execute",
+      "file": "ruby/sqli/sqli_model_connection_execute.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "connection-execute",
+        "class-qualified",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "Model.connection.execute with an interpolated table name"
+    },
+    {
+      "case_id": "rb-sqli-connection-local-execute",
+      "file": "ruby/sqli/sqli_connection_local_execute.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "connection-execute",
+        "typed-local",
+        "sqli"
+      ],
+      "disabled": false,
+      "notes": "Local bound to ActiveRecord::Base.connection then execute with interpolation"
+    },
+    {
+      "case_id": "rb-safe-ar-connection-execute-sanitized",
+      "file": "ruby/safe/safe_ar_connection_execute_sanitized.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "connection-execute",
+        "sanitize_sql",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "sanitize_sql with a bound placeholder before connection.execute"
+    },
+    {
+      "case_id": "rb-safe-ar-connection-quote",
+      "file": "ruby/safe/safe_ar_connection_quote.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "connection-execute",
+        "quote",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "connection.quote output interpolated into the SQL"
+    },
+    {
+      "case_id": "rb-safe-ar-connection-execute-literal",
+      "file": "ruby/safe/safe_ar_connection_execute_literal.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "connection-execute",
+        "migration",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Literal-only SQL in a migration"
+    },
+    {
+      "case_id": "rb-safe-ar-connection-execute-integer",
+      "file": "ruby/safe/safe_ar_connection_execute_integer.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "connection-execute",
+        "to_i",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Integer-coerced id interpolated into connection.execute"
+    },
+    {
+      "case_id": "rb-safe-non-connection-execute",
+      "file": "ruby/safe/safe_non_connection_execute.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "execute",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "execute on a non-connection receiver is not a SQL sink"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-struct-field-format",
+      "file": "rust/sqli/sqli_rusqlite_struct_field_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "struct-field",
+        "format"
+      ],
+      "disabled": false,
+      "notes": "Connection held in a struct field, raw format! SQL through self.conn.execute"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-arc-mutex-format",
+      "file": "rust/sqli/sqli_rusqlite_arc_mutex_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "arc-mutex",
+        "format"
+      ],
+      "disabled": false,
+      "notes": "Arc<Mutex<Connection>> field, guard bound by lock().unwrap(), raw format! SQL"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-field-query-row-format",
+      "file": "rust/sqli/sqli_rusqlite_field_query_row_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "struct-field",
+        "query_row"
+      ],
+      "disabled": false,
+      "notes": "self.db.query_row with raw format! SQL"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-let-annot-format",
+      "file": "rust/sqli/sqli_rusqlite_let_annot_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "let-annotation",
+        "format"
+      ],
+      "disabled": false,
+      "notes": "let conn: Connection = helper(); raw format! SQL"
+    },
+    {
+      "case_id": "rs-sqli-rusqlite-arc-mutex-formal-format",
+      "file": "rust/sqli/sqli_rusqlite_arc_mutex_formal_format.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "rusqlite",
+        "arc-mutex",
+        "formal"
+      ],
+      "disabled": false,
+      "notes": "&Arc<Mutex<Connection>> formal locked into a local, raw format! SQL"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-struct-field-params",
+      "file": "rust/safe/safe_rusqlite_struct_field_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "struct-field",
+        "params"
+      ],
+      "disabled": false,
+      "notes": "Parameterised self.conn.execute with a bound array"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-arc-mutex-params",
+      "file": "rust/safe/safe_rusqlite_arc_mutex_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "arc-mutex",
+        "params"
+      ],
+      "disabled": false,
+      "notes": "Parameterised execute on a locked Arc<Mutex<Connection>>"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-field-query-row-params",
+      "file": "rust/safe/safe_rusqlite_field_query_row_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "struct-field",
+        "query_row"
+      ],
+      "disabled": false,
+      "notes": "Parameterised self.db.query_row"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-let-annot-params",
+      "file": "rust/safe/safe_rusqlite_let_annot_params.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "let-annotation",
+        "params"
+      ],
+      "disabled": false,
+      "notes": "Parameterised execute on an annotated local"
+    },
+    {
+      "case_id": "rs-safe-local-connection-type-execute",
+      "file": "rust/safe/safe_local_connection_type_execute.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "connection",
+        "user-type"
+      ],
+      "disabled": false,
+      "notes": "A user-defined Connection type with its own execute is not rusqlite"
+    },
+    {
+      "case_id": "rs-safe-rusqlite-other-field-execute",
+      "file": "rust/safe/safe_rusqlite_other_field_execute.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "rusqlite",
+        "struct-field",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "execute on a non-connection field of a struct that also holds a connection"
+    },
+    {
+      "case_id": "rb-open-redirect-bare-helper-referrer",
+      "file": "ruby/open_redirect/redirect_bare_helper_referrer.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "bare-method-call",
+        "referrer",
+        "redirect_to"
+      ],
+      "disabled": false,
+      "notes": "redirect_to a receiver-less zero-arity helper that returns request.referrer"
+    },
+    {
+      "case_id": "rb-open-redirect-bare-helper-local",
+      "file": "ruby/open_redirect/redirect_bare_helper_local.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "bare-method-call",
+        "local",
+        "redirect_to"
+      ],
+      "disabled": false,
+      "notes": "redirect_to a receiver-less zero-arity helper that returns request.referrer through a local"
+    },
+    {
+      "case_id": "rb-safe-redirect-bare-helper-constant",
+      "file": "ruby/safe/safe_redirect_bare_helper_constant.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "bare-method-call",
+        "redirect_to",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Bare helper returns a constant path"
+    },
+    {
+      "case_id": "rb-safe-redirect-local-shadows-helper",
+      "file": "ruby/safe/safe_redirect_local_shadows_helper.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "bare-method-call",
+        "local-shadow",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A local, formal and block parameter named like a source helper stay variables"
+    },
+    {
+      "case_id": "rs-deser-toml-result-dyn-value",
+      "file": "rust/deser/deser_toml_result_dyn_value.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "Result<Box<dyn P>, E> annotation: the decoded value is a trait object"
+    },
+    {
+      "case_id": "rs-safe-toml-result-dyn-error",
+      "file": "rust/safe/safe_toml_result_dyn_error.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "let-annotation",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "dyn appears only in the Result error type; the decoded value is a concrete Config"
     }
   ]
 }

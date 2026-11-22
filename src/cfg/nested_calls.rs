@@ -15,7 +15,7 @@
 //! paths, PHP variables without `$`), so a tree entry lines up with the SSA
 //! value lowering looked up for the same name.
 
-use super::literals::call_ident_of;
+use super::literals::{call_ident_of, ruby_implicit_call_arg};
 use super::{member_expr_text, text_of};
 use crate::labels::{Cap, DataLabel, Kind, RuntimeLabelRule, lookup};
 use tree_sitter::Node;
@@ -196,6 +196,10 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
             _ => {}
         }
         if is_value_leaf(kind) {
+            // A bare Ruby argument that is not a local is a call.
+            if in_call && ruby_arg_is_implicit_call(n, lang, code).is_some() {
+                *calls += 1;
+            }
             if !in_call {
                 *outside = true;
             }
@@ -214,6 +218,14 @@ fn needs_tree(ast: Node, lang: &str, code: &[u8]) -> bool {
     let mut outside = false;
     scan(ast, lang, code, false, &mut calls, &mut outside);
     calls >= 2 || (calls == 1 && outside)
+}
+
+/// The method name when `n` is a bare Ruby call argument that is not a local.
+fn ruby_arg_is_implicit_call(n: Node, lang: &str, code: &[u8]) -> Option<String> {
+    if lang != "ruby" || n.kind() != "identifier" || n.parent()?.kind() != "argument_list" {
+        return None;
+    }
+    ruby_implicit_call_arg(n, lang, code)
 }
 
 fn is_value_leaf(kind: &str) -> bool {
@@ -306,6 +318,10 @@ impl Builder<'_> {
         if self.bail {
             return;
         }
+        if let Some(callee) = ruby_arg_is_implicit_call(n, self.lang, self.code) {
+            self.push_implicit_call(n, callee, cur, slot);
+            return;
+        }
         match lookup(self.lang, n.kind()) {
             Kind::Function => return,
             Kind::CallMacro => {
@@ -355,6 +371,32 @@ impl Builder<'_> {
             }
             self.walk(ch, cur, slot);
         }
+    }
+
+    /// A bare Ruby argument that is a zero-argument method call
+    /// ([`ruby_implicit_call_arg`]): a call with no labels of its own, so only
+    /// its callee summary can say what it returns.
+    fn push_implicit_call(&mut self, n: Node, callee: String, parent: Option<u16>, slot: CallSlot) {
+        if self.tree.calls.len() >= u16::MAX as usize {
+            self.bail = true;
+            return;
+        }
+        self.tree.calls.push(NestedCall {
+            callee,
+            span: (n.start_byte(), n.end_byte()),
+            parent,
+            slot: if parent.is_some() {
+                slot
+            } else {
+                CallSlot::Other
+            },
+            arity: Some(0),
+            exact_arg: parent.is_some(),
+            label_source: Cap::empty(),
+            label_strip: Cap::empty(),
+            label_sink: false,
+            labelled: false,
+        });
     }
 
     fn walk_call(&mut self, call: Node, parent: Option<u16>, slot: CallSlot) {

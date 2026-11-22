@@ -1,0 +1,14 @@
+{
+  "description": "connection.quote output interpolated into connection.execute",
+  "tags": ["taint", "sqli", "ruby", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [1, 8],
+      "notes": "Adapter quoting is a SQL sanitizer"
+    }
+  ]
+}
