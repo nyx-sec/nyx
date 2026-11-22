@@ -1261,6 +1261,43 @@ fn bench_type_facts_chained_callee_js(c: &mut Criterion) {
     });
 }
 
+/// Cold counterpart of `type_facts_chained_callee_js`: every iteration sees
+/// a callee text the per-thread memo has never held, so each predicate pays
+/// the normalisation plus the memo insert once, as a file whose long callee
+/// texts each appear once or twice would.  The text is built in the batch
+/// setup and excluded from the timing.
+fn bench_type_facts_chained_callee_js_cold(c: &mut Criterion) {
+    use nyx_scanner::ssa::type_facts::{
+        is_int_producing_callee, is_safe_string_producing_callee, peel_identity_suffix,
+    };
+    use nyx_scanner::symbol::Lang;
+    let mut serial = 0usize;
+    c.bench_function("type_facts_chained_callee_js_cold", |b| {
+        b.iter_batched(
+            || {
+                serial += 1;
+                let mut callee = String::from("wrap(function(){");
+                for i in 0..400 {
+                    callee.push_str(&format!(
+                        "var v{i}=f{serial}_{i}(a({i}),b[{i}]);if(v{i}){{g(v{i});}}"
+                    ));
+                }
+                callee.push_str("}).then");
+                callee
+            },
+            |callee| {
+                let callee = std::hint::black_box(callee.as_str());
+                let mut hits = 0usize;
+                hits += usize::from(is_int_producing_callee(Some(Lang::JavaScript), callee));
+                hits += usize::from(is_safe_string_producing_callee(callee));
+                hits += peel_identity_suffix(callee).len();
+                hits
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
 /// Wide fan-in: many sources joined through branches and loops so SSA
 /// variables carry 10+ origins and every worklist join merges origin
 /// sets.  Exercises `merge_origins` / `push_origin_bounded` and the
@@ -1332,6 +1369,7 @@ criterion_group!(
     bench_surface_build_corpus,
     bench_surface_detect_express_minified_js,
     bench_type_facts_chained_callee_js,
+    bench_type_facts_chained_callee_js_cold,
     bench_taint_many_origins_join_c,
 );
 criterion_main!(benches);
