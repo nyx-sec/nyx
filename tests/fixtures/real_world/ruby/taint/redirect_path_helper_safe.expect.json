@@ -1,0 +1,14 @@
+{
+  "description": "Named route helpers build host-relative paths, so redirecting to one is not an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "rails",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

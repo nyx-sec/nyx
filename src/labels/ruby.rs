@@ -341,6 +341,15 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: true,
     },
+    // Named route helpers (`things_path(page: 1)`) build a host-relative path
+    // with escaped segments, so redirecting to one cannot leave the site.
+    // `_url` helpers are excluded: they accept `host:`.  A project function
+    // of the same name resolves through its summary first and wins.
+    LabelRule {
+        matchers: &["~_path"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &[
             "validate_redirect_url",

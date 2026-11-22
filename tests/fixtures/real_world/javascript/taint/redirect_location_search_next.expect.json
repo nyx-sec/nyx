@@ -1,0 +1,24 @@
+{
+  "description": "A next parameter read from location.search and assigned to location is a DOM open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "dom"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        3,
+        3
+      ],
+      "evidence_contains": [],
+      "notes": "A next parameter read from location.search and assigned to location is a DOM open redirect"
+    }
+  ]
+}

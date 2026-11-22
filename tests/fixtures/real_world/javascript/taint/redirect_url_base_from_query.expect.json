@@ -1,0 +1,25 @@
+{
+  "description": "A redirect URL built from a request-controlled base is an open redirect even after searchParams.append",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "express",
+    "url"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "A redirect URL built from a request-controlled base is an open redirect even after searchParams.append"
+    }
+  ]
+}

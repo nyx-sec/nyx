@@ -1,0 +1,14 @@
+{
+  "description": "The page own origin is not attacker chosen, so rebuilding the current URL from it is not an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "dom",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

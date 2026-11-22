@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 979
+    "corpus_size": 985
   },
   "cases": [
     {
@@ -31149,6 +31149,197 @@
       ],
       "disabled": false,
       "notes": "getContextPath is the deployment mount prefix, not request text, so a redirect built from it is not an open redirect"
+    },
+    {
+      "case_id": "rb-ts-redirect-param-url",
+      "file": "ruby/open_redirect/redirect_param_url.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "rails"
+      ],
+      "disabled": false,
+      "notes": "A request parameter used as a redirect target is an open redirect"
+    },
+    {
+      "case_id": "rb-ts-redirect-path-helper-safe",
+      "file": "ruby/safe/redirect_path_helper_safe.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "rails",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "Named route helpers build host-relative paths, so redirecting to one is not an open redirect"
+    },
+    {
+      "case_id": "js-ts-redirect-url-base-from-query",
+      "file": "javascript/open_redirect/redirect_url_base_from_query.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "express",
+        "url"
+      ],
+      "disabled": false,
+      "notes": "A redirect URL built from a request-controlled base is an open redirect even after searchParams.append"
+    },
+    {
+      "case_id": "js-ts-redirect-searchparams-append-safe",
+      "file": "javascript/safe/redirect_searchparams_append_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "express",
+        "url",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "Query parameters appended to a constant URL cannot change the redirect destination"
+    },
+    {
+      "case_id": "js-ts-redirect-location-search-next",
+      "file": "javascript/open_redirect/redirect_location_search_next.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "dom"
+      ],
+      "disabled": false,
+      "notes": "A next parameter read from location.search and assigned to location is a DOM open redirect"
+    },
+    {
+      "case_id": "js-ts-redirect-location-origin-safe",
+      "file": "javascript/safe/redirect_location_origin_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "dom",
+        "no-source"
+      ],
+      "disabled": false,
+      "notes": "The page own origin is not attacker chosen, so rebuilding the current URL from it is not an open redirect"
     }
   ]
 }

@@ -3281,7 +3281,7 @@ fn payload_positions_aligned(lang: Lang, info: &crate::cfg::NodeInfo) -> bool {
 /// Check whether any variable that reaches the sink's payload is directly
 /// derived from a Source node in the same function (via simple def-use
 /// chain).
-fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
     let sink_info = &ctx.cfg[sink];
     let sink_func = sink_info.ast.enclosing_func.as_deref();
 
@@ -3300,6 +3300,18 @@ fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
             continue;
         }
         if !node_introduces_untrusted_data(info) {
+            continue;
+        }
+        // A source that carries none of the sink's capabilities (the page's
+        // own `window.location.origin` read by a redirect sink) is not data
+        // the sink can be attacked through.
+        if !sink_caps.is_empty()
+            && !info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(bits) if bits.intersects(sink_caps)))
+        {
             continue;
         }
         // Source node defines a variable that the sink reads → source-derived
@@ -3989,7 +4001,7 @@ impl CfgAnalysis for UnguardedSink {
             // LOW: wrapper function (param-only, non-entrypoint)
 
             let has_taint = taint_confirms_sink(ctx, *sink);
-            let source_derived = sink_arg_is_source_derived(ctx, *sink);
+            let source_derived = sink_arg_is_source_derived(ctx, *sink, sink_caps);
 
             // If sink args are all constants (including one-hop constant bindings)
             // and taint didn't confirm, this is a false positive, skip it.
