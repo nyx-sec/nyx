@@ -3884,9 +3884,25 @@ fn url_target_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: C
                 && n.ast.span.0 < info.ast.span.0
         })
         .collect();
-    defs.iter()
+    if defs
+        .iter()
         .all(|&i| ctx.cfg[i].string_prefix.as_deref().is_some_and(locks))
         && defs_cover_every_path(ctx, &defs, sink)
+    {
+        return true;
+    }
+    // The taint engine locks the target from the abstract string facts as
+    // well (`"/" + strings.Trim(p, "/\\")` keeps the origin), which no single
+    // definition's literal prefix shows.
+    ctx.body_const_facts.is_some_and(|facts| {
+        crate::taint::ssa_transfer::url_sink_origin_locked_by_facts(
+            &facts.ssa,
+            ctx.cfg,
+            ctx.lang,
+            sink,
+            node_introduces_untrusted_data,
+        )
+    })
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.

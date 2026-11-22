@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 977
   },
   "cases": [
     {
@@ -30961,6 +30961,146 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "cve-go-2025-71405-vulnerable",
+      "file": "cve_corpus/go/CVE-2025-71405/vulnerable.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          42,
+          42
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          33,
+          33
+        ]
+      ],
+      "tags": [
+        "cve",
+        "chi",
+        "open_redirect",
+        "redirect"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-71405: go-chi/chi RedirectSlashes builds the redirect target from r.URL.Path (and r.Host) so a path such as //evil.example/ redirects off-site through http.Redirect. File as of d7034fd. MIT."
+    },
+    {
+      "case_id": "cve-go-2025-71405-patched",
+      "file": "cve_corpus/go/CVE-2025-71405/patched.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "chi",
+        "open_redirect",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-71405 patched counterpart (file as of 6eb3588, which completes 1be7ad9): backslashes are rewritten to '/', then '/' + strings.Trim(path, \"/\") leaves a first character that is neither '/' nor '\\'. Locks the origin through the string domain's character exclusions. The 1be7ad9 file alone trims only '/' and still allows /\\evil.example (CVE-2025-69725), which the engine rightly keeps flagging. MIT."
+    },
+    {
+      "case_id": "go-redirect-trim-forward-only-001",
+      "file": "go/open_redirect/redirect_trim_forward_slash_only.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "trim"
+      ],
+      "disabled": false,
+      "notes": "\"/\" + strings.Trim(r.URL.Path, \"/\") keeps a possible leading backslash, so /\\evil.example still redirects off-site."
+    },
+    {
+      "case_id": "go-safe-redirect-trim-both-001",
+      "file": "go/safe/safe_redirect_trim_both_separators.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "trim",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of go-redirect-trim-forward-only-001: the cutset holds both '/' and '\\\\', so the character after the leading '/' is neither, and the redirect stays on this origin."
     }
   ]
 }

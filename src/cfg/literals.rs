@@ -2700,8 +2700,39 @@ pub(super) fn strip_literal_quotes(raw: &str, node: Node, code: &[u8]) -> Option
         if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
             return Some(raw[1..raw.len() - 1].to_string());
         }
+        // Go raw string: the text between the backticks is the value, with
+        // no escapes.  See `extract_arg_raw_string_mask`.
+        if first == b'`' && last == b'`' && node.kind() == "raw_string_literal" {
+            return Some(raw[1..raw.len() - 1].to_string());
+        }
     }
     None
+}
+
+/// Positional arguments of `call_node` that are Go raw string literals, as the
+/// bit mask stored in `CallMeta::arg_raw_string_mask`.  A raw literal's
+/// recorded text is its value, while an interpreted literal's is the source
+/// text with its escapes unread, so a reader of
+/// [`extract_arg_string_literals`] needs the mask to tell a raw pair of
+/// backslashes from an interpreted escaped backslash (one character).
+/// Indexed like [`extract_arg_uses`].
+pub(super) fn extract_arg_raw_string_mask(call_node: Node) -> u64 {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return 0;
+    };
+    let mut mask = 0u64;
+    let mut pos = 0usize;
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        if child.kind() == "variadic_argument" {
+            return 0;
+        }
+        if pos < 64 && child.kind() == "raw_string_literal" {
+            mask |= 1 << pos;
+        }
+        pos += 1;
+    }
+    mask
 }
 
 /// For each argument of `call_node`, find the callee name if that argument
