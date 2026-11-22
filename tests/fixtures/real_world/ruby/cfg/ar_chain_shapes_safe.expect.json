@@ -1,0 +1,26 @@
+{
+  "description": "Chained and modifier-if ActiveRecord statements where every where/joins/pluck call has a hash or symbol argument, including where.not(hash) and a nested Account.where(hash); the statement-wide safe-shape proof must clear them.",
+  "tags": [
+    "active-record",
+    "rails",
+    "sqli",
+    "chain",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

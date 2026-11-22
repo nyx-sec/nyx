@@ -2337,6 +2337,8 @@ impl<'a> ParsedFile<'a> {
             state::collect_closure_released_var_names(&self.file_cfg.bodies, caller_lang);
         let empty_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         let module_constants = cfg_analysis::module_constant_names(&self.file_cfg.bodies);
+        let module_constant_collections =
+            cfg_analysis::module_constant_collection_names(&self.file_cfg.bodies);
         for body in &self.file_cfg.bodies {
             let body_taint: Vec<_> = taint_results
                 .iter()
@@ -2379,6 +2381,7 @@ impl<'a> ParsedFile<'a> {
                 body_params: &body.meta.params,
                 captured_params: &captured_params,
                 module_constants: Some(&module_constants),
+                module_constant_collections: Some(&module_constant_collections),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
                 // Layer C4 mirror at the CFG-emission point: Python

@@ -14,7 +14,7 @@ use super::{
     find_constructor_type_child, first_call_ident, rmw_assignment, rmw_target_define,
     rmw_target_reads, root_receiver_text, text_of,
 };
-use crate::labels::{Cap, Kind, lookup};
+use crate::labels::{Cap, DataLabel, Kind, lookup};
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
@@ -905,46 +905,129 @@ pub(super) fn java_chain_arg0_kind_for_method(
     None
 }
 
-/// Walk a Ruby method-chain receiver-side looking for the inner call whose
-/// method identifier matches one of `target_methods`, then return that
-/// inner call's [`arg0_kind_and_interpolation`].  Used when the CFG node
-/// represents a chained expression like `Model.where(...).preload(...).to_a`
-///, the outermost call (`to_a`) has no arguments, so the shape suppressor
-/// must reach down the chain to inspect `where`'s arg 0.
+/// Decide whether every ActiveRecord query call in a Ruby statement has a
+/// parameter-safe argument shape, so the statement may carry a synthesised
+/// `Sanitizer(SQL_QUERY)`.
 ///
-/// Conservative: returns `None` if the chain doesn't contain a matching
-/// method, so callers fall through to the no-suppression path.
-pub(super) fn ruby_chain_arg0_for_method(
-    expr: Node,
-    target_methods: &[&str],
+/// The CFG node for a Ruby statement stands for the whole expression:
+/// `Status.where.not(a: 1).joins(:b).merge(Account.where("n = '#{q}'"))`
+/// is one node, and the label machinery may have picked any call in it as the
+/// sink.  The synthesised sanitizer clears the whole node, so the proof must
+/// cover the whole statement rather than one call:
+///
+/// * at least one AR query method (`where`, `order`, `group`, `having`,
+///   `joins`, `pluck`) call must be present;
+/// * every such call must have a safe arg 0 (hash, symbol, array, or a string
+///   without interpolation) or no arguments at all (`where` followed by
+///   `.not(hash)`; the `not` call is checked like `where`);
+/// * no other SQL-labelled call (`find_by_sql`, `execute`, ...) may appear,
+///   since the sanitizer would mask it.
+///
+/// Nested function literals (`do` blocks, lambdas) are separate CFG bodies and
+/// are not walked.
+pub(super) fn ruby_statement_ar_queries_safe(
+    scope: Node,
     code: &[u8],
-) -> Option<(String, bool)> {
-    let n = unwrap_parens(expr);
-    if n.kind() == "call"
-        && let Some(method) = n.child_by_field_name("method")
-        && let Some(name) = text_of(method, code)
-        && target_methods.iter().any(|m| *m == name)
-    {
-        return arg0_kind_and_interpolation(n);
-    }
-    // Recurse into the receiver chain (`call.receiver` → next call up).
-    if n.kind() == "call"
-        && let Some(recv) = n
-            .child_by_field_name("receiver")
-            .or_else(|| n.child_by_field_name("object"))
-        && let Some(found) = ruby_chain_arg0_for_method(recv, target_methods, code)
-    {
-        return Some(found);
-    }
-    // Also descend into named children to handle wrapping (assignment RHS,
-    // begin-end blocks, parenthesised expressions, etc.).
-    let mut cursor = n.walk();
-    for c in n.named_children(&mut cursor) {
-        if let Some(found) = ruby_chain_arg0_for_method(c, target_methods, code) {
-            return Some(found);
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> bool {
+    const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
+    const AR_FRAGMENT_METHODS: &[&str] = &[
+        "update_all",
+        "delete_all",
+        "destroy_all",
+        "reorder",
+        "rewhere",
+        "select",
+        "from",
+        "lock",
+        "calculate",
+        "sum",
+        "average",
+        "minimum",
+        "maximum",
+        "count",
+        "find_by",
+        "exists?",
+        "left_joins",
+        "left_outer_joins",
+    ];
+    let mut seen_ar = false;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "call" {
+            let method = n
+                .child_by_field_name("method")
+                .and_then(|m| text_of(m, code));
+            let is_not_on_where = method.as_deref() == Some("not")
+                && n.child_by_field_name("receiver")
+                    .map(unwrap_parens)
+                    .and_then(|r| {
+                        (r.kind() == "call")
+                            .then(|| r.child_by_field_name("method"))
+                            .flatten()
+                    })
+                    .and_then(|m| text_of(m, code))
+                    .as_deref()
+                    == Some("where");
+            let ar_method = method
+                .as_deref()
+                .filter(|m| AR_QUERY_METHODS.contains(m))
+                .or(is_not_on_where.then_some("not"));
+            if let Some(m) = ar_method {
+                seen_ar = true;
+                if let Some((kind, has_interp)) = arg0_kind_and_interpolation(n) {
+                    let lookup_name = if m == "not" { "where" } else { m };
+                    if !crate::labels::ruby::ar_query_safe_shape(lookup_name, &kind, has_interp) {
+                        return false;
+                    }
+                }
+            } else if let Some(m) = method {
+                // Relation methods that take a SQL fragment but are not in
+                // the proven set: `where(a: 1).update_all(params[:set])`.
+                // Their calls do not classify as sinks (the receiver
+                // segment is the inner `where`), so check the argument
+                // shape directly.
+                if AR_FRAGMENT_METHODS.contains(&m.as_str())
+                    && let Some((kind, has_interp)) = arg0_kind_and_interpolation(n)
+                    && !crate::labels::ruby::ar_query_safe_shape("where", &kind, has_interp)
+                {
+                    return false;
+                }
+                // Name the call by its own method and the nearest receiver
+                // segment only.  `call_ident_of` would fold the whole
+                // receiver chain in, so `where(a: 1).delete_all` would read
+                // as the AR call it wraps and trip this check.
+                let seg = n
+                    .child_by_field_name("receiver")
+                    .map(unwrap_parens)
+                    .and_then(|r| {
+                        if r.kind() == "call" {
+                            r.child_by_field_name("method")
+                                .and_then(|x| text_of(x, code))
+                        } else {
+                            text_of(r, code)
+                        }
+                    });
+                let id = match seg {
+                    Some(r) => format!("{r}.{m}"),
+                    None => m,
+                };
+                if crate::labels::classify_all("ruby", &id, extra)
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
+                {
+                    return false;
+                }
+            }
+        }
+        let mut cursor = n.walk();
+        for c in n.named_children(&mut cursor) {
+            if lookup("ruby", c.kind()) != Kind::Function {
+                stack.push(c);
+            }
         }
     }
-    None
+    seen_ar
 }
 
 fn subtree_has_interpolation(n: Node) -> bool {
@@ -4219,4 +4302,183 @@ mod orm_uid_ref_tests {
             assert!(!js_orm_query_arg0_is_uid_ref(k), "should reject {k}");
         }
     }
+}
+
+/// Whether a Go call's first argument is a `context.Context`.
+///
+/// Go database APIs that take a context put it before the SQL text
+/// (`db.Exec(ctx, query, args...)`), so a gate that names arg 0 as the
+/// payload has to move to arg 1 for these calls.  Recognised without type
+/// information: a call that produces a context (`context.Background()`,
+/// `context.TODO()`, `context.With*(..)`, `x.Context()`), and an identifier
+/// that the enclosing function declares as a parameter of type
+/// `context.Context` or binds from such a call with `:=`.  Anything else,
+/// including a plain string, is not a context.
+pub(super) fn go_leading_arg_is_context(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg0) = args.named_children(&mut cursor).next() else {
+        return false;
+    };
+    let arg0 = unwrap_parens(arg0);
+    match arg0.kind() {
+        "call_expression" => go_call_yields_context(arg0, code),
+        "identifier" => {
+            let Some(name) = text_of(arg0, code) else {
+                return false;
+            };
+            go_ident_is_context(arg0, &name, code)
+        }
+        _ => false,
+    }
+}
+
+fn go_call_yields_context(call: Node, code: &[u8]) -> bool {
+    let Some(f) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let Some(text) = text_of(f, code) else {
+        return false;
+    };
+    let text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(leaf) = text.strip_prefix("context.") {
+        return matches!(leaf, "Background" | "TODO") || leaf.starts_with("With");
+    }
+    // `r.Context()`, `t.Context()`: a method named Context taking no arguments.
+    text.ends_with(".Context")
+        && call
+            .child_by_field_name("arguments")
+            .is_some_and(|a| a.named_child_count() == 0)
+}
+
+fn go_is_context_type(ty: Node, code: &[u8]) -> bool {
+    text_of(ty, code).is_some_and(|t| t == "context.Context")
+}
+
+fn go_ident_is_context(use_node: Node, name: &str, code: &[u8]) -> bool {
+    // Nearest enclosing function; its parameters and `:=` bindings decide.
+    let mut cur = use_node.parent();
+    while let Some(n) = cur {
+        if matches!(
+            n.kind(),
+            "function_declaration" | "method_declaration" | "func_literal"
+        ) {
+            if let Some(params) = n.child_by_field_name("parameters") {
+                let mut pc = params.walk();
+                for p in params.named_children(&mut pc) {
+                    if p.kind() != "parameter_declaration" {
+                        continue;
+                    }
+                    let Some(ty) = p.child_by_field_name("type") else {
+                        continue;
+                    };
+                    if !go_is_context_type(ty, code) {
+                        continue;
+                    }
+                    let mut nc = p.walk();
+                    if p.children_by_field_name("name", &mut nc)
+                        .any(|id| text_of(id, code).is_some_and(|t| t == name))
+                    {
+                        return true;
+                    }
+                }
+            }
+            if let Some(body) = n.child_by_field_name("body") {
+                return go_body_binds_context(body, use_node.start_byte(), name, code);
+            }
+            return false;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+/// `name := <context-producing call>` before `before` in `body`, without
+/// descending into nested function literals.
+fn go_body_binds_context(body: Node, before: usize, name: &str, code: &[u8]) -> bool {
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        if n.start_byte() >= before {
+            continue;
+        }
+        if n.kind() == "short_var_declaration"
+            && let (Some(l), Some(r)) = (
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            )
+        {
+            let mut lc = l.walk();
+            let mut rc = r.walk();
+            let lhs: Vec<Node> = l.named_children(&mut lc).collect();
+            let rhs: Vec<Node> = r.named_children(&mut rc).collect();
+            if let Some(i) = lhs
+                .iter()
+                .position(|x| text_of(*x, code).is_some_and(|t| t == name))
+                && let Some(call) = rhs.get(i.min(rhs.len().saturating_sub(1)))
+                && call.kind() == "call_expression"
+                && go_call_yields_context(*call, code)
+            {
+                return true;
+            }
+        }
+        if n.kind() == "func_literal" {
+            continue;
+        }
+        let mut c = n.walk();
+        for ch in n.named_children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    false
+}
+
+/// Whether the right-hand side bound by `ast` is an array / list / tuple
+/// literal made only of string (without interpolation) and number literals.
+pub(super) fn literal_scalar_collection_rhs(ast: Node, lang: &str, code: &[u8]) -> bool {
+    fn collection_of_scalars(val: Node, code: &[u8]) -> bool {
+        if !matches!(val.kind(), "array" | "list" | "tuple") {
+            return false;
+        }
+        let mut c = val.walk();
+        val.named_children(&mut c).all(|e| {
+            matches!(e.kind(), "comment")
+                || (is_syntactic_literal(e, code)
+                    && !matches!(
+                        e.kind(),
+                        "true"
+                            | "false"
+                            | "null"
+                            | "nil"
+                            | "none"
+                            | "null_literal"
+                            | "boolean"
+                            | "boolean_literal"
+                    ))
+        })
+    }
+    let direct = ast
+        .child_by_field_name("value")
+        .or_else(|| ast.child_by_field_name("right"));
+    if let Some(v) = direct {
+        return collection_of_scalars(v, code);
+    }
+    if !matches!(
+        lookup(lang, ast.kind()),
+        Kind::CallWrapper | Kind::Assignment
+    ) {
+        return false;
+    }
+    let mut cursor = ast.walk();
+    ast.children(&mut cursor).any(|child| {
+        child
+            .child_by_field_name("value")
+            .or_else(|| {
+                matches!(lookup(lang, child.kind()), Kind::Assignment)
+                    .then(|| child.child_by_field_name("right"))
+                    .flatten()
+            })
+            .is_some_and(|v| collection_of_scalars(v, code))
+    })
 }

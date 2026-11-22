@@ -1,0 +1,37 @@
+{
+  "description": "Sequelize.literal with an interpolated request value must fire, also when a constant literal sits beside it in the same statement.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "literal",
+    "nested-sink",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "Sequelize.literal with an interpolated request value must fire, also when a constant literal sits beside it in the same statement."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "Sequelize.literal with an interpolated request value must fire, also when a constant literal sits beside it in the same statement."
+    }
+  ]
+}

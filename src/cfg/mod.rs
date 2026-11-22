@@ -49,7 +49,8 @@ use helpers::{
     collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
     find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
     first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
+    is_subscript_kind, nested_member_sink_calls, root_member_receiver, subscript_components,
+    subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -71,23 +72,25 @@ use imports::{
     collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
     extract_promisify_aliases, extract_python_import_paths, rust_bare_join_crate_prefix,
 };
+use literals::go_leading_arg_is_context;
 #[cfg(test)]
 use literals::has_sql_placeholders;
+use literals::literal_scalar_collection_rhs;
 use literals::{
-    ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    destination_field_reading_source, detect_go_replace_call_sanitizer,
-    detect_rust_replace_chain_sanitizer, extract_arg_bare_name_mask, extract_arg_callees,
-    extract_arg_string_literals, extract_arg_string_prefixes, extract_arg_uses,
-    extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
-    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
-    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
-    find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
+    ParamQueryShape, call_has_arg_at, call_ident_of, def_use, destination_field_reading_source,
+    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer,
+    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_string_literals,
+    extract_arg_string_prefixes, extract_arg_uses, extract_const_keyword_arg,
+    extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
+    extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
+    extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
+    find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
     js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
     js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
     js_positional_arity, js_shell_option_argv_positions, js_sql_template_raw_splices,
-    parameterized_query_shape, python_positional_arity, ruby_chain_arg0_for_method,
+    parameterized_query_shape, python_positional_arity, ruby_statement_ar_queries_safe,
     walk_chain_inner_call_args,
 };
 use params::{
@@ -880,6 +883,20 @@ pub struct HoistedSink {
     pub arg_string_literals: Vec<Option<String>>,
 }
 
+impl HoistedSink {
+    /// Whether every payload position of the inner sink call holds a captured
+    /// constant string literal.  `payload_args = Some(non-empty)` lists the
+    /// positions to check; `None` or empty means every argument is a payload,
+    /// so every recorded argument must be a literal and there must be at least
+    /// one (an empty list is unproven).
+    pub fn is_constant(&self) -> bool {
+        crate::cfg_analysis::guards::payload_positions_all_literal(
+            &self.payload_args,
+            &self.arg_string_literals,
+        )
+    }
+}
+
 /// One gate's contribution at a call site whose callee matches multiple
 /// gates.  The SSA taint engine processes each filter independently so a
 /// `fetch({url: tainted}, {body: tainted})` flow surfaces as one SSRF
@@ -913,6 +930,12 @@ pub struct TaintMeta {
     /// Raw text of a constant/literal RHS when this node defines a variable
     /// from a syntactic literal with no uses. Used by SSA constant propagation.
     pub const_text: Option<String>,
+    /// The node binds `defines` to an array / list / tuple literal whose
+    /// elements are all string or number literals, with no uses
+    /// (`const NAMES = ["a", "b"]`).  A loop over such a collection only ever
+    /// binds those literals.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub const_collection: bool,
     pub defines: Option<String>, // variable written by this stmt
     pub uses: Vec<String>,       // variables read
     /// Additional variable definitions from destructuring patterns.
@@ -3688,6 +3711,11 @@ pub(super) fn push_node<'a>(
     //       (a JSON_PARSE / HTML_ESCAPE cap on the parsed *result* is
     //       unrelated to the inner sink's path/query/command argument),
     //       and only fires when no Sink label is present yet.
+    // Provenance for a Sink label that came from a call nested inside this
+    // node (a wrapper's callback body, or an argument position) rather than
+    // the node's own callee.  Consumed by the CFG node's
+    // `CallMeta.hoisted_sink`.
+    let mut hoisted_sink: Option<Box<HoistedSink>> = None;
     let outer_has_sink_label = labels.iter().any(|l| matches!(l, DataLabel::Sink(_)));
     if !outer_has_sink_label
         && matches!(
@@ -3758,6 +3786,43 @@ pub(super) fn push_node<'a>(
                 outer_callee = Some(text.clone());
                 text = inner_text;
                 inner_callee_span = Some((inner_node.start_byte(), inner_node.end_byte()));
+                // JS/TS: a sink call nested in an argument position
+                // (`User.findAll({ where: Sequelize.literal(`const`) })`)
+                // has payload positions of its own, which the outer call's
+                // `sink_payload_args` / `arg_string_literals` do not describe.
+                // Record the nested sink calls so the unguarded-sink check can
+                // tell a constant payload from a tainted one.  Every sink call
+                // the statement names as a member expression is a candidate;
+                // all must be constant, so a constant sink cannot vouch for a
+                // tainted one beside it.
+                if inner_is_sink
+                    && matches!(lang, "javascript" | "typescript" | "tsx")
+                    && matches!(
+                        lookup(lang, inner_node.kind()),
+                        Kind::CallFn | Kind::CallMethod
+                    )
+                {
+                    let mut calls = nested_member_sink_calls(ast, lang, code, extra);
+                    if let Some(calls) = calls.as_mut()
+                        && !calls.iter().any(|c| c.id() == inner_node.id())
+                    {
+                        calls.push(inner_node);
+                    }
+                    // A sink member expression that is not a call callee has no
+                    // call provenance; leave the node unproven then.
+                    if let Some(mut calls) = calls {
+                        calls.sort_by_key(|c| c.start_byte());
+                        let mut all: Vec<HoistedSink> = calls
+                            .into_iter()
+                            .map(|c| compute_hoisted_sink(c, lang, code))
+                            .collect();
+                        // Recorded only when every one is constant: a node with
+                        // a non-constant sink keeps the checks it had before.
+                        if all.iter().all(HoistedSink::is_constant) {
+                            hoisted_sink = Some(Box::new(all.swap_remove(0)));
+                        }
+                    }
+                }
                 // Inner-nested-sink argument attribution.  The Sink label was
                 // contributed by a call nested inside a larger, non-sink outer
                 // expression (`Ok(Reader { meta: <tainted>, h:
@@ -3828,10 +3893,6 @@ pub(super) fn push_node<'a>(
     // names, so that call cannot anchor the node's call nesting.
     let labelled_by_assign_target = unlabelled_before_target_check && !labels.is_empty();
 
-    // Provenance for a Sink label hoisted onto a wrapper from a callback body
-    // (populated in the hoist block below).  Consumed by the CFG node's
-    // `CallMeta.hoisted_sink`.
-    let mut hoisted_sink: Option<Box<HoistedSink>> = None;
     // Set when the hoist block below rewrites `text` to a member expression
     // found inside the node rather than the node's own callee.
     let mut text_from_member_label = false;
@@ -4277,6 +4338,19 @@ pub(super) fn push_node<'a>(
                             gm.payload_args.to_vec()
                         };
 
+                    // Go database calls that lead with a `context.Context`
+                    // (`db.Exec(ctx, query, args...)`) carry the SQL one
+                    // position later than the context-free forms the gate
+                    // describes.
+                    if lang == "go"
+                        && payload_vec.as_slice() == [0]
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY))
+                        && gm.object_destination_fields.is_empty()
+                        && go_leading_arg_is_context(cn, code)
+                    {
+                        payload_vec = vec![1];
+                    }
+
                     // Destination-aware gates: when the gate declares
                     // destination-bearing object fields and a payload-position
                     // arg is an object literal at call time, narrow sink-taint
@@ -4673,22 +4747,8 @@ pub(super) fn push_node<'a>(
             .iter()
             .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SQL_QUERY)))
     {
-        // Identify the matched AR query method from the callee `text`
-        // (e.g. "Issue.where" → "where", "joins(:project).where" → "where").
-        let leaf = text.rsplit(['.', ':']).next().unwrap_or(&text);
-        const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
-        if AR_QUERY_METHODS.contains(&leaf) {
-            // Try the outer call's arg 0 first (handles direct calls);
-            // fall back to walking the receiver chain for collapsed
-            // chained-call CFG nodes.
-            let shape = call_ast
-                .and_then(arg0_kind_and_interpolation)
-                .or_else(|| scope.and_then(|s| ruby_chain_arg0_for_method(s, &[leaf], code)));
-            if let Some((arg0_kind, has_interp)) = shape
-                && crate::labels::ruby::ar_query_safe_shape(&text, &arg0_kind, has_interp)
-            {
-                labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
-            }
+        if scope.is_some_and(|s| ruby_statement_ar_queries_safe(s, code, extra)) {
+            labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
         }
     }
 
@@ -4894,6 +4954,11 @@ pub(super) fn push_node<'a>(
     } else {
         None
     };
+
+    let const_collection = rmw.is_none()
+        && defines.is_some()
+        && uses.is_empty()
+        && literal_scalar_collection_rhs(ast, lang, code);
 
     let callee = if kind == StmtKind::Call || !labels.is_empty() {
         Some(text.clone())
@@ -5328,6 +5393,7 @@ pub(super) fn push_node<'a>(
         taint: TaintMeta {
             labels,
             const_text,
+            const_collection,
             defines,
             uses,
             extra_defines,
@@ -11118,6 +11184,8 @@ pub(crate) fn build_cfg<'a>(
         python_imports
     };
 
+    retain_sound_const_collections(&mut bodies, tree.root_node(), lang, code);
+
     // Clear the per-file DFS-index map so it does not leak to the next
     // file built on this thread.
     clear_fn_dfs_indices();
@@ -11171,6 +11239,100 @@ pub(crate) fn build_cfg<'a>(
         entry_kinds,
         safe_lookup_fields,
         class_constant_scalars,
+    }
+}
+
+/// Keep `TaintMeta::const_collection` only on file-scope collections that
+/// nothing else in the file can reach.
+///
+/// A literal collection is constant for a loop over it only while it is never
+/// mutated, aliased or handed to other code.  Every identifier in the file
+/// spelled like the collection must be its own declaration or the iterable of
+/// a `for ... of/in` loop; any other mention (a `.push` call, an argument, an
+/// export, a shadowing declaration) clears the flag.  The scan runs once per
+/// file and only when a flagged collection exists.
+fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str, code: &[u8]) {
+    if !matches!(lang, "javascript" | "typescript" | "tsx" | "python") {
+        for body in bodies.iter_mut() {
+            for info in body.graph.node_weights_mut() {
+                info.taint.const_collection = false;
+            }
+        }
+        return;
+    }
+    let mut names: HashSet<String> = HashSet::new();
+    for body in bodies.iter() {
+        for info in body.graph.node_weights() {
+            if info.taint.const_collection
+                && let Some(d) = info.taint.defines.as_deref()
+            {
+                names.insert(d.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+        if n.child_count() != 0 || !(n.kind().ends_with("identifier") || n.kind() == "constant") {
+            continue;
+        }
+        let Some(text) = text_of(n, code) else {
+            continue;
+        };
+        if !names.contains(&text) {
+            continue;
+        }
+        let allowed = n.parent().is_some_and(|p| {
+            let field_is = |f: &str| p.child_by_field_name(f).map(|c| c.id()) == Some(n.id());
+            match p.kind() {
+                // `const NAMES = [..]`.  An exported declaration is
+                // importable, and another module may mutate it.
+                "variable_declarator" => {
+                    field_is("name")
+                        && !p
+                            .parent()
+                            .and_then(|d| d.parent())
+                            .is_some_and(|e| e.kind() == "export_statement")
+                }
+                // `NAMES = [..]` (Python).  A public module-level list can be
+                // mutated by any importer; only private names and immutable
+                // tuples are provably constant.
+                "assignment" => {
+                    field_is("left")
+                        && (text.starts_with('_')
+                            || p.child_by_field_name("right")
+                                .is_some_and(|r| r.kind() == "tuple"))
+                }
+                // `for (const x of NAMES)` / `for x in NAMES:`
+                "for_in_statement" | "for_statement" => field_is("right"),
+                _ => false,
+            }
+        });
+        if !allowed {
+            names.remove(&text);
+            if names.is_empty() {
+                break;
+            }
+        }
+    }
+    for body in bodies.iter_mut() {
+        for info in body.graph.node_weights_mut() {
+            if info.taint.const_collection
+                && !info
+                    .taint
+                    .defines
+                    .as_deref()
+                    .is_some_and(|d| names.contains(d))
+            {
+                info.taint.const_collection = false;
+            }
+        }
     }
 }
 

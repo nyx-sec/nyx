@@ -1,0 +1,25 @@
+{
+  "description": "update_all, reorder, select and count with hash, symbol or literal arguments stay quiet.",
+  "tags": [
+    "active-record",
+    "rails",
+    "sqli",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

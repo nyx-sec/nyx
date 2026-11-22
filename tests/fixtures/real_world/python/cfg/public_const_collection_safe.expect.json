@@ -1,0 +1,24 @@
+{
+  "description": "A private (underscore) list and a literal tuple cannot be changed by another module.",
+  "tags": [
+    "sqli",
+    "const-collection",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

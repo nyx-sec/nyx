@@ -1,0 +1,25 @@
+{
+  "description": "Project classes define eval() methods that only compare values; calls to cond.eval(...) must not match the Python eval sink by name.",
+  "tags": [
+    "eval",
+    "code-injection",
+    "name-collision",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "description": "exec on request data with a callback, inline or by name, must still fire.",
+  "tags": [
+    "cmdi",
+    "exec",
+    "callback",
+    "wrapper",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "exec on request data with a callback, inline or by name, must still fire."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "exec on request data with a callback, inline or by name, must still fire."
+    }
+  ]
+}

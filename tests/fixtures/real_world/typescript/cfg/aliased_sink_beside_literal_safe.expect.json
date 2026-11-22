@@ -1,0 +1,26 @@
+{
+  "description": "An aliased literal with a constant argument beside a constant literal stays constant.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "literal",
+    "nested-sink",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

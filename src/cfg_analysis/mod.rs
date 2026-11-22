@@ -219,6 +219,11 @@ pub struct AnalysisContext<'a> {
     /// that neither assigns it nor takes it as a parameter is a constant.
     /// `None` on call sites that have not threaded the set through.
     pub module_constants: Option<&'a HashSet<String>>,
+    /// File-scope names bound once to a literal collection of scalars and
+    /// read only as the iterable of a loop (see
+    /// [`module_constant_collection_names`]).  The binder of such a loop is a
+    /// constant.  `None` on call sites that have not threaded the set through.
+    pub module_constant_collections: Option<&'a HashSet<String>>,
 }
 
 /// Names bound once, at file scope, to a literal: `const FIND_USER = 'SELECT
@@ -251,6 +256,39 @@ pub fn module_constant_names(bodies: &[crate::cfg::BodyCfg]) -> HashSet<String> 
             (literal && def_counts.get(d) == Some(&1)).then(|| d.to_string())
         })
         .collect()
+}
+
+/// Names bound once, at file scope, to a literal collection of scalars
+/// (`const NAMES = ["a", "b"]`) that nothing else in the file touches.  The CFG
+/// builder clears `const_collection` unless every mention of the name is its
+/// declaration or a loop iterable, so the collection cannot be mutated, aliased
+/// or passed on and a loop variable over it only takes the literal elements.
+pub fn module_constant_collection_names(bodies: &[crate::cfg::BodyCfg]) -> HashSet<String> {
+    let Some(top) = bodies
+        .iter()
+        .find(|b| b.meta.kind == crate::cfg::BodyKind::TopLevel)
+    else {
+        return HashSet::new();
+    };
+    let mut candidates: HashSet<&str> = top
+        .graph
+        .node_weights()
+        .filter(|i| i.taint.const_collection)
+        .filter_map(|i| i.taint.defines.as_deref())
+        .collect();
+    if candidates.is_empty() {
+        return HashSet::new();
+    }
+    let mut def_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for body in bodies {
+        for info in body.graph.node_weights() {
+            for d in info.taint.defines.iter().chain(&info.taint.extra_defines) {
+                *def_counts.entry(d.as_str()).or_default() += 1;
+            }
+        }
+    }
+    candidates.retain(|c| def_counts.get(c) == Some(&1));
+    candidates.into_iter().map(str::to_string).collect()
 }
 
 impl<'a> AnalysisContext<'a> {

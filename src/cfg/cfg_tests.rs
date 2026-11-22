@@ -1285,6 +1285,7 @@ fn clone_preserves_all_sub_structs() {
                 v
             },
             const_text: Some("42".into()),
+            const_collection: false,
             defines: Some("r".into()),
             uses: vec!["a".into(), "b".into()],
             extra_defines: vec!["c".into()],
