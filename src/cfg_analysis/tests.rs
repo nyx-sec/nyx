@@ -3660,3 +3660,92 @@ fn unguarded_sink_url_builder_base_constant_is_a_lock() {
 ";
     assert_eq!(js_unguarded_sink_lines(src), Vec::<usize>::new());
 }
+
+fn java_unguarded_sink_lines(src: &[u8]) -> Vec<usize> {
+    unguarded_sink_file(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+#[test]
+fn unguarded_sink_println_on_declared_file_stream_is_not_a_response_write() {
+    let src = b"import java.io.*;
+class Copy {
+  void copy(File out, File f) throws Exception {
+    try (PrintStream ps = new PrintStream(new FileOutputStream(out));
+         BufferedReader br = new BufferedReader(new FileReader(f))) {
+      for (String l = br.readLine(); l != null; l = br.readLine()) {
+        ps.println(l);
+      }
+    }
+  }
+}
+";
+    assert!(
+        java_unguarded_sink_lines(src).is_empty(),
+        "{:?}",
+        java_unguarded_sink_lines(src)
+    );
+}
+
+#[test]
+fn unguarded_sink_println_on_response_writer_is_kept() {
+    let src = b"import java.io.*;
+class Echo {
+  void echo(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {
+    PrintWriter w = resp.getWriter();
+    String q = req.getParameter(\"q\");
+    w.println(q);
+  }
+}
+";
+    assert!(java_unguarded_sink_lines(src).contains(&6));
+}
+
+fn ruby_unguarded_sink_lines(src: &[u8]) -> Vec<usize> {
+    unguarded_sink_file(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE))
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+#[test]
+fn unguarded_sink_ruby_relation_tails_with_inert_arguments_are_safe() {
+    let src = b"class Cleaner
+  def run(from_account, ids)
+    from_account.statuses.where(id: ids).reorder(nil).find_each do |s|
+      s.touch
+    end
+  end
+
+  def sorted
+    CustomEmoji.local.reorder(CustomEmojiCategory.arel_table[:name].asc).order(shortcode: :asc)
+  end
+
+  def exists(domain)
+    Mention
+      .joins(:account)
+      .merge(Account.with_domain(domain))
+      .select(1).arel.exists
+  end
+end
+";
+    assert!(
+        ruby_unguarded_sink_lines(src).is_empty(),
+        "{:?}",
+        ruby_unguarded_sink_lines(src)
+    );
+}
+
+#[test]
+fn unguarded_sink_ruby_reorder_with_interpolation_is_kept() {
+    let src = b"class Search
+  def run(scope)
+    q = params[:q]
+    scope.where(id: 1).reorder(\"#{q} desc\").to_a
+  end
+end
+";
+    assert!(ruby_unguarded_sink_lines(src).contains(&4));
+}

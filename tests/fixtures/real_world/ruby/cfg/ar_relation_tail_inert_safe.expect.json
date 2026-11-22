@@ -1,0 +1,25 @@
+{
+  "description": "reorder(nil), select(1) and an Arel reorder after a hash where are inert tails, also on multi-line trailing-dot chains.",
+  "tags": [
+    "active-record",
+    "rails",
+    "sqli",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

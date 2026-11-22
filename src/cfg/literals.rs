@@ -951,7 +951,9 @@ pub(super) fn ruby_statement_ar_queries_safe(
                 seen_ar = true;
                 if let Some((kind, has_interp)) = arg0_kind_and_interpolation(n) {
                     let lookup_name = if m == "not" { "where" } else { m };
-                    if !crate::labels::ruby::ar_query_safe_shape(lookup_name, &kind, has_interp) {
+                    if !crate::labels::ruby::ar_query_safe_shape(lookup_name, &kind, has_interp)
+                        && !ruby_arg0_is_inert_value(n, code)
+                    {
                         return false;
                     }
                 }
@@ -964,6 +966,7 @@ pub(super) fn ruby_statement_ar_queries_safe(
                 if AR_FRAGMENT_METHODS.contains(&m.as_str())
                     && let Some((kind, has_interp)) = arg0_kind_and_interpolation(n)
                     && !crate::labels::ruby::ar_query_safe_shape("where", &kind, has_interp)
+                    && !ruby_arg0_is_inert_value(n, code)
                 {
                     return false;
                 }
@@ -982,9 +985,12 @@ pub(super) fn ruby_statement_ar_queries_safe(
                             text_of(r, code)
                         }
                     });
+                // An AR query segment (`where(a: 1).reorder(nil)`) is already
+                // judged by its own arg 0 above; folding it into the id would
+                // make `where.reorder` match the `where` sink rule.
                 let id = match seg {
-                    Some(r) => format!("{r}.{m}"),
-                    None => m,
+                    Some(r) if !AR_QUERY_METHODS.contains(&r.as_str()) => format!("{r}.{m}"),
+                    _ => m,
                 };
                 if crate::labels::classify_all("ruby", &id, extra)
                     .iter()
@@ -1002,6 +1008,55 @@ pub(super) fn ruby_statement_ar_queries_safe(
         }
     }
     seen_ar
+}
+
+/// Arg 0 of a Ruby call is a value that cannot carry a SQL fragment: a
+/// `nil`/boolean/numeric literal (`reorder(nil)`, `select(1)`) or an Arel
+/// expression built from `arel_table` / `Arel` (`reorder(T.arel_table[:n].asc)`),
+/// which Active Record renders and quotes itself.
+fn ruby_arg0_is_inert_value(call: Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg0) = args.named_children(&mut cursor).next() else {
+        return false;
+    };
+    let arg0 = unwrap_parens(arg0);
+    if matches!(arg0.kind(), "nil" | "true" | "false" | "integer" | "float") {
+        return true;
+    }
+    if subtree_has_interpolation(arg0) || !matches!(arg0.kind(), "call" | "element_reference") {
+        return false;
+    }
+    // Walk the receiver chain looking for `arel_table` or an `Arel` root.
+    let mut cur = arg0;
+    loop {
+        match cur.kind() {
+            "call" => {
+                if cur
+                    .child_by_field_name("method")
+                    .and_then(|m| text_of(m, code))
+                    .as_deref()
+                    == Some("arel_table")
+                {
+                    return true;
+                }
+                match cur.child_by_field_name("receiver") {
+                    Some(r) => cur = unwrap_parens(r),
+                    None => return false,
+                }
+            }
+            "element_reference" => match cur.child_by_field_name("object") {
+                Some(r) => cur = unwrap_parens(r),
+                None => return false,
+            },
+            "scope_resolution" | "constant" => {
+                return text_of(cur, code).is_some_and(|t| t == "Arel" || t.starts_with("Arel::"));
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn subtree_has_interpolation(n: Node) -> bool {

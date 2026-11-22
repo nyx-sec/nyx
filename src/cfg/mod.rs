@@ -3928,6 +3928,31 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // JS/TS: a sink call nested in the value an assignment or declaration
+    // binds (`where = { [Op.and]: [Sequelize.literal(`const`)] }`) names the
+    // node's callee but is not the statement's own call, so no payload
+    // positions describe it.  Record every nested sink call; the unguarded-sink
+    // check then proves the node constant only when all of them are.
+    if hoisted_sink.is_none()
+        && matches!(lang, "javascript" | "typescript" | "tsx")
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::Assignment | Kind::CallWrapper
+        )
+        && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+        && scope.and_then(|s| find_call_node(s, lang)).is_none()
+        && let Some(calls) = nested_member_sink_calls(ast, lang, code, extra)
+        && !calls.is_empty()
+    {
+        let mut all: Vec<HoistedSink> = calls
+            .into_iter()
+            .map(|c| compute_hoisted_sink(c, lang, code))
+            .collect();
+        if all.iter().all(HoistedSink::is_constant) {
+            hoisted_sink = Some(Box::new(all.swap_remove(0)));
+        }
+    }
+
     // Conditions can contain source/sink calls whose argument side effects are
     // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
     // Classify the condition call so output-parameter sources still lower as
@@ -5258,9 +5283,12 @@ pub(super) fn push_node<'a>(
 
     // Java receivers typed only by a declaration (injected fields, formals,
     // locals bound to an untyped call).  Skipped when the node already has a
-    // sink: type-qualified resolution only runs on calls with none.
+    // sink: type-qualified resolution only runs on calls with none.  The one
+    // exception is a node whose sinks are all response-write sinks
+    // (`println` / `write`): the declared type lets the taint engine drop the
+    // cap when the receiver is plainly not an HTTP response (a `PrintStream`).
     let receiver_decl_type =
-        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+        if lang == "java" && labels.iter().all(|l| html_escape_only_sink_or_non_sink(l)) {
             call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
         } else {
             None
@@ -5810,6 +5838,17 @@ pub(crate) fn java_declared_receiver_kind(
         // `createNativeQuery` statement API as the Hibernate session.
         "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
         "CallableStatement" => Some(TypeKind::DatabaseConnection),
+        // Output streams and writers that sit on a console, file, socket or
+        // memory buffer.  `PrintWriter` / `Writer` / `OutputStream` /
+        // `ServletOutputStream` / `BufferedWriter` are left out because
+        // servlet code declares the response writer with those types.
+        "PrintStream"
+        | "DataOutputStream"
+        | "ObjectOutputStream"
+        | "FileOutputStream"
+        | "FileWriter"
+        | "ByteArrayOutputStream"
+        | "StringWriter" => Some(TypeKind::FileHandle),
         "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
         // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
         // `dbf.parse`, and StAX parses straight off the factory
@@ -5827,6 +5866,16 @@ pub(crate) fn java_declared_receiver_kind(
             | TypeKind::Runtime) => Some(k),
             _ => None,
         },
+    }
+}
+
+/// True for labels that leave a Java call node open to declared-type receiver
+/// resolution: anything that is not a sink, or a sink carrying only
+/// `HTML_ESCAPE`.
+fn html_escape_only_sink_or_non_sink(label: &DataLabel) -> bool {
+    match label {
+        DataLabel::Sink(caps) => *caps == Cap::HTML_ESCAPE,
+        _ => true,
     }
 }
 

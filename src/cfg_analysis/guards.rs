@@ -907,6 +907,25 @@ fn go_fprintf_writer_non_response(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         .is_some_and(crate::ssa::type_facts::go_writer_is_non_response)
 }
 
+/// True when every cap on the sink is response-only and the call's receiver is
+/// declared as a type that cannot be an HTTP response
+/// ([`crate::cfg::NodeInfo::call`] `receiver_decl_type`).  Mirrors the taint
+/// engine's declared-receiver strip so the structural rule agrees with it.
+fn java_receiver_declared_non_response(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    ctx.cfg[sink]
+        .call
+        .receiver_decl_type
+        .as_ref()
+        .is_some_and(|kind| {
+            crate::taint::ssa_transfer::receiver_incompatible_sink_caps(kind, sink_caps)
+                .contains(sink_caps)
+        })
+}
+
 /// Suppress a `cfg-unguarded-sink` finding when every real argument to the
 /// sink is a value-use identifier proven *numeric-confined* by the CFG-level
 /// AST walk ([`crate::cfg::NodeInfo::numeric_confined_uses`]): each occurrence
@@ -4271,6 +4290,13 @@ impl CfgAnalysis for UnguardedSink {
             // writer type, so the flow is not confirmed here (`!has_taint`)
             // and the structural finding would be a twin false positive.
             if !has_taint && go_fprintf_writer_non_response(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // A response-write sink (`println` / `write`) on a receiver whose
+            // declared type is not an HTTP response (a `PrintStream` field):
+            // the taint engine strips the cap for the same receiver.
+            if !has_taint && java_receiver_declared_non_response(ctx, *sink, sink_caps) {
                 continue;
             }
 

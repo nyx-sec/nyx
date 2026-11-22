@@ -1,0 +1,26 @@
+{
+  "description": "A constant Sequelize.literal inside an object assigned to a variable is not a sink payload; the named replacement carries the user value.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "literal",
+    "nested-sink",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

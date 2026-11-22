@@ -13264,7 +13264,10 @@ fn type_safe_for_taint_sink(kind: &crate::ssa::type_facts::TypeKind, cap: Cap) -
 /// proves the sink doesn't apply. For example, `HTML_ESCAPE` sinks require
 /// an HTTP-response-like receiver, if the receiver is known to be
 /// Int/Bool/String, `HTML_ESCAPE` doesn't apply.
-fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink_caps: Cap) -> Cap {
+pub(crate) fn receiver_incompatible_sink_caps(
+    kind: &crate::ssa::type_facts::TypeKind,
+    sink_caps: Cap,
+) -> Cap {
     use crate::ssa::type_facts::TypeKind;
     let mut remove = Cap::empty();
     // HTML_ESCAPE / OPEN_REDIRECT / HEADER_INJECTION all require an HTTP
