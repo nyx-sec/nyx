@@ -976,16 +976,33 @@ pub(crate) fn first_member_label(
         None
     };
     let mut cursor = n.walk();
+    // A node carries one source label.  A source that omits some caps (the
+    // page's own origin parts, which are not redirect input) must not hide a
+    // full source later in the same expression, so keep scanning and union
+    // the caps of every source seen.
+    let mut partial: Option<crate::labels::Cap> = None;
     for child in n.children(&mut cursor) {
         let lbl = first_member_label(child, lang, code, extra_labels);
         if assign_target == Some(child.id()) && !matches!(lbl, Some(DataLabel::Sink(_))) {
             continue;
         }
-        if lbl.is_some() {
-            return lbl;
+        match lbl {
+            Some(DataLabel::Source(c)) if c != crate::labels::Cap::all() => {
+                partial = Some(partial.map_or(c, |p| p | c));
+            }
+            Some(DataLabel::Source(c)) => {
+                return Some(DataLabel::Source(partial.map_or(c, |p| p | c)));
+            }
+            Some(other) => {
+                return match partial {
+                    Some(p) => Some(DataLabel::Source(p)),
+                    None => Some(other),
+                };
+            }
+            None => {}
         }
     }
-    None
+    partial.map(DataLabel::Source)
 }
 
 /// Locate the inner sink CALL node whose `Sink` label [`first_member_label`]

@@ -1498,12 +1498,18 @@ fn starts_with_cs(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool 
 /// Word-boundary suffix match with configurable case sensitivity.
 #[inline]
 fn match_suffix_cs(text: &[u8], matcher: &[u8], case_sensitive: bool) -> bool {
-    // `~_path` is a name-suffix matcher: it fires on any callee whose leaf
-    // name ends with the text after the sigil (`things_path`), with no word
-    // boundary and a non-empty stem.  It keys on its last byte in the index
-    // like every other suffix matcher.
+    // `~_path` is a name-suffix matcher: it fires on a bare callee (no
+    // receiver or namespace) whose name ends with the text after the sigil
+    // (`things_path`), with no word boundary and a non-empty stem.  It keys
+    // on its last byte in the index like every other suffix matcher.
     if let Some(tail) = matcher.strip_prefix(b"~") {
-        return text.len() > tail.len() && ends_with_cs(text, tail, case_sensitive);
+        // Only a bare call (`things_path(..)`) is a route helper.  A callee
+        // with a receiver (`obj.relative_path`, `Mod::unescape_path`) is an
+        // ordinary method that can return attacker data.
+        return text.len() > tail.len()
+            && ends_with_cs(text, tail, case_sensitive)
+            && !text.contains(&b'.')
+            && !text.contains(&b':');
     }
     let (m, exact_only) = unpack_matcher(matcher);
     if ends_with_cs(text, m, case_sensitive) {

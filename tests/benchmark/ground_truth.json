@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 985
+    "corpus_size": 989
   },
   "cases": [
     {
@@ -31340,6 +31340,138 @@
       ],
       "disabled": false,
       "notes": "The page own origin is not attacker chosen, so rebuilding the current URL from it is not an open redirect"
+    },
+    {
+      "case_id": "js-ts-redirect-origin-plus-hash",
+      "file": "javascript/open_redirect/redirect_origin_plus_hash.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "dom"
+      ],
+      "disabled": false,
+      "notes": "An own-origin read joined with location.hash still lets the visitor pick the redirect host"
+    },
+    {
+      "case_id": "js-ts-redirect-origin-parts-safe",
+      "file": "javascript/safe/redirect_origin_parts_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "dom"
+      ],
+      "disabled": false,
+      "notes": "Rebuilding a URL only from the page own origin parts is not an open redirect"
+    },
+    {
+      "case_id": "rb-ts-redirect-receiver-path-methods",
+      "file": "ruby/open_redirect/redirect_receiver_path_methods.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "rails"
+      ],
+      "disabled": false,
+      "notes": "Methods that merely end in _path can return attacker data, so redirecting to them stays an open redirect"
+    },
+    {
+      "case_id": "rb-ts-redirect-bare-path-helper-safe",
+      "file": "ruby/safe/redirect_bare_path_helper_safe.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "rails"
+      ],
+      "disabled": false,
+      "notes": "Bare named route helpers build host-relative paths, so redirecting to one is not an open redirect"
     }
   ]
 }
