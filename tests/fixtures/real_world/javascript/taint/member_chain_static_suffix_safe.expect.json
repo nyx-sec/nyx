@@ -1,0 +1,61 @@
+{
+  "description": "Long member chains that only end in a request suffix (req.url, req.body, process.env.X, document.location) on a literal object or config are not sources.",
+  "tags": [
+    "taint",
+    "member-chain",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "notes": "chain ends in a source suffix but is not request input"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "chain ends in a source suffix but is not request input"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "chain ends in a source suffix but is not request input"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "chain ends in a source suffix but is not request input"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "chain ends in a source suffix but is not request input"
+    }
+  ]
+}

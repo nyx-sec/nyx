@@ -7768,7 +7768,9 @@ fn collect_rhs_member_sources<'a>(
             if let Some(full) = member_expr_text_full(n, code) {
                 let mut candidate = full.as_str();
                 loop {
-                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra) {
+                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra)
+                        && helpers::long_source_path_ok(candidate)
+                    {
                         out.push((n, caps, candidate.to_string()));
                         return;
                     }

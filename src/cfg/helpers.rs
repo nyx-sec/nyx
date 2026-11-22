@@ -832,6 +832,23 @@ fn capped_path_len(path: &str) -> usize {
     path.len()
 }
 
+/// Whether a Source match on a member path longer than the 3-segment cap may
+/// stand.  Short paths always may.  A longer path is a request chain only when
+/// it hangs off a receiver that conventionally carries the request (`ctx`,
+/// `event`, `this`, ...): `ctx.node.req.url` is, `cfg.x.y.req.url` or a local
+/// object literal `o.a.b.req.url` is merely a path that ends in `req.url`.
+pub(crate) fn long_source_path_ok(path: &str) -> bool {
+    if path.bytes().filter(|&b| b == b'.').count() < 3 {
+        return true;
+    }
+    let root = path.split('.').next().unwrap_or("");
+    [
+        "ctx", "context", "event", "evt", "this", "req", "request", "c",
+    ]
+    .iter()
+    .any(|r| root.eq_ignore_ascii_case(r))
+}
+
 /// Like [`member_expr_text`] but without the 3-segment cap.  Label rules are
 /// suffix-anchored on `.`, so classifying the untruncated path adds matches
 /// for sources spelled with a longer receiver chain (`ctx.node.req.url`,
@@ -938,7 +955,10 @@ pub(crate) fn first_member_label(
                 let mut candidate = full.as_str();
                 loop {
                     if let Some(lbl) = classify(lang, candidate, extra_labels) {
-                        if candidate.len() == capped_len || matches!(lbl, DataLabel::Source(_)) {
+                        if candidate.len() == capped_len
+                            || (matches!(lbl, DataLabel::Source(_))
+                                && long_source_path_ok(candidate))
+                        {
                             return Some(lbl);
                         }
                     }

@@ -1,0 +1,27 @@
+{
+  "description": "A request URL read through ctx.node.req.url reaches a shell command.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "member-chain"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "ctx.node.req.url reaches exec"
+    }
+  ]
+}

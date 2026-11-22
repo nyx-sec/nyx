@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 989
+    "corpus_size": 993
   },
   "cases": [
     {
@@ -31521,6 +31521,131 @@
       ],
       "disabled": false,
       "notes": "CVE-2025-8129: Koa response.back() redirected to the unchecked Referrer header. MIT. The upstream fix commit (422c551) kept a startsWith('/') bypass fixed later by CVE-2025-62595, so its patched twin is not part of the corpus; CVE-2025-62595 carries the clean fixed form."
+    },
+    {
+      "case_id": "js-cmdi-ctx-node-req-url",
+      "file": "javascript/cmdi/cmdi_ctx_node_req_url.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "cmdi",
+        "member-chain"
+      ],
+      "disabled": false,
+      "notes": "Request URL read through a long receiver chain (ctx.node.req.url) reaches exec."
+    },
+    {
+      "case_id": "js-safe-member-chain-static-suffix",
+      "file": "javascript/safe/safe_member_chain_static_suffix.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "member-chain",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Long chains on a literal object or config that merely end in req.url, req.body, process.env.X or document.location are not sources."
+    },
+    {
+      "case_id": "js-ssrf-host-check-then-append",
+      "file": "javascript/ssrf/ssrf_host_check_then_append.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "host-compare",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "The same-host check covers the parsed string only; text appended afterwards can name another host."
+    },
+    {
+      "case_id": "js-safe-ssrf-host-check-forward",
+      "file": "javascript/safe/safe_ssrf_host_check_forward.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "host-compare"
+      ],
+      "disabled": false,
+      "notes": "The checked string forwarded unchanged to fetch after the same-host check is clean."
     }
   ]
 }
