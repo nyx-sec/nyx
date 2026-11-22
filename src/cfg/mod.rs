@@ -680,6 +680,30 @@ impl CondArith {
 }
 
 /// Call-related metadata for CFG nodes.
+/// Relation between a node's recorded `callee` and the call the node is.
+///
+/// `callee` can be promoted from a call nested in the node, so the resource
+/// passes need to know whether it still describes the call whose result the
+/// node's definition holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CalleeNesting {
+    /// The callee is the node's own call, or a chain head used as a receiver
+    /// (`createReadStream(p).on(..)`), whose result is the acquired value.
+    #[default]
+    Own,
+    /// Promoted from the arguments of another call (`wrap(open(p))`): the
+    /// definition holds the outer call's result, not the nested value.
+    InArg,
+    /// As `InArg`, but through an object / array / map literal in the
+    /// arguments (`rq({ files: createReadStream(p) })`): the value is stored
+    /// into an aggregate that the outer call receives.
+    InAggregateArg,
+    /// A member read hoisted out of a callback argument over the node's own
+    /// callee (`describe(.., () => { fs.createReadStream(p) })`).  Names no
+    /// call of this node.
+    Hoisted,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallMeta {
     pub callee: Option<String>,
@@ -818,6 +842,10 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// Where `callee` sits relative to the node's own call.  See
+    /// [`CalleeNesting`].
+    #[serde(default)]
+    pub callee_nesting: CalleeNesting,
     /// Bare variables whose ownership this constructor takes over: the
     /// arguments of a Java wrapper constructor (`new BufferedInputStream(in)`,
     /// nested wrappers included) and the initialiser of a C++ smart-pointer
@@ -1048,6 +1076,36 @@ pub struct AstMeta {
     pub enclosing_func: Option<String>,
 }
 
+/// What a C / C++ assignment's value is, for the resource passes: whether it
+/// copies a whole handle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsShape {
+    /// An identifier, a cast of one, or any shape not listed below: the new
+    /// name may hold the handle.
+    #[default]
+    Whole,
+    /// The address of a sub-object (`c = &ac->c`) or arithmetic
+    /// (`q = p + 1`): a different value that a tracked handle read by it
+    /// does not move into.
+    SubObject,
+    /// An aggregate initializer (`cc = {.names = names}`, `(S){f}`): a handle
+    /// listed in it is now owned by the aggregate, which is not itself a
+    /// handle.
+    Aggregate,
+    /// A field, element or dereference read (`cur = cur->next`): the value
+    /// is another object reached from the handle.
+    Projection,
+}
+
+/// The call a condition header evaluates; see [`NodeInfo::cond_call`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CondCall {
+    /// Callee text, spelled like `CallMeta::callee`.
+    pub callee: String,
+    /// Identifiers of each positional argument, like `CallMeta::arg_uses`.
+    pub arg_uses: Vec<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeInfo {
     pub kind: StmtKind,
@@ -1067,6 +1125,12 @@ pub struct NodeInfo {
     /// an acquire produced nothing.
     #[serde(default)]
     pub null_check: Option<NullCheck>,
+    /// For If headers whose condition is a call (`if (fclose(f))`): that call
+    /// as structured data.  The header node
+    /// is not a `StmtKind::Call`, so the resource passes read this to apply
+    /// the call's release effect, which runs before either branch.
+    #[serde(default)]
+    pub cond_call: Option<Box<CondCall>>,
     /// For Return nodes: variables (and member paths) the returned expression
     /// hands to the caller, in escape positions only (see
     /// `helpers::collect_return_escapes`).  `return f`, `return f, nil`,
@@ -1096,6 +1160,9 @@ pub struct NodeInfo {
     /// resource that must be released before the function returns.
     #[serde(default)]
     pub escaping_store: bool,
+    /// Shape of this C / C++ assignment's value; see [`RhsShape`].
+    #[serde(default)]
+    pub rhs_shape: RhsShape,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -2923,10 +2990,14 @@ pub(crate) fn is_numeric_length_property(name: &str) -> bool {
 /// expressions, computed-key subscripts, optional-chaining, etc.) so
 /// the legacy copy-prop / Unknown propagation continues to apply.
 fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
-    // Pull the RHS the same way `detect_numeric_length_access` does so
-    // both detectors look at the same node grain.
-    let target = ast
-        .child_by_field_name("value")
+    extract_member_field_name(assignment_rhs_or_self(ast), code)
+}
+
+/// The value expression of a declaration / assignment statement, or `ast`
+/// itself when it has none.  Pulled the same way by every detector that reads
+/// the RHS so they look at the same node grain.
+fn assignment_rhs_or_self(ast: Node) -> Node {
+    ast.child_by_field_name("value")
         .or_else(|| ast.child_by_field_name("right"))
         .or_else(|| {
             let mut cursor = ast.walk();
@@ -2949,8 +3020,71 @@ fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
                 .find(|c| matches!(c.kind(), "assignment"))
                 .and_then(|a| a.child_by_field_name("right"))
         })
-        .unwrap_or(ast);
-    extract_member_field_name(target, code)
+        .unwrap_or(ast)
+}
+
+/// See [`RhsShape`].
+fn rhs_shape_of(ast: Node) -> RhsShape {
+    let mut rhs = assignment_rhs_or_self(ast);
+    if rhs.id() == ast.id() {
+        // `expression_statement > assignment_expression`
+        let mut cursor = ast.walk();
+        let Some(inner) = ast
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "assignment_expression")
+            .and_then(|a| a.child_by_field_name("right"))
+        else {
+            return RhsShape::Whole;
+        };
+        rhs = inner;
+    }
+    let v = strip_parens_and_casts(rhs);
+    match v.kind() {
+        "initializer_list" | "compound_literal_expression" => RhsShape::Aggregate,
+        "binary_expression" | "unary_expression" | "sizeof_expression" | "update_expression" => {
+            RhsShape::SubObject
+        }
+        "pointer_expression" => {
+            if v.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+            {
+                RhsShape::SubObject
+            } else {
+                RhsShape::Projection
+            }
+        }
+        "field_expression" | "subscript_expression" => RhsShape::Projection,
+        // `c ? a : b` copies a handle only when a branch is one itself.
+        "conditional_expression" => {
+            let copies = ["consequence", "alternative"].iter().any(|f| {
+                v.child_by_field_name(f).is_some_and(|n| {
+                    matches!(
+                        strip_parens_and_casts(n).kind(),
+                        "identifier" | "this" | "conditional_expression"
+                    )
+                })
+            });
+            if copies {
+                RhsShape::Whole
+            } else {
+                RhsShape::SubObject
+            }
+        }
+        _ => RhsShape::Whole,
+    }
+}
+
+/// `v` without enclosing parentheses and C-style casts (`(char *)p`), which
+/// still copy the handle.
+fn strip_parens_and_casts(mut v: Node) -> Node {
+    v = unwrap_parens(v);
+    while v.kind() == "cast_expression" {
+        let Some(inner) = v.child_by_field_name("value") else {
+            break;
+        };
+        v = unwrap_parens(inner);
+    }
+    v
 }
 
 fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
@@ -3972,6 +4106,8 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // Set when `text` below is the callee of a call in a condition header.
+    let mut cond_call_text = false;
     // Conditions can contain source/sink calls whose argument side effects are
     // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
     // Classify the condition call so output-parameter sources still lower as
@@ -3987,6 +4123,7 @@ pub(super) fn push_node<'a>(
             labels.push(l);
         }
         text = ident;
+        cond_call_text = true;
         if inner_text_span.is_none() {
             inner_text_span = Some(ident_span);
         }
@@ -5081,6 +5218,19 @@ pub(super) fn push_node<'a>(
     };
     let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
 
+    let cond_call = if cond_call_text && kind == StmtKind::If {
+        call_ast
+            .filter(|cn| scope.is_none_or(|root| runs_unconditionally(root, *cn)))
+            .map(|cn| {
+                Box::new(CondCall {
+                    callee: text.clone(),
+                    arg_uses: extract_arg_uses(cn, code),
+                })
+            })
+    } else {
+        None
+    };
+
     // Extract keyword / named arguments for Call and gated-sink nodes.
     // Languages whose grammar doesn't produce `keyword_argument` / `named_argument`
     // children return an empty Vec, so this costs nothing for C/Java/Go/etc.
@@ -5309,6 +5459,12 @@ pub(super) fn push_node<'a>(
     // actually narrows against `ast.span`, storing a redundant copy would
     // just bloat every labeled Call node.
     let callee_span = inner_callee_span.or(inner_text_span).filter(|s| *s != span);
+    let callee_nesting =
+        if text_from_member_label && inner_callee_span.is_none() && outer_callee.is_some() {
+            CalleeNesting::Hoisted
+        } else {
+            callee_span.map_or(CalleeNesting::Own, |cs| call_arg_nesting(ast, cs))
+        };
 
     // Constructor detection: a `new X(...)` call carries different cap
     // semantics than a plain function call. The SSA Call transfer uses
@@ -5384,6 +5540,7 @@ pub(super) fn push_node<'a>(
             destination_uses,
             gate_filters,
             is_constructor,
+            callee_nesting,
             ctor_owned_args,
             produces_null_proto,
             hoisted_sink,
@@ -5409,10 +5566,16 @@ pub(super) fn push_node<'a>(
         condition_vars,
         condition_negated,
         null_check,
+        cond_call,
         returned_idents: return_escapes.idents,
         returned_call_callees: return_escapes.call_callees,
         implicit_return: false,
         escaping_store: assignment_target_is_indirect(ast, lang),
+        rhs_shape: if matches!(lang, "c" | "cpp") {
+            rhs_shape_of(ast)
+        } else {
+            RhsShape::Whole
+        },
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -8801,8 +8964,40 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
         | "index_expression"
         | "array_access"
         | "element_reference" => true,
+        // `f(..)->field = v`, `get().field = v`: the object is a call result,
+        // so the field lives in storage the call hands out, not in a local.
+        "field_expression"
+        | "member_expression"
+        | "field_access"
+        | "selector_expression"
+        | "member_access_expression"
+        | "attribute" => member_base_is_call(lhs, lang),
         _ => false,
     }
+}
+
+/// True when the object a member expression reads from, looking through
+/// nested member accesses and parentheses, is a call.
+fn member_base_is_call(member: Node, lang: &str) -> bool {
+    let mut cur = member;
+    for _ in 0..8 {
+        let Some(base) = cur
+            .child_by_field_name("argument")
+            .or_else(|| cur.child_by_field_name("object"))
+            .or_else(|| cur.child_by_field_name("operand"))
+        else {
+            return false;
+        };
+        let base = unwrap_parens(base);
+        if matches!(
+            lookup(lang, base.kind()),
+            Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+        ) {
+            return true;
+        }
+        cur = base;
+    }
+    false
 }
 
 /// Names a C / C++ / Go / Java function declares itself: parameters
@@ -9035,6 +9230,10 @@ fn collect_js_declared_names(root: Node, code: &[u8], is_fn: bool, out: &mut Vec
 /// never declares (a global, package variable or unqualified field).  See
 /// [`NodeInfo::escaping_store`].
 fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], params: &[String]) {
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        mark_param_rooted_member_stores(g, params);
+        return;
+    }
     if !matches!(lang, "c" | "cpp" | "go" | "java") {
         return;
     }
@@ -9076,19 +9275,68 @@ fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], param
     }
 }
 
-/// Mark the CFG node built from the tail statement of a Ruby method body as
-/// the method's implicit return value.  Only a plain value expression
+/// JS / TS: flag `param.field = v` / `param.a.b = v` stores.  The object
+/// belongs to the caller, so a handle stored on it is handed off (Koa
+/// `ctx.body = fs.createReadStream(p)`).  `this.field` is not flagged: a
+/// class-field acquire is the leak the state checks exist to report.
+fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
+    if params.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        let Some(def) = info.taint.defines.as_deref() else {
+            continue;
+        };
+        let Some((root, _)) = def.split_once('.') else {
+            continue;
+        };
+        if root != "this" && params.iter().any(|p| p == root) {
+            info.escaping_store = true;
+        }
+    }
+}
+
+/// Whether `func` is a callback whose return value the caller throws away:
+/// an argument of `forEach` / `for_each`, or of a Python `map(..)` used as a
+/// statement.  A handle such a callback opens never reaches anyone.
+fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
+    let Some(args) = func.parent() else {
+        return false;
+    };
+    if !matches!(args.kind(), "arguments" | "argument_list") {
+        return false;
+    }
+    let Some(call) = args.parent() else {
+        return false;
+    };
+    let Some(callee) = call
+        .child_by_field_name("function")
+        .or_else(|| call.child_by_field_name("name"))
+    else {
+        return false;
+    };
+    let Ok(text) = callee.utf8_text(code) else {
+        return false;
+    };
+    let leaf = text.rsplit(['.', ':']).next().unwrap_or(text);
+    match leaf {
+        "forEach" | "for_each" => true,
+        "map" if text == "map" => call
+            .parent()
+            .is_some_and(|p| p.kind() == "expression_statement"),
+        _ => false,
+    }
+}
+
+/// Mark the CFG node built from the tail statement of a Ruby method body, or
+/// from the expression body of an arrow function / lambda / closure, as the
+/// function's implicit return value.  Only a plain value expression
 /// qualifies (a variable, a call, a literal container); control flow
 /// (`if` / `case` / `begin`), assignments and explicit `return` keep their
 /// own semantics.  The node is matched by span so only the node that
 /// evaluates the whole statement is marked.
-fn mark_ruby_implicit_return(
-    g: &mut Cfg,
-    stmt: Node,
-    exits: &[NodeIndex],
-    lang: &str,
-    code: &[u8],
-) {
+fn mark_implicit_return(g: &mut Cfg, stmt: Node, exits: &[NodeIndex], lang: &str, code: &[u8]) {
     if !matches!(
         lookup(lang, stmt.kind()),
         Kind::CallFn | Kind::CallMethod | Kind::CallWrapper | Kind::Other
@@ -10084,7 +10332,7 @@ pub(super) fn build_sub<'a>(
                 }
 
                 if ruby_tail_stmt == Some(child.id()) {
-                    mark_ruby_implicit_return(g, child, &child_exits, lang, code);
+                    mark_implicit_return(g, child, &child_exits, lang, code);
                 }
 
                 let is_preproc = child.kind().starts_with("preproc_");
@@ -10246,6 +10494,17 @@ pub(super) fn build_sub<'a>(
                 fn_body_id,
             );
             drop(receiver_aliases);
+
+            // An expression body (`() => fs.createReadStream(p)`,
+            // `lambda: open(p)`) is the function's return value.
+            if matches!(
+                lang,
+                "javascript" | "typescript" | "tsx" | "python" | "rust"
+            ) && lookup(lang, body_ast.kind()) != Kind::Block
+                && !callback_result_is_discarded(ast, code)
+            {
+                mark_implicit_return(&mut fn_graph, body_ast, &body_exits, lang, code);
+            }
 
             // ── 3) Wire exits to Exit node ────────────────────────────────────
             for &b in &body_exits {
@@ -11815,8 +12074,16 @@ fn apply_gated_label_rules(
                     }
                     reaching = Some(uses);
                 }
+                let nesting = if own_call.is_none() {
+                    call_arg_nesting(node, inner_span)
+                } else {
+                    CalleeNesting::Own
+                };
                 let info = &mut body.graph[idx];
                 info.taint.labels.push(inner.label);
+                if nesting != CalleeNesting::Own {
+                    info.call.callee_nesting = nesting;
+                }
                 if info.call.sink_reaching_uses.is_none() {
                     info.call.sink_reaching_uses = reaching;
                 }
@@ -11861,6 +12128,83 @@ fn chain_head_call(call_node: Node) -> Node {
         cur = next;
     }
     cur
+}
+
+/// Classify how the node spanning `span` sits under `root`: directly in the
+/// `arguments` of some call, through an aggregate literal inside such
+/// arguments, or not in call arguments at all.
+fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
+    let Some(mut cur) = root.descendant_for_byte_range(span.0, span.1) else {
+        return CalleeNesting::Own;
+    };
+    let mut via_aggregate = false;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return CalleeNesting::Own;
+        };
+        if parent
+            .child_by_field_name("arguments")
+            .is_some_and(|a| a.id() == cur.id())
+        {
+            return if via_aggregate {
+                CalleeNesting::InAggregateArg
+            } else {
+                CalleeNesting::InArg
+            };
+        }
+        if is_aggregate_literal_kind(cur.kind()) {
+            via_aggregate = true;
+        }
+        cur = parent;
+    }
+    CalleeNesting::Own
+}
+
+/// True when `call`, a descendant of the condition expression `root`, is
+/// evaluated on every run of the condition: it is not the right operand of a
+/// short-circuit operator and not a branch of a conditional expression.
+fn runs_unconditionally(root: Node, call: Node) -> bool {
+    let mut cur = call;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return true;
+        };
+        let mut cursor = parent.walk();
+        let short_circuit = parent
+            .children(&mut cursor)
+            .any(|c| !c.is_named() && matches!(c.kind(), "&&" | "||" | "and" | "or" | "??" | "?"));
+        let left_first = parent
+            .named_child(0)
+            .is_some_and(|first| first.id() == cur.id());
+        if short_circuit && !left_first {
+            return false;
+        }
+        cur = parent;
+    }
+    true
+}
+
+/// Grammar kinds of object / array / map / struct literals.
+fn is_aggregate_literal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "object"
+            | "array"
+            | "pair"
+            | "dictionary"
+            | "list"
+            | "tuple"
+            | "set"
+            | "hash"
+            | "array_initializer"
+            | "array_creation_expression"
+            | "initializer_list"
+            | "composite_literal"
+            | "literal_value"
+            | "struct_expression"
+            | "array_expression"
+            | "tuple_expression"
+    )
 }
 
 /// Positional index of the argument of `call_node` whose span contains

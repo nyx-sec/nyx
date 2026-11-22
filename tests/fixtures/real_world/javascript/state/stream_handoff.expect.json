@@ -1,0 +1,69 @@
+{
+  "description": "Node stream handoffs: pipeline() takes its stream arguments, a store on a parameter object belongs to the caller, and an expression-bodied factory returns its stream. A stream used locally and never closed still leaks.",
+  "tags": [
+    "state",
+    "cfg",
+    "resource-leak",
+    "ownership-handoff"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        5,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "pipeline and ctx.body hand the stream over"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        5,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "cfg twin of the same handoffs"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        28,
+        30
+      ],
+      "evidence_contains": [],
+      "notes": "expression-bodied arrow returns the acquire"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "out is only written to"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "class-field acquire stays a leak"
+    }
+  ]
+}

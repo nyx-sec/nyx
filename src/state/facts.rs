@@ -225,7 +225,16 @@ pub fn extract_findings(
             } else {
                 None
             };
-            let acquire_node = find_acquire_node(cfg, sym, interner, scope);
+            // The node that acquired the handle, as recorded when it went
+            // OPEN; a name search is the fallback for states without one.
+            let recorded_span = state.acquire_spans.get(&sym).copied();
+            let acquire_node = recorded_span
+                .and_then(|sp| {
+                    cfg.node_references()
+                        .find(|(_, n)| n.kind == StmtKind::Call && n.ast.span == sp)
+                        .map(|(i, _)| i)
+                })
+                .or_else(|| find_acquire_node(cfg, sym, interner, scope));
 
             // At the file-level Exit, skip variables whose acquire site is
             // inside a function, those are already handled by the per-

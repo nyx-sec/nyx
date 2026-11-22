@@ -1,0 +1,46 @@
+{
+  "description": "A handle stored into f(..)->field or *f(..) is owned by that storage. A handle only written through a local pointer still leaks.",
+  "tags": [
+    "state",
+    "resource-leak",
+    "escaping-store"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        11,
+        24
+      ],
+      "evidence_contains": [],
+      "notes": "stored through a call result"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        11,
+        24
+      ],
+      "evidence_contains": [],
+      "notes": "stored through a call result on every path"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        28,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "item is never freed or stored"
+    }
+  ]
+}
