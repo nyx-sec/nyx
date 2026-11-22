@@ -87,8 +87,8 @@ pub fn prefix_locks_origin_for(callee: Option<&str>, prefix: &str) -> bool {
 /// bare `/` prefix locks the origin when the character after it can be
 /// neither `/` nor `\`, so `"/" + strings.Trim(p, "/\\")` stays on the
 /// current origin (`/` followed by anything else is a same-origin path).
-/// Like [`prefix_locks_origin`], this does not model the control characters a
-/// URL parser drops before it looks at the second character.
+/// The characters a URL parser drops (`url_parser_skips`) must be excluded
+/// as well, or `"/" + "\t/evil.com"` would read as `//evil.com`.
 pub fn fact_locks_origin_for(callee: Option<&str>, fact: &StringFact) -> bool {
     let Some(prefix) = fact.prefix.as_deref() else {
         return false;
@@ -99,8 +99,10 @@ pub fn fact_locks_origin_for(callee: Option<&str>, fact: &StringFact) -> bool {
     if prefix != "/" || callee.is_some_and(opens_local_paths) {
         return false;
     }
+    // The parser drops tab, CR, LF, other C0 controls and space before it
+    // looks at the second character, so each of them must be excluded too.
     let after = fact.excl_at(1);
-    after.contains('/') && after.contains('\\')
+    after.contains('/') && after.contains('\\') && (0u8..=0x20).all(|b| after.contains(b as char))
 }
 
 /// Characters a URL parser strips or folds before it decides whether a
@@ -259,6 +261,16 @@ pub fn go_literal_value(text: &str, is_raw: bool) -> Option<String> {
             continue;
         }
         out.push(match chars.next()? {
+            'x' => {
+                let hi = chars.next()?.to_digit(16)?;
+                let lo = chars.next()?.to_digit(16)?;
+                let byte = hi * 16 + lo;
+                // A byte above 0x7f is not a character of its own in UTF-8.
+                if byte > 0x7f {
+                    return None;
+                }
+                byte as u8 as char
+            }
             '\\' => '\\',
             '"' => '"',
             'n' => '\n',
@@ -724,6 +736,20 @@ impl StringFact {
             _ => AsciiSet::EMPTY,
         };
         here.union(self.absent)
+    }
+
+    /// True when the fact claims any excluded character.
+    pub fn has_exclusions(&self) -> bool {
+        self.absent != AsciiSet::EMPTY || self.next_excl != AsciiSet::EMPTY
+    }
+
+    /// The same fact without its character-exclusion claims.
+    pub fn without_exclusions(&self) -> Self {
+        Self {
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
+            ..self.clone()
+        }
     }
 
     /// `strings.Trim` / `TrimLeft` / `TrimRight` with a literal cutset.  The
@@ -1533,6 +1559,13 @@ mod tests {
         AsciiSet::of_str(s)
     }
 
+    /// `extra` plus every character a URL parser drops (C0 controls, space).
+    fn with_controls(extra: &str) -> String {
+        let mut s = String::from(extra);
+        s.extend((0u8..=0x20).map(|b| b as char));
+        s
+    }
+
     /// `"/" + strings.Trim(p, cutset)`.
     fn slash_then_trim(input: &StringFact, set: &str) -> StringFact {
         StringFact::exact("/").concat(&input.trimmed(cutset(set), true, true))
@@ -1541,7 +1574,10 @@ mod tests {
     #[test]
     fn slash_plus_trim_locks_origin_only_when_both_separators_are_trimmed() {
         let p = StringFact::top();
-        assert!(fact_locks_origin_for(None, &slash_then_trim(&p, "/\\")));
+        assert!(fact_locks_origin_for(
+            None,
+            &slash_then_trim(&p, &with_controls("/\\"))
+        ));
         assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "/")));
         assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "\\")));
         assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "x")));
@@ -1553,24 +1589,61 @@ mod tests {
     }
 
     #[test]
+    fn url_parser_dropped_characters_keep_the_origin_open() {
+        // `"/" + Trim(p, "/\\")` can be `"/\t/evil.com"`, which a browser reads
+        // as `//evil.com`.
+        let p = StringFact::top();
+        assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "/\\")));
+        for skipped in ["\t", "\r", "\n", "\x01", " "] {
+            let missing_one: String = with_controls("/\\").replace(skipped, "");
+            assert!(
+                !fact_locks_origin_for(None, &slash_then_trim(&p, &missing_one)),
+                "{skipped:?}"
+            );
+        }
+        // Backslash rewrite then Trim of '/' leaves a tab possible as well.
+        let no_backslash = StringFact::top().with_char_replaced('\\', cutset("/"));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&no_backslash, "/")
+        ));
+    }
+
+    #[test]
+    fn aliased_variable_loses_exclusions_only() {
+        let f = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        assert!(f.has_exclusions());
+        let stripped = f.without_exclusions();
+        assert!(!stripped.has_exclusions());
+        assert_eq!(stripped.prefix.as_deref(), Some("/"));
+        assert!(!fact_locks_origin_for(None, &stripped));
+    }
+
+    #[test]
     fn replaced_backslash_then_trimmed_slash_locks_origin() {
         let no_backslash = StringFact::top().with_char_replaced('\\', cutset("/"));
         assert!(no_backslash.absent.contains('\\'));
         assert!(fact_locks_origin_for(
             None,
-            &slash_then_trim(&no_backslash, "/")
+            &slash_then_trim(&no_backslash, &with_controls("/"))
         ));
         // Replacing with text that holds a backslash proves nothing.
         let still = StringFact::top().with_char_replaced('\\', cutset("\\/"));
-        assert!(!fact_locks_origin_for(None, &slash_then_trim(&still, "/")));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&still, &with_controls("/"))
+        ));
         // Replacing `/` instead leaves a possible backslash at the front.
         let other = StringFact::top().with_char_replaced('/', cutset("-"));
-        assert!(!fact_locks_origin_for(None, &slash_then_trim(&other, "/")));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&other, &with_controls("/"))
+        ));
     }
 
     #[test]
     fn trim_right_only_keeps_the_first_character_open() {
-        let right = StringFact::top().trimmed(cutset("/\\"), false, true);
+        let right = StringFact::top().trimmed(cutset(&with_controls("/\\")), false, true);
         assert!(!fact_locks_origin_for(
             None,
             &StringFact::exact("/").concat(&right)
@@ -1579,7 +1652,7 @@ mod tests {
 
     #[test]
     fn exclusion_survives_a_literal_suffix_but_not_an_unknown_tail() {
-        let head = slash_then_trim(&StringFact::top(), "/\\");
+        let head = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
         // `head + "?" + q` (Sprintf("%s?%s", head, q)).
         let with_query = head
             .concat(&StringFact::exact("?"))
@@ -1587,14 +1660,15 @@ mod tests {
         assert!(fact_locks_origin_for(None, &with_query));
         // The trimmed part may be empty, so a literal after it is what
         // follows `/` then; one that starts with `/` is not a lock.
-        let bad = slash_then_trim(&StringFact::top(), "/\\").concat(&StringFact::exact("/x"));
+        let bad = slash_then_trim(&StringFact::top(), &with_controls("/\\"))
+            .concat(&StringFact::exact("/x"));
         assert!(!fact_locks_origin_for(None, &bad));
     }
 
     #[test]
     fn join_keeps_only_exclusions_both_sides_share() {
-        let both = slash_then_trim(&StringFact::top(), "/\\");
-        let forward = slash_then_trim(&StringFact::top(), "/");
+        let both = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        let forward = slash_then_trim(&StringFact::top(), &with_controls("/"));
         assert!(fact_locks_origin_for(None, &both.join(&both)));
         assert!(!fact_locks_origin_for(None, &both.join(&forward)));
         // A join with a known-safe literal head keeps the lock.
@@ -1604,7 +1678,7 @@ mod tests {
 
     #[test]
     fn exclusions_do_not_lock_a_local_path_reader() {
-        let head = slash_then_trim(&StringFact::top(), "/\\");
+        let head = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
         assert!(!fact_locks_origin_for(Some("file_get_contents"), &head));
     }
 
@@ -1623,7 +1697,7 @@ mod tests {
 
     #[test]
     fn exclusion_fields_keep_lattice_laws() {
-        let a = slash_then_trim(&StringFact::top(), "/\\");
+        let a = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
         let b = StringFact::exact("/x");
         assert_eq!(a.join(&a), a);
         assert!(a.leq(&a.join(&b)));
@@ -1656,7 +1730,8 @@ mod tests {
     fn go_literal_values_read_interpreted_and_raw_text() {
         assert_eq!(go_literal_value("/\\\\", false).as_deref(), Some("/\\"));
         assert_eq!(go_literal_value("\\n", false).as_deref(), Some("\n"));
-        assert_eq!(go_literal_value("\\x41", false), None);
+        assert_eq!(go_literal_value("\\x41", false).as_deref(), Some("A"));
+        assert_eq!(go_literal_value("\\xff", false), None);
         assert_eq!(go_literal_value("\\\\", true).as_deref(), Some("\\\\"));
         assert_eq!(go_literal_value("a\\", false), None);
     }

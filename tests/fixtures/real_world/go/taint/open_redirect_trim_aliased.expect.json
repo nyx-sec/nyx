@@ -1,0 +1,34 @@
+{
+  "description": "A value that a closure assigns or whose address is passed on is no longer the trimmed string, so the origin lock does not hold.",
+  "tags": [
+    "taint",
+    "go",
+    "open-redirect",
+    "string-domain"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "closure assigns the tainted value to p"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "callee writes through &p"
+    }
+  ]
+}

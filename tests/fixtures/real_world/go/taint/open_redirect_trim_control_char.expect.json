@@ -1,0 +1,44 @@
+{
+  "description": "Trimming the two separators is not enough: a tab (or another character a URL parser drops) can sit between the leading '/' and a second '/'.",
+  "tags": [
+    "taint",
+    "go",
+    "open-redirect",
+    "string-domain"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "Trim cutset lacks the control characters"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "Sprintf form, same hole"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        29,
+        29
+      ],
+      "notes": "backslash rewrite then Trim of '/' leaves a tab"
+    }
+  ]
+}

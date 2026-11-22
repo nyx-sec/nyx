@@ -1079,6 +1079,13 @@ pub struct NodeInfo {
     /// resource that must be released before the function returns.
     #[serde(default)]
     pub escaping_store: bool,
+    /// Go: the variable this node defines has its address taken (`&p`) or is
+    /// assigned inside a nested function literal, so it can change without
+    /// an assignment the SSA form sees.  Abstract string facts that rest on
+    /// the exclusion of characters (`Trim`, `ReplaceAll`) are not trusted for
+    /// such a variable.
+    #[serde(default)]
+    pub aliased_def: bool,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -5353,6 +5360,7 @@ pub(super) fn push_node<'a>(
         returned_call_callees: return_escapes.call_callees,
         implicit_return: false,
         escaping_store: assignment_target_is_indirect(ast, lang),
+        aliased_def: false,
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -8909,6 +8917,85 @@ fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], param
     }
 }
 
+/// Root identifier of a Go operand: `p`, `p.f`, `p[i]`, `(p)`.
+fn go_root_ident<'a>(mut n: Node<'a>, code: &[u8]) -> Option<String> {
+    loop {
+        match n.kind() {
+            "identifier" => return text_of(n, code),
+            "selector_expression" | "index_expression" | "parenthesized_expression" => {
+                n = n
+                    .child_by_field_name("operand")
+                    .or_else(|| n.named_child(0))?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn collect_go_aliased_names(n: Node, in_closure: bool, code: &[u8], out: &mut HashSet<String>) {
+    let mut in_closure = in_closure;
+    match n.kind() {
+        "func_literal" => in_closure = true,
+        "unary_expression" => {
+            if n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "&")
+                && let Some(operand) = n.child_by_field_name("operand")
+                && let Some(name) = go_root_ident(operand, code)
+            {
+                out.insert(name);
+            }
+        }
+        "assignment_statement" if in_closure => {
+            if let Some(left) = n.child_by_field_name("left") {
+                let mut cursor = left.walk();
+                for target in left.named_children(&mut cursor) {
+                    if let Some(name) = go_root_ident(target, code) {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = n.walk();
+    for c in n.children(&mut cursor) {
+        collect_go_aliased_names(c, in_closure, code, out);
+    }
+}
+
+/// Flag Go nodes that define a variable whose address is taken or that a
+/// nested function literal assigns.  See [`NodeInfo::aliased_def`].
+fn mark_aliased_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8]) {
+    if lang != "go" {
+        return;
+    }
+    // Both shapes need one of these bytes, so most functions skip the walk.
+    let body = &code[func.start_byte()..func.end_byte().min(code.len())];
+    let has_closure = body
+        .windows(5)
+        .skip(1)
+        .any(|w| w == b"func(" || w == b"func ");
+    if !body.contains(&b'&') && !has_closure {
+        return;
+    }
+    let mut names = HashSet::new();
+    collect_go_aliased_names(func, false, code, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        if info
+            .taint
+            .defines
+            .as_deref()
+            .is_some_and(|d| names.contains(d))
+        {
+            info.aliased_def = true;
+        }
+    }
+}
+
 /// Mark the CFG node built from the tail statement of a Ruby method body as
 /// the method's implicit return value.  Only a plain value expression
 /// qualifies (a variable, a call, a literal container); control flow
@@ -10250,6 +10337,7 @@ pub(super) fn build_sub<'a>(
 
             // ── 5b) Flag assignments to names this body never declares ───────
             mark_nonlocal_defines(&mut fn_graph, ast, lang, code, &param_names);
+            mark_aliased_defines(&mut fn_graph, ast, lang, code);
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let auth_decorators = extract_auth_decorators(ast, lang, code);

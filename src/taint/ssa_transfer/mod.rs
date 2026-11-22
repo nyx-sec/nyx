@@ -8179,6 +8179,19 @@ fn string_const_value(s: &str) -> crate::abstract_interp::AbstractValue {
 /// Rust path primitives, `fs::canonicalize`, `.starts_with`, etc.); `None`
 /// disables them and matches the pre-PathFact behaviour exactly.
 fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
+    transfer_abstract_inner(inst, cfg, abs, lang);
+    // A variable that can change behind the SSA form's back (`&p`, a closure
+    // write) keeps no excluded-character claim.
+    if cfg[inst.cfg_node].aliased_def {
+        let mut value = abs.get(inst.value);
+        if value.string.has_exclusions() {
+            value.string = value.string.without_exclusions();
+            abs.set(inst.value, value);
+        }
+    }
+}
+
+fn transfer_abstract_inner(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
     use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
     use crate::cfg::BinOp;
 

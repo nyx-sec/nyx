@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 985
+    "corpus_size": 988
   },
   "cases": [
     {
@@ -31003,35 +31003,44 @@
       "notes": "CVE-2025-71405: go-chi/chi RedirectSlashes builds the redirect target from r.URL.Path (and r.Host) so a path such as //evil.example/ redirects off-site through http.Redirect. File as of d7034fd. MIT."
     },
     {
-      "case_id": "cve-go-2025-71405-patched",
+      "case_id": "cve-go-2025-71405-patched-tab-bypass",
       "file": "cve_corpus/go/CVE-2025-71405/patched.go",
       "language": "go",
-      "is_vulnerable": false,
-      "vuln_class": "safe",
-      "cwe": "N/A",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
       "provenance": "real_cve",
       "equivalence_tier": "exact",
-      "match_mode": "file_presence",
-      "expected_rule_ids": [],
-      "allowed_alternative_rule_ids": [],
-      "forbidden_rule_ids": [
-        "taint-open-redirect",
-        "taint-unsanitised-flow",
-        "cfg-unguarded-sink"
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
       ],
-      "expected_severity": null,
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
       "expected_category": "Security",
-      "expected_sink_lines": [],
-      "expected_source_lines": [],
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
       "tags": [
         "cve",
         "chi",
         "open_redirect",
-        "patched",
-        "negative"
+        "redirect"
       ],
       "disabled": false,
-      "notes": "CVE-2025-71405 patched counterpart (file as of 6eb3588, which completes 1be7ad9): backslashes are rewritten to '/', then '/' + strings.Trim(path, \"/\") leaves a first character that is neither '/' nor '\\'. Locks the origin through the string domain's character exclusions. The 1be7ad9 file alone trims only '/' and still allows /\\evil.example (CVE-2025-69725), which the engine rightly keeps flagging. MIT."
+      "notes": "CVE-2025-71405 file as of 6eb3588 (completes 1be7ad9): backslashes are rewritten to '/', then '/' + strings.Trim(path, \"/\"). Upstream treats this as the fix, but the Trim does not remove a tab, so a path such as /%09/evil.example/ yields \"/\\t/evil.example\", which browsers read as //evil.example. The engine keeps flagging it. MIT."
     },
     {
       "case_id": "cve-go-2025-6023-vulnerable",
@@ -31240,7 +31249,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Safe twin of go-redirect-trim-forward-only-001: the cutset holds both '/' and '\\\\', so the character after the leading '/' is neither, and the redirect stays on this origin."
+      "notes": "Safe twin of go-redirect-trim-forward-only-001 and go-redirect-trim-control-char-001: the cutset holds '/' , '\\\\' and every character a URL parser drops, so the character after the leading '/' cannot start a second separator."
     },
     {
       "case_id": "go-redirect-struct-field-request-001",
@@ -31375,6 +31384,114 @@
       ],
       "disabled": false,
       "notes": "Safe twin of rs-cmdi-file-read-to-end-001: the reader is a Cursor over a constant, not a file."
+    },
+    {
+      "case_id": "go-redirect-trim-control-char-001",
+      "file": "go/open_redirect/redirect_trim_control_char.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "trim"
+      ],
+      "disabled": false,
+      "notes": "Trim removes both separators but not a tab; ?next=%09/evil.example gives \"/\\t/evil.example\", which browsers read as //evil.example."
+    },
+    {
+      "case_id": "go-redirect-trim-aliased-001",
+      "file": "go/open_redirect/redirect_trim_aliased.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "alias"
+      ],
+      "disabled": false,
+      "notes": "The locked value is overwritten through its address after the Trim, so the origin lock does not hold."
+    },
+    {
+      "case_id": "go-safe-redirect-trim-closure-read-001",
+      "file": "go/safe/safe_redirect_trim_closure_read.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "closure",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of go-redirect-trim-aliased-001: the closure only reads the trimmed value, so the origin lock stands."
     }
   ]
 }

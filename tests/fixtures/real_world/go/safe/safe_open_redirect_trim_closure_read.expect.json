@@ -1,0 +1,29 @@
+{
+  "description": "A closure that only reads the trimmed value leaves the origin lock intact.",
+  "tags": [
+    "taint",
+    "go",
+    "open-redirect",
+    "string-domain",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [
+        16,
+        16
+      ],
+      "must_not_match": true,
+      "notes": "closure reads p, never writes it"
+    }
+  ],
+  "strict_unexpected": [
+    "taint-open-redirect",
+    "cfg-unguarded-sink"
+  ]
+}
