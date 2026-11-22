@@ -1,0 +1,104 @@
+{
+  "description": "A prefix test compared against a boolean sentinel locks the edge where the test is true, however the comparison is spelled; an unknown sentinel locks neither edge.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "path-guard",
+    "sentinel-comparison"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        38,
+        38
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        44,
+        44
+      ],
+      "notes": "inside the prefix test's true edge"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        51,
+        51
+      ],
+      "notes": "inside the prefix test's true edge"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        58,
+        58
+      ],
+      "notes": "the path is outside the root here"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        65,
+        65
+      ],
+      "notes": "the path is outside the root here"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        72,
+        72
+      ],
+      "notes": "the path is outside the root here"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        81,
+        81
+      ],
+      "notes": "the comparison proves nothing about the root"
+    }
+  ]
+}

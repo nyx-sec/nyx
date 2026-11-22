@@ -8579,3 +8579,92 @@ fn rust_unwrap_rebind_never_counts_as_all_literal() {
         .expect("unwrap call node");
     assert!(!unwrapped.1, "peeled call must stay not-all-literal");
 }
+
+/// Whether the first prefix-test condition in the file was flagged as having a
+/// root that provably lacks a trailing separator.
+fn first_prefix_test_root_unterminated(src: &[u8], lang: &str, ts_lang: Language) -> bool {
+    let file_cfg = parse_to_file_cfg(src, lang, ts_lang);
+    for body in &file_cfg.bodies {
+        for n in body.graph.node_indices() {
+            let info = &body.graph[n];
+            if info.condition_text.as_deref().is_some_and(|t| {
+                crate::abstract_interp::path_domain::starts_with_root_arg(t).is_some()
+            }) {
+                return info.root_unterminated;
+            }
+        }
+    }
+    panic!("no prefix-test condition in source");
+}
+
+#[test]
+fn js_root_constant_without_trailing_separator_is_flagged() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    let flagged = |root: &str| {
+        let src = format!(
+            "const path = require('path');\nconst ROOT = {root};\n\
+             function f(p) {{ if (!p.startsWith(ROOT)) {{ return; }} use(p); }}"
+        );
+        first_prefix_test_root_unterminated(src.as_bytes(), "javascript", js.clone())
+    };
+    // path.resolve strips a trailing separator; a bare literal has none.
+    assert!(flagged("path.resolve('/srv/files')"));
+    assert!(flagged("'/srv/files'"));
+    // A separator at the end of the literal, or appended to the call, makes
+    // the root a directory prefix.
+    assert!(!flagged("'/srv/files/'"));
+    assert!(!flagged("path.resolve('/srv/files') + path.sep"));
+    assert!(!flagged("path.resolve('/srv/files') + '/'"));
+    // An opaque value is not resolved, so the lock stays accepted.
+    assert!(!flagged("loadRoot()"));
+    assert!(!flagged("process.env.ROOT"));
+}
+
+#[test]
+fn root_constant_rebound_or_shadowed_is_not_flagged() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // Two definitions: the value at the test is unknown.
+    let rebound = b"let ROOT = '/srv/files';\nROOT = loadRoot();\n\
+                    function f(p) { if (!p.startsWith(ROOT)) { return; } use(p); }";
+    assert!(!first_prefix_test_root_unterminated(
+        rebound,
+        "javascript",
+        js.clone()
+    ));
+    // A parameter named like the constant shadows it.
+    let shadowed = b"const ROOT = '/srv/files';\n\
+                     function f(p, ROOT) { if (!p.startsWith(ROOT)) { return; } use(p); }";
+    assert!(!first_prefix_test_root_unterminated(
+        shadowed,
+        "javascript",
+        js
+    ));
+}
+
+#[test]
+fn python_root_constant_without_trailing_separator_is_flagged() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    let flagged = |root: &str| {
+        let src = format!(
+            "import os\nROOT = {root}\n\
+             def f(p):\n    if not p.startswith(ROOT):\n        return\n    use(p)\n"
+        );
+        first_prefix_test_root_unterminated(src.as_bytes(), "python", py.clone())
+    };
+    assert!(flagged("'/srv/files'"));
+    assert!(flagged("os.path.abspath('/srv/files')"));
+    assert!(flagged("os.path.realpath(BASE)"));
+    assert!(!flagged("'/srv/files/'"));
+    assert!(!flagged("os.path.abspath('/srv/files') + os.sep"));
+    assert!(!flagged("os.path.join(BASE, '')"));
+    assert!(!flagged("load_root()"));
+}
+
+#[test]
+fn java_and_rust_root_constants_are_not_resolved() {
+    // `startsWith` / `starts_with` may be component-wise `Path` methods there.
+    let java = Language::from(tree_sitter_java::LANGUAGE);
+    let src = b"class C { static final String ROOT = \"/srv/files\";\n\
+                void f(String p) { if (!p.startsWith(ROOT)) { return; } use(p); } }";
+    assert!(!first_prefix_test_root_unterminated(src, "java", java));
+}

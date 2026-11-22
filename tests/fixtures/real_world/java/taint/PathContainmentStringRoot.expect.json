@@ -1,0 +1,51 @@
+{
+  "description": "String.startsWith is byte-wise so a bare root admits a sibling directory; Path.startsWith compares components; == false moves the locked edge.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "sibling-prefix",
+    "path-guard",
+    "sentinel-comparison"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "Path.startsWith compares components"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        30,
+        30
+      ],
+      "notes": "/srv/data-backup starts with the root"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        39,
+        39
+      ],
+      "notes": "root ends with a separator"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        48,
+        48
+      ],
+      "notes": "reached only when the test is true"
+    }
+  ]
+}

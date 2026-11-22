@@ -1,0 +1,68 @@
+{
+  "description": "A prefix test compared against a boolean sentinel (== False, is False, != True, is not True) locks the edge where the test is true.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "path-guard",
+    "sentinel-comparison"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        32,
+        32
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        40,
+        40
+      ],
+      "notes": "reached only when the prefix test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        47,
+        47
+      ],
+      "notes": "the path is outside the root here"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        55,
+        55
+      ],
+      "notes": "the path is outside the root here"
+    }
+  ]
+}

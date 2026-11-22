@@ -1,7 +1,7 @@
-// js-safe-canonicalise-rooted: path.resolve + .startsWith with a
-// non-literal root variable (an opaque prefix-lock).  Combined with
-// path.resolve's dotdot=No proof, is_path_traversal_safe should suppress
-// the FILE_IO sink even though the canonicalised path is absolute.
+// js-path-traversal-sibling-prefix: path.resolve + .startsWith against a root
+// that ends without a separator.  path.resolve drops a trailing separator, so
+// "/srv/uploads-old/x" also passes the test and the sink is reached by a path
+// outside the upload directory.
 const fs = require("fs");
 const path = require("path");
 
