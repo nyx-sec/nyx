@@ -3080,14 +3080,41 @@ pub(super) fn extract_arg_bare_name_mask(call_node: Node) -> u64 {
     mask
 }
 
+/// The operand of a C / C++ pointer cast `(T *)x`: a pointer cast keeps the
+/// value, so `free((char *)p)` still passes `p` whole.
+fn c_pointer_cast_operand(node: Node) -> Option<Node> {
+    if node.kind() != "cast_expression" {
+        return None;
+    }
+    let ty = node.child_by_field_name("type")?;
+    if ty.kind() != "type_descriptor" {
+        return None;
+    }
+    let mut w = ty.walk();
+    let is_ptr = ty
+        .children(&mut w)
+        .any(|c| c.kind() == "abstract_pointer_declarator");
+    if is_ptr {
+        node.child_by_field_name("value")
+    } else {
+        None
+    }
+}
+
 /// True when `node` is an identifier or a member path made only of
 /// identifiers, after peeling parentheses and PHP's `argument` wrapper.
 fn is_bare_name(node: Node) -> bool {
     let mut cur = node;
-    while matches!(cur.kind(), "argument" | "parenthesized_expression") {
-        match cur.named_child(0) {
-            Some(inner) if cur.named_child_count() == 1 => cur = inner,
-            _ => return false,
+    loop {
+        if matches!(cur.kind(), "argument" | "parenthesized_expression") {
+            match cur.named_child(0) {
+                Some(inner) if cur.named_child_count() == 1 => cur = inner,
+                _ => return false,
+            }
+        } else if let Some(inner) = c_pointer_cast_operand(cur) {
+            cur = inner;
+        } else {
+            break;
         }
     }
     match cur.kind() {

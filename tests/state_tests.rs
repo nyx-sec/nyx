@@ -1950,3 +1950,30 @@ fn receiver_field_proxy_leak_still_fires() {
 fn receiver_field_proxy_released_by_sibling_method() {
     assert_no_leaks("proxy_receiver_field_balanced.py");
 }
+
+#[test]
+fn c_release_wrapper_only_releases_an_exact_argument() {
+    // `fd = settle(fd, ..)` rebinds the variable, `free(*out)` frees what the
+    // parameter points at, a pointer cast keeps the argument whole, and a
+    // cast alias is released through either name.
+    assert_no_state_findings("c_wrapper_release_exact_arg_clean.c");
+    assert_has("c_wrapper_release_cast_double_free.c", "state-double-close");
+}
+
+#[test]
+fn c_preproc_group_contents_raise_no_reliability_findings() {
+    // The group's arms are lowered for taint; which one is compiled is
+    // unknown, so resource and structural rules stay silent inside it.
+    let hits: Vec<&str> = scan_all_fixtures()
+        .iter()
+        .filter(|d| d.path.contains("c_preproc_group_silences_reliability.c"))
+        .filter(|d| {
+            d.id.starts_with("state-resource")
+                || d.id.starts_with("cfg-resource")
+                || d.id.starts_with("cfg-unreachable")
+                || d.id == "cfg-error-fallthrough"
+        })
+        .map(|d| d.id.as_str())
+        .collect();
+    assert!(hits.is_empty(), "unexpected findings: {hits:?}");
+}

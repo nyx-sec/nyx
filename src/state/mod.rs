@@ -441,18 +441,27 @@ fn push_param_release_summaries(
         }) {
             continue;
         }
-        for arg in info.call.arg_uses.iter().flatten() {
-            if let Some(k) = body.meta.params.iter().position(|p| p == arg)
-                && !out.iter().any(|s| {
-                    s.method_name == name && s.effect == transfer::ResourceEffect::ReleaseParam(k)
-                })
-            {
-                out.push(transfer::ResourceMethodSummary {
-                    method_name: name.to_string(),
-                    effect: transfer::ResourceEffect::ReleaseParam(k),
-                    class_group: body.meta.id,
-                    original_span: info.ast.span,
-                });
+        for (i, uses) in info.call.arg_uses.iter().enumerate() {
+            // Only an argument that is exactly the parameter releases it.
+            // `free(*out)`, `free(p->buf)` and `free(&p)` release something
+            // the parameter points at or holds, not the caller's handle.
+            if i >= 64 || info.call.arg_bare_names & (1u64 << i) == 0 || uses.len() != 1 {
+                continue;
+            }
+            for arg in uses {
+                if let Some(k) = body.meta.params.iter().position(|p| p == arg)
+                    && !out.iter().any(|s| {
+                        s.method_name == name
+                            && s.effect == transfer::ResourceEffect::ReleaseParam(k)
+                    })
+                {
+                    out.push(transfer::ResourceMethodSummary {
+                        method_name: name.to_string(),
+                        effect: transfer::ResourceEffect::ReleaseParam(k),
+                        class_group: body.meta.id,
+                        original_span: info.ast.span,
+                    });
+                }
             }
         }
     }
