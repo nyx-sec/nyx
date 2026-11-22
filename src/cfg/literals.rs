@@ -1026,6 +1026,9 @@ fn ruby_arg0_is_inert_value(call: Node, code: &[u8]) -> bool {
     if matches!(arg0.kind(), "nil" | "true" | "false" | "integer" | "float") {
         return true;
     }
+    if matches!(arg0.kind(), "string" | "binary") && ruby_sql_text_is_static(arg0, code) {
+        return true;
+    }
     if subtree_has_interpolation(arg0) || !matches!(arg0.kind(), "call" | "element_reference") {
         return false;
     }
@@ -1057,6 +1060,50 @@ fn ruby_arg0_is_inert_value(call: Node, code: &[u8]) -> bool {
             _ => return false,
         }
     }
+}
+
+/// A `+` concatenation of string literals whose interpolations are all
+/// `Const.table_name` / `Const.quoted_table_name` reads: SQL text built from
+/// model metadata, with no request value in it.
+fn ruby_sql_text_is_static(n: Node, code: &[u8]) -> bool {
+    match n.kind() {
+        "string" => {
+            let mut cursor = n.walk();
+            n.named_children(&mut cursor).all(|c| match c.kind() {
+                "string_content" | "escape_sequence" => true,
+                "interpolation" => {
+                    let mut ic = c.walk();
+                    let mut inner = c.named_children(&mut ic);
+                    match (inner.next(), inner.next()) {
+                        (Some(e), None) => ruby_is_table_name_read(e, code),
+                        _ => false,
+                    }
+                }
+                _ => false,
+            })
+        }
+        "binary" => {
+            n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "+")
+                && n.child_by_field_name("left")
+                    .zip(n.child_by_field_name("right"))
+                    .is_some_and(|(l, r)| {
+                        ruby_sql_text_is_static(unwrap_parens(l), code)
+                            && ruby_sql_text_is_static(unwrap_parens(r), code)
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn ruby_is_table_name_read(e: Node, code: &[u8]) -> bool {
+    e.kind() == "call"
+        && e.child_by_field_name("arguments").is_none()
+        && e.child_by_field_name("method")
+            .and_then(|m| text_of(m, code))
+            .is_some_and(|m| matches!(m.as_str(), "table_name" | "quoted_table_name"))
+        && e.child_by_field_name("receiver")
+            .is_some_and(|r| matches!(r.kind(), "constant" | "scope_resolution"))
 }
 
 fn subtree_has_interpolation(n: Node) -> bool {

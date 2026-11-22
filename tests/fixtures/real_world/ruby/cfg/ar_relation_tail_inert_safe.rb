@@ -15,4 +15,11 @@ class FeedCleaner
       .merge(Account.with_domain(domain))
       .select(1).arel.exists
   end
+
+  def spent_hours(user)
+    TimeEntry.visible(user).joins(:issue).
+      joins("JOIN #{Issue.table_name} parent ON parent.root_id = #{Issue.table_name}.root_id" +
+            " AND parent.lft <= #{Issue.table_name}.lft").
+      where("parent.id > ?", 0).group(:project_id).sum(:hours)
+  end
 end

@@ -3749,3 +3749,15 @@ end
 ";
     assert!(ruby_unguarded_sink_lines(src).contains(&4));
 }
+
+#[test]
+fn unguarded_sink_ruby_joins_with_request_interpolation_is_kept() {
+    let src = b"class Search
+  def run(scope)
+    q = params[:q]
+    scope.joins(\"JOIN #{Issue.table_name} t ON t.k = #{q}\").where(id: 1).to_a
+  end
+end
+";
+    assert!(ruby_unguarded_sink_lines(src).contains(&4));
+}
