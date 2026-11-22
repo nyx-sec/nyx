@@ -1,0 +1,27 @@
+{
+  "description": "Koa response prototype with a same-host check on the parsed Referrer: the guarded redirect is clean.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "koa",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "host equals this.ctx.host on the passing edge"
+    }
+  ]
+}

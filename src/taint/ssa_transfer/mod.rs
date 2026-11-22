@@ -1366,6 +1366,9 @@ struct BranchCondClass {
     /// [`crate::taint::path_state::equality_literal_guard`]).  Only set for
     /// [`PredicateKind::Comparison`].
     eq_guard: Option<(String, bool)>,
+    /// `u.host === X` on a variable that may hold a parsed URL (see
+    /// [`crate::taint::path_state::url_host_compare`]).
+    host_compare: Option<crate::taint::path_state::UrlHostCompare>,
     path: PathBranchClass,
 }
 
@@ -1430,6 +1433,7 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         bit_negated,
         sentinel,
         eq_guard,
+        host_compare: crate::taint::path_state::url_host_compare(cond_text),
         path: classify_path_branch(cond_text),
     }
 }
@@ -1624,6 +1628,19 @@ fn compute_succ_states(
                         *op_is_eq,
                         cond_info,
                         transfer.interner,
+                    );
+                }
+
+                if let Some(hc) = &class.host_compare {
+                    apply_url_host_compare_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        exit_state,
+                        hc,
+                        cond_info,
+                        ssa,
+                        block.id,
+                        transfer,
                     );
                 }
 
@@ -2513,6 +2530,103 @@ fn apply_input_validator_branch_narrowing(
         if let Some(sym) = interner.get(name) {
             success_state.validated_may.insert(sym);
             success_state.validated_must.insert(sym);
+        }
+    }
+}
+
+/// Same-host guard on a parsed URL: `const u = new URL(x, base); if (u.host
+/// === Y) { sink(x) }`.
+///
+/// On the edge where the hosts are equal, the parsed URL resolves to the host
+/// `Y`, so neither `u` nor the string `x` it was parsed from can steer a
+/// request or a redirect to another host.  Clears `Cap::OPEN_REDIRECT` and
+/// `Cap::SSRF` from both there; every other capability keeps its taint.
+///
+/// The guard only counts when
+/// * the subject's reaching definition is a call to the `URL` constructor
+///   (a bare `.host` field comparison proves nothing), and
+/// * the compared operand `Y` cannot be attacker data: no tainted variable
+///   in it and no source-labelled member path (`req.query.host`).
+///
+/// The narrowing is skipped when either condition is unproven.
+fn apply_url_host_compare_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    exit_state: &SsaTaintState,
+    hc: &crate::taint::path_state::UrlHostCompare,
+    cond_info: &NodeInfo,
+    ssa: &SsaBody,
+    block: BlockId,
+    transfer: &SsaTaintTransfer,
+) {
+    const CAPS: Cap = Cap::OPEN_REDIRECT.union(Cap::SSRF);
+    let Some(subject_val) = reaching_def_at_block_end(&hc.subject, ssa, block) else {
+        return;
+    };
+    let Some(def_inst) = find_inst_for_value(subject_val, ssa) else {
+        return;
+    };
+    let SsaOp::Call { callee, args, .. } = &def_inst.op else {
+        return;
+    };
+    if !matches!(
+        callee.as_str(),
+        "URL" | "new URL" | "window.URL" | "globalThis.URL" | "self.URL" | "URL.parse"
+    ) {
+        return;
+    }
+
+    // The other operand must not be attacker-controlled.
+    let lang = transfer.lang.as_str();
+    for word in hc
+        .rhs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.')))
+        .filter(|w| !w.is_empty())
+    {
+        let mut candidate = word;
+        loop {
+            if matches!(
+                crate::labels::classify(lang, candidate, transfer.extra_labels),
+                Some(DataLabel::Source(_))
+            ) {
+                return;
+            }
+            match candidate.rsplit_once('.') {
+                Some((prefix, _)) => candidate = prefix,
+                None => break,
+            }
+        }
+        let root = word.split('.').next().unwrap_or(word);
+        if let Some(v) = reaching_def_at_block_end(root, ssa, block)
+            && exit_state.get(v).is_some_and(|t| !t.caps.is_empty())
+        {
+            return;
+        }
+    }
+
+    // Edge on which the comparison held.
+    let eq_on_true = hc.is_eq != cond_info.condition_negated;
+    let state = if eq_on_true { true_state } else { false_state };
+
+    let mut targets: SmallVec<[SsaValue; 4]> = smallvec::smallvec![subject_val];
+    if let Some(first_arg) = args.first() {
+        targets.extend(first_arg.iter().copied());
+    }
+    for val in targets {
+        if let Some(name) = ssa
+            .value_defs
+            .get(val.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+        {
+            clear_cap_alias_aware(state, name, CAPS, ssa, transfer.base_aliases);
+        }
+        if let Some(taint) = state.get(val).cloned() {
+            let caps = taint.caps & !CAPS;
+            if caps.is_empty() {
+                state.remove(val);
+            } else {
+                state.set(val, VarTaint { caps, ..taint });
+            }
         }
     }
 }

@@ -3022,6 +3022,75 @@ fn has_leading_slash_partner(cond: NodeIndex, ctx: &AnalysisContext) -> bool {
     })
 }
 
+/// `if (u.host === Y)` where `u` was bound by `new URL(..)` in the same
+/// function and `Y` is not attacker data.  Returns whether the guarded code
+/// sits on the TRUE edge.
+///
+/// `Y` counts as attacker data when any dotted path in it classifies as a
+/// source, or when a variable in it is defined by a source-labelled node.
+fn cond_url_host_guard(info: &crate::cfg::NodeInfo, ctx: &AnalysisContext) -> Option<bool> {
+    let hc = crate::taint::path_state::url_host_compare(info.condition_text.as_deref()?)?;
+    let cond_func = info.ast.enclosing_func.as_deref();
+    let cond_start = info.ast.span.0;
+    let defined_in_func = |n: &crate::cfg::NodeInfo, name: &str| {
+        n.taint.defines.as_deref() == Some(name) && n.ast.enclosing_func.as_deref() == cond_func
+    };
+
+    // The subject's latest definition before the condition must be `new URL(..)`.
+    let mut best: Option<(usize, &str)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != StmtKind::Call
+            || !defined_in_func(n, &hc.subject)
+            || n.ast.span.0 >= cond_start
+        {
+            continue;
+        }
+        if let Some(callee) = n.call.callee.as_deref()
+            && best.is_none_or(|(s, _)| n.ast.span.0 > s)
+        {
+            best = Some((n.ast.span.0, callee));
+        }
+    }
+    if !matches!(
+        best?.1,
+        "URL" | "new URL" | "window.URL" | "globalThis.URL" | "self.URL" | "URL.parse"
+    ) {
+        return None;
+    }
+
+    let extra = ctx.analysis_rules.map(|r| r.extra_labels.as_slice());
+    let lang = ctx.lang.as_str();
+    for word in hc
+        .rhs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.')))
+        .filter(|w| !w.is_empty())
+    {
+        let mut candidate = word;
+        loop {
+            if matches!(
+                crate::labels::classify(lang, candidate, extra),
+                Some(DataLabel::Source(_))
+            ) {
+                return None;
+            }
+            match candidate.rsplit_once('.') {
+                Some((prefix, _)) => candidate = prefix,
+                None => break,
+            }
+        }
+        let root = word.split('.').next().unwrap_or(word);
+        let source_defined = ctx.cfg.node_indices().any(|nidx| {
+            let n = &ctx.cfg[nidx];
+            defined_in_func(n, root) && node_introduces_untrusted_data(n)
+        });
+        if source_defined {
+            return None;
+        }
+    }
+    Some(hc.is_eq != info.condition_negated)
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -3127,6 +3196,14 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                         (kind == PredicateKind::RelativeUrlValidated) != info.condition_negated;
                     if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
                         result.push((succ, Cap::OPEN_REDIRECT));
+                    }
+                } else if let Some(passes_on_true) = cond_url_host_guard(info, ctx) {
+                    // `const u = new URL(x, base); if (u.host === TRUSTED)`:
+                    // on the passing edge the parsed URL, and the string it
+                    // was parsed from, stay on the trusted host.  Mirrors the
+                    // taint layer's `apply_url_host_compare_narrowing`.
+                    if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
+                        result.push((succ, Cap::OPEN_REDIRECT | Cap::SSRF));
                     }
                 } else if matches!(
                     kind,

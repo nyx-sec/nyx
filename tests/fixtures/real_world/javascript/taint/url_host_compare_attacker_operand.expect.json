@@ -1,0 +1,39 @@
+{
+  "description": "A host comparison guards only a parsed URL against a trusted operand: an attacker-controlled operand or a plain object field keeps the redirect open.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "compared against req.query.host, still attacker data"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "cfg.host is not a parsed URL"
+    }
+  ]
+}
