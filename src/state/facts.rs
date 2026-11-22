@@ -395,7 +395,8 @@ pub fn extract_findings(
                     // `return &W{f: f}`); `return f.read()` merely mentions it.
                     // C / C++ keep the mention rule, see `return_hands_off`.
                     let returns_var = super::transfer::return_hands_off(lang, &cfg[pred], |u| {
-                        interner.get_scoped(scope, u) == Some(sym)
+                        let id = interner.get_scoped(scope, u);
+                        id == Some(sym) || id.and_then(|i| ps.sub_aliases.get(&i)) == Some(&sym)
                     });
                     if returns_var {
                         returned_open += 1;

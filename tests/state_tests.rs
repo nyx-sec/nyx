@@ -286,6 +286,14 @@ fn c_subobject_aggregate_and_conditional_reads_do_not_move_the_handle() {
 }
 
 #[test]
+fn c_offset_and_subobject_aliases_stand_for_the_handle() {
+    // Returning, releasing or storing `s = sh + n` / `b = &it->base` hands
+    // the handle on; a chained field store and a same-file free wrapper do too.
+    assert_no_state_findings("c_alias_returned_clean.c");
+    assert_has("c_alias_offset_leak.c", "state-resource-leak");
+}
+
+#[test]
 fn c_alias_leak_is_reported_at_the_allocation() {
     // `q = p` really moves the handle; the leak belongs on the malloc line,
     // not on the function exit.

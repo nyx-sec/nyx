@@ -416,6 +416,48 @@ fn names_receiver_state(lang: Lang, name: &str, locals: &std::collections::HashS
     }
 }
 
+/// Summaries for a C function whose body passes one of its own parameters,
+/// bare, to a release call (`free(p)`, `fclose(f)`): calling it hands that
+/// argument position to the release.
+fn push_param_release_summaries(
+    body: &crate::cfg::BodyCfg,
+    name: &str,
+    out: &mut Vec<transfer::ResourceMethodSummary>,
+) {
+    use petgraph::visit::IntoNodeReferences;
+    let pairs = rules::resource_pairs(Lang::C);
+    for (_, info) in body.graph.node_references() {
+        if info.kind != crate::cfg::StmtKind::Call {
+            continue;
+        }
+        let Some(callee) = info.call.callee.as_deref() else {
+            continue;
+        };
+        let callee = callee.to_ascii_lowercase();
+        if !pairs.iter().any(|p| {
+            p.release
+                .iter()
+                .any(|r| transfer::callee_matches_pub(&callee, r))
+        }) {
+            continue;
+        }
+        for arg in info.call.arg_uses.iter().flatten() {
+            if let Some(k) = body.meta.params.iter().position(|p| p == arg)
+                && !out.iter().any(|s| {
+                    s.method_name == name && s.effect == transfer::ResourceEffect::ReleaseParam(k)
+                })
+            {
+                out.push(transfer::ResourceMethodSummary {
+                    method_name: name.to_string(),
+                    effect: transfer::ResourceEffect::ReleaseParam(k),
+                    class_group: body.meta.id,
+                    original_span: info.ast.span,
+                });
+            }
+        }
+    }
+}
+
 /// Build resource method summaries by pre-scanning all method bodies for known
 /// resource acquire/release operations. Only creates summaries for methods whose
 /// bodies actually contain matching operations, never infers from names alone.
@@ -439,6 +481,11 @@ pub fn build_resource_method_summaries(
             Some(name) => name.clone(),
             None => continue,
         };
+        // C has no methods: a function that frees one of its parameters.
+        if lang == Lang::C {
+            push_param_release_summaries(body, &method_name, &mut summaries);
+            continue;
+        }
         let class_group = match body.meta.parent_body_id {
             Some(pid) => pid,
             None => continue, // top-level functions are not class methods

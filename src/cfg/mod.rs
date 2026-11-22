@@ -8770,6 +8770,27 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
     } else {
         None
     };
+    // C / C++ chained store `regs = cfg->priv = xmalloc(n)`: the value also
+    // lands in the inner target, which the outer name does not own.
+    if matches!(lang, "c" | "cpp") {
+        let mut cur = assign;
+        while let Some(a) = cur
+            && let Some(inner) = a
+                .child_by_field_name("right")
+                .map(unwrap_parens)
+                .filter(|r| lookup(lang, r.kind()) == Kind::Assignment)
+        {
+            if let Some(l) = inner.child_by_field_name("left").map(unwrap_parens)
+                && matches!(
+                    l.kind(),
+                    "field_expression" | "pointer_expression" | "subscript_expression"
+                )
+            {
+                return true;
+            }
+            cur = Some(inner);
+        }
+    }
     let Some(lhs) = assign.and_then(|a| a.child_by_field_name("left")) else {
         return false;
     };

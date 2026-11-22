@@ -262,6 +262,11 @@ pub struct ProductState {
     /// instead of searching the CFG by variable name.  Joins keep the earlier
     /// span so the merge is order-independent.
     pub acquire_spans: HashMap<SymbolId, (usize, usize)>,
+    /// Maps a name bound to a sub-object address or offset of a handle
+    /// (`s = (char *)sh + hdrlen`, `base = &iter->base`) to the handle's
+    /// symbol.  The handle keeps its own state; a release, hand-off or return
+    /// of the alias is read as one of the handle.  Joins union the entries.
+    pub sub_aliases: HashMap<SymbolId, SymbolId>,
     /// Per-chain-receiver proxy tracking, keyed by joined chain text
     /// (`"c.mu"`, `"c.writer.header"`). Each chain receiver has its own
     /// lifecycle, class group, and acquire span, independent of both
@@ -282,6 +287,7 @@ impl ProductState {
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
             acquire_spans: HashMap::new(),
+            sub_aliases: HashMap::new(),
             chain_proxies: HashMap::new(),
             err_companions: ErrCompanions::empty(),
         }
@@ -296,6 +302,7 @@ impl Lattice for ProductState {
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
             acquire_spans: HashMap::new(),
+            sub_aliases: HashMap::new(),
             chain_proxies: HashMap::new(),
             err_companions: ErrCompanions::bot(),
         }
@@ -313,6 +320,13 @@ impl Lattice for ProductState {
                 .entry(*sym)
                 .and_modify(|e| *e = (*e).min(*span))
                 .or_insert(*span);
+        }
+        let mut sub_aliases = self.sub_aliases.clone();
+        for (alias, root) in &other.sub_aliases {
+            sub_aliases
+                .entry(*alias)
+                .and_modify(|e| *e = (*e).min(*root))
+                .or_insert(*root);
         }
         // Chain proxies: union, with lifecycle joined per-key so an OPEN
         // entry on one path remains OPEN if joined with a missing entry
@@ -335,6 +349,7 @@ impl Lattice for ProductState {
             receiver_class_group: class_group,
             proxy_acquire_spans: proxy_spans,
             acquire_spans,
+            sub_aliases,
             chain_proxies: chain,
             err_companions: self.err_companions.join(&other.err_companions),
         }
