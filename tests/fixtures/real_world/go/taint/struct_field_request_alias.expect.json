@@ -1,0 +1,45 @@
+{
+  "description": "A formal (or method receiver) whose type is a struct declared in the same file brings that struct's *http.Request fields as request sources: ctx.Req.URL.Query(), ctx.Req.Header and h.r.FormValue.",
+  "tags": [
+    "taint",
+    "go",
+    "cmdi",
+    "request-type",
+    "struct-field"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "pointer formal, ctx.Req.URL.Query().Get"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        25,
+        25
+      ],
+      "notes": "value formal, ctx.Req.Header.Get"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "method receiver field, h.r.FormValue"
+    }
+  ]
+}

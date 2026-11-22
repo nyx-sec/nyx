@@ -659,36 +659,149 @@ pub(super) fn go_receiver_alias_frame(
     func_node: Node<'_>,
     code: &[u8],
 ) -> crate::labels::ReceiverAliasFrame {
-    let Some(params) = func_node.child_by_field_name("parameters") else {
-        return Vec::new();
-    };
     let mut frame = Vec::new();
-    let mut cursor = params.walk();
-    for param in params.named_children(&mut cursor) {
-        if param.kind() != "parameter_declaration"
-            && param.kind() != "variadic_parameter_declaration"
-        {
-            continue;
-        }
-        let prefix = if param.kind() == "parameter_declaration" {
-            param
-                .child_by_field_name("type")
-                .and_then(|t| text_of(t, code))
-                .and_then(|t| {
-                    crate::labels::go_request_receiver_prefix(&t)
-                        .or_else(|| go_decl_type_to_kind(&t).and_then(|k| k.label_prefix()))
-                })
-        } else {
-            None
-        };
-        let mut name_cursor = param.walk();
-        for name in param.children_by_field_name("name", &mut name_cursor) {
-            if let Some(n) = text_of(name, code) {
+    // A method's receiver is a formal too (`func (c *Ctx) h() { c.Req.URL }`).
+    let receiver = func_node.child_by_field_name("receiver");
+    let params = func_node.child_by_field_name("parameters");
+    for list in receiver.into_iter().chain(params) {
+        let mut cursor = list.walk();
+        for param in list.named_children(&mut cursor) {
+            if param.kind() != "parameter_declaration"
+                && param.kind() != "variadic_parameter_declaration"
+            {
+                continue;
+            }
+            let type_text = if param.kind() == "parameter_declaration" {
+                param
+                    .child_by_field_name("type")
+                    .and_then(|t| text_of(t, code))
+            } else {
+                None
+            };
+            let prefix = type_text.as_deref().and_then(|t| {
+                crate::labels::go_request_receiver_prefix(t)
+                    .or_else(|| go_decl_type_to_kind(t).and_then(|k| k.label_prefix()))
+            });
+            let mut name_cursor = param.walk();
+            for name in param.children_by_field_name("name", &mut name_cursor) {
+                let Some(n) = text_of(name, code) else {
+                    continue;
+                };
+                // A formal whose type is a struct declared in this file also
+                // brings the struct's request-typed fields (`ctx.Req`).
+                if let Some(t) = type_text.as_deref() {
+                    for (field, field_prefix) in go_struct_typed_fields(func_node, code, t) {
+                        frame.push((format!("{n}.{field}"), Some(field_prefix)));
+                    }
+                }
                 frame.push((n, prefix));
             }
         }
     }
     frame
+}
+
+thread_local! {
+    /// Fields of the file's struct types whose declared type has a receiver
+    /// prefix, by struct name.  Built on the first Go function of a file and
+    /// cleared with the receiver-alias frames at the start and end of each
+    /// file's CFG build.
+    static GO_STRUCT_TYPED_FIELDS: std::cell::RefCell<
+        Option<std::collections::HashMap<String, Vec<(String, &'static str)>>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn clear_go_struct_typed_fields() {
+    GO_STRUCT_TYPED_FIELDS.with(|c| *c.borrow_mut() = None);
+}
+
+/// The fields of the struct type named by the formal type text `type_text`
+/// (`*Context`, `Context`) whose own types have a receiver prefix, as
+/// `(field name, prefix)`.  Only a struct declared in the same file is known;
+/// a type from another package, an embedded field and a field of a field are
+/// not followed.
+fn go_struct_typed_fields(
+    func_node: Node<'_>,
+    code: &[u8],
+    type_text: &str,
+) -> Vec<(String, &'static str)> {
+    let name = type_text.trim().trim_start_matches('*').trim();
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Vec::new();
+    }
+    GO_STRUCT_TYPED_FIELDS.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let index = cell.get_or_insert_with(|| {
+            let mut root = func_node;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            go_index_struct_typed_fields(root, code)
+        });
+        index.get(name).cloned().unwrap_or_default()
+    })
+}
+
+fn go_index_struct_typed_fields(
+    root: Node<'_>,
+    code: &[u8],
+) -> std::collections::HashMap<String, Vec<(String, &'static str)>> {
+    let mut index = std::collections::HashMap::new();
+    let mut top = root.walk();
+    for decl in root.named_children(&mut top) {
+        if decl.kind() != "type_declaration" {
+            continue;
+        }
+        let mut specs = decl.walk();
+        for spec in decl.named_children(&mut specs) {
+            if spec.kind() != "type_spec" {
+                continue;
+            }
+            let (Some(name), Some(ty)) = (
+                spec.child_by_field_name("name")
+                    .and_then(|n| text_of(n, code)),
+                spec.child_by_field_name("type"),
+            ) else {
+                continue;
+            };
+            if ty.kind() != "struct_type" {
+                continue;
+            }
+            let mut fields = Vec::new();
+            let mut walk = ty.walk();
+            for list in ty.named_children(&mut walk) {
+                if list.kind() != "field_declaration_list" {
+                    continue;
+                }
+                let mut lw = list.walk();
+                for field in list.named_children(&mut lw) {
+                    if field.kind() != "field_declaration" {
+                        continue;
+                    }
+                    let Some(prefix) = field
+                        .child_by_field_name("type")
+                        .and_then(|t| text_of(t, code))
+                        .and_then(|t| {
+                            crate::labels::go_request_receiver_prefix(&t)
+                                .or_else(|| go_decl_type_to_kind(&t).and_then(|k| k.label_prefix()))
+                        })
+                    else {
+                        continue;
+                    };
+                    let mut nw = field.walk();
+                    for fname in field.children_by_field_name("name", &mut nw) {
+                        if let Some(f) = text_of(fname, code) {
+                            fields.push((f, prefix));
+                        }
+                    }
+                }
+            }
+            if !fields.is_empty() {
+                index.insert(name, fields);
+            }
+        }
+    }
+    index
 }
 
 /// Map a declared Go type (a formal's type, a `var x T` declaration, or the
@@ -1151,6 +1264,20 @@ fn classify_param_type_rust<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
     rust_type_to_kind(&type_text)
 }
 
+/// The receiver type a Rust formal brings to its body: a `File` is a
+/// [`TypeKind::FileHandle`], so `file.read_to_end(&mut buf)` resolves to the
+/// type-qualified read source; a `rusqlite` connection is a
+/// [`TypeKind::DatabaseConnection`] ([`rust_db_connection_type`]).
+fn rust_receiver_type(t: &str) -> Option<TypeKind> {
+    if matches!(
+        strip_rust_ref_markers(t),
+        "File" | "std::fs::File" | "fs::File"
+    ) {
+        return Some(TypeKind::FileHandle);
+    }
+    rust_db_connection_type(t)
+}
+
 /// A `rusqlite` connection formal (`conn: &Connection`, `&mut rusqlite::Connection`)
 /// is a [`TypeKind::DatabaseConnection`], the same type `Connection::open(..)`
 /// produces for a local, so `conn.execute(sql, params)` resolves to the
@@ -1198,7 +1325,7 @@ pub(super) fn rust_receiver_alias_frame(
             continue;
         };
         let prefix = rust_param_type_text(param, code)
-            .and_then(|t| rust_db_connection_type(&t))
+            .and_then(|t| rust_receiver_type(&t))
             .and_then(|k| k.label_prefix());
         frame.push((name, prefix));
     }

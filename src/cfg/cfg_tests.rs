@@ -1247,6 +1247,7 @@ fn clone_preserves_all_sub_structs() {
             arg_string_literals: vec![Some("lit".into())],
             arg_string_prefixes: vec![None],
             arg_bare_names: 0b1,
+            arg_raw_string_mask: 0b10,
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,

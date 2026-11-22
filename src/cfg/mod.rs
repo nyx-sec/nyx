@@ -82,12 +82,12 @@ use literals::literal_scalar_collection_rhs;
 use literals::{
     ParamQueryShape, call_has_arg_at, call_ident_of, def_use, destination_field_reading_source,
     detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer,
-    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_string_literals,
-    extract_arg_string_prefixes, extract_arg_uses, extract_const_keyword_arg,
-    extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
-    extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
-    extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
-    find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
+    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_raw_string_mask,
+    extract_arg_string_literals, extract_arg_string_prefixes, extract_arg_uses,
+    extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
+    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
+    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
+    find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
     js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
@@ -812,6 +812,12 @@ pub struct CallMeta {
     /// are never set.
     #[serde(default)]
     pub arg_bare_names: u64,
+    /// Positional arguments that are Go raw string literals (bit `i` for
+    /// argument `i`).  `arg_string_literals[i]` is then the literal's value,
+    /// where for an interpreted literal it is the source text between the
+    /// quotes, escapes unread.  Go only; positions past 63 are never set.
+    #[serde(default)]
+    pub arg_raw_string_mask: u64,
     /// Destination-aware sink filter for outbound-HTTP gates.
     ///
     /// When `Some(names)`, the SSA sink scan restricts taint checks to
@@ -1173,6 +1179,13 @@ pub struct NodeInfo {
     /// Shape of this C / C++ assignment's value; see [`RhsShape`].
     #[serde(default)]
     pub rhs_shape: RhsShape,
+    /// Go: the variable this node defines has its address taken (`&p`) or is
+    /// assigned inside a nested function literal, so it can change without
+    /// an assignment the SSA form sees.  Abstract string facts that rest on
+    /// the exclusion of characters (`Trim`, `ReplaceAll`) are not trusted for
+    /// such a variable.
+    #[serde(default)]
+    pub aliased_def: bool,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -1293,6 +1306,14 @@ pub struct NodeInfo {
     /// SSA value so SSRF prefix-suppression can fire for values constructed
     /// from template literals.
     pub string_prefix: Option<String>,
+    /// True when this node's RHS is exactly `<string literal> + <operand>`
+    /// with a bare identifier or a single call as the operand, and
+    /// [`Self::string_prefix`] is that whole literal.  The result's string
+    /// fact is then the literal concatenated with the operand's fact (a
+    /// `"/" + strings.Trim(p, "/\\")` tail still says which character
+    /// follows the `/`), not just the literal prefix.  Go only for now.
+    #[serde(default)]
+    pub string_concat_tail: bool,
     /// `(identifier, literal tail)` when the string this node builds starts
     /// with a bare identifier instead of a literal (`API + p`,
     /// `` `${API}/x/${id}` ``).  Resolved into [`Self::string_prefix`] at the
@@ -2189,9 +2210,12 @@ fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
 
 fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
     match ast.kind() {
-        "variable_declarator" | "assignment_expression" | "assignment" => ast
-            .child_by_field_name("value")
-            .or_else(|| ast.child_by_field_name("right")),
+        // Go `x = ...` is an `assignment_statement` whose value sits on the
+        // `right` expression list.
+        "variable_declarator" | "assignment_expression" | "assignment" | "assignment_statement" => {
+            ast.child_by_field_name("value")
+                .or_else(|| ast.child_by_field_name("right"))
+        }
         // Phase 14 — Java `local_variable_declaration`, Go
         // `short_var_declaration` / `var_spec`, Rust `let_declaration`,
         // Python `assignment` (already covered above), and PHP
@@ -2246,6 +2270,52 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         }
         _ => None,
     }
+}
+
+/// The operand of a Go `<string literal> + <operand>` right-hand side, with the
+/// literal's whole text, when the operand is a bare identifier or a call.
+/// The literal must hold no escape sequence so its text is its value.
+fn go_literal_plus_operand<'a>(scope: Node<'a>, code: &[u8]) -> Option<(String, Node<'a>)> {
+    fn unwrap<'t>(mut n: Node<'t>) -> Node<'t> {
+        for _ in 0..4 {
+            match n.kind() {
+                "parenthesized_expression" => match n.named_child(0) {
+                    Some(c) => n = c,
+                    None => return n,
+                },
+                "expression_list" if n.named_child_count() == 1 => match n.named_child(0) {
+                    Some(c) => n = c,
+                    None => return n,
+                },
+                _ => return n,
+            }
+        }
+        n
+    }
+    if !matches!(
+        scope.kind(),
+        "assignment_statement" | "short_var_declaration"
+    ) {
+        return None;
+    }
+    let rhs = unwrap(assignment_rhs(scope)?);
+    if rhs.kind() != "binary_expression" || rhs.child_by_field_name("operator")?.kind() != "+" {
+        return None;
+    }
+    let left = unwrap(rhs.child_by_field_name("left")?);
+    if !matches!(
+        left.kind(),
+        "interpreted_string_literal" | "raw_string_literal"
+    ) {
+        return None;
+    }
+    let text = text_of(left, code)?;
+    let inner = text.get(1..text.len().checked_sub(1)?)?;
+    if inner.is_empty() || inner.contains('\\') && left.kind() == "interpreted_string_literal" {
+        return None;
+    }
+    let operand = unwrap(rhs.child_by_field_name("right")?);
+    matches!(operand.kind(), "identifier" | "call_expression").then(|| (inner.to_string(), operand))
 }
 
 /// Extract a constant leading string prefix from an assignment-like node's
@@ -4314,6 +4384,21 @@ pub(super) fn push_node<'a>(
         call_ast = literals::condition_assigned_call(cond, lang);
     }
 
+    // Go `p = "/" + strings.Trim(q, "/")`: the call is the right operand of a
+    // concatenation, one level deeper than `find_call_node` looks.  It is
+    // still the node's only call, so its arguments and literals describe the
+    // node the way they do for `p = strings.Trim(q, "/")`.
+    let go_concat_operand = if lang == "go" && call_ast.is_none() {
+        scope.and_then(|s| go_literal_plus_operand(s, code))
+    } else {
+        None
+    };
+    if let Some((_, operand)) = go_concat_operand
+        && operand.kind() == "call_expression"
+    {
+        call_ast = Some(operand);
+    }
+
     // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
     // only unwrap the result, so the arguments that matter for gate payload
     // positions belong to the call underneath.  Without this the outermost
@@ -5472,6 +5557,11 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
     let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
+    let arg_raw_string_mask = if lang == "go" {
+        call_ast.map(extract_arg_raw_string_mask).unwrap_or(0)
+    } else {
+        0
+    };
 
     let cond_call = if cond_call_text && kind == StmtKind::If {
         call_ast
@@ -5695,6 +5785,11 @@ pub(super) fn push_node<'a>(
         _ => SmallVec::new(),
     };
     let string_prefix = scope_prefix.or_else(|| template_prefix_of(&call_ops, lang, code));
+    let string_concat_tail = rmw.is_none()
+        && go_concat_operand
+            .as_ref()
+            .zip(string_prefix.as_deref())
+            .is_some_and(|((lit, _), prefix)| lit == prefix);
     let url_sink = labels
         .iter()
         .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)));
@@ -5804,6 +5899,7 @@ pub(super) fn push_node<'a>(
             arg_string_literals,
             arg_string_prefixes,
             arg_bare_names,
+            arg_raw_string_mask,
             destination_uses,
             gate_filters,
             is_constructor,
@@ -5843,6 +5939,7 @@ pub(super) fn push_node<'a>(
         } else {
             RhsShape::Whole
         },
+        aliased_def: false,
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -5864,6 +5961,7 @@ pub(super) fn push_node<'a>(
         parameterized_query,
         parameterized_query_interpolated,
         string_prefix,
+        string_concat_tail,
         string_prefix_ident,
         root_unterminated: false,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
@@ -10135,6 +10233,21 @@ fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
     }
 }
 
+/// Root identifier of a Go operand: `p`, `p.f`, `p[i]`, `(p)`.
+fn go_root_ident<'a>(mut n: Node<'a>, code: &[u8]) -> Option<String> {
+    loop {
+        match n.kind() {
+            "identifier" => return text_of(n, code),
+            "selector_expression" | "index_expression" | "parenthesized_expression" => {
+                n = n
+                    .child_by_field_name("operand")
+                    .or_else(|| n.named_child(0))?;
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Whether `func` is a callback whose return value the caller throws away:
 /// an argument of `forEach` / `for_each`, or of a Python `map(..)` used as a
 /// statement.  A handle such a callback opens never reaches anyone.
@@ -10164,6 +10277,70 @@ fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
             .parent()
             .is_some_and(|p| p.kind() == "expression_statement"),
         _ => false,
+    }
+}
+
+fn collect_go_aliased_names(n: Node, in_closure: bool, code: &[u8], out: &mut HashSet<String>) {
+    let mut in_closure = in_closure;
+    match n.kind() {
+        "func_literal" => in_closure = true,
+        "unary_expression" => {
+            if n.child_by_field_name("operator")
+                .is_some_and(|o| o.kind() == "&")
+                && let Some(operand) = n.child_by_field_name("operand")
+                && let Some(name) = go_root_ident(operand, code)
+            {
+                out.insert(name);
+            }
+        }
+        "assignment_statement" if in_closure => {
+            if let Some(left) = n.child_by_field_name("left") {
+                let mut cursor = left.walk();
+                for target in left.named_children(&mut cursor) {
+                    if let Some(name) = go_root_ident(target, code) {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = n.walk();
+    for c in n.children(&mut cursor) {
+        collect_go_aliased_names(c, in_closure, code, out);
+    }
+}
+
+/// Flag Go nodes that define a variable whose address is taken or that a
+/// nested function literal assigns.  See [`NodeInfo::aliased_def`].
+fn mark_aliased_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8]) {
+    if lang != "go" {
+        return;
+    }
+    // Both shapes need one of these bytes, so most functions skip the walk.
+    let body = &code[func.start_byte()..func.end_byte().min(code.len())];
+    let has_closure = body
+        .windows(5)
+        .skip(1)
+        .any(|w| w == b"func(" || w == b"func ");
+    if !body.contains(&b'&') && !has_closure {
+        return;
+    }
+    let mut names = HashSet::new();
+    collect_go_aliased_names(func, false, code, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        if info
+            .taint
+            .defines
+            .as_deref()
+            .is_some_and(|d| names.contains(d))
+        {
+            info.aliased_def = true;
+        }
     }
 }
 
@@ -11565,6 +11742,7 @@ pub(super) fn build_sub<'a>(
 
             // ── 5b) Flag assignments to names this body never declares ───────
             mark_nonlocal_defines(&mut fn_graph, ast, lang, code, &param_names);
+            mark_aliased_defines(&mut fn_graph, ast, lang, code);
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let declared_names = if is_js_ts_lang(lang) {
@@ -12247,6 +12425,7 @@ pub(crate) fn build_cfg<'a>(
     // Receiver-alias frames are scoped to function bodies by guards in
     // `build_sub`; start from an empty stack regardless.
     crate::labels::clear_receiver_aliases();
+    params::clear_go_struct_typed_fields();
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -12443,6 +12622,7 @@ pub(crate) fn build_cfg<'a>(
     literals::clear_ruby_scope_bindings();
     rust_receivers::clear();
     crate::labels::clear_receiver_aliases();
+    params::clear_go_struct_typed_fields();
 
     // collect every
     // declared inheritance / impl / implements relationship in the

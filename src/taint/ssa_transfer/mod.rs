@@ -6570,7 +6570,12 @@ pub(super) fn transfer_inst(
             // though the default arg-to-return propagation below would copy
             // the now-tainted destination pointer into it.
             let mut binder_error_return = false;
-            if !return_bits.is_empty() {
+            // A Rust read that fills its argument is a method on an open
+            // reader (`file.read_to_end(&mut buf)`); the path call
+            // `fs::read(path)` is a source that returns its bytes and writes
+            // nothing into `path`.
+            let out_param_call = transfer.lang != Lang::Rust || receiver.is_some();
+            if !return_bits.is_empty() && out_param_call {
                 if let Some(positions) =
                     crate::labels::output_param_source_positions(transfer.lang.as_str(), callee)
                 {
@@ -6603,6 +6608,7 @@ pub(super) fn transfer_inst(
                                             uses_summary: false,
                                         },
                                     );
+                                    forget_abstract_value(state, arg_v);
                                 }
                             }
                         }
@@ -7083,6 +7089,36 @@ pub(super) fn transfer_inst(
                                 };
                                 if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
                                     return_origins.push(origin);
+                                }
+                                // A typed read that fills a buffer argument
+                                // (`file.read_to_end(&mut buf)`): the buffer
+                                // carries the bytes, as for a direct Source.
+                                // The call may end in `.unwrap()` / `?`, so the
+                                // read's own name is found past those.
+                                if transfer.lang == Lang::Rust
+                                    && let Some(positions) =
+                                        method_candidates_from_chain(callee, transfer.lang)
+                                            .iter()
+                                            .find_map(|m| {
+                                                crate::labels::output_param_source_positions(
+                                                    transfer.lang.as_str(),
+                                                    m,
+                                                )
+                                            })
+                                {
+                                    for &pos in positions {
+                                        for &arg_v in args.get(pos).into_iter().flatten() {
+                                            state.set(
+                                                arg_v,
+                                                VarTaint {
+                                                    caps: *bits,
+                                                    origins: return_origins.clone(),
+                                                    uses_summary: false,
+                                                },
+                                            );
+                                            forget_abstract_value(state, arg_v);
+                                        }
+                                    }
                                 }
                             }
                             DataLabel::Sanitizer(bits) => {
@@ -8736,6 +8772,19 @@ fn string_const_value(s: &str) -> crate::abstract_interp::AbstractValue {
 /// Rust path primitives, `fs::canonicalize`, `.starts_with`, etc.); `None`
 /// disables them and matches the pre-PathFact behaviour exactly.
 fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
+    transfer_abstract_inner(inst, cfg, abs, lang);
+    // A variable that can change behind the SSA form's back (`&p`, a closure
+    // write) keeps no excluded-character claim.
+    if cfg[inst.cfg_node].aliased_def {
+        let mut value = abs.get(inst.value);
+        if value.string.has_exclusions() {
+            value.string = value.string.without_exclusions();
+            abs.set(inst.value, value);
+        }
+    }
+}
+
+fn transfer_abstract_inner(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
     use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
     use crate::cfg::BinOp;
 
@@ -8819,11 +8868,18 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // over the default Top StringFact.
         SsaOp::Assign(_) if info.string_prefix.is_some() => {
             let prefix = info.string_prefix.as_deref().unwrap();
+            // `"/" + name`: the literal followed by whatever the name holds.
+            let string = match &inst.op {
+                SsaOp::Assign(uses) if info.string_concat_tail && uses.len() == 1 => {
+                    StringFact::exact(prefix).concat(&abs.get(uses[0]).string)
+                }
+                _ => StringFact::from_prefix(prefix),
+            };
             abs.set(
                 inst.value,
                 AbstractValue {
                     interval: IntervalFact::top(),
-                    string: StringFact::from_prefix(prefix),
+                    string,
                     bits: BitFact::top(),
                     path: PathFact::top(),
                 },
@@ -9016,6 +9072,26 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     path: PathFact::top(),
                 },
             );
+        }
+
+        // Go string functions whose result keeps part of what the input
+        // proves: `strings.Trim*` leaves a first character outside the
+        // cutset, `strings.ReplaceAll` removes a character, `fmt.Sprintf`
+        // concatenates its format with its arguments.
+        SsaOp::Call { callee, args, .. }
+            if lang == Some(Lang::Go) && go_string_fn(callee).is_some() =>
+        {
+            if let Some(string) = go_string_call_fact(callee, info, args, abs) {
+                abs.set(
+                    inst.value,
+                    AbstractValue {
+                        interval: IntervalFact::top(),
+                        string,
+                        bits: BitFact::top(),
+                        path: PathFact::top(),
+                    },
+                );
+            }
         }
 
         // Path-primitive calls, per-language classifiers map known stdlib
@@ -9219,11 +9295,28 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         let is_url_builder = args.len() >= 2 && facts.url_builder.is_some();
         if !is_url_builder {
             let mut value = abs.get(inst.value);
-            if value.string.is_top() {
+            // `"/" + f(x)`: the literal followed by the call's own result,
+            // when this is the call the node's right-hand side ends in.
+            if info.string_concat_tail
+                && info.call.callee.as_deref() == callee_of(&inst.op)
+                && !value.string.is_bottom()
+            {
+                value.string = StringFact::exact(prefix).concat(&value.string);
+                abs.set(inst.value, value);
+            } else if value.string.is_top() {
                 value.string = StringFact::from_prefix(prefix);
                 abs.set(inst.value, value);
             }
         }
+    }
+}
+
+/// Drop what the abstract domains know about `v`: a call has written into the
+/// buffer it names (`file.read_to_end(&mut buf)`), so the facts of the
+/// allocation that came before (an empty `Vec::new()`) no longer describe it.
+fn forget_abstract_value(state: &mut SsaTaintState, v: SsaValue) {
+    if let Some(abs) = state.abstract_state.as_mut() {
+        Arc::make_mut(abs).set(v, crate::abstract_interp::AbstractValue::top());
     }
 }
 
@@ -9248,6 +9341,134 @@ fn bare_name_arg(
         Some(group) if group.len() == 1 => Some(group[0]),
         _ => None,
     }
+}
+
+fn callee_of(op: &SsaOp) -> Option<&str> {
+    match op {
+        SsaOp::Call { callee, .. } => Some(callee.as_str()),
+        _ => None,
+    }
+}
+
+/// Go standard-library string functions with a string-fact transfer.
+fn go_string_fn(callee: &str) -> Option<()> {
+    matches!(
+        callee,
+        "strings.Trim"
+            | "strings.TrimLeft"
+            | "strings.TrimRight"
+            | "strings.TrimSpace"
+            | "strings.ReplaceAll"
+            | "fmt.Sprintf"
+    )
+    .then_some(())
+}
+
+/// String fact of a call to one of [`go_string_fn`], from the literal
+/// arguments the node records and the facts of arguments that are bare names.
+/// `None` when the call has no usable shape (a cutset that is not a literal,
+/// a format with `%[n]d` or `%*d`).
+fn go_string_call_fact(
+    callee: &str,
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+) -> Option<crate::abstract_interp::StringFact> {
+    use crate::abstract_interp::StringFact;
+    use crate::abstract_interp::string_domain::{AsciiSet, go_literal_value};
+    if !node_describes_call(info, callee) {
+        return None;
+    }
+    // The value of string-literal argument `i`, escapes read.
+    let literal = |i: usize| -> Option<String> {
+        let text = info.call.arg_string_literals.get(i)?.as_deref()?;
+        let is_raw = i < 64 && info.call.arg_raw_string_mask & (1u64 << i) != 0;
+        go_literal_value(text, is_raw)
+    };
+    let arg_fact = |i: usize| {
+        bare_name_arg(info, callee, args, i)
+            .map(|v| abs.get(v).string)
+            .unwrap_or_else(StringFact::top)
+    };
+    match callee {
+        "strings.Trim" | "strings.TrimLeft" | "strings.TrimRight" => {
+            let cutset = AsciiSet::of_str(&literal(1)?);
+            Some(arg_fact(0).trimmed(
+                cutset,
+                callee != "strings.TrimRight",
+                callee != "strings.TrimLeft",
+            ))
+        }
+        "strings.TrimSpace" => {
+            Some(arg_fact(0).trimmed(AsciiSet::of_str(" \t\n\x0b\x0c\r"), true, true))
+        }
+        "strings.ReplaceAll" => {
+            // A single character `old` and a literal `new` that lacks it.
+            let old_text = literal(1)?;
+            let mut chars = old_text.chars();
+            let old = chars.next().filter(|c| c.is_ascii())?;
+            if chars.next().is_some() {
+                return None;
+            }
+            let new_chars = AsciiSet::of_str(&literal(2)?);
+            Some(arg_fact(0).with_char_replaced(old, new_chars))
+        }
+        "fmt.Sprintf" => go_sprintf_fact(&literal(0)?, arg_fact),
+        _ => None,
+    }
+}
+
+/// `fmt.Sprintf(format, args...)` as a concatenation of the format's literal
+/// runs and, for each plain `%s` / `%v` directive, the fact of its argument.
+/// Any other directive contributes an unknown string.  `None` for a format
+/// with an escape, an explicit argument index or a `*` width, which this does
+/// not follow.
+fn go_sprintf_fact(
+    format: &str,
+    arg_fact: impl Fn(usize) -> crate::abstract_interp::StringFact,
+) -> Option<crate::abstract_interp::StringFact> {
+    use crate::abstract_interp::StringFact;
+    if format.contains('\\') {
+        return None;
+    }
+    let mut acc = StringFact::exact("");
+    let mut literal_run = String::new();
+    let mut next_arg = 1usize;
+    let mut chars = format.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            literal_run.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'%') {
+            chars.next();
+            literal_run.push('%');
+            continue;
+        }
+        if !literal_run.is_empty() {
+            acc = acc.concat(&StringFact::exact(&literal_run));
+            literal_run.clear();
+        }
+        let mut plain = true;
+        let verb = loop {
+            match chars.next()? {
+                '[' | '*' => return None,
+                v if v.is_ascii_alphabetic() => break v,
+                _ => plain = false,
+            }
+        };
+        let segment = if plain && matches!(verb, 's' | 'v') {
+            arg_fact(next_arg)
+        } else {
+            StringFact::top()
+        };
+        next_arg += 1;
+        acc = acc.concat(&segment);
+    }
+    if !literal_run.is_empty() {
+        acc = acc.concat(&StringFact::exact(&literal_run));
+    }
+    Some(acc)
 }
 
 /// True when `info` is the CFG node of the call `callee`, not of an outer
@@ -14733,9 +14954,113 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
 /// also takes the sink `callee`: a callee that reads local paths, such as PHP
 /// `file_get_contents`, is not pinned by a `/path` prefix).
 fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact, callee: Option<&str>) -> bool {
-    sf.prefix
-        .as_deref()
-        .is_some_and(|p| crate::abstract_interp::string_domain::prefix_locks_origin_for(callee, p))
+    crate::abstract_interp::string_domain::fact_locks_origin_for(callee, sf)
+}
+
+/// Whether the abstract string facts of `ssa` prove that every value that
+/// reaches the URL sink at `sink` from an untrusted source cannot leave the
+/// current origin or a fixed host ([`is_string_safe_for_ssrf`]).  The
+/// structural unguarded-sink pass asks it so that it keeps in step with the
+/// taint engine, which suppresses such a sink from the same facts.
+/// `introduces_untrusted_data` says which CFG nodes are sources.  `false`
+/// when no value reaching the sink comes from one.
+///
+/// The facts are rebuilt here on demand for just the values the sink depends
+/// on: each value's operands first, then its own transfer, a phi as the join
+/// of its operands.  A value reached again while it is being evaluated (a
+/// loop-carried phi) is left unknown.
+pub(crate) fn url_sink_origin_locked_by_facts(
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    lang: Lang,
+    sink: NodeIndex,
+    introduces_untrusted_data: impl Fn(&NodeInfo) -> bool,
+) -> bool {
+    use crate::abstract_interp::AbstractValue;
+    type Defs<'a> = rustc_hash::FxHashMap<SsaValue, &'a SsaInst>;
+    let mut defs: Defs = rustc_hash::FxHashMap::default();
+    let mut sink_call: Option<&SsaInst> = None;
+    for block in &ssa.blocks {
+        for inst in block.phis.iter().chain(&block.body) {
+            defs.insert(inst.value, inst);
+            if inst.cfg_node == sink && matches!(inst.op, SsaOp::Call { .. }) {
+                sink_call = Some(inst);
+            }
+        }
+    }
+    let Some(sink_call) = sink_call else {
+        return false;
+    };
+
+    fn eval(
+        v: SsaValue,
+        defs: &Defs,
+        cfg: &Cfg,
+        lang: Lang,
+        abs: &mut AbstractState,
+        seen: &mut rustc_hash::FxHashSet<SsaValue>,
+        depth: usize,
+    ) {
+        if depth > 64 || !seen.insert(v) {
+            return;
+        }
+        let Some(inst) = defs.get(&v) else {
+            return;
+        };
+        for u in inst_use_values(inst) {
+            eval(u, defs, cfg, lang, abs, seen, depth + 1);
+        }
+        match &inst.op {
+            SsaOp::Phi(operands) => {
+                let mut joined = AbstractValue::bottom();
+                for (_, operand) in operands {
+                    joined = joined.join(&abs.get(*operand));
+                }
+                abs.set(inst.value, joined);
+            }
+            _ => transfer_abstract(inst, cfg, abs, Some(lang)),
+        }
+    }
+
+    // Whether `v` is computed from a value an untrusted source defines.  A
+    // formal parameter is not one: the taint engine seeds none of them.
+    fn from_source(
+        v: SsaValue,
+        defs: &Defs,
+        cfg: &Cfg,
+        is_source: &dyn Fn(&NodeInfo) -> bool,
+        seen: &mut rustc_hash::FxHashSet<SsaValue>,
+        depth: usize,
+    ) -> bool {
+        if depth > 64 || !seen.insert(v) {
+            return false;
+        }
+        let Some(inst) = defs.get(&v) else {
+            return false;
+        };
+        let formal = matches!(inst.op, SsaOp::Param { .. } | SsaOp::SelfParam);
+        (!formal && is_source(&cfg[inst.cfg_node]))
+            || inst_use_values(inst)
+                .into_iter()
+                .any(|u| from_source(u, defs, cfg, is_source, seen, depth + 1))
+    }
+
+    let callee = cfg[sink].call.callee.as_deref();
+    let mut abs = AbstractState::empty();
+    let mut eval_seen = rustc_hash::FxHashSet::default();
+    let mut any_source = false;
+    for v in inst_use_values(sink_call) {
+        let mut seen = rustc_hash::FxHashSet::default();
+        if !from_source(v, &defs, cfg, &introduces_untrusted_data, &mut seen, 0) {
+            continue;
+        }
+        any_source = true;
+        eval(v, &defs, cfg, lang, &mut abs, &mut eval_seen, 0);
+        if !is_string_safe_for_ssrf(&abs.get(v).string, callee) {
+            return false;
+        }
+    }
+    any_source
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by

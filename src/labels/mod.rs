@@ -460,6 +460,7 @@ pub fn output_param_source_positions(lang: &str, callee: &str) -> Option<&'stati
         "c" => c::OUTPUT_PARAM_SOURCES,
         "cpp" => cpp::OUTPUT_PARAM_SOURCES,
         "go" => go::OUTPUT_PARAM_SOURCES,
+        "rust" | "rs" => rust::OUTPUT_PARAM_SOURCES,
         _ => return None,
     };
     let normalized = callee
@@ -1664,7 +1665,15 @@ fn aliased_receiver_text(text: &str) -> Option<String> {
         if root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return None;
         }
+        // `root.field.rest`: a formal's field with a declared receiver type
+        // (`ctx.Req.URL.Path` where `Req` is an `*http.Request` field).
+        let field_end = text[dot + 1..].find('.').map(|i| dot + 1 + i);
         for frame in s.iter().rev() {
+            if let Some(end) = field_end
+                && let Some((_, Some(prefix))) = frame.iter().find(|(name, _)| name == &text[..end])
+            {
+                return Some(format!("{prefix}{}", &text[end..]));
+            }
             if let Some((_, prefix)) = frame.iter().find(|(name, _)| name == root) {
                 return prefix
                     .filter(|p| *p != root)
@@ -5439,6 +5448,34 @@ mod tests {
         // A frame without typed formals is not pushed onto an empty stack.
         let untyped = push_receiver_aliases(vec![("req".to_string(), None)]);
         assert!(!untyped.pushed);
+    }
+
+    #[test]
+    fn go_struct_field_alias_classifies_through_the_formal() {
+        clear_receiver_aliases();
+        let _frame = push_receiver_aliases(vec![
+            (
+                "ctx.Req".to_string(),
+                go_request_receiver_prefix("*http.Request"),
+            ),
+            ("ctx".to_string(), None),
+        ]);
+        assert_eq!(
+            aliased_receiver_text("ctx.Req.URL.Path").as_deref(),
+            Some("Request.URL.Path")
+        );
+        assert!(
+            classify_all("go", "ctx.Req.URL.Query().Get", None)
+                .contains(&DataLabel::Source(Cap::all()))
+        );
+        // Another field of the struct, and the struct itself, are not aliased.
+        assert_eq!(aliased_receiver_text("ctx.Other.URL.Path"), None);
+        assert_eq!(aliased_receiver_text("ctx.Req"), None);
+        {
+            // An inner formal named `ctx` of another type shadows the field.
+            let _inner = push_receiver_aliases(vec![("ctx".to_string(), None)]);
+            assert_eq!(aliased_receiver_text("ctx.Req.URL.Path"), None);
+        }
     }
 
     #[test]

@@ -1,0 +1,44 @@
+{
+  "description": "A trimmed path still opens a redirect unless both '/' and '\\' are removed from its start: forward-slash-only Trim, TrimRight and a backslash rewrite alone all keep the open redirect.",
+  "tags": [
+    "taint",
+    "go",
+    "open-redirect",
+    "string-domain"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "Trim with cutset \"/\" leaves a leading backslash"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "TrimRight only trims the end of the path"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        25,
+        25
+      ],
+      "notes": "the rewritten path can still start with a second slash"
+    }
+  ]
+}

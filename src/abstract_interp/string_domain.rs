@@ -83,6 +83,28 @@ pub fn prefix_locks_origin_for(callee: Option<&str>, prefix: &str) -> bool {
     prefix_locks_origin(prefix)
 }
 
+/// [`prefix_locks_origin_for`] for a whole fact: besides a locking prefix, a
+/// bare `/` prefix locks the origin when the character after it can be
+/// neither `/` nor `\`, so `"/" + strings.Trim(p, "/\\")` stays on the
+/// current origin (`/` followed by anything else is a same-origin path).
+/// The characters a URL parser drops (`url_parser_skips`) must be excluded
+/// as well, or `"/" + "\t/evil.com"` would read as `//evil.com`.
+pub fn fact_locks_origin_for(callee: Option<&str>, fact: &StringFact) -> bool {
+    let Some(prefix) = fact.prefix.as_deref() else {
+        return false;
+    };
+    if prefix_locks_origin_for(callee, prefix) {
+        return true;
+    }
+    if prefix != "/" || callee.is_some_and(opens_local_paths) {
+        return false;
+    }
+    // The parser drops tab, CR, LF, other C0 controls and space before it
+    // looks at the second character, so each of them must be excluded too.
+    let after = fact.excl_at(1);
+    after.contains('/') && after.contains('\\') && (0u8..=0x20).all(|b| after.contains(b as char))
+}
+
 /// Characters a URL parser strips or folds before it decides whether a
 /// reference starts with `//` or `\\`: leading C0 controls and spaces, and
 /// the tab/newline/carriage-return characters that WHATWG parsing removes
@@ -154,6 +176,116 @@ fn url_origin(base: &str) -> Option<&str> {
     Some(&base[..after_scheme + host_len])
 }
 
+/// A set of ASCII characters.  Non-ASCII characters are never members, so a
+/// set used as an exclusion ("the string holds none of these") only ever
+/// claims things about ASCII text, which keeps it sound for any input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AsciiSet(u128);
+
+impl AsciiSet {
+    pub const EMPTY: Self = Self(0);
+    pub const ALL: Self = Self(u128::MAX);
+
+    /// The ASCII characters of `s`.
+    pub fn of_str(s: &str) -> Self {
+        let mut bits = 0u128;
+        for b in s.bytes().filter(u8::is_ascii) {
+            bits |= 1u128 << b;
+        }
+        Self(bits)
+    }
+
+    pub fn contains(self, c: char) -> bool {
+        c.is_ascii() && self.0 & (1u128 << c as u32) != 0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn intersect(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Every ASCII character except `byte` (any non-ASCII byte excludes none).
+    fn all_but(byte: u8) -> Self {
+        if byte.is_ascii() {
+            Self(u128::MAX & !(1u128 << byte))
+        } else {
+            Self::ALL
+        }
+    }
+
+    /// The members of `self` that are not in `other`.
+    pub fn minus(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    pub fn is_subset_of(self, other: Self) -> bool {
+        self.0 & !other.0 == 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Serialize for AsciiSet {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        // Two words: JSON numbers do not round-trip a full 128 bits.
+        ((self.0 >> 64) as u64, self.0 as u64).serialize(ser)
+    }
+}
+
+impl<'de> Deserialize<'de> for AsciiSet {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let (hi, lo) = <(u64, u64)>::deserialize(de)?;
+        Ok(Self(((hi as u128) << 64) | lo as u128))
+    }
+}
+
+/// The value of a Go string literal given as the text the CFG records for it:
+/// the source text between the quotes, with `is_raw` set for a backtick
+/// literal (whose text is already its value).  An interpreted literal's
+/// escapes are read for the single-character forms and for byte escapes below
+/// 0x80; any other escape returns `None` rather than guess.
+pub fn go_literal_value(text: &str, is_raw: bool) -> Option<String> {
+    if is_raw {
+        return Some(text.to_string());
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        out.push(match chars.next()? {
+            'x' => {
+                let hi = chars.next()?.to_digit(16)?;
+                let lo = chars.next()?.to_digit(16)?;
+                let byte = hi * 16 + lo;
+                // A byte above 0x7f is not a character of its own in UTF-8.
+                if byte > 0x7f {
+                    return None;
+                }
+                byte as u8 as char
+            }
+            '\\' => '\\',
+            '"' => '"',
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            'a' => '\x07',
+            'b' => '\x08',
+            'f' => '\x0c',
+            'v' => '\x0b',
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
 /// String abstract domain: tracks known prefix, suffix, and finite domain.
 ///
 /// Lattice ordering:
@@ -174,6 +306,17 @@ pub struct StringFact {
     /// `Some(vec)` with `vec.len() <= MAX_DOMAIN_SIZE` = value ∈ `vec`.
     /// Always sorted and deduped.
     pub domain: Option<Vec<String>>,
+    /// ASCII characters the string does not contain anywhere (after every
+    /// backslash of `s` is replaced by a slash, no backslash is left).
+    #[serde(default)]
+    pub absent: AsciiSet,
+    /// ASCII characters that cannot be the character at byte offset
+    /// `prefix.len()` (offset 0 when there is no prefix), when the string is
+    /// long enough to have one.  `"/" + strings.Trim(p, "/\\")` has prefix
+    /// `/` and excludes `/` and `\` there, which is what keeps the result from
+    /// reading as `//host` or `/\host`.
+    #[serde(default)]
+    pub next_excl: AsciiSet,
     /// True when this fact is Bottom (unsatisfiable).
     is_bottom: bool,
 }
@@ -185,6 +328,8 @@ impl StringFact {
             prefix: None,
             suffix: None,
             domain: None,
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
             is_bottom: false,
         }
     }
@@ -195,6 +340,8 @@ impl StringFact {
             prefix: None,
             suffix: None,
             domain: None,
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
             is_bottom: true,
         }
     }
@@ -220,6 +367,14 @@ impl StringFact {
                 Some(suffix)
             },
             domain: Some(vec![s.to_string()]),
+            // Every character the text lacks is absent, and nothing follows
+            // it: the exclusion at the end offset holds vacuously.
+            absent: AsciiSet::ALL.minus(AsciiSet::of_str(s)),
+            next_excl: if s.len() <= MAX_PREFIX_LEN {
+                AsciiSet::ALL
+            } else {
+                AsciiSet::EMPTY
+            },
             is_bottom: false,
         }
     }
@@ -235,6 +390,8 @@ impl StringFact {
             },
             suffix: None,
             domain: None,
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
             is_bottom: false,
         }
     }
@@ -250,6 +407,8 @@ impl StringFact {
                 Some(suffix)
             },
             domain: None,
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
             is_bottom: false,
         }
     }
@@ -274,12 +433,19 @@ impl StringFact {
             prefix: None,
             suffix: None,
             domain,
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
             is_bottom: false,
         }
     }
 
     pub fn is_top(&self) -> bool {
-        !self.is_bottom && self.prefix.is_none() && self.suffix.is_none() && self.domain.is_none()
+        !self.is_bottom
+            && self.prefix.is_none()
+            && self.suffix.is_none()
+            && self.domain.is_none()
+            && self.absent.is_empty()
+            && self.next_excl.is_empty()
     }
 
     pub fn is_bottom(&self) -> bool {
@@ -336,7 +502,10 @@ impl StringFact {
             }
             _ => None,
         };
+        let at = prefix.as_deref().map_or(0, str::len);
         Self {
+            next_excl: self.excl_at(at).intersect(other.excl_at(at)),
+            absent: self.absent.intersect(other.absent),
             prefix,
             suffix,
             domain,
@@ -393,7 +562,10 @@ impl StringFact {
             (None, Some(b)) => Some(b.clone()),
             (None, None) => None,
         };
+        let at = prefix.as_deref().map_or(0, str::len);
         Self {
+            next_excl: self.excl_at(at).union(other.excl_at(at)),
+            absent: self.absent.union(other.absent),
             prefix,
             suffix,
             domain,
@@ -424,10 +596,21 @@ impl StringFact {
         } else {
             None
         };
+        let same_exclusions = self.absent == other.absent && self.next_excl == other.next_excl;
         Self {
             prefix,
             suffix,
             domain,
+            absent: if same_exclusions {
+                self.absent
+            } else {
+                AsciiSet::EMPTY
+            },
+            next_excl: if same_exclusions {
+                self.next_excl
+            } else {
+                AsciiSet::EMPTY
+            },
             is_bottom: false,
         }
     }
@@ -454,7 +637,10 @@ impl StringFact {
             (None, Some(_)) => false,
             (Some(a), Some(b)) => a.iter().all(|s| b.binary_search(s).is_ok()),
         };
-        prefix_ok && suffix_ok && domain_ok
+        let other_at = other.prefix.as_deref().map_or(0, str::len);
+        let excl_ok = other.absent.is_subset_of(self.absent)
+            && other.next_excl.is_subset_of(self.excl_at(other_at));
+        prefix_ok && suffix_ok && domain_ok && excl_ok
     }
 
     // ── Transfer functions ──────────────────────────────────────────────
@@ -468,10 +654,148 @@ impl StringFact {
         if self.is_bottom || other.is_bottom {
             return Self::bottom();
         }
+        let at = self.prefix.as_deref().map_or(0, str::len);
+        if let Some(lead) = self.exact_text() {
+            // `lead + other`: the prefix grows by `other`'s own, and the
+            // character after it is `other`'s.
+            let tail = other.prefix.as_deref().unwrap_or("");
+            let joined = format!("{lead}{tail}");
+            let (prefix, next_excl) = if joined.len() <= MAX_PREFIX_LEN {
+                (joined, other.excl_at(tail.len()))
+            } else {
+                (truncate_prefix(&joined), AsciiSet::EMPTY)
+            };
+            return Self {
+                prefix: if prefix.is_empty() {
+                    None
+                } else {
+                    Some(prefix)
+                },
+                suffix: other.suffix.clone(),
+                domain: None,
+                absent: self.absent.intersect(other.absent),
+                next_excl,
+                is_bottom: false,
+            };
+        }
+        // The character just past `self`'s prefix is `self`'s own when `self`
+        // is known to have one, and `other`'s first when `self` may end at
+        // the prefix.
+        let next_excl = if self.has_char_at_prefix_end() {
+            self.excl_at(at)
+        } else {
+            self.excl_at(at).intersect(other.excl_at(0))
+        };
         Self {
             prefix: self.prefix.clone(),
             suffix: other.suffix.clone(),
             domain: None,
+            absent: self.absent.intersect(other.absent),
+            next_excl,
+            is_bottom: false,
+        }
+    }
+
+    /// The whole text when this fact pins exactly one string that the prefix
+    /// holds in full.
+    fn exact_text(&self) -> Option<&str> {
+        match (&self.domain, &self.prefix) {
+            (Some(values), Some(prefix)) if values.len() == 1 && values[0] == *prefix => {
+                Some(prefix)
+            }
+            (Some(values), None) if values.len() == 1 && values[0].is_empty() => Some(""),
+            _ => None,
+        }
+    }
+
+    /// True when every string this fact describes is longer than its known
+    /// prefix, so [`Self::next_excl`] always has a character to apply to.
+    /// A string that ends in a known suffix the prefix does not itself end in
+    /// cannot stop at the prefix.
+    fn has_char_at_prefix_end(&self) -> bool {
+        if self.exact_text().is_some() {
+            return false;
+        }
+        let prefix = self.prefix.as_deref().unwrap_or("");
+        match (&self.domain, &self.suffix) {
+            (Some(values), _) if values.iter().all(|v| v.len() > prefix.len()) => true,
+            (_, Some(suffix)) => !prefix.ends_with(suffix.as_str()),
+            _ => false,
+        }
+    }
+
+    /// ASCII characters that cannot be the character at byte offset `pos`.
+    /// Inside the known prefix every character but the prefix's own is
+    /// excluded; at its end, [`Self::next_excl`]; the characters that occur
+    /// nowhere are excluded at every offset.
+    pub fn excl_at(&self, pos: usize) -> AsciiSet {
+        let plen = self.prefix.as_deref().map_or(0, str::len);
+        let here = match &self.prefix {
+            Some(p) if pos < plen => AsciiSet::all_but(p.as_bytes()[pos]),
+            _ if pos == plen => self.next_excl,
+            _ => AsciiSet::EMPTY,
+        };
+        here.union(self.absent)
+    }
+
+    /// True when the fact claims any excluded character.
+    pub fn has_exclusions(&self) -> bool {
+        self.absent != AsciiSet::EMPTY || self.next_excl != AsciiSet::EMPTY
+    }
+
+    /// The same fact without its character-exclusion claims.
+    pub fn without_exclusions(&self) -> Self {
+        Self {
+            absent: AsciiSet::EMPTY,
+            next_excl: AsciiSet::EMPTY,
+            ..self.clone()
+        }
+    }
+
+    /// `strings.Trim` / `TrimLeft` / `TrimRight` with a literal cutset.  The
+    /// result is a substring of `self`, so what `self` never contains it never
+    /// contains; trimming from the left leaves a first character outside the
+    /// cutset.  Trimming only from the right keeps `self`'s own first
+    /// character.
+    pub fn trimmed(&self, cutset: AsciiSet, from_left: bool, from_right: bool) -> Self {
+        if self.is_bottom {
+            return Self::bottom();
+        }
+        let first = if from_left {
+            cutset
+        } else if from_right {
+            self.excl_at(0)
+        } else {
+            AsciiSet::EMPTY
+        };
+        Self {
+            prefix: None,
+            suffix: None,
+            domain: None,
+            absent: self.absent,
+            next_excl: first.union(self.absent),
+            is_bottom: false,
+        }
+    }
+
+    /// `strings.ReplaceAll(self, old, new)` for a single-character `old` and a
+    /// literal `new` (given as its character set): when `new` does not
+    /// contain `old`, the result contains no `old` at all.  Every other
+    /// character of `new` may now appear anywhere.
+    pub fn with_char_replaced(&self, old: char, new_chars: AsciiSet) -> Self {
+        if self.is_bottom {
+            return Self::bottom();
+        }
+        let mut absent = self.absent.minus(new_chars);
+        if !new_chars.contains(old) {
+            absent = absent.union(AsciiSet::of_str(old.encode_utf8(&mut [0; 4])));
+        }
+        Self {
+            prefix: None,
+            suffix: None,
+            domain: None,
+            absent,
+            next_excl: absent,
             is_bottom: false,
         }
     }
@@ -767,7 +1091,8 @@ mod tests {
         let a = StringFact::exact("hello");
         let b = StringFact::exact(" world");
         let c = a.concat(&b);
-        assert_eq!(c.prefix.as_deref(), Some("hello"));
+        // A known left operand is followed by the right operand's own prefix.
+        assert_eq!(c.prefix.as_deref(), Some("hello world"));
         assert_eq!(c.suffix.as_deref(), Some(" world"));
         // domain drops because cross-product is not tracked
         assert!(c.domain.is_none());
@@ -871,17 +1196,15 @@ mod tests {
     }
 
     /// `concat("", x)` and `concat(x, "")` must round-trip the
-    /// non-empty operand's prefix/suffix. The current `concat` keeps
-    /// LHS prefix and RHS suffix verbatim. After empty-string
-    /// normalisation, `exact("")` carries no prefix/suffix info, so
-    /// the LHS prefix is `None` (unknown) and only the RHS suffix
-    /// survives.
+    /// non-empty operand's prefix/suffix. A known left operand is followed
+    /// by the right operand's own prefix, and the right operand's suffix is
+    /// the result's.  `exact("")` is the identity on both sides.
     #[test]
     fn concat_empty_string_lhs_preserves_rhs_suffix() {
         let empty = StringFact::exact("");
         let rhs = StringFact::exact("x");
         let r = empty.concat(&rhs);
-        assert_eq!(r.prefix, None);
+        assert_eq!(r.prefix.as_deref(), Some("x"));
         assert_eq!(r.suffix.as_deref(), Some("x"));
     }
 
@@ -1228,5 +1551,188 @@ mod tests {
         assert_eq!(r.prefix.as_deref(), Some("hello"));
         let r2 = e.concat(&s);
         assert_eq!(r2.suffix.as_deref(), Some("hello"));
+    }
+
+    // ── Character exclusions ────────────────────────────────────────
+
+    fn cutset(s: &str) -> AsciiSet {
+        AsciiSet::of_str(s)
+    }
+
+    /// `extra` plus every character a URL parser drops (C0 controls, space).
+    fn with_controls(extra: &str) -> String {
+        let mut s = String::from(extra);
+        s.extend((0u8..=0x20).map(|b| b as char));
+        s
+    }
+
+    /// `"/" + strings.Trim(p, cutset)`.
+    fn slash_then_trim(input: &StringFact, set: &str) -> StringFact {
+        StringFact::exact("/").concat(&input.trimmed(cutset(set), true, true))
+    }
+
+    #[test]
+    fn slash_plus_trim_locks_origin_only_when_both_separators_are_trimmed() {
+        let p = StringFact::top();
+        assert!(fact_locks_origin_for(
+            None,
+            &slash_then_trim(&p, &with_controls("/\\"))
+        ));
+        assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "/")));
+        assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "\\")));
+        assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "x")));
+        // No trim at all: the bare prefix alone is not a lock.
+        assert!(!fact_locks_origin_for(
+            None,
+            &StringFact::exact("/").concat(&p)
+        ));
+    }
+
+    #[test]
+    fn url_parser_dropped_characters_keep_the_origin_open() {
+        // `"/" + Trim(p, "/\\")` can be `"/\t/evil.com"`, which a browser reads
+        // as `//evil.com`.
+        let p = StringFact::top();
+        assert!(!fact_locks_origin_for(None, &slash_then_trim(&p, "/\\")));
+        for skipped in ["\t", "\r", "\n", "\x01", " "] {
+            let missing_one: String = with_controls("/\\").replace(skipped, "");
+            assert!(
+                !fact_locks_origin_for(None, &slash_then_trim(&p, &missing_one)),
+                "{skipped:?}"
+            );
+        }
+        // Backslash rewrite then Trim of '/' leaves a tab possible as well.
+        let no_backslash = StringFact::top().with_char_replaced('\\', cutset("/"));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&no_backslash, "/")
+        ));
+    }
+
+    #[test]
+    fn aliased_variable_loses_exclusions_only() {
+        let f = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        assert!(f.has_exclusions());
+        let stripped = f.without_exclusions();
+        assert!(!stripped.has_exclusions());
+        assert_eq!(stripped.prefix.as_deref(), Some("/"));
+        assert!(!fact_locks_origin_for(None, &stripped));
+    }
+
+    #[test]
+    fn replaced_backslash_then_trimmed_slash_locks_origin() {
+        let no_backslash = StringFact::top().with_char_replaced('\\', cutset("/"));
+        assert!(no_backslash.absent.contains('\\'));
+        assert!(fact_locks_origin_for(
+            None,
+            &slash_then_trim(&no_backslash, &with_controls("/"))
+        ));
+        // Replacing with text that holds a backslash proves nothing.
+        let still = StringFact::top().with_char_replaced('\\', cutset("\\/"));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&still, &with_controls("/"))
+        ));
+        // Replacing `/` instead leaves a possible backslash at the front.
+        let other = StringFact::top().with_char_replaced('/', cutset("-"));
+        assert!(!fact_locks_origin_for(
+            None,
+            &slash_then_trim(&other, &with_controls("/"))
+        ));
+    }
+
+    #[test]
+    fn trim_right_only_keeps_the_first_character_open() {
+        let right = StringFact::top().trimmed(cutset(&with_controls("/\\")), false, true);
+        assert!(!fact_locks_origin_for(
+            None,
+            &StringFact::exact("/").concat(&right)
+        ));
+    }
+
+    #[test]
+    fn exclusion_survives_a_literal_suffix_but_not_an_unknown_tail() {
+        let head = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        // `head + "?" + q` (Sprintf("%s?%s", head, q)).
+        let with_query = head
+            .concat(&StringFact::exact("?"))
+            .concat(&StringFact::top());
+        assert!(fact_locks_origin_for(None, &with_query));
+        // The trimmed part may be empty, so a literal after it is what
+        // follows `/` then; one that starts with `/` is not a lock.
+        let bad = slash_then_trim(&StringFact::top(), &with_controls("/\\"))
+            .concat(&StringFact::exact("/x"));
+        assert!(!fact_locks_origin_for(None, &bad));
+    }
+
+    #[test]
+    fn join_keeps_only_exclusions_both_sides_share() {
+        let both = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        let forward = slash_then_trim(&StringFact::top(), &with_controls("/"));
+        assert!(fact_locks_origin_for(None, &both.join(&both)));
+        assert!(!fact_locks_origin_for(None, &both.join(&forward)));
+        // A join with a known-safe literal head keeps the lock.
+        let literal = StringFact::from_prefix("/dash");
+        assert!(fact_locks_origin_for(None, &both.join(&literal)));
+    }
+
+    #[test]
+    fn exclusions_do_not_lock_a_local_path_reader() {
+        let head = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        assert!(!fact_locks_origin_for(Some("file_get_contents"), &head));
+    }
+
+    #[test]
+    fn exact_concat_extends_the_prefix() {
+        let r = StringFact::exact("/api/").concat(&StringFact::from_prefix("v1/"));
+        assert_eq!(r.prefix.as_deref(), Some("/api/v1/"));
+        let lead = StringFact::exact("");
+        assert_eq!(
+            lead.concat(&StringFact::from_prefix("abc"))
+                .prefix
+                .as_deref(),
+            Some("abc")
+        );
+    }
+
+    #[test]
+    fn exclusion_fields_keep_lattice_laws() {
+        let a = slash_then_trim(&StringFact::top(), &with_controls("/\\"));
+        let b = StringFact::exact("/x");
+        assert_eq!(a.join(&a), a);
+        assert!(a.leq(&a.join(&b)));
+        assert!(b.leq(&a.join(&b)));
+        let exact = StringFact::exact("/");
+        assert_eq!(exact.join(&exact), exact);
+        assert!(exact.leq(&a));
+        assert!(!StringFact::from_prefix("/").leq(&a));
+        // Widening drops a changed exclusion rather than keeping a stale one.
+        let w = a.widen(&StringFact::from_prefix("/"));
+        assert!(!fact_locks_origin_for(None, &w));
+    }
+
+    #[test]
+    fn exclusion_sets_round_trip_through_json() {
+        let f = StringFact::top()
+            .with_char_replaced('\\', cutset("/"))
+            .trimmed(cutset("/"), true, true);
+        let json = serde_json::to_string(&f).unwrap();
+        let back: StringFact = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, f);
+        // Older blobs without the fields still load.
+        let old: StringFact =
+            serde_json::from_str(r#"{"prefix":"/","suffix":null,"domain":null,"is_bottom":false}"#)
+                .unwrap();
+        assert_eq!(old, StringFact::from_prefix("/"));
+    }
+
+    #[test]
+    fn go_literal_values_read_interpreted_and_raw_text() {
+        assert_eq!(go_literal_value("/\\\\", false).as_deref(), Some("/\\"));
+        assert_eq!(go_literal_value("\\n", false).as_deref(), Some("\n"));
+        assert_eq!(go_literal_value("\\x41", false).as_deref(), Some("A"));
+        assert_eq!(go_literal_value("\\xff", false), None);
+        assert_eq!(go_literal_value("\\\\", true).as_deref(), Some("\\\\"));
+        assert_eq!(go_literal_value("a\\", false), None);
     }
 }
