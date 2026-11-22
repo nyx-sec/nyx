@@ -194,10 +194,8 @@ struct CanonCache {
 
 impl CanonCache {
     fn shard(&self, p: &Path) -> &std::sync::RwLock<HashMap<PathBuf, PathBuf>> {
-        use std::hash::{BuildHasher, Hash, Hasher};
-        let mut h = rustc_hash::FxBuildHasher.build_hasher();
-        p.hash(&mut h);
-        &self.shards[(h.finish() as usize) % CANON_SHARDS]
+        use std::hash::BuildHasher;
+        &self.shards[(rustc_hash::FxBuildHasher.hash_one(p) as usize) % CANON_SHARDS]
     }
 
     fn canonical(&self, p: &Path) -> PathBuf {

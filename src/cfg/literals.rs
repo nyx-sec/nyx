@@ -3152,16 +3152,14 @@ pub(super) fn extract_arg_raw_string_mask(call_node: Node) -> u64 {
         return 0;
     };
     let mut mask = 0u64;
-    let mut pos = 0usize;
     let mut cursor = args_node.walk();
-    for child in args_node.named_children(&mut cursor) {
+    for (pos, child) in args_node.named_children(&mut cursor).enumerate() {
         if child.kind() == "variadic_argument" {
             return 0;
         }
         if pos < 64 && child.kind() == "raw_string_literal" {
             mask |= 1 << pos;
         }
-        pos += 1;
     }
     mask
 }
@@ -4887,110 +4885,6 @@ fn is_shell_command_flag(shell: &str, flag: &str) -> bool {
     crate::labels::is_code_flag(shell, flag)
 }
 
-#[cfg(test)]
-mod orm_uid_ref_tests {
-    use super::{
-        find_orm_query_chain_call, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
-    };
-
-    fn parse_ts(src: &[u8]) -> tree_sitter::Tree {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-            .unwrap();
-        parser.parse(src, None).unwrap()
-    }
-
-    const QT: &[&str] = &["query", "execute"];
-
-    /// The robust DFS locates the `<recv>.query(UID).<orm_method>(...)` call
-    /// through wrappers that defeat a fixed-depth lookup: `(await ...)` const
-    /// bindings, `(await ...) > 0` binary expressions, and `Promise.all([...])`
-    /// array arguments.  For each, the surfaced outer method must be the ORM
-    /// accessor, not the wrapping call.
-    #[test]
-    fn dfs_finds_orm_chain_through_wrappers() {
-        for (src, want) in [
-            (
-                &b"async function f(u:string){ const r = (await x.db.query(u).findMany({})); return r; }"[..],
-                "findMany",
-            ),
-            (
-                &b"async function f(a:unknown){ return (await x.db.query('admin::user').count({where:a})) > 0; }"[..],
-                "count",
-            ),
-            (
-                &b"async function f(m:string){ return Promise.all([x.db.query(m).findOne({})]); }"[..],
-                "findOne",
-            ),
-        ] {
-            let tree = parse_ts(src);
-            let bytes = src;
-            let mut budget = 96u32;
-            let call = find_orm_query_chain_call(tree.root_node(), QT, bytes, &mut budget)
-                .unwrap_or_else(|| panic!("DFS should find ORM call in: {}", String::from_utf8_lossy(src)));
-            assert_eq!(
-                js_chain_outer_method_for_inner(call, QT, bytes).as_deref(),
-                Some(want),
-                "outer method for: {}",
-                String::from_utf8_lossy(src),
-            );
-        }
-    }
-
-    /// A `key as UID.Schema` type-cast argument is transparent: the observed
-    /// inner-query arg-0 kind is the underlying `identifier`, not
-    /// `as_expression`, so the UID-reference gate accepts it.
-    #[test]
-    fn as_cast_arg0_unwraps_to_identifier() {
-        let src = &b"function f(k:string){ return x.db.query(k as any).count({}); }"[..];
-        let tree = parse_ts(src);
-        let call = find_orm_query_chain_call(tree.root_node(), QT, src, &mut 96u32)
-            .expect("DFS finds the count call");
-        let (kind, has_interp) =
-            super::js_chain_arg0_kind_for_method(call, QT, src).expect("inner query arg0");
-        assert_eq!(kind, "identifier", "as-cast should unwrap to identifier");
-        assert!(!has_interp);
-        assert!(js_orm_query_arg0_is_uid_ref(&kind));
-    }
-
-    /// Model-UID references accepted by the `db.query(UID).<orm_method>(...)`
-    /// ORM-chain recogniser: string literals AND by-reference forms (variable /
-    /// const identifier, member access).  Pins the real-repo shapes
-    /// `db.query(uid)` / `db.query(RELEASE_MODEL_UID)` / `db.query(models.x)`.
-    #[test]
-    fn accepts_literal_and_reference_uid_shapes() {
-        for k in [
-            "string",
-            "string_fragment",
-            "template_string",
-            "identifier",
-            "shorthand_property_identifier",
-            "property_identifier",
-            "member_expression",
-        ] {
-            assert!(js_orm_query_arg0_is_uid_ref(k), "should accept {k}");
-        }
-    }
-
-    /// Computed / concatenated arg-0 shapes are NOT model-UID references: a
-    /// `binary_expression` (`"SELECT " + x`) or a nested call could carry raw
-    /// SQL, so the sanitizer synthesis must refuse them even when an ORM method
-    /// is chained.  Guards against re-broadening the allowlist.
-    #[test]
-    fn rejects_computed_arg_shapes() {
-        for k in [
-            "binary_expression",
-            "call_expression",
-            "await_expression",
-            "ternary_expression",
-            "subscript_expression",
-        ] {
-            assert!(!js_orm_query_arg0_is_uid_ref(k), "should reject {k}");
-        }
-    }
-}
-
 /// Whether a Go call's first argument is a `context.Context`.
 ///
 /// Go database APIs that take a context put it before the SQL text
@@ -5168,4 +5062,108 @@ pub(super) fn literal_scalar_collection_rhs(ast: Node, lang: &str, code: &[u8]) 
             })
             .is_some_and(|v| collection_of_scalars(v, code))
     })
+}
+
+#[cfg(test)]
+mod orm_uid_ref_tests {
+    use super::{
+        find_orm_query_chain_call, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
+    };
+
+    fn parse_ts(src: &[u8]) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    const QT: &[&str] = &["query", "execute"];
+
+    /// The robust DFS locates the `<recv>.query(UID).<orm_method>(...)` call
+    /// through wrappers that defeat a fixed-depth lookup: `(await ...)` const
+    /// bindings, `(await ...) > 0` binary expressions, and `Promise.all([...])`
+    /// array arguments.  For each, the surfaced outer method must be the ORM
+    /// accessor, not the wrapping call.
+    #[test]
+    fn dfs_finds_orm_chain_through_wrappers() {
+        for (src, want) in [
+            (
+                &b"async function f(u:string){ const r = (await x.db.query(u).findMany({})); return r; }"[..],
+                "findMany",
+            ),
+            (
+                &b"async function f(a:unknown){ return (await x.db.query('admin::user').count({where:a})) > 0; }"[..],
+                "count",
+            ),
+            (
+                &b"async function f(m:string){ return Promise.all([x.db.query(m).findOne({})]); }"[..],
+                "findOne",
+            ),
+        ] {
+            let tree = parse_ts(src);
+            let bytes = src;
+            let mut budget = 96u32;
+            let call = find_orm_query_chain_call(tree.root_node(), QT, bytes, &mut budget)
+                .unwrap_or_else(|| panic!("DFS should find ORM call in: {}", String::from_utf8_lossy(src)));
+            assert_eq!(
+                js_chain_outer_method_for_inner(call, QT, bytes).as_deref(),
+                Some(want),
+                "outer method for: {}",
+                String::from_utf8_lossy(src),
+            );
+        }
+    }
+
+    /// A `key as UID.Schema` type-cast argument is transparent: the observed
+    /// inner-query arg-0 kind is the underlying `identifier`, not
+    /// `as_expression`, so the UID-reference gate accepts it.
+    #[test]
+    fn as_cast_arg0_unwraps_to_identifier() {
+        let src = &b"function f(k:string){ return x.db.query(k as any).count({}); }"[..];
+        let tree = parse_ts(src);
+        let call = find_orm_query_chain_call(tree.root_node(), QT, src, &mut 96u32)
+            .expect("DFS finds the count call");
+        let (kind, has_interp) =
+            super::js_chain_arg0_kind_for_method(call, QT, src).expect("inner query arg0");
+        assert_eq!(kind, "identifier", "as-cast should unwrap to identifier");
+        assert!(!has_interp);
+        assert!(js_orm_query_arg0_is_uid_ref(&kind));
+    }
+
+    /// Model-UID references accepted by the `db.query(UID).<orm_method>(...)`
+    /// ORM-chain recogniser: string literals AND by-reference forms (variable /
+    /// const identifier, member access).  Pins the real-repo shapes
+    /// `db.query(uid)` / `db.query(RELEASE_MODEL_UID)` / `db.query(models.x)`.
+    #[test]
+    fn accepts_literal_and_reference_uid_shapes() {
+        for k in [
+            "string",
+            "string_fragment",
+            "template_string",
+            "identifier",
+            "shorthand_property_identifier",
+            "property_identifier",
+            "member_expression",
+        ] {
+            assert!(js_orm_query_arg0_is_uid_ref(k), "should accept {k}");
+        }
+    }
+
+    /// Computed / concatenated arg-0 shapes are NOT model-UID references: a
+    /// `binary_expression` (`"SELECT " + x`) or a nested call could carry raw
+    /// SQL, so the sanitizer synthesis must refuse them even when an ORM method
+    /// is chained.  Guards against re-broadening the allowlist.
+    #[test]
+    fn rejects_computed_arg_shapes() {
+        for k in [
+            "binary_expression",
+            "call_expression",
+            "await_expression",
+            "ternary_expression",
+            "subscript_expression",
+        ] {
+            assert!(!js_orm_query_arg0_is_uid_ref(k), "should reject {k}");
+        }
+    }
 }

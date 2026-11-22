@@ -210,7 +210,7 @@ impl AsciiSet {
     /// Every ASCII character except `byte` (any non-ASCII byte excludes none).
     fn all_but(byte: u8) -> Self {
         if byte.is_ascii() {
-            Self(u128::MAX & !(1u128 << byte))
+            Self(!(1u128 << byte))
         } else {
             Self::ALL
         }

@@ -1034,7 +1034,7 @@ pub fn classify_path_assertion(text: &str) -> PathAssertion {
             if split_single_comparison(rest).is_some() {
                 return PathAssertion::None;
             }
-            (SentinelPolarity::Same, nots >= 2 && nots % 2 == 0)
+            (SentinelPolarity::Same, nots >= 2 && nots.is_multiple_of(2))
         }
         other => (other, false),
     };

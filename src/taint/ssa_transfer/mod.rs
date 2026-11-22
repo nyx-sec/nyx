@@ -1786,8 +1786,7 @@ fn compute_succ_states(
                         // Only a lone condition variable is known to be the
                         // receiver.
                         effective_vars
-                            .iter()
-                            .next()
+                            .first()
                             .filter(|_| effective_vars.len() == 1)
                             .is_some_and(|var| {
                                 reaching_def_at_block_end(var, ssa, block.id).is_some_and(|v| {
@@ -1806,7 +1805,7 @@ fn compute_succ_states(
                         ssa,
                         block.id,
                         cfg,
-                        &exit_state,
+                        exit_state,
                     )
                 {
                     path_class.to_mut().view_root_untrusted = true;
@@ -2850,8 +2849,8 @@ fn value_reaches_sink(seed: SsaValue, ssa: &SsaBody, cfg: &Cfg, caps: Cap) -> bo
 /// * a call argument spelled as the checked variable's own name (never the
 ///   receiver) of a call that is a redirect/SSRF sink, or whose result
 ///   nothing consumes.
-/// Concatenation, templates, method calls on the value and helper calls whose
-/// result is used keep the taint.
+///   Concatenation, templates, method calls on the value and helper calls whose
+///   result is used keep the taint.
 fn host_pinned_uses_are_forwarding(
     targets: &[SsaValue],
     url_value: SsaValue,
@@ -4024,9 +4023,7 @@ fn apply_path_fact_branch_narrowing_with_aliases(
             .as_ref()
             .is_some_and(|v| v.normalizes && v.path_valued);
     let assertion_targets: smallvec::SmallVec<[SsaValue; 2]> = match class.view.as_ref() {
-        Some(view) if effective_vars.iter().any(|v| *v == view.root) => {
-            view_root_def.into_iter().collect()
-        }
+        Some(view) if effective_vars.contains(&view.root) => view_root_def.into_iter().collect(),
         _ => targets.clone(),
     };
 

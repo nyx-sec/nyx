@@ -298,7 +298,7 @@ pub(crate) fn scope_sets_html_content_type(node: Node, code: &[u8]) -> bool {
         return true;
     }
     // A quoted `html` argument or value shortly after a `type` word.
-    for quote in [b'\'', b'"', b'`'] {
+    for quote in *b"'\"`" {
         let needle = [quote, b'h', b't', b'm', b'l', quote];
         let mut from = 0;
         while let Some(i) = find_bytes(&lower[from..], &needle) {

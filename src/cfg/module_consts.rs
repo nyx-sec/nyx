@@ -139,32 +139,6 @@ pub(super) fn resolve_prefix_idents(bodies: &mut [BodyCfg]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::string_literal_value;
-
-    #[test]
-    fn only_a_single_plain_literal_is_a_value() {
-        assert_eq!(
-            string_literal_value("'https://api.example.com/'"),
-            Some("https://api.example.com/")
-        );
-        assert_eq!(string_literal_value("`https://h/`"), Some("https://h/"));
-        for text in [
-            "\"https://a\" \"pi.example.com/\"",
-            "\"https://a\" + \"b/\"",
-            "`https://${host}/`",
-            "\"https://#{host}/\"",
-            "\"a\\\"b\"",
-            "f\"https://h/\"",
-            "API",
-            "\"",
-        ] {
-            assert_eq!(string_literal_value(text), None, "{text}");
-        }
-    }
-}
-
 /// Calls whose result never ends with a path separator: they strip trailing
 /// ones (`path.resolve('/srv/uploads/')` is `/srv/uploads`).  A root built
 /// by one of these and then used as a bare `startsWith` / `startswith` /
@@ -333,4 +307,30 @@ fn is_bare_identifier(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(|c: char| c.is_ascii_digit())
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::string_literal_value;
+
+    #[test]
+    fn only_a_single_plain_literal_is_a_value() {
+        assert_eq!(
+            string_literal_value("'https://api.example.com/'"),
+            Some("https://api.example.com/")
+        );
+        assert_eq!(string_literal_value("`https://h/`"), Some("https://h/"));
+        for text in [
+            "\"https://a\" \"pi.example.com/\"",
+            "\"https://a\" + \"b/\"",
+            "`https://${host}/`",
+            "\"https://#{host}/\"",
+            "\"a\\\"b\"",
+            "f\"https://h/\"",
+            "API",
+            "\"",
+        ] {
+            assert_eq!(string_literal_value(text), None, "{text}");
+        }
+    }
 }

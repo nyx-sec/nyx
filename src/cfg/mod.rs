@@ -5092,7 +5092,7 @@ pub(super) fn push_node<'a>(
                 && v.len() >= 2
                 && !t.is_empty()
                 && !t.contains("${")
-                && t.trim_matches('/').trim_matches('.') != ""
+                && !t.trim_matches('/').trim_matches('.').is_empty()
         })
     {
         for label in labels.iter_mut() {

@@ -815,6 +815,8 @@ impl DefaultTransfer<'_> {
     /// when `callee` is a release of some resource pair.  `strict` limits the
     /// match to the callee itself or a method of that name, so a predicate
     /// such as `should_close(f)` is not a close.
+    // Each argument is an independent piece of the transfer state; a context struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     fn apply_release(
         &self,
         strict: bool,

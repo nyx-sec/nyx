@@ -4817,16 +4817,13 @@ fn java_execute_concat_may_be_sql(call: tree_sitter::Node, bytes: &[u8]) -> bool
                 .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
             && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     };
-    match call.child_by_field_name("object") {
-        Some(o) => {
-            let Ok(t) = o.utf8_text(bytes) else {
-                return true;
-            };
-            if !class_like(t) {
-                return true;
-            }
+    if let Some(o) = call.child_by_field_name("object") {
+        let Ok(t) = o.utf8_text(bytes) else {
+            return true;
+        };
+        if !class_like(t) {
+            return true;
         }
-        None => {}
     }
     let Some(arg) = call
         .child_by_field_name("arguments")
@@ -5059,15 +5056,14 @@ fn ruby_constant_is_closed_literal_set(constant: tree_sitter::Node, bytes: &[u8]
                     mutated = true;
                 }
             }
-            "binary" => {
+            "binary"
                 if n.child_by_field_name("left").is_some_and(|l| {
                     l.kind() == "constant" && l.utf8_text(bytes).ok() == Some(name)
                 }) && n
                     .child_by_field_name("operator")
-                    .is_some_and(|o| o.kind() == "<<")
-                {
-                    mutated = true;
-                }
+                    .is_some_and(|o| o.kind() == "<<") =>
+            {
+                mutated = true;
             }
             _ => {}
         }

@@ -701,14 +701,14 @@ pub(super) fn go_receiver_alias_frame(
     frame
 }
 
+type GoStructTypedFields = std::collections::HashMap<String, Vec<(String, &'static str)>>;
+
 thread_local! {
     /// Fields of the file's struct types whose declared type has a receiver
     /// prefix, by struct name.  Built on the first Go function of a file and
     /// cleared with the receiver-alias frames at the start and end of each
     /// file's CFG build.
-    static GO_STRUCT_TYPED_FIELDS: std::cell::RefCell<
-        Option<std::collections::HashMap<String, Vec<(String, &'static str)>>>,
-    > = const { std::cell::RefCell::new(None) };
+    static GO_STRUCT_TYPED_FIELDS: std::cell::RefCell<Option<GoStructTypedFields>> = const { std::cell::RefCell::new(None) };
 }
 
 pub(super) fn clear_go_struct_typed_fields() {
