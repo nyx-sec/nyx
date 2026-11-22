@@ -748,9 +748,12 @@ impl DefaultTransfer<'_> {
 
     /// Release effect of a call to `callee` whose operands are `uses`: moves
     /// each OPEN operand to CLOSED and reports a second close.  Returns true
-    /// when `callee` is a release of some resource pair.
+    /// when `callee` is a release of some resource pair.  `strict` limits the
+    /// match to the callee itself or a method of that name, so a predicate
+    /// such as `should_close(f)` is not a close.
     fn apply_release(
         &self,
+        strict: bool,
         node_idx: NodeIndex,
         info: &NodeInfo,
         callee: &str,
@@ -763,7 +766,13 @@ impl DefaultTransfer<'_> {
         // matching across multiple resource pair definitions.
         let mut direct_release = false;
         for pair in self.resource_pairs {
-            let is_release = pair.release.iter().any(|r| callee_matches(callee, r));
+            let is_release = pair.release.iter().any(|r| {
+                if strict {
+                    rules::callee_matches_at_boundary(callee, &r.to_ascii_lowercase())
+                } else {
+                    callee_matches(callee, r)
+                }
+            });
             if is_release {
                 direct_release = true;
                 // Go `defer f.Close()`: skip the CLOSED transition so the
@@ -818,7 +827,16 @@ impl DefaultTransfer<'_> {
             uses.push(receiver.to_string());
         }
         let mut released = smallvec::SmallVec::new();
-        self.apply_release(node_idx, info, &callee, &uses, &mut released, state, events);
+        self.apply_release(
+            true,
+            node_idx,
+            info,
+            &callee,
+            &uses,
+            &mut released,
+            state,
+            events,
+        );
     }
 
     fn apply_call(
@@ -935,6 +953,7 @@ impl DefaultTransfer<'_> {
         // ── Resource release ─────────────────────────────────────────────
         let mut released: smallvec::SmallVec<[SymbolId; 4]> = smallvec::SmallVec::new();
         let direct_release = self.apply_release(
+            false,
             node_idx,
             info,
             &callee,
@@ -1369,6 +1388,21 @@ impl DefaultTransfer<'_> {
             // claim on the handle it held.
             match info.rhs_shape {
                 RhsShape::SubObject => return,
+                RhsShape::Aggregate => {
+                    // The handle is stored in the aggregate; whoever holds
+                    // the aggregate owns it now.
+                    for used in info.taint.uses.iter().filter(not_rmw_self) {
+                        if let Some(use_sym) = self.get_sym(info, used)
+                            && state
+                                .resource
+                                .get(use_sym)
+                                .contains(ResourceLifecycle::OPEN)
+                        {
+                            state.resource.set(use_sym, ResourceLifecycle::MOVED);
+                        }
+                    }
+                    return;
+                }
                 RhsShape::Projection => {
                     if info.taint.uses.iter().any(|u| u == def)
                         && state

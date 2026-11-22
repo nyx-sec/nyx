@@ -237,6 +237,49 @@ fn c_release_behind_short_circuit_still_leaks() {
 }
 
 #[test]
+fn c_predicate_named_like_a_release_is_not_a_close() {
+    let file = "c_predicate_in_condition.c";
+    let lines: Vec<usize> = state_diags_for(file)
+        .iter()
+        .filter(|d| d.id == "state-double-close")
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![39],
+        "only the fclose after a real fclose condition is a double close"
+    );
+}
+
+#[test]
+fn c_handle_stored_in_an_aggregate_initializer_is_owned_by_it() {
+    let file = "c_aggregate_owns_handle.c";
+    let lines: Vec<usize> = state_diags_for(file)
+        .iter()
+        .filter(|d| d.id.starts_with("state-resource-leak"))
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(lines, vec![22], "only the plain leak is reported");
+}
+
+#[test]
+fn js_foreach_callback_discards_the_handle_it_opens() {
+    let file = "js_foreach_discarded_handle.js";
+    let lines: Vec<usize> = diags_with_prefix(file, "cfg-resource-leak")
+        .iter()
+        .map(|d| d.line)
+        .collect();
+    assert!(
+        lines.contains(&4),
+        "forEach drops the descriptor; got {lines:?}"
+    );
+    assert!(
+        !lines.contains(&8),
+        "returned thunk hands it over; got {lines:?}"
+    );
+}
+
+#[test]
 fn c_subobject_aggregate_and_conditional_reads_do_not_move_the_handle() {
     let file = "c_alias_subobject_clean.c";
     assert_no_state_findings(file);

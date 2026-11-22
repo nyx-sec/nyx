@@ -1061,10 +1061,14 @@ pub enum RhsShape {
     /// name may hold the handle.
     #[default]
     Whole,
-    /// The address of a sub-object (`c = &ac->c`), an aggregate initializer
-    /// (`cc = {.names = names}`) or arithmetic (`q = p + 1`): a different
-    /// value that a tracked handle read by it does not move into.
+    /// The address of a sub-object (`c = &ac->c`) or arithmetic
+    /// (`q = p + 1`): a different value that a tracked handle read by it
+    /// does not move into.
     SubObject,
+    /// An aggregate initializer (`cc = {.names = names}`, `(S){f}`): a handle
+    /// listed in it is now owned by the aggregate, which is not itself a
+    /// handle.
+    Aggregate,
     /// A field, element or dereference read (`cur = cur->next`): the value
     /// is another object reached from the handle.
     Projection,
@@ -2969,12 +2973,10 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
     }
     let v = strip_parens_and_casts(rhs);
     match v.kind() {
-        "initializer_list"
-        | "compound_literal_expression"
-        | "binary_expression"
-        | "unary_expression"
-        | "sizeof_expression"
-        | "update_expression" => RhsShape::SubObject,
+        "initializer_list" | "compound_literal_expression" => RhsShape::Aggregate,
+        "binary_expression" | "unary_expression" | "sizeof_expression" | "update_expression" => {
+            RhsShape::SubObject
+        }
         "pointer_expression" => {
             if v.child_by_field_name("operator")
                 .is_some_and(|op| op.kind() == "&")
@@ -9039,6 +9041,38 @@ fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
     }
 }
 
+/// Whether `func` is a callback whose return value the caller throws away:
+/// an argument of `forEach` / `for_each`, or of a Python `map(..)` used as a
+/// statement.  A handle such a callback opens never reaches anyone.
+fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
+    let Some(args) = func.parent() else {
+        return false;
+    };
+    if !matches!(args.kind(), "arguments" | "argument_list") {
+        return false;
+    }
+    let Some(call) = args.parent() else {
+        return false;
+    };
+    let Some(callee) = call
+        .child_by_field_name("function")
+        .or_else(|| call.child_by_field_name("name"))
+    else {
+        return false;
+    };
+    let Ok(text) = callee.utf8_text(code) else {
+        return false;
+    };
+    let leaf = text.rsplit(['.', ':']).next().unwrap_or(text);
+    match leaf {
+        "forEach" | "for_each" => true,
+        "map" if text == "map" => call
+            .parent()
+            .is_some_and(|p| p.kind() == "expression_statement"),
+        _ => false,
+    }
+}
+
 /// Mark the CFG node built from the tail statement of a Ruby method body, or
 /// from the expression body of an arrow function / lambda / closure, as the
 /// function's implicit return value.  Only a plain value expression
@@ -10211,6 +10245,7 @@ pub(super) fn build_sub<'a>(
                 lang,
                 "javascript" | "typescript" | "tsx" | "python" | "rust"
             ) && lookup(lang, body_ast.kind()) != Kind::Block
+                && !callback_result_is_discarded(ast, code)
             {
                 mark_implicit_return(&mut fn_graph, body_ast, &body_exits, lang, code);
             }

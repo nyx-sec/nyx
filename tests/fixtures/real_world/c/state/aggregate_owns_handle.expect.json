@@ -1,0 +1,23 @@
+{
+  "description": "A handle listed in an aggregate initializer is owned by the aggregate, which is returned or registered. A handle never closed still leaks.",
+  "tags": ["state", "resource-leak", "ownership-handoff"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [7, 18],
+      "evidence_contains": [],
+      "notes": "handle moved into the aggregate"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [22, 22],
+      "evidence_contains": [],
+      "notes": "f is never closed or handed off"
+    }
+  ]
+}
