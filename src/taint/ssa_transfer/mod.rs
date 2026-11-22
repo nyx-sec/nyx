@@ -52,7 +52,7 @@ pub use summary_extract::{extract_ssa_func_summary, extract_ssa_func_summary_ful
 
 use crate::abstract_interp::AbstractState;
 use crate::callgraph::{callee_container_hint, callee_leaf_name};
-use crate::cfg::{BodyId, Cfg, FuncSummaries, NodeInfo};
+use crate::cfg::{BodyId, CalleeNesting, Cfg, FuncSummaries, NodeInfo};
 use crate::constraint;
 use crate::interop::InteropEdge;
 use crate::labels::{Cap, DataLabel, RuntimeLabelRule, SourceKind};
@@ -6730,14 +6730,22 @@ pub(super) fn transfer_inst(
             // causes qualified-first resolution to prefer
             // `{Type}::{name}` over any same-leaf collision in the
             // global summary table.
-            let callee_summary = resolve_callee_typed(
-                transfer,
-                callee,
-                caller_func,
-                info.call.call_ordinal,
-                arity_hint,
-                *receiver,
-            );
+            // A hoisted member read (`useEffect(cb, [location.search])`) names
+            // no call of this node, so its text must not bind to a same-leaf
+            // project function (`MailPit.search`); the wrapping call is
+            // resolved through `outer_callee` below.
+            let callee_summary = if info.call.callee_nesting == CalleeNesting::Hoisted {
+                None
+            } else {
+                resolve_callee_typed(
+                    transfer,
+                    callee,
+                    caller_func,
+                    info.call.call_ordinal,
+                    arity_hint,
+                    *receiver,
+                )
+            };
 
             // Capture container fields and return type regardless of whether
             // inline analysis handled the call
@@ -12385,9 +12393,14 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
     } else {
         Some(info.call.arg_uses.len())
     };
-    let primary = info.call.callee.as_ref().and_then(|c| {
-        resolve_callee_hinted(transfer, c, caller_func, info.call.call_ordinal, arity_hint)
-    });
+    let primary = info
+        .call
+        .callee
+        .as_ref()
+        .filter(|_| info.call.callee_nesting != CalleeNesting::Hoisted)
+        .and_then(|c| {
+            resolve_callee_hinted(transfer, c, caller_func, info.call.call_ordinal, arity_hint)
+        });
     if let Some(r) = primary.filter(|r| !r.sink_caps.is_empty()) {
         return SinkInfo {
             caps: r.sink_caps,
@@ -15311,9 +15324,9 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
     // are default-valued or optional, a routine call shape in Python, JS/TS,
     // PHP and Ruby.  Mirrors the global resolver's widening so a same-file
     // callee with optional parameters resolves like a cross-file one.
-    let widened = q
-        .arity
-        .is_some_and(|a| !all.iter().any(|k| k.arity == Some(a)));
+    let widened = q.caller_lang.allows_under_application()
+        && q.arity
+            .is_some_and(|a| !all.iter().any(|k| k.arity == Some(a)));
     let arity_matches = |k: &FuncKey| match q.arity {
         Some(a) if widened => matches!(k.arity, Some(p) if p >= a),
         Some(a) => k.arity == Some(a),

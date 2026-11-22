@@ -1,0 +1,19 @@
+{
+  "description": "A library decode(s) call never binds to the same-file decode(s, loader) overload through the arity under-application fallback, so a decode helper's own parameter is not a taint source.  The deserialization pattern rule still fires.",
+  "tags": ["taint", "java", "precision"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-",
+      "line_range": [1, 25],
+      "must_not_match": true,
+      "notes": "Base64 decode of a helper's own parameter is not a source"
+    },
+    {
+      "rule_id": "java.deser.readobject",
+      "line_range": [10, 10],
+      "must_match": true,
+      "notes": "readObject on decoded bytes stays reported by the pattern rule"
+    }
+  ]
+}

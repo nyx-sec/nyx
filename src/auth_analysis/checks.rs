@@ -209,6 +209,14 @@ fn check_ownership_gaps(
                 if has_scope_co_subject {
                     continue;
                 }
+                // Tenant pin from an authorised row: the same call also binds
+                // the tenant of a row an earlier check covers
+                // (`Attachment.findAll({ where: { teamId: document.teamId, id:
+                // ids } })` after `authorize(user, "read", document)`), so the
+                // lookup cannot leave the tenant the caller was cleared for.
+                if has_authorised_tenant_pin(unit, op) {
+                    continue;
+                }
                 if !has_prior_subject_auth(unit, op, &relevant_subjects) {
                     findings.push(AuthFinding {
                         rule_id: rules.rule_id("missing_ownership_check"),
@@ -464,6 +472,39 @@ fn has_prior_subject_auth(
         subjects
             .iter()
             .any(|subject| auth_check_covers_subject(check, subject, unit))
+    })
+}
+
+/// The call binds a tenant field of a row that an earlier authorization check
+/// already covers (`teamId: document.teamId` after `authorize(user, "read",
+/// document)`).  Only a tenant-like field qualifies: the row's own fields say
+/// nothing about which other rows the caller may reach.
+fn has_authorised_tenant_pin(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool {
+    op.subjects.iter().any(|s| {
+        !is_callee_receiver(s, &op.callee)
+            && s.base.is_some()
+            && !matches!(
+                s.source_kind,
+                ValueSourceKind::RequestParam
+                    | ValueSourceKind::RequestBody
+                    | ValueSourceKind::RequestQuery
+                    | ValueSourceKind::Session
+            )
+            && s.base
+                .as_deref()
+                .map(|b| b.split(['.', '[', '(']).next().unwrap_or(b))
+                .is_some_and(|root| !unit.request_roots.contains(root))
+            && s.field.as_deref().is_some_and(is_actor_tenant_field)
+            && unit.auth_checks.iter().any(|check| {
+                check.line <= op.line
+                    && !matches!(
+                        check.kind,
+                        AuthCheckKind::LoginGuard
+                            | AuthCheckKind::TokenExpiry
+                            | AuthCheckKind::TokenRecipient
+                    )
+                    && auth_check_covers_subject(check, s, unit)
+            })
     })
 }
 

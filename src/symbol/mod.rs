@@ -41,6 +41,18 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Whether a call may supply fewer arguments than the callee declares
+    /// (default-valued or optional parameters).  Java, C, Go and Rust have
+    /// no such calls, so an arity mismatch there names a different overload
+    /// or an unrelated function (`Base64.decode(s)` is not the same-file
+    /// `decode(s, loader)`).
+    pub fn allows_under_application(self) -> bool {
+        matches!(
+            self,
+            Lang::Python | Lang::Ruby | Lang::Php | Lang::JavaScript | Lang::TypeScript | Lang::Cpp
+        )
+    }
+
     /// Parse a language slug (as returned by `lang_for_path`) into a `Lang`.
     pub fn from_slug(s: &str) -> Option<Lang> {
         match s {

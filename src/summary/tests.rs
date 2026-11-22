@@ -5307,7 +5307,7 @@ mod resolve_callee_oracle_tests {
             // degrades to `Ambiguous`, never a wrong `Resolved`. Exact-arity
             // matches always take precedence (this branch runs only when none
             // exist), so no existing exact-match resolution regresses.
-            if let Some(a) = q.arity {
+            if let Some(a) = q.arity.filter(|_| q.caller_lang.allows_under_application()) {
                 arity_filtered = all_candidates
                     .iter()
                     .copied()
