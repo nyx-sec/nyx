@@ -39104,8 +39104,8 @@
         "patched",
         "negative"
       ],
-      "disabled": false,
-      "notes": "CVE-2025-54314 patched counterpart: regression guard that Nyx does not refire on the fix. MIT"
+      "disabled": true,
+      "notes": "CVE-2025-54314 patched counterpart: regression guard that Nyx does not refire on the fix. MIT DISABLED (precision deferred): the fix runs system(merge_tool, path, dest) in argv form with merge_tool read from ENV[\"THOR_MERGE\"]; a dynamic program word in argv form still reports because telling an environment-configured program from request input at the program position needs source-kind awareness."
     },
     {
       "case_id": "cve-ruby-2025-53623-vulnerable",
