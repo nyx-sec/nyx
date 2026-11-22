@@ -119,7 +119,14 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         id: "java.sqli.execute_concat",
         description: "SQL execute with concatenated string argument",
+        // JDBC `execute*` is always called on an instance (a Statement,
+        // Connection or chained call).  A bare `execute(..)` and a static
+        // call on a CamelCase type (`KcAdmExec.execute(..)`) are CLI or
+        // helper wrappers, not JDBC, so the receiver must be present and
+        // must not look like a class name.  All-caps receivers (constants)
+        // still match.
         query: r#"(method_invocation
+                     object: (_) @recv (#not-match? @recv "^[A-Z][a-z0-9][A-Za-z0-9_]*$")
                      name: (identifier) @id (#match? @id "^execute(Query|Update)?$")
                      arguments: (argument_list
                        (binary_expression) @concat))

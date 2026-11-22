@@ -1,0 +1,14 @@
+{
+  "description": "A bare execute() helper and a static call on a CamelCase type are CLI wrappers, not JDBC, so the Tier-B SQL execute pattern stays quiet.",
+  "tags": ["sqli", "java", "negative", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "severity": null,
+      "line_range": [5, 6],
+      "notes": "execute() without an instance receiver is not JDBC",
+      "must_not_match": true
+    }
+  ]
+}
