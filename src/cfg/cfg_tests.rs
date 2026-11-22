@@ -2324,6 +2324,68 @@ fn c_function_extracts_param_names() {
 }
 
 #[test]
+fn c_pointer_returning_functions_keep_param_names() {
+    let src = b"static FILE *open_pipe(char *cmd, int mode) { return 0; }\n\
+char **table(char *key) { return 0; }\n\
+void *(*pick(int sel))(void) { return 0; }\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "c", ts_lang);
+    let by_name = |n: &str| {
+        file_cfg
+            .summaries
+            .iter()
+            .find(|(k, _)| k.name == n)
+            .map(|(_, s)| s.param_names.clone())
+    };
+    assert_eq!(
+        by_name("open_pipe"),
+        Some(vec!["cmd".into(), "mode".into()])
+    );
+    assert_eq!(by_name("table"), Some(vec!["key".into()]));
+    assert_eq!(by_name("pick"), Some(vec!["sel".into()]));
+}
+
+#[test]
+fn c_condition_assignment_defines_target() {
+    let src = b"void f(void) {\n\
+    char *e;\n\
+    int c;\n\
+    if ((e = getenv(\"X\")) == NULL) return;\n\
+    while ((c = getc(stdin)) != EOF) { }\n\
+    if (!(e = getenv(\"Y\"))) return;\n\
+    if ((c += 1) > 2) return;\n\
+}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let defs: Vec<(StmtKind, Option<String>)> = g
+        .node_indices()
+        .filter(|&i| matches!(g[i].kind, StmtKind::If | StmtKind::Loop))
+        .map(|i| (g[i].kind, g[i].taint.defines.clone()))
+        .collect();
+    assert_eq!(
+        defs,
+        vec![
+            (StmtKind::If, Some("e".to_string())),
+            (StmtKind::Loop, Some("c".to_string())),
+            (StmtKind::If, Some("e".to_string())),
+            (StmtKind::If, None),
+        ],
+        "plain assignments in a condition define their target; compound ones do not"
+    );
+}
+
+#[test]
+fn c_preproc_group_bodies_are_lowered() {
+    let src = b"#ifndef X\nvoid f(void) { char *e = getenv(\"A\"); system(e); }\n#endif\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "c", ts_lang);
+    assert!(
+        file_cfg.summaries.keys().any(|k| k.name == "f"),
+        "a function inside #ifndef must be summarised"
+    );
+}
+
+#[test]
 fn cpp_function_extracts_param_names() {
     let src = b"void process(int x, std::string name) { }";
     let ts_lang = Language::from(tree_sitter_cpp::LANGUAGE);

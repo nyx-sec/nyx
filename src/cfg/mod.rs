@@ -3916,6 +3916,15 @@ pub(super) fn push_node<'a>(
 
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
+    // C / C++ `if ((x = getenv("V")) == NULL)`: the assigned call sits deeper
+    // than the generic probe looks, and it is the call the header evaluates.
+    if call_ast.is_none()
+        && matches!(lang, "c" | "cpp")
+        && header.is_some()
+        && let Some(cond) = scope
+    {
+        call_ast = literals::condition_assigned_call(cond, lang);
+    }
 
     // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
     // only unwrap the result, so the arguments that matter for gate payload
@@ -4816,7 +4825,25 @@ pub(super) fn push_node<'a>(
         None
     };
 
-    let callee = if kind == StmtKind::Call || !labels.is_empty() {
+    // C / C++ `if (!realpath(dir, out))`: an unlabelled call in a branch or
+    // loop condition still writes its output arguments.  Keep it as the
+    // node's callee when it has an arg-to-arg propagation rule so the buffer
+    // it fills carries the input's taint, as the same call in statement
+    // position does.
+    let mut header_call_propagates = false;
+    if labels.is_empty()
+        && header.is_some()
+        && matches!(lang, "c" | "cpp")
+        && let Some(cn) = call_ast
+        && let Some((ident, ident_span)) = call_ident_at_or_under(cn, lang, code)
+        && crate::labels::arg_propagation(lang, &ident).is_some()
+    {
+        text = ident;
+        inner_text_span = Some(ident_span);
+        header_call_propagates = true;
+    }
+
+    let callee = if kind == StmtKind::Call || !labels.is_empty() || header_call_propagates {
         Some(text.clone())
     } else {
         None
@@ -4905,7 +4932,11 @@ pub(super) fn push_node<'a>(
 
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
-    let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() {
+    // A C / C++ branch or loop header whose condition calls something
+    // (`if (!realpath(a, b))`, `while ((n = read(fd, buf, len)) > 0)`) needs
+    // the per-argument groups too, so output-argument positions resolve.
+    let c_header_call = header.is_some() && callee.is_some() && matches!(lang, "c" | "cpp");
+    let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() || c_header_call {
         call_ast
             .or(narrowed_query_call)
             .map(|cn| extract_arg_uses(cn, code))
@@ -8878,6 +8909,35 @@ pub(super) fn build_sub<'a>(
     next_body_id: &mut u32,
     current_body_id: BodyId,
 ) -> Vec<NodeIndex> {
+    // C / C++ `#if` / `#ifdef` / `#elif` / `#else` groups wrap statements,
+    // declarations and whole function definitions.  Lower them as a branch
+    // with a merge so their contents are analysed instead of collapsing into
+    // one opaque node.
+    if matches!(lang, "c" | "cpp")
+        && matches!(
+            ast.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        )
+    {
+        return build_preproc_group(
+            ast,
+            preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+    }
     match lookup(lang, ast.kind()) {
         //  IF‑/ELSE: two branches that re‑merge afterwards
         Kind::If => {
@@ -9863,6 +9923,10 @@ pub(super) fn build_sub<'a>(
                 anon_fn_name(ast.start_byte())
             } else {
                 ast.child_by_field_name("name")
+                    .or_else(|| {
+                        params::c_function_declarator(ast)
+                            .and_then(|d| d.child_by_field_name("declarator"))
+                    })
                     .or_else(|| ast.child_by_field_name("declarator"))
                     .and_then(|n| {
                         let mut tmp = Vec::new();
@@ -10675,6 +10739,93 @@ pub(super) fn build_sub<'a>(
             vec![n]
         }
     }
+}
+
+/// Lower one C / C++ preprocessor conditional group.
+///
+/// The group body runs sequentially from `preds`.  The `alternative` chain
+/// (`#elif` / `#else`) is an independent path from the same `preds`.  Without
+/// an `#else` the body may also be skipped, so `preds` is an exit too.  Exits
+/// are the union, so a definition in one arm never kills one from another.
+#[allow(clippy::too_many_arguments)]
+fn build_preproc_group<'a>(
+    ast: Node<'a>,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    let condition = ast.child_by_field_name("condition");
+    let name = ast.child_by_field_name("name");
+    let alternative = ast.child_by_field_name("alternative");
+    let mut frontier = preds.to_vec();
+    let mut cursor = ast.walk();
+    for child in ast.named_children(&mut cursor) {
+        let is_header = [condition, name, alternative]
+            .into_iter()
+            .flatten()
+            .any(|n| n.id() == child.id());
+        if is_header {
+            continue;
+        }
+        frontier = build_sub(
+            child,
+            &frontier,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+    }
+    let mut exits = frontier;
+    match alternative {
+        Some(alt) => exits.extend(build_sub(
+            alt,
+            preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )),
+        // `#else` is itself the last alternative; every other group can be
+        // skipped entirely.
+        None if ast.kind() != "preproc_else" => exits.extend_from_slice(preds),
+        None => {}
+    }
+    let mut seen = std::collections::HashSet::new();
+    exits.retain(|n| seen.insert(*n));
+    exits
 }
 
 /// Languages whose `x = cond ? a : b` assignments lower to a CFG diamond

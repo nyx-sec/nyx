@@ -3082,6 +3082,17 @@ pub(super) fn def_use(
                 return (defs, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
+            // C / C++ `if ((x = getenv("V")) == NULL)` and
+            // `while ((c = getc(f)) != EOF)`: the condition assigns, so the
+            // header defines the target like the assignment statement would.
+            if matches!(lang, "c" | "cpp")
+                && let Some(c) = cond
+                && let Some(assign) = condition_assignment(c)
+            {
+                let (defs, _, extra, idx, rhs) = def_use(assign, lang, code, extra_labels);
+                return (defs, header_uses(cond, code), extra, idx, rhs);
+            }
+
             // The header reads its condition only: the branches and the loop
             // body are lowered as nodes of their own.
             (
@@ -3163,6 +3174,19 @@ pub(super) fn def_use(
             SmallVec::new(),
         ),
 
+        // A short-circuit operand of a C / C++ condition that assigns:
+        // `(x = getenv("V")) == NULL` inside `a && (x = f()) != NULL`.
+        _ if matches!(lang, "c" | "cpp")
+            && matches!(
+                ast.kind(),
+                "binary_expression" | "parenthesized_expression" | "unary_expression"
+            )
+            && let Some(assign) = condition_assignment(ast) =>
+        {
+            let (defs, _, extra, idx, rhs) = def_use(assign, lang, code, extra_labels);
+            (defs, header_uses(Some(ast), code), extra, idx, rhs)
+        }
+
         // everything else – no definition, but may read vars
         _ => {
             let mut idents = Vec::new();
@@ -3172,6 +3196,70 @@ pub(super) fn def_use(
             uses.extend(idents);
             (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
+    }
+}
+
+/// The plain assignment a C / C++ condition evaluates for its value:
+/// `(x = f())`, `(x = f()) == NULL`, `NULL != (x = f())`, `!(x = f())`.
+/// Compound assignments (`x += y`) are not matched.
+pub(super) fn condition_assignment(cond: Node) -> Option<Node> {
+    fn unwrap(mut n: Node) -> Node {
+        while n.kind() == "parenthesized_expression" {
+            match n.named_child(0) {
+                Some(c) => n = c,
+                None => break,
+            }
+        }
+        n
+    }
+    let n = unwrap(cond);
+    match n.kind() {
+        "assignment_expression" => {
+            let op = n.child_by_field_name("operator")?;
+            (op.kind() == "=").then_some(n)
+        }
+        "binary_expression" => {
+            let op = n.child_by_field_name("operator")?.kind();
+            if !matches!(op, "==" | "!=" | "<" | ">" | "<=" | ">=") {
+                return None;
+            }
+            [
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            ]
+            .into_iter()
+            .flatten()
+            .map(unwrap)
+            .find_map(|o| {
+                let op = o.child_by_field_name("operator")?;
+                (o.kind() == "assignment_expression" && op.kind() == "=").then_some(o)
+            })
+        }
+        "unary_expression" => {
+            let op = n.child_by_field_name("operator")?;
+            if op.kind() != "!" {
+                return None;
+            }
+            condition_assignment(n.child_by_field_name("argument")?)
+        }
+        _ => None,
+    }
+}
+
+/// The call on the right-hand side of the assignment a C / C++ condition
+/// evaluates, looking through parentheses and casts.
+pub(super) fn condition_assigned_call<'a>(cond: Node<'a>, lang: &str) -> Option<Node<'a>> {
+    let mut rhs = condition_assignment(cond)?.child_by_field_name("right")?;
+    for _ in 0..8 {
+        match rhs.kind() {
+            "parenthesized_expression" => rhs = rhs.named_child(0)?,
+            "cast_expression" => rhs = rhs.child_by_field_name("value")?,
+            _ => break,
+        }
+    }
+    match lookup(lang, rhs.kind()) {
+        Kind::CallFn | Kind::CallMethod | Kind::CallMacro => Some(rhs),
+        _ => find_call_node(rhs, lang),
     }
 }
 

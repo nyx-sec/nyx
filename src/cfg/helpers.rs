@@ -2217,6 +2217,20 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
                 }
             }
         }
+        // C++ `return this;` / `return *this;`: the receiver itself escapes.
+        // Recorded as the pseudo-variable `this` so a summary can tell a
+        // fluent method (`Builder &host(const char *h) { h_ = h; return *this; }`)
+        // from one that returns an unrelated value.
+        "this" if lang == "cpp" => out.idents.push("this".to_string()),
+        "pointer_expression" | "unary_expression"
+            if lang == "cpp"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|a| a.kind() == "this") =>
+        {
+            out.idents.push("this".to_string());
+        }
         // Address-of / casts / type assertions: the operand escapes.
         "unary_expression" | "pointer_expression" | "reference_expression" => {
             let is_addr = n
