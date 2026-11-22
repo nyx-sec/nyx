@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 979
+    "corpus_size": 985
   },
   "cases": [
     {
@@ -31167,6 +31167,251 @@
       ],
       "disabled": false,
       "notes": "CVE-2024-32461 patched counterpart: the package filter moves to the bound parameter array and the LIMIT size is cast to int; user values reach dbFetch* only through arg 1. GPL-3.0-or-later."
+    },
+    {
+      "case_id": "php-cast-field-keeps-taint-vuln",
+      "file": "php/path_traversal/cast_field_keeps_taint.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "tags": [
+        "taint",
+        "path-traversal",
+        "cast",
+        "field",
+        "php"
+      ],
+      "disabled": false,
+      "notes": "An integer cast stored into one field does not clear the taint of another field of the same object."
+    },
+    {
+      "case_id": "php-cast-field-keeps-taint-safe",
+      "file": "php/path_traversal/cast_field_keeps_taint_safe.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "taint",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of cast_field_keeps_taint."
+    },
+    {
+      "case_id": "php-file-io-namespaced-or-die-vuln",
+      "file": "php/path_traversal/file_io_namespaced_or_die.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          9,
+          9
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          9,
+          9
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "taint",
+        "path-traversal",
+        "file-io",
+        "php"
+      ],
+      "disabled": false,
+      "notes": "FILE_IO builtins called as \\unlink or consumed by `or die` still see their path argument."
+    },
+    {
+      "case_id": "php-file-io-namespaced-or-die-safe",
+      "file": "php/path_traversal/file_io_namespaced_or_die_safe.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "taint",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of file_io_namespaced_or_die."
+    },
+    {
+      "case_id": "php-echo-ternary-coalesce-vuln",
+      "file": "php/xss/echo_ternary_coalesce.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          12,
+          12
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          12,
+          12
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "taint",
+        "xss",
+        "echo",
+        "ternary",
+        "php"
+      ],
+      "disabled": false,
+      "notes": "A superglobal read through ?? or a ternary branch of an echo operand reaches the output unescaped."
+    },
+    {
+      "case_id": "php-echo-ternary-coalesce-safe",
+      "file": "php/xss/echo_ternary_coalesce_safe.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "taint",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of echo_ternary_coalesce."
     }
   ]
 }

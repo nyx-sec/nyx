@@ -1,0 +1,37 @@
+{
+  "description": "An integer cast stored into one field does not clear the taint of another field of the same object.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "cast",
+    "field",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 8"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 17"
+    }
+  ]
+}

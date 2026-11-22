@@ -1,0 +1,22 @@
+{
+  "description": "Safe twin: a superglobal read through ?? or a ternary branch of an echo operand reaches the output unescaped. Here every value is a number, escaped, fixed or only a branch condition, so no flow is expected.",
+  "tags": [
+    "taint",
+    "safe",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        18
+      ],
+      "notes": "No flow is expected anywhere in this file."
+    }
+  ]
+}

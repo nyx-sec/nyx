@@ -87,6 +87,17 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
                                 return Some(found);
                             }
                         }
+                        // `$ok = unlink($f) or die('x')` parses as
+                        // `(assignment) or (call)`: the assignment's call is
+                        // the one the callee name came from.
+                        _ if lang == "php"
+                            && gc.kind() == "assignment_expression"
+                            && c.kind() == "binary_expression" =>
+                        {
+                            if let Some(found) = find_call_node(gc, lang) {
+                                return Some(found);
+                            }
+                        }
                         _ => {}
                     }
                 }

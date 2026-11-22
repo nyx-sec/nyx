@@ -1,0 +1,22 @@
+{
+  "description": "Safe twin: fILE_IO builtins called as \\unlink or consumed by `or die` still see their path argument. Here every value is a number, escaped, fixed or only a branch condition, so no flow is expected.",
+  "tags": [
+    "taint",
+    "safe",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        14
+      ],
+      "notes": "No flow is expected anywhere in this file."
+    }
+  ]
+}

@@ -50,7 +50,7 @@ use helpers::{
     find_classifiable_inner_call, find_inner_sink_call, find_inner_source_or_sink_call,
     first_call_ident_with_span, first_callback_sink_call, first_member_label, first_member_text,
     is_raii_factory, is_subscript_kind, php_direct_operand_sources, php_output_construct,
-    root_member_receiver, subscript_components, subscript_lhs_node,
+    php_output_value_uses, root_member_receiver, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -2932,6 +2932,14 @@ fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
         },
         _ => return false,
     };
+    // Only a plain variable target: a field or element write is a weak
+    // update of its base, so it must keep the taint flowing as before.
+    if assign
+        .child_by_field_name("left")
+        .is_none_or(|l| l.kind() != "variable_name")
+    {
+        return false;
+    }
     let Some(mut rhs) = assign.child_by_field_name("right") else {
         return false;
     };
@@ -3469,11 +3477,22 @@ pub(super) fn push_node<'a>(
     // below the enclosing statement (e.g. call inside a multi-line template
     // literal).
     let mut inner_text_span: Option<(usize, usize)> = None;
+    let mut php_test_in_output = false;
     if matches!(
         lookup(lang, ast.kind()),
         Kind::CallWrapper | Kind::Assignment | Kind::Return
     ) {
-        if let Some((inner, inner_span)) = first_call_ident_with_span(ast, lang, code) {
+        // `echo isset($a) ? $a : ''`: `isset` / `empty` only test a value,
+        // so the output construct stays the node's callee.
+        let php_output = (lang == "php")
+            .then(|| php_output_construct(ast, code))
+            .flatten();
+        let inner_call = first_call_ident_with_span(ast, lang, code).filter(|(name, _)| {
+            let test = php_output.is_some() && matches!(name.as_str(), "isset" | "empty");
+            php_test_in_output |= test;
+            !test
+        });
+        if let Some((inner, inner_span)) = inner_call {
             text = inner;
             inner_text_span = Some(inner_span);
         } else if lang == "php"
@@ -3500,6 +3519,11 @@ pub(super) fn push_node<'a>(
     }
 
     /* ── 2.  LABEL LOOK-UP  ───────────────────────────────────────────── */
+
+    // `\unlink($p)`: the global-namespace prefix names the same builtin.
+    if lang == "php" && text.starts_with('\\') {
+        text.remove(0);
+    }
 
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
@@ -4854,8 +4878,14 @@ pub(super) fn push_node<'a>(
 
     /* ── 3.  GRAPH INSERTION + DEBUG ──────────────────────────────────── */
 
-    let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
+    let (defines, mut uses, extra_defines, array_pattern_indices, rhs_array_elements) =
         def_use(ast, lang, code, extra);
+    // `echo isset($a) ? $b : ''`: the `isset` test is not output, so its
+    // operands are not uses of the echo.
+    if php_test_in_output && let Some(construct) = php_output_construct(ast, code) {
+        uses.clear();
+        php_output_value_uses(construct.operand, code, &mut uses);
+    }
     let rhs_object_literal = match defines.as_deref() {
         Some(name) if extra_defines.is_empty() => collect_rhs_object_literal(ast, lang, code, name),
         _ => None,
@@ -4980,7 +5010,11 @@ pub(super) fn push_node<'a>(
 
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
-    let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() {
+    let arg_uses = if php_test_in_output {
+        // The `isset` call is not the callee, so its arguments are not the
+        // echo's arguments.
+        Vec::new()
+    } else if kind == StmtKind::Call || sink_payload_args.is_some() {
         call_ast
             .or(narrowed_query_call)
             .map(|cn| extract_arg_uses(cn, code))
@@ -7991,6 +8025,16 @@ fn pre_emit_arg_source_nodes(
     let Some(outer_call) = find_call_node(ast, lang) else {
         return (effective_preds, bindings, uses_only);
     };
+    // `echo isset($_GET['c']) ? .. : ..`: `isset` / `empty` are not the node's
+    // callee (see the callee choice in `push_node`), so their arguments are
+    // not sink inputs.
+    if lang == "php"
+        && php_output_construct(ast, code).is_some()
+        && call_node_ident_with_span(outer_call, lang, code)
+            .is_some_and(|(name, _)| matches!(name.as_str(), "isset" | "empty"))
+    {
+        return (effective_preds, bindings, uses_only);
+    }
     // A JS/TS method chain whose sink sits in the middle
     // (`repo.createQueryBuilder('u').where(<cond>).getMany()`): `push_node`
     // reads the argument positions from that inner call, so the sources are

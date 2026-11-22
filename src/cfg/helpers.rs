@@ -2598,11 +2598,25 @@ pub(crate) fn php_direct_operand_sources<'a>(
                 php_direct_operand_sources(c, code, extra, out);
             }
         }
+        "conditional_expression" => {
+            // The condition is only a value in the short form `a ?: b`.
+            let body = operand.child_by_field_name("body");
+            if body.is_none() {
+                if let Some(c) = operand.child_by_field_name("condition") {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+            for f in ["body", "alternative"] {
+                if let Some(c) = operand.child_by_field_name(f) {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+        }
         "binary_expression" => {
-            let is_concat = operand
+            let is_value_join = operand
                 .child_by_field_name("operator")
-                .is_some_and(|op| op.kind() == ".");
-            if is_concat {
+                .is_some_and(|op| matches!(op.kind(), "." | "??"));
+            if is_value_join {
                 let mut cursor = operand.walk();
                 for c in operand.named_children(&mut cursor) {
                     php_direct_operand_sources(c, code, extra, out);
@@ -2621,5 +2635,31 @@ pub(crate) fn php_direct_operand_sources<'a>(
             }
         }
         _ => {}
+    }
+}
+
+/// Variable names an output operand prints, leaving out `isset(..)` / `empty(..)`
+/// tests that only choose a branch (`echo isset($a) ? $b : ''`).
+pub(crate) fn php_output_value_uses(operand: Node, code: &[u8], out: &mut Vec<String>) {
+    match operand.kind() {
+        "conditional_expression"
+        | "binary_expression"
+        | "parenthesized_expression"
+        | "sequence_expression"
+        | "error_suppression_expression" => {
+            let mut cursor = operand.walk();
+            for c in operand.named_children(&mut cursor) {
+                php_output_value_uses(c, code, out);
+            }
+        }
+        "function_call_expression"
+            if operand
+                .child_by_field_name("function")
+                .and_then(|f| text_of(f, code))
+                .is_some_and(|f| matches!(f.as_str(), "isset" | "empty")) => {}
+        _ => {
+            let mut paths = Vec::new();
+            collect_idents_with_paths(operand, code, out, &mut paths);
+        }
     }
 }
