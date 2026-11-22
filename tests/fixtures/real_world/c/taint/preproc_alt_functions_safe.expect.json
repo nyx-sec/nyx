@@ -1,0 +1,15 @@
+{
+  "description": "Same #if arms, neither passes its parameter to system.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": []
+}

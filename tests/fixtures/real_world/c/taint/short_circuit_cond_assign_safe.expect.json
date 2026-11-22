@@ -1,0 +1,15 @@
+{
+  "description": "Same condition shape, the value only reaches printf and system gets a constant.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": []
+}

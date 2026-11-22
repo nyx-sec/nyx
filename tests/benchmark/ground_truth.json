@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 991
+    "corpus_size": 997
   },
   "cases": [
     {
@@ -31562,6 +31562,201 @@
       ],
       "disabled": true,
       "notes": "CVE-2026-25554 patched counterpart: claim escaped with escape_common before formatting"
+    },
+    {
+      "case_id": "c-cmdi-recall-c-005",
+      "file": "c/cmdi/short_circuit_cond_assign.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "short_circuit_cond_assign"
+      ],
+      "disabled": false,
+      "notes": "Source assigned in a short-circuit condition operand defines its target."
+    },
+    {
+      "case_id": "c-safe-recall-c-005",
+      "file": "c/safe/short_circuit_cond_assign_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "short_circuit_cond_assign",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Same condition shape, the value only reaches printf and system gets a constant: no taint flow expected."
+    },
+    {
+      "case_id": "c-cmdi-recall-c-006",
+      "file": "c/cmdi/preproc_alt_functions.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "preproc_alt_functions"
+      ],
+      "disabled": false,
+      "notes": "Two #if arms define the same function name; the flow into the arm that reaches system is kept."
+    },
+    {
+      "case_id": "c-safe-recall-c-006",
+      "file": "c/safe/preproc_alt_functions_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "preproc_alt_functions",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Same #if arms, neither passes its parameter to system: no taint flow expected."
+    },
+    {
+      "case_id": "c-cmdi-recall-c-007",
+      "file": "c/cmdi/cond_assign_forwards_taint.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "cond_assign_forwards_taint"
+      ],
+      "disabled": false,
+      "notes": "A condition assignment copies a tainted value into its target."
+    },
+    {
+      "case_id": "c-safe-recall-c-007",
+      "file": "c/safe/cond_assign_overwrites_taint_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "cond_assign_overwrites_taint",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A condition assignment overwrites a tainted target with a constant: no taint flow expected."
     }
   ]
 }

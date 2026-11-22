@@ -325,7 +325,17 @@ pub(super) fn push_condition_node<'a>(
         info.null_check = extract_null_check(cond_ast, lang, code);
         // Union the condition idents into `taint.uses` so branch-predicate
         // lookup keeps working without clobbering the call's own arg uses.
+        // The target of a C / C++ condition assignment is overwritten here,
+        // so it is not a read of the node.
+        let overwritten = if matches!(lang, "c" | "cpp") {
+            info.taint.defines.clone()
+        } else {
+            None
+        };
         for v in &uses_for_taint {
+            if overwritten.as_deref() == Some(v.as_str()) {
+                continue;
+            }
             if !info.taint.uses.contains(v) {
                 info.taint.uses.push(v.clone());
             }

@@ -3089,8 +3089,10 @@ pub(super) fn def_use(
                 && let Some(c) = cond
                 && let Some(assign) = condition_assignment(c)
             {
-                let (defs, _, extra, idx, rhs) = def_use(assign, lang, code, extra_labels);
-                return (defs, header_uses(cond, code), extra, idx, rhs);
+                // The target is overwritten, so only the assignment's own
+                // reads flow into it: a stale taint on `x` must not survive
+                // `if ((x = safe) == NULL)`.
+                return def_use(assign, lang, code, extra_labels);
             }
 
             // The header reads its condition only: the branches and the loop
@@ -3183,8 +3185,7 @@ pub(super) fn def_use(
             )
             && let Some(assign) = condition_assignment(ast) =>
         {
-            let (defs, _, extra, idx, rhs) = def_use(assign, lang, code, extra_labels);
-            (defs, header_uses(Some(ast), code), extra, idx, rhs)
+            def_use(assign, lang, code, extra_labels)
         }
 
         // everything else – no definition, but may read vars

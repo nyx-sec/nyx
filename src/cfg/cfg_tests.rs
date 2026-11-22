@@ -8605,3 +8605,34 @@ fn rust_unwrap_rebind_never_counts_as_all_literal() {
         .expect("unwrap call node");
     assert!(!unwrapped.1, "peeled call must stay not-all-literal");
 }
+
+#[test]
+fn c_short_circuit_condition_assignment_is_a_source_node() {
+    let src = b"void f(void) {\n char *x;\n if ((x = getenv(\"T\")) == NULL || strlen(x) > 5) return;\n system(x);\n}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let n = g
+        .node_indices()
+        .find(|&i| g[i].taint.defines.as_deref() == Some("x") && g[i].kind == StmtKind::If)
+        .expect("the assigning operand defines x");
+    assert_eq!(g[n].call.callee.as_deref(), Some("getenv"));
+    assert!(
+        g[n].taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+    );
+}
+
+#[test]
+fn c_condition_assignment_target_is_not_a_read() {
+    let src =
+        b"void f(void) {\n char *cmd = getenv(\"X\");\n if ((cmd = safe) == NULL) return;\n}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let n = g
+        .node_indices()
+        .find(|&i| g[i].taint.defines.as_deref() == Some("cmd") && g[i].kind == StmtKind::If)
+        .expect("the condition defines cmd");
+    assert_eq!(g[n].taint.uses, vec!["safe".to_string()]);
+}

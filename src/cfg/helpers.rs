@@ -1491,6 +1491,18 @@ pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Heade
     if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
         return cond(ast.child_by_field_name("condition"));
     }
+    // A C / C++ short-circuit operand that assigns, `(x = getenv("V")) == NULL`
+    // in `if (a || (x = getenv("V")) == NULL)`, is lowered as a branch node of
+    // its own and evaluates like a condition header.
+    if matches!(lang, "c" | "cpp")
+        && matches!(
+            ast.kind(),
+            "binary_expression" | "parenthesized_expression" | "unary_expression"
+        )
+        && super::literals::condition_assignment(ast).is_some()
+    {
+        return Some(HeaderExpr::Condition(ast));
+    }
     match lookup(lang, ast.kind()) {
         Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
         Kind::For => {

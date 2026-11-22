@@ -1,0 +1,15 @@
+{
+  "description": "A condition assignment overwrites a tainted target with a constant.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": []
+}
