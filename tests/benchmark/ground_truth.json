@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 979
+    "corpus_size": 981
   },
   "cases": [
     {
@@ -31144,6 +31144,67 @@
       ],
       "disabled": false,
       "notes": "An element read from a tainted container keeps the container's taint."
+    },
+    {
+      "case_id": "js-interproc-implicit-global-handlers-001",
+      "file": "javascript/interprocedural/implicit_global_across_handlers.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "two-level",
+        "implicit-global"
+      ],
+      "disabled": false,
+      "notes": "Undeclared global written in one handler and read in another must keep its taint."
+    },
+    {
+      "case_id": "js-safe-implicit-global-per-handler-001",
+      "file": "javascript/safe/safe_implicit_global_per_handler.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "two-level",
+        "implicit-global",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Per-handler declarations of the same name share no taint."
     }
   ]
 }

@@ -1704,6 +1704,35 @@ fn analyse_multi_body(
             for d in &top.meta.declared_names {
                 keys.insert(ssa_transfer::BindingKey::new(d.as_str(), BodyId(0)));
             }
+            // Implicit globals: a name assigned inside a body but declared
+            // in neither that body nor any enclosing body is a sloppy-mode
+            // global, shared across handlers.
+            for body in &file_cfg.bodies {
+                if body.meta.parent_body_id.is_none() {
+                    continue;
+                }
+                for (_idx, info) in body.graph.node_references() {
+                    let Some(ref d) = info.taint.defines else {
+                        continue;
+                    };
+                    let root = d.as_str().split('.').next().unwrap_or(d.as_str());
+                    let mut cur = Some(body);
+                    let mut declared = false;
+                    while let Some(b) = cur {
+                        if b.meta.declared_names.iter().any(|n| n == root) {
+                            declared = true;
+                            break;
+                        }
+                        cur = b
+                            .meta
+                            .parent_body_id
+                            .and_then(|p| file_cfg.bodies.get(p.0 as usize));
+                    }
+                    if !declared {
+                        keys.insert(ssa_transfer::BindingKey::new(d.as_str(), BodyId(0)));
+                    }
+                }
+            }
             keys
         };
 
