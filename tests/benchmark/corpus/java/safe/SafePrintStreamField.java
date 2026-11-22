@@ -1,14 +1,14 @@
-import java.io.PrintStream;
+import java.io.FileWriter;
 
 public class SafePrintStreamField {
-    public PrintStream stderr;
+    public FileWriter log;
 
-    int run(String id) {
+    int run(String id) throws Exception {
         try {
             Integer.parseInt(id);
         } catch (Exception e) {
             String msg = id + ": " + e.getMessage();
-            stderr.println(msg);
+            log.write(msg);
             return 1;
         }
         return 0;

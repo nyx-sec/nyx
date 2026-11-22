@@ -4550,6 +4550,14 @@ pub(super) fn push_node<'a>(
             || text.ends_with("res.sendfile"))
         && let Some(cn) = call_ast
         && literals::object_arg_sets_property_without_spread(cn, 1, "root", code)
+        && literals::extract_object_arg_property(cn, 1, "root", code).is_some_and(|v| {
+            let t = v.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+            v.starts_with(['"', '\'', '`'])
+                && v.len() >= 2
+                && !t.is_empty()
+                && !t.contains("${")
+                && t.trim_matches('/').trim_matches('.') != ""
+        })
     {
         for label in labels.iter_mut() {
             if let DataLabel::Sink(c) = label {
@@ -5774,17 +5782,15 @@ pub(crate) fn java_declared_receiver_kind(
         // `createNativeQuery` statement API as the Hibernate session.
         "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
         "CallableStatement" => Some(TypeKind::DatabaseConnection),
-        // Output streams and writers that sit on a console, file, socket or
-        // memory buffer.  `PrintWriter` / `Writer` / `OutputStream` /
+        // Output streams and writers that sit on a file or memory buffer.
+        // `PrintStream` / `DataOutputStream` / `ObjectOutputStream` are left
+        // out too: they wrap any stream, including the servlet response
+        // (`new PrintStream(resp.getOutputStream())`).  `PrintWriter` / `Writer` / `OutputStream` /
         // `ServletOutputStream` / `BufferedWriter` are left out because
         // servlet code declares the response writer with those types.
-        "PrintStream"
-        | "DataOutputStream"
-        | "ObjectOutputStream"
-        | "FileOutputStream"
-        | "FileWriter"
-        | "ByteArrayOutputStream"
-        | "StringWriter" => Some(TypeKind::FileHandle),
+        "FileOutputStream" | "FileWriter" | "ByteArrayOutputStream" | "StringWriter" => {
+            Some(TypeKind::FileHandle)
+        }
         "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
         // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
         // `dbf.parse`, and StAX parses straight off the factory

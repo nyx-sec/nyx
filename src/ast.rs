@@ -1733,6 +1733,18 @@ impl<'a> ParsedSource<'a> {
         {
             return None;
         }
+        // Layer J2: Java `execute(..)` / `Type.execute(..)` without an
+        // instance receiver.  JDBC `execute*` runs on a Statement or
+        // Connection, but a user helper of that name also wraps one, so the
+        // call is kept when its concatenation visibly builds SQL and dropped
+        // otherwise (CLI wrappers such as `Exec.execute("get " + url)`).
+        if meta.id == "java.sqli.execute_concat"
+            && self.lang_slug == "java"
+            && let Some(call) = vuln_node.filter(|v| v.kind() == "method_invocation")
+            && !java_execute_concat_may_be_sql(call, self.bytes)
+        {
+            return None;
+        }
         // Layer J: Java `x.invoke(..)` that cannot be
         // `java.lang.reflect.Method.invoke`.  The query matches any call
         // named `invoke` with a receiver and an argument, which also picks
@@ -4753,6 +4765,67 @@ fn is_ruby_eval_string_arg(cap_node: tree_sitter::Node) -> bool {
     false
 }
 
+/// A `execute*` call on an instance receiver is judged JDBC.  With no
+/// receiver or a class-name receiver, the concatenation must contain a string
+/// literal that starts like a SQL statement.
+fn java_execute_concat_may_be_sql(call: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let class_like = |t: &str| {
+        let mut ch = t.chars();
+        ch.next().is_some_and(|c| c.is_ascii_uppercase())
+            && ch
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    match call.child_by_field_name("object") {
+        Some(o) => {
+            let Ok(t) = o.utf8_text(bytes) else {
+                return true;
+            };
+            if !class_like(t) {
+                return true;
+            }
+        }
+        None => {}
+    }
+    let Some(arg) = call
+        .child_by_field_name("arguments")
+        .and_then(|a| a.named_child(0))
+    else {
+        return true;
+    };
+    let mut stack = vec![arg];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "string_literal"
+            && let Ok(t) = n.utf8_text(bytes)
+        {
+            let t = t.trim_matches('"').trim_start().to_ascii_lowercase();
+            if [
+                "select ",
+                "insert ",
+                "update ",
+                "delete ",
+                "drop ",
+                "create ",
+                "alter ",
+                "call ",
+                "merge ",
+                "with ",
+                "replace ",
+                "truncate ",
+            ]
+            .iter()
+            .any(|k| t.starts_with(k))
+            {
+                return true;
+            }
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
+    }
+    false
+}
+
 /// True iff `ident` (the first argument of a Ruby `send`) is the element
 /// parameter of an enclosing iterator block whose receiver is a closed set of
 /// literals: an array / `%w` / `%i` literal, or a constant assigned exactly
@@ -4771,17 +4844,34 @@ fn is_ruby_send_closed_set_arg(ident: tree_sitter::Node, bytes: &[u8]) -> bool {
     };
     let mut cur = ident.parent();
     while let Some(n) = cur {
-        if matches!(n.kind(), "block" | "do_block")
-            && let Some(recv) = ruby_iterator_literal_receiver(n, name, bytes)
-            && ruby_receiver_is_closed_literal_set(recv, bytes)
-            && !ruby_node_assigns_identifier(n, name, bytes)
-        {
-            return true;
+        if matches!(n.kind(), "block" | "do_block") && ruby_block_binds_name(n, name, bytes) {
+            // The nearest block that binds `name` decides: an inner block
+            // parameter shadows any outer literal-iterating block.
+            return ruby_iterator_literal_receiver(n, name, bytes).is_some_and(|recv| {
+                ruby_receiver_is_closed_literal_set(recv, bytes)
+                    && !ruby_node_assigns_identifier(n, name, bytes)
+            });
         }
         if matches!(n.kind(), "method" | "singleton_method" | "program") {
             return false;
         }
         cur = n.parent();
+    }
+    false
+}
+
+/// True iff any parameter (or block-local) of `block` is named `name`.
+fn ruby_block_binds_name(block: tree_sitter::Node, name: &str, bytes: &[u8]) -> bool {
+    let Some(params) = block.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut stack = vec![params];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" && n.utf8_text(bytes).ok() == Some(name) {
+            return true;
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
     }
     false
 }

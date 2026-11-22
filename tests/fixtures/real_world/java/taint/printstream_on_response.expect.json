@@ -1,0 +1,19 @@
+{
+  "description": "PrintStream and DataOutputStream built on the servlet output stream are response writers, so the request value written to them is still XSS.",
+  "tags": ["taint", "xss", "java", "positive", "response-writer"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [10, 10],
+      "notes": "PrintStream wraps the response stream"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [15, 15],
+      "notes": "DataOutputStream wraps the response stream"
+    }
+  ]
+}

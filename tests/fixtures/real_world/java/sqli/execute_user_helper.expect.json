@@ -1,0 +1,32 @@
+{
+  "description": "A user helper named execute that wraps a Statement, called bare or on a class name with concatenated SQL, still fires the Tier-B pattern.",
+  "tags": [
+    "sqli",
+    "java",
+    "pattern",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "severity": null,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "concatenated SQL text passed to a helper"
+    },
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "severity": null,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "concatenated SQL text passed to a helper"
+    }
+  ]
+}
